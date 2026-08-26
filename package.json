@@ -1,0 +1,42 @@
+{
+  "name": "wrj-local-demo",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev:ui": "vite --host 127.0.0.1 --port 5173 --strictPort",
+    "dev:mock": "npm run validate:contracts && tsx server/index.ts",
+    "start:mock": "npm run validate:contracts && tsx server/index.ts",
+    "build": "vite build",
+    "typecheck": "tsc -b",
+    "validate:contracts": "tsx scripts/validate-contracts.ts",
+    "test:unit": "vitest run --config vitest.config.ts tests/components",
+    "test:contracts": "vitest run --config vitest.config.ts tests/contracts",
+    "test:server": "vitest run --config vitest.config.ts tests/server",
+    "test": "npm run test:unit && npm run test:contracts && npm run test:server",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "p0:check": "npm run typecheck && npm run build && npm run validate:contracts && npm run test:unit && npm run test:contracts && npm run test:server && npm run test:coverage"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "express": "5.1.0",
+    "vue": "3.5.21",
+    "ws": "8.21.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.3",
+    "@types/node": "24.3.0",
+    "@types/supertest": "6.0.3",
+    "@types/ws": "8.18.1",
+    "@vitejs/plugin-vue": "6.0.8",
+    "@vitest/coverage-v8": "4.1.11",
+    "@vue/test-utils": "2.4.6",
+    "jsdom": "26.1.0",
+    "supertest": "7.1.4",
+    "tsx": "4.20.5",
+    "typescript": "5.9.2",
+    "vite": "8.2.2",
+    "vitest": "4.1.11"
+  }
+}

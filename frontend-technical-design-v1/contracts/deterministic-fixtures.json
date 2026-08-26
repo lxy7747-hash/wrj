@@ -1,0 +1,1909 @@
+{
+  "schemaVersion": "1.0",
+  "fixtureVersion": "2026-08-25.1",
+  "epoch": "2026-08-06T08:00:00Z",
+  "clock": {
+    "scenarioCreatedAt": "2026-08-06T08:00:00Z",
+    "taskCreatedAt": "2026-08-06T08:01:00Z",
+    "configModifiedAt": "2026-08-06T08:02:11Z",
+    "scriptGeneratedAt": "2026-08-06T08:03:02Z",
+    "runStartedAt": "2026-08-06T08:05:00Z",
+    "runCompletedAt": "2026-08-06T10:05:00Z",
+    "reportGeneratedAt": "2026-08-06T10:06:30Z",
+    "batchReportGeneratedAt": "2026-08-06T10:07:00Z",
+    "levelThreeVerifiedAt": "2026-08-06T10:08:00Z"
+  },
+  "principals": [
+    {
+      "userId": "USR-ADMIN",
+      "username": "admin",
+      "role": "ADMIN",
+      "status": "ACTIVE"
+    },
+    {
+      "userId": "USR-OPERATOR",
+      "username": "operator",
+      "role": "OPERATOR",
+      "status": "ACTIVE"
+    }
+  ],
+  "templates": [
+    {
+      "templateId": "TPL-SCN-001",
+      "scenarioId": "SCN-001",
+      "name": "跨海通联演示官方基线",
+      "version": "4",
+      "official": true,
+      "referenceCount": 2
+    }
+  ],
+  "fileArchives": [
+    {
+      "fileId": "FILE-001",
+      "taskId": "TASK-001",
+      "contract": "link_quality.csv",
+      "status": "VALID_FIXTURE",
+      "createdAt": "2026-08-06T08:05:00Z"
+    }
+  ],
+  "masterData": [
+    {
+      "dataId": "MW-COMM",
+      "kind": "COMMUNICATION_SYSTEM",
+      "version": 4,
+      "referenceCount": 2,
+      "active": true
+    }
+  ],
+  "backups": [
+    {
+      "backupId": "PREBACKUP-002",
+      "status": "VALID_FIXTURE",
+      "checksum": "SHA256-DEMO-PREBACKUP-002",
+      "createdAt": "2026-08-06T10:08:00Z"
+    }
+  ],
+  "audit": [
+    {
+      "auditId": "AUD-001",
+      "actor": "admin",
+      "role": "ADMIN",
+      "action": "THRESHOLD_UPDATE",
+      "objectId": "MW-COMM",
+      "result": "SUCCESS",
+      "occurredAt": "2026-08-06T08:04:00Z",
+      "immutableFixture": true
+    }
+  ],
+  "diagnostics": {
+    "ui": "HEALTHY",
+    "engine": "NOT_CONNECTED_BY_DESIGN",
+    "database": "NOT_CONNECTED_BY_DESIGN",
+    "channel": "NOT_CONNECTED_BY_DESIGN"
+  },
+  "scenarioCoverage": {
+    "businessNodeTypes": [
+      "REAR_COMMAND_NODE",
+      "FORWARD_RELAY_NODE",
+      "GROUND_CLUSTER_COMMAND_NODE",
+      "AIRBORNE_MISSION_CLUSTER"
+    ],
+    "supportingEntityTypes": [
+      "COMMUNICATION_SATELLITE",
+      "GROUND_JAMMER_DETECTION_STATION"
+    ],
+    "acceptedBusinessNodeCount": 50,
+    "rejectedBusinessNodeCount": 51,
+    "rejection": {
+      "code": "NODE_LIMIT_EXCEEDED",
+      "fieldPath": "platforms",
+      "mutationApplied": false
+    },
+    "linkTypes": [
+      "SAT",
+      "MICROWAVE",
+      "DATALINK",
+      "LASER"
+    ],
+    "jammerTypes": [
+      "BARRAGE",
+      "SPOT"
+    ],
+    "minimumInformationDemandCount": 1
+  },
+  "scenario": {
+    "schemaVersion": "1.0",
+    "scenario": {
+      "id": "SCN-001",
+      "name": "跨海通联演示",
+      "description": "确定性离线夹具",
+      "startTime": "2026-08-06T08:00:00Z",
+      "duration": 7200,
+      "timeStep": 1,
+      "environment": {
+        "seaState": 3,
+        "temperatureC": 26,
+        "humidityPercent": 80,
+        "rainRateMmPerHour": 12,
+        "rainLossDbPerKm": 0.07,
+        "multipathEnabled": true
+      }
+    },
+    "platforms": [
+      {
+        "id": "CMD-01",
+        "name": "公共服务平台后方指挥节点",
+        "type": "REAR_COMMAND_NODE",
+        "category": "ground",
+        "initialPosition": {
+          "longitude": 114.17,
+          "latitude": 22.3,
+          "altitude": 20
+        },
+        "waypoints": [],
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-SAT-02",
+          "L-LASER-04"
+        ],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "UAV-01",
+        "name": "高空前出中继节点",
+        "type": "FORWARD_RELAY_NODE",
+        "category": "air",
+        "initialPosition": {
+          "longitude": 114.5,
+          "latitude": 22.5,
+          "altitude": 3000
+        },
+        "waypoints": [
+          {
+            "longitude": 114.7,
+            "latitude": 22.6,
+            "altitude": 3000,
+            "speed": 45,
+            "arrivalTime": 600
+          }
+        ],
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-SAT-02",
+          "L-LASER-04"
+        ],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "GCC-01",
+        "name": "地面无人集群指挥车",
+        "type": "GROUND_CLUSTER_COMMAND_NODE",
+        "category": "ground",
+        "initialPosition": {
+          "longitude": 114.24,
+          "latitude": 22.34,
+          "altitude": 20
+        },
+        "waypoints": [],
+        "linkIds": [],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "AIR-01",
+        "name": "空中无人作战集群",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "category": "air",
+        "initialPosition": {
+          "longitude": 114.72,
+          "latitude": 22.62,
+          "altitude": 3200
+        },
+        "waypoints": [
+          {
+            "longitude": 114.9,
+            "latitude": 22.7,
+            "altitude": 3300,
+            "speed": 42,
+            "arrivalTime": 900
+          }
+        ],
+        "linkIds": [],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "SAT-01",
+        "name": "通信卫星",
+        "type": "COMMUNICATION_SATELLITE",
+        "category": "space",
+        "initialPosition": {
+          "longitude": 114,
+          "latitude": 0,
+          "altitude": 35786000
+        },
+        "waypoints": [],
+        "linkIds": [],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "STN-01",
+        "name": "地面固定式干扰侦测站",
+        "type": "GROUND_JAMMER_DETECTION_STATION",
+        "category": "ground",
+        "initialPosition": {
+          "longitude": 114.65,
+          "latitude": 22.42,
+          "altitude": 15
+        },
+        "waypoints": [],
+        "linkIds": [],
+        "sensorIds": [
+          "ESM-01"
+        ],
+        "jammerIds": [
+          "JAM-WB-01-TX",
+          "JAM-SPOT-01-TX"
+        ]
+      }
+    ],
+    "links": [
+      {
+        "id": "L-MW-01",
+        "type": "MICROWAVE",
+        "sourcePlatformId": "CMD-01",
+        "targetPlatformId": "UAV-01",
+        "frequency": 4500,
+        "bandwidth": 20,
+        "txPower": 100,
+        "antennaGain": {
+          "tx": 18,
+          "rx": 12
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 20,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-DL-03",
+        "type": "DATALINK",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "CMD-01",
+        "frequency": 2200,
+        "bandwidth": 10,
+        "txPower": 50,
+        "antennaGain": {
+          "tx": 12,
+          "rx": 18
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 10,
+        "direction": "REVERSE"
+      },
+      {
+        "id": "L-SAT-02",
+        "type": "SAT",
+        "sourcePlatformId": "CMD-01",
+        "targetPlatformId": "UAV-01",
+        "frequency": 12000,
+        "bandwidth": 25,
+        "txPower": 80,
+        "antennaGain": {
+          "tx": 25,
+          "rx": 20
+        },
+        "modulation": "BPSK",
+        "berThreshold": 0.000005,
+        "dataRate": 15,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-LASER-04",
+        "type": "LASER",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "CMD-01",
+        "frequency": 193500000,
+        "bandwidth": 1000,
+        "txPower": 20,
+        "antennaGain": {
+          "tx": 30,
+          "rx": 30
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.000001,
+        "dataRate": 100,
+        "direction": "REVERSE"
+      }
+    ],
+    "jammers": [
+      {
+        "id": "JAM-WB-01-TX",
+        "platformId": "STN-01",
+        "type": "BARRAGE",
+        "defaultPower": 72,
+        "frequency": 2200,
+        "bandwidth": 40,
+        "autoDetect": true,
+        "detectionRange": 150000
+      },
+      {
+        "id": "JAM-SPOT-01-TX",
+        "platformId": "STN-01",
+        "type": "SPOT",
+        "defaultPower": 50,
+        "frequency": 4500,
+        "bandwidth": 5,
+        "autoDetect": false,
+        "detectionRange": 150000
+      }
+    ],
+    "sensors": [
+      {
+        "id": "ESM-01",
+        "platformId": "STN-01",
+        "frequencyRange": {
+          "min": 2000,
+          "max": 5000
+        },
+        "detectionRange": 150000
+      }
+    ],
+    "output": {
+      "directory": "./tasks/TASK-001/output",
+      "writeInterval": 5,
+      "linkQualityEnabled": true,
+      "eventsEnabled": true,
+      "linkSwitchEnabled": true
+    },
+    "informationDemand": [
+      {
+        "id": "INFO-001",
+        "sourcePlatformId": "CMD-01",
+        "destinationPlatformIds": [
+          "UAV-01"
+        ],
+        "informationType": "COMMAND",
+        "volumeMb": 2,
+        "frequencyHz": 1,
+        "priority": "HIGH",
+        "maxLatencyMs": 200,
+        "minDataRateMbps": 5
+      }
+    ]
+  },
+  "task": {
+    "taskId": "TASK-001",
+    "scenarioId": "SCN-001",
+    "configVersion": "SCN-001-v4",
+    "scriptId": "SCRIPT-001",
+    "createdAt": "2026-08-06T08:01:00Z"
+  },
+  "script": {
+    "scriptId": "SCRIPT-001",
+    "taskId": "TASK-001",
+    "scenarioId": "SCN-001",
+    "configVersion": "SCN-001-v4",
+    "target": "AFSIM 2.9.0",
+    "checksum": "SHA256-DEMO-7A91",
+    "generatedTime": "2026-08-06T08:03:02Z",
+    "preview": "# deterministic design fixture; no process invocation"
+  },
+  "run": {
+    "runId": "RUN-001",
+    "taskId": "TASK-001",
+    "scenarioId": "SCN-001",
+    "uiStatus": "COMPLETED",
+    "canonical": {
+      "status": "COMPLETED",
+      "currentTime": 7200,
+      "totalDuration": 7200,
+      "processId": null,
+      "progress": 100
+    },
+    "configLocked": false,
+    "startedAt": "2026-08-06T08:05:00Z",
+    "completedAt": "2026-08-06T10:05:00Z"
+  },
+  "frame": {
+    "frameId": "F-00042",
+    "taskId": "TASK-001",
+    "runId": "RUN-001",
+    "simulationTime": 42,
+    "sequence": 42,
+    "platforms": [
+      {
+        "platformId": "CMD-01",
+        "name": "公共服务平台后方指挥节点",
+        "type": "REAR_COMMAND_NODE",
+        "longitude": 114.17,
+        "latitude": 22.3,
+        "altitude": 20,
+        "speed": 0,
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-SAT-02",
+          "L-LASER-04"
+        ],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "UAV-01",
+        "name": "高空前出中继节点",
+        "type": "FORWARD_RELAY_NODE",
+        "longitude": 114.5,
+        "latitude": 22.5,
+        "altitude": 3000,
+        "speed": 45,
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-SAT-02",
+          "L-LASER-04"
+        ],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "GCC-01",
+        "name": "地面无人集群指挥车",
+        "type": "GROUND_CLUSTER_COMMAND_NODE",
+        "longitude": 114.24,
+        "latitude": 22.34,
+        "altitude": 20,
+        "speed": 0,
+        "linkIds": [],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "AIR-01",
+        "name": "空中无人作战集群",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "longitude": 114.72,
+        "latitude": 22.62,
+        "altitude": 3200,
+        "speed": 42,
+        "linkIds": [],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "SAT-01",
+        "name": "通信卫星",
+        "type": "COMMUNICATION_SATELLITE",
+        "longitude": 114,
+        "latitude": 0,
+        "altitude": 35786000,
+        "speed": 0,
+        "linkIds": [],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "STN-01",
+        "name": "地面固定式干扰侦测站",
+        "type": "GROUND_JAMMER_DETECTION_STATION",
+        "longitude": 114.65,
+        "latitude": 22.42,
+        "altitude": 15,
+        "speed": 0,
+        "linkIds": [],
+        "jammers": [
+          {
+            "time": 42,
+            "jammerId": "JAM-WB-01-TX",
+            "platformId": "STN-01",
+            "targetPlatform": "UAV-01",
+            "power": 72,
+            "frequency": 2200,
+            "bandwidth": 40,
+            "active": true
+          },
+          {
+            "time": 42,
+            "jammerId": "JAM-SPOT-01-TX",
+            "platformId": "STN-01",
+            "targetPlatform": "CMD-01",
+            "power": 50,
+            "frequency": 4500,
+            "bandwidth": 5,
+            "active": false
+          }
+        ],
+        "updatedAt": 42
+      }
+    ],
+    "links": [
+      {
+        "linkId": "L-MW-01",
+        "time": 42,
+        "sourcePlatform": "CMD-01",
+        "destPlatform": "UAV-01",
+        "linkType": "MICROWAVE",
+        "frequency": 4500,
+        "bandwidth": 20,
+        "distance": 45000,
+        "txPower": 100,
+        "txAntennaGain": 18,
+        "rxAntennaGain": 12,
+        "pathLoss": 142.5,
+        "jammingPower": -110,
+        "receivedPower": -84,
+        "snr": 18.62,
+        "modulation": "QPSK",
+        "ber": 3.2e-7,
+        "linkStatus": "UP",
+        "berThreshold": 0.00001,
+        "dataRate": 20
+      },
+      {
+        "linkId": "L-DL-03",
+        "time": 42,
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "CMD-01",
+        "linkType": "DATALINK",
+        "frequency": 2200,
+        "bandwidth": 10,
+        "distance": 45000,
+        "txPower": 50,
+        "txAntennaGain": 12,
+        "rxAntennaGain": 18,
+        "pathLoss": 134.8,
+        "jammingPower": -100.8,
+        "receivedPower": -91.6,
+        "snr": 7.1,
+        "modulation": "QPSK",
+        "ber": 0.00024,
+        "linkStatus": "DOWN",
+        "berThreshold": 0.00001,
+        "dataRate": 10
+      }
+    ],
+    "uiLinks": [
+      {
+        "linkId": "L-MW-01",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 5,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-DL-03",
+        "frameId": "F-00042",
+        "status": "DEGRADED",
+        "canonicalStatus": "DOWN",
+        "reason": "BER_THRESHOLD_AND_HYSTERESIS",
+        "consecutiveFrames": 3,
+        "ageMs": 0
+      }
+    ],
+    "eventIds": [
+      "DET-042",
+      "SW-003"
+    ],
+    "evidence": {
+      "losses": [
+        {
+          "linkId": "L-MW-01",
+          "freeSpaceLossDb": 120,
+          "seaSurfaceLossDb": 12,
+          "rainLossDb": 5,
+          "multipathLossDb": 5.5,
+          "totalPathLossDb": 142.5,
+          "noisePowerDbm": -104,
+          "effectiveNoiseAndInterferenceDbm": -102.62,
+          "modelVersion": "COMPOSITE-LOSS-1.0"
+        },
+        {
+          "linkId": "L-DL-03",
+          "freeSpaceLossDb": 115,
+          "seaSurfaceLossDb": 9,
+          "rainLossDb": 4,
+          "multipathLossDb": 6.8,
+          "totalPathLossDb": 134.8,
+          "noisePowerDbm": -102.5,
+          "effectiveNoiseAndInterferenceDbm": -98.7,
+          "modelVersion": "COMPOSITE-LOSS-1.0"
+        }
+      ],
+      "routeCandidates": [
+        {
+          "linkId": "L-MW-01",
+          "direction": "FORWARD",
+          "eligible": true,
+          "jamImpactDb": 1.38,
+          "ber": 3.2e-7,
+          "stabilityFrames": 5,
+          "rank": 1
+        },
+        {
+          "linkId": "L-SAT-02",
+          "direction": "FORWARD",
+          "eligible": true,
+          "jamImpactDb": 3.2,
+          "ber": 0.0000011,
+          "stabilityFrames": 4,
+          "rank": 2
+        },
+        {
+          "linkId": "L-LASER-04",
+          "direction": "REVERSE",
+          "eligible": true,
+          "jamImpactDb": 0.2,
+          "ber": 8e-7,
+          "stabilityFrames": 4,
+          "rank": 1
+        },
+        {
+          "linkId": "L-DL-03",
+          "direction": "REVERSE",
+          "eligible": false,
+          "jamImpactDb": 12.4,
+          "ber": 0.00024,
+          "stabilityFrames": 3,
+          "rank": 2
+        }
+      ],
+      "synchronization": {
+        "configVersion": "SCN-001-v4",
+        "engineVersion": "AFSIM-2.9.0-FIXTURE",
+        "uiVersion": "FRAME-1.0",
+        "effectiveFrameId": "F-00042",
+        "effectiveSimulationTime": 42
+      },
+      "jammerExecution": {
+        "jammerId": "JAM-WB-01-TX",
+        "targetPlatformId": "UAV-01",
+        "power": 72,
+        "frequency": 2200,
+        "bandwidth": 40,
+        "startTime": 42,
+        "duration": 1470,
+        "reason": "AUTO_DETECTION_DET-042"
+      }
+    },
+    "linkSummaries": [
+      {
+        "linkKey": "CMD-01>UAV-01>MICROWAVE",
+        "sourcePlatform": "CMD-01",
+        "destPlatform": "UAV-01",
+        "linkType": "MICROWAVE",
+        "currentSnr": 18.62,
+        "currentBer": 3.2e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "UAV-01>CMD-01>DATALINK",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "CMD-01",
+        "linkType": "DATALINK",
+        "currentSnr": 7.1,
+        "currentBer": 0.00024,
+        "status": "DOWN",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "CMD-01>UAV-01>SAT",
+        "sourcePlatform": "CMD-01",
+        "destPlatform": "UAV-01",
+        "linkType": "SAT",
+        "currentSnr": 15.4,
+        "currentBer": 0.0000011,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "UAV-01>CMD-01>LASER",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "CMD-01",
+        "linkType": "LASER",
+        "currentSnr": 24.8,
+        "currentBer": 8e-7,
+        "status": "UP",
+        "updatedAt": 42
+      }
+    ]
+  },
+  "events": [
+    {
+      "eventId": "DET-042",
+      "frameId": "F-00042",
+      "time": 42,
+      "sourceRegistryTime": 2200,
+      "type": "DETECTION",
+      "sensorId": "ESM-01",
+      "targetPlatformId": "UAV-01",
+      "dedupeKey": "DET-042",
+      "detectionProbability": 0.95
+    },
+    {
+      "eventId": "SW-003",
+      "frameId": "F-00042",
+      "time": 42,
+      "sourceRegistryTime": 2518,
+      "type": "LINK_SWITCH",
+      "oldLinkId": "L-DL-03",
+      "newLinkId": "L-MW-01",
+      "decision": "ACCEPTED",
+      "reason": "BER_THRESHOLD_AND_HYSTERESIS",
+      "dedupeKey": "SW-003"
+    }
+  ],
+  "replay": {
+    "replayId": "REPLAY-001",
+    "runId": "RUN-001",
+    "state": "PAUSED",
+    "durationS": 7200,
+    "currentTimeS": 2537,
+    "eventIds": [
+      "DET-042",
+      "SW-003"
+    ]
+  },
+  "report": {
+    "reportId": "RPT-001",
+    "runId": "RUN-001",
+    "classification": "LEVEL_II",
+    "generatedTime": "2026-08-06T10:06:30Z",
+    "status": "READY",
+    "kpis": {
+      "connectivityRate": 87.3,
+      "switchCount": 3,
+      "avgBer": 0.0000046,
+      "avgSnrDb": 16.8,
+      "interferenceDurationS": 1470,
+      "avgConnectivityDurationS": 5202,
+      "minSnrDb": 4.2,
+      "maxBer": 0.000038
+    }
+  },
+  "archive": {
+    "archiveId": "ARCH-001",
+    "taskId": "TASK-001",
+    "scenarioId": "SCN-001",
+    "runId": "RUN-001",
+    "replayId": "REPLAY-001",
+    "reportId": "RPT-001",
+    "status": "INDEXED"
+  },
+  "batch": {
+    "batchId": "BATCH-001",
+    "state": "COMPLETED",
+    "runIds": [
+      "RUN-B01",
+      "RUN-B02",
+      "RUN-B03",
+      "RUN-B04",
+      "RUN-B05",
+      "RUN-B06",
+      "RUN-B07",
+      "RUN-B08",
+      "RUN-B09",
+      "RUN-B10",
+      "RUN-B11",
+      "RUN-B12"
+    ],
+    "reportIds": [
+      "RPT-B01",
+      "RPT-B02",
+      "RPT-B03",
+      "RPT-B04",
+      "RPT-B05",
+      "RPT-B06",
+      "RPT-B07",
+      "RPT-B08",
+      "RPT-B09",
+      "RPT-B10",
+      "RPT-B11",
+      "RPT-B12"
+    ],
+    "aggregateReportId": "RPT-BATCH-001"
+  },
+  "batchRuns": [
+    {
+      "runId": "RUN-B01",
+      "powerW": 50,
+      "distanceKm": 80,
+      "connectivityDurationS": 6703,
+      "connectivityRate": 93.1,
+      "switchCount": 1,
+      "avgBer": 0.0000012,
+      "maxBer": 0.0000081,
+      "avgSnrDb": 20.4,
+      "minSnrDb": 11.2,
+      "interferenceDurationS": 720,
+      "status": "COMPLETED",
+      "reportId": "RPT-B01"
+    },
+    {
+      "runId": "RUN-B02",
+      "powerW": 50,
+      "distanceKm": 100,
+      "connectivityDurationS": 6437,
+      "connectivityRate": 89.4,
+      "switchCount": 2,
+      "avgBer": 0.0000028,
+      "maxBer": 0.000012,
+      "avgSnrDb": 18.3,
+      "minSnrDb": 8.8,
+      "interferenceDurationS": 900,
+      "status": "COMPLETED",
+      "reportId": "RPT-B02"
+    },
+    {
+      "runId": "RUN-B03",
+      "powerW": 50,
+      "distanceKm": 120,
+      "connectivityDurationS": 6062,
+      "connectivityRate": 84.2,
+      "switchCount": 3,
+      "avgBer": 0.0000062,
+      "maxBer": 0.000022,
+      "avgSnrDb": 15.8,
+      "minSnrDb": 6.3,
+      "interferenceDurationS": 1080,
+      "status": "COMPLETED",
+      "reportId": "RPT-B03"
+    },
+    {
+      "runId": "RUN-B04",
+      "powerW": 100,
+      "distanceKm": 80,
+      "connectivityDurationS": 6286,
+      "connectivityRate": 87.3,
+      "switchCount": 3,
+      "avgBer": 0.0000046,
+      "maxBer": 0.000038,
+      "avgSnrDb": 16.8,
+      "minSnrDb": 4.2,
+      "interferenceDurationS": 1470,
+      "status": "COMPLETED",
+      "reportId": "RPT-B04"
+    },
+    {
+      "runId": "RUN-B05",
+      "powerW": 100,
+      "distanceKm": 100,
+      "connectivityDurationS": 5947,
+      "connectivityRate": 82.6,
+      "switchCount": 4,
+      "avgBer": 0.0000084,
+      "maxBer": 0.000051,
+      "avgSnrDb": 14.5,
+      "minSnrDb": 3.6,
+      "interferenceDurationS": 1650,
+      "status": "COMPLETED",
+      "reportId": "RPT-B05"
+    },
+    {
+      "runId": "RUN-B06",
+      "powerW": 100,
+      "distanceKm": 120,
+      "connectivityDurationS": 5746,
+      "connectivityRate": 79.8,
+      "switchCount": 5,
+      "avgBer": 0.000011,
+      "maxBer": 0.000068,
+      "avgSnrDb": 12.9,
+      "minSnrDb": 2.8,
+      "interferenceDurationS": 1830,
+      "status": "COMPLETED",
+      "reportId": "RPT-B06"
+    },
+    {
+      "runId": "RUN-B07",
+      "powerW": 150,
+      "distanceKm": 80,
+      "connectivityDurationS": 5796,
+      "connectivityRate": 80.5,
+      "switchCount": 5,
+      "avgBer": 0.000016,
+      "maxBer": 0.000082,
+      "avgSnrDb": 11.8,
+      "minSnrDb": 2.2,
+      "interferenceDurationS": 1980,
+      "status": "COMPLETED",
+      "reportId": "RPT-B07"
+    },
+    {
+      "runId": "RUN-B08",
+      "powerW": 150,
+      "distanceKm": 100,
+      "connectivityDurationS": 5537,
+      "connectivityRate": 76.9,
+      "switchCount": 6,
+      "avgBer": 0.000024,
+      "maxBer": 0.00011,
+      "avgSnrDb": 10.2,
+      "minSnrDb": 1.5,
+      "interferenceDurationS": 2160,
+      "status": "COMPLETED",
+      "reportId": "RPT-B08"
+    },
+    {
+      "runId": "RUN-B09",
+      "powerW": 150,
+      "distanceKm": 120,
+      "connectivityDurationS": 5285,
+      "connectivityRate": 73.4,
+      "switchCount": 7,
+      "avgBer": 0.000031,
+      "maxBer": 0.00014,
+      "avgSnrDb": 9.1,
+      "minSnrDb": 0.8,
+      "interferenceDurationS": 2340,
+      "status": "COMPLETED",
+      "reportId": "RPT-B09"
+    },
+    {
+      "runId": "RUN-B10",
+      "powerW": 200,
+      "distanceKm": 80,
+      "connectivityDurationS": 5148,
+      "connectivityRate": 71.5,
+      "switchCount": 7,
+      "avgBer": 0.000038,
+      "maxBer": 0.00018,
+      "avgSnrDb": 8.5,
+      "minSnrDb": 0.4,
+      "interferenceDurationS": 2520,
+      "status": "COMPLETED",
+      "reportId": "RPT-B10"
+    },
+    {
+      "runId": "RUN-B11",
+      "powerW": 200,
+      "distanceKm": 100,
+      "connectivityDurationS": 4910,
+      "connectivityRate": 68.2,
+      "switchCount": 8,
+      "avgBer": 0.000049,
+      "maxBer": 0.00021,
+      "avgSnrDb": 7.4,
+      "minSnrDb": -0.6,
+      "interferenceDurationS": 2700,
+      "status": "COMPLETED",
+      "reportId": "RPT-B11"
+    },
+    {
+      "runId": "RUN-B12",
+      "powerW": 200,
+      "distanceKm": 120,
+      "connectivityDurationS": 4666,
+      "connectivityRate": 64.8,
+      "switchCount": 9,
+      "avgBer": 0.000063,
+      "maxBer": 0.00027,
+      "avgSnrDb": 6.2,
+      "minSnrDb": -1.4,
+      "interferenceDurationS": 2880,
+      "status": "COMPLETED",
+      "reportId": "RPT-B12"
+    }
+  ],
+  "batchReports": [
+    {
+      "reportId": "RPT-B01",
+      "runId": "RUN-B01"
+    },
+    {
+      "reportId": "RPT-B02",
+      "runId": "RUN-B02"
+    },
+    {
+      "reportId": "RPT-B03",
+      "runId": "RUN-B03"
+    },
+    {
+      "reportId": "RPT-B04",
+      "runId": "RUN-B04"
+    },
+    {
+      "reportId": "RPT-B05",
+      "runId": "RUN-B05"
+    },
+    {
+      "reportId": "RPT-B06",
+      "runId": "RUN-B06"
+    },
+    {
+      "reportId": "RPT-B07",
+      "runId": "RUN-B07"
+    },
+    {
+      "reportId": "RPT-B08",
+      "runId": "RUN-B08"
+    },
+    {
+      "reportId": "RPT-B09",
+      "runId": "RUN-B09"
+    },
+    {
+      "reportId": "RPT-B10",
+      "runId": "RUN-B10"
+    },
+    {
+      "reportId": "RPT-B11",
+      "runId": "RUN-B11"
+    },
+    {
+      "reportId": "RPT-B12",
+      "runId": "RUN-B12"
+    }
+  ],
+  "batchAggregateReport": {
+    "reportId": "RPT-BATCH-001",
+    "batchId": "BATCH-001",
+    "classification": "LEVEL_III",
+    "generatedTime": "2026-08-06T10:07:00Z",
+    "status": "READY"
+  },
+  "reset": {
+    "method": "POST",
+    "path": "/api/v1/reset",
+    "requestId": "REQ-RESET-001",
+    "responseGeneratedAt": "2026-08-06T08:00:00Z",
+    "nextSequence": 1
+  },
+  "validation": {
+    "openApiDocument": "mock-api.openapi.yaml",
+    "rootSchema": "#/components/schemas/DeterministicFixtures",
+    "typeContract": "domain-models.ts#DeterministicFixtureSet",
+    "fixturePaths": {
+      "scenario": "$.scenario",
+      "scenarioCoverage": "$.scenarioCoverage",
+      "simulationRun": "$.run",
+      "telemetryFrame": "$.frame",
+      "events": "$.events",
+      "batchRuns": "$.batchRuns",
+      "metadata": "$.metadata",
+      "contracts": "$.contracts"
+    },
+    "requiredEvidence": [
+      "platforms",
+      "sceneEntityTaxonomy",
+      "businessNodeCapacityBoundary",
+      "fourLinkTypes",
+      "twoJammerTypes",
+      "minimumInformationDemand",
+      "completeLinkQuality",
+      "compositeLoss",
+      "noise",
+      "routeCandidates",
+      "synchronization",
+      "sameFrameEvents",
+      "jammerExecution",
+      "linkSummaries",
+      "metadata29_7_8_11"
+    ]
+  },
+  "metadata": {
+    "capabilities": [
+      {
+        "id": "DSDWRJQTLJS-XQ-QDZS-STXR",
+        "module": "前端展示",
+        "name": "2D态势渲染（Leaflet）",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-stxr",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-QDZS-ZBJK",
+        "module": "前端展示",
+        "name": "实时指标监控面板",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-zbjk",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-QDZS-LLTC",
+        "module": "前端展示",
+        "name": "链路质量弹窗展示",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-lltc",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-QDZS-BBKSH",
+        "module": "前端展示",
+        "name": "评估报表可视化",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-bbksh",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-CJPZYJBSC-CJKSH",
+        "module": "场景配置与脚本生成",
+        "name": "场景可视化配置",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-cjksh",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-CJPZYJBSC-CSJY",
+        "module": "场景配置与脚本生成",
+        "name": "参数校验与冲突检测",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-csjy",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-CJPZYJBSC-CJMB",
+        "module": "场景配置与脚本生成",
+        "name": "场景模板管理",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-cjmb",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-CJPZYJBSC-JBSC",
+        "module": "场景配置与脚本生成",
+        "name": "AFSIM脚本生成",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "cap-jbsc",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-FZYXYLLJS-YQQD",
+        "module": "仿真运行与链路计算",
+        "name": "AFSIM引擎驱动",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "cap-yqqd",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS",
+        "module": "仿真运行与链路计算",
+        "name": "LinkCalculator插件（链路计算）",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "cap-lljs",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX",
+        "module": "仿真运行与链路计算",
+        "name": "复合损耗模型计算",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-fhsx",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER",
+        "module": "仿真运行与链路计算",
+        "name": "SNR/BER逐帧求解",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-snber",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT",
+        "module": "仿真运行与链路计算",
+        "name": "链路状态判定",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-llzt",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-GRYGZ-ESMGL",
+        "module": "干扰与感知",
+        "name": "ESM侦测传感器管理",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-esmgl",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-GRYGZ-RFGR",
+        "module": "干扰与感知",
+        "name": "RF干扰机控制",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-rfgr",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-GRYGZ-BHC",
+        "module": "干扰与感知",
+        "name": "侦测→启扰→劣化闭环",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-bhc",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-GRYGZ-CSS",
+        "module": "干扰与感知",
+        "name": "干扰参数实时同步",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-css",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-LLQHYYX-LLJC",
+        "module": "链路切换与优选",
+        "name": "LinkManager插件（链路质量监测）",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-lljc",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-LLQHYYX-QXL",
+        "module": "链路切换与优选",
+        "name": "前向选路能力（干扰最小通道）",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-qxl",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-LLQHYYX-HXL",
+        "module": "链路切换与优选",
+        "name": "返向选路能力（误码最低链路）",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-hxl",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-LLQHYYX-QHJY",
+        "module": "链路切换与优选",
+        "name": "切换决策与事件记录",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-qhjy",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-SJJHYJK-CSVDX",
+        "module": "数据交换与接口",
+        "name": "CSV文件读写",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "de-cap-csvdx",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-SJJHYJK-JSONJX",
+        "module": "数据交换与接口",
+        "name": "JSON配置解析",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "de-cap-jsonjx",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-SJJHYJK-WSTC",
+        "module": "数据交换与接口",
+        "name": "WebSocket数据推送",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "de-cap-wstc",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-SJJHYJK-JCGJ",
+        "module": "数据交换与接口",
+        "name": "AFSIM进程管理",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "de-cap-jcgj",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-XTGL-JCSJ",
+        "module": "系统管理",
+        "name": "基础数据管理",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-jcsj",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-XTGL-YHJS",
+        "module": "系统管理",
+        "name": "用户与角色管理",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-yhjs",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-XTGL-BFHF",
+        "module": "系统管理",
+        "name": "数据库备份与恢复",
+        "coverage": "VISIBLE_CONTRACT",
+        "destination": "cap-bfhf",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      },
+      {
+        "id": "DSDWRJQTLJS-XQ-XTGL-CZRZ",
+        "module": "系统管理",
+        "name": "用户操作日志",
+        "coverage": "INTERACTIVE_UI",
+        "destination": "cap-czrz",
+        "states": [
+          "LOADING",
+          "VALIDATING",
+          "EXECUTING",
+          "SUCCESS",
+          "EMPTY",
+          "ERROR"
+        ]
+      }
+    ],
+    "interfaces": [
+      {
+        "id": "DSDWRJQTLJS-JK-YHCZ",
+        "kind": "外部",
+        "name": "用户操作接口",
+        "destination": "de-if-jk-yhcz"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-WJXT",
+        "kind": "外部",
+        "name": "文件系统接口",
+        "destination": "de-if-jk-wjxt"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-CZXT",
+        "kind": "外部",
+        "name": "操作系统接口",
+        "destination": "de-if-jk-czxt"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-QDZS-SJJHYJK",
+        "kind": "内部",
+        "name": "前端展示 ↔ 数据交换",
+        "destination": "de-if-jk-qdzs-sjjhyjk"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-SJJHYJK-FZYXYLLJS",
+        "kind": "内部",
+        "name": "数据交换 ↔ 仿真计算",
+        "destination": "de-if-jk-sjjhyjk-fzyxylljs"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-CJPZYJBSC-WJXT",
+        "kind": "内部",
+        "name": "场景配置 ↔ 文件系统",
+        "destination": "de-if-jk-cjpzyjbsc-wjxt"
+      },
+      {
+        "id": "DSDWRJQTLJS-JK-CSCI-SJJH",
+        "kind": "内部",
+        "name": "七 CSCI 数据交换",
+        "destination": "de-if-jk-csci-sjjh"
+      }
+    ],
+    "decisions": [
+      {
+        "id": "DEC-001",
+        "conflict": "scenario vs scene",
+        "adopted": "ScenarioConfig 1.0 uses scenario; scene is legacy input only",
+        "effect": "canonical output rejects scene"
+      },
+      {
+        "id": "DEC-002",
+        "conflict": "three CSV vs legacy candidates",
+        "adopted": "link_quality/events/link_switch only",
+        "effect": "three literal contracts"
+      },
+      {
+        "id": "DEC-003",
+        "conflict": "five vs six simulation states",
+        "adopted": "SRS five canonical; UI adds STOPPED",
+        "effect": "STOPPED never serializes"
+      },
+      {
+        "id": "DEC-004",
+        "conflict": "two vs three link states",
+        "adopted": "SRS/CSV UP/DOWN; UI adds DEGRADED",
+        "effect": "threshold projection required"
+      },
+      {
+        "id": "DEC-005",
+        "conflict": "loopback messaging vs no external network",
+        "adopted": "127.0.0.1 only",
+        "effect": "non-loopback rejection"
+      },
+      {
+        "id": "DEC-006",
+        "conflict": "four business information-node roles mixed with supporting entities",
+        "adopted": "four business node types plus two supporting entity types",
+        "effect": "only business node types count toward the 50-node capacity"
+      },
+      {
+        "id": "DEC-007",
+        "conflict": "report authorization/classification",
+        "adopted": "ordinary Level II; batch Level III admin plus confirmation",
+        "effect": "generated false status only"
+      },
+      {
+        "id": "DEC-008",
+        "conflict": "five SRS types vs sparse detailed-design type",
+        "adopted": "SRS canonical superset",
+        "effect": "sparse data read adapter only"
+      }
+    ],
+    "routes": [
+      {
+        "path": "/login",
+        "page": "LoginPage",
+        "stores": [
+          "authStore",
+          "uiStore"
+        ],
+        "guard": "PUBLIC"
+      },
+      {
+        "path": "/situation",
+        "page": "SituationPage",
+        "stores": [
+          "simulationStore",
+          "telemetryStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/scenarios",
+        "page": "ScenariosPage",
+        "stores": [
+          "scenarioStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/batches",
+        "page": "BatchesPage",
+        "stores": [
+          "batchStore",
+          "scenarioStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/reports",
+        "page": "ReportsPage",
+        "stores": [
+          "reportStore",
+          "batchStore",
+          "authStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/replays",
+        "page": "ReplaysPage",
+        "stores": [
+          "replayStore",
+          "telemetryStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/admin",
+        "page": "AdminPage",
+        "stores": [
+          "adminStore",
+          "authStore",
+          "uiStore"
+        ],
+        "guard": "requireAdmin"
+      },
+      {
+        "path": "/blueprint",
+        "page": "BlueprintPage",
+        "stores": [
+          "traceabilityStore",
+          "authStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/admin/data-exchange",
+        "page": "DataExchangePage",
+        "stores": [
+          "scenarioStore",
+          "simulationStore",
+          "telemetryStore",
+          "traceabilityStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/traceability",
+        "page": "TraceabilityPage",
+        "stores": [
+          "traceabilityStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      },
+      {
+        "path": "/interactions",
+        "page": "InteractionsPage",
+        "stores": [
+          "authStore",
+          "scenarioStore",
+          "simulationStore",
+          "telemetryStore",
+          "batchStore",
+          "reportStore",
+          "replayStore",
+          "adminStore",
+          "traceabilityStore",
+          "uiStore"
+        ],
+        "guard": "requirePrincipal"
+      }
+    ]
+  },
+  "contracts": {
+    "scenarioConfig": {
+      "name": "ScenarioConfig",
+      "version": "1.0",
+      "sourceRef": "SRS §1.2.2/§3.5.3 Table 22; approved frontend baseline V1.1 §6.1",
+      "fields": [
+        "schemaVersion",
+        "scenario",
+        "platforms",
+        "links",
+        "jammers",
+        "sensors",
+        "output",
+        "informationDemand"
+      ]
+    },
+    "frontendTypes": [
+      {
+        "name": "LinkQualityData",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.4",
+        "fields": [
+          "time",
+          "sourcePlatform",
+          "destPlatform",
+          "linkType",
+          "frequency",
+          "bandwidth",
+          "distance",
+          "txPower",
+          "txAntennaGain",
+          "rxAntennaGain",
+          "pathLoss",
+          "jammingPower",
+          "receivedPower",
+          "snr",
+          "modulation",
+          "ber",
+          "linkStatus",
+          "berThreshold",
+          "dataRate"
+        ]
+      },
+      {
+        "name": "LinkStatusSummary",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.4",
+        "fields": [
+          "linkKey",
+          "sourcePlatform",
+          "destPlatform",
+          "linkType",
+          "currentSnr",
+          "currentBer",
+          "status",
+          "updatedAt"
+        ]
+      },
+      {
+        "name": "JammerStatusData",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.4",
+        "fields": [
+          "time",
+          "jammerId",
+          "platformId",
+          "targetPlatform",
+          "power",
+          "frequency",
+          "bandwidth",
+          "active"
+        ]
+      },
+      {
+        "name": "PlatformStatus",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.4",
+        "fields": [
+          "platformId",
+          "name",
+          "type",
+          "longitude",
+          "latitude",
+          "altitude",
+          "speed",
+          "linkIds",
+          "jammers",
+          "updatedAt"
+        ]
+      },
+      {
+        "name": "SimulationState",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.4",
+        "fields": [
+          "status",
+          "currentTime",
+          "totalDuration",
+          "processId",
+          "progress",
+          "errorMessage"
+        ]
+      }
+    ],
+    "csv": [
+      {
+        "name": "link_quality.csv",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.2 Table 18",
+        "fields": [
+          "Time",
+          "SourcePlatform",
+          "DestPlatform",
+          "LinkType",
+          "Frequency",
+          "Bandwidth",
+          "Distance",
+          "TxPower",
+          "TxAntennaGain",
+          "RxAntennaGain",
+          "PathLoss",
+          "JammingPower",
+          "ReceivedPower",
+          "SNR",
+          "Modulation",
+          "BER",
+          "LinkStatus",
+          "BERThreshold",
+          "DataRate"
+        ]
+      },
+      {
+        "name": "events.csv",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.2 Table 19",
+        "fields": [
+          "Time",
+          "EventType",
+          "SourcePlatform",
+          "TargetPlatform",
+          "Status",
+          "Power",
+          "Frequency",
+          "Bandwidth",
+          "Parameters"
+        ]
+      },
+      {
+        "name": "link_switch.csv",
+        "version": "1.0",
+        "sourceRef": "SRS §3.5.2 Table 20",
+        "fields": [
+          "Time",
+          "SourcePlatform",
+          "DestPlatform",
+          "Direction",
+          "OldLinkType",
+          "NewLinkType",
+          "OldBER",
+          "NewBER",
+          "SwitchReason"
+        ]
+      }
+    ]
+  }
+}
