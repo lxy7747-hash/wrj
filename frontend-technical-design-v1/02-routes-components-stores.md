@@ -4,7 +4,7 @@
 
 | Route | Page | 主要组件 | Store | API/Topic | Guard |
 |---|---|---|---|---|---|
-| `/login` | `LoginPage` | `LoginFixtureForm`, `AuthResultPanel` | `authStore`, `uiStore` | `POST /api/v1/auth/login` | 公开；已登录可仍访问以切换角色夹具 |
+| `/login` | `LoginPage` | `LoginForm`, `AuthFeedback` | `authStore`, `uiStore` | `POST /api/v1/auth/login` | 独立公开布局；成功后 `replace('/situation')` |
 | `/situation` | `SituationPage` | `OfflineSituationMap`, `MetricPanel`, `LinkQualityDialog`, `SimulationToolbar` | `simulationStore`, `telemetryStore`, `uiStore` | simulations/frames；`simulation.frame`, `link.metric`, `runtime.state` | `requirePrincipal` |
 | `/scenarios` | `ScenariosPage` | `ScenarioEditor`, `ValidationPanel`, `TemplateLibrary`, `ScriptPreview` | `scenarioStore`, `uiStore` | scenarios/templates/scripts/contracts | `requirePrincipal`; 官方库写操作另需 ADMIN |
 | `/batches` | `BatchesPage` | `BatchForm`, `BatchRunTable`, `BatchStateCard` | `batchStore`, `scenarioStore`, `uiStore` | batches | `requirePrincipal` |
@@ -16,13 +16,13 @@
 | `/traceability` | `TraceabilityPage` | `TraceFilterBar`, `RequirementTraceTable`, `InterfaceTraceTable` | `traceabilityStore`, `uiStore` | meta capabilities/interfaces/routes | `requirePrincipal` |
 | `/interactions` | `InteractionsPage` | `StateFixtureGallery`, `ErrorCatalogPanel`, `ContractExamples` | `authStore`, `scenarioStore`, `simulationStore`, `telemetryStore`, `batchStore`, `reportStore`, `replayStore`, `adminStore`, `traceabilityStore`, `uiStore` | contracts/meta/reset | `requirePrincipal` |
 
-未知路径重定向 `/login` 不新增命名路由。`requirePrincipal` 只检查假 principal；`requireAdmin` 同时在 UI 产生 `PERMISSION_DENIED` 证据。真正操作仍由 mock 的 `x-rbac` 重验。
+未知路径重定向 `/login` 不新增命名路由。`requirePrincipal` 只检查内存 principal；`requireAdmin` 同时在 UI 产生 `PERMISSION_DENIED` 证据。真正操作仍由 mock 的 `x-rbac` 重验。
 
 ## Pinia Store 合同
 
 | Store | 唯一拥有的 state | Actions | 不得拥有 |
 |---|---|---|---|
-| `authStore` | principal、role fixture、permissions、最近授权结果 | `loginFixture`, `switchRole`, `refreshPermissions`, `authorize`, `resetToSafeEmpty` | 业务数据、真实 token/session |
+| `authStore` | principal、role、permissions、最近授权结果 | `login`, `refreshPermissions`, `authorize`, `resetToSafeEmpty` | 业务数据、真实 token/session |
 | `scenarioStore` | canonical draft、UI 扩展、history、revision、validation、warning confirmation、templates、script preview、lock projection | `load`, `edit`, `validate`, `requestWarningConfirmation`, `importBatch`, `undo`, `resetDraft`, `copyTemplate`, `previewScript`, `resetToSafeEmpty` | 仿真计时器、官方持久化假象 |
 | `simulationStore` | RUN-001 UI/canonical 状态、time/progress/mode/speed、config lock、command feedback | `create`, `command`, `setSpeed`, `step`, `clearTimers`, `resetProjection`, `resetToSafeEmpty` | telemetry 数组、浏览器定时期望值 |
 | `telemetryStore` | 按 frameId 的平台/链路/事件、topic sequence、新鲜度 | `connect`, `subscribe`, `acceptEnvelope`, `markDisconnected`, `disconnectAndReset`, `loadFrame`, `resetToSafeEmpty` | 仿真命令、地图实例 |

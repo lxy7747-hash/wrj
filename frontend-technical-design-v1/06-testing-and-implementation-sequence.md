@@ -31,7 +31,7 @@
 - 六态 capability：验证前不得 EXECUTING；ERROR 重试；EMPTY 不显示旧数据。
 - simulation：START 必须选择运行模式并锁配置；PAUSE/RESUME/STEP/STOP/SET_SPEED 合法性与倍速正数边界；STOPPED→canonical IDLE；ERROR/COMPLETED 清锁。
 - link：连续帧/滞回；F-00042 的 L-MW-01=UP，L-DL-03 UI DEGRADED/canonical DOWN。
-- confirmation：场景 WARNING 继续、官方模板删除、仿真停止和敏感管理员动作均覆盖确认/取消；过期、角色切换、重复确认、reset 全部失效；场景存在 ERROR 时不得以确认绕过。
+- confirmation：场景 WARNING 继续、官方模板删除、仿真停止和敏感管理员动作均覆盖确认/取消；过期、重新认证、重复确认、reset 全部失效；场景存在 ERROR 时不得以确认绕过。
 - replay：load/play/pause/seek/single-frame/back/speed/end/corrupt；不修改 RUN-001。
 - batch：12 run/report 一一对应；partial/cancel/illegal transition；聚合只来自同 12 行。
 
@@ -39,7 +39,7 @@
 
 | Action | OPERATOR | ADMIN | 附加条件 |
 |---|---|---|---|
-| 业务读取、临时场景、仿真、回放、普通 Level II 状态导出 | allow | allow | 登录夹具 |
+| 业务读取、临时场景、仿真、回放、普通 Level II 状态导出 | allow | allow | 登录认证 |
 | 官方模板维护、主数据、用户角色 | deny | allow | 删除需引用检查 |
 | `/admin` route | redirect+denial | allow | endpoint 仍重验 |
 | 备份/恢复、全量配置、审计受控导出 | deny | allow | 一次性二次确认 |
@@ -70,7 +70,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 
 | Route | 核心断言 |
 |---|---|
-| `/login` | 三种认证结果与角色切换；无 token/cookie |
+| `/login` | 三种认证结果；ADMIN 与 OPERATOR 分别登录；无 token/cookie |
 | `/situation` | F-00042 同帧地图/面板/弹窗；仿真状态/锁 |
 | `/scenarios` | 完整编辑、校验、批量 import/undo/reset、模板 RBAC、脚本预览 |
 | `/batches` | 12 行、参数、状态与 report pair |
@@ -88,7 +88,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 
 1. **合同基线**：复制 types，采用 OpenAPI 2020-12 schema 与 fixture loader；AJV 直接验证 `DeterministicFixtures`，先通过 type/schema/evidence/timing closure tests。
 2. **Mock 内核**：实现固定 clock/requestId、success/error envelope、内存 projection、reset、loopback bind；通过无副作用测试。
-3. **Auth/RBAC/router shell**：实现两个假角色、十一路由与 guards；通过 route×role 表。
+3. **Auth/RBAC/router shell**：实现两个受支持角色的独立认证、十一路由与 guards；通过 route×role 表。
 4. **核心 adapters/stores**：依次 auth/ui、scenario、simulation/telemetry、batch/report/replay、admin/traceability；每个状态机先测后接 UI。
 5. **场景与合同页面**：scenario editor、validation、template、script preview、blueprint/traceability/interactions。
 6. **运行态势与 WS**：离线 Leaflet、frame consistency、simulation controls、topics/reconnect。

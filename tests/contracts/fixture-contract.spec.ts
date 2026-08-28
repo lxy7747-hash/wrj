@@ -3,7 +3,7 @@ import addFormats from 'ajv-formats'
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { ValidateFunction } from 'ajv'
 
-import type { DeterministicFixtureSet } from '../../src/contracts/domain-models.js'
+import type { CapabilityState, DeterministicFixtureSet } from '../../src/contracts/domain-models.js'
 
 type JsonObject = Record<string, unknown>
 type ValidationFinding = { code: string; path: string; message: string }
@@ -88,6 +88,87 @@ describe('deterministic fixture contract', () => {
 
     expect(auditFixtureClosure(candidate).map(({ code }) => code))
       .toContain('FIXTURE_ORPHAN_REFERENCE')
+  })
+
+  it('rejects a forged capability metadata ID', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.capabilities[0].id = 'DSDWRJQTLJS-XQ-FORGED'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code)).toContain('FIXTURE_METADATA_SET')
+  })
+
+  it('rejects a forged UI route path', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.routes[0].path = '/forged'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code)).toContain('FIXTURE_METADATA_SET')
+  })
+
+  it('rejects a changed capability destination', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.capabilities[0].destination = 'cap-forged'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects a changed interface destination', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.interfaces[0].destination = 'de-if-forged'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects a changed route page', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.routes[0].page = 'ForgedPage'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects changed route store order', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const stores = candidate.metadata.routes[0].stores
+    ;[stores[0], stores[1]] = [stores[1], stores[0]]
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects a changed route guard', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    candidate.metadata.routes[0].guard = 'requirePrincipal'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects a missing capability state', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const states = candidate.metadata.capabilities[0].states as CapabilityState[]
+    states.pop()
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('rejects a duplicate substituted for a capability state', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const states = candidate.metadata.capabilities[0].states as CapabilityState[]
+    states[5] = 'LOADING'
+
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('accepts a pure reorder of the complete capability state set', () => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const states = candidate.metadata.capabilities[0].states as CapabilityState[]
+    states.reverse()
+
+    expect(auditFixtureClosure(candidate)).toEqual([])
   })
 
   it('rejects a changed canonical CSV field order', () => {

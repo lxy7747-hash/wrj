@@ -18,6 +18,12 @@ interface HttpServerInstance {
   listening: boolean
   once(event: string, listener: (...args: unknown[]) => void): unknown
   address(): ListenerAddress | string | null
+  close(callback: (error?: Error) => void): this
+}
+
+interface IsolatedHttpServerInstance extends HttpServerInstance {
+  listen(port: number, host: string): this
+  removeAllListeners(): this
 }
 
 interface MockServerInstance {
@@ -45,12 +51,18 @@ interface RequestClient {
 
 interface WebSocketClient {
   once(event: string, listener: (...args: unknown[]) => void): this
-  send(data: string): void
+  send(data: string | Uint8Array): void
   close(): void
 }
 
 interface WebSocketConstructor {
   new (url: string, options: { origin: string; headers?: Record<string, string> }): WebSocketClient
+}
+
+interface RealtimeControllerInstance {
+  activeClientCount(): number
+  invalidateForReset(): void
+  close(): Promise<void>
 }
 
 type LoopbackDecision =
@@ -64,22 +76,41 @@ let assertLoopbackRequest: (request: {
 }) => LoopbackDecision
 let request: (baseUrl: string) => RequestClient
 let WebSocket: WebSocketConstructor
+let createHttpServer: () => IsolatedHttpServerInstance
+let MockProjectionConstructor: new () => MockProjectionInstance
+let attachRealtimeServer: (
+  httpServer: IsolatedHttpServerInstance,
+  projection: MockProjectionInstance,
+) => RealtimeControllerInstance
 let currentServer: MockServerInstance | undefined
 
 beforeAll(async () => {
   const appModulePath = '../../server/' + 'app.js'
   const loopbackModulePath = '../../server/http/' + 'loopback.js'
+  const projectionModulePath = '../../server/state/' + 'projection.js'
+  const realtimeModulePath = '../../server/ws/' + 'realtime.js'
+  const httpModulePath = 'node:' + 'http'
   const supertestModulePath = 'super' + 'test'
   const wsModulePath = 'w' + 's'
   const appModule = await import(appModulePath) as { createMockServer: typeof createMockServer }
   const loopbackModule = await import(loopbackModulePath) as {
     assertLoopbackRequest: typeof assertLoopbackRequest
   }
+  const projectionModule = await import(projectionModulePath) as {
+    MockProjection: typeof MockProjectionConstructor
+  }
+  const realtimeModule = await import(realtimeModulePath) as {
+    attachRealtimeServer: typeof attachRealtimeServer
+  }
+  const httpModule = await import(httpModulePath) as { createServer: typeof createHttpServer }
   const supertestModule = await import(supertestModulePath) as { default: typeof request }
   const wsModule = await import(wsModulePath) as { WebSocket: WebSocketConstructor }
 
   ;({ createMockServer } = appModule)
   ;({ assertLoopbackRequest } = loopbackModule)
+  ;({ MockProjection: MockProjectionConstructor } = projectionModule)
+  ;({ attachRealtimeServer } = realtimeModule)
+  ;({ createServer: createHttpServer } = httpModule)
   ;({ default: request } = supertestModule)
   ;({ WebSocket } = wsModule)
 })
@@ -175,6 +206,13 @@ afterEach(async () => {
 })
 
 describe('P0 deterministic mock server', () => {
+  it.each([-1, 0.5, 65_536])('rejects invalid listener port %s', (port) => {
+    expect(() => createMockServer({ port })).toThrow(RangeError)
+    expect(() => createMockServer({ port })).toThrow(
+      'Mock server port must be an integer from 0 through 65535.',
+    )
+  })
+
   it('binds its listener explicitly to 127.0.0.1', async () => {
     const { server } = await startServer()
     const address = server.httpServer.address()
@@ -197,6 +235,52 @@ describe('P0 deterministic mock server', () => {
       allowed: false,
       code: 'LOOPBACK_ONLY',
     })
+
+    expect(assertLoopbackRequest({
+      headers: { host: '127.0.0.1', origin: ORIGIN },
+      socket: { remoteAddress: '127.0.0.1' },
+    })).toEqual({ allowed: true, peerAddress: '127.0.0.1' })
+    for (const host of ['127.0.0.1:0', '127.0.0.1:65536']) {
+      expect(assertLoopbackRequest({
+        headers: { host, origin: ORIGIN },
+        socket: { remoteAddress: '127.0.0.1' },
+      })).toMatchObject({ allowed: false, code: 'LOOPBACK_ONLY' })
+    }
+  })
+
+  it('memoizes close across repeated calls', async () => {
+    const { server } = await startServer()
+
+    const firstClose = server.close()
+    const secondClose = server.close()
+
+    expect(secondClose).toBe(firstClose)
+    await expect(firstClose).resolves.toBeUndefined()
+  })
+
+  it('rejects close when the underlying HTTP listener is already closed', async () => {
+    const { server } = await startServer()
+    await new Promise<void>((resolve, reject) => {
+      server.httpServer.close((error) => error === undefined ? resolve() : reject(error))
+    })
+
+    try {
+      await expect(server.close()).rejects.toThrow('Server is not running')
+    } finally {
+      currentServer = undefined
+    }
+  })
+
+  it('surfaces a repeated realtime close callback error without leaking listeners', async () => {
+    const httpServer = createHttpServer()
+    const controller = attachRealtimeServer(httpServer, new MockProjectionConstructor())
+
+    try {
+      await expect(controller.close()).resolves.toBeUndefined()
+      await expect(controller.close()).rejects.toThrow('The server is not running')
+    } finally {
+      httpServer.removeAllListeners()
+    }
   })
 
   it('returns deterministic reset envelopes across repeated cycles', async () => {
@@ -261,27 +345,75 @@ describe('P0 deterministic mock server', () => {
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('allows only the canonical Vite origin to preflight reset', async () => {
+  it('returns a typed error with parser details for malformed strict JSON', async () => {
     const { baseUrl } = await startServer()
 
-    const allowed = await request(baseUrl)
-      .options('/api/v1/reset')
+    const response = await request(baseUrl)
+      .post('/api/v1/reset')
       .set('Origin', ORIGIN)
-      .set('Access-Control-Request-Method', 'POST')
-      .set('Access-Control-Request-Headers', 'content-type,x-demo-role')
-      .expect(204)
-    expect(allowed.headers).toMatchObject({
-      'access-control-allow-origin': ORIGIN,
-      'access-control-allow-methods': 'POST',
-      'access-control-allow-headers': 'Content-Type, X-Demo-Role',
+      .set('X-Demo-Role', 'ADMIN')
+      .set('Content-Type', 'application/json')
+      .send('{')
+      .expect(400)
+
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_REQUEST', details: expect.any(String) },
     })
+  })
+
+  it('accepts JSON bodies above 16KB and reaches reset validation', async () => {
+    const { baseUrl } = await startServer()
+    const body = { confirm: false, padding: 'x'.repeat(17_000) }
+    const bodyLength = JSON.stringify(body).length
+    expect(bodyLength).toBeGreaterThan(16 * 1024)
+    expect(bodyLength).toBeLessThan(256 * 1024)
+
+    const response = await request(baseUrl)
+      .post('/api/v1/reset')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .send(body)
+      .expect(400)
+
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_REQUEST', fieldPath: 'confirm' },
+    })
+  })
+
+  it.each(['GET', 'PUT', 'DELETE'] as const)(
+    'preflights arbitrary API paths for %s',
+    async (method) => {
+      const { baseUrl } = await startServer()
+
+      const response = await request(baseUrl)
+        .options(`/api/arbitrary/${method.toLowerCase()}/path`)
+        .set('Origin', ORIGIN)
+        .set('Access-Control-Request-Method', method)
+        .set('Access-Control-Request-Headers', 'content-type,x-demo-role')
+        .expect(204)
+
+      expect(response.headers['access-control-allow-origin']).toBe(ORIGIN)
+      expect(response.headers['access-control-allow-methods']).toBe(
+        'GET,POST,PUT,PATCH,DELETE,OPTIONS',
+      )
+      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Demo-Role')
+      expect(response.headers.vary).toBe('Origin')
+    },
+  )
+
+  it('rejects invalid-origin preflight before setting CORS headers', async () => {
+    const { baseUrl } = await startServer()
 
     const rejected = await request(baseUrl)
-      .options('/api/v1/reset')
+      .options('/api/arbitrary/delete/path')
       .set('Origin', 'http://localhost:5173')
-      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Method', 'DELETE')
       .expect(403)
     expect(rejected.body).toMatchObject({ ok: false, error: { code: 'LOOPBACK_ONLY' } })
+    expect(rejected.headers['access-control-allow-origin']).toBeUndefined()
+    expect(rejected.headers['access-control-allow-methods']).toBeUndefined()
   })
 
   it('accepts one canonical WebSocket subscription and emits no feature stream', async () => {
@@ -308,6 +440,107 @@ describe('P0 deterministic mock server', () => {
     const closePromise = nextClose(client)
     client.close()
     await closePromise
+  })
+
+  it('destroys upgrades for non-canonical WebSocket paths', async () => {
+    const { wsUrl } = await startServer()
+    const client = new WebSocket(wsUrl.replace('/ws/v1', '/ws/not-canonical'), {
+      origin: ORIGIN,
+      headers: { 'X-Demo-Role': 'ADMIN' },
+    })
+    const closePromise = nextClose(client)
+    const errorPromise = new Promise<void>((resolve, reject) => {
+      client.once('error', () => resolve())
+      client.once('open', () => reject(new Error('Non-canonical WebSocket path opened.')))
+    })
+
+    await expect(errorPromise).resolves.toBeUndefined()
+    await expect(closePromise).resolves.toMatchObject({ code: 1006 })
+  })
+
+  it('tracks active clients through reset invalidation', async () => {
+    const httpServer = createHttpServer()
+    const controller = attachRealtimeServer(httpServer, new MockProjectionConstructor())
+
+    try {
+      httpServer.listen(0, '127.0.0.1')
+      await waitForEvent(httpServer, 'listening')
+
+      const address = httpServer.address()
+      if (address === null || typeof address === 'string') {
+        throw new Error('Expected a TCP listener address.')
+      }
+
+      expect(controller.activeClientCount()).toBe(0)
+      const client = await openWebSocket(`ws://127.0.0.1:${address.port}/ws/v1`, { role: 'ADMIN' })
+      expect(controller.activeClientCount()).toBe(1)
+      const closePromise = nextClose(client)
+
+      controller.invalidateForReset()
+      expect(controller.activeClientCount()).toBe(0)
+      await expect(closePromise).resolves.toMatchObject({ code: 1008, reason: 'RESET' })
+    } finally {
+      try {
+        await controller.close()
+      } finally {
+        if (httpServer.listening) {
+          await new Promise<void>((resolve, reject) => {
+            httpServer.close((error) => error === undefined ? resolve() : reject(error))
+          })
+        }
+        httpServer.removeAllListeners()
+      }
+    }
+  })
+
+  it('rejects a second subscription on an already subscribed client', async () => {
+    const { wsUrl } = await startServer()
+    const client = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const firstMessagePromise = nextJsonMessage(client)
+    const subscription = {
+      type: 'subscribe',
+      schemaVersion: '1.0',
+      taskId: 'TASK-001',
+      topics: ['simulation.frame'],
+    }
+
+    client.send(JSON.stringify(subscription))
+    await expect(firstMessagePromise).resolves.toMatchObject({ type: 'subscribed' })
+
+    const secondMessagePromise = nextJsonMessage(client)
+    const closePromise = nextClose(client)
+    client.send(JSON.stringify(subscription))
+
+    await expect(secondMessagePromise).resolves.toMatchObject({
+      type: 'rejected',
+      code: 'INVALID_ENVELOPE',
+      closeCode: 1008,
+    })
+    await expect(closePromise).resolves.toMatchObject({ code: 1008 })
+  })
+
+  it('rejects binary subscriptions and duplicate topics', async () => {
+    const { wsUrl } = await startServer()
+    const binaryClient = await openWebSocket(wsUrl, { role: 'ADMIN' })
+    const binaryMessagePromise = nextJsonMessage(binaryClient)
+    const binaryClosePromise = nextClose(binaryClient)
+    binaryClient.send(new Uint8Array([1, 2, 3]))
+
+    await expect(binaryMessagePromise).resolves.toMatchObject({
+      type: 'rejected',
+      code: 'INVALID_ENVELOPE',
+    })
+    await expect(binaryClosePromise).resolves.toMatchObject({ code: 1008 })
+
+    await expectRejected(wsUrl, 'INVALID_ENVELOPE', {
+      role: 'ADMIN',
+      payload: {
+        type: 'subscribe',
+        schemaVersion: '1.0',
+        taskId: 'TASK-001',
+        topics: ['simulation.frame', 'simulation.frame'],
+      },
+    })
   })
 
   it('rejects invalid WebSocket origin, role, topic, and envelope with close 1008', async () => {

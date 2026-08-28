@@ -4,10 +4,15 @@ node_modules/
 # Build and test outputs
 dist/
 coverage/
+test-results/
+output/
 *.tsbuildinfo
 
 # Local tool state
 .playwright-cli/
+
+# Local heavy assets
+/map/
 
 # Environment and logs
 .env
