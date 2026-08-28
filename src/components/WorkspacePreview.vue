@@ -298,7 +298,7 @@ const preview = computed<WorkspacePreview>(() => (
 .preview-shell__label {
   margin: 0 0 var(--space-1);
   color: var(--workspace-accent);
-  font-size: 0.68rem;
+  font-size: var(--console-font-size-min);
   font-weight: 700;
   letter-spacing: 0.16em;
 }
@@ -313,7 +313,7 @@ const preview = computed<WorkspacePreview>(() => (
   max-width: 24rem;
   margin: 0;
   color: var(--console-text-dim);
-  font-size: 0.72rem;
+  font-size: var(--console-font-size-min);
   line-height: 1.55;
   text-align: right;
 }

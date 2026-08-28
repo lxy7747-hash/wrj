@@ -14,6 +14,7 @@
   --console-danger: #ff667a;
   --console-radius: 8px;
   --console-shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+  --console-font-size-min: 12px;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;

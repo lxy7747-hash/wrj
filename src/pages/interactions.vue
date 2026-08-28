@@ -151,7 +151,7 @@
 .domain-card__label {
   margin: 0;
   color: var(--console-cyan);
-  font-size: 0.67rem;
+  font-size: var(--console-font-size-min);
   font-weight: 700;
   letter-spacing: 0.14em;
 }

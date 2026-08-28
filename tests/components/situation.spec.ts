@@ -39,7 +39,9 @@ const mapControllerMock = vi.hoisted(() => {
 
 const offlineLabelLayerMock = vi.hoisted(() => ({
   create: vi.fn(),
-  latestLayer: null as (L.Layer & { setTheme: (theme: 'dark' | 'light') => void }) | null,
+  latestLayer: null as (L.Layer & {
+    setTheme: (theme: 'dark' | 'light', redraw?: boolean) => void
+  }) | null,
   setTheme: vi.fn(),
   removeListener: vi.fn(),
 }))
@@ -105,6 +107,9 @@ describe('态势主界面', () => {
     expect(wrapper.findAll('[data-frame-id="F-00042"]').length).toBeGreaterThanOrEqual(3)
     expect(wrapper.get('[data-testid="frame-freshness"]').text()).toBe('最大数据年龄 0 ms · 新鲜')
     expect(wrapper.get('[data-testid="business-node-capacity"]').text()).toBe('4 / 50')
+    expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
+      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路',
+    )
     expect(wrapper.text()).toContain('4 类业务信息节点')
     expect(wrapper.text()).toContain('4 类链路')
     expect(wrapper.text()).toContain('2 种干扰设备')
@@ -133,6 +138,36 @@ describe('态势主界面', () => {
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
   })
 
+  it('左右悬浮面板可独立折叠并重新展开', async () => {
+    const wrapper = mountSituationPage()
+    const workspace = wrapper.get('.situation-page__workspace')
+    const scenePanel = wrapper.get('[aria-label="场景配置摘要"]')
+    const telemetryPanel = wrapper.get('[aria-label="链路、干扰与事件"]')
+    const sceneToggle = wrapper.get('[data-testid="toggle-scene-summary"]')
+    const telemetryToggle = wrapper.get('[data-testid="toggle-telemetry-panel"]')
+
+    expect(sceneToggle.attributes('aria-expanded')).toBe('true')
+    expect(telemetryToggle.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('[data-testid="situation-center"]')).toBeTruthy()
+
+    await sceneToggle.trigger('click')
+    expect(scenePanel.attributes('data-collapsed')).toBe('true')
+    expect(scenePanel.classes()).toContain('is-collapsed')
+    expect(workspace.classes()).toContain('situation-page__workspace--scene-collapsed')
+    expect(sceneToggle.attributes('aria-label')).toBe('展开场景配置摘要')
+
+    await telemetryToggle.trigger('click')
+    expect(telemetryPanel.attributes('data-collapsed')).toBe('true')
+    expect(telemetryPanel.classes()).toContain('is-collapsed')
+    expect(workspace.classes()).toContain('situation-page__workspace--telemetry-collapsed')
+    expect(telemetryToggle.attributes('aria-label')).toBe('展开链路、干扰与事件')
+
+    await sceneToggle.trigger('click')
+    await telemetryToggle.trigger('click')
+    expect(scenePanel.attributes('data-collapsed')).toBe('false')
+    expect(telemetryPanel.attributes('data-collapsed')).toBe('false')
+  })
+
   it('展示 L-DL-03 的劣化详情并区分只有摘要的链路', async () => {
     const wrapper = mountSituationPage()
 
@@ -156,55 +191,103 @@ describe('态势主界面', () => {
     const options = mapControllerMock.latestOptions
 
     expect(options).not.toBeNull()
-    const layerButtons = wrapper.get('[aria-label="态势图层"]').findAll('button')
-    expect(layerButtons.slice(0, 4)).toHaveLength(4)
+    const layerbar = wrapper.get('[aria-label="态势图层"]')
+    const layerButtons = layerbar.findAll('button')
+    expect(layerButtons).toHaveLength(4)
+    expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '干扰范围', '经纬网'])
+    expect(layerbar.get('span').text()).toBe('离线矢量 · Z10')
     await layerButtons[0].trigger('click')
     expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('nodes', false)
 
+    const viewControls = wrapper.get('[aria-label="态势图视图控制"]')
+    const viewButtons = viewControls.findAll('button')
+    expect(viewButtons).toHaveLength(5)
+    expect(viewButtons.map((button) => button.text())).toEqual(['', '', '＋', '－', ''])
+    expect(viewButtons.map((button) => button.attributes('title'))).toEqual([
+      '切换为深色地图',
+      '切换为卫星底图',
+      '放大态势图',
+      '缩小态势图',
+      '重置视图',
+    ])
+
     const mapSection = wrapper.get('[aria-label="Leaflet 离线态势图"]')
     const themeButton = wrapper.get('[aria-label="切换为深色地图"]')
+    const basemapButton = wrapper.get('[aria-label="切换为卫星底图"]')
+    const resetButton = wrapper.get('[aria-label="重置视图"]')
     expect(mapSection.attributes('data-map-theme')).toBe('light')
     expect(mapSection.attributes('data-map-basemap')).toBe('vector')
-    expect(themeButton.text()).toBe('地图：浅色')
-    expect(wrapper.get('[aria-label="切换为卫星底图"]').text()).toBe('底图：矢量')
+    for (const iconButton of [themeButton, basemapButton, resetButton]) {
+      expect(iconButton.text()).toBe('')
+      expect(iconButton.get('svg').attributes('aria-hidden')).toBe('true')
+      expect(iconButton.get('svg').attributes('focusable')).toBe('false')
+    }
+    expect(themeButton.attributes('title')).toBe(themeButton.attributes('aria-label'))
+    expect(basemapButton.attributes('title')).toBe(basemapButton.attributes('aria-label'))
+    const satelliteIconMarkup = basemapButton.get('svg').html()
     expect(wrapper.get('[aria-label="态势图层"]').text()).toContain('离线矢量')
     expect(wrapper.get('[aria-label="态势图层"]').text()).toContain('Z10')
 
-    await wrapper.get('[aria-label="切换为卫星底图"]').trigger('click')
+    await basemapButton.trigger('click')
     expect(mapControllerMock.controller.setBasemap).toHaveBeenNthCalledWith(1, 'satellite')
     expect(mapSection.attributes('data-map-basemap')).toBe('satellite')
-    expect(wrapper.get('[aria-label="切换为矢量底图"]').text()).toBe('底图：卫星')
+    const vectorBasemapButton = wrapper.get('[aria-label="切换为矢量底图"]')
+    expect(vectorBasemapButton.attributes('title')).toBe('切换为矢量底图')
+    expect(vectorBasemapButton.attributes('title')).toBe(vectorBasemapButton.attributes('aria-label'))
+    expect(vectorBasemapButton.text()).toBe('')
+    expect(vectorBasemapButton.get('svg').html()).not.toBe(satelliteIconMarkup)
     expect(wrapper.get('[aria-label="态势图层"]').text()).toContain('离线卫星')
 
     await wrapper.get('[aria-label="切换为矢量底图"]').trigger('click')
     expect(mapControllerMock.controller.setBasemap).toHaveBeenNthCalledWith(2, 'vector')
     expect(mapSection.attributes('data-map-basemap')).toBe('vector')
+    const satelliteBasemapButton = wrapper.get('[aria-label="切换为卫星底图"]')
+    expect(satelliteBasemapButton.attributes('title')).toBe('切换为卫星底图')
+    expect(satelliteBasemapButton.attributes('title')).toBe(satelliteBasemapButton.attributes('aria-label'))
 
     await themeButton.trigger('click')
     expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(1, 'dark')
     expect(mapSection.attributes('data-map-theme')).toBe('dark')
-    expect(wrapper.get('[aria-label="切换为浅色地图"]').text()).toBe('地图：深色')
+    const lightThemeButton = wrapper.get('[aria-label="切换为浅色地图"]')
+    expect(lightThemeButton.attributes('title')).toBe('切换为浅色地图')
+    expect(lightThemeButton.attributes('title')).toBe(lightThemeButton.attributes('aria-label'))
+    expect(lightThemeButton.text()).toBe('')
+    expect(lightThemeButton.find('svg').exists()).toBe(true)
 
     await wrapper.get('[aria-label="切换为浅色地图"]').trigger('click')
     expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(2, 'light')
     expect(mapSection.attributes('data-map-theme')).toBe('light')
-    expect(wrapper.get('[aria-label="切换为深色地图"]').text()).toBe('地图：浅色')
+    const darkThemeButton = wrapper.get('[aria-label="切换为深色地图"]')
+    expect(darkThemeButton.attributes('title')).toBe('切换为深色地图')
+    expect(darkThemeButton.attributes('title')).toBe(darkThemeButton.attributes('aria-label'))
+    expect(darkThemeButton.text()).toBe('')
 
     await wrapper.get('[aria-label="放大态势图"]').trigger('click')
     await wrapper.get('[aria-label="缩小态势图"]').trigger('click')
-    await wrapper.get('.offline-map__layerbar button:last-child').trigger('click')
+    await resetButton.trigger('click')
     expect(mapControllerMock.controller.zoomIn).toHaveBeenCalledOnce()
     expect(mapControllerMock.controller.zoomOut).toHaveBeenCalledOnce()
     expect(mapControllerMock.controller.reset).toHaveBeenCalledOnce()
 
+    expect(document.querySelector('[data-testid="selected-node-dialog"]')).toBeNull()
     options?.onSelectNode('SAT-01')
     await flushPromises()
     expect(mapControllerMock.controller.setSelectedNodeId).toHaveBeenCalledWith('SAT-01')
-    const satelliteCard = wrapper.get('[data-testid="selected-node-card"]')
-    expect(satelliteCard.text()).toContain('通信卫星')
-    expect(satelliteCard.text()).toContain('原始位置')
-    expect(satelliteCard.text()).toContain('地图采用台海任务展示投影，不改变固定帧原始遥测。')
-    expect(satelliteCard.text()).toContain('卫星地图位置为轨道示意，非真实轨道位置。')
+    const satelliteDialog = document.querySelector<HTMLElement>('.selected-node-dialog')
+    expect(document.querySelector('[data-testid="selected-node-dialog"]')).not.toBeNull()
+    expect(satelliteDialog?.textContent).toContain('节点详情')
+    expect(satelliteDialog?.textContent).toContain('通信卫星')
+    expect(satelliteDialog?.textContent).toContain('类型通信卫星')
+    expect(satelliteDialog?.textContent).toContain('遥测位置121.25°E / 25.75°N')
+    expect(satelliteDialog?.textContent).toContain('高度35786000 m')
+    expect(satelliteDialog?.textContent).toContain('速度0 m/s')
+    expect(satelliteDialog?.textContent).toContain('二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。')
+
+    document.querySelector<HTMLElement>('.selected-node-dialog .el-dialog__headerbtn')?.click()
+    await flushPromises()
+    const dialogOverlay = document.querySelector<HTMLElement>('.selected-node-dialog')
+      ?.closest<HTMLElement>('.el-overlay')
+    expect(dialogOverlay?.style.display).toBe('none')
 
     options?.onSelectLink(SITUATION_LINKS_F00042[0])
     await flushPromises()
@@ -276,7 +359,7 @@ describe('Leaflet 控制器回归', () => {
     offlineLabelLayerMock.removeListener = vi.fn()
     offlineLabelLayerMock.create.mockImplementation(() => {
       const layer = L.layerGroup() as unknown as L.Layer & {
-        setTheme: (theme: 'dark' | 'light') => void
+        setTheme: (theme: 'dark' | 'light', redraw?: boolean) => void
       }
       layer.setTheme = offlineLabelLayerMock.setTheme
       layer.on('remove', offlineLabelLayerMock.removeListener)
@@ -323,6 +406,23 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
   })
 
+  it('按原型图例绘制四类链路并用红色标记异常链路', async () => {
+    const polylineSpy = vi.spyOn(L, 'polyline')
+    const controller = await createController()
+    const lineOptions = polylineSpy.mock.calls
+      .filter(([, options]) => options?.interactive === true)
+      .map(([, options]) => options)
+
+    expect(lineOptions).toHaveLength(4)
+    expect(lineOptions[0]).toEqual(expect.objectContaining({ color: '#409eff', dashArray: '8 5' }))
+    expect(lineOptions[1]).toEqual(expect.objectContaining({ color: '#f56c6c' }))
+    expect(lineOptions[1]?.dashArray).toBeUndefined()
+    expect(lineOptions[2]).toEqual(expect.objectContaining({ color: '#67c23a' }))
+    expect(lineOptions[3]).toEqual(expect.objectContaining({ color: '#b37feb' }))
+
+    controller.destroy()
+  })
+
   it('初始和重置视图均使用台海区域与配置的缩放范围', async () => {
     const mapSpy = vi.spyOn(L, 'map')
     const fitBoundsSpy = vi.spyOn(L.Map.prototype, 'fitBounds')
@@ -358,13 +458,18 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
   })
 
-  it('在同一 VectorGrid 上幂等换肤且保持视图与关闭的经纬网状态', async () => {
+  it('整数缩放在同一 VectorGrid 上幂等重绘且保持视图与关闭的经纬网状态', async () => {
     const mapSpy = vi.spyOn(L, 'map')
     const layerGroupSpy = vi.spyOn(L, 'layerGroup')
     const controller = await createController()
     const map = mapSpy.mock.results[0]?.value as L.Map
     const gridGroup = layerGroupSpy.mock.results[3]?.value as L.LayerGroup
+    const vectorLayer = vectorGridLayer as MockVectorGridLayer
+    const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer
+    const vectorRemoveSpy = vi.spyOn(vectorLayer, 'removeFrom')
+    const labelRemoveSpy = vi.spyOn(labelLayer, 'removeFrom')
     const originalStyles = vectorGridLayer?.options.vectorTileLayerStyles
+    map.setView([24.1, 119.2], 9, { animate: false })
     const originalCenter = map.getCenter()
     const originalZoom = map.getZoom()
 
@@ -384,6 +489,8 @@ describe('Leaflet 控制器回归', () => {
     expect(vectorGridLayer?.redraw).toHaveBeenCalledOnce()
     expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledOnce()
     expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledWith('dark')
+    expect(vectorRemoveSpy).not.toHaveBeenCalled()
+    expect(labelRemoveSpy).not.toHaveBeenCalled()
     expect(vectorGridLayer?.redraw.mock.invocationCallOrder[0])
       .toBeLessThan(offlineLabelLayerMock.setTheme.mock.invocationCallOrder[0] as number)
     expect(map.getCenter()).toEqual(originalCenter)
@@ -462,6 +569,45 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
   })
 
+  it('分数缩放换肤重挂同一可见瓦片层且保持中心和缩放不变', async () => {
+    const mapSpy = vi.spyOn(L, 'map')
+    const controller = await createController()
+    const map = mapSpy.mock.results[0]?.value as L.Map
+    const vectorLayer = vectorGridLayer as MockVectorGridLayer
+    const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer & {
+      setTheme: (theme: 'dark' | 'light', redraw?: boolean) => void
+    }
+    const vectorRemoveSpy = vi.spyOn(vectorLayer, 'removeFrom')
+    const vectorAddSpy = vi.spyOn(vectorLayer, 'addTo')
+    const labelRemoveSpy = vi.spyOn(labelLayer, 'removeFrom')
+    const labelAddSpy = vi.spyOn(labelLayer, 'addTo')
+    map.setView([24.15, 119.25], 8, { animate: false })
+    vi.spyOn(map, 'getZoom').mockReturnValue(7.5)
+    const originalCenter = map.getCenter()
+    const originalZoom = map.getZoom()
+    vectorLayer.redraw.mockClear()
+    vectorRemoveSpy.mockClear()
+    vectorAddSpy.mockClear()
+    labelRemoveSpy.mockClear()
+    labelAddSpy.mockClear()
+
+    controller.setTheme('dark')
+
+    expect(originalZoom).toBe(7.5)
+    expect(vectorLayer.redraw).not.toHaveBeenCalled()
+    expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledWith('dark', false)
+    expect(vectorRemoveSpy).toHaveBeenCalledOnce()
+    expect(vectorAddSpy).toHaveBeenCalledOnce()
+    expect(labelRemoveSpy).toHaveBeenCalledOnce()
+    expect(labelAddSpy).toHaveBeenCalledOnce()
+    expect(map.hasLayer(vectorLayer)).toBe(true)
+    expect(map.hasLayer(labelLayer)).toBe(true)
+    expect(map.getCenter()).toEqual(originalCenter)
+    expect(map.getZoom()).toBe(originalZoom)
+
+    controller.destroy()
+  })
+
   it('复用唯一底图实例切换并保持视图、隐藏业务层和卫星期间更新的主题', async () => {
     const mapSpy = vi.spyOn(L, 'map')
     const tileLayerSpy = vi.spyOn(L, 'tileLayer')
@@ -471,7 +617,7 @@ describe('Leaflet 控制器回归', () => {
     const map = mapSpy.mock.results[0]?.value as L.Map
     const vectorLayer = vectorGridLayer as MockVectorGridLayer
     const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer & {
-      setTheme: (theme: 'dark' | 'light') => void
+      setTheme: (theme: 'dark' | 'light', redraw?: boolean) => void
     }
     const satelliteLayer = tileLayerSpy.mock.results[0]?.value as L.TileLayer
     const interferenceGroup = layerGroupSpy.mock.results[2]?.value as L.LayerGroup
@@ -501,6 +647,7 @@ describe('Leaflet 控制器回归', () => {
     expect(map.hasLayer(satelliteLayer)).toBe(false)
 
     map.setView([24.1, 119.2], 9, { animate: false })
+    vi.spyOn(map, 'getZoom').mockReturnValue(9.25)
     controller.setLayerVisible('interference', false)
     const originalCenter = map.getCenter()
     const originalZoom = map.getZoom()
@@ -518,10 +665,20 @@ describe('Leaflet 控制器回归', () => {
     expect(map.hasLayer(labelLayer)).toBe(false)
     expect(map.hasLayer(satelliteLayer)).toBe(true)
 
+    vectorRemoveSpy.mockClear()
+    vectorAddSpy.mockClear()
+    labelRemoveSpy.mockClear()
+    labelAddSpy.mockClear()
+
     controller.setTheme('dark')
-    expect(vectorLayer.redraw).toHaveBeenCalledOnce()
+    expect(vectorLayer.redraw).not.toHaveBeenCalled()
     expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledOnce()
-    expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledWith('dark')
+    expect(offlineLabelLayerMock.setTheme).toHaveBeenCalledWith('dark', false)
+    expect((vectorLayer.options.vectorTileLayerStyles.ocean as L.PathOptions).fillColor).toBe('#06111d')
+    expect(vectorRemoveSpy).not.toHaveBeenCalled()
+    expect(vectorAddSpy).not.toHaveBeenCalled()
+    expect(labelRemoveSpy).not.toHaveBeenCalled()
+    expect(labelAddSpy).not.toHaveBeenCalled()
 
     controller.setBasemap('vector')
     controller.setBasemap('vector')
@@ -562,20 +719,18 @@ describe('Leaflet 控制器回归', () => {
     expect(offlineLabelLayerMock.removeListener).toHaveBeenCalledOnce()
   })
 
-  it('用唯一台海展示投影生成六个平台、链路端点与命中点和干扰圈', async () => {
+  it('用固定帧 API 遥测坐标生成六个平台、链路端点与命中点和干扰圈', async () => {
     const markerSpy = vi.spyOn(L, 'marker')
     const polylineSpy = vi.spyOn(L, 'polyline')
     const circleSpy = vi.spyOn(L, 'circle')
     const controller = await createController()
-    const expectedPoints: Readonly<Record<string, L.LatLngTuple>> = {
-      'CMD-01': [24.45, 118.15],
-      'UAV-01': [24.70, 119.35],
-      'GCC-01': [23.55, 118.65],
-      'AIR-01': [23.95, 120.15],
-      'SAT-01': [25.75, 121.25],
-      'STN-01': [25.25, 119.55],
-    }
-    expect(MAP_CONFIG.displayProjection).toEqual(expectedPoints)
+    const expectedPoints = Object.fromEntries(
+      SITUATION_FRAME_F00042.platforms.map((platform) => [
+        platform.platformId,
+        [platform.latitude, platform.longitude] as L.LatLngTuple,
+      ]),
+    ) as Readonly<Record<string, L.LatLngTuple>>
+    expect('displayProjection' in MAP_CONFIG).toBe(false)
 
     const nodeCalls = markerSpy.mock.calls.filter(([, options]) => (
       typeof options?.title === 'string' && options.title.startsWith('选择节点 ')

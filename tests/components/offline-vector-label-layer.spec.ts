@@ -155,6 +155,23 @@ describe('离线矢量文字瓦片层', () => {
     expect(redrawSpy).not.toHaveBeenCalled()
   })
 
+  it('可只更新主题状态而不重绘，后续瓦片仍使用新调色板', async () => {
+    parserState.tile = tileWith({
+      boundary_labels: [pointFeature({ name: '延迟深色标签', admin_level: 4 }, 2000, 2000)],
+    })
+    const layer = createOfflineVectorLabelLayer() as PublicGridLayer
+    const redrawSpy = vi.spyOn(layer, 'redraw')
+
+    layer.setTheme('dark', false)
+
+    expect(redrawSpy).not.toHaveBeenCalled()
+    const done = vi.fn()
+    layer.createTile(coords(7), done)
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+    expect(context.fillStyle).toBe('#d7e8f3')
+    expect(context.strokeStyle).toBe('#06111d')
+  })
+
   it('中文名优先于英文名和编号，并对无效字段逐级回退', async () => {
     parserState.tile = tileWith({
       boundary_labels: [

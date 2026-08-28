@@ -346,7 +346,7 @@ async function confirmDelete(): Promise<void> {
 .section-kicker {
   margin: 0;
   color: var(--console-cyan);
-  font-size: 0.65rem;
+  font-size: var(--console-font-size-min);
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
@@ -358,7 +358,7 @@ async function confirmDelete(): Promise<void> {
 
 .section-note {
   color: var(--console-text-dim);
-  font-size: 0.72rem;
+  font-size: var(--console-font-size-min);
   text-align: right;
 }
 
@@ -448,7 +448,7 @@ async function confirmDelete(): Promise<void> {
   place-items: center;
   border-right: 1px solid var(--console-border);
   color: var(--console-text-muted);
-  font-size: 0.7rem;
+  font-size: var(--console-font-size-min);
   font-weight: 700;
   letter-spacing: 0.08em;
 }
@@ -493,7 +493,7 @@ async function confirmDelete(): Promise<void> {
     min-width: 0;
     justify-content: center;
     padding: 0 var(--space-1, 0.25rem);
-    font-size: 0.68rem;
+    font-size: var(--console-font-size-min);
   }
 
   .console-section {

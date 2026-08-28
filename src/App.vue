@@ -167,7 +167,7 @@ h1 {
 .brand__subtitle {
   margin: 0.1rem 0 0;
   color: var(--shell-text-muted);
-  font-size: 0.7rem;
+  font-size: var(--console-font-size-min);
   letter-spacing: 0.12em;
 }
 

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-08-25.1",
+  "fixtureVersion": "2026-08-28.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -136,8 +136,8 @@
         "type": "REAR_COMMAND_NODE",
         "category": "ground",
         "initialPosition": {
-          "longitude": 114.17,
-          "latitude": 22.3,
+          "longitude": 118.15,
+          "latitude": 24.45,
           "altitude": 20
         },
         "waypoints": [],
@@ -156,14 +156,14 @@
         "type": "FORWARD_RELAY_NODE",
         "category": "air",
         "initialPosition": {
-          "longitude": 114.5,
-          "latitude": 22.5,
+          "longitude": 119.35,
+          "latitude": 24.70,
           "altitude": 3000
         },
         "waypoints": [
           {
-            "longitude": 114.7,
-            "latitude": 22.6,
+            "longitude": 119.55,
+            "latitude": 24.80,
             "altitude": 3000,
             "speed": 45,
             "arrivalTime": 600
@@ -184,8 +184,8 @@
         "type": "GROUND_CLUSTER_COMMAND_NODE",
         "category": "ground",
         "initialPosition": {
-          "longitude": 114.24,
-          "latitude": 22.34,
+          "longitude": 118.65,
+          "latitude": 23.55,
           "altitude": 20
         },
         "waypoints": [],
@@ -199,14 +199,14 @@
         "type": "AIRBORNE_MISSION_CLUSTER",
         "category": "air",
         "initialPosition": {
-          "longitude": 114.72,
-          "latitude": 22.62,
+          "longitude": 120.15,
+          "latitude": 23.95,
           "altitude": 3200
         },
         "waypoints": [
           {
-            "longitude": 114.9,
-            "latitude": 22.7,
+            "longitude": 120.33,
+            "latitude": 24.03,
             "altitude": 3300,
             "speed": 42,
             "arrivalTime": 900
@@ -222,8 +222,8 @@
         "type": "COMMUNICATION_SATELLITE",
         "category": "space",
         "initialPosition": {
-          "longitude": 114,
-          "latitude": 0,
+          "longitude": 121.25,
+          "latitude": 25.75,
           "altitude": 35786000
         },
         "waypoints": [],
@@ -237,8 +237,8 @@
         "type": "GROUND_JAMMER_DETECTION_STATION",
         "category": "ground",
         "initialPosition": {
-          "longitude": 114.65,
-          "latitude": 22.42,
+          "longitude": 119.55,
+          "latitude": 25.25,
           "altitude": 15
         },
         "waypoints": [],
@@ -422,8 +422,8 @@
         "platformId": "CMD-01",
         "name": "公共服务平台后方指挥节点",
         "type": "REAR_COMMAND_NODE",
-        "longitude": 114.17,
-        "latitude": 22.3,
+        "longitude": 118.15,
+        "latitude": 24.45,
         "altitude": 20,
         "speed": 0,
         "linkIds": [
@@ -439,8 +439,8 @@
         "platformId": "UAV-01",
         "name": "高空前出中继节点",
         "type": "FORWARD_RELAY_NODE",
-        "longitude": 114.5,
-        "latitude": 22.5,
+        "longitude": 119.35,
+        "latitude": 24.70,
         "altitude": 3000,
         "speed": 45,
         "linkIds": [
@@ -456,8 +456,8 @@
         "platformId": "GCC-01",
         "name": "地面无人集群指挥车",
         "type": "GROUND_CLUSTER_COMMAND_NODE",
-        "longitude": 114.24,
-        "latitude": 22.34,
+        "longitude": 118.65,
+        "latitude": 23.55,
         "altitude": 20,
         "speed": 0,
         "linkIds": [],
@@ -468,8 +468,8 @@
         "platformId": "AIR-01",
         "name": "空中无人作战集群",
         "type": "AIRBORNE_MISSION_CLUSTER",
-        "longitude": 114.72,
-        "latitude": 22.62,
+        "longitude": 120.15,
+        "latitude": 23.95,
         "altitude": 3200,
         "speed": 42,
         "linkIds": [],
@@ -480,8 +480,8 @@
         "platformId": "SAT-01",
         "name": "通信卫星",
         "type": "COMMUNICATION_SATELLITE",
-        "longitude": 114,
-        "latitude": 0,
+        "longitude": 121.25,
+        "latitude": 25.75,
         "altitude": 35786000,
         "speed": 0,
         "linkIds": [],
@@ -492,8 +492,8 @@
         "platformId": "STN-01",
         "name": "地面固定式干扰侦测站",
         "type": "GROUND_JAMMER_DETECTION_STATION",
-        "longitude": 114.65,
-        "latitude": 22.42,
+        "longitude": 119.55,
+        "latitude": 25.25,
         "altitude": 15,
         "speed": 0,
         "linkIds": [],

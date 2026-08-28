@@ -53,7 +53,7 @@ export interface SituationMapController {
    * 原地切换离线地图的深色或浅色主题。
    * @param theme 要应用的地图主题。
    * @returns 无返回值。
-   * @sideeffect 主题变化时替换既有矢量瓦片样式并各重绘一次底图和标签层，同时按新主题重建经纬网；不会重建地图或业务图层组。
+   * @sideeffect 主题变化时替换既有矢量瓦片样式并安全刷新可见底图和标签层，同时按新主题重建经纬网；不会重建地图或业务图层组。
    */
   setTheme: (theme: MapTheme) => void
 
@@ -269,30 +269,51 @@ function createVectorTileStyles(theme: MapTheme): Record<string, VectorTileStyle
   }
 }
 
-const LINK_STYLES: Record<SituationLinkView['status'], L.PathOptions> = {
-  UP: {
-    color: '#2dd4bf',
+const LINK_TYPE_STYLES: Record<SituationLinkView['type'], L.PathOptions> = {
+  SAT: {
+    color: '#67c23a',
     weight: 3,
     opacity: 0.95,
   },
-  DEGRADED: {
-    color: '#f5b942',
+  MICROWAVE: {
+    color: '#409eff',
     weight: 3,
     opacity: 0.95,
-    dashArray: '10 7',
+    dashArray: '8 5',
   },
-  DOWN: {
-    color: '#ff526d',
+  DATALINK: {
+    color: '#e6a23c',
     weight: 3,
     opacity: 0.95,
-    dashArray: '4 7',
+    dashArray: '2 5',
   },
+  LASER: {
+    color: '#b37feb',
+    weight: 3,
+    opacity: 0.95,
+  },
+}
+
+const UNAVAILABLE_LINK_STYLE: L.PathOptions = {
+  color: '#f56c6c',
+  weight: 3,
+  opacity: 0.95,
 }
 
 const LINK_STATUS_LABELS: Record<SituationLinkView['status'], string> = {
   UP: '正常',
   DEGRADED: '劣化',
   DOWN: '中断',
+}
+
+/**
+ * 根据链路类型与运行状态生成地图线型。
+ * @param link 当前帧链路视图。
+ * @returns 正常链路使用类型配色，劣化或中断链路使用红色异常配色。
+ * @sideeffect 无副作用。
+ */
+function linkStyle(link: SituationLinkView): L.PathOptions {
+  return link.status === 'UP' ? LINK_TYPE_STYLES[link.type] : UNAVAILABLE_LINK_STYLE
 }
 
 /**
@@ -408,8 +429,21 @@ export function createSituationMapController(options: SituationMapControllerOpti
       if (!map || currentTheme === theme) return
       currentTheme = theme
       vectorGrid.options.vectorTileLayerStyles = createVectorTileStyles(theme)
-      vectorGrid.redraw()
-      offlineLabelLayer.setTheme(theme)
+      if (currentBasemap === 'vector') {
+        if (Number.isInteger(map.getZoom())) {
+          vectorGrid.redraw()
+          offlineLabelLayer.setTheme(theme)
+        } else {
+          // GridLayer.redraw() 会直接使用分数 map zoom；重新挂载才会走 Leaflet 的整数瓦片网格选择。
+          offlineLabelLayer.setTheme(theme, false)
+          vectorGrid.removeFrom(map)
+          vectorGrid.addTo(map)
+          offlineLabelLayer.removeFrom(map)
+          offlineLabelLayer.addTo(map)
+        }
+      } else {
+        offlineLabelLayer.setTheme(theme, false)
+      }
       renderGrid(layerGroups.grid, theme)
     },
 
@@ -456,16 +490,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
 }
 
 /**
- * 返回平台在地图上的示意位置。
+ * 将 API 平台经纬度转换为 Leaflet 坐标顺序。
  * @param platform 固定帧中的平台状态。
- * @returns Leaflet 使用的纬度、经度坐标。
- * @sideeffect 无副作用；仅返回只读展示投影的副本，不修改原始遥测。
+ * @returns Leaflet 使用的 [纬度, 经度] 坐标。
+ * @sideeffect 无副作用；仅调整 API 经度、纬度的排列顺序。
  */
 function pointForPlatform(platform: SituationPlatform): L.LatLngTuple {
-  const projected = MAP_CONFIG.displayProjection[
-    platform.platformId as keyof typeof MAP_CONFIG.displayProjection
-  ]
-  if (projected) return [...projected]
   return [platform.latitude, platform.longitude]
 }
 
@@ -528,7 +558,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
     : platform.name
   name.style.marginTop = '3px'
   name.style.color = '#d7e8f3'
-  name.style.fontSize = '11px'
+  name.style.fontSize = '12px'
   name.style.fontWeight = selected ? '700' : '500'
   name.style.whiteSpace = 'nowrap'
   name.style.textShadow = '0 1px 3px #06111d, 0 0 4px #06111d'
@@ -538,7 +568,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   id.textContent = platform.platformId
   id.style.color = '#7f9aad'
   id.style.fontFamily = 'Consolas, monospace'
-  id.style.fontSize = '9px'
+  id.style.fontSize = '12px'
   id.style.whiteSpace = 'nowrap'
   id.style.textShadow = '0 1px 3px #06111d'
 
@@ -702,7 +732,7 @@ function renderLinks(
     tooltip.textContent = accessibleName
 
     const line = L.polyline(points, {
-      ...LINK_STYLES[link.status],
+      ...linkStyle(link),
       bubblingMouseEvents: false,
       interactive: true,
     })
@@ -841,7 +871,7 @@ function createGridLabel(
   label.textContent = text
   label.style.color = theme === 'light' ? '#425c6d' : '#66849a'
   label.style.fontFamily = 'Consolas, monospace'
-  label.style.fontSize = '9px'
+  label.style.fontSize = '12px'
   label.style.whiteSpace = 'nowrap'
   label.style.textShadow = theme === 'light' ? '0 1px 2px #f7fbfd' : '0 1px 2px #06111d'
 

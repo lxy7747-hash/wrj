@@ -130,7 +130,7 @@ const statusLabel = computed(() => ({
 .simulation-toolbar__runtime small {
   overflow: hidden;
   color: var(--console-text-muted);
-  font-size: 0.66rem;
+  font-size: var(--console-font-size-min);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -213,7 +213,7 @@ const statusLabel = computed(() => ({
   align-items: center;
   gap: 0.3rem;
   color: var(--console-text-muted);
-  font-size: 0.72rem;
+  font-size: var(--console-font-size-min);
 }
 
 .runtime-state i {

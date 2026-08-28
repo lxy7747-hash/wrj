@@ -62,10 +62,11 @@ export interface OfflineVectorLabelLayer extends L.GridLayer {
   /**
    * 原地切换后续标签瓦片使用的颜色主题。
    * @param theme 要切换到的深色或浅色主题。
+   * @param redraw 是否立即重绘当前瓦片，默认重绘。
    * @returns 无返回值。
-   * @sideeffect 主题变化时更新闭包状态并触发一次 GridLayer 重绘；相同主题不会重绘。
+   * @sideeffect 主题变化时更新闭包状态，并按需触发一次 GridLayer 重绘；相同主题不会重绘。
    */
-  setTheme(theme: MapTheme): void
+  setTheme(theme: MapTheme, redraw?: boolean): void
 }
 
 type LabelLayerName = (typeof LABEL_LAYERS)[number]
@@ -197,15 +198,16 @@ export function createOfflineVectorLabelLayer(
   }
 
   /**
-   * 仅在主题实际变化时更新闭包状态并请求 Leaflet 重绘现有瓦片。
+   * 仅在主题实际变化时更新闭包状态并按需请求 Leaflet 重绘现有瓦片。
    * @param nextTheme 要切换到的标签主题。
+   * @param redraw 是否立即重绘当前瓦片。
    * @returns 无返回值。
-   * @sideeffect 主题变化时调用一次 layer.redraw()，重复主题没有副作用。
+   * @sideeffect 主题变化且允许重绘时调用一次 layer.redraw()，重复主题没有副作用。
    */
-  const setTheme = (nextTheme: MapTheme): void => {
+  const setTheme = (nextTheme: MapTheme, redraw = true): void => {
     if (currentTheme === nextTheme) return
     currentTheme = nextTheme
-    layer.redraw()
+    if (redraw) layer.redraw()
   }
   Object.assign(layer, { createTile, setTheme })
 
@@ -654,10 +656,7 @@ function labelStyle(
     const fontSize = candidate.kind === 'capital' || candidate.kind === 'state_capital' ? 14 : 12
     return { font: `600 ${fontSize}px ${FONT_FAMILY}`, fontSize, ...colors }
   }
-  if (candidate.category === 'water') {
-    return { font: `500 11px ${FONT_FAMILY}`, fontSize: 11, ...colors }
-  }
-  return { font: `500 10px ${FONT_FAMILY}`, fontSize: 10, ...colors }
+  return { font: `500 12px ${FONT_FAMILY}`, fontSize: 12, ...colors }
 }
 
 /**

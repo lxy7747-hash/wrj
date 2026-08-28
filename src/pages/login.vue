@@ -200,7 +200,7 @@ async function submitLogin(): Promise<void> {
 .login-card__eyebrow {
   margin: 0;
   color: var(--login-accent);
-  font-size: 0.69rem;
+  font-size: var(--console-font-size-min);
   font-weight: 700;
   letter-spacing: 0.16em;
 }

@@ -7,7 +7,7 @@ defineProps<{ metrics: SituationMetrics }>()
 <template>
   <section class="metric-panel" aria-label="当前帧指标" :data-frame-id="metrics.frameId">
     <div class="metric-panel__item">
-      <span>业务信息节点</span>
+      <span>在线业务信息节点</span>
       <strong>{{ metrics.businessNodeCount }}</strong>
     </div>
     <div class="metric-panel__item">
@@ -27,7 +27,7 @@ defineProps<{ metrics: SituationMetrics }>()
       <strong class="metric-panel__danger">{{ metrics.activeJammerCount }}</strong>
     </div>
     <div class="metric-panel__item">
-      <span>切换事件</span>
+      <span>切换次数</span>
       <strong>{{ metrics.switchEventCount }}</strong>
     </div>
   </section>
@@ -35,38 +35,36 @@ defineProps<{ metrics: SituationMetrics }>()
 
 <style scoped>
 .metric-panel {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 0.35rem;
-  padding: 0.45rem;
-  border-bottom: 1px solid var(--console-border);
-  background: rgba(5, 11, 20, 0.78);
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  pointer-events: none;
 }
 
 .metric-panel__item {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.4rem;
-  padding: 0.35rem 0.5rem;
+  min-width: 5.375rem;
+  padding: 0.375rem 0.875rem;
   border: 1px solid var(--console-border);
-  border-radius: 5px;
-  background: rgba(11, 29, 45, 0.92);
+  border-radius: 8px;
+  background: rgba(15, 31, 48, 0.92);
 }
 
 .metric-panel__item span {
-  overflow: hidden;
+  display: block;
   color: var(--console-text-muted);
-  font-size: 0.66rem;
-  text-overflow: ellipsis;
+  font-size: var(--console-font-size-min);
   white-space: nowrap;
 }
 
 .metric-panel__item strong {
+  display: block;
   color: var(--console-cyan);
   font-family: Consolas, monospace;
-  font-size: 0.92rem;
+  font-size: 1.0625rem;
+  line-height: 1.2;
 }
 
 .metric-panel__good {
@@ -81,12 +79,4 @@ defineProps<{ metrics: SituationMetrics }>()
   color: var(--console-danger) !important;
 }
 
-@media (max-width: 1500px) {
-  .metric-panel__item {
-    display: grid;
-    justify-items: center;
-    gap: 0.1rem;
-    padding: 0.25rem;
-  }
-}
 </style>

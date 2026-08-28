@@ -105,7 +105,7 @@ function reasonLabel(reason: string): string {
 .link-quality-dialog__header strong {
   color: var(--console-cyan);
   font-family: Consolas, monospace;
-  font-size: 0.7rem;
+  font-size: var(--console-font-size-min);
 }
 
 .link-quality-dialog__route {
@@ -143,7 +143,7 @@ function reasonLabel(reason: string): string {
 
 .link-quality-dialog__grid dt {
   color: var(--console-text-muted);
-  font-size: 0.68rem;
+  font-size: var(--console-font-size-min);
 }
 
 .link-quality-dialog__grid dd {
@@ -175,6 +175,6 @@ function reasonLabel(reason: string): string {
   border-left: 3px solid var(--console-amber);
   color: var(--console-text-muted);
   background: rgba(246, 184, 75, 0.08);
-  font-size: 0.72rem;
+  font-size: var(--console-font-size-min);
 }
 </style>

@@ -28,6 +28,13 @@ const mapController = ref<SituationMapController | null>(null)
 const zoom = ref(MAP_CONFIG.defaults.zoom)
 const theme = ref<MapTheme>(MAP_CONFIG.defaults.theme)
 const basemap = ref<MapBasemap>(MAP_CONFIG.defaults.basemap)
+const selectedNodeDialogVisible = ref(false)
+const themeToggleLabel = computed(() => (
+  theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
+))
+const basemapToggleLabel = computed(() => (
+  basemap.value === 'vector' ? '切换为卫星底图' : '切换为矢量底图'
+))
 const layers = reactive<Record<MapLayer, boolean>>({
   nodes: true,
   links: true,
@@ -44,10 +51,11 @@ const selectedNode = computed(() => (
  * 向父组件转发节点选择事件。
  * @param platformId 被选择的平台唯一标识。
  * @returns 无返回值。
- * @sideeffect 触发组件的 select-node 事件。
+ * @sideeffect 触发组件的 select-node 事件，并打开节点详情弹框。
  */
 function handleSelectNode(platformId: string): void {
   emit('select-node', platformId)
+  selectedNodeDialogVisible.value = true
 }
 
 /**
@@ -189,60 +197,158 @@ onBeforeUnmount(() => {
       aria-label="固定帧 F-00042 Leaflet 节点、链路和干扰态势图"
     ></div>
 
-    <div class="offline-map__layerbar" aria-label="态势图层">
-      <button
-        v-for="layer in ([
-          ['nodes', '节点'],
-          ['links', '链路'],
-          ['interference', '干扰范围'],
-          ['grid', '经纬网'],
-        ] as const)"
-        :key="layer[0]"
-        type="button"
-        :class="{ active: layers[layer[0]] }"
-        :aria-pressed="layers[layer[0]]"
-        @click="toggleLayer(layer[0])"
-      >{{ layer[1] }}</button>
-      <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
-      <button
-        type="button"
-        :aria-label="theme === 'dark' ? '切换为浅色地图' : '切换为深色地图'"
-        @click="toggleTheme"
-      >地图：{{ theme === 'dark' ? '深色' : '浅色' }}</button>
-      <button
-        type="button"
-        :aria-label="basemap === 'vector' ? '切换为卫星底图' : '切换为矢量底图'"
-        @click="toggleBasemap"
-      >底图：{{ basemap === 'vector' ? '矢量' : '卫星' }}</button>
-      <button type="button" aria-label="放大态势图" @click="changeZoom(1)">＋</button>
-      <button type="button" aria-label="缩小态势图" @click="changeZoom(-1)">－</button>
-      <button type="button" @click="resetView">重置视图</button>
+    <div class="offline-map__topbar">
+      <slot name="topbar"></slot>
+
+      <div class="offline-map__layerbar" aria-label="态势图层">
+        <button
+          v-for="layer in ([
+            ['nodes', '节点'],
+            ['links', '链路'],
+            ['interference', '干扰范围'],
+            ['grid', '经纬网'],
+          ] as const)"
+          :key="layer[0]"
+          type="button"
+          :class="{ active: layers[layer[0]] }"
+          :aria-pressed="layers[layer[0]]"
+          @click="toggleLayer(layer[0])"
+        >{{ layer[1] }}</button>
+        <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
+      </div>
     </div>
 
-    <aside v-if="selectedNode" class="node-card" data-testid="selected-node-card">
-      <div>
-        <span>选中节点</span>
-        <strong>{{ selectedNode.name }}</strong>
-      </div>
-      <dl>
-        <div><dt>类型</dt><dd>{{ PLATFORM_TYPE_LABELS[selectedNode.type] }}</dd></div>
-        <div><dt>原始位置</dt><dd>{{ selectedNode.longitude }}°E / {{ selectedNode.latitude }}°N</dd></div>
-        <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
-        <div><dt>速度</dt><dd>{{ selectedNode.speed }} m/s</dd></div>
-      </dl>
-      <p class="node-card__notice">
-        地图采用台海任务展示投影，不改变固定帧原始遥测。
-      </p>
-      <p v-if="selectedNode.type === 'COMMUNICATION_SATELLITE'" class="node-card__notice">
-        卫星地图位置为轨道示意，非真实轨道位置。
-      </p>
-    </aside>
+    <div class="offline-map__view-controls" aria-label="态势图视图控制">
+      <button
+        type="button"
+        :aria-label="themeToggleLabel"
+        :title="themeToggleLabel"
+        @click="toggleTheme"
+      >
+        <svg
+          class="offline-map__control-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <g
+            v-if="theme === 'dark'"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+          >
+            <circle cx="12" cy="12" r="3.5" />
+            <path d="M12 2.5V5M12 19V21.5M2.5 12H5M19 12H21.5M5.3 5.3L7.1 7.1M16.9 16.9L18.7 18.7M18.7 5.3L16.9 7.1M7.1 16.9L5.3 18.7" />
+          </g>
+          <path
+            v-else
+            d="M19.5 15.4A8 8 0 0 1 8.6 4.5A8 8 0 1 0 19.5 15.4Z"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+      <button
+        type="button"
+        :aria-label="basemapToggleLabel"
+        :title="basemapToggleLabel"
+        @click="toggleBasemap"
+      >
+        <svg
+          class="offline-map__control-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <g
+            v-if="basemap === 'vector'"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <rect x="9" y="8" width="6" height="8" rx="1" />
+            <path d="M9 10L4 7V13L9 14M15 10L20 7V13L15 14M12 5V8M10 5H14M12 16V19M9.5 21.5L12 19L14.5 21.5" />
+          </g>
+          <g
+            v-else
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M3.5 5.5L9 3L15 5.5L20.5 3V18.5L15 21L9 18.5L3.5 21V5.5Z" />
+            <path d="M9 3V18.5M15 5.5V21" />
+          </g>
+        </svg>
+      </button>
+      <button type="button" aria-label="放大态势图" title="放大态势图" @click="changeZoom(1)">＋</button>
+      <button type="button" aria-label="缩小态势图" title="缩小态势图" @click="changeZoom(-1)">－</button>
+      <button type="button" aria-label="重置视图" title="重置视图" @click="resetView">
+        <svg
+          class="offline-map__control-icon"
+          viewBox="0 0 24 24"
+          fill="none"
+          xmlns="http://www.w3.org/2000/svg"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path
+            d="M4.5 8V3.5M4.5 3.5H9M4.5 3.5L7.7 6.7A7.5 7.5 0 1 1 5 14.5"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+      </button>
+    </div>
 
-    <div class="offline-map__legend" aria-label="地图图例">
-      <span><i class="legend-line legend-line--up"></i>正常链路</span>
-      <span><i class="legend-line legend-line--degraded"></i>劣化链路</span>
-      <span><i class="legend-range"></i>活动干扰范围</span>
-      <span>点击链路查看 SNR / BER</span>
+    <el-dialog
+      v-model="selectedNodeDialogVisible"
+      width="min(38rem, calc(100vw - 2rem))"
+      class="selected-node-dialog"
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div v-if="selectedNode" class="selected-node-dialog__header">
+          <span>节点详情</span>
+          <strong>{{ selectedNode.name }}</strong>
+        </div>
+      </template>
+
+      <div
+        v-if="selectedNode"
+        class="selected-node-dialog__body"
+        data-testid="selected-node-dialog"
+      >
+        <dl class="selected-node-dialog__grid">
+          <div><dt>类型</dt><dd>{{ PLATFORM_TYPE_LABELS[selectedNode.type] }}</dd></div>
+          <div><dt>遥测位置</dt><dd>{{ selectedNode.longitude }}°E / {{ selectedNode.latitude }}°N</dd></div>
+          <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
+          <div><dt>速度</dt><dd>{{ selectedNode.speed }} m/s</dd></div>
+        </dl>
+        <p
+          v-if="selectedNode.type === 'COMMUNICATION_SATELLITE'"
+          class="selected-node-dialog__notice"
+        >
+          二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。
+        </p>
+      </div>
+    </el-dialog>
+
+    <div class="offline-map__legend" aria-label="链路类型图例">
+      <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
+      <div><i class="legend-line legend-line--microwave"></i>微波链路</div>
+      <div><i class="legend-line legend-line--datalink"></i>新一代数传链路</div>
+      <div><i class="legend-line legend-line--laser"></i>激光链路</div>
+      <div><i class="legend-line legend-line--unavailable"></i>受干扰 / 失效链路</div>
     </div>
 
     <span class="offline-map__frame">固定帧 {{ SITUATION_FRAME_F00042.frameId }} · 数据时刻 {{ SITUATION_FRAME_F00042.simulationTime }} s</span>
@@ -266,152 +372,201 @@ onBeforeUnmount(() => {
   background: #07131f;
 }
 
-.offline-map__layerbar {
+.offline-map__topbar {
   position: absolute;
-  z-index: 1001;
-  top: 0.5rem;
-  left: 0.5rem;
+  z-index: 1002;
+  top: 0.75rem;
+  right: var(--telemetry-panel-clearance, 0.75rem);
+  left: var(--scene-panel-clearance, 0.75rem);
   display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  padding: 0.25rem;
-  border: 1px solid var(--console-border);
-  border-radius: 5px;
-  background: rgba(7, 21, 34, 0.94);
+  min-width: 0;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  pointer-events: none;
+  transition: right 0.18s ease, left 0.18s ease;
 }
 
-.offline-map__layerbar button {
+.offline-map__layerbar {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  margin-left: auto;
+  padding: 0.25rem;
+  border-radius: 5px;
+  pointer-events: auto;
+}
+
+.offline-map__view-controls {
+  position: absolute;
+  z-index: 1001;
+  right: var(--telemetry-panel-clearance, 0.75rem);
+  bottom: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: calc(100% - var(--telemetry-panel-clearance, 0.75rem) - 0.75rem);
+  align-items: stretch;
+  gap: 0.25rem;
+  padding: 0.25rem;
+  border-radius: 5px;
+  transition: right 0.18s ease;
+}
+
+.offline-map__layerbar button,
+.offline-map__view-controls button {
   height: 1.65rem;
   padding: 0 0.45rem;
   border: 1px solid var(--console-border);
   border-radius: 4px;
   color: var(--console-text-muted);
   background: var(--console-bg-elevated);
-  font-size: 0.66rem;
+  font-size: var(--console-font-size-min);
   cursor: pointer;
+}
+
+.offline-map__layerbar button {
+  background: rgba(7, 21, 34, 0.96);
+}
+
+.offline-map__view-controls button {
+  display: grid;
+  min-width: 1.65rem;
+  place-items: center;
+}
+
+.offline-map__control-icon {
+  display: block;
+  width: 1rem;
+  height: 1rem;
+  color: inherit;
 }
 
 .offline-map__layerbar button.active {
   border-color: var(--console-cyan);
   color: var(--console-cyan);
-  background: rgba(66, 216, 255, 0.1);
+  background: #0e4155;
 }
 
 .offline-map__layerbar span {
   margin-left: 0.25rem;
   color: var(--console-text-muted);
-  font-size: 0.65rem;
+  font-size: var(--console-font-size-min);
 }
 
-.node-card {
-  position: absolute;
-  z-index: 1001;
-  right: 0.55rem;
-  bottom: 2.15rem;
-  width: min(18.5rem, 42%);
-  padding: 0.55rem;
-  border: 1px solid var(--console-border-strong);
-  border-radius: 6px;
-  background: rgba(7, 21, 34, 0.94);
-  box-shadow: var(--console-shadow);
-}
-
-.node-card > div {
+.selected-node-dialog__header {
   display: grid;
-  gap: 0.12rem;
-  padding-bottom: 0.35rem;
-  border-bottom: 1px solid var(--console-border);
+  gap: 0.15rem;
 }
 
-.node-card span,
-.node-card dt {
+.selected-node-dialog__header span {
+  color: var(--console-text);
+  font-size: 0.95rem;
+  font-weight: 700;
+}
+
+.selected-node-dialog__header strong {
+  color: var(--console-cyan);
+  font-size: var(--console-font-size-min);
+}
+
+.selected-node-dialog__grid dt {
   color: var(--console-text-muted);
-  font-size: 0.62rem;
+  font-size: var(--console-font-size-min);
 }
 
-.node-card strong {
-  font-size: 0.74rem;
-}
-
-.node-card dl {
+.selected-node-dialog__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.3rem 0.65rem;
-  margin: 0.4rem 0 0;
+  margin: 0;
 }
 
-.node-card dl div {
+.selected-node-dialog__grid div {
   min-width: 0;
 }
 
-.node-card dd {
+.selected-node-dialog__grid dd {
   overflow: hidden;
   margin: 0.1rem 0 0;
   color: var(--console-text);
-  font-size: 0.65rem;
+  font-size: var(--console-font-size-min);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.node-card__notice {
+.selected-node-dialog__notice {
   margin: 0.45rem 0 0;
   color: var(--console-amber);
-  font-size: 0.61rem;
+  font-size: var(--console-font-size-min);
   line-height: 1.4;
 }
 
 .offline-map__legend {
   position: absolute;
   z-index: 1001;
-  bottom: 0.45rem;
-  left: 0.5rem;
-  display: flex;
-  max-width: calc(100% - 1rem);
-  gap: 0.65rem;
-  padding: 0.28rem 0.45rem;
-  border: 1px solid var(--console-border);
-  border-radius: 4px;
-  color: var(--console-text-muted);
-  background: rgba(7, 21, 34, 0.92);
-  font-size: 0.62rem;
+  bottom: 0.75rem;
+  left: var(--scene-panel-clearance, 0.75rem);
+  width: max-content;
+  max-width: calc(100% - 1.5rem);
+  padding: 0.625rem 0.875rem;
+  border: 1px solid #2d4a6b;
+  border-radius: 6px;
+  color: #c0c4cc;
+  background: rgba(13, 27, 42, 0.85);
+  font-size: var(--console-font-size-min);
+  transition: left 0.18s ease;
 }
 
-.offline-map__legend span {
-  display: inline-flex;
+.offline-map__legend div {
+  display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
   white-space: nowrap;
 }
 
 .legend-line {
-  width: 1.2rem;
-  border-top: 2px solid;
+  width: 1.625rem;
+  border-top: 3px solid;
 }
 
-.legend-line--up {
-  border-color: var(--console-teal);
+.legend-line--satellite {
+  border-color: #67c23a;
 }
 
-.legend-line--degraded {
-  border-color: var(--console-amber);
+.legend-line--microwave {
+  border-color: #409eff;
   border-top-style: dashed;
 }
 
-.legend-range {
-  width: 0.7rem;
-  height: 0.7rem;
-  border: 1px dashed var(--console-danger);
-  border-radius: 50%;
+.legend-line--datalink {
+  border-color: #e6a23c;
+  border-top-style: dotted;
+}
+
+.legend-line--laser {
+  border-color: #b37feb;
+}
+
+.legend-line--unavailable {
+  border-color: #f56c6c;
 }
 
 .offline-map__frame {
   position: absolute;
   z-index: 1001;
   top: 3rem;
-  right: 0.55rem;
+  right: var(--telemetry-panel-clearance, 0.55rem);
   color: var(--console-text-muted);
   font-family: Consolas, monospace;
-  font-size: 0.62rem;
+  font-size: var(--console-font-size-min);
+  transition: right 0.18s ease;
 }
 
 :deep(.leaflet-container) {
@@ -427,7 +582,7 @@ onBeforeUnmount(() => {
   color: var(--console-text);
   background: rgba(7, 21, 34, 0.96);
   box-shadow: var(--console-shadow);
-  font-size: 0.65rem;
+  font-size: var(--console-font-size-min);
 }
 
 :deep(.leaflet-tooltip-top::before) {
@@ -472,17 +627,9 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 1500px) {
-  .offline-map__layerbar button {
+  .offline-map__layerbar button,
+  .offline-map__view-controls button {
     padding: 0 0.3rem;
-  }
-
-  .offline-map__layerbar span,
-  .offline-map__legend span:last-child {
-    display: none;
-  }
-
-  .node-card {
-    width: 15.5rem;
   }
 }
 </style>

@@ -48,6 +48,43 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
+  it('keeps Taiwan-frame telemetry aligned with scenario positions and waypoint deltas', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const expectedCoordinates = {
+      'CMD-01': { longitude: 118.15, latitude: 24.45 },
+      'UAV-01': { longitude: 119.35, latitude: 24.70 },
+      'GCC-01': { longitude: 118.65, latitude: 23.55 },
+      'AIR-01': { longitude: 120.15, latitude: 23.95 },
+      'SAT-01': { longitude: 121.25, latitude: 25.75 },
+      'STN-01': { longitude: 119.55, latitude: 25.25 },
+    }
+    const frameCoordinates = Object.fromEntries(fixture.frame.platforms.map((platform) => [
+      platform.platformId,
+      { longitude: platform.longitude, latitude: platform.latitude },
+    ]))
+    const scenarioCoordinates = Object.fromEntries(fixture.scenario.platforms.map((platform) => [
+      platform.id,
+      {
+        longitude: platform.initialPosition.longitude,
+        latitude: platform.initialPosition.latitude,
+      },
+    ]))
+
+    expect(fixture.fixtureVersion).toBe('2026-08-28.1')
+    expect(frameCoordinates).toEqual(expectedCoordinates)
+    expect(scenarioCoordinates).toEqual(expectedCoordinates)
+
+    const uav = fixture.scenario.platforms.find(({ id }) => id === 'UAV-01')
+    const air = fixture.scenario.platforms.find(({ id }) => id === 'AIR-01')
+    if (!uav?.waypoints[0] || !air?.waypoints[0]) {
+      throw new Error('Expected UAV-01 and AIR-01 deterministic waypoints')
+    }
+    expect(uav.waypoints[0].longitude - uav.initialPosition.longitude).toBeCloseTo(0.20)
+    expect(uav.waypoints[0].latitude - uav.initialPosition.latitude).toBeCloseTo(0.10)
+    expect(air.waypoints[0].longitude - air.initialPosition.longitude).toBeCloseTo(0.18)
+    expect(air.waypoints[0].latitude - air.initialPosition.latitude).toBeCloseTo(0.08)
+  })
+
   it('converts only local component-schema references without mutating OpenAPI', () => {
     const sourceSnapshot = structuredClone(openApi)
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
