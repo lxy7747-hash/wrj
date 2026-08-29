@@ -9,7 +9,7 @@
 | RBAC | Vitest、Supertest | 角色×route×endpoint×敏感 action | UI guard 与 server reject 均有证据；last-admin 和 Level III 组合覆盖 |
 | Component | Vue Test Utils | 29 capability 目的地、7 interface 目的地、共享表单/表格/对话框 | 六态、键盘、错误/空状态、fieldPath、单位、无颜色唯一语义 |
 | Contract/API | Supertest、`ws` test client | OpenAPI 每个 operation、error catalog、5 个 canonical topics | 成功/错误 envelope；127.0.0.1；序号/gap/close 1008/reconnect；禁止副作用 |
-| E2E | Playwright | 11 routes、主链、数据交换、回放、报告、admin 拒绝、reset | Chromium；1920×1080 与 1366×768；console error=0；非回环请求=0 |
+| E2E | Playwright | 11 routes、主链、数据交换、回放、报告、admin 拒绝、reset | Chromium；1920×1080 与 1366×768；除负向登录场景中明确白名单的 401/423 浏览器资源错误外，console error=0。HTTP 404=0；非回环请求=0 |
 
 覆盖率分母中的核心包括：全部 stores、状态 transition/predicate、RBAC、canonical/UI projection、API/WS adapters、schema/business validators。生成的 schema 类型和纯展示样式可单列，不得用排除规则掩盖未测试业务分支。
 
@@ -84,6 +84,12 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 
 所有十一条路由分别在 1920×1080 和 1366×768 截图比较。小视口允许数据表内部滚动，但导航、主 action、错误和确认按钮必须可见/可键盘到达；无重叠、截断或脱离 viewport 的 modal。
 
+阶段化 E2E 口径：
+
+- P1 只验证 11 条路由的页面壳、主导航、匿名重定向及 OPERATOR/ADMIN 权限矩阵，不断言 P2–P8 尚未实现的业务功能。
+- P2–P7 随对应能力实现补充业务主链、六态、错误路径和权限操作断言。
+- P8 汇总全部路由及业务链路，执行完整双视口集成验收。
+
 ## 后续实现顺序
 
 1. **合同基线**：复制 types，采用 OpenAPI 2020-12 schema 与 fixture loader；AJV 直接验证 `DeterministicFixtures`，先通过 type/schema/evidence/timing closure tests。
@@ -106,8 +112,8 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 - 六态完整可见，SUCCESS/EMPTY/ERROR 不复用旧内容，错误有 code 与 fieldPath（适用时）。
 - canonical/UI 投影只发生在声明 adapter；单位、枚举、ID 与 frame/task ownership 不漂移。
 - OPERATOR/ADMIN 的 allow/deny 与 mock 二次校验一致；敏感操作的确认、引用和 last-admin guard 有负例。
-- component、store、contract test 通过；核心覆盖率阈值满足；相关十一路由 E2E 在双 viewport 通过。
-- 无 console error、未处理 promise、非回环请求、网络地图资源、文件/SQLite/进程/加密/导出副作用。
+- component、store、contract test 通过；核心覆盖率阈值满足；相关路由 E2E 按上述 P1、P2～P7、P8 三阶段在双 viewport 通过。
+- 除负向登录场景中 /api/v1/auth/login 返回预期 401/423 时由浏览器产生的对应资源错误外，无其他 console error。白名单必须按具体场景精确匹配状态码，不允许忽略或模糊过滤其他控制台错误。无未处理 promise；所有场景 HTTP 404=0、非回环请求=0，且无网络地图资源、文件/SQLite/进程/加密/导出副作用。
 - fixture reset 可重复，相关 ID 引用闭合，结果不依赖系统时间、随机数、机器或 locale。
 - 文档与机器合同同步更新；未引入本包非目标中的生产能力。
 - 后续代码对非显然业务规则、来源决策、状态转换和安全边界添加必要注释，不注释显而易见语法。

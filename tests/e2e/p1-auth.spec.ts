@@ -9,6 +9,35 @@ interface ConsoleAudit {
   nonLoopbackHosts: Set<string>
 }
 
+interface WorkspaceRoute {
+  path: string
+  navLabel: string
+  title: string
+}
+
+const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
+  { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
+  { path: '/scenarios', navLabel: '场景配置', title: '场景管理' },
+  { path: '/batches', navLabel: '仿真批次', title: '批量仿真' },
+  { path: '/reports', navLabel: '报表中心', title: '报告分析' },
+  { path: '/replays', navLabel: '回放复盘', title: '历史回放' },
+  { path: '/blueprint', navLabel: '资源模板库', title: '能力蓝图' },
+  { path: '/admin/data-exchange', navLabel: '数据交换与接口', title: '数据交换与接口' },
+  { path: '/traceability', navLabel: '可追溯性', title: '需求追踪' },
+  { path: '/interactions', navLabel: '交互管理', title: '交互管理' },
+]
+
+const ADMIN_WORKSPACE_ROUTE: WorkspaceRoute = {
+  path: '/admin',
+  navLabel: '用户与角色',
+  title: '用户与角色管理',
+}
+
+const PROTECTED_WORKSPACE_ROUTES = [
+  ...SHARED_WORKSPACE_ROUTES,
+  ADMIN_WORKSPACE_ROUTE,
+] as const
+
 function auditConsole(page: Page): ConsoleAudit {
   const audit: ConsoleAudit = { errors: [], http404s: [], nonLoopbackHosts: new Set() }
 
@@ -73,12 +102,39 @@ async function loginAs(page: Page, username: 'admin' | 'operator'): Promise<void
   expect(await page.context().cookies()).toEqual([])
 }
 
-test('root path redirects to login without console errors or 404s', async ({ page }) => {
+async function visitWorkspaceRouteFromNavigation(page: Page, route: WorkspaceRoute): Promise<void> {
+  const navigation = page.getByRole('navigation', { name: '主导航' })
+  const link = navigation.getByRole('link', { name: route.navLabel, exact: true })
+
+  await link.click()
+  await page.waitForURL((url) => url.pathname === route.path)
+
+  expect(new URL(page.url()).pathname).toBe(route.path)
+  await expect(page.locator('.app-shell')).toBeVisible()
+  await expect(navigation).toBeVisible()
+  await expect(page.getByTestId('identity-panel')).toBeVisible()
+  await expect(page.getByRole('heading', { name: route.title, exact: true })).toBeVisible()
+  await expect(link).toHaveAttribute('aria-current', 'page')
+}
+
+test('anonymous access keeps login public and redirects every protected route', async ({ page }) => {
   const audit = auditConsole(page)
+
+  await page.goto('/login')
+  await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.locator('.app-shell')).toHaveCount(0)
 
   await page.goto('/')
   await page.waitForURL('**/login')
   await expect(page.getByTestId('login-submit')).toBeVisible()
+  await expect(page.locator('.app-shell')).toHaveCount(0)
+
+  for (const route of PROTECTED_WORKSPACE_ROUTES) {
+    await page.goto(route.path)
+    await page.waitForURL('**/login')
+    await expect(page.getByTestId('login-submit')).toBeVisible()
+    await expect(page.locator('.app-shell')).toHaveCount(0)
+  }
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
@@ -112,14 +168,14 @@ for (const credentials of [
   })
 }
 
-test('ADMIN login enters the workspace and reaches the user-role panel', async ({ page }) => {
+test('ADMIN can navigate every workspace route from the main navigation', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'admin')
-  await expect(page.getByRole('heading', { name: '态势主界面' })).toBeVisible()
+  for (const route of PROTECTED_WORKSPACE_ROUTES) {
+    await visitWorkspaceRouteFromNavigation(page, route)
+  }
 
-  await page.getByRole('link', { name: '用户与角色' }).click()
-  await page.waitForURL('**/admin')
   await expect(page.getByTestId('user-role-panel')).toBeVisible()
   await expect(page.getByTestId('role-permission-map')).toContainText('BUSINESS_READ')
 
@@ -153,11 +209,15 @@ test('session identity survives reload and logout stays anonymous after reload',
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('OPERATOR is denied admin access with visible PERMISSION_DENIED evidence', async ({ page }) => {
+test('OPERATOR can navigate shared routes and is denied direct admin access', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
   await expect(page.getByRole('link', { name: '用户与角色', exact: true })).toHaveCount(0)
+  for (const route of SHARED_WORKSPACE_ROUTES) {
+    await visitWorkspaceRouteFromNavigation(page, route)
+  }
+
   await page.evaluate(() => {
     window.history.pushState({}, '', '/admin')
     window.dispatchEvent(new PopStateEvent('popstate'))
