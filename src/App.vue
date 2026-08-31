@@ -1,11 +1,21 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
+import { useScenarioStore } from './stores/scenario'
 
 const auth = useAuthStore()
+const scenario = useScenarioStore()
 const router = useRouter()
+
+watch(
+  () => auth.principal,
+  (principal) => {
+    if (principal === null) scenario.resetToSafeEmpty()
+  },
+  { immediate: true, flush: 'sync' },
+)
 
 /**
  * 以中文显示当前已认证主体的固定应用角色。

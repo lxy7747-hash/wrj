@@ -230,3 +230,66 @@ test('OPERATOR can navigate shared routes and is denied direct admin access', as
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
+
+test.describe('P2-1 scenario business loop', () => {
+  test.use({ timezoneId: 'America/New_York' })
+
+  test('OPERATOR saves Beijing time as UTC and reloads it outside UTC+8', async ({ page }) => {
+    const audit = auditConsole(page)
+    const putBodies: Array<Record<string, unknown>> = []
+    page.on('request', (request) => {
+      if (request.method() === 'PUT' && new URL(request.url()).pathname === '/api/v1/scenarios/SCN-001') {
+        putBodies.push(request.postDataJSON() as Record<string, unknown>)
+      }
+    })
+
+    await loginAs(page, 'operator')
+    const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
+    await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    expect((await loaded).status()).toBe(200)
+    expect(await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone)).toBe('America/New_York')
+
+    const name = page.getByTestId('scenario-name')
+    const startTime = page.getByTestId('scenario-start-time').locator('input')
+    const nameError = page.getByTestId('scenario-editor')
+      .getByText('场景名称为必填项，且不能超过 128 个字符。', { exact: true })
+    await expect(page.getByTestId('scenario-id')).toHaveValue('SCN-001')
+    await expect(page.getByText('开始时间', { exact: true })).toBeVisible()
+    await expect(name).not.toHaveValue('')
+
+    await name.fill('')
+    await page.getByTestId('save-scenario').click()
+    await expect(nameError).toBeVisible()
+    expect(putBodies).toEqual([])
+
+    await name.fill('跨海通联时区验证场景')
+    await startTime.fill('2026-08-07 09:30')
+    await startTime.press('Enter')
+    await expect(nameError).toHaveCount(0)
+    await expect(page.locator('.scenario-feedback')).toHaveCount(0)
+
+    const saved = page.waitForResponse((response) => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
+    await page.getByTestId('save-scenario').click()
+    expect((await saved).status()).toBe(200)
+    expect(putBodies).toHaveLength(1)
+    expect(putBodies[0]).toMatchObject({
+      scenario: {
+        name: '跨海通联时区验证场景',
+        startTime: '2026-08-07T01:30:00Z',
+      },
+    })
+
+    const reloaded = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
+    await page.reload()
+    expect((await reloaded).status()).toBe(200)
+    await expect(name).toHaveValue('跨海通联时区验证场景')
+    await expect(startTime).toHaveValue('2026-08-07 09:30')
+
+    expect(audit.errors).toEqual([])
+    expect(audit.http404s).toEqual([])
+    expect([...audit.nonLoopbackHosts]).toEqual([])
+  })
+})

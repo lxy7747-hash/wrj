@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import type { ScenarioDraft } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -47,6 +48,7 @@ interface RequestClient {
   get(path: string): RequestChain
   options(path: string): RequestChain
   post(path: string): RequestChain
+  put(path: string): RequestChain
 }
 
 interface WebSocketClient {
@@ -339,10 +341,91 @@ describe('P0 deterministic mock server', () => {
     expect(invalidOrigin.body).toMatchObject({ ok: false, error: { code: 'LOOPBACK_ONLY' } })
 
     const missingRoute = await request(baseUrl)
-      .get('/api/v1/scenarios/SCN-001')
+      .get('/api/v1/not-found')
       .set('Origin', ORIGIN)
       .expect(404)
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
+  })
+
+  it('loads, validates, saves, and resets the P2-1 scenario draft', async () => {
+    const { baseUrl } = await startServer()
+    const load = () => request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+
+    const loaded = await load().expect(200)
+    const original = (loaded.body as { data: ScenarioDraft }).data
+    expect(original).toMatchObject({ revision: 4, config: { scenario: { name: '跨海通联演示' } } })
+
+    const changed = structuredClone(original.config)
+    changed.scenario.name = '台海通联验证场景'
+    changed.scenario.environment.humidityPercent = 75
+    const saved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(changed)
+      .expect(200)
+    expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
+      revision: 5,
+      config: { scenario: { name: '台海通联验证场景', environment: { humidityPercent: 75 } } },
+    })
+
+    const invalid = structuredClone(changed)
+    invalid.scenario.environment.humidityPercent = 101
+    const rejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .send(invalid)
+      .expect(422)
+    expect(rejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'scenario.environment.humidityPercent' },
+    })
+
+    const readOnlyMutation = structuredClone(changed)
+    readOnlyMutation.platforms[0]!.name = '不允许修改的平台'
+    const readOnlyRejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(readOnlyMutation)
+      .expect(422)
+    expect(readOnlyRejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'platforms' },
+    })
+
+    await request(baseUrl)
+      .post('/api/v1/reset')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .send({ confirm: true })
+      .expect(200)
+    const reset = await load().expect(200)
+    expect((reset.body as { data: ScenarioDraft }).data).toMatchObject({
+      revision: 4,
+      config: { scenario: { name: '跨海通联演示', environment: { humidityPercent: 80 } } },
+    })
+  })
+
+  it('rejects missing roles and unknown scenario identifiers', async () => {
+    const { baseUrl } = await startServer()
+
+    const denied = await request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .expect(403)
+    expect(denied.body).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } })
+
+    const missing = await request(baseUrl)
+      .get('/api/v1/scenarios/SCN-NOT-FOUND')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .expect(404)
+    expect(missing.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
   it('returns a typed error with parser details for malformed strict JSON', async () => {

@@ -18,6 +18,7 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "scripts/**/*.ts",
-    "server/**/*.ts"
+    "server/**/*.ts",
+    "src/features/scenarios/scenario-validation.ts"
   ]
 }

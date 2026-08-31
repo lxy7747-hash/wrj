@@ -17,6 +17,7 @@ import {
 } from './auth/projection.js'
 import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest, VITE_ORIGIN } from './http/loopback.js'
+import { ScenarioProjection } from './scenarios/projection.js'
 import { MockProjection } from './state/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 
@@ -308,6 +309,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
   const projection = new MockProjection()
   const auth = new AuthProjection()
+  const scenarios = new ScenarioProjection()
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -430,6 +432,55 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
+   * 返回指定场景的当前内存草稿。
+   * @param req 包含角色提示和场景编号的请求。
+   * @param res 接收场景草稿或类型化错误的响应。
+   * @returns 无返回值。
+   * @remarks 只读取场景投影，不修改草稿修订号。
+   */
+  app.get('/api/v1/scenarios/:scenarioId', (req, res) => {
+    const scenarioId = req.params.scenarioId
+    const requestId = 'REQ-P2-SCENARIO-GET'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_READ', scenarioId) === undefined) return
+
+    const result = scenarios.get(scenarioId)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 保存指定场景的 P2-1 基础、环境和时序参数。
+   * @param req 包含角色提示、场景编号和完整配置的请求。
+   * @param res 接收更新后草稿或字段校验错误的响应。
+   * @returns 无返回值。
+   * @remarks 校验通过时递增场景草稿修订号，其他配置区段保持不变。
+   */
+  app.put('/api/v1/scenarios/:scenarioId', (req, res) => {
+    const scenarioId = req.params.scenarioId
+    const requestId = 'REQ-P2-SCENARIO-PUT'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_UPDATE', scenarioId) === undefined) return
+
+    const result = scenarios.save(scenarioId, req.body)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
    * Returns the current detached user snapshot.
    *
    * @param req - Authorized administrator request.
@@ -546,6 +597,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result: ResetResult = realtime.reset()
     auth.reset()
+    scenarios.reset()
     res.status(200).json(success(result, {
       requestId: result.requestId,
       generatedAt: result.generatedAt,

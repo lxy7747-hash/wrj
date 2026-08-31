@@ -3,6 +3,8 @@ import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import type { ApiSuccess, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
 
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
@@ -25,6 +27,32 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 import App from '../../src/App.vue'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
+import { useScenarioStore } from '../../src/stores/scenario'
+
+function scenarioDraft(): ScenarioDraft {
+  return {
+    config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
+    uiExtensions: { jammers: [], sensors: [] },
+    revision: 4,
+    officialLibraryChanged: false,
+    locked: false,
+  }
+}
+
+function scenarioResponse(draft: ScenarioDraft): Response {
+  const body: ApiSuccess<ScenarioDraft> = {
+    ok: true,
+    data: draft,
+    meta: {
+      requestId: 'REQ-P2-APP',
+      generatedAt: '2026-08-06T08:00:00Z',
+      page: 1,
+      pageSize: 1,
+      total: 1,
+    },
+  }
+  return { ok: true, json: vi.fn().mockResolvedValue(body) } as unknown as Response
+}
 
 describe('App shell', () => {
   afterEach(() => {
@@ -137,10 +165,14 @@ describe('App shell', () => {
     expect(adminWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：admin')
     expect(adminWrapper.get('[data-testid="identity-role"]').text()).toBe('角色：管理员')
 
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
+
     await adminWrapper.get('[data-testid="logout"]').trigger('click')
     await flushPromises()
     expect(auth.principal).toBeNull()
     expect(auth.permissions).toEqual([])
+    expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
     expect(router.currentRoute.value.path).toBe('/login')
     expect(adminWrapper.find('.app-shell').exists()).toBe(false)
     expect(adminWrapper.find('[data-testid="identity-panel"]').exists()).toBe(false)
@@ -159,5 +191,69 @@ describe('App shell', () => {
       .findAll('[src], [href]')
       .filter((node) => /^(?:https?:)?\/\//i.test(node.attributes('src') ?? node.attributes('href') ?? ''))
     expect(externalResources).toHaveLength(0)
+  })
+
+  it('clears a dirty scenario synchronously when authentication is invalidated', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/login')
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
+    const auth = useAuthStore(pinia)
+    const scenario = useScenarioStore(pinia)
+    auth.$patch({
+      principal: {
+        userId: 'USR-OPERATOR',
+        username: 'operator',
+        role: 'OPERATOR',
+        permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
+      },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
+    })
+    scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Permissions offline')))
+
+    await expect(auth.refreshPermissions()).resolves.toBe(false)
+
+    expect(auth.principal).toBeNull()
+    expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
+    wrapper.unmount()
+  })
+
+  it.each(['load', 'save'] as const)('ignores a delayed scenario %s response after logout', async (operation) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({
+      principal: {
+        userId: 'USR-OPERATOR',
+        username: 'operator',
+        role: 'OPERATOR',
+        permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
+      },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
+    })
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/situation')
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
+    const scenario = useScenarioStore(pinia)
+    if (operation === 'save') scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
+    let resolveResponse!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>((resolve) => { resolveResponse = resolve })))
+
+    const pending = operation === 'load' ? scenario.loadScenario() : scenario.saveScenario()
+    await wrapper.get('[data-testid="logout"]').trigger('click')
+    expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
+
+    const lateDraft = scenarioDraft()
+    lateDraft.revision = 5
+    resolveResponse(scenarioResponse(lateDraft))
+    await expect(pending).resolves.toBe(false)
+    expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
+    wrapper.unmount()
   })
 })

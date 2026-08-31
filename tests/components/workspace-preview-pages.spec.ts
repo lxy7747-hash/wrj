@@ -12,16 +12,14 @@ import WorkspacePreview from '../../src/components/WorkspacePreview.vue'
 import BatchesPage from '../../src/pages/batches.vue'
 import ReportsPage from '../../src/pages/reports.vue'
 import ReplaysPage from '../../src/pages/replays.vue'
-import ScenariosPage from '../../src/pages/scenarios.vue'
 import TraceabilityPage from '../../src/pages/traceability.vue'
 
 describe('工作区预览页面', () => {
-  it('将五个薄页面统一委托给 WorkspacePreview', () => {
+  it('将四个薄页面统一委托给 WorkspacePreview', () => {
     const pages = [
       BatchesPage,
       ReportsPage,
       ReplaysPage,
-      ScenariosPage,
       TraceabilityPage,
     ]
 
