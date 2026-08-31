@@ -44,7 +44,7 @@ describe('fixture projection', () => {
     const cleanSnapshot = projection.snapshot()
 
     expect(cleanLoad.scenario.scenario.name).toBe('跨海通联演示')
-    expect(cleanLoad.frame.platforms[0].name).toBe('公共服务平台后方指挥节点')
+    expect(cleanLoad.frame.platforms[0].name).toBe('后方指挥节点')
     expect(cleanSnapshot).toEqual(cleanLoad)
   })
 

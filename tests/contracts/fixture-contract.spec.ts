@@ -50,7 +50,7 @@ describe('deterministic fixture contract', () => {
 
   it('keeps Taiwan-frame telemetry aligned with scenario positions and waypoint deltas', () => {
     const fixture = fixtures as DeterministicFixtureSet
-    const expectedCoordinates = {
+    const expectedCoreCoordinates = {
       'CMD-01': { longitude: 118.15, latitude: 24.45 },
       'UAV-01': { longitude: 119.35, latitude: 24.70 },
       'GCC-01': { longitude: 118.65, latitude: 23.55 },
@@ -70,9 +70,23 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-08-28.1')
-    expect(frameCoordinates).toEqual(expectedCoordinates)
-    expect(scenarioCoordinates).toEqual(expectedCoordinates)
+    expect(fixture.fixtureVersion).toBe('2026-08-31.5')
+    expect(frameCoordinates).toEqual(scenarioCoordinates)
+    Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
+      expect(frameCoordinates[platformId]).toEqual(coordinates)
+    })
+
+    const businessTypes = new Set([
+      'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'AIRBORNE_MISSION_CLUSTER',
+    ])
+    const businessPlatforms = fixture.scenario.platforms.filter(({ type }) => businessTypes.has(type))
+    const airbornePlatforms = businessPlatforms.filter(({ type }) => type === 'AIRBORNE_MISSION_CLUSTER')
+    expect(businessPlatforms).toHaveLength(6)
+    expect(airbornePlatforms.map(({ id }) => id)).toEqual(['AIR-01', 'AIR-02', 'AIR-03'])
+    expect(fixture.scenario.jammers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'JAM-WB-01-TX', platformId: 'STN-01' }),
+      expect.objectContaining({ id: 'JAM-SPOT-01-TX', platformId: 'AIR-03' }),
+    ]))
 
     const uav = fixture.scenario.platforms.find(({ id }) => id === 'UAV-01')
     const air = fixture.scenario.platforms.find(({ id }) => id === 'AIR-01')

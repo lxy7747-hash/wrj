@@ -10,12 +10,14 @@ import {
 import {
   createSituationMapController,
   type MapLayer,
+  type SituationMapFocusTarget,
   type SituationMapController,
 } from './situation-map-controller'
 
 const props = defineProps<{
   links: SituationLinkView[]
   selectedNodeId: string
+  focusTarget: SituationMapFocusTarget | null
 }>()
 
 const emit = defineEmits<{
@@ -79,14 +81,42 @@ function handleZoomChange(nextZoom: number): void {
 }
 
 /**
+ * 设置一个地图图层的可见性。
+ * @param layer 要设置的图层名称。
+ * @param visible 是否显示该图层。
+ * @returns 无返回值。
+ * @sideeffect 修改组件内图层状态，并同步 Leaflet 图层组。
+ */
+function setLayerVisible(layer: MapLayer, visible: boolean): void {
+  if (layers[layer] === visible) return
+  layers[layer] = visible
+  mapController.value?.setLayerVisible(layer, visible)
+}
+
+/**
  * 切换一个地图图层的可见性。
  * @param layer 要切换的图层名称。
  * @returns 无返回值。
  * @sideeffect 修改组件内图层状态，并同步 Leaflet 图层组。
  */
 function toggleLayer(layer: MapLayer): void {
-  layers[layer] = !layers[layer]
-  mapController.value?.setLayerVisible(layer, layers[layer])
+  setLayerVisible(layer, !layers[layer])
+}
+
+/**
+ * 执行左侧摘要列表发出的地图定位请求。
+ * @param target 节点、链路或干扰设备定位目标。
+ * @returns 无返回值。
+ * @sideeffect 确保对应业务图层可见，并调用 Leaflet 控制器调整地图视图。
+ */
+function focusTargetOnMap(target: SituationMapFocusTarget): void {
+  if (target.kind === 'node') setLayerVisible('nodes', true)
+  if (target.kind === 'link') setLayerVisible('links', true)
+  if (target.kind === 'interference') {
+    setLayerVisible('nodes', true)
+    setLayerVisible('interference', true)
+  }
+  mapController.value?.focusTarget(target)
 }
 
 /**
@@ -148,6 +178,7 @@ onMounted(() => {
     onSelectLink: handleSelectLink,
     onZoomChange: handleZoomChange,
   })
+  if (props.focusTarget) focusTargetOnMap(props.focusTarget)
 })
 
 /**
@@ -161,14 +192,21 @@ watch(() => props.links, (links) => {
 })
 
 /**
- * 在选中节点变化时刷新 Leaflet 节点选中态。
- * @param platformId 父组件传入的最新平台唯一标识。
+ * 统一同步父组件的节点选择与摘要定位状态。
  * @returns 无返回值。
- * @sideeffect 重建控制器中的节点图层以更新选中样式。
+ * @sideeffect 更新节点选中样式，或恢复目标图层并调整地图视图。
  */
-watch(() => props.selectedNodeId, (platformId) => {
-  mapController.value?.setSelectedNodeId(platformId)
-})
+watch(
+  [() => props.selectedNodeId, () => props.focusTarget],
+  ([platformId, target], [previousPlatformId, previousTarget]) => {
+    // 同一批次的摘要定位已包含选中态，优先处理它以避免重复重绘。
+    if (target && target !== previousTarget) {
+      focusTargetOnMap(target)
+      return
+    }
+    if (platformId !== previousPlatformId) mapController.value?.setSelectedNodeId(platformId)
+  },
+)
 
 /**
  * 在组件卸载前释放 Leaflet 地图资源。
@@ -405,12 +443,12 @@ onBeforeUnmount(() => {
 .offline-map__view-controls {
   position: absolute;
   z-index: 1001;
-  right: var(--telemetry-panel-clearance, 0.75rem);
+  right: var(--view-controls-clearance, var(--telemetry-panel-clearance, 0.75rem));
   bottom: 0.75rem;
   display: flex;
   flex-direction: column;
   width: max-content;
-  max-width: calc(100% - var(--telemetry-panel-clearance, 0.75rem) - 0.75rem);
+  max-width: calc(100% - var(--view-controls-clearance, var(--telemetry-panel-clearance, 0.75rem)) - 0.75rem);
   align-items: stretch;
   gap: 0.25rem;
   padding: 0.25rem;
@@ -511,7 +549,7 @@ onBeforeUnmount(() => {
   position: absolute;
   z-index: 1001;
   bottom: 0.75rem;
-  left: var(--scene-panel-clearance, 0.75rem);
+  left: var(--legend-clearance, var(--scene-panel-clearance, 0.75rem));
   width: max-content;
   max-width: calc(100% - 1.5rem);
   padding: 0.625rem 0.875rem;
@@ -613,6 +651,21 @@ onBeforeUnmount(() => {
 
 :deep(.situation-map-node-marker--selected) {
   z-index: 700;
+}
+
+:deep(.situation-map-node-marker--selected .situation-map-node__glyph) {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 2px solid #f5b942;
+  border-radius: 50%;
+  background: rgba(245, 185, 66, 0.2);
+}
+
+:deep(.situation-map-link--selected),
+:deep(.situation-map-interference--selected) {
+  filter: drop-shadow(0 0 4px #f5b942) drop-shadow(0 0 8px rgba(245, 185, 66, 0.9));
 }
 
 :deep(.situation-map-node__glyph) {

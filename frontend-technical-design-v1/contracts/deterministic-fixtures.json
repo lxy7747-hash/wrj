@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-08-28.1",
+  "fixtureVersion": "2026-08-31.5",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -132,7 +132,7 @@
     "platforms": [
       {
         "id": "CMD-01",
-        "name": "公共服务平台后方指挥节点",
+        "name": "后方指挥节点",
         "type": "REAR_COMMAND_NODE",
         "category": "ground",
         "initialPosition": {
@@ -142,10 +142,9 @@
         },
         "waypoints": [],
         "linkIds": [
-          "L-MW-01",
-          "L-DL-03",
-          "L-SAT-02",
-          "L-LASER-04"
+          "L-LASER-04",
+          "L-SAT-05",
+          "L-DL-05"
         ],
         "sensorIds": [],
         "jammerIds": []
@@ -157,13 +156,13 @@
         "category": "air",
         "initialPosition": {
           "longitude": 119.35,
-          "latitude": 24.70,
+          "latitude": 24.7,
           "altitude": 3000
         },
         "waypoints": [
           {
             "longitude": 119.55,
-            "latitude": 24.80,
+            "latitude": 24.8,
             "altitude": 3000,
             "speed": 45,
             "arrivalTime": 600
@@ -173,7 +172,9 @@
           "L-MW-01",
           "L-DL-03",
           "L-SAT-02",
-          "L-LASER-04"
+          "L-LASER-04",
+          "L-MW-05",
+          "L-MW-06"
         ],
         "sensorIds": [],
         "jammerIds": []
@@ -189,13 +190,18 @@
           "altitude": 20
         },
         "waypoints": [],
-        "linkIds": [],
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-DL-05",
+          "L-DL-06"
+        ],
         "sensorIds": [],
         "jammerIds": []
       },
       {
         "id": "AIR-01",
-        "name": "空中无人作战集群",
+        "name": "空中无人作业节点 U01",
         "type": "AIRBORNE_MISSION_CLUSTER",
         "category": "air",
         "initialPosition": {
@@ -212,9 +218,49 @@
             "arrivalTime": 900
           }
         ],
-        "linkIds": [],
+        "linkIds": [
+          "L-MW-05",
+          "L-DL-06",
+          "L-DL-07"
+        ],
         "sensorIds": [],
         "jammerIds": []
+      },
+      {
+        "id": "AIR-02",
+        "name": "空中无人作业节点 U02",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "category": "air",
+        "initialPosition": {
+          "longitude": 119.67,
+          "latitude": 23.95,
+          "altitude": 3300
+        },
+        "waypoints": [],
+        "linkIds": [
+          "L-DL-07"
+        ],
+        "sensorIds": [],
+        "jammerIds": []
+      },
+      {
+        "id": "AIR-03",
+        "name": "空中无人作业节点 U03",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "category": "air",
+        "initialPosition": {
+          "longitude": 119.99,
+          "latitude": 24.43,
+          "altitude": 3400
+        },
+        "waypoints": [],
+        "linkIds": [
+          "L-MW-06"
+        ],
+        "sensorIds": [],
+        "jammerIds": [
+          "JAM-SPOT-01-TX"
+        ]
       },
       {
         "id": "SAT-01",
@@ -227,7 +273,10 @@
           "altitude": 35786000
         },
         "waypoints": [],
-        "linkIds": [],
+        "linkIds": [
+          "L-SAT-02",
+          "L-SAT-05"
+        ],
         "sensorIds": [],
         "jammerIds": []
       },
@@ -247,8 +296,7 @@
           "ESM-01"
         ],
         "jammerIds": [
-          "JAM-WB-01-TX",
-          "JAM-SPOT-01-TX"
+          "JAM-WB-01-TX"
         ]
       }
     ],
@@ -256,8 +304,8 @@
       {
         "id": "L-MW-01",
         "type": "MICROWAVE",
-        "sourcePlatformId": "CMD-01",
-        "targetPlatformId": "UAV-01",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "GCC-01",
         "frequency": 4500,
         "bandwidth": 20,
         "txPower": 100,
@@ -274,7 +322,7 @@
         "id": "L-DL-03",
         "type": "DATALINK",
         "sourcePlatformId": "UAV-01",
-        "targetPlatformId": "CMD-01",
+        "targetPlatformId": "GCC-01",
         "frequency": 2200,
         "bandwidth": 10,
         "txPower": 50,
@@ -290,7 +338,7 @@
       {
         "id": "L-SAT-02",
         "type": "SAT",
-        "sourcePlatformId": "CMD-01",
+        "sourcePlatformId": "SAT-01",
         "targetPlatformId": "UAV-01",
         "frequency": 12000,
         "bandwidth": 25,
@@ -307,8 +355,8 @@
       {
         "id": "L-LASER-04",
         "type": "LASER",
-        "sourcePlatformId": "UAV-01",
-        "targetPlatformId": "CMD-01",
+        "sourcePlatformId": "CMD-01",
+        "targetPlatformId": "UAV-01",
         "frequency": 193500000,
         "bandwidth": 1000,
         "txPower": 20,
@@ -319,7 +367,109 @@
         "modulation": "QPSK",
         "berThreshold": 0.000001,
         "dataRate": 100,
-        "direction": "REVERSE"
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-SAT-05",
+        "type": "SAT",
+        "sourcePlatformId": "SAT-01",
+        "targetPlatformId": "CMD-01",
+        "frequency": 12000,
+        "bandwidth": 25,
+        "txPower": 80,
+        "antennaGain": {
+          "tx": 25,
+          "rx": 20
+        },
+        "modulation": "BPSK",
+        "berThreshold": 0.000005,
+        "dataRate": 15,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-MW-05",
+        "type": "MICROWAVE",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "AIR-01",
+        "frequency": 4500,
+        "bandwidth": 20,
+        "txPower": 100,
+        "antennaGain": {
+          "tx": 18,
+          "rx": 12
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 20,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-MW-06",
+        "type": "MICROWAVE",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "AIR-03",
+        "frequency": 4500,
+        "bandwidth": 20,
+        "txPower": 100,
+        "antennaGain": {
+          "tx": 18,
+          "rx": 12
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 20,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-DL-05",
+        "type": "DATALINK",
+        "sourcePlatformId": "CMD-01",
+        "targetPlatformId": "GCC-01",
+        "frequency": 2200,
+        "bandwidth": 10,
+        "txPower": 50,
+        "antennaGain": {
+          "tx": 12,
+          "rx": 18
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 10,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-DL-06",
+        "type": "DATALINK",
+        "sourcePlatformId": "GCC-01",
+        "targetPlatformId": "AIR-01",
+        "frequency": 2200,
+        "bandwidth": 10,
+        "txPower": 50,
+        "antennaGain": {
+          "tx": 12,
+          "rx": 18
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 10,
+        "direction": "FORWARD"
+      },
+      {
+        "id": "L-DL-07",
+        "type": "DATALINK",
+        "sourcePlatformId": "AIR-01",
+        "targetPlatformId": "AIR-02",
+        "frequency": 2200,
+        "bandwidth": 10,
+        "txPower": 50,
+        "antennaGain": {
+          "tx": 12,
+          "rx": 18
+        },
+        "modulation": "QPSK",
+        "berThreshold": 0.00001,
+        "dataRate": 10,
+        "direction": "FORWARD"
       }
     ],
     "jammers": [
@@ -335,7 +485,7 @@
       },
       {
         "id": "JAM-SPOT-01-TX",
-        "platformId": "STN-01",
+        "platformId": "AIR-03",
         "type": "SPOT",
         "defaultPower": 50,
         "frequency": 4500,
@@ -420,17 +570,16 @@
     "platforms": [
       {
         "platformId": "CMD-01",
-        "name": "公共服务平台后方指挥节点",
+        "name": "后方指挥节点",
         "type": "REAR_COMMAND_NODE",
         "longitude": 118.15,
         "latitude": 24.45,
         "altitude": 20,
         "speed": 0,
         "linkIds": [
-          "L-MW-01",
-          "L-DL-03",
-          "L-SAT-02",
-          "L-LASER-04"
+          "L-LASER-04",
+          "L-SAT-05",
+          "L-DL-05"
         ],
         "jammers": [],
         "updatedAt": 42
@@ -440,14 +589,16 @@
         "name": "高空前出中继节点",
         "type": "FORWARD_RELAY_NODE",
         "longitude": 119.35,
-        "latitude": 24.70,
+        "latitude": 24.7,
         "altitude": 3000,
         "speed": 45,
         "linkIds": [
           "L-MW-01",
           "L-DL-03",
           "L-SAT-02",
-          "L-LASER-04"
+          "L-LASER-04",
+          "L-MW-05",
+          "L-MW-06"
         ],
         "jammers": [],
         "updatedAt": 42
@@ -460,20 +611,68 @@
         "latitude": 23.55,
         "altitude": 20,
         "speed": 0,
-        "linkIds": [],
+        "linkIds": [
+          "L-MW-01",
+          "L-DL-03",
+          "L-DL-05",
+          "L-DL-06"
+        ],
         "jammers": [],
         "updatedAt": 42
       },
       {
         "platformId": "AIR-01",
-        "name": "空中无人作战集群",
+        "name": "空中无人作业节点 U01",
         "type": "AIRBORNE_MISSION_CLUSTER",
         "longitude": 120.15,
         "latitude": 23.95,
         "altitude": 3200,
         "speed": 42,
-        "linkIds": [],
+        "linkIds": [
+          "L-MW-05",
+          "L-DL-06",
+          "L-DL-07"
+        ],
         "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "AIR-02",
+        "name": "空中无人作业节点 U02",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "longitude": 119.67,
+        "latitude": 23.95,
+        "altitude": 3300,
+        "speed": 42,
+        "linkIds": [
+          "L-DL-07"
+        ],
+        "jammers": [],
+        "updatedAt": 42
+      },
+      {
+        "platformId": "AIR-03",
+        "name": "空中无人作业节点 U03",
+        "type": "AIRBORNE_MISSION_CLUSTER",
+        "longitude": 119.99,
+        "latitude": 24.43,
+        "altitude": 3400,
+        "speed": 42,
+        "linkIds": [
+          "L-MW-06"
+        ],
+        "jammers": [
+          {
+            "time": 42,
+            "jammerId": "JAM-SPOT-01-TX",
+            "platformId": "AIR-03",
+            "targetPlatform": "CMD-01",
+            "power": 50,
+            "frequency": 4500,
+            "bandwidth": 5,
+            "active": false
+          }
+        ],
         "updatedAt": 42
       },
       {
@@ -484,7 +683,10 @@
         "latitude": 25.75,
         "altitude": 35786000,
         "speed": 0,
-        "linkIds": [],
+        "linkIds": [
+          "L-SAT-02",
+          "L-SAT-05"
+        ],
         "jammers": [],
         "updatedAt": 42
       },
@@ -507,16 +709,6 @@
             "frequency": 2200,
             "bandwidth": 40,
             "active": true
-          },
-          {
-            "time": 42,
-            "jammerId": "JAM-SPOT-01-TX",
-            "platformId": "STN-01",
-            "targetPlatform": "CMD-01",
-            "power": 50,
-            "frequency": 4500,
-            "bandwidth": 5,
-            "active": false
           }
         ],
         "updatedAt": 42
@@ -526,8 +718,8 @@
       {
         "linkId": "L-MW-01",
         "time": 42,
-        "sourcePlatform": "CMD-01",
-        "destPlatform": "UAV-01",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "GCC-01",
         "linkType": "MICROWAVE",
         "frequency": 4500,
         "bandwidth": 20,
@@ -549,7 +741,7 @@
         "linkId": "L-DL-03",
         "time": 42,
         "sourcePlatform": "UAV-01",
-        "destPlatform": "CMD-01",
+        "destPlatform": "GCC-01",
         "linkType": "DATALINK",
         "frequency": 2200,
         "bandwidth": 10,
@@ -575,7 +767,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
-        "consecutiveFrames": 5,
+        "consecutiveFrames": 4,
         "ageMs": 0
       },
       {
@@ -585,6 +777,78 @@
         "canonicalStatus": "DOWN",
         "reason": "BER_THRESHOLD_AND_HYSTERESIS",
         "consecutiveFrames": 3,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-SAT-02",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-LASER-04",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-SAT-05",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-MW-05",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-MW-06",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-DL-05",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-DL-06",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
+        "ageMs": 0
+      },
+      {
+        "linkId": "L-DL-07",
+        "frameId": "F-00042",
+        "status": "UP",
+        "canonicalStatus": "UP",
+        "reason": "BER_BELOW_THRESHOLD",
+        "consecutiveFrames": 4,
         "ageMs": 0
       }
     ],
@@ -675,9 +939,9 @@
     },
     "linkSummaries": [
       {
-        "linkKey": "CMD-01>UAV-01>MICROWAVE",
-        "sourcePlatform": "CMD-01",
-        "destPlatform": "UAV-01",
+        "linkKey": "UAV-01>GCC-01>MICROWAVE",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "GCC-01",
         "linkType": "MICROWAVE",
         "currentSnr": 18.62,
         "currentBer": 3.2e-7,
@@ -685,9 +949,9 @@
         "updatedAt": 42
       },
       {
-        "linkKey": "UAV-01>CMD-01>DATALINK",
+        "linkKey": "UAV-01>GCC-01>DATALINK",
         "sourcePlatform": "UAV-01",
-        "destPlatform": "CMD-01",
+        "destPlatform": "GCC-01",
         "linkType": "DATALINK",
         "currentSnr": 7.1,
         "currentBer": 0.00024,
@@ -695,8 +959,8 @@
         "updatedAt": 42
       },
       {
-        "linkKey": "CMD-01>UAV-01>SAT",
-        "sourcePlatform": "CMD-01",
+        "linkKey": "SAT-01>UAV-01>SAT",
+        "sourcePlatform": "SAT-01",
         "destPlatform": "UAV-01",
         "linkType": "SAT",
         "currentSnr": 15.4,
@@ -705,12 +969,72 @@
         "updatedAt": 42
       },
       {
-        "linkKey": "UAV-01>CMD-01>LASER",
-        "sourcePlatform": "UAV-01",
-        "destPlatform": "CMD-01",
+        "linkKey": "CMD-01>UAV-01>LASER",
+        "sourcePlatform": "CMD-01",
+        "destPlatform": "UAV-01",
         "linkType": "LASER",
         "currentSnr": 24.8,
         "currentBer": 8e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-SAT-05",
+        "sourcePlatform": "SAT-01",
+        "destPlatform": "CMD-01",
+        "linkType": "SAT",
+        "currentSnr": 14.8,
+        "currentBer": 0.0000014,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-MW-05",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "AIR-01",
+        "linkType": "MICROWAVE",
+        "currentSnr": 17.9,
+        "currentBer": 4e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-MW-06",
+        "sourcePlatform": "UAV-01",
+        "destPlatform": "AIR-03",
+        "linkType": "MICROWAVE",
+        "currentSnr": 17.4,
+        "currentBer": 5e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-DL-05",
+        "sourcePlatform": "CMD-01",
+        "destPlatform": "GCC-01",
+        "linkType": "DATALINK",
+        "currentSnr": 16.8,
+        "currentBer": 7e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-DL-06",
+        "sourcePlatform": "GCC-01",
+        "destPlatform": "AIR-01",
+        "linkType": "DATALINK",
+        "currentSnr": 15.9,
+        "currentBer": 9e-7,
+        "status": "UP",
+        "updatedAt": 42
+      },
+      {
+        "linkKey": "L-DL-07",
+        "sourcePlatform": "AIR-01",
+        "destPlatform": "AIR-02",
+        "linkType": "DATALINK",
+        "currentSnr": 14.7,
+        "currentBer": 0.0000012,
         "status": "UP",
         "updatedAt": 42
       }

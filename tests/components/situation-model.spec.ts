@@ -12,13 +12,13 @@ describe('态势固定帧模型', () => {
   it('使指标、链路和事件保持在同一固定帧', () => {
     expect(SITUATION_FRAME_F00042.frameId).toBe('F-00042')
     expect(SITUATION_METRICS_F00042.frameId).toBe('F-00042')
-    expect(SITUATION_LINKS_F00042).toHaveLength(4)
+    expect(SITUATION_LINKS_F00042).toHaveLength(10)
     expect(SITUATION_LINKS_F00042.every((link) => link.frameId === 'F-00042')).toBe(true)
     expect(SITUATION_EVENTS_F00042.every((event) => event.frameId === 'F-00042')).toBe(true)
     expect(SITUATION_METRICS_F00042).toMatchObject({
-      businessNodeCount: 4,
+      businessNodeCount: 6,
       supportingEntityCount: 2,
-      upLinkCount: 3,
+      upLinkCount: 9,
       degradedLinkCount: 1,
       downLinkCount: 0,
       activeJammerCount: 1,
@@ -48,6 +48,23 @@ describe('态势固定帧模型', () => {
       consecutiveFrames: 4,
       ageMs: 0,
     })
+  })
+
+  it('保持参考图中的代表节点链路拓扑', () => {
+    expect(SITUATION_LINKS_F00042.map((link) => [
+      link.linkId, link.type, link.sourceName, link.destinationName,
+    ])).toEqual([
+      ['L-MW-01', 'MICROWAVE', '高空前出中继节点', '地面无人集群指挥车'],
+      ['L-DL-03', 'DATALINK', '高空前出中继节点', '地面无人集群指挥车'],
+      ['L-SAT-02', 'SAT', '通信卫星', '高空前出中继节点'],
+      ['L-LASER-04', 'LASER', '后方指挥节点', '高空前出中继节点'],
+      ['L-SAT-05', 'SAT', '通信卫星', '后方指挥节点'],
+      ['L-MW-05', 'MICROWAVE', '高空前出中继节点', '空中无人作业节点 U01'],
+      ['L-MW-06', 'MICROWAVE', '高空前出中继节点', '空中无人作业节点 U03'],
+      ['L-DL-05', 'DATALINK', '后方指挥节点', '地面无人集群指挥车'],
+      ['L-DL-06', 'DATALINK', '地面无人集群指挥车', '空中无人作业节点 U01'],
+      ['L-DL-07', 'DATALINK', '空中无人作业节点 U01', '空中无人作业节点 U02'],
+    ])
   })
 
   it('提供稳定的单位格式', () => {

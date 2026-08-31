@@ -14,6 +14,11 @@ import {
 
 export type MapLayer = 'nodes' | 'links' | 'interference' | 'grid'
 
+export interface SituationMapFocusTarget {
+  kind: 'node' | 'link' | 'interference'
+  targetId: string
+}
+
 export interface SituationMapControllerOptions {
   container: HTMLElement
   links: SituationLinkView[]
@@ -39,6 +44,14 @@ export interface SituationMapController {
    * @sideeffect 重建节点图层以刷新选中态样式。
    */
   setSelectedNodeId: (platformId: string) => void
+
+  /**
+   * 将地图视图定位到摘要列表指定的业务对象。
+   * @param target 节点、链路或干扰设备的定位请求。
+   * @returns 无返回值。
+   * @sideeffect 节点和待机干扰设备使用中心定位，链路和活动干扰范围使用边界自适应。
+   */
+  focusTarget: (target: SituationMapFocusTarget) => void
 
   /**
    * 设置一个业务图层是否可见。
@@ -333,6 +346,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   })
   let currentLinks = [...options.links]
   let selectedNodeId = options.selectedNodeId
+  let focusedTarget: SituationMapFocusTarget | null = null
   let currentTheme: MapTheme = MAP_CONFIG.defaults.theme
   let currentBasemap: MapBasemap = MAP_CONFIG.defaults.basemap
 
@@ -347,6 +361,55 @@ export function createSituationMapController(options: SituationMapControllerOpti
     links: true,
     interference: true,
     grid: true,
+  }
+
+  /**
+   * 处理地图中的节点选择。
+   * @param platformId 被选择的平台唯一标识。
+   * @returns 无返回值。
+   * @sideeffect 清除其他业务对象高亮、重绘节点选中态并通知上层组件。
+   */
+  function handleMapNodeSelect(platformId: string): void {
+    selectedNodeId = platformId
+    focusedTarget = { kind: 'node', targetId: platformId }
+    renderBusinessLayers()
+    options.onSelectNode(platformId)
+  }
+
+  /**
+   * 处理地图中的链路选择。
+   * @param link 被选择的链路视图。
+   * @returns 无返回值。
+   * @sideeffect 清除其他业务对象高亮、重绘链路选中态并通知上层组件。
+   */
+  function handleMapLinkSelect(link: SituationLinkView): void {
+    focusedTarget = { kind: 'link', targetId: link.linkId }
+    renderBusinessLayers()
+    options.onSelectLink(link)
+  }
+
+  /** 根据当前联动目标重绘节点、链路和干扰范围的唯一高亮态。 */
+  const renderBusinessLayers = (): void => {
+    let highlightedNodeId = selectedNodeId
+    if (focusedTarget?.kind === 'link') highlightedNodeId = ''
+    if (focusedTarget?.kind === 'node') highlightedNodeId = focusedTarget.targetId
+    if (focusedTarget?.kind === 'interference') {
+      highlightedNodeId = SITUATION_FRAME_F00042.platforms.find((platform) => (
+        platform.jammers.some((jammer) => jammer.jammerId === focusedTarget?.targetId)
+      ))?.platformId ?? selectedNodeId
+    }
+
+    renderInterference(
+      layerGroups.interference,
+      focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '',
+    )
+    renderLinks(
+      layerGroups.links,
+      currentLinks,
+      focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
+      handleMapLinkSelect,
+    )
+    renderNodes(layerGroups.nodes, highlightedNodeId, handleMapNodeSelect)
   }
 
   const leaflet = L as LeafletWithVectorGrid
@@ -375,9 +438,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   })
 
   renderGrid(layerGroups.grid, currentTheme)
-  renderInterference(layerGroups.interference)
-  renderLinks(layerGroups.links, currentLinks, options.onSelectLink)
-  renderNodes(layerGroups.nodes, selectedNodeId, options.onSelectNode)
+  renderBusinessLayers()
 
   const layerOrder: MapLayer[] = ['grid', 'interference', 'links', 'nodes']
   layerOrder.forEach((layer) => layerGroups[layer].addTo(map as L.Map))
@@ -406,13 +467,73 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setLinks(links): void {
       if (!map) return
       currentLinks = [...links]
-      renderLinks(layerGroups.links, currentLinks, options.onSelectLink)
+      renderLinks(
+        layerGroups.links,
+        currentLinks,
+        focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
+        handleMapLinkSelect,
+      )
     },
 
     setSelectedNodeId(platformId): void {
-      if (!map || selectedNodeId === platformId) return
+      if (!map || (selectedNodeId === platformId && focusedTarget === null)) return
       selectedNodeId = platformId
-      renderNodes(layerGroups.nodes, selectedNodeId, options.onSelectNode)
+      focusedTarget = null
+      renderBusinessLayers()
+    },
+
+    focusTarget(target): void {
+      if (!map) return
+      const focusZoom = MAP_CONFIG.defaults.zoom
+      const animation = { animate: true, duration: 0.45 }
+
+      if (target.kind === 'node') {
+        const platform = SITUATION_FRAME_F00042.platforms.find(
+          (candidate) => candidate.platformId === target.targetId,
+        )
+        if (platform) {
+          selectedNodeId = platform.platformId
+          focusedTarget = target
+          renderBusinessLayers()
+          map.setView(pointForPlatform(platform), focusZoom, animation)
+        }
+        return
+      }
+
+      if (target.kind === 'link') {
+        const link = currentLinks.find((candidate) => candidate.linkId === target.targetId)
+        const points = link ? sampleLinkCurve(link) : []
+        if (points.length > 0) {
+          focusedTarget = target
+          renderBusinessLayers()
+          map.fitBounds(L.latLngBounds(points), {
+            padding: [...MAP_CONFIG.fitPadding],
+            maxZoom: focusZoom,
+            ...animation,
+          })
+        }
+        return
+      }
+
+      const platform = SITUATION_FRAME_F00042.platforms.find((candidate) => (
+        candidate.jammers.some((jammer) => jammer.jammerId === target.targetId)
+      ))
+      const jammer = platform?.jammers.find((candidate) => candidate.jammerId === target.targetId)
+      if (!platform || !jammer) return
+
+      selectedNodeId = platform.platformId
+      focusedTarget = target
+      renderBusinessLayers()
+      const center = L.latLng(pointForPlatform(platform))
+      if (jammer.active) {
+        map.fitBounds(center.toBounds(MAP_CONFIG.activeInterferenceRadiusMeters * 2), {
+          padding: [...MAP_CONFIG.fitPadding],
+          maxZoom: focusZoom,
+          ...animation,
+        })
+        return
+      }
+      map.setView(center, focusZoom, animation)
     },
 
     setLayerVisible(layer, visible): void {
@@ -536,6 +657,7 @@ function bindMarkerKeyboardSelection(marker: L.Marker, onSelect: () => void): vo
  * @sideeffect 创建新的 DOM 节点，不修改传入平台数据。
  */
 function createNodeIconContent(platform: SituationPlatform, selected: boolean): HTMLElement {
+  const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
   const root = document.createElement('div')
   root.className = 'situation-map-node'
   root.style.display = 'flex'
@@ -556,6 +678,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   name.textContent = platform.type === 'COMMUNICATION_SATELLITE'
     ? `${platform.name}（轨道示意）`
     : platform.name
+  name.style.display = compact ? 'none' : 'block'
   name.style.marginTop = '3px'
   name.style.color = '#d7e8f3'
   name.style.fontSize = '12px'
@@ -565,7 +688,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const id = document.createElement('span')
   id.className = 'situation-map-node__id'
-  id.textContent = platform.platformId
+  id.textContent = compact ? platform.platformId.replace('AIR-', 'U') : platform.platformId
   id.style.color = '#7f9aad'
   id.style.fontFamily = 'Consolas, monospace'
   id.style.fontSize = '12px'
@@ -593,6 +716,7 @@ function renderNodes(
 
   SITUATION_FRAME_F00042.platforms.forEach((platform) => {
     const selected = platform.platformId === selectedNodeId
+    const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
     const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
     const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
     const tooltip = document.createElement('span')
@@ -604,8 +728,8 @@ function renderNodes(
         className: selected
           ? 'situation-map-node-marker situation-map-node-marker--selected'
           : 'situation-map-node-marker',
-        iconSize: [160, 52],
-        iconAnchor: [80, 16],
+        iconSize: compact ? [44, 40] : [160, 52],
+        iconAnchor: compact ? [22, 16] : [80, 16],
         tooltipAnchor: [0, -16],
       }),
       keyboard: true,
@@ -712,6 +836,7 @@ function sampleLinkCurve(link: SituationLinkView): L.LatLngTuple[] {
  * 重建链路曲线和键盘命中点。
  * @param group 链路专用图层组。
  * @param links 当前要展示的链路列表。
+ * @param selectedLinkId 当前联动选中的链路标识。
  * @param onSelectLink 链路点击或键盘确认时的回调。
  * @returns 无返回值。
  * @sideeffect 清空并向图层组添加曲线、提示和透明键盘标记。
@@ -719,6 +844,7 @@ function sampleLinkCurve(link: SituationLinkView): L.LatLngTuple[] {
 function renderLinks(
   group: L.LayerGroup,
   links: SituationLinkView[],
+  selectedLinkId: string,
   onSelectLink: (link: SituationLinkView) => void,
 ): void {
   group.clearLayers()
@@ -726,6 +852,7 @@ function renderLinks(
   links.forEach((link) => {
     const points = sampleLinkCurve(link)
     if (points.length === 0) return
+    const selected = link.linkId === selectedLinkId
 
     const accessibleName = `${LINK_TYPE_LABELS[link.type]}，${link.sourceName}至${link.destinationName}，${LINK_STATUS_LABELS[link.status]}`
     const tooltip = document.createElement('span')
@@ -733,6 +860,11 @@ function renderLinks(
 
     const line = L.polyline(points, {
       ...linkStyle(link),
+      ...(selected ? {
+        weight: 6,
+        opacity: 1,
+        className: 'situation-map-link--selected',
+      } : {}),
       bubblingMouseEvents: false,
       interactive: true,
     })
@@ -769,27 +901,33 @@ function renderLinks(
 /**
  * 构建活动干扰范围图层。
  * @param group 干扰范围专用图层组。
+ * @param selectedJammerId 当前联动选中的干扰设备标识。
  * @returns 无返回值。
  * @sideeffect 清空并向图层组添加固定半径的活动干扰圈和永久标签。
  */
-function renderInterference(group: L.LayerGroup): void {
+function renderInterference(group: L.LayerGroup, selectedJammerId: string): void {
   group.clearLayers()
 
   SITUATION_FRAME_F00042.platforms
     .filter((platform) => platform.jammers.some((jammer) => jammer.active))
     .forEach((platform) => {
+      const selected = platform.jammers.some((jammer) => (
+        jammer.active && jammer.jammerId === selectedJammerId
+      ))
+      const color = selected ? '#f5b942' : '#ff526d'
       const label = document.createElement('span')
-      label.textContent = '活动干扰范围（示意）'
+      label.textContent = selected ? '已选：活动干扰范围（示意）' : '活动干扰范围（示意）'
 
       L.circle(pointForPlatform(platform), {
         radius: MAP_CONFIG.activeInterferenceRadiusMeters,
-        color: '#ff526d',
-        weight: 1.5,
-        opacity: 0.9,
+        color,
+        weight: selected ? 4 : 1.5,
+        opacity: selected ? 1 : 0.9,
         dashArray: '8 6',
         fill: true,
-        fillColor: '#ff526d',
-        fillOpacity: 0.09,
+        fillColor: color,
+        fillOpacity: selected ? 0.2 : 0.09,
+        className: selected ? 'situation-map-interference--selected' : undefined,
         interactive: true,
       })
         .bindTooltip(label, {

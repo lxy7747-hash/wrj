@@ -136,7 +136,6 @@ function reasonLabel(reason: string): string {
 .link-quality-dialog__grid div {
   min-width: 0;
   padding: 0.5rem 0.6rem;
-  border: 1px solid var(--console-border);
   border-radius: 5px;
   background: rgba(11, 29, 45, 0.74);
 }

@@ -18,6 +18,7 @@ const mapControllerMock = vi.hoisted(() => {
   const controller = {
     setLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
+    focusTarget: vi.fn(),
     setLayerVisible: vi.fn(),
     setTheme: vi.fn(),
     setBasemap: vi.fn(),
@@ -99,30 +100,40 @@ describe('态势主界面', () => {
 
     expect(wrapper.get('#situation-title').text()).toBe('态势主界面')
     expect(wrapper.get('[aria-label="仿真控制"]')).toBeTruthy()
-    expect(wrapper.get('[aria-label="场景配置摘要"]')).toBeTruthy()
+    expect(wrapper.get('[aria-label="场景配置"]')).toBeTruthy()
     expect(wrapper.get('[aria-label="Leaflet 离线态势图"]')).toBeTruthy()
     expect(wrapper.get('[data-testid="leaflet-situation-map"]')).toBeTruthy()
     expect(wrapper.get('[aria-label="链路、干扰与事件"]')).toBeTruthy()
-    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(4)
+    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(10)
+    expect(wrapper.get('.link-table thead').text()).toBe('链路体制SNRBER状态')
+    expect(wrapper.get('tr[data-link-id="L-DL-03"] td:nth-child(2)').text()).toBe('数传')
+    expect(wrapper.findAll('.link-table tbody tr.is-exception')).toHaveLength(1)
     expect(wrapper.findAll('[data-frame-id="F-00042"]').length).toBeGreaterThanOrEqual(3)
     expect(wrapper.get('[data-testid="frame-freshness"]').text()).toBe('最大数据年龄 0 ms · 新鲜')
-    expect(wrapper.get('[data-testid="business-node-capacity"]').text()).toBe('4 / 50')
+    expect(wrapper.get('.node-jammer-count').text()).toBe('6 / 50')
+    expect(wrapper.findAll('[data-testid^="focus-node-"]')).toHaveLength(8)
     expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
       '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路',
     )
     expect(wrapper.text()).toContain('4 类业务信息节点')
     expect(wrapper.text()).toContain('4 类链路')
     expect(wrapper.text()).toContain('2 种干扰设备')
+    expect(wrapper.text()).toContain('空中无人作业节点 U01')
+    expect(wrapper.text()).toContain('空中无人作业节点 U02')
+    expect(wrapper.text()).toContain('空中无人作业节点 U03')
+    expect(wrapper.text()).toContain('机载点频干扰设备')
+    expect(wrapper.text()).toContain('地面宽带压制干扰设备')
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(webSocketSpy).not.toHaveBeenCalled()
   })
 
-  it('在开始后锁定摘要并在确认停止后解锁', async () => {
+  it('支持开始、暂停并在确认后停止', async () => {
     const wrapper = mountSituationPage()
 
+    expect(wrapper.text()).not.toContain('配置可查看')
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
-    expect(wrapper.text()).toContain('配置已锁定')
     expect(wrapper.text()).toContain('运行中')
+    expect(wrapper.text()).not.toContain('配置已锁定')
 
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     expect(wrapper.text()).toContain('已暂停')
@@ -134,14 +145,63 @@ describe('态势主界面', () => {
     confirmButton?.click()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('配置可查看')
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
+  })
+
+  it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
+    const wrapper = mountSituationPage()
+    const layerButtons = wrapper.findAll('[aria-label="态势图层"] button')
+
+    await layerButtons[0]?.trigger('click')
+    await wrapper.get('[data-testid="focus-node-UAV-01"]').trigger('click')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenNthCalledWith(1, 'nodes', false)
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenNthCalledWith(2, 'nodes', true)
+    expect(mapControllerMock.controller.setSelectedNodeId).not.toHaveBeenCalled()
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenNthCalledWith(1, {
+      kind: 'node',
+      targetId: 'UAV-01',
+    })
+
+    await wrapper.get('[data-testid="focus-node-UAV-01"]').trigger('click')
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenNthCalledWith(2, {
+      kind: 'node',
+      targetId: 'UAV-01',
+    })
+
+    await wrapper.findAll('.scene-summary__tabs button')[1]?.trigger('click')
+    await layerButtons[1]?.trigger('click')
+    await wrapper.get('[data-testid="focus-link-L-MW-01"]').trigger('click')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('links', false)
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('links', true)
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenNthCalledWith(3, {
+      kind: 'link',
+      targetId: 'L-MW-01',
+    })
+
+    await wrapper.findAll('.scene-summary__tabs button')[2]?.trigger('click')
+    await layerButtons[2]?.trigger('click')
+    await wrapper.get('[data-testid="focus-interference-JAM-WB-01-TX"]').trigger('click')
+    expect(mapControllerMock.controller.setSelectedNodeId).not.toHaveBeenCalled()
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('interference', false)
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('interference', true)
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenNthCalledWith(4, {
+      kind: 'interference',
+      targetId: 'JAM-WB-01-TX',
+    })
+    expect(mapControllerMock.controller.setSelectedNodeId).not.toHaveBeenCalled()
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenCalledTimes(4)
+    expect(mapControllerMock.latestOptions).not.toBeNull()
+    mapControllerMock.latestOptions?.onSelectNode('SAT-01')
+    await flushPromises()
+    expect(mapControllerMock.controller.setSelectedNodeId).toHaveBeenCalledOnce()
+    expect(mapControllerMock.controller.setSelectedNodeId).toHaveBeenCalledWith('SAT-01')
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenCalledTimes(4)
   })
 
   it('左右悬浮面板可独立折叠并重新展开', async () => {
     const wrapper = mountSituationPage()
     const workspace = wrapper.get('.situation-page__workspace')
-    const scenePanel = wrapper.get('[aria-label="场景配置摘要"]')
+    const scenePanel = wrapper.get('[aria-label="场景配置"]')
     const telemetryPanel = wrapper.get('[aria-label="链路、干扰与事件"]')
     const sceneToggle = wrapper.get('[data-testid="toggle-scene-summary"]')
     const telemetryToggle = wrapper.get('[data-testid="toggle-telemetry-panel"]')
@@ -154,7 +214,7 @@ describe('态势主界面', () => {
     expect(scenePanel.attributes('data-collapsed')).toBe('true')
     expect(scenePanel.classes()).toContain('is-collapsed')
     expect(workspace.classes()).toContain('situation-page__workspace--scene-collapsed')
-    expect(sceneToggle.attributes('aria-label')).toBe('展开场景配置摘要')
+    expect(sceneToggle.attributes('aria-label')).toBe('展开场景配置')
 
     await telemetryToggle.trigger('click')
     expect(telemetryPanel.attributes('data-collapsed')).toBe('true')
@@ -171,6 +231,7 @@ describe('态势主界面', () => {
   it('展示 L-DL-03 的劣化详情并区分只有摘要的链路', async () => {
     const wrapper = mountSituationPage()
 
+    expect(wrapper.get('tr[data-link-id="L-DL-03"] .link-status').text()).toBe('劣化')
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
     await flushPromises()
     expect(document.body.textContent).toContain('界面状态劣化')
@@ -413,12 +474,48 @@ describe('Leaflet 控制器回归', () => {
       .filter(([, options]) => options?.interactive === true)
       .map(([, options]) => options)
 
-    expect(lineOptions).toHaveLength(4)
+    expect(lineOptions).toHaveLength(10)
     expect(lineOptions[0]).toEqual(expect.objectContaining({ color: '#409eff', dashArray: '8 5' }))
     expect(lineOptions[1]).toEqual(expect.objectContaining({ color: '#f56c6c' }))
     expect(lineOptions[1]?.dashArray).toBeUndefined()
     expect(lineOptions[2]).toEqual(expect.objectContaining({ color: '#67c23a' }))
     expect(lineOptions[3]).toEqual(expect.objectContaining({ color: '#b37feb' }))
+
+    controller.destroy()
+  })
+
+  it('直接点击地图节点和链路时更新唯一高亮', async () => {
+    const onSelectNode = vi.fn()
+    const onSelectLink = vi.fn()
+    const markerSpy = vi.spyOn(L, 'marker')
+    const polylineSpy = vi.spyOn(L, 'polyline')
+    const controller = await createController({ onSelectNode, onSelectLink })
+
+    const satelliteMarker = markerSpy.mock.results.find((_, index) => (
+      markerSpy.mock.calls[index]?.[1]?.title === '选择节点 通信卫星（轨道示意）'
+    ))?.value as L.Marker | undefined
+    satelliteMarker?.fire('click')
+    expect(onSelectNode).toHaveBeenCalledWith('SAT-01')
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('SAT-01')
+
+    const currentLinkLines = polylineSpy.mock.results
+      .map((result, index) => ({
+        line: result.value as L.Polyline,
+        options: polylineSpy.mock.calls[index]?.[1],
+      }))
+      .filter(({ options }) => options?.interactive === true)
+      .slice(-SITUATION_LINKS_F00042.length)
+    currentLinkLines[0]?.line.fire('click')
+    expect(onSelectLink).toHaveBeenCalledWith(SITUATION_LINKS_F00042[0])
+    expect(container?.querySelector('.situation-map-node-marker--selected')).toBeNull()
+    expect(polylineSpy.mock.calls
+      .filter(([, options]) => options?.interactive === true)
+      .slice(-SITUATION_LINKS_F00042.length)[0]?.[1])
+      .toEqual(expect.objectContaining({
+        className: 'situation-map-link--selected',
+        weight: 6,
+        opacity: 1,
+      }))
 
     controller.destroy()
   })
@@ -454,6 +551,83 @@ describe('Leaflet 控制器回归', () => {
     fitBoundsSpy.mock.calls.forEach(([, fitOptions]) => {
       expect(fitOptions).toEqual(expect.objectContaining({ padding: [24, 24], animate: false }))
     })
+
+    controller.destroy()
+  })
+
+  it('按摘要目标定位节点、链路以及活动和待机干扰设备', async () => {
+    const mapSpy = vi.spyOn(L, 'map')
+    const polylineSpy = vi.spyOn(L, 'polyline')
+    const circleSpy = vi.spyOn(L, 'circle')
+    const controller = await createController()
+    const map = mapSpy.mock.results[0]?.value as L.Map
+    const setViewSpy = vi.spyOn(map, 'setView').mockReturnValue(map)
+    const fitBoundsSpy = vi.spyOn(map, 'fitBounds').mockReturnValue(map)
+
+    controller.focusTarget({ kind: 'node', targetId: 'UAV-01' })
+    expect(setViewSpy).toHaveBeenNthCalledWith(1, [24.70, 119.35], 10, {
+      animate: true,
+      duration: 0.45,
+    })
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('UAV-01')
+
+    polylineSpy.mockClear()
+    controller.focusTarget({ kind: 'link', targetId: 'L-MW-01' })
+    const linkBounds = fitBoundsSpy.mock.calls[0]?.[0] as L.LatLngBounds
+    expect(linkBounds.contains([24.70, 119.35])).toBe(true)
+    expect(linkBounds.contains([23.55, 118.65])).toBe(true)
+    expect(fitBoundsSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      padding: [24, 24],
+      maxZoom: 10,
+      animate: true,
+      duration: 0.45,
+    }))
+    expect(polylineSpy.mock.calls.find(([, options]) => (
+      options?.className === 'situation-map-link--selected'
+    ))?.[1]).toEqual(expect.objectContaining({ weight: 6, opacity: 1 }))
+    expect(container?.querySelector('.situation-map-node-marker--selected')).toBeNull()
+
+    circleSpy.mockClear()
+    controller.focusTarget({ kind: 'interference', targetId: 'JAM-WB-01-TX' })
+    const interferenceBounds = fitBoundsSpy.mock.calls[1]?.[0] as L.LatLngBounds
+    expect(interferenceBounds.contains([25.25, 119.55])).toBe(true)
+    expect(fitBoundsSpy.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      animate: true,
+      duration: 0.45,
+    }))
+    const selectedInterferenceOptions = circleSpy.mock.calls
+      .map((call) => call[1] as unknown as L.CircleMarkerOptions)
+      .find((options) => options.className === 'situation-map-interference--selected')
+    expect(selectedInterferenceOptions).toEqual(expect.objectContaining({
+      color: '#f5b942',
+      weight: 4,
+      fillOpacity: 0.2,
+    }))
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('STN-01')
+
+    circleSpy.mockClear()
+    controller.focusTarget({ kind: 'interference', targetId: 'JAM-SPOT-01-TX' })
+    expect(setViewSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      lat: 24.43,
+      lng: 119.99,
+    }), 10, { animate: true, duration: 0.45 })
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('U03')
+    expect(circleSpy.mock.calls.some((call) => (
+      (call[1] as unknown as L.CircleMarkerOptions).className === 'situation-map-interference--selected'
+    ))).toBe(false)
+
+    controller.focusTarget({ kind: 'node', targetId: 'AIR-03' })
+    expect(setViewSpy).toHaveBeenNthCalledWith(3, [24.43, 119.99], 10, {
+      animate: true,
+      duration: 0.45,
+    })
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('U03')
+
+    controller.focusTarget({ kind: 'node', targetId: 'NODE-NOT-FOUND' })
+    controller.focusTarget({ kind: 'link', targetId: 'LINK-NOT-FOUND' })
+    controller.focusTarget({ kind: 'interference', targetId: 'JAMMER-NOT-FOUND' })
+    expect(setViewSpy).toHaveBeenCalledTimes(3)
+    expect(fitBoundsSpy).toHaveBeenCalledTimes(2)
 
     controller.destroy()
   })
@@ -719,7 +893,7 @@ describe('Leaflet 控制器回归', () => {
     expect(offlineLabelLayerMock.removeListener).toHaveBeenCalledOnce()
   })
 
-  it('用固定帧 API 遥测坐标生成六个平台、链路端点与命中点和干扰圈', async () => {
+  it('用固定帧 API 遥测坐标生成代表平台、链路端点与命中点和干扰圈', async () => {
     const markerSpy = vi.spyOn(L, 'marker')
     const polylineSpy = vi.spyOn(L, 'polyline')
     const circleSpy = vi.spyOn(L, 'circle')
@@ -735,11 +909,13 @@ describe('Leaflet 控制器回归', () => {
     const nodeCalls = markerSpy.mock.calls.filter(([, options]) => (
       typeof options?.title === 'string' && options.title.startsWith('选择节点 ')
     ))
-    expect(nodeCalls).toHaveLength(6)
-    SITUATION_FRAME_F00042.platforms.forEach((platform) => {
+    const visiblePlatforms = SITUATION_FRAME_F00042.platforms
+    expect(nodeCalls).toHaveLength(visiblePlatforms.length)
+    visiblePlatforms.forEach((platform) => {
       const call = nodeCalls.find(([, options]) => options?.title?.includes(platform.name))
       expect(call?.[0]).toEqual(expectedPoints[platform.platformId])
     })
+    expect(nodeCalls.some(([, options]) => options?.title?.includes('空中无人作业节点 U03'))).toBe(true)
 
     const linkCurves = polylineSpy.mock.calls
       .filter(([, options]) => options?.interactive === true)
@@ -750,8 +926,8 @@ describe('Leaflet 控制器回归', () => {
     const controlOffsets = [-0.18, -0.06, 0.06, 0.18] as const
     expect(MAP_CONFIG.linkCurveOffsets).toEqual(controlOffsets)
     expect(MAP_CONFIG.curveSampleCount).toBe(32)
-    expect(linkCurves).toHaveLength(4)
-    expect(linkKeyboardCalls).toHaveLength(4)
+    expect(linkCurves).toHaveLength(SITUATION_FRAME_F00042.linkSummaries.length)
+    expect(linkKeyboardCalls).toHaveLength(SITUATION_FRAME_F00042.linkSummaries.length)
     SITUATION_FRAME_F00042.linkSummaries.forEach((summary, index) => {
       const curve = linkCurves[index] as L.LatLngTuple[]
       const source = expectedPoints[summary.sourcePlatform] as L.LatLngTuple
@@ -759,12 +935,9 @@ describe('Leaflet 控制器回归', () => {
       expect(curve[0]).toEqual(source)
       expect(curve[curve.length - 1]).toEqual(destination)
       expect(linkKeyboardCalls[index]?.[0]).toEqual(curve[16])
-      expect(curve[16]?.[0]).toBeCloseTo(
-        (source[0] + destination[0]) / 2 + controlOffsets[index] / 2,
-      )
-      expect(curve[16]?.[1]).toBeCloseTo(
-        (source[1] + destination[1]) / 2 + controlOffsets[index] / 2,
-      )
+      const offset = controlOffsets[index] ?? 0
+      expect(curve[16]?.[0]).toBeCloseTo((source[0] + destination[0]) / 2 + offset / 2)
+      expect(curve[16]?.[1]).toBeCloseTo((source[1] + destination[1]) / 2 + offset / 2)
     })
 
     const activePlatforms = SITUATION_FRAME_F00042.platforms
@@ -825,7 +998,7 @@ describe('Leaflet 控制器回归', () => {
     const onSelectNode = vi.fn()
     const markerSpy = vi.spyOn(L, 'marker')
     const controller = await createController({ onSelectNode })
-    const node = container?.querySelector<HTMLElement>('[title="选择节点 高空前出中继节点"]')
+    let node = container?.querySelector<HTMLElement>('[title="选择节点 高空前出中继节点"]')
     const nodeMarker = markerSpy.mock.results.find(({ value }) => (
       (value as L.Marker).options.title === '选择节点 高空前出中继节点'
     ))?.value as L.Marker | undefined
@@ -835,6 +1008,7 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectNode).toHaveBeenCalledOnce()
     expect(onSelectNode).toHaveBeenCalledWith('UAV-01')
 
+    node = container?.querySelector<HTMLElement>('[title="选择节点 高空前出中继节点"]')
     onSelectNode.mockClear()
     const escapeEvent = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })
     node?.dispatchEvent(escapeEvent)
@@ -847,6 +1021,7 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectNode).toHaveBeenCalledOnce()
     expect(onSelectNode).toHaveBeenCalledWith('UAV-01')
 
+    node = container?.querySelector<HTMLElement>('[title="选择节点 高空前出中继节点"]')
     onSelectNode.mockClear()
     const spaceEvent = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
     node?.dispatchEvent(spaceEvent)
@@ -861,7 +1036,7 @@ describe('Leaflet 控制器回归', () => {
     const onSelectLink = vi.fn()
     const markerSpy = vi.spyOn(L, 'marker')
     const controller = await createController({ onSelectLink })
-    const link = container?.querySelector<HTMLElement>('.situation-map-link-keyboard-hit[title]')
+    let link = container?.querySelector<HTMLElement>('.situation-map-link-keyboard-hit[title]')
     const linkMarker = markerSpy.mock.results.find(({ value }) => (
       (value as L.Marker).options.title === link?.title
     ))?.value as L.Marker | undefined
@@ -875,6 +1050,7 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectLink).toHaveBeenCalledOnce()
     expect(onSelectLink).toHaveBeenCalledWith(SITUATION_LINKS_F00042[0])
 
+    link = container?.querySelector<HTMLElement>('.situation-map-link-keyboard-hit[title]')
     onSelectLink.mockClear()
     const enterEvent = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
     link?.dispatchEvent(enterEvent)
@@ -882,6 +1058,7 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectLink).toHaveBeenCalledOnce()
     expect(onSelectLink).toHaveBeenCalledWith(SITUATION_LINKS_F00042[0])
 
+    link = container?.querySelector<HTMLElement>('.situation-map-link-keyboard-hit[title]')
     onSelectLink.mockClear()
     const spaceEvent = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true })
     link?.dispatchEvent(spaceEvent)
@@ -976,6 +1153,7 @@ describe('Leaflet 控制器回归', () => {
     expect(() => {
       controller.setLinks(SITUATION_LINKS_F00042)
       controller.setSelectedNodeId('UAV-01')
+      controller.focusTarget({ kind: 'node', targetId: 'UAV-01' })
       controller.setLayerVisible('nodes', false)
       controller.setTheme('dark')
       controller.setBasemap('satellite')

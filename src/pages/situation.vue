@@ -5,15 +5,16 @@ import LinkQualityDialog from '../components/situation/LinkQualityDialog.vue'
 import MetricPanel from '../components/situation/MetricPanel.vue'
 import OfflineSituationMap from '../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar, { type LocalSimulationStatus } from '../components/situation/SimulationToolbar.vue'
+import type { SituationMapFocusTarget } from '../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
-  PLATFORM_TYPE_LABELS,
   SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
   SITUATION_LINKS_F00042,
   SITUATION_METRICS_F00042,
   formatBer,
   formatSimulationTime,
+  getPlatformName,
   type SituationLinkView,
 } from '../features/situation/situation-model'
 
@@ -41,9 +42,9 @@ const selectedLink = ref<SituationLinkView | null>(null)
 const linkDialogVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
+const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 
-const configurationLocked = computed(() => simulationStatus.value !== 'STOPPED')
-const businessPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
+const displayedBusinessPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
 ))
 const supportingPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
@@ -53,14 +54,11 @@ const jammers = computed(() => SITUATION_FRAME_F00042.platforms.flatMap((platfor
 const detectionEvent = computed(() => SITUATION_EVENTS_F00042.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
-const modeLabel = computed(() => ({
-  single: '单次仿真', batch: '批量仿真', scan: '参数扫描', replay: '历史回放',
-})[simulationMode.value] ?? '单次仿真')
 const maximumLinkAgeMs = computed(() => Math.max(...SITUATION_LINKS_F00042.map((link) => link.ageMs)))
 const frameFreshnessLabel = computed(() => (maximumLinkAgeMs.value === 0 ? '新鲜' : '存在延迟'))
 
 /**
- * 切换场景配置摘要悬浮面板的折叠状态。
+ * 切换场景配置悬浮面板的折叠状态。
  * @returns 无返回值。
  * @sideeffect 修改左侧悬浮面板状态并联动地图控件的左侧留白。
  */
@@ -80,7 +78,7 @@ function toggleTelemetryPanel(): void {
 /**
  * 开始或继续本地确定性仿真状态机。
  * @returns 无返回值。
- * @sideeffect 将本地运行状态改为运行中并锁定配置摘要。
+ * @sideeffect 将本地运行状态改为运行中。
  */
 function startSimulation(): void {
   simulationStatus.value = 'RUNNING'
@@ -118,7 +116,7 @@ function requestStop(): void {
 /**
  * 确认停止本地仿真状态机。
  * @returns 无返回值。
- * @sideeffect 停止运行、清零本地时钟、解锁配置摘要并关闭确认框。
+ * @sideeffect 停止运行、清零本地时钟并关闭确认框。
  */
 function confirmStop(): void {
   simulationStatus.value = 'STOPPED'
@@ -158,24 +156,73 @@ function openLinkDetails(link: SituationLinkView): void {
 }
 
 /**
+ * 创建地图定位请求。
+ * @param kind 节点、链路或干扰设备定位类型。
+ * @param targetId 对应业务对象的唯一标识。
+ * @returns 无返回值。
+ * @sideeffect 创建新的请求对象并传给地图组件，同一条目可重复触发定位。
+ */
+function requestMapFocus(kind: SituationMapFocusTarget['kind'], targetId: string): void {
+  mapFocusTarget.value = { kind, targetId }
+}
+
+/**
+ * 从左侧摘要选择信息节点并定位地图。
+ * @param platformId 平台唯一标识。
+ * @returns 无返回值。
+ * @sideeffect 更新当前选中节点并发出节点定位请求。
+ */
+function focusNodeOnMap(platformId: string): void {
+  selectedNodeId.value = platformId
+  requestMapFocus('node', platformId)
+}
+
+/**
+ * 从左侧摘要选择信息链路并定位地图。
+ * @param linkId 链路唯一标识。
+ * @returns 无返回值。
+ * @sideeffect 发出链路范围定位请求，不自动打开链路详情弹框。
+ */
+function focusLinkOnMap(linkId: string): void {
+  requestMapFocus('link', linkId)
+}
+
+/**
+ * 从左侧摘要选择干扰设备并定位地图。
+ * @param jammerId 干扰设备唯一标识。
+ * @param platformId 搭载干扰设备的平台唯一标识。
+ * @returns 无返回值。
+ * @sideeffect 选中干扰设备所在平台并发出干扰范围定位请求。
+ */
+function focusInterferenceOnMap(jammerId: string, platformId: string): void {
+  selectedNodeId.value = platformId
+  requestMapFocus('interference', jammerId)
+}
+
+/**
  * 返回链路状态的中文标签。
  * @param link 来自固定帧的链路视图。
- * @returns 同时表达界面状态和规范状态的中文文本。
+ * @returns 链路界面状态的中文文本。
  * @sideeffect 无副作用。
  */
 function linkStatusLabel(link: SituationLinkView): string {
-  if (link.status === 'DEGRADED') return '劣化 / 规范中断'
+  if (link.status === 'DEGRADED') return '劣化'
   return link.status === 'UP' ? '正常' : '中断'
 }
 
 /**
  * 返回干扰设备类型的中文名称。
  * @param jammerId 固定帧干扰设备标识。
- * @returns 宽带压制或点频干扰名称。
+ * @param platformId 搭载干扰设备的平台标识。
+ * @returns 包含机载或地面部署位置的干扰设备名称。
  * @sideeffect 无副作用。
  */
-function jammerTypeLabel(jammerId: string): string {
-  return jammerId.includes('WB') ? '宽带压制干扰' : '点频干扰'
+function jammerTypeLabel(jammerId: string, platformId: string): string {
+  const location = SITUATION_FRAME_F00042.platforms
+    .find((platform) => platform.platformId === platformId)?.type === 'AIRBORNE_MISSION_CLUSTER'
+    ? '机载'
+    : '地面'
+  return `${location}${jammerId.includes('WB') ? '宽带压制' : '点频'}干扰设备`
 }
 
 /**
@@ -219,31 +266,21 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <aside
         class="scene-summary"
         :class="{ 'is-collapsed': sceneSummaryCollapsed }"
-        aria-label="场景配置摘要"
+        aria-label="场景配置"
         :data-collapsed="sceneSummaryCollapsed"
       >
+      <strong class="node-jammer-count">{{ SITUATION_METRICS_F00042.businessNodeCount }} / {{ BUSINESS_NODE_CAPACITY }}</strong>
         <button
           type="button"
           class="floating-panel__toggle floating-panel__toggle--left"
           data-testid="toggle-scene-summary"
           :aria-expanded="!sceneSummaryCollapsed"
-          :aria-label="sceneSummaryCollapsed ? '展开场景配置摘要' : '折叠场景配置摘要'"
+          :aria-label="sceneSummaryCollapsed ? '展开场景配置' : '折叠场景配置'"
           @click="toggleSceneSummary"
         ><span aria-hidden="true">{{ sceneSummaryCollapsed ? '›' : '‹' }}</span></button>
         <div class="panel-heading">
-          <div><strong>场景配置摘要</strong></div>
+          <div><strong>场景配置</strong></div>
           <router-link to="/scenarios">进入场景配置</router-link>
-        </div>
-
-        <div class="scene-summary__state" :class="{ locked: configurationLocked }" aria-live="polite">
-          <strong>{{ configurationLocked ? '配置已锁定' : '配置可查看' }}</strong>
-          <span>{{ modeLabel }} · {{ configurationLocked ? '运行期间不可编辑' : '本页不提供编辑' }}</span>
-        </div>
-
-        <div class="scene-summary__capacity">
-          <span>业务信息节点容量</span>
-          <strong data-testid="business-node-capacity">{{ SITUATION_METRICS_F00042.businessNodeCount }} / {{ BUSINESS_NODE_CAPACITY }}</strong>
-          <small>支撑实体 {{ SITUATION_METRICS_F00042.supportingEntityCount }} 个，不计入上限</small>
         </div>
 
         <div class="scene-summary__tabs" role="tablist" aria-label="场景摘要分类">
@@ -261,38 +298,68 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <div class="scene-summary__content" :aria-label="`${summaryTabs.find((tab) => tab.key === activeTab)?.label}摘要`">
           <template v-if="activeTab === 'nodes'">
             <div class="summary-group">
-              <h3>4 类业务信息节点</h3>
+              <h3>信息节点 · {{ SITUATION_METRICS_F00042.businessNodeCount }} 个</h3>
               <ul>
-                <li v-for="platform in businessPlatforms" :key="platform.platformId">
-                  <span>{{ PLATFORM_TYPE_LABELS[platform.type] }}</span><small>{{ platform.platformId }}</small>
+                <li v-for="platform in displayedBusinessPlatforms" :key="platform.platformId">
+                  <button
+                    type="button"
+                    class="summary-focus-button"
+                    :data-testid="`focus-node-${platform.platformId}`"
+                    :aria-label="`在地图中定位${platform.name}`"
+                    @click="focusNodeOnMap(platform.platformId)"
+                  >
+                    <span>{{ platform.platformId }}</span><small>{{ platform.name }}</small>
+                  </button>
                 </li>
               </ul>
             </div>
             <div class="summary-group">
-              <h3>2 类支撑实体</h3>
+              <h3>支撑实体</h3>
               <ul>
                 <li v-for="platform in supportingPlatforms" :key="platform.platformId">
-                  <span>{{ PLATFORM_TYPE_LABELS[platform.type] }}</span><small>{{ platform.platformId }}</small>
+                  <button
+                    type="button"
+                    class="summary-focus-button"
+                    :data-testid="`focus-node-${platform.platformId}`"
+                    :aria-label="`在地图中定位${platform.name}`"
+                    @click="focusNodeOnMap(platform.platformId)"
+                  >
+                    <span>{{ platform.platformId }}</span><small>{{ platform.name }}</small>
+                  </button>
                 </li>
               </ul>
             </div>
           </template>
 
           <div v-else-if="activeTab === 'links'" class="summary-group">
-            <h3>4 类信息链路</h3>
             <ul>
               <li v-for="link in SITUATION_LINKS_F00042" :key="link.linkId">
-                <span>{{ LINK_TYPE_LABELS[link.type] }}</span><small>{{ link.linkId }}</small>
+                <button
+                  type="button"
+                  class="summary-focus-button"
+                  :data-testid="`focus-link-${link.linkId}`"
+                  :aria-label="`在地图中定位${LINK_TYPE_LABELS[link.type]} ${link.sourceName}至${link.destinationName}`"
+                  @click="focusLinkOnMap(link.linkId)"
+                >
+                  <span>{{ link.linkId }}</span><small>{{ LINK_TYPE_LABELS[link.type] }}</small>
+                </button>
               </li>
             </ul>
           </div>
 
           <div v-else-if="activeTab === 'interference'" class="summary-group">
-            <h3>2 种干扰设备</h3>
             <ul>
               <li v-for="jammer in jammers" :key="jammer.jammerId">
-                <span>{{ jammerTypeLabel(jammer.jammerId) }}</span>
-                <small>{{ jammer.active ? '活动' : '待机' }} · {{ jammer.power }} W</small>
+                <button
+                  type="button"
+                  class="summary-focus-button"
+                  :data-testid="`focus-interference-${jammer.jammerId}`"
+                  :aria-label="`在地图中定位${jammerTypeLabel(jammer.jammerId, jammer.platformId)}`"
+                  @click="focusInterferenceOnMap(jammer.jammerId, jammer.platformId)"
+                >
+                  <span>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</span>
+                  <small>{{ jammer.active ? '活动' : '待机' }} · {{ jammer.power }} W</small>
+                </button>
               </li>
             </ul>
           </div>
@@ -308,13 +375,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
         </div>
 
-        <div class="scene-summary__boundary">本页展示固定帧数据；场景录入、校验和脚本预览在“场景配置”中实施。</div>
       </aside>
 
       <main class="situation-center" data-testid="situation-center">
         <OfflineSituationMap
           :links="SITUATION_LINKS_F00042"
           :selected-node-id="selectedNodeId"
+          :focus-target="mapFocusTarget"
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
         >
@@ -340,11 +407,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         ><span aria-hidden="true">{{ telemetryPanelCollapsed ? '‹' : '›' }}</span></button>
         <section class="telemetry-section telemetry-section--links" :data-frame-id="SITUATION_FRAME_F00042.frameId">
           <div class="panel-heading">
-            <div><strong>全链路状态</strong><span>{{ SITUATION_LINKS_F00042.length }} 条</span></div><small>点击查看详情</small>
+            <div><strong>全链路状态</strong></div>
+            <span class="panel-heading__more">异常 {{ SITUATION_METRICS_F00042.degradedLinkCount + SITUATION_METRICS_F00042.downLinkCount }} 条</span>
           </div>
           <div class="link-table-wrap">
             <table class="link-table">
-              <thead><tr><th>链路</th><th>SNR / BER</th><th>状态</th></tr></thead>
+              <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
                   v-for="link in SITUATION_LINKS_F00042"
@@ -352,11 +420,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   tabindex="0"
                   role="button"
                   :data-link-id="link.linkId"
+                  :class="{ 'is-exception': link.status !== 'UP' }"
                   @click="openLinkDetails(link)"
                   @keydown.enter="openLinkDetails(link)"
                 >
-                  <td><strong>{{ link.linkId }}</strong><small>{{ LINK_TYPE_LABELS[link.type] }}</small></td>
-                  <td><strong>{{ link.snrDb.toFixed(2) }} dB</strong><small>{{ formatBer(link.ber) }}</small></td>
+                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small>{{ link.linkId }}</small></td>
+                  <td>{{ link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '') }}</td>
+                  <td>{{ link.snrDb.toFixed(2) }}</td>
+                  <td>{{ formatBer(link.ber) }}</td>
                   <td><span :class="`link-status link-status--${link.status.toLowerCase()}`">{{ linkStatusLabel(link) }}</span></td>
                 </tr>
               </tbody>
@@ -365,10 +436,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--jammer">
-          <div class="panel-heading"><div><strong>干扰 / 感知</strong><span>{{ jammers.length }} 台设备</span></div></div>
+          <div class="panel-heading"><div><strong>干扰 / 侦测设备</strong></div><span class="panel-heading__more">{{ jammers.length }} 台</span></div>
           <div class="jammer-list">
             <article v-for="jammer in jammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
-              <div><strong>{{ jammerTypeLabel(jammer.jammerId) }}</strong><span>{{ jammer.active ? '活动' : '待机' }}</span></div>
+              <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active ? '活动' : '待机' }}</span></div>
+              <small>搭载平台：{{ getPlatformName(jammer.platformId) }} · {{ jammer.platformId }}</small>
               <dl>
                 <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
                 <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
@@ -383,7 +455,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--events">
-          <div class="panel-heading"><div><strong>同帧事件</strong><span>{{ SITUATION_EVENTS_F00042.length }} 条</span></div></div>
+          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ SITUATION_EVENTS_F00042.length }} 条</span></div>
           <ol class="event-list">
             <li v-for="event in SITUATION_EVENTS_F00042" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.type === 'DETECTION' ? '侦测' : '链路切换' }}</strong></div>
@@ -405,7 +477,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">停止后本地仿真时钟将清零，场景配置摘要将解除锁定。固定帧 F-00042 不会改变。</p>
+      <p class="stop-dialog-copy">停止后本地仿真时钟将清零。固定帧 F-00042 不会改变。</p>
       <template #footer>
         <el-button @click="stopDialogVisible = false">取消</el-button>
         <el-button type="danger" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
@@ -431,15 +503,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .situation-page__semantic-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .situation-page__workspace {
   --scene-panel-clearance: 17.5rem;
-  --telemetry-panel-clearance: 21.5rem;
+  --telemetry-panel-clearance: 24rem;
   position: relative;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
 }
 .scene-summary, .telemetry-panel { position: absolute; z-index: 1100; top: .75rem; bottom: .75rem; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--console-border); border-radius: 8px; background: rgba(8,25,39,.96); box-shadow: var(--console-shadow); transition: width .18s ease; }
-.scene-summary { left: .75rem; display: grid; width: 16rem; grid-template-rows: auto auto auto auto minmax(0, 1fr) auto; }
-.telemetry-panel { right: .75rem; display: grid; width: 20rem; grid-template-rows: minmax(11rem, 1.25fr) minmax(10rem, 1fr) minmax(9rem, .85fr); }
+.scene-summary { left: .75rem; display: grid; width: 16rem; grid-template-rows: auto auto minmax(0, 1fr); }
+.telemetry-panel { right: .75rem; display: grid; width: 22.5rem; grid-template-rows: minmax(14rem, 1.35fr) minmax(10rem, 1fr) minmax(8rem, .8fr); border-color: #1e3448; background: #0f1f30; }
 .floating-panel__toggle { position: absolute; z-index: 2; top: .3rem; display: grid; width: 1.75rem; height: 1.75rem; place-items: center; padding: 0; border: 1px solid var(--console-border-strong); border-radius: 5px; color: var(--console-cyan); background: rgba(7,21,34,.96); font-size: 1.1rem; line-height: 1; cursor: pointer; }
 .floating-panel__toggle--left { right: .35rem; }
 .floating-panel__toggle--right { left: .35rem; }
@@ -452,13 +524,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .panel-heading strong { font-size: .76rem; }
 .panel-heading span, .panel-heading small, .panel-heading a { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
 .panel-heading a { color: var(--console-cyan); text-decoration: none; }
-.scene-summary__state, .scene-summary__capacity { display: grid; gap: .15rem; margin: .5rem .6rem 0; padding: .45rem .55rem; border: 1px solid var(--console-border); border-radius: 5px; background: rgba(66,216,255,.05); }
-.scene-summary__state.locked { border-color: rgba(246,184,75,.5); background: rgba(246,184,75,.07); }
-.scene-summary__state strong, .scene-summary__capacity strong { color: var(--console-cyan); font-size: var(--console-font-size-min); }
-.scene-summary__state.locked strong { color: var(--console-amber); }
-.scene-summary__state span, .scene-summary__capacity span, .scene-summary__capacity small { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
-.scene-summary__capacity { grid-template-columns: 1fr auto; }
-.scene-summary__capacity small { grid-column: 1 / -1; }
+.telemetry-panel .panel-heading { min-height: 2.35rem; padding: .55rem .85rem; border-bottom-color: #1e3448; color: #e8f0f8; background: transparent; }
+.telemetry-panel .panel-heading strong { color: #e8f0f8; font-size: 13px; }
+.telemetry-panel .panel-heading__more { color: #4fd6ff; font-size: 12px; font-weight: 400; }
 .scene-summary__tabs { display: grid; grid-template-columns: repeat(4,1fr); margin: .5rem .6rem 0; border: 1px solid var(--console-border); border-radius: 5px; overflow: hidden; }
 .scene-summary__tabs button { min-height: 1.75rem; border: 0; border-right: 1px solid var(--console-border); color: var(--console-text-muted); background: var(--console-bg-elevated); font-size: var(--console-font-size-min); cursor: pointer; }
 .scene-summary__tabs button:last-child { border-right: 0; }
@@ -467,67 +535,81 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .summary-group + .summary-group { margin-top: .55rem; }
 .summary-group h3 { margin: 0 0 .3rem; color: var(--console-text-muted); font-size: var(--console-font-size-min); font-weight: 600; }
 .summary-group ul, .event-list { display: grid; gap: .28rem; margin: 0; padding: 0; list-style: none; }
-.summary-group li { display: grid; gap: .12rem; padding: .38rem .45rem; border-left: 2px solid var(--console-border-strong); color: var(--console-text); background: rgba(16,40,58,.48); font-size: var(--console-font-size-min); }
+.summary-group li { border-left: 2px solid var(--console-border-strong); background: rgba(16,40,58,.48); }
+.summary-focus-button { display: grid; width: 100%; gap: .12rem; padding: .38rem .45rem; border: 0; color: var(--console-text); background: transparent; font: inherit; font-size: var(--console-font-size-min); text-align: left; cursor: pointer; }
+.summary-focus-button:hover { background: rgba(66,216,255,.08); }
+.summary-focus-button:focus-visible { outline: 1px solid var(--console-cyan); outline-offset: -1px; background: rgba(66,216,255,.1); }
 .summary-group li small { color: var(--console-text-muted); font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
 .timing-list { display: grid; gap: .3rem; margin: 0; }
 .timing-list div { display: grid; gap: .12rem; padding: .4rem; background: rgba(16,40,58,.48); }
 .timing-list dt { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
 .timing-list dd { margin: 0; font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
-.scene-summary__boundary { padding: .5rem .6rem; border-top: 1px solid var(--console-border); color: var(--console-text-muted); background: var(--console-bg-elevated); font-size: var(--console-font-size-min); line-height: 1.45; }
 .situation-center { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0,1fr); }
-.telemetry-section { min-height: 0; overflow: hidden; border-bottom: 1px solid var(--console-border); }
+.telemetry-section { min-height: 0; overflow: hidden; border-bottom: 1px solid #1e3448; }
 .telemetry-section:last-child { border-bottom: 0; }
 .telemetry-section--links, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
 .telemetry-section--jammer { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
 .link-table-wrap, .event-list, .jammer-list { min-height: 0; overflow-y: auto; }
 .link-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
-.link-table th { position: sticky; z-index: 1; top: 0; padding: .35rem .4rem; color: var(--console-text-muted); background: #0b1e2d; font-size: var(--console-font-size-min); text-align: left; }
-.link-table td { padding: .42rem .4rem; border-top: 1px solid rgba(29,64,88,.65); font-size: var(--console-font-size-min); cursor: pointer; }
-.link-table tr:hover td, .link-table tr:focus td { background: rgba(66,216,255,.06); }
+.link-table th { position: sticky; z-index: 1; top: 0; padding: .45rem .5rem; color: #8fb6d9; background: #102a40; font-size: 12px; font-weight: 600; text-align: left; }
+.link-table th:nth-child(1) { width: 28%; }
+.link-table th:nth-child(2) { width: 17%; }
+.link-table th:nth-child(3) { width: 14%; }
+.link-table th:nth-child(4) { width: 17%; }
+.link-table th:nth-child(5) { width: 24%; }
+.link-table td { padding: .4rem .5rem; border-bottom: 1px solid #16283c; color: #a8bfd4; font-family: Consolas,"Microsoft YaHei",monospace; font-size: 12px; cursor: pointer; }
+.link-table tr.is-exception td { color: #ff7b7b; background: #3a1620; }
+.link-table tr:hover td, .link-table tr:focus td { background: #16283c; }
+.link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
 .link-table td strong, .link-table td small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.link-table td small { margin-top: .12rem; color: var(--console-text-muted); font-size: var(--console-font-size-min); }
-.link-status { display: inline-flex; padding: .18rem .35rem; border: 1px solid currentColor; border-radius: 999px; font-size: var(--console-font-size-min); line-height: 1.2; }
-.link-status--up { color: var(--console-teal); }
-.link-status--degraded { color: var(--console-amber); }
-.link-status--down { color: var(--console-danger); }
-.jammer-list { display: grid; gap: .35rem; padding: .45rem .6rem; }
-.jammer-list article { padding: .4rem .45rem; border: 1px solid var(--console-border); border-radius: 5px; background: rgba(16,40,58,.48); }
-.jammer-list article.active { border-color: rgba(255,102,122,.55); }
-.jammer-list article>div:first-child { display: flex; align-items: center; justify-content: space-between; }
-.jammer-list article strong { font-size: var(--console-font-size-min); }
-.jammer-list article span { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
-.jammer-list article.active span { color: var(--console-danger); }
-.jammer-list dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .3rem; margin: .35rem 0; }
-.jammer-list dt { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
-.jammer-list dd { margin: .08rem 0 0; font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
-.power-bar { height: .22rem; overflow: hidden; border-radius: 999px; background: var(--console-border); }
-.power-bar i { display: block; height: 100%; background: var(--console-danger); }
-.detection-state { margin: 0; padding: .4rem .6rem; border-top: 1px solid var(--console-border); color: var(--console-amber); font-size: var(--console-font-size-min); }
-.event-list { padding: .45rem .6rem; }
-.event-list li { padding: .38rem .45rem; border-left: 2px solid var(--console-border-strong); background: rgba(16,40,58,.48); }
+.link-table td small { margin-top: .1rem; color: #6b8299; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; }
+.link-status { display: inline-flex; padding: .1rem .45rem; border-radius: 999px; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; line-height: 1.25; }
+.link-status--up { color: #6fd68a; background: #12351f; }
+.link-status--degraded { color: #ffb84d; background: #3a2c10; }
+.link-status--down { color: #ff7b7b; background: #3a1620; }
+.jammer-list { display: block; padding: 0; }
+.jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
+.jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }
+.jammer-list article>div:first-child::before { width: .55rem; height: .55rem; border-radius: 50%; background: #6b8299; content: ""; }
+.jammer-list article.active>div:first-child::before { background: #ff5b5b; box-shadow: 0 0 6px rgba(255,91,91,.65); }
+.jammer-list article strong { color: #e8f0f8; font-size: 12px; }
+.jammer-list article span { color: #8fb6d9; font-size: 12px; }
+.jammer-list article>small { display: block; margin-top: .35rem; color: #6b8299; font-size: 12px; }
+.jammer-list article.active span { color: #ff7b7b; }
+.jammer-list dl { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .5rem; margin: .5rem 0; }
+.jammer-list dt { color: #6b8299; font-size: 12px; }
+.jammer-list dd { margin: .1rem 0 0; color: #a8bfd4; font-family: Consolas,monospace; font-size: 12px; }
+.power-bar { height: .35rem; overflow: hidden; border-radius: 999px; background: #16283c; }
+.power-bar i { display: block; height: 100%; border-radius: inherit; background: #ff5b5b; }
+.detection-state { margin: 0; padding: .5rem .85rem; border-top: 1px solid #1e3448; color: #ff7b7b; font-size: 12px; }
+.event-list { display: block; padding: .5rem .85rem; }
+.event-list li { padding: .4rem 0; border-bottom: 1px dashed #16283c; background: transparent; }
+.event-list li:last-child { border-bottom: 0; }
 .event-list li>div { display: flex; justify-content: space-between; gap: .5rem; }
-.event-list time, .event-list small { color: var(--console-text-muted); font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
-.event-list strong { color: var(--console-cyan); font-size: var(--console-font-size-min); }
-.event-list p { margin: .22rem 0; color: var(--console-text); font-size: var(--console-font-size-min); line-height: 1.35; }
+.event-list time { color: #4fd6ff; font-family: Consolas,monospace; font-size: 12px; }
+.event-list small { color: #6b8299; font-family: Consolas,monospace; font-size: 12px; }
+.event-list strong { color: #ffb84d; font-size: 12px; }
+.event-list p { margin: .2rem 0; color: #a8bfd4; font-size: 12px; line-height: 1.5; }
 .situation-footer { display: flex; min-height: 2rem; align-items: center; gap: 1rem; padding: .35rem .7rem; border-top: 1px solid var(--console-border); color: var(--console-text-muted); background: #06131f; font-family: Consolas,"Microsoft YaHei",monospace; font-size: var(--console-font-size-min); white-space: nowrap; }
 .situation-footer span:first-child { display: inline-flex; align-items: center; gap: .3rem; }
 .situation-footer strong { overflow: hidden; margin-left: auto; color: var(--console-teal); text-overflow: ellipsis; }
 .footer-dot { width: .42rem; height: .42rem; border-radius: 50%; background: var(--console-text-dim); }
 .stop-dialog-copy { margin: 0; color: var(--console-text-muted); line-height: 1.7; }
+.scene-summary .node-jammer-count{ position: absolute;  top:9px; left:62px; color: var(--console-cyan); font-size: var(--console-font-size-min);}
 @media (max-width: 1500px) {
-  .situation-page__workspace { --scene-panel-clearance: 15.5rem; --telemetry-panel-clearance: 19.5rem; }
+  .situation-page__workspace { --scene-panel-clearance: 15.5rem; --telemetry-panel-clearance: 21.5rem; }
   .scene-summary { width: 14rem; }
-  .telemetry-panel { width: 18rem; }
+  .telemetry-panel { width: 20rem; }
   .situation-footer { gap: .65rem; }
 }
 @media (max-width: 1100px) {
-  .situation-page__workspace { --scene-panel-clearance: 13.5rem; --telemetry-panel-clearance: 16.5rem; }
+  .situation-page__workspace { --scene-panel-clearance: 13.5rem; --telemetry-panel-clearance: 19.5rem; }
   .scene-summary { width: 12rem; }
-  .telemetry-panel { width: 15rem; }
+  .telemetry-panel { width: 18rem; }
   .situation-footer span:nth-child(3), .situation-footer span:nth-child(4) { display: none; }
 }
-.situation-page__workspace--scene-collapsed { --scene-panel-clearance: 3.25rem; }
-.situation-page__workspace--telemetry-collapsed { --telemetry-panel-clearance: 3.25rem; }
+.situation-page__workspace--scene-collapsed { --scene-panel-clearance: 3.25rem; --legend-clearance: .75rem; }
+.situation-page__workspace--telemetry-collapsed { --telemetry-panel-clearance: 3.25rem; --view-controls-clearance: .75rem; }
 .scene-summary.is-collapsed, .telemetry-panel.is-collapsed { bottom: auto; width: 1.75rem; height: 1.75rem; overflow: visible; border-color: transparent; background: transparent; box-shadow: none; }
 @media (max-width: 760px) {
   .situation-page { height: auto; }
