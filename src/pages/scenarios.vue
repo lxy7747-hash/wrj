@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Link, LinkType, Platform, PlatformType, ScenarioConfig } from '../contracts/domain-models'
+import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig } from '../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
+  JAMMER_TYPES,
   LINK_MHZ_MINIMUM_STEP,
   LINK_TYPES,
   SUPPORTING_ENTITY_TYPES,
   inspectScenarioConfig,
+  inspectScenarioUiExtensions,
   isBusinessInformationNodeType,
 } from '../features/scenarios/scenario-validation'
-import { LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
+import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
 import { useScenarioStore } from '../stores/scenario'
 import WaypointMapPicker, { type WaypointMapPoint } from '../components/scenarios/WaypointMapPicker.vue'
 
@@ -33,6 +35,15 @@ const linkFeedback = ref('')
 const linkFeedbackStatus = ref<'success' | 'error'>('success')
 const linkFrequencyBelowMinimum = ref(false)
 const linkBandwidthBelowMinimum = ref(false)
+const jammerDialogVisible = ref(false)
+const editingJammerIndex = ref<number | null>(null)
+const jammerEditor = ref<Jammer | null>(null)
+const jammerUiEditor = ref<JammerUiExtension | null>(null)
+const jammerEditorError = ref('')
+const jammerFeedback = ref('')
+const jammerFeedbackStatus = ref<'success' | 'error'>('success')
+const jammerFrequencyBelowMinimum = ref(false)
+const jammerBandwidthBelowMinimum = ref(false)
 
 const deploymentDomainLabels = {
   ground: '地面',
@@ -43,6 +54,7 @@ const businessTypeOptions = BUSINESS_INFORMATION_NODE_TYPES.map((value) => ({ va
 const supportingTypeOptions = SUPPORTING_ENTITY_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
 const linkTypeOptions = LINK_TYPES.map((value) => ({ value, label: LINK_TYPE_LABELS[value] }))
 const linkDirectionLabels = { FORWARD: '正向', REVERSE: '反向' } as const
+const jammerTypeOptions = JAMMER_TYPES.map((value) => ({ value, label: JAMMER_TYPE_LABELS[value] }))
 
 const stateLabels: Record<CapabilityState, string> = {
   LOADING: '加载中',
@@ -62,6 +74,7 @@ const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(p
 const businessNodeCount = computed(() => draft.value?.config.platforms.filter((platform) => isBusinessInformationNodeType(platform.type)).length ?? 0)
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
+const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -349,11 +362,11 @@ function resetLinkMinimumAttempts(): void {
 
 // Element Plus normalizes the model to min; retain the user's raw attempt until valid input replaces it.
 function trackLinkFrequencyInput(value: number | undefined): void {
-  if (typeof value === 'number') linkFrequencyBelowMinimum.value = value < LINK_MHZ_MINIMUM_STEP
+  if (typeof value === 'number') linkFrequencyBelowMinimum.value = value <= 0
 }
 
 function trackLinkBandwidthInput(value: number | undefined): void {
-  if (typeof value === 'number') linkBandwidthBelowMinimum.value = value < LINK_MHZ_MINIMUM_STEP
+  if (typeof value === 'number') linkBandwidthBelowMinimum.value = value <= 0
 }
 
 /**
@@ -432,11 +445,11 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
 function applyLinkEditor(): boolean {
   if (draft.value === null || linkEditor.value === null) return false
   if (linkFrequencyBelowMinimum.value) {
-    linkEditorError.value = '链路频率不能小于 0.001 MHz。'
+    linkEditorError.value = '链路频率必须大于 0 MHz。'
     return false
   }
   if (linkBandwidthBelowMinimum.value) {
-    linkEditorError.value = '链路带宽不能小于 0.001 MHz。'
+    linkEditorError.value = '链路带宽必须大于 0 MHz。'
     return false
   }
   linkEditor.value.id = linkEditor.value.id.trim()
@@ -492,6 +505,213 @@ function linkTypeLabel(type: LinkType): string {
 }
 
 /**
+ * 生成当前场景内未占用的干扰设备 ID。
+ * @returns 首个未使用的三位序号配置干扰设备 ID。
+ * @remarks 只读取当前草稿，不修改干扰设备集合。
+ */
+function nextJammerId(): string {
+  const ids = new Set(draft.value?.config.jammers.map((jammer) => jammer.id) ?? [])
+  let index = 1
+  while (ids.has(`JAM-CFG-${String(index).padStart(3, '0')}`)) index += 1
+  return `JAM-CFG-${String(index).padStart(3, '0')}`
+}
+
+/**
+ * 清除干扰频率和带宽的非法输入记录。
+ * @returns 无返回值。
+ * @sideEffects 将两个最低值输入标记恢复为未触发状态。
+ */
+function resetJammerMinimumAttempts(): void {
+  jammerFrequencyBelowMinimum.value = false
+  jammerBandwidthBelowMinimum.value = false
+}
+
+/**
+ * 记录干扰频率输入是否低于合同最小值。
+ * @param value Element Plus 数字输入组件发出的原始值。
+ * @returns 无返回值。
+ * @sideEffects 更新当前干扰频率的非法输入标记。
+ */
+function trackJammerFrequencyInput(value: number | undefined): void {
+  if (typeof value === 'number') jammerFrequencyBelowMinimum.value = value <= 0
+}
+
+/**
+ * 记录干扰带宽输入是否低于合同最小值。
+ * @param value Element Plus 数字输入组件发出的原始值。
+ * @returns 无返回值。
+ * @sideEffects 更新当前干扰带宽的非法输入标记。
+ */
+function trackJammerBandwidthInput(value: number | undefined): void {
+  if (typeof value === 'number') jammerBandwidthBelowMinimum.value = value <= 0
+}
+
+/**
+ * 打开新增干扰设备对话框并填入可校验的默认参数。
+ * @returns 无返回值。
+ * @sideEffects 没有场景实体时显示中文提示；否则创建独立编辑副本并打开对话框。
+ */
+function openNewJammer(): void {
+  const platform = draft.value?.config.platforms[0]
+  if (platform === undefined) {
+    jammerFeedback.value = '至少需要一个场景实体才能新增干扰设备。'
+    jammerFeedbackStatus.value = 'error'
+    return
+  }
+  jammerEditor.value = {
+    id: nextJammerId(),
+    platformId: platform.id,
+    type: 'BARRAGE',
+    defaultPower: 50,
+    frequency: 2200,
+    bandwidth: 20,
+    autoDetect: false,
+    detectionRange: 100000,
+  }
+  jammerUiEditor.value = { jammerId: jammerEditor.value.id, direction: 0, duration: 60, enabled: true }
+  editingJammerIndex.value = null
+  jammerEditorError.value = ''
+  jammerFeedback.value = ''
+  resetJammerMinimumAttempts()
+  jammerDialogVisible.value = true
+}
+
+/**
+ * 打开现有干扰设备编辑对话框。
+ * @param jammer 需要编辑的干扰设备数据。
+ * @param index 干扰设备在当前草稿集合中的位置。
+ * @returns 无返回值。
+ * @sideEffects 创建干扰设备深拷贝，取消编辑时不会污染草稿。
+ */
+function openJammerEditor(jammer: Jammer, index: number): void {
+  jammerEditor.value = structuredClone(toRaw(jammer))
+  jammerUiEditor.value = structuredClone(toRaw(
+    draft.value?.uiExtensions.jammers.find((extension) => extension.jammerId === jammer.id)
+      ?? { jammerId: jammer.id, direction: 0, duration: 60, enabled: true },
+  ))
+  editingJammerIndex.value = index
+  jammerEditorError.value = ''
+  jammerFeedback.value = ''
+  resetJammerMinimumAttempts()
+  jammerDialogVisible.value = true
+}
+
+/**
+ * 根据干扰设备归属同步平台反向关联。
+ * @param config 待同步的完整场景配置副本。
+ * @param jammerId 新增、更新或删除的干扰设备 ID。
+ * @returns 无返回值。
+ * @sideEffects 先从所有平台移除该 ID，再为当前归属平台补回关联。
+ */
+function synchronizePlatformJammerIds(config: ScenarioConfig, jammerId: string): void {
+  config.platforms.forEach((platform) => {
+    platform.jammerIds = platform.jammerIds.filter((id) => id !== jammerId)
+  })
+  const jammer = config.jammers.find((item) => item.id === jammerId)
+  const platform = config.platforms.find((item) => item.id === jammer?.platformId)
+  if (platform !== undefined) platform.jammerIds.push(jammerId)
+}
+
+/**
+ * 将干扰设备编辑副本写入当前场景草稿。
+ * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
+ * @sideEffects 成功时同步归属平台关联、标记未保存并关闭对话框。
+ */
+function applyJammerEditor(): boolean {
+  if (draft.value === null || jammerEditor.value === null || jammerUiEditor.value === null) return false
+  if (jammerFrequencyBelowMinimum.value) {
+    jammerEditorError.value = '干扰频率必须大于 0 MHz。'
+    return false
+  }
+  if (jammerBandwidthBelowMinimum.value) {
+    jammerEditorError.value = '干扰带宽必须大于 0 MHz。'
+    return false
+  }
+  jammerEditor.value.id = jammerEditor.value.id.trim()
+  if (jammerEditor.value.id === '') {
+    jammerEditorError.value = '干扰设备 ID 为必填项。'
+    return false
+  }
+  const candidate = structuredClone(toRaw(draft.value.config))
+  const candidateExtensions = structuredClone(toRaw(draft.value.uiExtensions))
+  const editedJammer = structuredClone(toRaw(jammerEditor.value))
+  const editedExtension = { ...structuredClone(toRaw(jammerUiEditor.value)), jammerId: editedJammer.id }
+  if (editingJammerIndex.value === null) {
+    candidate.jammers.push(editedJammer)
+    candidateExtensions.jammers.push(editedExtension)
+  } else {
+    candidate.jammers[editingJammerIndex.value] = editedJammer
+    const extensionIndex = candidateExtensions.jammers.findIndex((extension) => extension.jammerId === editedJammer.id)
+    if (extensionIndex === -1) candidateExtensions.jammers.push(editedExtension)
+    else candidateExtensions.jammers[extensionIndex] = editedExtension
+  }
+  synchronizePlatformJammerIds(candidate, editedJammer.id)
+  const issue = [
+    ...inspectScenarioConfig(candidate).result.errors,
+    ...inspectScenarioUiExtensions(candidateExtensions, candidate.jammers.map((jammer) => jammer.id)).result.errors,
+  ].find((item) => (
+    item.fieldPath.startsWith('jammers') || item.fieldPath.endsWith('.jammerIds')
+      || item.fieldPath.startsWith('uiExtensions.jammers')
+  ))
+  if (issue !== undefined) {
+    jammerEditorError.value = issue.message
+    return false
+  }
+
+  draft.value.config.jammers = candidate.jammers
+  draft.value.config.platforms = candidate.platforms
+  draft.value.uiExtensions.jammers = candidateExtensions.jammers
+  markDirty()
+  jammerDialogVisible.value = false
+  jammerFeedback.value = editingJammerIndex.value === null ? '干扰设备已新增，保存草稿后生效。' : '干扰设备已更新，保存草稿后生效。'
+  jammerFeedbackStatus.value = 'success'
+  return true
+}
+
+/**
+ * 删除指定干扰设备并清理平台反向关联。
+ * @param jammer 需要删除的干扰设备。
+ * @param index 干扰设备在当前草稿集合中的位置。
+ * @returns 删除成功时返回 `true`。
+ * @sideEffects 从草稿移除干扰设备及平台关联，并设置未保存标记。
+ */
+function removeJammer(jammer: Jammer, index: number): boolean {
+  if (draft.value === null) return false
+  const candidate = structuredClone(toRaw(draft.value.config))
+  candidate.jammers.splice(index, 1)
+  const candidateExtensions = structuredClone(toRaw(draft.value.uiExtensions))
+  candidateExtensions.jammers = candidateExtensions.jammers.filter((extension) => extension.jammerId !== jammer.id)
+  synchronizePlatformJammerIds(candidate, jammer.id)
+  draft.value.config.jammers = candidate.jammers
+  draft.value.config.platforms = candidate.platforms
+  draft.value.uiExtensions.jammers = candidateExtensions.jammers
+  markDirty()
+  jammerFeedback.value = '干扰设备已删除，保存草稿后生效。'
+  jammerFeedbackStatus.value = 'success'
+  return true
+}
+
+/**
+ * 读取干扰设备类型的中文名称。
+ * @param type 干扰设备类型枚举值。
+ * @returns 对应中文名称。
+ */
+function jammerTypeLabel(type: Jammer['type']): string {
+  return JAMMER_TYPE_LABELS[type]
+}
+
+function jammerExtension(jammerId: string): JammerUiExtension | undefined {
+  return draft.value?.uiExtensions.jammers.find((extension) => extension.jammerId === jammerId)
+}
+
+function setJammerEnabled(jammerId: string, enabled: boolean): void {
+  const extension = jammerExtension(jammerId)
+  if (extension === undefined) return
+  extension.enabled = enabled
+  markDirty()
+}
+
+/**
  * 重新加载确定性场景草稿。
  * @returns 加载流程结束后兑现且不返回值的 Promise。
  * @sideEffects 调用场景 Store，并以服务端草稿替换当前页面数据。
@@ -510,6 +730,8 @@ async function saveScenario(): Promise<void> {
     platformFeedback.value = '场景草稿已保存。'
     linkFeedback.value = '场景草稿已保存。'
     linkFeedbackStatus.value = 'success'
+    jammerFeedback.value = '场景草稿已保存。'
+    jammerFeedbackStatus.value = 'success'
   }
 }
 
@@ -779,6 +1001,60 @@ onMounted(() => {
             </div>
           </section>
         </el-tab-pane>
+
+        <el-tab-pane label="干扰设备" name="jammers">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-jammer-title">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">干扰设备</p>
+                <h3 id="scenario-jammer-title">干扰参数配置</h3>
+              </div>
+              <div class="platform-counts" aria-label="干扰设备类型覆盖">
+                <el-tag type="primary">设备 {{ draft.config.jammers.length }}</el-tag>
+                <el-tag :type="jammerTypeCount === 2 ? 'success' : 'warning'">已配置 {{ jammerTypeCount }} / 2 类</el-tag>
+              </div>
+            </div>
+
+            <el-alert
+              v-if="jammerFeedback"
+              class="platform-feedback"
+              :type="jammerFeedbackStatus"
+              :closable="false"
+              :title="jammerFeedback"
+              show-icon
+            />
+
+            <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
+              <el-table-column prop="id" label="设备 ID" min-width="130" />
+              <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
+              <el-table-column prop="platformId" label="归属平台" min-width="130" />
+              <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
+              <el-table-column prop="bandwidth" label="带宽（MHz）" min-width="110" />
+              <el-table-column prop="defaultPower" label="默认功率（W）" min-width="115" />
+              <el-table-column label="自动检测" width="90"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
+              <el-table-column prop="detectionRange" label="检测范围（m）" min-width="120" />
+              <el-table-column label="方向（°）" width="90"><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
+              <el-table-column label="持续时间（s）" width="110"><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
+              <el-table-column label="启用" width="80">
+                <template #default="{ row }">
+                  <el-switch :model-value="jammerExtension(row.id)?.enabled" :disabled="pending || draft.locked" :data-testid="`toggle-jammer-${row.id}`" @update:model-value="setJammerEnabled(row.id, $event)" />
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" fixed="right" width="140">
+                <template #default="{ row, $index }">
+                  <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-jammer-${$index}`" @click="openJammerEditor(row, $index)">编辑</el-button>
+                  <el-popconfirm title="确认删除该干扰设备？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeJammer(row, $index)">
+                    <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-jammer-${$index}`">删除</el-button></template>
+                  </el-popconfirm>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="platform-actions">
+              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
+            </div>
+          </section>
+        </el-tab-pane>
       </el-tabs>
     </el-form>
 
@@ -842,9 +1118,7 @@ onMounted(() => {
               </el-select>
             </el-form-item>
             <el-form-item label="干扰器">
-              <el-select v-model="platformEditor.jammerIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择干扰器" style="width: 100%">
-                <el-option v-for="jammer in draft?.config.jammers ?? []" :key="jammer.id" :label="jammer.id" :value="jammer.id" />
-              </el-select>
+              <el-input :model-value="platformEditor.jammerIds.join(', ')" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
             </el-form-item>
           </div>
         </section>
@@ -924,8 +1198,8 @@ onMounted(() => {
         <section class="link-editor-section" aria-labelledby="link-communication-title">
           <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
           <div class="link-editor-grid">
-            <el-form-item label="频率（MHz）"><el-input-number v-model="linkEditor.frequency" :min="LINK_MHZ_MINIMUM_STEP" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-frequency" @input="trackLinkFrequencyInput" /></el-form-item>
-            <el-form-item label="带宽（MHz）"><el-input-number v-model="linkEditor.bandwidth" :min="LINK_MHZ_MINIMUM_STEP" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-bandwidth" @input="trackLinkBandwidthInput" /></el-form-item>
+            <el-form-item label="频率（MHz）"><el-input-number v-model="linkEditor.frequency" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-frequency" @input="trackLinkFrequencyInput" /></el-form-item>
+            <el-form-item label="带宽（MHz）"><el-input-number v-model="linkEditor.bandwidth" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-bandwidth" @input="trackLinkBandwidthInput" /></el-form-item>
             <el-form-item label="发射功率（W）"><el-input-number v-model="linkEditor.txPower" :min="0" controls-position="right" data-testid="link-power" /></el-form-item>
             <el-form-item label="数据速率（Mbps）"><el-input-number v-model="linkEditor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
             <el-form-item label="发射天线增益（dBi）"><el-input-number v-model="linkEditor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
@@ -958,6 +1232,56 @@ onMounted(() => {
       <template #footer>
         <el-button data-testid="cancel-link" @click="linkDialogVisible = false">取消</el-button>
         <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-link" @click="applyLinkEditor">确认</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="jammerDialogVisible"
+      class="link-editor-dialog"
+      :title="editingJammerIndex === null ? '新增干扰设备' : '编辑干扰设备'"
+      width="min(760px, calc(100vw - 2rem))"
+      destroy-on-close
+      append-to-body
+      data-testid="jammer-dialog"
+    >
+      <el-alert v-if="jammerEditorError" class="platform-feedback" type="error" :closable="false" :title="jammerEditorError" show-icon />
+      <el-form v-if="jammerEditor && jammerUiEditor" class="link-editor-form" :model="jammerEditor" label-position="top" :disabled="pending || draft?.locked">
+        <section class="link-editor-section" aria-labelledby="jammer-basic-title">
+          <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="干扰设备 ID"><el-input v-model="jammerEditor.id" :disabled="editingJammerIndex !== null" data-testid="jammer-id" /></el-form-item>
+            <el-form-item label="干扰类型">
+              <el-select v-model="jammerEditor.type" style="width: 100%" data-testid="jammer-type">
+                <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="归属平台">
+              <el-select v-model="jammerEditor.platformId" filterable style="width: 100%" data-testid="jammer-platform">
+                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="自动检测">
+              <el-switch v-model="jammerEditor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" />
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
+          <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="默认功率（W）"><el-input-number v-model="jammerEditor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
+            <el-form-item label="检测范围（m）"><el-input-number v-model="jammerEditor.detectionRange" :min="0" controls-position="right" data-testid="jammer-range" /></el-form-item>
+            <el-form-item label="频率（MHz）"><el-input-number v-model="jammerEditor.frequency" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="jammer-frequency" @input="trackJammerFrequencyInput" /></el-form-item>
+            <el-form-item label="带宽（MHz）"><el-input-number v-model="jammerEditor.bandwidth" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="jammer-bandwidth" @input="trackJammerBandwidthInput" /></el-form-item>
+            <el-form-item label="方向（°）"><el-input-number v-model="jammerUiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
+            <el-form-item label="持续时间（s）"><el-input-number v-model="jammerUiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
+            <el-form-item label="启用"><el-switch v-model="jammerUiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
+          </div>
+        </section>
+      </el-form>
+      <template #footer>
+        <el-button data-testid="cancel-jammer" @click="jammerDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-jammer" @click="applyJammerEditor">确认</el-button>
       </template>
     </el-dialog>
   </section>

@@ -6,9 +6,15 @@ import {
   SITUATION_METRICS_F00042,
   formatBer,
   formatSimulationTime,
+  getJammerTypeLabel,
 } from '../../src/features/situation/situation-model'
 
 describe('态势固定帧模型', () => {
+  it('按规范 jammer type 统一 SPOT 为瞄准式', () => {
+    expect(getJammerTypeLabel('JAM-SPOT-01-TX')).toBe('瞄准式')
+    expect(getJammerTypeLabel('JAM-WB-01-TX')).toBe('宽带压制')
+  })
+
   it('使指标、链路和事件保持在同一固定帧', () => {
     expect(SITUATION_FRAME_F00042.frameId).toBe('F-00042')
     expect(SITUATION_METRICS_F00042.frameId).toBe('F-00042')

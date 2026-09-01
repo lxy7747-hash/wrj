@@ -348,7 +348,7 @@ describe('P0 deterministic mock server', () => {
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('加载、校验、保存并重置 P2-3 场景草稿', async () => {
+  it('加载、校验、保存并重置 P2-4 场景草稿', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -357,7 +357,11 @@ describe('P0 deterministic mock server', () => {
 
     const loaded = await load().expect(200)
     const original = (loaded.body as { data: ScenarioDraft }).data
-    expect(original).toMatchObject({ revision: 4, config: { scenario: { name: '跨海通联演示' } } })
+    expect(original).toMatchObject({
+      revision: 4,
+      config: { scenario: { name: '跨海通联演示' } },
+      uiExtensions: { jammers: [{ jammerId: 'JAM-WB-01-TX' }, { jammerId: 'JAM-SPOT-01-TX' }], sensors: [] },
+    })
 
     const changed = structuredClone(original.config)
     changed.scenario.name = '台海通联验证场景'
@@ -366,7 +370,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(changed)
+      .send({ config: changed, uiExtensions: original.uiExtensions })
       .expect(200)
     expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 5,
@@ -379,7 +383,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'ADMIN')
-      .send(invalid)
+      .send({ config: invalid, uiExtensions: original.uiExtensions })
       .expect(422)
     expect(rejected.body).toMatchObject({
       ok: false,
@@ -392,7 +396,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(platformMutation)
+      .send({ config: platformMutation, uiExtensions: original.uiExtensions })
       .expect(200)
     const platformSavedDraft = (platformSaved.body as { data: ScenarioDraft }).data
     expect(platformSavedDraft.revision).toBe(6)
@@ -404,11 +408,57 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(linkMutation)
+      .send({ config: linkMutation, uiExtensions: original.uiExtensions })
       .expect(200)
     const linkSavedDraft = (linkSaved.body as { data: ScenarioDraft }).data
     expect(linkSavedDraft.revision).toBe(7)
     expect(linkSavedDraft.config.links[0]?.frequency).toBe(4600)
+
+    const jammerMutation = structuredClone(linkSavedDraft.config)
+    jammerMutation.jammers[0]!.defaultPower = 0
+    jammerMutation.jammers[0]!.detectionRange = 0
+    jammerMutation.jammers[0]!.frequency = 0.0001
+    jammerMutation.jammers[0]!.bandwidth = Number.MIN_VALUE
+    const jammerSaved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: jammerMutation, uiExtensions: original.uiExtensions })
+      .expect(200)
+    const jammerSavedDraft = (jammerSaved.body as { data: ScenarioDraft }).data
+    expect(jammerSavedDraft.revision).toBe(8)
+    expect(jammerSavedDraft.config.jammers[0]).toMatchObject({
+      defaultPower: 0,
+      detectionRange: 0,
+      frequency: 0.0001,
+      bandwidth: Number.MIN_VALUE,
+    })
+
+    const invalidJammer = structuredClone(jammerMutation)
+    invalidJammer.jammers[0]!.detectionRange = -1
+    const invalidJammerRejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: invalidJammer, uiExtensions: original.uiExtensions })
+      .expect(422)
+    expect(invalidJammerRejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'jammers[0].detectionRange' },
+    })
+
+    const invalidPower = structuredClone(jammerMutation)
+    invalidPower.jammers[0]!.defaultPower = -1
+    const invalidPowerRejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: invalidPower, uiExtensions: original.uiExtensions })
+      .expect(422)
+    expect(invalidPowerRejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'jammers[0].defaultPower' },
+    })
 
     const invalidLink = structuredClone(linkMutation)
     invalidLink.links[0]!.bandwidth = 0
@@ -416,7 +466,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(invalidLink)
+      .send({ config: invalidLink, uiExtensions: original.uiExtensions })
       .expect(422)
     expect(invalidLinkRejected.body).toMatchObject({
       ok: false,
@@ -439,7 +489,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(overLimit)
+      .send({ config: overLimit, uiExtensions: original.uiExtensions })
       .expect(422)
     expect(limitRejected.body).toMatchObject({
       ok: false,
@@ -452,7 +502,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(readOnlyMutation)
+      .send({ config: readOnlyMutation, uiExtensions: original.uiExtensions })
       .expect(422)
     expect(readOnlyRejected.body).toMatchObject({
       ok: false,
@@ -472,7 +522,7 @@ describe('P0 deterministic mock server', () => {
     })
   })
 
-  it('直接 PUT 忽略客户端链路反向关联并持久化规范结果', async () => {
+  it('直接 PUT 忽略客户端链路和干扰设备反向关联并持久化规范结果', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -481,13 +531,17 @@ describe('P0 deterministic mock server', () => {
     const original = (await load().expect(200)).body as { data: ScenarioDraft }
     const inconsistent = structuredClone(original.data.config)
     inconsistent.links[0]!.targetPlatformId = 'AIR-02'
-    inconsistent.platforms.forEach((platform) => { platform.linkIds = ['CLIENT-OWNED'] })
+    inconsistent.jammers[0]!.platformId = 'AIR-01'
+    inconsistent.platforms.forEach((platform) => {
+      platform.linkIds = ['CLIENT-OWNED']
+      platform.jammerIds = ['CLIENT-OWNED']
+    })
 
     const response = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(inconsistent)
+      .send({ config: inconsistent, uiExtensions: original.data.uiExtensions })
       .expect(200)
     const saved = (response.body as { data: ScenarioDraft }).data
     expect(saved.revision).toBe(original.data.revision + 1)
@@ -495,6 +549,9 @@ describe('P0 deterministic mock server', () => {
       expect(platform.linkIds).toEqual(saved.config.links
         .filter((link) => link.sourcePlatformId === platform.id || link.targetPlatformId === platform.id)
         .map((link) => link.id))
+      expect(platform.jammerIds).toEqual(saved.config.jammers
+        .filter((jammer) => jammer.platformId === platform.id)
+        .map((jammer) => jammer.id))
     })
     expect((await load().expect(200)).body).toMatchObject({ data: saved })
 
@@ -504,13 +561,90 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send(malformed)
+      .send({ config: malformed, uiExtensions: saved.uiExtensions })
       .expect(422)
     expect(rejected.body).toMatchObject({
       ok: false,
       error: { code: 'VALIDATION_FAILED', fieldPath: 'platforms[0]' },
     })
     expect((await load().expect(200)).body).toMatchObject({ data: saved })
+  })
+
+  it('按 jammerId 原子保存扩展并拒绝不匹配、越界和只读传感器', async () => {
+    const { baseUrl } = await startServer()
+    const load = () => request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+    const original = ((await load().expect(200)).body as { data: ScenarioDraft }).data
+
+    const malformedWrapper = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: original.config })
+      .expect(422)
+    expect(malformedWrapper.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'request' },
+    })
+
+    const mismatchedIdConfig = structuredClone(original.config)
+    mismatchedIdConfig.scenario.id = 'SCN-OTHER'
+    const mismatchedId = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: mismatchedIdConfig, uiExtensions: original.uiExtensions })
+      .expect(422)
+    expect(mismatchedId.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'scenario.id' },
+    })
+    expect(((await load().expect(200)).body as { data: ScenarioDraft }).data).toEqual(original)
+
+    const changedExtensions = structuredClone(original.uiExtensions)
+    changedExtensions.jammers.reverse()
+    changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-SPOT-01-TX')!.direction = 360
+    changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-WB-01-TX')!.enabled = false
+
+    const savedResponse = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: original.config, uiExtensions: changedExtensions })
+      .expect(200)
+    const saved = (savedResponse.body as { data: ScenarioDraft }).data
+    expect(saved.revision).toBe(original.revision + 1)
+    expect(saved.uiExtensions).toEqual(changedExtensions)
+
+    const invalidCases = [
+      {
+        fieldPath: 'uiExtensions.jammers',
+        uiExtensions: { ...changedExtensions, jammers: [changedExtensions.jammers[0]] },
+      },
+      {
+        fieldPath: 'uiExtensions.jammers[0].duration',
+        uiExtensions: {
+          ...changedExtensions,
+          jammers: [{ ...changedExtensions.jammers[0]!, duration: -1 }, changedExtensions.jammers[1]],
+        },
+      },
+      {
+        fieldPath: 'uiExtensions.sensors',
+        uiExtensions: { ...changedExtensions, sensors: [{ sensorId: 'ESM-01' }] },
+      },
+    ]
+    for (const invalid of invalidCases) {
+      const rejected = await request(baseUrl)
+        .put('/api/v1/scenarios/SCN-001')
+        .set('Origin', ORIGIN)
+        .set('X-Demo-Role', 'OPERATOR')
+        .send({ config: saved.config, uiExtensions: invalid.uiExtensions })
+        .expect(422)
+      expect(rejected.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', fieldPath: invalid.fieldPath } })
+      expect(((await load().expect(200)).body as { data: ScenarioDraft }).data).toEqual(saved)
+    }
   })
 
   it('rejects missing roles and unknown scenario identifiers', async () => {

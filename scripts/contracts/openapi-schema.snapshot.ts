@@ -3601,7 +3601,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'PutapiV1ScenariosScenarioIdRequest': {
-    '$ref': '#/components/schemas/ScenarioConfig'
+    '$ref': '#/components/schemas/ScenarioDraftUpdate'
   },
   'PutapiV1ScenariosScenarioIdResponse': {
     'additionalProperties': false,
@@ -4270,6 +4270,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'revision',
       'officialLibraryChanged',
       'locked'
+    ],
+    'type': 'object'
+  },
+  'ScenarioDraftUpdate': {
+    'additionalProperties': false,
+    'properties': {
+      'config': {
+        '$ref': '#/components/schemas/ScenarioConfig'
+      },
+      'uiExtensions': {
+        '$ref': '#/components/schemas/ScenarioUiExtensions'
+      }
+    },
+    'required': [
+      'config',
+      'uiExtensions'
     ],
     'type': 'object'
   },

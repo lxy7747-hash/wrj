@@ -456,11 +456,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
-   * 保存指定场景的基础、环境、时序、平台、航点和链路参数。
-   * @param req 包含角色提示、场景编号和完整配置的请求。
+   * 保存指定场景的基础、环境、时序、平台、航点、链路和干扰设备参数。
+   * @param req 包含角色提示、场景编号、完整配置和界面扩展的请求。
    * @param res 接收更新后草稿或字段校验错误的响应。
    * @returns 无返回值。
-   * @remarks 校验通过时递增场景草稿修订号，干扰器、传感器、输出和信息需求区段保持不变。
+   * @remarks 校验通过时递增场景草稿修订号，传感器、输出和信息需求区段保持不变。
    */
   app.put('/api/v1/scenarios/:scenarioId', (req, res) => {
     const scenarioId = req.params.scenarioId

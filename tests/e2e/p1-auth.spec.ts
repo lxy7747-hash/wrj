@@ -295,10 +295,13 @@ test.describe('P2-1 scenario business loop', () => {
     expect((await saved).status()).toBe(200)
     expect(putBodies).toHaveLength(1)
     expect(putBodies[0]).toMatchObject({
-      scenario: {
-        name: '跨海通联时区验证场景',
-        startTime: '2026-08-07T01:30:00Z',
+      config: {
+        scenario: {
+          name: '跨海通联时区验证场景',
+          startTime: '2026-08-07T01:30:00Z',
+        },
       },
+      uiExtensions: { jammers: expect.any(Array), sensors: [] },
     })
 
     const reloaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -403,7 +406,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
 
     const acceptedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: fiftyConfig,
+      data: { config: fiftyConfig, uiExtensions: baseline.uiExtensions },
     })
     expect(acceptedResponse.status()).toBe(200)
     const acceptedDraft = ((await acceptedResponse.json()) as ApiSuccess<ScenarioDraft>).data
@@ -424,7 +427,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     })
     const rejectedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: fiftyOneConfig,
+      data: { config: fiftyOneConfig, uiExtensions: acceptedDraft.uiExtensions },
     })
     expect(rejectedResponse.status()).toBe(422)
     expect(await rejectedResponse.json()).toMatchObject({
@@ -457,13 +460,13 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await frequency.fill('0')
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.getByText('链路频率不能小于 0.001 MHz。', { exact: true })).toBeVisible()
+  await expect(page.getByText('链路频率必须大于 0 MHz。', { exact: true })).toBeVisible()
   await expect(addedRow).toHaveCount(0)
   await frequency.fill('4500')
   await bandwidth.fill('0')
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.getByText('链路带宽不能小于 0.001 MHz。', { exact: true })).toBeVisible()
+  await expect(page.getByText('链路带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
   await expect(addedRow).toHaveCount(0)
   await bandwidth.fill('20')
   await page.getByTestId('apply-link').click()
@@ -527,6 +530,111 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await page.getByRole('tab', { name: '平台与航点' }).click()
   await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
   await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and independent switches', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await loaded).status()).toBe(200)
+  await page.getByRole('tab', { name: '干扰设备' }).click()
+
+  await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
+  await expect(page.getByTestId('toggle-jammer-JAM-SPOT-01-TX')).not.toHaveClass(/is-checked/)
+  await page.getByTestId('toggle-jammer-JAM-SPOT-01-TX').click()
+  await expect(page.getByTestId('toggle-jammer-JAM-SPOT-01-TX')).toHaveClass(/is-checked/)
+  await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
+
+  await page.getByTestId('add-jammer').click()
+  const frequency = page.getByTestId('jammer-frequency').locator('input')
+  const bandwidth = page.getByTestId('jammer-bandwidth').locator('input')
+  await frequency.fill('0')
+  await page.getByTestId('apply-jammer').click()
+  await expect(page.getByText('干扰频率必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await frequency.fill('0.0001')
+  await bandwidth.fill('0')
+  await page.getByTestId('apply-jammer').click()
+  await expect(page.getByText('干扰带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await bandwidth.fill('0.0002')
+  await page.getByTestId('jammer-type').click()
+  await page.getByRole('option', { name: '瞄准式', exact: true }).click()
+  await page.getByTestId('jammer-platform').click()
+  await page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true }).click()
+  await page.getByTestId('jammer-power').locator('input').fill('0')
+  await page.getByTestId('jammer-range').locator('input').fill('0')
+  await page.getByTestId('jammer-direction').locator('input').fill('270')
+  await page.getByTestId('jammer-duration').locator('input').fill('90')
+  await page.getByTestId('apply-jammer').click()
+
+  const addedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
+  await expect(addedRow).toContainText('瞄准式')
+  await expect(addedRow).toContainText('270')
+  await addedRow.getByRole('button', { name: '编辑' }).click()
+  await page.getByTestId('jammer-platform').click()
+  await page.getByRole('option', { name: '空中无人作业节点 U02（AIR-02）', exact: true }).click()
+  await page.getByTestId('jammer-direction').locator('input').fill('360')
+  await page.getByTestId('jammer-duration').locator('input').fill('120')
+  await page.getByTestId('apply-jammer').click()
+
+  await page.getByTestId('delete-jammer-0').click()
+  await page.getByRole('button', { name: '删除', exact: true }).last().click()
+  await expect(page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-WB-01-TX' })).toHaveCount(0)
+
+  await page.getByRole('tab', { name: '平台与航点' }).click()
+  const platformTable = page.getByTestId('platform-table')
+  await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-jammer-ids')).toHaveValue(/JAM-CFG-001/)
+  await page.getByTestId('cancel-platform').click()
+  await platformTable.getByRole('row').filter({ hasText: '后方指挥节点' }).getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-jammer-ids')).not.toHaveValue(/JAM-CFG-001/)
+  await page.getByTestId('cancel-platform').click()
+
+  const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByTestId('save-scenario').click()
+  const saved = await savedResponse
+  expect(saved.status()).toBe(200)
+  const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
+  expect(savedDraft.config.jammers.find((jammer) => jammer.id === 'JAM-CFG-001')).toEqual({
+    id: 'JAM-CFG-001',
+    platformId: 'AIR-02',
+    type: 'SPOT',
+    defaultPower: 0,
+    frequency: 0.0001,
+    bandwidth: 0.0002,
+    autoDetect: false,
+    detectionRange: 0,
+  })
+  expect(savedDraft.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
+  expect(savedDraft.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
+    jammerId: 'JAM-CFG-001',
+    direction: 360,
+    duration: 120,
+    enabled: true,
+  })
+  expect(new Set(savedDraft.uiExtensions.jammers.map((extension) => extension.jammerId))).toEqual(
+    new Set(savedDraft.config.jammers.map((jammer) => jammer.id)),
+  )
+  expect(savedDraft.config.jammers.every((jammer) => !('direction' in jammer) && !('duration' in jammer) && !('enabled' in jammer))).toBe(true)
+
+  const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.reload()
+  expect((await reloadedResponse).status()).toBe(200)
+  expect(await loadScenarioDraft(request)).toEqual(savedDraft)
+  await page.getByRole('tab', { name: '干扰设备' }).click()
+  const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
+  await expect(reloadedRow).toContainText('AIR-02')
+  await expect(reloadedRow).toContainText('360')
+  await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

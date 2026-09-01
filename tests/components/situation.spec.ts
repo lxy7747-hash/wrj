@@ -121,7 +121,7 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('空中无人作业节点 U01')
     expect(wrapper.text()).toContain('空中无人作业节点 U02')
     expect(wrapper.text()).toContain('空中无人作业节点 U03')
-    expect(wrapper.text()).toContain('机载点频干扰设备')
+    expect(wrapper.text()).toContain('机载瞄准式干扰设备')
     expect(wrapper.text()).toContain('地面宽带压制干扰设备')
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(webSocketSpy).not.toHaveBeenCalled()

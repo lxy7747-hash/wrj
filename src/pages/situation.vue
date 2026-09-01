@@ -14,6 +14,7 @@ import {
   SITUATION_METRICS_F00042,
   formatBer,
   formatSimulationTime,
+  getJammerTypeLabel,
   getPlatformName,
   type SituationLinkView,
 } from '../features/situation/situation-model'
@@ -222,7 +223,7 @@ function jammerTypeLabel(jammerId: string, platformId: string): string {
     .find((platform) => platform.platformId === platformId)?.type === 'AIRBORNE_MISSION_CLUSTER'
     ? '机载'
     : '地面'
-  return `${location}${jammerId.includes('WB') ? '宽带压制' : '点频'}干扰设备`
+  return `${location}${getJammerTypeLabel(jammerId)}干扰设备`
 }
 
 /**

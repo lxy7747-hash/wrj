@@ -32,7 +32,13 @@ import { useScenarioStore } from '../../src/stores/scenario'
 function scenarioDraft(): ScenarioDraft {
   return {
     config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
-    uiExtensions: { jammers: [], sensors: [] },
+    uiExtensions: {
+      jammers: [
+        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+      ],
+      sensors: [],
+    },
     revision: 4,
     officialLibraryChanged: false,
     locked: false,

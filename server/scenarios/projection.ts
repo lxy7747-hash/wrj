@@ -2,9 +2,10 @@ import type {
   ApiErrorCode,
   ScenarioConfig,
   ScenarioDraft,
+  ScenarioDraftUpdate,
   ScenarioId,
 } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
+import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type ScenarioProjectionResult<T> =
@@ -17,9 +18,18 @@ export type ScenarioProjectionResult<T> =
  * @remarks 每次调用都会创建新的可变配置，不共享基线引用。
  */
 function createDraft(): ScenarioDraft {
+  const config = loadFixtureProjection().scenario
   return {
-    config: loadFixtureProjection().scenario,
-    uiExtensions: { jammers: [], sensors: [] },
+    config,
+    uiExtensions: {
+      jammers: config.jammers.map((jammer) => ({
+        jammerId: jammer.id,
+        direction: jammer.type === 'BARRAGE' ? 360 : 45,
+        duration: jammer.type === 'BARRAGE' ? 120 : 60,
+        enabled: jammer.type === 'BARRAGE',
+      })),
+      sensors: [],
+    },
     revision: 4,
     officialLibraryChanged: false,
     locked: false,
@@ -34,30 +44,46 @@ function createDraft(): ScenarioDraft {
  * @remarks 只读取并比较值，不修改候选对象或当前草稿。
  */
 function changedReadOnlyField(candidate: Record<string, unknown>, current: ScenarioConfig): string | undefined {
-  const readOnlyFields = ['jammers', 'sensors', 'output', 'informationDemand'] as const
+  const readOnlyFields = ['sensors', 'output', 'informationDemand'] as const
   return readOnlyFields.find((field) => JSON.stringify(candidate[field]) !== JSON.stringify(current[field]))
 }
 
-function withDerivedPlatformLinkIds(value: unknown): unknown {
+/**
+ * 按链路端点和干扰设备归属重建平台反向关联。
+ * @param value 客户端提交的未知场景配置。
+ * @returns 带规范化 `linkIds` 和 `jammerIds` 的浅拷贝；结构不足时返回可继续校验的原值或副本。
+ * @remarks 不信任客户端反向关联，避免直接 PUT 形成不一致数据。
+ */
+function withDerivedPlatformAssociations(value: unknown): unknown {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
   const candidate = { ...value } as Record<string, unknown>
-  if (!Array.isArray(candidate.platforms) || !Array.isArray(candidate.links)) return candidate
+  if (!Array.isArray(candidate.platforms)) return candidate
 
   const linkIdsByPlatform = new Map<string, Set<string>>()
+  const jammerIdsByPlatform = new Map<string, Set<string>>()
   candidate.platforms.forEach((platform) => {
     if (typeof platform === 'object' && platform !== null && !Array.isArray(platform) && typeof platform.id === 'string') {
       linkIdsByPlatform.set(platform.id, new Set())
+      jammerIdsByPlatform.set(platform.id, new Set())
     }
   })
-  candidate.links.forEach((link) => {
+  if (Array.isArray(candidate.links)) candidate.links.forEach((link) => {
     if (typeof link !== 'object' || link === null || Array.isArray(link) || typeof link.id !== 'string') return
     for (const platformId of [link.sourcePlatformId, link.targetPlatformId]) {
       if (typeof platformId === 'string') linkIdsByPlatform.get(platformId)?.add(link.id)
     }
   })
+  if (Array.isArray(candidate.jammers)) candidate.jammers.forEach((jammer) => {
+    if (typeof jammer !== 'object' || jammer === null || Array.isArray(jammer) || typeof jammer.id !== 'string') return
+    if (typeof jammer.platformId === 'string') jammerIdsByPlatform.get(jammer.platformId)?.add(jammer.id)
+  })
   candidate.platforms = candidate.platforms.map((platform) => (
     typeof platform === 'object' && platform !== null && !Array.isArray(platform)
-      ? { ...platform, linkIds: typeof platform.id === 'string' ? [...(linkIdsByPlatform.get(platform.id) ?? [])] : [] }
+      ? {
+          ...platform,
+          linkIds: typeof platform.id === 'string' ? [...(linkIdsByPlatform.get(platform.id) ?? [])] : [],
+          jammerIds: typeof platform.id === 'string' ? [...(jammerIdsByPlatform.get(platform.id) ?? [])] : [],
+        }
       : platform
   ))
   return candidate
@@ -80,7 +106,7 @@ export class ScenarioProjection {
   }
 
   /**
-   * 校验并保存场景基础、环境、时序、平台、航点和链路参数。
+   * 校验并保存场景基础、环境、时序、平台、航点、链路和干扰设备参数。
    * @param scenarioId 路由中的场景编号。
    * @param value 客户端提交的未知 JSON 值。
    * @returns 保存后的草稿副本，或带字段路径的失败结果。
@@ -91,9 +117,14 @@ export class ScenarioProjection {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
 
-    const candidate = withDerivedPlatformLinkIds(value)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'config') || !Object.hasOwn(value, 'uiExtensions')) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '场景草稿更新结构不正确。' }
+    }
+    const update = value as unknown as ScenarioDraftUpdate
+    const candidate = withDerivedPlatformAssociations(update.config)
     const inspection = inspectScenarioConfig(candidate)
-    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined || inspection.links === undefined) {
+    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined || inspection.links === undefined || inspection.jammers === undefined) {
       const issue = inspection.result.errors[0]
       return {
         ok: false,
@@ -107,9 +138,24 @@ export class ScenarioProjection {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'scenario.id', message: '场景编号与请求地址不一致。' }
     }
 
+    const extensionInspection = inspectScenarioUiExtensions(update.uiExtensions, inspection.jammers.map((jammer) => jammer.id))
+    if (!extensionInspection.result.valid || extensionInspection.jammers === undefined) {
+      const issue = extensionInspection.result.errors[0]
+      return {
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        status: 422,
+        fieldPath: issue?.fieldPath ?? 'uiExtensions',
+        message: issue?.message ?? '场景界面扩展校验失败。',
+      }
+    }
+
     const readOnlyField = changedReadOnlyField(candidate as Record<string, unknown>, this.draft.config)
     if (readOnlyField !== undefined) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: readOnlyField, message: '当前阶段不允许修改该配置。' }
+    }
+    if (JSON.stringify(update.uiExtensions.sensors) !== JSON.stringify(this.draft.uiExtensions.sensors)) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'uiExtensions.sensors', message: '当前阶段不允许修改该配置。' }
     }
 
     this.draft = {
@@ -119,6 +165,11 @@ export class ScenarioProjection {
         scenario: inspection.identity,
         platforms: structuredClone(inspection.platforms),
         links: structuredClone(inspection.links),
+        jammers: structuredClone(inspection.jammers),
+      },
+      uiExtensions: {
+        ...this.draft.uiExtensions,
+        jammers: structuredClone(extensionInspection.jammers),
       },
       revision: this.draft.revision + 1,
     }

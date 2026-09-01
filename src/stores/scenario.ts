@@ -6,7 +6,7 @@ import type {
   ScenarioId,
   ValidationResult,
 } from '../contracts/domain-models'
-import { inspectScenarioConfig } from '../features/scenarios/scenario-validation'
+import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
 class InvalidScenarioResponseError extends Error {
@@ -48,7 +48,11 @@ function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   if (keys.length !== 5 || !keys.every((key) => ['config', 'uiExtensions', 'revision', 'officialLibraryChanged', 'locked'].includes(key))) return undefined
   if (!Number.isInteger(draft.revision) || (draft.revision ?? -1) < 0 || draft.officialLibraryChanged !== false || typeof draft.locked !== 'boolean') return undefined
   if (typeof uiExtensions !== 'object' || uiExtensions === null || !Array.isArray(uiExtensions.jammers) || !Array.isArray(uiExtensions.sensors)) return undefined
-  return inspectScenarioConfig(draft.config).result.valid ? draft as ScenarioDraft : undefined
+  const inspection = inspectScenarioConfig(draft.config)
+  if (!inspection.result.valid || inspection.jammers === undefined) return undefined
+  return inspectScenarioUiExtensions(uiExtensions, inspection.jammers.map((jammer) => jammer.id)).result.valid
+    ? draft as ScenarioDraft
+    : undefined
 }
 
 export const useScenarioStore = defineStore('scenario', {
@@ -165,10 +169,21 @@ export const useScenarioStore = defineStore('scenario', {
       this.panelState = 'VALIDATING'
       const inspection = inspectScenarioConfig(this.draft.config)
       this.validation = inspection.result
-      if (!inspection.result.valid) {
+      if (!inspection.result.valid || inspection.jammers === undefined) {
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
         this.resultMessage = inspection.result.errors[0]?.message ?? '场景配置校验失败。'
+        return false
+      }
+      const extensionInspection = inspectScenarioUiExtensions(
+        this.draft.uiExtensions,
+        inspection.jammers.map((jammer) => jammer.id),
+      )
+      if (!extensionInspection.result.valid) {
+        this.validation = extensionInspection.result
+        this.panelState = 'ERROR'
+        this.resultCode = 'VALIDATION_FAILED'
+        this.resultMessage = extensionInspection.result.errors[0]?.message ?? '场景界面扩展校验失败。'
         return false
       }
 
@@ -181,7 +196,7 @@ export const useScenarioStore = defineStore('scenario', {
             'Content-Type': 'application/json',
             'X-Demo-Role': auth.role,
           },
-          body: JSON.stringify(this.draft.config),
+          body: JSON.stringify({ config: this.draft.config, uiExtensions: this.draft.uiExtensions }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'

@@ -2,6 +2,7 @@ import type {
   DetectionEvent,
   LinkStatusSummary,
   PlatformStatus,
+  ScenarioConfig,
   SwitchEvent,
   TelemetryFrame,
   TelemetryLinkRecord,
@@ -58,6 +59,17 @@ export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {
   MICROWAVE: '微波链路',
   DATALINK: '新一代数传链路',
   LASER: '激光链路',
+}
+
+export const JAMMER_TYPE_LABELS: Record<ScenarioConfig['jammers'][number]['type'], string> = {
+  BARRAGE: '宽带压制',
+  SPOT: '瞄准式',
+}
+
+/** 按规范场景中的正式类型读取干扰设备中文名称。 */
+export function getJammerTypeLabel(jammerId: string): string {
+  const jammer = (deterministicData.scenario as ScenarioConfig).jammers.find((item) => item.id === jammerId)
+  return jammer === undefined ? jammerId : JAMMER_TYPE_LABELS[jammer.type]
 }
 
 const BUSINESS_NODE_TYPES = new Set<PlatformStatus['type']>([

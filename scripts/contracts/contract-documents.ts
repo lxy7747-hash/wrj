@@ -158,7 +158,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1Scenarios: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioList'),
   postapiV1Scenarios: operationSchemaBinding('#/components/schemas/ScenarioConfig', '201', '#/components/schemas/ScenarioDraft'),
   getapiV1ScenariosScenarioId: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioDraft'),
-  putapiV1ScenariosScenarioId: operationSchemaBinding('#/components/schemas/ScenarioConfig', '200', '#/components/schemas/ScenarioDraft'),
+  putapiV1ScenariosScenarioId: operationSchemaBinding('#/components/schemas/ScenarioDraftUpdate', '200', '#/components/schemas/ScenarioDraft'),
   postapiV1ScenariosScenarioIdValidate: operationSchemaBinding('#/components/schemas/ScenarioValidationRequest', '200', '#/components/schemas/ValidationResult'),
   postapiV1ScenariosScenarioIdUndo: operationSchemaBinding('#/components/schemas/MutationRequest', '200', '#/components/schemas/ScenarioDraft'),
   postapiV1ScenariosScenarioIdReset: operationSchemaBinding('#/components/schemas/MutationRequest', '200', '#/components/schemas/ScenarioDraft'),

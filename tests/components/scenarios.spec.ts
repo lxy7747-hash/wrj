@@ -28,7 +28,13 @@ const META: PageMeta = {
 function draft(revision = 4): ScenarioDraft {
   return {
     config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
-    uiExtensions: { jammers: [], sensors: [] },
+    uiExtensions: {
+      jammers: [
+        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+      ],
+      sensors: [],
+    },
     revision,
     officialLibraryChanged: false,
     locked: false,
@@ -361,6 +367,8 @@ describe('P2-1 场景管理页面', () => {
     const linkIds = document.querySelector<HTMLInputElement>('[data-testid="platform-link-ids"]')!
     expect(linkIds.readOnly).toBe(true)
     expect(linkIds.value).toContain('L-MW-01')
+    const jammerIds = document.querySelector<HTMLInputElement>('[data-testid="platform-jammer-ids"]')!
+    expect(jammerIds.readOnly).toBe(true)
     document.querySelector<HTMLElement>('[data-testid="delete-waypoint-0"]')!.click()
     const editName = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
     editName.value = '高空前出中继节点（编辑）'
@@ -372,11 +380,10 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
     await flushPromises()
     const selects = wrapper.findAllComponents({ name: 'ElSelect' })
-    expect(selects).toHaveLength(4)
+    expect(selects).toHaveLength(3)
     selects[0]!.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
     selects[1]!.vm.$emit('update:modelValue', 'ground')
     selects[2]!.vm.$emit('update:modelValue', [])
-    selects[3]!.vm.$emit('update:modelValue', [])
     const dialogNumbers = wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(-3)
     dialogNumbers[0]!.vm.$emit('update:modelValue', 119)
     dialogNumbers[1]!.vm.$emit('update:modelValue', 24)
@@ -414,15 +421,15 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === testId)!
     const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === testId)!
-    expect(inputNumber('link-frequency').props()).toMatchObject({ min: LINK_MHZ_MINIMUM_STEP, step: LINK_MHZ_MINIMUM_STEP })
-    expect(inputNumber('link-bandwidth').props()).toMatchObject({ min: LINK_MHZ_MINIMUM_STEP, step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
     inputNumber('link-frequency').vm.$emit('input', 0)
     inputNumber('link-frequency').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
     expect(scenario.draft?.config.links).toHaveLength(originalCount)
     expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('链路频率不能小于 0.001 MHz。')
+    expect(document.body.textContent).toContain('链路频率必须大于 0 MHz。')
     inputNumber('link-frequency').vm.$emit('input', 193500000)
     inputNumber('link-frequency').vm.$emit('update:modelValue', 193500000)
     inputNumber('link-bandwidth').vm.$emit('input', 0)
@@ -431,7 +438,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(scenario.draft?.config.links).toHaveLength(originalCount)
     expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('链路带宽不能小于 0.001 MHz。')
+    expect(document.body.textContent).toContain('链路带宽必须大于 0 MHz。')
     select('link-type').vm.$emit('update:modelValue', 'LASER')
     select('link-source').vm.$emit('update:modelValue', 'CMD-01')
     select('link-target').vm.$emit('update:modelValue', 'UAV-01')
@@ -495,5 +502,108 @@ describe('P2-1 场景管理页面', () => {
 
     const errorAlert = wrapper.findAllComponents({ name: 'ElAlert' }).find((component) => component.props('title') === '至少需要两个场景实体才能新增链路。')
     expect(errorAlert?.props('type')).toBe('error')
+  })
+
+  it('新增、编辑和删除干扰设备时同步归属平台关联', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, {
+      attachTo: document.body,
+      global: {
+        plugins: [pinia, ElementPlus],
+        stubs: { ElPopconfirm: { emits: ['confirm'], template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>' } },
+      },
+    })
+
+    await wrapper.get('#tab-jammers').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('已配置 2 / 2 类')
+    const originalCount = scenario.draft!.config.jammers.length
+    await wrapper.get('[data-testid="add-jammer"]').trigger('click')
+    await flushPromises()
+    const select = (testId: string) => wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === testId)!
+    const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find((component) => component.attributes('data-testid') === testId)!
+    const autoDetect = wrapper.findAllComponents({ name: 'ElSwitch' })
+      .find((component) => component.attributes('data-testid') === 'jammer-auto-detect')!
+    expect(inputNumber('jammer-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('jammer-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+
+    inputNumber('jammer-frequency').vm.$emit('input', 0)
+    inputNumber('jammer-frequency').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.jammers).toHaveLength(originalCount)
+    expect(document.body.textContent).toContain('干扰频率必须大于 0 MHz。')
+
+    select('jammer-type').vm.$emit('update:modelValue', 'SPOT')
+    select('jammer-platform').vm.$emit('update:modelValue', 'CMD-01')
+    autoDetect.vm.$emit('update:modelValue', true)
+    inputNumber('jammer-power').vm.$emit('update:modelValue', 60)
+    inputNumber('jammer-range').vm.$emit('update:modelValue', 120000)
+    inputNumber('jammer-frequency').vm.$emit('input', 3200)
+    inputNumber('jammer-frequency').vm.$emit('update:modelValue', 3200)
+    inputNumber('jammer-bandwidth').vm.$emit('input', 0)
+    inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.jammers).toHaveLength(originalCount)
+    expect(document.body.textContent).toContain('干扰带宽必须大于 0 MHz。')
+    inputNumber('jammer-direction').vm.$emit('update:modelValue', 270)
+    inputNumber('jammer-duration').vm.$emit('update:modelValue', 90)
+    wrapper.findAllComponents({ name: 'ElSwitch' })
+      .find((component) => component.attributes('data-testid') === 'jammer-enabled')!
+      .vm.$emit('update:modelValue', false)
+    inputNumber('jammer-frequency').vm.$emit('input', undefined)
+    inputNumber('jammer-bandwidth').vm.$emit('input', 15)
+    inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', 15)
+    inputNumber('jammer-bandwidth').vm.$emit('input', undefined)
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+
+    expect(scenario.draft?.config.jammers).toHaveLength(originalCount + 1)
+    expect(scenario.draft?.config.jammers.at(-1)).toEqual({
+      id: 'JAM-CFG-001',
+      platformId: 'CMD-01',
+      type: 'SPOT',
+      defaultPower: 60,
+      frequency: 3200,
+      bandwidth: 15,
+      autoDetect: true,
+      detectionRange: 120000,
+    })
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'CMD-01')?.jammerIds).toContain('JAM-CFG-001')
+    expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
+      jammerId: 'JAM-CFG-001',
+      direction: 270,
+      duration: 90,
+      enabled: false,
+    })
+
+    wrapper.findAllComponents({ name: 'ElSwitch' })
+      .find((component) => component.attributes('data-testid') === 'toggle-jammer-JAM-SPOT-01-TX')!
+      .vm.$emit('update:modelValue', true)
+    await nextTick()
+    expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-WB-01-TX')?.enabled).toBe(true)
+    expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-SPOT-01-TX')?.enabled).toBe(true)
+
+    await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
+    await flushPromises()
+    select('jammer-platform').vm.$emit('update:modelValue', 'AIR-01')
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.jammers[0]?.platformId).toBe('AIR-01')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).not.toContain('JAM-WB-01-TX')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-01')?.jammerIds).toContain('JAM-WB-01-TX')
+
+    await wrapper.get('[data-testid="delete-jammer-0"]').trigger('click')
+    await nextTick()
+    expect(scenario.draft?.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
+    expect(scenario.draft?.config.platforms.every((platform) => !platform.jammerIds.includes('JAM-WB-01-TX'))).toBe(true)
+    expect(scenario.draft?.uiExtensions.jammers.some((extension) => extension.jammerId === 'JAM-WB-01-TX')).toBe(false)
+    wrapper.unmount()
   })
 })

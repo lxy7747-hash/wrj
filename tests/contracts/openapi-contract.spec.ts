@@ -69,6 +69,25 @@ describe('OpenAPI contract audit', () => {
     expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(61)
   })
 
+  it('uses the minimal scenario draft update wrapper without server-owned fields', () => {
+    const { openApi } = loadContractDocuments()
+
+    expect(requestSchemaAt(openApi, '/api/v1/scenarios/{scenarioId}', 'put')).toEqual({
+      $ref: '#/components/schemas/PutapiV1ScenariosScenarioIdRequest',
+    })
+    expect(schemaAt(openApi, 'PutapiV1ScenariosScenarioIdRequest')).toEqual({
+      $ref: '#/components/schemas/ScenarioDraftUpdate',
+    })
+    expect(schemaAt(openApi, 'ScenarioDraftUpdate')).toMatchObject({
+      additionalProperties: false,
+      required: ['config', 'uiExtensions'],
+      properties: {
+        config: { $ref: '#/components/schemas/ScenarioConfig' },
+        uiExtensions: { $ref: '#/components/schemas/ScenarioUiExtensions' },
+      },
+    })
+  })
+
   it('rejects a duplicate operationId', () => {
     const { openApi } = loadContractDocuments()
     const candidate = structuredClone(openApi)

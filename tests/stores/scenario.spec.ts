@@ -9,7 +9,7 @@ import type {
   ScenarioConfig,
   ScenarioDraft,
 } from '../../src/contracts/domain-models'
-import { LINK_MHZ_MINIMUM_STEP, inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
+import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
@@ -31,7 +31,13 @@ const OPERATOR: Principal = {
 function scenarioDraft(revision = 4): ScenarioDraft {
   return {
     config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
-    uiExtensions: { jammers: [], sensors: [] },
+    uiExtensions: {
+      jammers: [
+        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+      ],
+      sensors: [],
+    },
     revision,
     officialLibraryChanged: false,
     locked: false,
@@ -121,7 +127,13 @@ describe('P2-1 场景 Store', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
-      expect.objectContaining({ method: 'PUT', body: JSON.stringify(scenarioDraft().config).replace('跨海通联演示', '台海通联验证场景') }),
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({
+          config: { ...scenarioDraft().config, scenario: { ...scenarioDraft().config.scenario, name: '台海通联验证场景' } },
+          uiExtensions: scenarioDraft().uiExtensions,
+        }),
+      }),
     )
     expect(scenario.draft?.revision).toBe(5)
     expect(scenario.dirty).toBe(false)
@@ -199,6 +211,7 @@ describe('P2-1 场景 Store', () => {
       { ...valid, extra: true },
       { ...valid, revision: -1 },
       { ...valid, uiExtensions: { jammers: null, sensors: [] } },
+      { ...valid, uiExtensions: { ...valid.uiExtensions, jammers: [valid.uiExtensions.jammers[0]!] } },
       { ...valid, config: { ...valid.config, schemaVersion: '2.0' } },
     ]
     const fetchSpy = vi.fn()
@@ -403,16 +416,16 @@ describe('P2-3 链路字段校验', () => {
     expect(inspectScenarioConfig(config).result.valid).toBe(true)
   })
 
-  it('频率和带宽共用 0.001 MHz 最小值', () => {
-    const minimum = scenarioDraft().config
-    minimum.links[0]!.frequency = LINK_MHZ_MINIMUM_STEP
-    minimum.links[0]!.bandwidth = LINK_MHZ_MINIMUM_STEP
-    expect(inspectScenarioConfig(minimum).result.valid).toBe(true)
+  it('频率和带宽接受任意有限正数，0.001 仅作为输入步长', () => {
+    const positive = scenarioDraft().config
+    positive.links[0]!.frequency = 0.0001
+    positive.links[0]!.bandwidth = Number.MIN_VALUE
+    expect(inspectScenarioConfig(positive).result.valid).toBe(true)
 
     for (const field of ['frequency', 'bandwidth'] as const) {
-      const belowMinimum = scenarioDraft().config
-      belowMinimum.links[0]![field] = LINK_MHZ_MINIMUM_STEP - 0.0001
-      expect(inspectScenarioConfig(belowMinimum).result.errors.map((issue) => issue.fieldPath)).toContain(`links[0].${field}`)
+      const invalid = scenarioDraft().config
+      invalid.links[0]![field] = 0
+      expect(inspectScenarioConfig(invalid).result.errors.map((issue) => issue.fieldPath)).toContain(`links[0].${field}`)
     }
   })
 
@@ -442,5 +455,68 @@ describe('P2-3 链路字段校验', () => {
       mutate(config)
       expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
     }
+  })
+})
+
+describe('P2-4 干扰设备字段校验', () => {
+  it('覆盖两类干扰设备并允许没有干扰设备的场景', () => {
+    const config = scenarioDraft().config
+    expect(new Set(config.jammers.map((jammer) => jammer.type))).toEqual(new Set(['BARRAGE', 'SPOT']))
+
+    config.jammers = []
+    config.platforms.forEach((platform) => { platform.jammerIds = [] })
+    expect(inspectScenarioConfig(config).result.valid).toBe(true)
+  })
+
+  it('频率和带宽接受任意有限正数，功率和检测范围接受 0', () => {
+    const valid = scenarioDraft().config
+    valid.jammers[0]!.frequency = 0.0001
+    valid.jammers[0]!.bandwidth = Number.MIN_VALUE
+    valid.jammers[0]!.defaultPower = 0
+    valid.jammers[0]!.detectionRange = 0
+    expect(inspectScenarioConfig(valid).result.valid).toBe(true)
+  })
+
+  it('定位干扰设备标识、归属和全参数错误', () => {
+    const cases: Array<[string, (config: ScenarioConfig) => void]> = [
+      ['jammers', (config) => { config.jammers[1]!.id = config.jammers[0]!.id }],
+      ['jammers[0]', (config) => { delete (config.jammers[0] as unknown as Record<string, unknown>).frequency }],
+      ['jammers[0].id', (config) => { config.jammers[0]!.id = ' ' }],
+      ['jammers[0].platformId', (config) => { config.jammers[0]!.platformId = 'NOT-FOUND' }],
+      ['jammers[0].type', (config) => { config.jammers[0]!.type = 'UNKNOWN' as never }],
+      ['jammers[0].defaultPower', (config) => { config.jammers[0]!.defaultPower = -1 }],
+      ['jammers[0].frequency', (config) => { config.jammers[0]!.frequency = 0 }],
+      ['jammers[0].bandwidth', (config) => { config.jammers[0]!.bandwidth = 0 }],
+      ['jammers[0].autoDetect', (config) => { config.jammers[0]!.autoDetect = 'true' as never }],
+      ['jammers[0].detectionRange', (config) => { config.jammers[0]!.detectionRange = -1 }],
+    ]
+
+    for (const [fieldPath, mutate] of cases) {
+      const config = scenarioDraft().config
+      mutate(config)
+      expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
+  })
+
+  it('按 jammerId 校验一一对应的 UI 扩展边界', () => {
+    const { config, uiExtensions } = scenarioDraft()
+    expect(inspectScenarioUiExtensions(uiExtensions, config.jammers.map((jammer) => jammer.id)).result.valid).toBe(true)
+
+    const cases = [
+      ['uiExtensions.jammers', [{ ...uiExtensions.jammers[0] }, { ...uiExtensions.jammers[0] }]],
+      ['uiExtensions.jammers[0].jammerId', [{ ...uiExtensions.jammers[0], jammerId: '' }, uiExtensions.jammers[1]]],
+      ['uiExtensions.jammers[0].direction', [{ ...uiExtensions.jammers[0], direction: 361 }, uiExtensions.jammers[1]]],
+      ['uiExtensions.jammers[0].duration', [{ ...uiExtensions.jammers[0], duration: -1 }, uiExtensions.jammers[1]]],
+      ['uiExtensions.jammers[0].enabled', [{ ...uiExtensions.jammers[0], enabled: 'yes' }, uiExtensions.jammers[1]]],
+    ] as const
+    for (const [fieldPath, jammers] of cases) {
+      expect(inspectScenarioUiExtensions({ jammers, sensors: [] }, config.jammers.map((jammer) => jammer.id)).result.errors
+        .map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
+
+    expect(inspectScenarioUiExtensions(null, config.jammers.map((jammer) => jammer.id)).result.errors[0]?.fieldPath).toBe('uiExtensions')
+    expect(inspectScenarioUiExtensions({ jammers: [null, uiExtensions.jammers[1]], sensors: [] }, config.jammers.map((jammer) => jammer.id)).result.errors
+      .map((issue) => issue.fieldPath)).toContain('uiExtensions.jammers[0]')
+    expect(inspectScenarioUiExtensions({ jammers: [], sensors: null }, []).result.errors[0]?.fieldPath).toBe('uiExtensions')
   })
 })

@@ -4172,6 +4172,22 @@
           }
         }
       },
+      "ScenarioDraftUpdate": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "config",
+          "uiExtensions"
+        ],
+        "properties": {
+          "config": {
+            "$ref": "#/components/schemas/ScenarioConfig"
+          },
+          "uiExtensions": {
+            "$ref": "#/components/schemas/ScenarioUiExtensions"
+          }
+        }
+      },
       "ScenarioTemplate": {
         "type": "object",
         "additionalProperties": false,
@@ -6552,7 +6568,7 @@
         }
       },
       "PutapiV1ScenariosScenarioIdRequest": {
-        "$ref": "#/components/schemas/ScenarioConfig"
+        "$ref": "#/components/schemas/ScenarioDraftUpdate"
       },
       "PutapiV1ScenariosScenarioIdResponse": {
         "type": "object",

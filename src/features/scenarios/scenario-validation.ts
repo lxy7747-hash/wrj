@@ -1,4 +1,6 @@
 import type {
+  Jammer,
+  JammerUiExtension,
   Link,
   Platform,
   ScenarioIdentity,
@@ -27,6 +29,9 @@ const ENVIRONMENT_KEYS = [
 ] as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
+const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange'] as const
+const UI_EXTENSION_KEYS = ['jammers', 'sensors'] as const
+const JAMMER_UI_EXTENSION_KEYS = ['jammerId', 'direction', 'duration', 'enabled'] as const
 const ANTENNA_GAIN_KEYS = ['tx', 'rx'] as const
 const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
 const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
@@ -40,6 +45,7 @@ export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMME
 const PLATFORM_TYPES = [...BUSINESS_INFORMATION_NODE_TYPES, ...SUPPORTING_ENTITY_TYPES] as const
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] as const
+export const JAMMER_TYPES = ['BARRAGE', 'SPOT'] as const
 export const LINK_MHZ_MINIMUM_STEP = 0.001
 const MODULATIONS = ['BPSK', 'QPSK'] as const
 const LINK_DIRECTIONS = ['FORWARD', 'REVERSE'] as const
@@ -50,6 +56,12 @@ export interface ScenarioInspection {
   identity?: ScenarioIdentity
   platforms?: Platform[]
   links?: Link[]
+  jammers?: Jammer[]
+}
+
+export interface ScenarioUiExtensionsInspection {
+  result: ValidationResult
+  jammers?: JammerUiExtension[]
 }
 
 /**
@@ -77,6 +89,10 @@ function isClosedObject(value: unknown, keys: readonly string[]): value is Recor
  */
 function isFiniteNumber(value: unknown, minimum = -Infinity, maximum = Infinity): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value > 0
 }
 
 /**
@@ -217,8 +233,8 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
   if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前场景实体。', `${path}.targetPlatformId`)
   if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源平台和目标平台不能相同。', `${path}.targetPlatformId`)
-  if (!isFiniteNumber(value.frequency, LINK_MHZ_MINIMUM_STEP)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率不能小于 0.001 MHz。', `${path}.frequency`)
-  if (!isFiniteNumber(value.bandwidth, LINK_MHZ_MINIMUM_STEP)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽不能小于 0.001 MHz。', `${path}.bandwidth`)
+  if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率必须大于 0 MHz。', `${path}.frequency`)
+  if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (!isFiniteNumber(value.txPower, 0)) addError(errors, 'LINK_POWER_INVALID', '链路发射功率不能小于 0 W。', `${path}.txPower`)
   if (!isClosedObject(value.antennaGain, ANTENNA_GAIN_KEYS)) {
     addError(errors, 'ANTENNA_GAIN_INVALID', '收发天线增益结构不正确。', `${path}.antennaGain`)
@@ -233,14 +249,74 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
 }
 
 /**
- * 校验只读集合中指向平台的引用，防止删除平台后留下悬空关系。
- * @param items 链路、干扰器、传感器或信息需求集合。
+ * 校验一台干扰设备的完整参数和归属平台。
+ * @param value 待校验的干扰设备对象。
+ * @param index 干扰设备在场景集合中的位置。
+ * @param platformIds 当前场景中存在的平台 ID。
+ * @param errors 接收中文字段错误的集合。
+ * @returns 无返回值。
+ * @remarks 只追加校验错误，不修改干扰设备或平台关联数组。
+ */
+function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+  const path = `jammers[${index}]`
+  if (!isClosedObject(value, JAMMER_KEYS)) {
+    addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
+    return
+  }
+  if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'JAMMER_ID_INVALID', '干扰设备 ID 为必填项。', `${path}.id`)
+  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前场景实体。', `${path}.platformId`)
+  if (typeof value.type !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(value.type)) addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${path}.type`)
+  if (!isFiniteNumber(value.defaultPower, 0)) addError(errors, 'JAMMER_POWER_INVALID', '默认功率不能小于 0 W。', `${path}.defaultPower`)
+  if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
+  if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
+  if (typeof value.autoDetect !== 'boolean') addError(errors, 'JAMMER_AUTO_DETECT_INVALID', '自动检测开关格式不正确。', `${path}.autoDetect`)
+  if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '检测范围不能小于 0 m。', `${path}.detectionRange`)
+}
+
+/** 校验干扰设备 UI 扩展与规范干扰设备 ID 的一一对应关系。 */
+export function inspectScenarioUiExtensions(value: unknown, jammerIds: readonly string[]): ScenarioUiExtensionsInspection {
+  const errors: ValidationIssue[] = []
+  if (!isClosedObject(value, UI_EXTENSION_KEYS) || !Array.isArray(value.jammers) || !Array.isArray(value.sensors)) {
+    addError(errors, 'UI_EXTENSIONS_SHAPE_INVALID', '场景界面扩展结构不正确。', 'uiExtensions')
+    return { result: { valid: false, errors, warnings: [] } }
+  }
+
+  value.jammers.forEach((extension, index) => {
+    const path = `uiExtensions.jammers[${index}]`
+    if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS)) {
+      addError(errors, 'JAMMER_UI_EXTENSION_SHAPE_INVALID', '干扰设备界面扩展结构不正确。', path)
+      return
+    }
+    if (typeof extension.jammerId !== 'string' || extension.jammerId.trim() === '') addError(errors, 'JAMMER_UI_EXTENSION_ID_INVALID', '干扰设备扩展 ID 为必填项。', `${path}.jammerId`)
+    if (!isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', '干扰方向必须在 0 至 360 度之间。', `${path}.direction`)
+    if (!isFiniteNumber(extension.duration, 0)) addError(errors, 'JAMMER_UI_EXTENSION_DURATION_INVALID', '干扰持续时间不能小于 0 秒。', `${path}.duration`)
+    if (typeof extension.enabled !== 'boolean') addError(errors, 'JAMMER_UI_EXTENSION_ENABLED_INVALID', '干扰设备启用开关格式不正确。', `${path}.enabled`)
+  })
+
+  const extensionIds = value.jammers.flatMap((extension) => (
+    typeof extension === 'object' && extension !== null && typeof extension.jammerId === 'string'
+      ? [extension.jammerId]
+      : []
+  ))
+  if (new Set(extensionIds).size !== extensionIds.length) addError(errors, 'JAMMER_UI_EXTENSION_ID_DUPLICATED', '干扰设备扩展 ID 不允许重复。', 'uiExtensions.jammers')
+  const canonicalIds = new Set(jammerIds)
+  if (extensionIds.length !== jammerIds.length || extensionIds.some((id) => !canonicalIds.has(id))) {
+    addError(errors, 'JAMMER_UI_EXTENSION_IDS_MISMATCH', '干扰设备与界面扩展必须按 ID 一一对应。', 'uiExtensions.jammers')
+  }
+
+  const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
+  return result.valid ? { result, jammers: value.jammers as JammerUiExtension[] } : { result }
+}
+
+/**
+ * 校验其他集合中指向平台的引用，防止删除平台后留下悬空关系。
+ * @param items 链路、传感器或信息需求集合。
  * @param fields 需要检查的平台 ID 字段。
  * @param platformIds 当前平台 ID 集合。
  * @param collectionPath 集合合同路径。
  * @param errors 接收中文字段错误的集合。
  * @returns 无返回值。
- * @remarks 仅检查已有字符串引用；集合自身的完整字段校验由后续功能阶段开放。
+ * @remarks 仅检查已有字符串引用；对应集合的完整字段校验按功能阶段开放。
  */
 function inspectPlatformReferences(
   items: unknown,
@@ -265,10 +341,10 @@ function inspectPlatformReferences(
 }
 
 /**
- * 校验场景基础信息、环境、时序、平台、航点和链路，并读取安全配置对象。
+ * 校验场景基础信息、环境、时序、平台、航点、链路和干扰设备，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
- * @remarks 只覆盖 P2-3 已开放字段及完整配置外壳，不修改原始配置。
+ * @remarks 只覆盖 P2-4 已开放字段及完整配置外壳，不修改原始配置。
  */
 export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   const errors: ValidationIssue[] = []
@@ -358,7 +434,6 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     })
 
     inspectPlatformReferences(value.links, ['sourcePlatformId', 'targetPlatformId'], platformIds, 'links', errors)
-    inspectPlatformReferences(value.jammers, ['platformId'], platformIds, 'jammers', errors)
     inspectPlatformReferences(value.sensors, ['platformId'], platformIds, 'sensors', errors)
     inspectPlatformReferences(value.informationDemand, ['sourcePlatformId', 'destinationPlatformIds'], platformIds, 'informationDemand', errors)
   }
@@ -370,6 +445,13 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     value.links.forEach((link, index) => inspectLink(link, index, platformIds, errors))
   }
 
+  if (Array.isArray(value.jammers)) {
+    const jammerIds = collectIds(value.jammers)
+    const platformIds = collectIds(value.platforms)
+    if (jammerIds.size !== value.jammers.length) addError(errors, 'JAMMER_ID_DUPLICATED', '干扰设备 ID 不允许为空或重复。', 'jammers')
+    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors))
+  }
+
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
   if (!result.valid) return { result }
 
@@ -377,6 +459,7 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     result,
     platforms: value.platforms as Platform[],
     links: value.links as Link[],
+    jammers: value.jammers as Jammer[],
     identity: {
       id: scenario.id as ScenarioIdentity['id'],
       name: scenario.name as string,
