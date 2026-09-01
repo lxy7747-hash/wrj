@@ -21,7 +21,7 @@ interface WorkspaceRoute {
 
 const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
-  { path: '/scenarios', navLabel: '场景配置', title: '场景管理' },
+  { path: '/scenarios', navLabel: '场景配置', title: '场景标识' },
   { path: '/batches', navLabel: '仿真批次', title: '批量仿真' },
   { path: '/reports', navLabel: '报表中心', title: '报告分析' },
   { path: '/replays', navLabel: '回放复盘', title: '历史回放' },
@@ -436,4 +436,99 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     expect(afterRejection.revision).toBe(acceptedDraft.revision)
     expect(afterRejection).toEqual(acceptedDraft)
   })
+})
+
+test('P2-3 OPERATOR edits a link across validation, associations, save, and reload', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await loaded).status()).toBe(200)
+  await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByTestId('add-link').click()
+  await expect(page.getByTestId('link-dialog')).toBeVisible()
+
+  const frequency = page.getByTestId('link-frequency').locator('input')
+  const bandwidth = page.getByTestId('link-bandwidth').locator('input')
+  const addedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
+  await frequency.fill('0')
+  await page.getByTestId('apply-link').click()
+  await expect(page.getByTestId('link-dialog')).toBeVisible()
+  await expect(page.getByText('链路频率不能小于 0.001 MHz。', { exact: true })).toBeVisible()
+  await expect(addedRow).toHaveCount(0)
+  await frequency.fill('4500')
+  await bandwidth.fill('0')
+  await page.getByTestId('apply-link').click()
+  await expect(page.getByTestId('link-dialog')).toBeVisible()
+  await expect(page.getByText('链路带宽不能小于 0.001 MHz。', { exact: true })).toBeVisible()
+  await expect(addedRow).toHaveCount(0)
+  await bandwidth.fill('20')
+  await page.getByTestId('apply-link').click()
+  await expect(page.getByTestId('link-dialog')).toHaveCount(0)
+  await expect(addedRow).toHaveCount(1)
+  await addedRow.getByRole('button', { name: '编辑' }).click()
+  await page.getByTestId('link-target').click()
+  await page.getByRole('option', { name: '空中无人作业节点 U02（AIR-02）', exact: true }).click()
+  await frequency.fill('915.125')
+  await bandwidth.fill('5.125')
+  await page.getByTestId('link-power').locator('input').fill('42')
+  await page.getByTestId('link-data-rate').locator('input').fill('64')
+  await page.getByTestId('apply-link').click()
+  await expect(page.getByTestId('link-dialog')).toHaveCount(0)
+
+  await page.getByRole('tab', { name: '平台与航点' }).click()
+  const platformTable = page.getByTestId('platform-table')
+  const sourceRow = platformTable.getByRole('row').filter({ hasText: '后方指挥节点' })
+  await sourceRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
+  await page.getByTestId('cancel-platform').click()
+  const previousTargetRow = platformTable.getByRole('row').filter({ hasText: '高空前出中继节点' })
+  await previousTargetRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-link-ids')).not.toHaveValue(/L-CFG-001/)
+  await page.getByTestId('cancel-platform').click()
+  const targetRow = platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' })
+  await targetRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
+  await page.getByTestId('cancel-platform').click()
+
+  const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByTestId('save-scenario').click()
+  const saved = await savedResponse
+  expect(saved.status()).toBe(200)
+  const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
+  expect(savedDraft.config.links.at(-1)).toMatchObject({
+    id: 'L-CFG-001',
+    sourcePlatformId: 'CMD-01',
+    targetPlatformId: 'AIR-02',
+    frequency: 915.125,
+    bandwidth: 5.125,
+    txPower: 42,
+    dataRate: 64,
+  })
+  expect(savedDraft.config.platforms.find((platform) => platform.id === 'CMD-01')?.linkIds).toContain('L-CFG-001')
+  expect(savedDraft.config.platforms.find((platform) => platform.id === 'AIR-02')?.linkIds).toContain('L-CFG-001')
+  expect(savedDraft.config.platforms.find((platform) => platform.id === 'UAV-01')?.linkIds).not.toContain('L-CFG-001')
+
+  const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.reload()
+  const reloaded = await reloadedResponse
+  expect(reloaded.status()).toBe(200)
+  expect(((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data).toEqual(savedDraft)
+  await page.getByRole('tab', { name: '链路配置' }).click()
+  const reloadedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
+  await expect(reloadedRow).toContainText('AIR-02')
+  await expect(reloadedRow).toContainText('915.125')
+  await expect(reloadedRow).toContainText('5.125')
+  await page.getByRole('tab', { name: '平台与航点' }).click()
+  await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
 })

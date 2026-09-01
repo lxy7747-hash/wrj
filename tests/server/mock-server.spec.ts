@@ -348,7 +348,7 @@ describe('P0 deterministic mock server', () => {
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('加载、校验、保存并重置 P2-2 场景草稿', async () => {
+  it('加载、校验、保存并重置 P2-3 场景草稿', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -398,7 +398,32 @@ describe('P0 deterministic mock server', () => {
     expect(platformSavedDraft.revision).toBe(6)
     expect(platformSavedDraft.config.platforms[0]?.name).toBe('后方指挥节点（更新）')
 
-    const overLimit = structuredClone(platformMutation)
+    const linkMutation = structuredClone(platformSavedDraft.config)
+    linkMutation.links[0]!.frequency = 4600
+    const linkSaved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(linkMutation)
+      .expect(200)
+    const linkSavedDraft = (linkSaved.body as { data: ScenarioDraft }).data
+    expect(linkSavedDraft.revision).toBe(7)
+    expect(linkSavedDraft.config.links[0]?.frequency).toBe(4600)
+
+    const invalidLink = structuredClone(linkMutation)
+    invalidLink.links[0]!.bandwidth = 0
+    const invalidLinkRejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(invalidLink)
+      .expect(422)
+    expect(invalidLinkRejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'links[0].bandwidth' },
+    })
+
+    const overLimit = structuredClone(linkMutation)
     const sourcePlatform = structuredClone(overLimit.platforms[3]!)
     for (let index = 0; index < 45; index += 1) {
       overLimit.platforms.push({
@@ -421,7 +446,7 @@ describe('P0 deterministic mock server', () => {
       error: { code: 'NODE_LIMIT_EXCEEDED', fieldPath: 'platforms' },
     })
 
-    const readOnlyMutation = structuredClone(platformMutation)
+    const readOnlyMutation = structuredClone(linkMutation)
     readOnlyMutation.output.directory = './not-open-yet'
     const readOnlyRejected = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
@@ -445,6 +470,47 @@ describe('P0 deterministic mock server', () => {
       revision: 4,
       config: { scenario: { name: '跨海通联演示', environment: { humidityPercent: 80 } } },
     })
+  })
+
+  it('直接 PUT 忽略客户端链路反向关联并持久化规范结果', async () => {
+    const { baseUrl } = await startServer()
+    const load = () => request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+    const original = (await load().expect(200)).body as { data: ScenarioDraft }
+    const inconsistent = structuredClone(original.data.config)
+    inconsistent.links[0]!.targetPlatformId = 'AIR-02'
+    inconsistent.platforms.forEach((platform) => { platform.linkIds = ['CLIENT-OWNED'] })
+
+    const response = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(inconsistent)
+      .expect(200)
+    const saved = (response.body as { data: ScenarioDraft }).data
+    expect(saved.revision).toBe(original.data.revision + 1)
+    saved.config.platforms.forEach((platform) => {
+      expect(platform.linkIds).toEqual(saved.config.links
+        .filter((link) => link.sourcePlatformId === platform.id || link.targetPlatformId === platform.id)
+        .map((link) => link.id))
+    })
+    expect((await load().expect(200)).body).toMatchObject({ data: saved })
+
+    const malformed = structuredClone(saved.config)
+    delete (malformed.platforms[0] as unknown as Record<string, unknown>).name
+    const rejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(malformed)
+      .expect(422)
+    expect(rejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'platforms[0]' },
+    })
+    expect((await load().expect(200)).body).toMatchObject({ data: saved })
   })
 
   it('rejects missing roles and unknown scenario identifiers', async () => {

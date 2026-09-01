@@ -282,6 +282,7 @@ nav a.router-link-exact-active {
   min-width: 0;
   min-height: 0;
   flex: 1;
+  overflow: hidden;
   padding: 0;
   margin: 0;
   background: transparent;

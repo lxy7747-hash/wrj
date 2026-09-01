@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Platform, PlatformType } from '../contracts/domain-models'
+import type { CapabilityState, Link, LinkType, Platform, PlatformType, ScenarioConfig } from '../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
+  LINK_MHZ_MINIMUM_STEP,
+  LINK_TYPES,
   SUPPORTING_ENTITY_TYPES,
   inspectScenarioConfig,
   isBusinessInformationNodeType,
 } from '../features/scenarios/scenario-validation'
-import { PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
+import { LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
 import { useScenarioStore } from '../stores/scenario'
+import WaypointMapPicker, { type WaypointMapPoint } from '../components/scenarios/WaypointMapPicker.vue'
 
 const scenarioStore = useScenarioStore()
 const { draft, dirty, panelState, resultMessage, validation } = storeToRefs(scenarioStore)
@@ -19,6 +22,17 @@ const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
 const platformFeedback = ref('')
+const waypointPickerVisible = ref(false)
+const waypointPickerIndex = ref<number | null>(null)
+const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
+const linkDialogVisible = ref(false)
+const editingLinkIndex = ref<number | null>(null)
+const linkEditor = ref<Link | null>(null)
+const linkEditorError = ref('')
+const linkFeedback = ref('')
+const linkFeedbackStatus = ref<'success' | 'error'>('success')
+const linkFrequencyBelowMinimum = ref(false)
+const linkBandwidthBelowMinimum = ref(false)
 
 const deploymentDomainLabels = {
   ground: '地面',
@@ -27,6 +41,8 @@ const deploymentDomainLabels = {
 } as const
 const businessTypeOptions = BUSINESS_INFORMATION_NODE_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
 const supportingTypeOptions = SUPPORTING_ENTITY_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
+const linkTypeOptions = LINK_TYPES.map((value) => ({ value, label: LINK_TYPE_LABELS[value] }))
+const linkDirectionLabels = { FORWARD: '正向', REVERSE: '反向' } as const
 
 const stateLabels: Record<CapabilityState, string> = {
   LOADING: '加载中',
@@ -45,6 +61,7 @@ const stateLabels: Record<CapabilityState, string> = {
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(panelState.value))
 const businessNodeCount = computed(() => draft.value?.config.platforms.filter((platform) => isBusinessInformationNodeType(platform.type)).length ?? 0)
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
+const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -194,6 +211,46 @@ function addWaypoint(): void {
 }
 
 /**
+ * 打开指定航点的离线地图选点弹窗。
+ * @param index 航点在平台编辑副本中的位置。
+ * @returns 无返回值。
+ * @sideEffects 记录当前航点及其经纬度，并打开地图选点弹窗。
+ */
+function openWaypointPicker(index: number): void {
+  const waypoint = platformEditor.value?.waypoints[index]
+  if (waypoint === undefined) return
+  waypointPickerIndex.value = index
+  waypointPickerPoint.value = { longitude: waypoint.longitude, latitude: waypoint.latitude }
+  waypointPickerVisible.value = true
+}
+
+/**
+ * 将地图选点结果写入当前航点。
+ * @param point 地图返回的经度和纬度。
+ * @returns 无返回值。
+ * @sideEffects 更新航点经纬度，并按二维地图规则把高度设置为 0 米。
+ */
+function applyWaypointMapPoint(point: WaypointMapPoint): void {
+  if (waypointPickerIndex.value === null) return
+  const waypoint = platformEditor.value?.waypoints[waypointPickerIndex.value]
+  if (waypoint === undefined) return
+  waypoint.longitude = point.longitude
+  waypoint.latitude = point.latitude
+  waypoint.altitude = 0
+  waypointPickerVisible.value = false
+}
+
+/**
+ * 清理航点地图选点上下文。
+ * @returns 无返回值。
+ * @sideEffects 关闭选点弹窗并清除当前航点索引。
+ */
+function resetWaypointPicker(): void {
+  waypointPickerVisible.value = false
+  waypointPickerIndex.value = null
+}
+
+/**
  * 删除当前平台编辑副本中的指定航点。
  * @param index 航点在编辑副本中的位置。
  * @returns 无返回值。
@@ -274,6 +331,167 @@ function platformTypeLabel(type: PlatformType): string {
 }
 
 /**
+ * 生成当前场景内未占用的链路 ID。
+ * @returns 首个未使用的三位序号配置链路 ID。
+ * @remarks 只读取当前草稿，不修改链路集合。
+ */
+function nextLinkId(): string {
+  const ids = new Set(draft.value?.config.links.map((link) => link.id) ?? [])
+  let index = 1
+  while (ids.has(`L-CFG-${String(index).padStart(3, '0')}`)) index += 1
+  return `L-CFG-${String(index).padStart(3, '0')}`
+}
+
+function resetLinkMinimumAttempts(): void {
+  linkFrequencyBelowMinimum.value = false
+  linkBandwidthBelowMinimum.value = false
+}
+
+// Element Plus normalizes the model to min; retain the user's raw attempt until valid input replaces it.
+function trackLinkFrequencyInput(value: number | undefined): void {
+  if (typeof value === 'number') linkFrequencyBelowMinimum.value = value < LINK_MHZ_MINIMUM_STEP
+}
+
+function trackLinkBandwidthInput(value: number | undefined): void {
+  if (typeof value === 'number') linkBandwidthBelowMinimum.value = value < LINK_MHZ_MINIMUM_STEP
+}
+
+/**
+ * 打开新增链路对话框并填入可校验的默认参数。
+ * @returns 无返回值。
+ * @sideEffects 场景实体不足两个时显示中文提示；否则创建独立编辑副本并打开对话框。
+ */
+function openNewLink(): void {
+  if (draft.value === null) return
+  if (draft.value.config.platforms.length < 2) {
+    linkFeedback.value = '至少需要两个场景实体才能新增链路。'
+    linkFeedbackStatus.value = 'error'
+    return
+  }
+  linkEditor.value = {
+    id: nextLinkId(),
+    type: 'MICROWAVE',
+    sourcePlatformId: draft.value.config.platforms[0]!.id,
+    targetPlatformId: draft.value.config.platforms[1]!.id,
+    frequency: 4500,
+    bandwidth: 20,
+    txPower: 50,
+    antennaGain: { tx: 10, rx: 10 },
+    modulation: 'QPSK',
+    berThreshold: 0.00001,
+    dataRate: 10,
+    direction: 'FORWARD',
+  }
+  editingLinkIndex.value = null
+  linkEditorError.value = ''
+  linkFeedback.value = ''
+  resetLinkMinimumAttempts()
+  linkDialogVisible.value = true
+}
+
+/**
+ * 打开现有链路编辑对话框。
+ * @param link 需要编辑的链路数据。
+ * @param index 链路在当前草稿集合中的位置。
+ * @returns 无返回值。
+ * @sideEffects 创建链路深拷贝，取消编辑时不会污染草稿。
+ */
+function openLinkEditor(link: Link, index: number): void {
+  linkEditor.value = structuredClone(toRaw(link))
+  editingLinkIndex.value = index
+  linkEditorError.value = ''
+  linkFeedback.value = ''
+  resetLinkMinimumAttempts()
+  linkDialogVisible.value = true
+}
+
+/**
+ * 根据链路端点同步平台反向关联。
+ * @param config 待同步的完整场景配置副本。
+ * @param linkId 新增、更新或删除的链路 ID。
+ * @returns 无返回值。
+ * @sideEffects 先从所有平台移除该 ID，再为当前链路的源端和目标端补回关联。
+ */
+function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): void {
+  config.platforms.forEach((platform) => {
+    platform.linkIds = platform.linkIds.filter((id) => id !== linkId)
+  })
+  const link = config.links.find((item) => item.id === linkId)
+  if (link === undefined) return
+  new Set([link.sourcePlatformId, link.targetPlatformId]).forEach((platformId) => {
+    const platform = config.platforms.find((item) => item.id === platformId)
+    if (platform !== undefined) platform.linkIds.push(linkId)
+  })
+}
+
+/**
+ * 将链路编辑副本写入当前场景草稿。
+ * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
+ * @sideEffects 成功时同步端点平台关联、标记未保存并关闭对话框。
+ */
+function applyLinkEditor(): boolean {
+  if (draft.value === null || linkEditor.value === null) return false
+  if (linkFrequencyBelowMinimum.value) {
+    linkEditorError.value = '链路频率不能小于 0.001 MHz。'
+    return false
+  }
+  if (linkBandwidthBelowMinimum.value) {
+    linkEditorError.value = '链路带宽不能小于 0.001 MHz。'
+    return false
+  }
+  linkEditor.value.id = linkEditor.value.id.trim()
+  if (linkEditor.value.id === '') {
+    linkEditorError.value = '链路 ID 为必填项。'
+    return false
+  }
+  const candidate = structuredClone(toRaw(draft.value.config))
+  const editedLink = structuredClone(toRaw(linkEditor.value))
+  if (editingLinkIndex.value === null) candidate.links.push(editedLink)
+  else candidate.links[editingLinkIndex.value] = editedLink
+  synchronizePlatformLinkIds(candidate, editedLink.id)
+  const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
+    item.fieldPath.startsWith('links') || item.fieldPath.endsWith('.linkIds')
+  ))
+  if (issue !== undefined) {
+    linkEditorError.value = issue.message
+    return false
+  }
+
+  draft.value.config.links = candidate.links
+  draft.value.config.platforms = candidate.platforms
+  markDirty()
+  linkDialogVisible.value = false
+  linkFeedback.value = editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。'
+  linkFeedbackStatus.value = 'success'
+  return true
+}
+
+/**
+ * 删除指定链路并清理平台反向关联。
+ * @param link 需要删除的链路。
+ * @param index 链路在当前草稿集合中的位置。
+ * @returns 删除成功时返回 `true`。
+ * @sideEffects 从草稿移除链路及所有对应平台关联，并设置未保存标记。
+ */
+function removeLink(link: Link, index: number): boolean {
+  if (draft.value === null) return false
+  const candidate = structuredClone(toRaw(draft.value.config))
+  candidate.links.splice(index, 1)
+  synchronizePlatformLinkIds(candidate, link.id)
+  draft.value.config.links = candidate.links
+  draft.value.config.platforms = candidate.platforms
+  markDirty()
+  linkFeedback.value = '链路已删除，保存草稿后生效。'
+  linkFeedbackStatus.value = 'success'
+  return true
+}
+
+/** 读取链路类型的中文名称。 */
+function linkTypeLabel(type: LinkType): string {
+  return LINK_TYPE_LABELS[type]
+}
+
+/**
  * 重新加载确定性场景草稿。
  * @returns 加载流程结束后兑现且不返回值的 Promise。
  * @sideEffects 调用场景 Store，并以服务端草稿替换当前页面数据。
@@ -288,7 +506,11 @@ async function loadScenario(): Promise<void> {
  * @sideEffects 调用场景 Store；成功时把平台区域提示更新为已保存状态。
  */
 async function saveScenario(): Promise<void> {
-  if (await scenarioStore.saveScenario()) platformFeedback.value = '场景草稿已保存。'
+  if (await scenarioStore.saveScenario()) {
+    platformFeedback.value = '场景草稿已保存。'
+    linkFeedback.value = '场景草稿已保存。'
+    linkFeedbackStatus.value = 'success'
+  }
 }
 
 onMounted(() => {
@@ -297,13 +519,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="page scenario-page" aria-labelledby="scenarios-title">
-    <header class="scenario-header">
-      <div>
-        <p class="eyebrow">P2 / 场景配置</p>
-        <h2 id="scenarios-title">场景管理</h2>
-        <p class="scenario-header__description">编辑场景基础信息、环境参数、仿真时序、平台和航点，并保存为本机草稿。</p>
-      </div>
+  <section class="page scenario-page" aria-label="场景配置">
+    <header class="scenario-header" aria-label="场景操作">
       <div class="scenario-header__actions">
         <el-tag :type="panelState === 'ERROR' ? 'danger' : dirty ? 'warning' : 'success'">
           {{ dirty ? '未保存' : stateLabels[panelState] }}
@@ -516,85 +733,231 @@ onMounted(() => {
             </div>
           </section>
         </el-tab-pane>
+
+        <el-tab-pane label="链路配置" name="links">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-link-title">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">信息链路</p>
+                <h3 id="scenario-link-title">链路参数配置</h3>
+              </div>
+              <div class="platform-counts" aria-label="链路类型覆盖">
+                <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
+                <el-tag :type="linkTypeCount === 4 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 4 类</el-tag>
+              </div>
+            </div>
+
+            <el-alert
+              v-if="linkFeedback"
+              class="platform-feedback"
+              :type="linkFeedbackStatus"
+              :closable="false"
+              :title="linkFeedback"
+              show-icon
+            />
+
+            <el-table :data="draft.config.links" stripe data-testid="link-table">
+              <el-table-column prop="id" label="链路 ID" min-width="120" />
+              <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
+              <el-table-column prop="sourcePlatformId" label="源平台" min-width="120" />
+              <el-table-column prop="targetPlatformId" label="目标平台" min-width="120" />
+              <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
+              <el-table-column prop="bandwidth" label="带宽（MHz）" min-width="110" />
+              <el-table-column label="方向" width="80"><template #default="{ row }">{{ linkDirectionLabels[row.direction] }}</template></el-table-column>
+              <el-table-column label="操作" fixed="right" width="140">
+                <template #default="{ row, $index }">
+                  <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-link-${$index}`" @click="openLinkEditor(row, $index)">编辑</el-button>
+                  <el-popconfirm title="确认删除该链路？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeLink(row, $index)">
+                    <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-link-${$index}`">删除</el-button></template>
+                  </el-popconfirm>
+                </template>
+              </el-table-column>
+            </el-table>
+
+            <div class="platform-actions">
+              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
+            </div>
+          </section>
+        </el-tab-pane>
       </el-tabs>
     </el-form>
 
     <el-dialog
       v-model="platformDialogVisible"
+      class="platform-editor-dialog"
       :title="editingPlatformIndex === null ? '新增场景实体' : '编辑场景实体'"
-      width="min(920px, 92vw)"
+      width="min(880px, calc(100vw - 2rem))"
       destroy-on-close
       append-to-body
       data-testid="platform-dialog"
+      @closed="resetWaypointPicker"
     >
       <el-alert v-if="platformEditorError" class="platform-feedback" type="error" :closable="false" :title="platformEditorError" show-icon />
-      <el-form v-if="platformEditor" :model="platformEditor" label-position="top" :disabled="pending || draft?.locked">
-        <div class="platform-editor-grid">
-          <el-form-item label="场景实体 ID">
-            <el-input v-model="platformEditor.id" :disabled="editingPlatformIndex !== null" data-testid="platform-id" />
-          </el-form-item>
-          <el-form-item label="名称">
-            <el-input v-model="platformEditor.name" data-testid="platform-name" />
-          </el-form-item>
-          <el-form-item label="场景实体类型">
-            <el-select v-model="platformEditor.type" style="width: 100%" data-testid="platform-type">
-              <el-option-group label="业务信息节点">
-                <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-option-group>
-              <el-option-group label="支撑实体（不计入50个业务信息节点）">
-                <el-option v-for="option in supportingTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-option-group>
-            </el-select>
-          </el-form-item>
-          <el-form-item label="部署域">
-            <el-select v-model="platformEditor.category" style="width: 100%" data-testid="platform-category">
-              <el-option v-for="(label, value) in deploymentDomainLabels" :key="value" :label="label" :value="value" />
-            </el-select>
-          </el-form-item>
-        </div>
+      <el-form v-if="platformEditor" class="platform-editor-form" :model="platformEditor" label-position="top" :disabled="pending || draft?.locked">
+        <section class="platform-editor-section" aria-labelledby="platform-basic-title">
+          <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
+          <div class="platform-editor-grid">
+            <el-form-item label="场景实体 ID">
+              <el-input v-model="platformEditor.id" :disabled="editingPlatformIndex !== null" data-testid="platform-id" />
+            </el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="platformEditor.name" data-testid="platform-name" />
+            </el-form-item>
+            <el-form-item label="场景实体类型">
+              <el-select v-model="platformEditor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type">
+                <el-option-group label="业务信息节点">
+                  <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
+                </el-option-group>
+                <el-option-group label="支撑实体（不计入50个业务信息节点）">
+                  <el-option v-for="option in supportingTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
+                </el-option-group>
+              </el-select>
+            </el-form-item>
+            <el-form-item label="部署域">
+              <el-select v-model="platformEditor.category" placeholder="请选择部署域" style="width: 100%" data-testid="platform-category">
+                <el-option v-for="(label, value) in deploymentDomainLabels" :key="value" :label="label" :value="value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
 
-        <h4 class="editor-subtitle">初始位置</h4>
-        <div class="position-grid">
-          <el-form-item label="经度（°）"><el-input-number v-model="platformEditor.initialPosition.longitude" :min="-180" :max="180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-          <el-form-item label="纬度（°）"><el-input-number v-model="platformEditor.initialPosition.latitude" :min="-90" :max="90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
-          <el-form-item label="高度（m）"><el-input-number v-model="platformEditor.initialPosition.altitude" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
-        </div>
+        <section class="platform-editor-section" aria-labelledby="platform-position-title">
+          <h4 id="platform-position-title" class="platform-editor-section__title">初始位置</h4>
+          <div class="position-grid">
+            <el-form-item label="经度（°）"><el-input-number v-model="platformEditor.initialPosition.longitude" :min="-180" :max="180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
+            <el-form-item label="纬度（°）"><el-input-number v-model="platformEditor.initialPosition.latitude" :min="-90" :max="90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
+            <el-form-item label="高度（m）"><el-input-number v-model="platformEditor.initialPosition.altitude" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
+          </div>
+        </section>
 
-        <h4 class="editor-subtitle">关联 ID</h4>
-        <div class="position-grid">
-          <el-form-item label="链路">
-            <el-select v-model="platformEditor.linkIds" multiple collapse-tags style="width: 100%">
-              <el-option v-for="link in draft?.config.links ?? []" :key="link.id" :label="link.id" :value="link.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="传感器">
-            <el-select v-model="platformEditor.sensorIds" multiple collapse-tags style="width: 100%">
-              <el-option v-for="sensor in draft?.config.sensors ?? []" :key="sensor.id" :label="sensor.id" :value="sensor.id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="干扰器">
-            <el-select v-model="platformEditor.jammerIds" multiple collapse-tags style="width: 100%">
-              <el-option v-for="jammer in draft?.config.jammers ?? []" :key="jammer.id" :label="jammer.id" :value="jammer.id" />
-            </el-select>
-          </el-form-item>
-        </div>
+        <section class="platform-editor-section" aria-labelledby="platform-relation-title">
+          <h4 id="platform-relation-title" class="platform-editor-section__title">关联资源</h4>
+          <div class="position-grid">
+            <el-form-item label="链路">
+              <el-input :model-value="platformEditor.linkIds.join(', ')" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
+            </el-form-item>
+            <el-form-item label="传感器">
+              <el-select v-model="platformEditor.sensorIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择传感器" style="width: 100%">
+                <el-option v-for="sensor in draft?.config.sensors ?? []" :key="sensor.id" :label="sensor.id" :value="sensor.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="干扰器">
+              <el-select v-model="platformEditor.jammerIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择干扰器" style="width: 100%">
+                <el-option v-for="jammer in draft?.config.jammers ?? []" :key="jammer.id" :label="jammer.id" :value="jammer.id" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
 
-        <div class="waypoint-heading">
-          <h4 class="editor-subtitle">航点（{{ platformEditor.waypoints.length }}）</h4>
-          <el-button size="small" :disabled="pending || draft?.locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
-        </div>
-        <el-table :data="platformEditor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
-          <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="-180" :max="180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="-90" :max="90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="高度（m）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="速度（m/s）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.speed" :min="0" controls-position="right" :data-testid="`waypoint-speed-${$index}`" /></template></el-table-column>
-          <el-table-column label="到达时间（s）" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
-          <el-table-column label="操作" width="70"><template #default="{ $index }"><el-button link type="danger" :disabled="pending || draft?.locked" :data-testid="`delete-waypoint-${$index}`" @click="removeWaypoint($index)">删除</el-button></template></el-table-column>
-        </el-table>
+        <section class="platform-editor-section" aria-labelledby="platform-waypoint-title">
+          <div class="waypoint-heading">
+            <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ platformEditor.waypoints.length }}）</h4>
+            <el-button size="small" :disabled="pending || draft?.locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
+          </div>
+          <el-table :data="platformEditor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
+            <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="-180" :max="180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
+            <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="-90" :max="90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
+            <el-table-column label="高度（m）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
+            <el-table-column label="速度（m/s）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.speed" :min="0" controls-position="right" :data-testid="`waypoint-speed-${$index}`" /></template></el-table-column>
+            <el-table-column label="到达时间（s）" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
+            <el-table-column label="操作" width="140">
+              <template #default="{ $index }">
+                <el-button link type="primary" :disabled="pending || draft?.locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
+                <el-button link type="danger" :disabled="pending || draft?.locked" :data-testid="`delete-waypoint-${$index}`" @click="removeWaypoint($index)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </section>
       </el-form>
       <template #footer>
         <el-button data-testid="cancel-platform" @click="platformDialogVisible = false">取消</el-button>
         <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-platform" @click="applyPlatformEditor">确认</el-button>
+      </template>
+    </el-dialog>
+
+    <WaypointMapPicker
+      v-model="waypointPickerVisible"
+      :longitude="waypointPickerPoint.longitude"
+      :latitude="waypointPickerPoint.latitude"
+      @confirm="applyWaypointMapPoint"
+    />
+
+    <el-dialog
+      v-model="linkDialogVisible"
+      class="link-editor-dialog"
+      :title="editingLinkIndex === null ? '新增链路' : '编辑链路'"
+      width="min(760px, calc(100vw - 2rem))"
+      destroy-on-close
+      append-to-body
+      data-testid="link-dialog"
+    >
+      <el-alert v-if="linkEditorError" class="platform-feedback" type="error" :closable="false" :title="linkEditorError" show-icon />
+      <el-form v-if="linkEditor" class="link-editor-form" :model="linkEditor" label-position="top" :disabled="pending || draft?.locked">
+        <section class="link-editor-section" aria-labelledby="link-basic-title">
+          <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="链路 ID"><el-input v-model="linkEditor.id" :disabled="editingLinkIndex !== null" data-testid="link-id" /></el-form-item>
+            <el-form-item label="链路类型">
+              <el-select v-model="linkEditor.type" style="width: 100%" data-testid="link-type">
+                <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="link-editor-section" aria-labelledby="link-endpoint-title">
+          <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="源平台">
+              <el-select v-model="linkEditor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source">
+                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="目标平台">
+              <el-select v-model="linkEditor.targetPlatformId" filterable style="width: 100%" data-testid="link-target">
+                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="link-editor-section" aria-labelledby="link-communication-title">
+          <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="频率（MHz）"><el-input-number v-model="linkEditor.frequency" :min="LINK_MHZ_MINIMUM_STEP" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-frequency" @input="trackLinkFrequencyInput" /></el-form-item>
+            <el-form-item label="带宽（MHz）"><el-input-number v-model="linkEditor.bandwidth" :min="LINK_MHZ_MINIMUM_STEP" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-bandwidth" @input="trackLinkBandwidthInput" /></el-form-item>
+            <el-form-item label="发射功率（W）"><el-input-number v-model="linkEditor.txPower" :min="0" controls-position="right" data-testid="link-power" /></el-form-item>
+            <el-form-item label="数据速率（Mbps）"><el-input-number v-model="linkEditor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
+            <el-form-item label="发射天线增益（dBi）"><el-input-number v-model="linkEditor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
+            <el-form-item label="接收天线增益（dBi）"><el-input-number v-model="linkEditor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
+          </div>
+        </section>
+
+        <section class="link-editor-section" aria-labelledby="link-quality-title">
+          <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
+          <div class="link-editor-grid">
+            <el-form-item label="调制方式">
+              <el-select v-model="linkEditor.modulation" style="width: 100%" data-testid="link-modulation">
+                <el-option label="BPSK" value="BPSK" /><el-option label="QPSK" value="QPSK" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="链路方向">
+              <el-select v-model="linkEditor.direction" style="width: 100%" data-testid="link-direction">
+                <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
+              </el-select>
+            </el-form-item>
+            <el-form-item class="link-editor-field--wide" label="BER 阈值">
+              <div class="link-editor-threshold">
+                <el-input-number v-model="linkEditor.berThreshold" :min="0" :max="1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
+                <span>取值范围 0–1</span>
+              </div>
+            </el-form-item>
+          </div>
+        </section>
+      </el-form>
+      <template #footer>
+        <el-button data-testid="cancel-link" @click="linkDialogVisible = false">取消</el-button>
+        <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-link" @click="applyLinkEditor">确认</el-button>
       </template>
     </el-dialog>
   </section>
@@ -602,8 +965,12 @@ onMounted(() => {
 
 <style scoped>
 .scenario-page {
+  display: flex;
   height: 100%;
-  overflow: auto;
+  flex-direction: column;
+  padding-right: 0;
+  padding-left: 0;
+  overflow: hidden;
 }
 
 .scenario-header,
@@ -616,10 +983,10 @@ onMounted(() => {
 }
 
 .scenario-header {
+  justify-content: flex-end;
   margin-bottom: 1rem;
 }
 
-.scenario-header__description,
 .section-note {
   margin: 0;
   color: var(--console-text-muted);
@@ -636,12 +1003,51 @@ onMounted(() => {
 
 .scenario-form {
   display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr);
   gap: 1rem;
+}
+
+.scenario-tabs {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.scenario-tabs :deep(.el-tabs__header) {
+  flex: none;
+}
+
+.scenario-tabs :deep(.el-tabs__content) {
+  min-height: 0;
+  flex: 1;
 }
 
 .scenario-tabs :deep(.el-tab-pane) {
   display: grid;
+  height: 100%;
   gap: 1rem;
+  overflow: auto;
+  padding: 0 10px;
+}
+
+.scenario-tabs :deep(.el-tabs__item) {
+  height: 40px;
+  justify-content: center;
+  padding: 0 1rem;
+  border-radius: 6px 6px 0 0;
+  font-weight: 600;
+}
+
+.scenario-tabs :deep(.el-tabs__nav .el-tabs__item:nth-child(2)),
+.scenario-tabs :deep(.el-tabs__nav .el-tabs__item:last-child) {
+  padding-right: 1rem;
+  padding-left: 1rem;
+}
+
+.scenario-tabs :deep(.el-tabs__item.is-active) {
+  background: color-mix(in srgb, var(--console-cyan) 10%, transparent);
 }
 
 .scenario-section {
@@ -668,7 +1074,10 @@ onMounted(() => {
 }
 
 .section-note {
-  font-size: 0.75rem;
+  max-width: 26rem;
+  color: color-mix(in srgb, var(--console-text) 72%, transparent);
+  font-size: 0.8rem;
+  text-align: right;
 }
 
 .form-grid {
@@ -677,11 +1086,11 @@ onMounted(() => {
 }
 
 .form-grid--basic {
-  grid-template-columns: minmax(12rem, 0.7fr) minmax(18rem, 1.3fr);
+  grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 2fr);
 }
 
 .form-grid--timing {
-  grid-template-columns: minmax(16rem, 1.5fr) repeat(2, minmax(11rem, 1fr));
+  grid-template-columns: repeat(3, minmax(11rem, 1fr));
 }
 
 .form-grid--environment {
@@ -693,6 +1102,11 @@ onMounted(() => {
 }
 
 .scenario-form :deep(.el-input-number) {
+  width: 100%;
+}
+
+.scenario-start-time,
+.scenario-start-time :deep(.el-date-editor) {
   width: 100%;
 }
 
@@ -727,21 +1141,110 @@ onMounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.link-editor-form,
+.platform-editor-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.link-editor-section,
+.platform-editor-section {
+  min-width: 0;
+}
+
+.link-editor-section__title,
+.platform-editor-section__title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.375rem;
+  color: var(--console-cyan);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+.link-editor-section__title::after,
+.platform-editor-section__title::after {
+  flex: 1;
+  border-top: 1px solid var(--console-border);
+  content: '';
+}
+
+.link-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+}
+
+.link-editor-grid :deep(.el-form-item) {
+  margin-bottom: 0.375rem;
+}
+
+.link-editor-grid :deep(.el-form-item__label) {
+  margin-bottom: 0.25rem;
+  line-height: 1.25rem;
+}
+
+.link-editor-grid :deep(.el-input-number) {
+  width: 100%;
+}
+
+.platform-editor-form :deep(.el-form-item) {
+  margin-bottom: 0.375rem;
+}
+
+.platform-editor-form :deep(.el-form-item__label) {
+  margin-bottom: 0.25rem;
+  line-height: 1.25rem;
+}
+
+.platform-editor-form :deep(.el-input-number) {
+  width: 100%;
+}
+
+.platform-editor-form :deep(.el-select__wrapper .el-tag) {
+  --el-tag-bg-color: rgb(13 48 65 / 90%);
+  --el-tag-border-color: var(--console-border-strong);
+  --el-tag-text-color: var(--console-text);
+}
+
+.link-editor-field--wide {
+  grid-column: 1 / -1;
+}
+
+.link-editor-threshold {
+  display: grid;
+  align-items: center;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  width: 100%;
+}
+
+.link-editor-threshold span {
+  color: var(--console-text-muted);
+  font-size: 0.75rem;
+}
+
 .position-grid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-.editor-subtitle {
-  margin: 0.5rem 0 0.75rem;
+.waypoint-heading {
+  justify-content: space-between;
+  margin-bottom: 0.375rem;
+}
+
+.waypoint-heading .platform-editor-section__title {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+:global(.platform-editor-dialog .el-dialog__close) {
   color: var(--console-text);
 }
 
-.waypoint-heading {
-  justify-content: space-between;
-}
-
-.waypoint-heading .editor-subtitle {
-  margin-bottom: 0.5rem;
+:global(.platform-editor-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
+  color: var(--console-cyan);
 }
 
 .scenario-page :deep(.el-table .el-input-number) {
@@ -751,6 +1254,10 @@ onMounted(() => {
 .multipath-field :deep(.el-form-item__content) {
   min-height: 32px;
   align-items: center;
+  padding: 0 0.75rem;
+  border: 1px solid var(--console-border);
+  border-radius: 4px;
+  background: var(--console-bg-elevated);
 }
 
 @media (max-width: 960px) {
@@ -777,17 +1284,24 @@ onMounted(() => {
   .form-grid--timing,
   .form-grid--environment,
   .platform-editor-grid,
+  .link-editor-grid,
+  .link-editor-threshold,
   .position-grid {
     grid-template-columns: 1fr;
   }
 
-  .form-grid__wide {
+  .form-grid__wide,
+  .link-editor-field--wide {
     grid-column: auto;
   }
 
   .section-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .section-note {
+    text-align: left;
   }
 }
 </style>

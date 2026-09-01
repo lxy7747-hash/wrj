@@ -1,4 +1,5 @@
 import type {
+  Link,
   Platform,
   ScenarioIdentity,
   ValidationIssue,
@@ -25,6 +26,8 @@ const ENVIRONMENT_KEYS = [
   'multipathEnabled',
 ] as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
+const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
+const ANTENNA_GAIN_KEYS = ['tx', 'rx'] as const
 const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
 const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
 export const BUSINESS_INFORMATION_NODE_TYPES = [
@@ -36,12 +39,17 @@ export const BUSINESS_INFORMATION_NODE_TYPES = [
 export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'] as const
 const PLATFORM_TYPES = [...BUSINESS_INFORMATION_NODE_TYPES, ...SUPPORTING_ENTITY_TYPES] as const
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
+export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] as const
+export const LINK_MHZ_MINIMUM_STEP = 0.001
+const MODULATIONS = ['BPSK', 'QPSK'] as const
+const LINK_DIRECTIONS = ['FORWARD', 'REVERSE'] as const
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
 
 export interface ScenarioInspection {
   result: ValidationResult
   identity?: ScenarioIdentity
   platforms?: Platform[]
+  links?: Link[]
 }
 
 /**
@@ -190,6 +198,41 @@ function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, e
 }
 
 /**
+ * 校验一条信息链路的完整参数和平台端点。
+ * @param value 待校验的链路对象。
+ * @param index 链路在场景集合中的位置。
+ * @param platformIds 当前场景中存在的平台 ID。
+ * @param errors 接收中文字段错误的集合。
+ * @returns 无返回值。
+ * @remarks 只追加校验错误，不修改链路或平台关联数组。
+ */
+function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+  const path = `links[${index}]`
+  if (!isClosedObject(value, LINK_KEYS)) {
+    addError(errors, 'LINK_SHAPE_INVALID', '链路结构不正确。', path)
+    return
+  }
+  if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'LINK_ID_INVALID', '链路 ID 为必填项。', `${path}.id`)
+  if (typeof value.type !== 'string' || !(LINK_TYPES as readonly string[]).includes(value.type)) addError(errors, 'LINK_TYPE_INVALID', '链路类型不正确。', `${path}.type`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
+  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前场景实体。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源平台和目标平台不能相同。', `${path}.targetPlatformId`)
+  if (!isFiniteNumber(value.frequency, LINK_MHZ_MINIMUM_STEP)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率不能小于 0.001 MHz。', `${path}.frequency`)
+  if (!isFiniteNumber(value.bandwidth, LINK_MHZ_MINIMUM_STEP)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽不能小于 0.001 MHz。', `${path}.bandwidth`)
+  if (!isFiniteNumber(value.txPower, 0)) addError(errors, 'LINK_POWER_INVALID', '链路发射功率不能小于 0 W。', `${path}.txPower`)
+  if (!isClosedObject(value.antennaGain, ANTENNA_GAIN_KEYS)) {
+    addError(errors, 'ANTENNA_GAIN_INVALID', '收发天线增益结构不正确。', `${path}.antennaGain`)
+  } else {
+    if (!isFiniteNumber(value.antennaGain.tx)) addError(errors, 'TX_ANTENNA_GAIN_INVALID', '发射天线增益必须是有效数值。', `${path}.antennaGain.tx`)
+    if (!isFiniteNumber(value.antennaGain.rx)) addError(errors, 'RX_ANTENNA_GAIN_INVALID', '接收天线增益必须是有效数值。', `${path}.antennaGain.rx`)
+  }
+  if (typeof value.modulation !== 'string' || !(MODULATIONS as readonly string[]).includes(value.modulation)) addError(errors, 'MODULATION_INVALID', '调制方式不正确。', `${path}.modulation`)
+  if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', 'BER 阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
+  if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbps。', `${path}.dataRate`)
+  if (typeof value.direction !== 'string' || !(LINK_DIRECTIONS as readonly string[]).includes(value.direction)) addError(errors, 'LINK_DIRECTION_INVALID', '链路方向不正确。', `${path}.direction`)
+}
+
+/**
  * 校验只读集合中指向平台的引用，防止删除平台后留下悬空关系。
  * @param items 链路、干扰器、传感器或信息需求集合。
  * @param fields 需要检查的平台 ID 字段。
@@ -222,10 +265,10 @@ function inspectPlatformReferences(
 }
 
 /**
- * 校验场景基础信息、环境、时序、平台和航点，并读取安全配置对象。
+ * 校验场景基础信息、环境、时序、平台、航点和链路，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
- * @remarks 只覆盖 P2-2 已开放字段及完整配置外壳，不修改原始配置。
+ * @remarks 只覆盖 P2-3 已开放字段及完整配置外壳，不修改原始配置。
  */
 export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   const errors: ValidationIssue[] = []
@@ -320,12 +363,20 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     inspectPlatformReferences(value.informationDemand, ['sourcePlatformId', 'destinationPlatformIds'], platformIds, 'informationDemand', errors)
   }
 
+  if (Array.isArray(value.links)) {
+    const linkIds = collectIds(value.links)
+    const platformIds = collectIds(value.platforms)
+    if (linkIds.size !== value.links.length) addError(errors, 'LINK_ID_DUPLICATED', '链路 ID 不允许为空或重复。', 'links')
+    value.links.forEach((link, index) => inspectLink(link, index, platformIds, errors))
+  }
+
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
   if (!result.valid) return { result }
 
   return {
     result,
     platforms: value.platforms as Platform[],
+    links: value.links as Link[],
     identity: {
       id: scenario.id as ScenarioIdentity['id'],
       name: scenario.name as string,

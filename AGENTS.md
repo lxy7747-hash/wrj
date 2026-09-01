@@ -353,6 +353,15 @@ Avoid speculative refactoring.
 
 Do not modify unrelated files.
 
+### UI Design References
+
+UI 实现应结合以下表现参考：
+
+* [Mobbin：Descript Web 界面](https://mobbin.com/apps/descript-web-52d517cc-1eca-45d6-b739-e376412bed50/43908186-50e8-49f3-8bfe-5003fb50a411/screens)：参考信息层级、布局留白、表单、弹窗和工作区组织。
+* [Refero](https://refero.design/search)：按导航栏、侧边栏、抽屉、表格、页签、工具栏、地图和弹窗等界面类型检索参考。
+
+这些网站仅用于视觉与交互设计，不新增或删减功能。需求规格说明、详细设计说明、前端需求基线和 HTML 原型仍决定功能、流程、中文文案和信息内容。优先复用项目已有组件与 Element Plus 官方组件，不复制参考网站的品牌、英文文案或受版权保护的素材。
+
 ---
 
 ## 11. Map / Leaflet / PMTiles Tasks

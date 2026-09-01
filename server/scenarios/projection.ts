@@ -34,8 +34,33 @@ function createDraft(): ScenarioDraft {
  * @remarks 只读取并比较值，不修改候选对象或当前草稿。
  */
 function changedReadOnlyField(candidate: Record<string, unknown>, current: ScenarioConfig): string | undefined {
-  const readOnlyFields = ['links', 'jammers', 'sensors', 'output', 'informationDemand'] as const
+  const readOnlyFields = ['jammers', 'sensors', 'output', 'informationDemand'] as const
   return readOnlyFields.find((field) => JSON.stringify(candidate[field]) !== JSON.stringify(current[field]))
+}
+
+function withDerivedPlatformLinkIds(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value
+  const candidate = { ...value } as Record<string, unknown>
+  if (!Array.isArray(candidate.platforms) || !Array.isArray(candidate.links)) return candidate
+
+  const linkIdsByPlatform = new Map<string, Set<string>>()
+  candidate.platforms.forEach((platform) => {
+    if (typeof platform === 'object' && platform !== null && !Array.isArray(platform) && typeof platform.id === 'string') {
+      linkIdsByPlatform.set(platform.id, new Set())
+    }
+  })
+  candidate.links.forEach((link) => {
+    if (typeof link !== 'object' || link === null || Array.isArray(link) || typeof link.id !== 'string') return
+    for (const platformId of [link.sourcePlatformId, link.targetPlatformId]) {
+      if (typeof platformId === 'string') linkIdsByPlatform.get(platformId)?.add(link.id)
+    }
+  })
+  candidate.platforms = candidate.platforms.map((platform) => (
+    typeof platform === 'object' && platform !== null && !Array.isArray(platform)
+      ? { ...platform, linkIds: typeof platform.id === 'string' ? [...(linkIdsByPlatform.get(platform.id) ?? [])] : [] }
+      : platform
+  ))
+  return candidate
 }
 
 export class ScenarioProjection {
@@ -55,7 +80,7 @@ export class ScenarioProjection {
   }
 
   /**
-   * 校验并保存场景基础、环境、时序、平台和航点参数。
+   * 校验并保存场景基础、环境、时序、平台、航点和链路参数。
    * @param scenarioId 路由中的场景编号。
    * @param value 客户端提交的未知 JSON 值。
    * @returns 保存后的草稿副本，或带字段路径的失败结果。
@@ -66,8 +91,9 @@ export class ScenarioProjection {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
 
-    const inspection = inspectScenarioConfig(value)
-    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined) {
+    const candidate = withDerivedPlatformLinkIds(value)
+    const inspection = inspectScenarioConfig(candidate)
+    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined || inspection.links === undefined) {
       const issue = inspection.result.errors[0]
       return {
         ok: false,
@@ -81,7 +107,7 @@ export class ScenarioProjection {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'scenario.id', message: '场景编号与请求地址不一致。' }
     }
 
-    const readOnlyField = changedReadOnlyField(value as Record<string, unknown>, this.draft.config)
+    const readOnlyField = changedReadOnlyField(candidate as Record<string, unknown>, this.draft.config)
     if (readOnlyField !== undefined) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: readOnlyField, message: '当前阶段不允许修改该配置。' }
     }
@@ -92,6 +118,7 @@ export class ScenarioProjection {
         ...this.draft.config,
         scenario: inspection.identity,
         platforms: structuredClone(inspection.platforms),
+        links: structuredClone(inspection.links),
       },
       revision: this.draft.revision + 1,
     }

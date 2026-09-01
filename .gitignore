@@ -4,6 +4,7 @@ node_modules/
 # Build and test outputs
 dist/
 coverage/
+/coverage-audit/
 test-results/
 output/
 *.tsbuildinfo

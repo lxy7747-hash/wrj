@@ -9,7 +9,7 @@ import type {
   ScenarioConfig,
   ScenarioDraft,
 } from '../../src/contracts/domain-models'
-import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
+import { LINK_MHZ_MINIMUM_STEP, inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
@@ -390,5 +390,57 @@ describe('P2-2 平台与航点字段校验', () => {
       message: '关联对象不属于当前场景实体。',
       fieldPath: `platforms[0].${field}`,
     })
+  })
+})
+
+describe('P2-3 链路字段校验', () => {
+  it('覆盖四类链路并允许没有链路的场景', () => {
+    const config = scenarioDraft().config
+    expect(new Set(config.links.map((link) => link.type))).toEqual(new Set(['SAT', 'MICROWAVE', 'DATALINK', 'LASER']))
+
+    config.links = []
+    config.platforms.forEach((platform) => { platform.linkIds = [] })
+    expect(inspectScenarioConfig(config).result.valid).toBe(true)
+  })
+
+  it('频率和带宽共用 0.001 MHz 最小值', () => {
+    const minimum = scenarioDraft().config
+    minimum.links[0]!.frequency = LINK_MHZ_MINIMUM_STEP
+    minimum.links[0]!.bandwidth = LINK_MHZ_MINIMUM_STEP
+    expect(inspectScenarioConfig(minimum).result.valid).toBe(true)
+
+    for (const field of ['frequency', 'bandwidth'] as const) {
+      const belowMinimum = scenarioDraft().config
+      belowMinimum.links[0]![field] = LINK_MHZ_MINIMUM_STEP - 0.0001
+      expect(inspectScenarioConfig(belowMinimum).result.errors.map((issue) => issue.fieldPath)).toContain(`links[0].${field}`)
+    }
+  })
+
+  it('定位链路标识、端点和全参数错误', () => {
+    const cases: Array<[string, (config: ScenarioConfig) => void]> = [
+      ['links', (config) => { config.links[1]!.id = config.links[0]!.id }],
+      ['links[0]', (config) => { delete (config.links[0] as unknown as Record<string, unknown>).frequency }],
+      ['links[0].id', (config) => { config.links[0]!.id = ' ' }],
+      ['links[0].type', (config) => { config.links[0]!.type = 'UNKNOWN' as never }],
+      ['links[0].sourcePlatformId', (config) => { config.links[0]!.sourcePlatformId = 'NOT-FOUND' }],
+      ['links[0].targetPlatformId', (config) => { config.links[0]!.targetPlatformId = 'NOT-FOUND' }],
+      ['links[0].targetPlatformId', (config) => { config.links[0]!.targetPlatformId = config.links[0]!.sourcePlatformId }],
+      ['links[0].frequency', (config) => { config.links[0]!.frequency = 0 }],
+      ['links[0].bandwidth', (config) => { config.links[0]!.bandwidth = 0 }],
+      ['links[0].txPower', (config) => { config.links[0]!.txPower = -1 }],
+      ['links[0].antennaGain', (config) => { config.links[0]!.antennaGain = { tx: 1 } as never }],
+      ['links[0].antennaGain.tx', (config) => { config.links[0]!.antennaGain.tx = Number.NaN }],
+      ['links[0].antennaGain.rx', (config) => { config.links[0]!.antennaGain.rx = Number.NaN }],
+      ['links[0].modulation', (config) => { config.links[0]!.modulation = '16QAM' as never }],
+      ['links[0].berThreshold', (config) => { config.links[0]!.berThreshold = 1.1 }],
+      ['links[0].dataRate', (config) => { config.links[0]!.dataRate = -1 }],
+      ['links[0].direction', (config) => { config.links[0]!.direction = 'BOTH' as never }],
+    ]
+
+    for (const [fieldPath, mutate] of cases) {
+      const config = scenarioDraft().config
+      mutate(config)
+      expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
   })
 })

@@ -5,6 +5,7 @@ import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, PageMeta, Principal, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
+import { LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import ScenariosPage from '../../src/pages/scenarios.vue'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -62,7 +63,7 @@ describe('P2-1 场景管理页面', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
-    expect(wrapper.get('h2').text()).toBe('场景管理')
+    expect(wrapper.get('.scenario-page').attributes('aria-label')).toBe('场景配置')
     expect(wrapper.text()).toContain('基础信息')
     expect(wrapper.text()).toContain('时序参数')
     expect(wrapper.text()).toContain('环境参数')
@@ -243,6 +244,63 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
+  it('新增和编辑场景实体时通过地图选点回填航点并将高度设为零', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, {
+      attachTo: document.body,
+      global: {
+        plugins: [pinia, ElementPlus],
+        stubs: {
+          WaypointMapPicker: {
+            props: ['modelValue', 'longitude', 'latitude'],
+            emits: ['update:modelValue', 'confirm'],
+            template: '<button v-if="modelValue" data-testid="confirm-map-point" @click="$emit(\'confirm\', { longitude: 120.654321, latitude: 24.456789 })">确认模拟选点</button>',
+          },
+        },
+      },
+    })
+
+    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
+    await nextTick()
+    const newAltitude = wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find((component) => component.attributes('data-testid') === 'waypoint-altitude-0')!
+    newAltitude.vm.$emit('update:modelValue', 1500)
+    document.querySelector<HTMLElement>('[data-testid="pick-waypoint-0"]')!.click()
+    await nextTick()
+    await wrapper.get('[data-testid="confirm-map-point"]').trigger('click')
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+
+    expect(scenario.draft?.config.platforms.at(-1)?.waypoints[0]).toMatchObject({
+      longitude: 120.654321,
+      latitude: 24.456789,
+      altitude: 0,
+    })
+
+    await wrapper.get('#tab-platforms').trigger('click')
+    await nextTick()
+    await wrapper.get('[data-testid="edit-platform-1"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="pick-waypoint-0"]')).not.toBeNull()
+    document.querySelector<HTMLElement>('[data-testid="pick-waypoint-0"]')!.click()
+    await nextTick()
+    await wrapper.get('[data-testid="confirm-map-point"]').trigger('click')
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+
+    expect(scenario.draft?.config.platforms[1]?.waypoints[0]).toMatchObject({
+      longitude: 120.654321,
+      latitude: 24.456789,
+      altitude: 0,
+    })
+    wrapper.unmount()
+  })
+
   it('删除未被引用的支撑实体并拒绝第 51 个业务信息节点', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -300,6 +358,9 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     await wrapper.get('[data-testid="edit-platform-1"]').trigger('click')
     await flushPromises()
+    const linkIds = document.querySelector<HTMLInputElement>('[data-testid="platform-link-ids"]')!
+    expect(linkIds.readOnly).toBe(true)
+    expect(linkIds.value).toContain('L-MW-01')
     document.querySelector<HTMLElement>('[data-testid="delete-waypoint-0"]')!.click()
     const editName = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
     editName.value = '高空前出中继节点（编辑）'
@@ -311,12 +372,11 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
     await flushPromises()
     const selects = wrapper.findAllComponents({ name: 'ElSelect' })
-    expect(selects).toHaveLength(5)
+    expect(selects).toHaveLength(4)
     selects[0]!.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
     selects[1]!.vm.$emit('update:modelValue', 'ground')
     selects[2]!.vm.$emit('update:modelValue', [])
     selects[3]!.vm.$emit('update:modelValue', [])
-    selects[4]!.vm.$emit('update:modelValue', [])
     const dialogNumbers = wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(-3)
     dialogNumbers[0]!.vm.$emit('update:modelValue', 119)
     dialogNumbers[1]!.vm.$emit('update:modelValue', 24)
@@ -329,5 +389,111 @@ describe('P2-1 场景管理页面', () => {
 
     expect(scenario.draft?.config.platforms.some((platform) => platform.id === 'SUP-TEST')).toBe(false)
     wrapper.unmount()
+  })
+
+  it('新增、编辑和删除链路时同步端点平台关联', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, {
+      attachTo: document.body,
+      global: {
+        plugins: [pinia, ElementPlus],
+        stubs: { ElPopconfirm: { emits: ['confirm'], template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>' } },
+      },
+    })
+
+    await wrapper.get('#tab-links').trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('已配置 4 / 4 类')
+    const originalCount = scenario.draft!.config.links.length
+    await wrapper.get('[data-testid="add-link"]').trigger('click')
+    await flushPromises()
+    const select = (testId: string) => wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === testId)!
+    const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find((component) => component.attributes('data-testid') === testId)!
+    expect(inputNumber('link-frequency').props()).toMatchObject({ min: LINK_MHZ_MINIMUM_STEP, step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-bandwidth').props()).toMatchObject({ min: LINK_MHZ_MINIMUM_STEP, step: LINK_MHZ_MINIMUM_STEP })
+    inputNumber('link-frequency').vm.$emit('input', 0)
+    inputNumber('link-frequency').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.links).toHaveLength(originalCount)
+    expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('链路频率不能小于 0.001 MHz。')
+    inputNumber('link-frequency').vm.$emit('input', 193500000)
+    inputNumber('link-frequency').vm.$emit('update:modelValue', 193500000)
+    inputNumber('link-bandwidth').vm.$emit('input', 0)
+    inputNumber('link-bandwidth').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.links).toHaveLength(originalCount)
+    expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('链路带宽不能小于 0.001 MHz。')
+    select('link-type').vm.$emit('update:modelValue', 'LASER')
+    select('link-source').vm.$emit('update:modelValue', 'CMD-01')
+    select('link-target').vm.$emit('update:modelValue', 'UAV-01')
+    select('link-modulation').vm.$emit('update:modelValue', 'BPSK')
+    select('link-direction').vm.$emit('update:modelValue', 'REVERSE')
+    inputNumber('link-bandwidth').vm.$emit('input', 1000)
+    inputNumber('link-bandwidth').vm.$emit('update:modelValue', 1000)
+    inputNumber('link-power').vm.$emit('update:modelValue', 20)
+    inputNumber('link-data-rate').vm.$emit('update:modelValue', 100)
+    inputNumber('link-tx-gain').vm.$emit('update:modelValue', 30)
+    inputNumber('link-rx-gain').vm.$emit('update:modelValue', 30)
+    inputNumber('link-ber-threshold').vm.$emit('update:modelValue', 0.000001)
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+
+    expect(scenario.draft?.config.links).toHaveLength(originalCount + 1)
+    expect(scenario.draft?.config.links.at(-1)).toMatchObject({
+      id: 'L-CFG-001',
+      type: 'LASER',
+      sourcePlatformId: 'CMD-01',
+      targetPlatformId: 'UAV-01',
+      frequency: 193500000,
+      modulation: 'BPSK',
+      direction: 'REVERSE',
+    })
+    expect(scenario.draft?.config.platforms[0]?.linkIds).toContain('L-CFG-001')
+    expect(scenario.draft?.config.platforms[1]?.linkIds).toContain('L-CFG-001')
+    const successAlert = wrapper.findAllComponents({ name: 'ElAlert' }).find((component) => component.props('title') === '链路已新增，保存草稿后生效。')
+    expect(successAlert?.props('type')).toBe('success')
+
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    await flushPromises()
+    select('link-target').vm.$emit('update:modelValue', 'AIR-03')
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.links[0]?.targetPlatformId).toBe('AIR-03')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'GCC-01')?.linkIds).not.toContain('L-MW-01')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-03')?.linkIds).toContain('L-MW-01')
+
+    await wrapper.get('[data-testid="delete-link-0"]').trigger('click')
+    await nextTick()
+    expect(scenario.draft?.config.links.some((link) => link.id === 'L-MW-01')).toBe(false)
+    expect(scenario.draft?.config.platforms.every((platform) => !platform.linkIds.includes('L-MW-01'))).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('链路数量不足时使用显式错误状态', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    const singlePlatform = draft()
+    singlePlatform.config.links = []
+    singlePlatform.config.platforms = [singlePlatform.config.platforms[0]!]
+    singlePlatform.config.platforms[0]!.linkIds = []
+    scenario.$patch({ draft: singlePlatform, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('[data-testid="add-link"]').trigger('click')
+    await nextTick()
+
+    const errorAlert = wrapper.findAllComponents({ name: 'ElAlert' }).find((component) => component.props('title') === '至少需要两个场景实体才能新增链路。')
+    expect(errorAlert?.props('type')).toBe('error')
   })
 })
