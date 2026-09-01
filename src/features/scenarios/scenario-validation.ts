@@ -1,4 +1,5 @@
 import type {
+  Platform,
   ScenarioIdentity,
   ValidationIssue,
   ValidationResult,
@@ -23,11 +24,24 @@ const ENVIRONMENT_KEYS = [
   'rainLossDbPerKm',
   'multipathEnabled',
 ] as const
+const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
+const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
+const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
+export const BUSINESS_INFORMATION_NODE_TYPES = [
+  'REAR_COMMAND_NODE',
+  'FORWARD_RELAY_NODE',
+  'GROUND_CLUSTER_COMMAND_NODE',
+  'AIRBORNE_MISSION_CLUSTER',
+] as const
+export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'] as const
+const PLATFORM_TYPES = [...BUSINESS_INFORMATION_NODE_TYPES, ...SUPPORTING_ENTITY_TYPES] as const
+const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
 
 export interface ScenarioInspection {
   result: ValidationResult
   identity?: ScenarioIdentity
+  platforms?: Platform[]
 }
 
 /**
@@ -91,10 +105,127 @@ function addError(errors: ValidationIssue[], code: string, message: string, fiel
 }
 
 /**
- * 校验 P2-1 场景基础信息、环境参数和时序参数，并读取安全的身份对象。
+ * 判断场景实体是否计入 50 个业务信息节点容量。
+ * @param type 场景实体类型。
+ * @returns 属于文档规定的四类业务信息节点时返回 `true`。
+ * @remarks 纯分类判断，不修改场景数据。
+ */
+export function isBusinessInformationNodeType(type: unknown): boolean {
+  return typeof type === 'string' && (BUSINESS_INFORMATION_NODE_TYPES as readonly string[]).includes(type)
+}
+
+/**
+ * 读取集合中可用于引用校验的字符串 ID。
+ * @param value 待读取的配置集合。
+ * @returns 集合内合法字符串 ID 的集合。
+ * @remarks 忽略形状错误的条目，相关只读集合仍由服务端变更边界拒绝。
+ */
+function collectIds(value: unknown): Set<string> {
+  if (!Array.isArray(value)) return new Set()
+  return new Set(value.flatMap((item) => (
+    typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string'
+      ? [(item as { id: string }).id]
+      : []
+  )))
+}
+
+/**
+ * 校验平台关联 ID 数组的类型、唯一性和引用闭合性。
+ * @param value 待校验的关联 ID 数组。
+ * @param knownIds 对应目标集合中的有效 ID。
+ * @param fieldPath 当前关联字段路径。
+ * @param errors 接收中文字段错误的集合。
+ * @returns 无返回值。
+ * @remarks 只追加校验错误，不修改关联数组。
+ */
+function inspectReferenceIds(
+  value: unknown,
+  knownIds: ReadonlySet<string>,
+  ownedIds: ReadonlySet<string>,
+  fieldPath: string,
+  errors: ValidationIssue[],
+): void {
+  if (!Array.isArray(value) || value.some((id) => typeof id !== 'string' || id.trim() === '')) {
+    addError(errors, 'REFERENCE_LIST_INVALID', '关联 ID 必须是非空字符串数组。', fieldPath)
+    return
+  }
+  if (new Set(value).size !== value.length) addError(errors, 'REFERENCE_DUPLICATED', '关联 ID 不允许重复。', fieldPath)
+  if (value.some((id) => !knownIds.has(id))) addError(errors, 'REFERENCE_NOT_FOUND', '关联 ID 必须引用当前场景中存在的对象。', fieldPath)
+  if (value.some((id) => knownIds.has(id) && !ownedIds.has(id))) {
+    addError(errors, 'REFERENCE_OWNERSHIP_MISMATCH', '关联对象不属于当前场景实体。', fieldPath)
+  }
+}
+
+/** 读取归属于指定平台的关联对象 ID。 */
+function collectOwnedIds(items: unknown, platformId: string, fields: readonly string[]): Set<string> {
+  if (!Array.isArray(items)) return new Set()
+  return collectIds(items.filter((item) => (
+    typeof item === 'object'
+    && item !== null
+    && fields.some((field) => (item as Record<string, unknown>)[field] === platformId)
+  )))
+}
+
+/**
+ * 校验初始位置或航点坐标。
+ * @param value 待校验的位置对象。
+ * @param fieldPath 当前对象路径。
+ * @param waypoint 是否同时校验航点速度和到达时间。
+ * @param errors 接收中文字段错误的集合。
+ * @returns 无返回值。
+ * @remarks 只追加校验错误，不修改坐标或单位。
+ */
+function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, waypoint ? WAYPOINT_KEYS : POSITION_KEYS)) {
+    addError(errors, 'POSITION_SHAPE_INVALID', waypoint ? '航点结构不正确。' : '初始位置结构不正确。', fieldPath)
+    return
+  }
+  if (!isFiniteNumber(value.longitude, -180, 180)) addError(errors, 'LONGITUDE_INVALID', '经度必须在 -180 至 180 之间。', `${fieldPath}.longitude`)
+  if (!isFiniteNumber(value.latitude, -90, 90)) addError(errors, 'LATITUDE_INVALID', '纬度必须在 -90 至 90 之间。', `${fieldPath}.latitude`)
+  if (!isFiniteNumber(value.altitude, 0)) addError(errors, 'ALTITUDE_INVALID', '高度不能小于 0。', `${fieldPath}.altitude`)
+  if (waypoint) {
+    if (!isFiniteNumber(value.speed, 0)) addError(errors, 'SPEED_INVALID', '速度不能小于 0。', `${fieldPath}.speed`)
+    if (!isFiniteNumber(value.arrivalTime, 0)) addError(errors, 'ARRIVAL_TIME_INVALID', '到达时间不能小于 0。', `${fieldPath}.arrivalTime`)
+  }
+}
+
+/**
+ * 校验只读集合中指向平台的引用，防止删除平台后留下悬空关系。
+ * @param items 链路、干扰器、传感器或信息需求集合。
+ * @param fields 需要检查的平台 ID 字段。
+ * @param platformIds 当前平台 ID 集合。
+ * @param collectionPath 集合合同路径。
+ * @param errors 接收中文字段错误的集合。
+ * @returns 无返回值。
+ * @remarks 仅检查已有字符串引用；集合自身的完整字段校验由后续功能阶段开放。
+ */
+function inspectPlatformReferences(
+  items: unknown,
+  fields: readonly string[],
+  platformIds: ReadonlySet<string>,
+  collectionPath: string,
+  errors: ValidationIssue[],
+): void {
+  if (!Array.isArray(items)) return
+  items.forEach((item, index) => {
+    if (typeof item !== 'object' || item === null) return
+    fields.forEach((field) => {
+      const reference = (item as Record<string, unknown>)[field]
+      if (typeof reference === 'string' && !platformIds.has(reference)) {
+        addError(errors, 'PLATFORM_REFERENCE_NOT_FOUND', '引用的平台不存在。', `${collectionPath}[${index}].${field}`)
+      }
+      if (Array.isArray(reference) && reference.some((id) => typeof id === 'string' && !platformIds.has(id))) {
+        addError(errors, 'PLATFORM_REFERENCE_NOT_FOUND', '引用的平台不存在。', `${collectionPath}[${index}].${field}`)
+      }
+    })
+  })
+}
+
+/**
+ * 校验场景基础信息、环境、时序、平台和航点，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
- * @remarks 只覆盖本阶段可编辑字段及完整配置外壳，不修改原始配置。
+ * @remarks 只覆盖 P2-2 已开放字段及完整配置外壳，不修改原始配置。
  */
 export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   const errors: ValidationIssue[] = []
@@ -134,11 +265,67 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   if (!isFiniteNumber(environment.rainLossDbPerKm, 0)) addError(errors, 'RAIN_LOSS_INVALID', '雨衰不能小于 0。', 'scenario.environment.rainLossDbPerKm')
   if (typeof environment.multipathEnabled !== 'boolean') addError(errors, 'MULTIPATH_INVALID', '多径效应开关格式不正确。', 'scenario.environment.multipathEnabled')
 
+  if (Array.isArray(value.platforms)) {
+    const platformIds = collectIds(value.platforms)
+    const linkIds = collectIds(value.links)
+    const sensorIds = collectIds(value.sensors)
+    const jammerIds = collectIds(value.jammers)
+    const businessNodeCount = value.platforms.filter((platform) => (
+      typeof platform === 'object' && platform !== null && isBusinessInformationNodeType((platform as { type?: unknown }).type)
+    )).length
+
+    if (businessNodeCount === 0) addError(errors, 'MINIMUM_BUSINESS_NODE', '场景至少需要一个业务信息节点。', 'platforms')
+    if (businessNodeCount > 50) addError(errors, 'NODE_LIMIT_EXCEEDED', '业务信息节点不能超过 50 个。', 'platforms')
+    if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '场景实体 ID 不允许为空或重复。', 'platforms')
+
+    value.platforms.forEach((platform, index) => {
+      const path = `platforms[${index}]`
+      if (!isClosedObject(platform, PLATFORM_KEYS)) {
+        addError(errors, 'PLATFORM_SHAPE_INVALID', '场景实体结构不正确。', path)
+        return
+      }
+      if (typeof platform.id !== 'string' || platform.id.trim() === '') addError(errors, 'PLATFORM_ID_INVALID', '场景实体 ID 为必填项。', `${path}.id`)
+      if (typeof platform.name !== 'string' || platform.name.trim() === '') addError(errors, 'PLATFORM_NAME_INVALID', '场景实体名称为必填项。', `${path}.name`)
+      if (typeof platform.type !== 'string' || !(PLATFORM_TYPES as readonly string[]).includes(platform.type)) addError(errors, 'PLATFORM_TYPE_INVALID', '场景实体类型不正确。', `${path}.type`)
+      if (typeof platform.category !== 'string' || !(DEPLOYMENT_DOMAINS as readonly string[]).includes(platform.category)) addError(errors, 'PLATFORM_CATEGORY_INVALID', '部署域不正确。', `${path}.category`)
+      inspectPosition(platform.initialPosition, `${path}.initialPosition`, false, errors)
+      if (!Array.isArray(platform.waypoints)) {
+        addError(errors, 'WAYPOINTS_INVALID', '航点必须是数组。', `${path}.waypoints`)
+      } else {
+        let previousArrivalTime: number | undefined
+        platform.waypoints.forEach((waypoint, waypointIndex) => {
+          const waypointPath = `${path}.waypoints[${waypointIndex}]`
+          inspectPosition(waypoint, waypointPath, true, errors)
+          if (typeof waypoint !== 'object' || waypoint === null) return
+          const arrivalTime = (waypoint as { arrivalTime?: unknown }).arrivalTime
+          if (!isFiniteNumber(arrivalTime, 0)) return
+          if (isFiniteNumber(scenario.duration, Number.MIN_VALUE) && arrivalTime > scenario.duration) {
+            addError(errors, 'ARRIVAL_TIME_EXCEEDS_DURATION', '航点到达时间不能超过场景仿真时长。', `${waypointPath}.arrivalTime`)
+          }
+          if (previousArrivalTime !== undefined && arrivalTime <= previousArrivalTime) {
+            addError(errors, 'ARRIVAL_TIME_NOT_INCREASING', '航点到达时间必须严格递增。', `${waypointPath}.arrivalTime`)
+          }
+          previousArrivalTime = arrivalTime
+        })
+      }
+      const platformId = typeof platform.id === 'string' ? platform.id : ''
+      inspectReferenceIds(platform.linkIds, linkIds, collectOwnedIds(value.links, platformId, ['sourcePlatformId', 'targetPlatformId']), `${path}.linkIds`, errors)
+      inspectReferenceIds(platform.sensorIds, sensorIds, collectOwnedIds(value.sensors, platformId, ['platformId']), `${path}.sensorIds`, errors)
+      inspectReferenceIds(platform.jammerIds, jammerIds, collectOwnedIds(value.jammers, platformId, ['platformId']), `${path}.jammerIds`, errors)
+    })
+
+    inspectPlatformReferences(value.links, ['sourcePlatformId', 'targetPlatformId'], platformIds, 'links', errors)
+    inspectPlatformReferences(value.jammers, ['platformId'], platformIds, 'jammers', errors)
+    inspectPlatformReferences(value.sensors, ['platformId'], platformIds, 'sensors', errors)
+    inspectPlatformReferences(value.informationDemand, ['sourcePlatformId', 'destinationPlatformIds'], platformIds, 'informationDemand', errors)
+  }
+
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
   if (!result.valid) return { result }
 
   return {
     result,
+    platforms: value.platforms as Platform[],
     identity: {
       id: scenario.id as ScenarioIdentity['id'],
       name: scenario.name as string,

@@ -34,7 +34,7 @@ function createDraft(): ScenarioDraft {
  * @remarks 只读取并比较值，不修改候选对象或当前草稿。
  */
 function changedReadOnlyField(candidate: Record<string, unknown>, current: ScenarioConfig): string | undefined {
-  const readOnlyFields = ['platforms', 'links', 'jammers', 'sensors', 'output', 'informationDemand'] as const
+  const readOnlyFields = ['links', 'jammers', 'sensors', 'output', 'informationDemand'] as const
   return readOnlyFields.find((field) => JSON.stringify(candidate[field]) !== JSON.stringify(current[field]))
 }
 
@@ -55,7 +55,7 @@ export class ScenarioProjection {
   }
 
   /**
-   * 校验并保存 P2-1 范围内的场景基础、环境和时序参数。
+   * 校验并保存场景基础、环境、时序、平台和航点参数。
    * @param scenarioId 路由中的场景编号。
    * @param value 客户端提交的未知 JSON 值。
    * @returns 保存后的草稿副本，或带字段路径的失败结果。
@@ -67,11 +67,11 @@ export class ScenarioProjection {
     }
 
     const inspection = inspectScenarioConfig(value)
-    if (!inspection.result.valid || inspection.identity === undefined) {
+    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined) {
       const issue = inspection.result.errors[0]
       return {
         ok: false,
-        code: 'VALIDATION_FAILED',
+        code: issue?.code === 'NODE_LIMIT_EXCEEDED' ? 'NODE_LIMIT_EXCEEDED' : 'VALIDATION_FAILED',
         status: 422,
         fieldPath: issue?.fieldPath ?? 'config',
         message: issue?.message ?? '场景配置校验失败。',
@@ -88,7 +88,11 @@ export class ScenarioProjection {
 
     this.draft = {
       ...this.draft,
-      config: { ...this.draft.config, scenario: inspection.identity },
+      config: {
+        ...this.draft.config,
+        scenario: inspection.identity,
+        platforms: structuredClone(inspection.platforms),
+      },
       revision: this.draft.revision + 1,
     }
     return { ok: true, data: structuredClone(this.draft) }

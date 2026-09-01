@@ -97,6 +97,18 @@ afterEach(async () => {
 })
 
 describe('P1 in-memory authentication boundary', () => {
+  it('accepts login from the named loopback UI origin', async () => {
+    const { baseUrl } = await startServer()
+
+    const response = await request(baseUrl)
+      .post('/api/v1/auth/login')
+      .set('Origin', 'http://localhost:5173')
+      .send({ username: 'admin', passwordFixture: DEFAULT_LOGIN_PASSWORD })
+      .expect(200)
+
+    expect(response.headers['access-control-allow-origin']).toBe('http://localhost:5173')
+  })
+
   it.each([
     ['admin', 'USR-ADMIN', 'ADMIN'],
     ['operator', 'USR-OPERATOR', 'OPERATOR'],

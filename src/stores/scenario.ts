@@ -33,7 +33,7 @@ function readFailure(payload: unknown): ApiFailure | undefined {
 }
 
 /**
- * 从成功信封中读取并校验 P2-1 场景草稿。
+ * 从成功信封中读取并校验当前阶段场景草稿。
  * @param payload 服务端返回的已解析响应体。
  * @returns 合同有效时返回场景草稿，否则返回 `undefined`。
  * @remarks 校验场景外壳和本阶段字段，不修改响应载荷。

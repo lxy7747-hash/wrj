@@ -45,6 +45,7 @@ describe('P2-1 场景管理页面', () => {
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
+    document.body.innerHTML = ''
   })
 
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
@@ -208,5 +209,125 @@ describe('P2-1 场景管理页面', () => {
 
     expect(wrapper.text()).toContain('场景名称为必填项，且不能超过 128 个字符。')
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('使用平台对话框新增业务信息节点和航点且确认前不污染草稿', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const originalCount = scenario.draft!.config.platforms.length
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+
+    expect(wrapper.text()).toContain('业务信息节点 6 / 50')
+    expect(wrapper.text()).toContain('支撑实体 2')
+    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await nextTick()
+    expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
+    const nameInput = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
+    nameInput.value = '新增空中无人作业节点'
+    nameInput.dispatchEvent(new Event('input', { bubbles: true }))
+    document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
+    await flushPromises()
+    expect(document.querySelector('[data-testid="waypoint-table"]')?.textContent).toContain('经度')
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await nextTick()
+
+    expect(scenario.draft?.config.platforms).toHaveLength(originalCount + 1)
+    expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
+      name: '新增空中无人作业节点',
+      type: 'REAR_COMMAND_NODE',
+      waypoints: [{ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 }],
+    })
+    expect(scenario.dirty).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('删除未被引用的支撑实体并拒绝第 51 个业务信息节点', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    const currentDraft = draft()
+    currentDraft.config.platforms.push({
+      id: 'SUP-UNUSED',
+      name: '未引用支撑实体',
+      type: 'COMMUNICATION_SATELLITE',
+      category: 'space',
+      initialPosition: { longitude: 0, latitude: 0, altitude: 550000 },
+      waypoints: [],
+      linkIds: [],
+      sensorIds: [],
+      jammerIds: [],
+    })
+    scenario.$patch({ draft: currentDraft, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, {
+      global: {
+        plugins: [pinia, ElementPlus],
+        stubs: { ElPopconfirm: { emits: ['confirm'], template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>' } },
+      },
+    })
+
+    await wrapper.get('#tab-platforms').trigger('click')
+    await nextTick()
+    await wrapper.get('[data-testid="delete-platform-8"]').trigger('click')
+    await nextTick()
+    expect(scenario.draft?.config.platforms.some((platform) => platform.id === 'SUP-UNUSED')).toBe(false)
+
+    const source = structuredClone(fixtureSource.scenario.platforms[3]!) as ScenarioConfig['platforms'][number]
+    scenario.draft!.config.platforms = Array.from({ length: 50 }, (_, index) => ({
+      ...structuredClone(source),
+      id: `LIMIT-${String(index + 1).padStart(3, '0')}`,
+      name: `容量测试节点 ${index + 1}`,
+      linkIds: [],
+      sensorIds: [],
+      jammerIds: [],
+    }))
+    await nextTick()
+    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+
+    expect(scenario.draft?.config.platforms).toHaveLength(50)
+    expect(wrapper.text()).toContain('业务信息节点已达 50 个，不能继续新增。')
+  })
+
+  it('编辑平台、删除航点并覆盖全部对话框字段绑定', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+
+    await wrapper.get('#tab-platforms').trigger('click')
+    await nextTick()
+    await wrapper.get('[data-testid="edit-platform-1"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="delete-waypoint-0"]')!.click()
+    const editName = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
+    editName.value = '高空前出中继节点（编辑）'
+    editName.dispatchEvent(new Event('input', { bubbles: true }))
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.platforms[1]).toMatchObject({ name: '高空前出中继节点（编辑）', waypoints: [] })
+
+    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await flushPromises()
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
+    expect(selects).toHaveLength(5)
+    selects[0]!.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
+    selects[1]!.vm.$emit('update:modelValue', 'ground')
+    selects[2]!.vm.$emit('update:modelValue', [])
+    selects[3]!.vm.$emit('update:modelValue', [])
+    selects[4]!.vm.$emit('update:modelValue', [])
+    const dialogNumbers = wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(-3)
+    dialogNumbers[0]!.vm.$emit('update:modelValue', 119)
+    dialogNumbers[1]!.vm.$emit('update:modelValue', 24)
+    dialogNumbers[2]!.vm.$emit('update:modelValue', 15)
+    const idInput = document.querySelector<HTMLInputElement>('[data-testid="platform-id"]')!
+    idInput.value = 'SUP-TEST'
+    idInput.dispatchEvent(new Event('input', { bubbles: true }))
+    document.querySelector<HTMLElement>('[data-testid="cancel-platform"]')!.click()
+    await flushPromises()
+
+    expect(scenario.draft?.config.platforms.some((platform) => platform.id === 'SUP-TEST')).toBe(false)
+    wrapper.unmount()
   })
 })

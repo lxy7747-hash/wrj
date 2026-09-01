@@ -68,7 +68,7 @@ interface RealtimeControllerInstance {
 }
 
 type LoopbackDecision =
-  | { allowed: true; peerAddress: '127.0.0.1' }
+  | { allowed: true; peerAddress: '127.0.0.1'; origin: string }
   | { allowed: false; code: 'LOOPBACK_ONLY'; message: string }
 
 let createMockServer: (options?: { port?: number }) => MockServerInstance
@@ -232,6 +232,7 @@ describe('P0 deterministic mock server', () => {
     expect(assertLoopbackRequest({ headers, socket: { remoteAddress: '::ffff:127.0.0.1' } })).toEqual({
       allowed: true,
       peerAddress: '127.0.0.1',
+      origin: ORIGIN,
     })
     expect(assertLoopbackRequest({ headers, socket: { remoteAddress: '::1' } })).toMatchObject({
       allowed: false,
@@ -241,7 +242,7 @@ describe('P0 deterministic mock server', () => {
     expect(assertLoopbackRequest({
       headers: { host: '127.0.0.1', origin: ORIGIN },
       socket: { remoteAddress: '127.0.0.1' },
-    })).toEqual({ allowed: true, peerAddress: '127.0.0.1' })
+    })).toEqual({ allowed: true, peerAddress: '127.0.0.1', origin: ORIGIN })
     for (const host of ['127.0.0.1:0', '127.0.0.1:65536']) {
       expect(assertLoopbackRequest({
         headers: { host, origin: ORIGIN },
@@ -347,7 +348,7 @@ describe('P0 deterministic mock server', () => {
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('loads, validates, saves, and resets the P2-1 scenario draft', async () => {
+  it('加载、校验、保存并重置 P2-2 场景草稿', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -385,8 +386,43 @@ describe('P0 deterministic mock server', () => {
       error: { code: 'VALIDATION_FAILED', fieldPath: 'scenario.environment.humidityPercent' },
     })
 
-    const readOnlyMutation = structuredClone(changed)
-    readOnlyMutation.platforms[0]!.name = '不允许修改的平台'
+    const platformMutation = structuredClone(changed)
+    platformMutation.platforms[0]!.name = '后方指挥节点（更新）'
+    const platformSaved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(platformMutation)
+      .expect(200)
+    const platformSavedDraft = (platformSaved.body as { data: ScenarioDraft }).data
+    expect(platformSavedDraft.revision).toBe(6)
+    expect(platformSavedDraft.config.platforms[0]?.name).toBe('后方指挥节点（更新）')
+
+    const overLimit = structuredClone(platformMutation)
+    const sourcePlatform = structuredClone(overLimit.platforms[3]!)
+    for (let index = 0; index < 45; index += 1) {
+      overLimit.platforms.push({
+        ...structuredClone(sourcePlatform),
+        id: `LIMIT-${String(index + 1).padStart(3, '0')}`,
+        name: `容量测试节点 ${index + 1}`,
+        linkIds: [],
+        sensorIds: [],
+        jammerIds: [],
+      })
+    }
+    const limitRejected = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send(overLimit)
+      .expect(422)
+    expect(limitRejected.body).toMatchObject({
+      ok: false,
+      error: { code: 'NODE_LIMIT_EXCEEDED', fieldPath: 'platforms' },
+    })
+
+    const readOnlyMutation = structuredClone(platformMutation)
+    readOnlyMutation.output.directory = './not-open-yet'
     const readOnlyRejected = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
@@ -395,7 +431,7 @@ describe('P0 deterministic mock server', () => {
       .expect(422)
     expect(readOnlyRejected.body).toMatchObject({
       ok: false,
-      error: { code: 'VALIDATION_FAILED', fieldPath: 'platforms' },
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'output' },
     })
 
     await request(baseUrl)
@@ -491,7 +527,7 @@ describe('P0 deterministic mock server', () => {
 
     const rejected = await request(baseUrl)
       .options('/api/arbitrary/delete/path')
-      .set('Origin', 'http://localhost:5173')
+      .set('Origin', 'http://127.0.0.1:5174')
       .set('Access-Control-Request-Method', 'DELETE')
       .expect(403)
     expect(rejected.body).toMatchObject({ ok: false, error: { code: 'LOOPBACK_ONLY' } })
@@ -629,7 +665,7 @@ describe('P0 deterministic mock server', () => {
   it('rejects invalid WebSocket origin, role, topic, and envelope with close 1008', async () => {
     const { wsUrl } = await startServer()
 
-    await expectRejected(wsUrl, 'LOOPBACK_ONLY', { origin: 'http://localhost:5173', role: 'ADMIN' })
+    await expectRejected(wsUrl, 'LOOPBACK_ONLY', { origin: 'http://127.0.0.1:5174', role: 'ADMIN' })
     await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'VIEWER' })
     await expectRejected(wsUrl, 'TOPIC_FORBIDDEN', {
       role: 'OPERATOR',

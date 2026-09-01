@@ -12,7 +12,6 @@ interface WorkspacePreview {
 
 type WorkspaceRouteName =
   | 'situation'
-  | 'scenarios'
   | 'batches'
   | 'reports'
   | 'replays'
@@ -29,17 +28,6 @@ const WORKSPACE_PREVIEWS: Record<WorkspaceRouteName, WorkspacePreview> = {
       { title: '态势画布', description: '将容纳地理背景、节点分布与通联拓扑。' },
       { title: '场景图层', description: '将按信息类别组织可见范围与对象分组。' },
       { title: '观察摘要', description: '将汇集选中对象与关联事件的上下文。' },
-    ],
-  },
-  scenarios: {
-    eyebrow: '场景配置',
-    summary: '规划中的配置工作区将按场景结构分区承载建模信息。',
-    variant: 'form',
-    regions: [
-      { title: '场景基础', description: '将组织名称、时间与环境等基础信息。' },
-      { title: '平台与航点', description: '将组织实体分类、位置与行动路径。' },
-      { title: '链路与感知', description: '将组织通联、干扰与感知关系。' },
-      { title: '输出约束', description: '将组织产物范围与结构校验规则。' },
     ],
   },
   batches: {

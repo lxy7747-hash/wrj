@@ -16,7 +16,7 @@ import {
   type ProjectionResult,
 } from './auth/projection.js'
 import { failure, success } from './http/envelope.js'
-import { assertLoopbackRequest, VITE_ORIGIN } from './http/loopback.js'
+import { assertLoopbackRequest } from './http/loopback.js'
 import { ScenarioProjection } from './scenarios/projection.js'
 import { MockProjection } from './state/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
@@ -332,7 +332,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    res.setHeader('Access-Control-Allow-Origin', VITE_ORIGIN)
+    res.setHeader('Access-Control-Allow-Origin', decision.origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role')
     res.setHeader('Vary', 'Origin')
@@ -456,11 +456,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
-   * 保存指定场景的 P2-1 基础、环境和时序参数。
+   * 保存指定场景的基础、环境、时序、平台和航点参数。
    * @param req 包含角色提示、场景编号和完整配置的请求。
    * @param res 接收更新后草稿或字段校验错误的响应。
    * @returns 无返回值。
-   * @remarks 校验通过时递增场景草稿修订号，其他配置区段保持不变。
+   * @remarks 校验通过时递增场景草稿修订号，链路、设备、输出和信息需求区段保持不变。
    */
   app.put('/api/v1/scenarios/:scenarioId', (req, res) => {
     const scenarioId = req.params.scenarioId

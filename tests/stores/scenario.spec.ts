@@ -282,3 +282,113 @@ describe('P2-1 场景基础字段校验', () => {
     expect(inspected.identity?.startTime).toBe(valid.scenario.startTime)
   })
 })
+
+describe('P2-2 平台与航点字段校验', () => {
+  it('接受 50 个业务信息节点并拒绝第 51 个', () => {
+    const config = scenarioDraft().config
+    const source = structuredClone(config.platforms[3]!)
+    for (let index = 0; index < 44; index += 1) {
+      config.platforms.push({
+        ...structuredClone(source),
+        id: `CAPACITY-${String(index + 1).padStart(3, '0')}`,
+        name: `容量测试节点 ${index + 1}`,
+        linkIds: [],
+        sensorIds: [],
+        jammerIds: [],
+      })
+    }
+
+    expect(inspectScenarioConfig(config).result.valid).toBe(true)
+    config.platforms.push({
+      ...structuredClone(source),
+      id: 'CAPACITY-045',
+      name: '第 51 个业务信息节点',
+      linkIds: [],
+      sensorIds: [],
+      jammerIds: [],
+    })
+    expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
+      code: 'NODE_LIMIT_EXCEEDED',
+      fieldPath: 'platforms',
+    }))
+  })
+
+  it('定位平台、坐标、航点和关联错误', () => {
+    const cases: Array<[string, (config: ScenarioConfig) => void]> = [
+      ['platforms', (config) => { config.platforms[1]!.id = config.platforms[0]!.id }],
+      ['platforms[0].name', (config) => { config.platforms[0]!.name = ' ' }],
+      ['platforms[0].type', (config) => { config.platforms[0]!.type = 'UNKNOWN' as never }],
+      ['platforms[0].category', (config) => { config.platforms[0]!.category = 'sea' as never }],
+      ['platforms[0].initialPosition.longitude', (config) => { config.platforms[0]!.initialPosition.longitude = 181 }],
+      ['platforms[1].waypoints[0].speed', (config) => { config.platforms[1]!.waypoints[0]!.speed = -1 }],
+      ['platforms[0].linkIds', (config) => { config.platforms[0]!.linkIds.push('L-NOT-FOUND') }],
+      ['links[0].sourcePlatformId', (config) => { config.links[0]!.sourcePlatformId = 'P-NOT-FOUND' }],
+    ]
+
+    for (const [fieldPath, mutate] of cases) {
+      const config = scenarioDraft().config
+      mutate(config)
+      expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
+  })
+
+  it('至少保留一个业务信息节点且支撑实体不计入容量', () => {
+    const config = scenarioDraft().config
+    config.platforms = config.platforms.filter((platform) => (
+      platform.type === 'COMMUNICATION_SATELLITE' || platform.type === 'GROUND_JAMMER_DETECTION_STATION'
+    ))
+
+    expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
+      code: 'MINIMUM_BUSINESS_NODE',
+      fieldPath: 'platforms',
+    }))
+  })
+
+  it.each([
+    {
+      name: '倒序到达时间',
+      mutate: (config: ScenarioConfig) => {
+        config.platforms[1]!.waypoints.push({ longitude: 119.6, latitude: 24.9, altitude: 3100, speed: 45, arrivalTime: 599 })
+      },
+      code: 'ARRIVAL_TIME_NOT_INCREASING',
+      fieldPath: 'platforms[1].waypoints[1].arrivalTime',
+    },
+    {
+      name: '相等到达时间',
+      mutate: (config: ScenarioConfig) => {
+        config.platforms[1]!.waypoints.push({ longitude: 119.6, latitude: 24.9, altitude: 3100, speed: 45, arrivalTime: 600 })
+      },
+      code: 'ARRIVAL_TIME_NOT_INCREASING',
+      fieldPath: 'platforms[1].waypoints[1].arrivalTime',
+    },
+    {
+      name: '到达时间超过场景时长',
+      mutate: (config: ScenarioConfig) => {
+        config.platforms[1]!.waypoints[0]!.arrivalTime = config.scenario.duration + 1
+      },
+      code: 'ARRIVAL_TIME_EXCEEDS_DURATION',
+      fieldPath: 'platforms[1].waypoints[0].arrivalTime',
+    },
+  ])('拒绝$name并定位到对应航点', ({ mutate, code, fieldPath }) => {
+    const config = scenarioDraft().config
+    mutate(config)
+
+    expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({ code, fieldPath }))
+  })
+
+  it.each([
+    { name: '链路', field: 'linkIds' as const, id: 'L-MW-01' },
+    { name: '传感器', field: 'sensorIds' as const, id: 'ESM-01' },
+    { name: '干扰器', field: 'jammerIds' as const, id: 'JAM-WB-01-TX' },
+  ])('拒绝归属于其他平台的$name关联', ({ field, id }) => {
+    const config = scenarioDraft().config
+    config.platforms[0]![field].push(id)
+
+    expect(inspectScenarioConfig(config).result.errors).toContainEqual({
+      severity: 'ERROR',
+      code: 'REFERENCE_OWNERSHIP_MISMATCH',
+      message: '关联对象不属于当前场景实体。',
+      fieldPath: `platforms[0].${field}`,
+    })
+  })
+})

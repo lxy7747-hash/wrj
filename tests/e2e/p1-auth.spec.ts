@@ -1,7 +1,11 @@
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import type { ApiSuccess, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const AUTH_SESSION_KEY = 'wrj.auth.principal'
+const MOCK_ORIGIN = 'http://127.0.0.1:4173'
+const UI_ORIGIN = 'http://127.0.0.1:5173'
+const SCENARIO_PATH = '/api/v1/scenarios/SCN-001'
 
 interface ConsoleAudit {
   errors: string[]
@@ -115,6 +119,22 @@ async function visitWorkspaceRouteFromNavigation(page: Page, route: WorkspaceRou
   await expect(page.getByTestId('identity-panel')).toBeVisible()
   await expect(page.getByRole('heading', { name: route.title, exact: true })).toBeVisible()
   await expect(link).toHaveAttribute('aria-current', 'page')
+}
+
+async function resetMock(request: APIRequestContext): Promise<void> {
+  const response = await request.post(`${MOCK_ORIGIN}/api/v1/reset`, {
+    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'ADMIN' },
+    data: { confirm: true },
+  })
+  expect(response.status()).toBe(200)
+}
+
+async function loadScenarioDraft(request: APIRequestContext): Promise<ScenarioDraft> {
+  const response = await request.get(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
+    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+  })
+  expect(response.status()).toBe(200)
+  return ((await response.json()) as ApiSuccess<ScenarioDraft>).data
 }
 
 test('anonymous access keeps login public and redirects every protected route', async ({ page }) => {
@@ -291,5 +311,129 @@ test.describe('P2-1 scenario business loop', () => {
     expect(audit.errors).toEqual([])
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
+  })
+})
+
+test.describe('P2-2 platform and waypoint acceptance', () => {
+  test('OPERATOR adds and edits a platform waypoint, saves, and reloads it', async ({ page, request }) => {
+    await resetMock(request)
+    const audit = auditConsole(page)
+
+    await loginAs(page, 'operator')
+    const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === SCENARIO_PATH)
+    await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    expect((await loaded).status()).toBe(200)
+    await page.getByRole('tab', { name: '平台与航点' }).click()
+
+    await page.getByTestId('add-business-platform').click()
+    await page.getByTestId('platform-name').fill('E2E 新增业务节点')
+    await page.getByTestId('platform-longitude').locator('input').fill('120.25')
+    await page.getByTestId('platform-latitude').locator('input').fill('24.35')
+    await page.getByTestId('platform-altitude').locator('input').fill('1200')
+    await page.getByTestId('add-waypoint').click()
+    await page.getByTestId('waypoint-longitude-0').locator('input').fill('120.5')
+    await page.getByTestId('waypoint-latitude-0').locator('input').fill('24.5')
+    await page.getByTestId('waypoint-altitude-0').locator('input').fill('1500')
+    await page.getByTestId('waypoint-speed-0').locator('input').fill('60')
+    await page.getByTestId('waypoint-arrival-0').locator('input').fill('300')
+    await page.getByTestId('apply-platform').click()
+
+    const addedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 新增业务节点' })
+    await expect(addedRow).toContainText('1')
+    await addedRow.getByRole('button', { name: '编辑' }).click()
+    await page.getByTestId('platform-name').fill('E2E 已编辑业务节点')
+    await page.getByTestId('waypoint-longitude-0').locator('input').fill('120.75')
+    await page.getByTestId('waypoint-latitude-0').locator('input').fill('24.75')
+    await page.getByTestId('waypoint-altitude-0').locator('input').fill('1800')
+    await page.getByTestId('waypoint-speed-0').locator('input').fill('75')
+    await page.getByTestId('waypoint-arrival-0').locator('input').fill('450')
+    await page.getByTestId('apply-platform').click()
+
+    const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+      && new URL(response.url()).pathname === SCENARIO_PATH)
+    await page.getByTestId('save-scenario').click()
+    const saved = await savedResponse
+    expect(saved.status()).toBe(200)
+    const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
+    expect(savedDraft.revision).toBe(5)
+    expect(savedDraft.config.platforms.at(-1)).toMatchObject({
+      id: 'PLAT-001',
+      name: 'E2E 已编辑业务节点',
+      initialPosition: { longitude: 120.25, latitude: 24.35, altitude: 1200 },
+      waypoints: [{ longitude: 120.75, latitude: 24.75, altitude: 1800, speed: 75, arrivalTime: 450 }],
+    })
+
+    const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === SCENARIO_PATH)
+    await page.reload()
+    const reloaded = await reloadedResponse
+    expect(reloaded.status()).toBe(200)
+    const reloadedDraft = ((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data
+    expect(reloadedDraft).toEqual(savedDraft)
+    await page.getByRole('tab', { name: '平台与航点' }).click()
+    const reloadedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 已编辑业务节点' })
+    await expect(reloadedRow).toContainText('PLAT-001')
+    await expect(reloadedRow).toContainText('1')
+    await reloadedRow.getByRole('button', { name: '编辑' }).click()
+    await expect(page.getByTestId('platform-longitude').locator('input')).toHaveValue('120.25')
+    await expect(page.getByTestId('waypoint-longitude-0').locator('input')).toHaveValue('120.75')
+    await expect(page.getByTestId('waypoint-arrival-0').locator('input')).toHaveValue('450')
+
+    expect(audit.errors).toEqual([])
+    expect(audit.http404s).toEqual([])
+    expect([...audit.nonLoopbackHosts]).toEqual([])
+  })
+
+  test('real mock accepts exactly 50 business nodes and atomically rejects node 51', async ({ request }) => {
+    await resetMock(request)
+    const baseline = await loadScenarioDraft(request)
+    const fiftyConfig = structuredClone(baseline.config)
+    const source = structuredClone(fiftyConfig.platforms[3]!)
+    for (let index = 0; index < 44; index += 1) {
+      fiftyConfig.platforms.push({
+        ...structuredClone(source),
+        id: `E2E-LIMIT-${String(index + 1).padStart(3, '0')}`,
+        name: `E2E 容量节点 ${index + 1}`,
+        linkIds: [],
+        sensorIds: [],
+        jammerIds: [],
+      })
+    }
+
+    const acceptedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
+      headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+      data: fiftyConfig,
+    })
+    expect(acceptedResponse.status()).toBe(200)
+    const acceptedDraft = ((await acceptedResponse.json()) as ApiSuccess<ScenarioDraft>).data
+    expect(acceptedDraft.revision).toBe(baseline.revision + 1)
+    expect(acceptedDraft.config.platforms.filter((platform) => (
+      !['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'].includes(platform.type)
+    ))).toHaveLength(50)
+    expect(await loadScenarioDraft(request)).toEqual(acceptedDraft)
+
+    const fiftyOneConfig: ScenarioConfig = structuredClone(acceptedDraft.config)
+    fiftyOneConfig.platforms.push({
+      ...structuredClone(source),
+      id: 'E2E-LIMIT-045',
+      name: 'E2E 第 51 个容量节点',
+      linkIds: [],
+      sensorIds: [],
+      jammerIds: [],
+    })
+    const rejectedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
+      headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+      data: fiftyOneConfig,
+    })
+    expect(rejectedResponse.status()).toBe(422)
+    expect(await rejectedResponse.json()).toMatchObject({
+      ok: false,
+      error: { code: 'NODE_LIMIT_EXCEEDED', fieldPath: 'platforms' },
+    })
+
+    const afterRejection = await loadScenarioDraft(request)
+    expect(afterRejection.revision).toBe(acceptedDraft.revision)
+    expect(afterRejection).toEqual(acceptedDraft)
   })
 })

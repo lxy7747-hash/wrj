@@ -9,10 +9,11 @@ interface LoopbackRequestLike {
 }
 
 export type LoopbackDecision =
-  | { allowed: true; peerAddress: '127.0.0.1' }
+  | { allowed: true; peerAddress: '127.0.0.1'; origin: string }
   | { allowed: false; code: 'LOOPBACK_ONLY'; message: string }
 
 export const VITE_ORIGIN = 'http://127.0.0.1:5173'
+const VITE_ORIGINS = new Set([VITE_ORIGIN, 'http://localhost:5173'])
 
 function normalizePeerAddress(address: string | undefined): string | undefined {
   if (address === '::ffff:127.0.0.1') {
@@ -55,7 +56,8 @@ export function assertLoopbackRequest(req: LoopbackRequestLike): LoopbackDecisio
     }
   }
 
-  if (req.headers.origin !== VITE_ORIGIN) {
+  const origin = req.headers.origin
+  if (origin === undefined || !VITE_ORIGINS.has(origin)) {
     return {
       allowed: false,
       code: 'LOOPBACK_ONLY',
@@ -63,5 +65,5 @@ export function assertLoopbackRequest(req: LoopbackRequestLike): LoopbackDecisio
     }
   }
 
-  return { allowed: true, peerAddress }
+  return { allowed: true, peerAddress, origin }
 }
