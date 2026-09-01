@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { ScenarioDraft, ValidationResult } from '../../src/contracts/domain-models'
+import type { ConfirmationContext, ScenarioDraft, ScenarioTemplate, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -45,6 +45,7 @@ interface RequestChain {
 }
 
 interface RequestClient {
+  delete(path: string): RequestChain
   get(path: string): RequestChain
   options(path: string): RequestChain
   post(path: string): RequestChain
@@ -71,7 +72,10 @@ type LoopbackDecision =
   | { allowed: true; peerAddress: '127.0.0.1'; origin: string }
   | { allowed: false; code: 'LOOPBACK_ONLY'; message: string }
 
-let createMockServer: (options?: { port?: number }) => MockServerInstance
+let createMockServer: (options?: {
+  port?: number
+  confirmationClock?: { now(): string; expiresAt(createdAt: string): string }
+}) => MockServerInstance
 let assertLoopbackRequest: (request: {
   headers: { host?: string; origin?: string }
   socket: { remoteAddress?: string }
@@ -124,8 +128,10 @@ function waitForEvent(target: HttpServerInstance | WebSocketClient, event: strin
   })
 }
 
-async function startServer(): Promise<{ server: MockServerInstance; baseUrl: string; wsUrl: string }> {
-  const server = createMockServer({ port: 0 })
+async function startServer(options: {
+  confirmationClock?: { now(): string; expiresAt(createdAt: string): string }
+} = {}): Promise<{ server: MockServerInstance; baseUrl: string; wsUrl: string }> {
+  const server = createMockServer({ port: 0, ...options })
   currentServer = server
   if (!server.httpServer.listening) {
     await waitForEvent(server.httpServer, 'listening')
@@ -593,6 +599,139 @@ describe('P0 deterministic mock server', () => {
     expect((afterValidation.body as { data: ScenarioDraft }).data).toEqual(original)
   })
 
+  it('按角色完成模板七类动作并保护被引用模板', async () => {
+    const { baseUrl } = await startServer()
+    const operator = (chain: RequestChain) => chain.set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
+    const admin = (chain: RequestChain) => chain.set('Origin', ORIGIN).set('X-Demo-Role', 'ADMIN')
+    const originalDraft = ((await operator(request(baseUrl).get('/api/v1/scenarios/SCN-001')).expect(200)).body as { data: ScenarioDraft }).data
+
+    await request(baseUrl).get('/api/v1/templates').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).get('/api/v1/templates/TPL-SCN-001').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/templates/TPL-SCN-001/copy').set('Origin', ORIGIN).send({ name: '副本' }).expect(403)
+    await operator(request(baseUrl).put('/api/v1/templates/TPL-SCN-001'))
+      .send({ name: '越权更新', config: originalDraft.config })
+      .expect(403)
+    await operator(request(baseUrl).post('/api/v1/confirmations'))
+      .send({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: 'TPL-SCN-001' })
+      .expect(403)
+    await operator(request(baseUrl).post('/api/v1/confirmations/CONF-NOT-FOUND')).send({ confirm: true }).expect(409)
+    await admin(request(baseUrl).post('/api/v1/confirmations/CONF-NOT-FOUND')).send({ confirm: true }).expect(409)
+    await operator(request(baseUrl).delete('/api/v1/templates/TPL-SCN-001')).expect(403)
+    await admin(request(baseUrl).delete('/api/v1/templates/TPL-NOT-FOUND')).expect(404)
+
+    const listed = await operator(request(baseUrl).get('/api/v1/templates')).expect(200)
+    expect((listed.body as { data: ScenarioTemplate[] }).data).toMatchObject([
+      { templateId: 'TPL-SCN-001', version: '4', official: true, referenceCount: 2 },
+    ])
+    await operator(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '操作员越权模板', config: originalDraft.config })
+      .expect(403)
+
+    const operatorConfirmationResponse = await operator(request(baseUrl).post('/api/v1/confirmations'))
+      .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' })
+      .expect(201)
+    const operatorConfirmation = (operatorConfirmationResponse.body as { data: ConfirmationContext }).data
+    expect(operatorConfirmation.role).toBe('OPERATOR')
+    await operator(request(baseUrl).post(`/api/v1/confirmations/${operatorConfirmation.confirmationId}`))
+      .send({ confirm: true })
+      .expect(200)
+
+    const createdResponse = await admin(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '台海验证模板', config: originalDraft.config })
+      .expect(201)
+    const created = (createdResponse.body as { data: ScenarioTemplate }).data
+    expect(created).toMatchObject({ templateId: 'TPL-SCN-002', version: '1', referenceCount: 0 })
+    await admin(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: created.name, config: originalDraft.config })
+      .expect(409)
+    await admin(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '', config: originalDraft.config })
+      .expect(422)
+    await admin(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '多余字段模板', config: originalDraft.config, extra: true })
+      .expect(422)
+    const invalidTemplateConfig = structuredClone(originalDraft.config)
+    invalidTemplateConfig.links[0]!.txPower = -1
+    await admin(request(baseUrl).post('/api/v1/templates'))
+      .send({ name: '非法配置模板', config: invalidTemplateConfig })
+      .expect(422)
+
+    const updatedResponse = await admin(request(baseUrl).put(`/api/v1/templates/${created.templateId}`))
+      .send({ name: '台海验证模板 V2', config: originalDraft.config })
+      .expect(200)
+    expect((updatedResponse.body as { data: ScenarioTemplate }).data).toMatchObject({ version: '2', name: '台海验证模板 V2' })
+    await admin(request(baseUrl).put(`/api/v1/templates/${created.templateId}`))
+      .send({ name: '跨海通联演示官方基线', config: originalDraft.config })
+      .expect(409)
+    await admin(request(baseUrl).put('/api/v1/templates/TPL-NOT-FOUND'))
+      .send({ name: '不存在', config: originalDraft.config })
+      .expect(404)
+
+    const copiedResponse = await operator(request(baseUrl).post(`/api/v1/templates/${created.templateId}/copy`))
+      .send({ name: '操作员临时场景' })
+      .expect(201)
+    expect((copiedResponse.body as { data: ScenarioDraft }).data.config.scenario.name).toBe('操作员临时场景')
+    expect(((await operator(request(baseUrl).get('/api/v1/scenarios/SCN-001')).expect(200)).body as { data: ScenarioDraft }).data.config.scenario.name)
+      .toBe('操作员临时场景')
+    await operator(request(baseUrl).post(`/api/v1/templates/${created.templateId}/copy`)).send({ name: '' }).expect(422)
+    await operator(request(baseUrl).post('/api/v1/templates/TPL-NOT-FOUND/copy')).send({ name: '临时场景' }).expect(404)
+
+    await admin(request(baseUrl).delete(`/api/v1/templates/${created.templateId}`)).expect(428)
+    await admin(request(baseUrl).delete(`/api/v1/templates/${created.templateId}`))
+      .set('X-Confirmation-Id', 'CONF-NOT-FOUND')
+      .expect(409)
+    await admin(request(baseUrl).post('/api/v1/confirmations')).send({ action: 'UNKNOWN', objectId: created.templateId }).expect(400)
+    const confirmationResponse = await admin(request(baseUrl).post('/api/v1/confirmations'))
+      .send({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: created.templateId })
+      .expect(201)
+    const confirmation = (confirmationResponse.body as { data: ConfirmationContext }).data
+    expect(confirmation.state).toBe('AWAITING_CONFIRMATION')
+    await admin(request(baseUrl).post(`/api/v1/confirmations/${confirmation.confirmationId}`)).send({ confirm: false }).expect(400)
+    await operator(request(baseUrl).post(`/api/v1/confirmations/${confirmation.confirmationId}`)).send({ confirm: true }).expect(403)
+    await admin(request(baseUrl).post(`/api/v1/confirmations/${confirmation.confirmationId}`)).send({ confirm: true }).expect(200)
+    await admin(request(baseUrl).post(`/api/v1/confirmations/${confirmation.confirmationId}`)).send({ confirm: true }).expect(409)
+    await admin(request(baseUrl).delete('/api/v1/templates/TPL-SCN-001'))
+      .set('X-Confirmation-Id', confirmation.confirmationId)
+      .expect(409)
+    await admin(request(baseUrl).delete(`/api/v1/templates/${created.templateId}`))
+      .set('X-Confirmation-Id', confirmation.confirmationId)
+      .expect(200)
+    await admin(request(baseUrl).get(`/api/v1/templates/${created.templateId}`)).expect(404)
+
+    const referencedConfirmationResponse = await admin(request(baseUrl).post('/api/v1/confirmations'))
+      .send({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: 'TPL-SCN-001' })
+      .expect(201)
+    const referencedConfirmation = (referencedConfirmationResponse.body as { data: ConfirmationContext }).data
+    await admin(request(baseUrl).post(`/api/v1/confirmations/${referencedConfirmation.confirmationId}`)).send({ confirm: true }).expect(200)
+    const rejectedDelete = await admin(request(baseUrl).delete('/api/v1/templates/TPL-SCN-001'))
+      .set('X-Confirmation-Id', referencedConfirmation.confirmationId)
+      .expect(409)
+    expect(rejectedDelete.body).toMatchObject({ error: { code: 'CONFLICT', fieldPath: 'referenceCount' } })
+    expect((await admin(request(baseUrl).get('/api/v1/templates/TPL-SCN-001')).expect(200)).body)
+      .toMatchObject({ data: { referenceCount: 2 } })
+  })
+
+  it('确认上下文到期后接口拒绝继续确认', async () => {
+    let now = '2026-08-06T08:00:00Z'
+    const { baseUrl } = await startServer({
+      confirmationClock: { now: () => now, expiresAt: () => '2026-08-06T08:05:00Z' },
+    })
+    const create = await request(baseUrl).post('/api/v1/confirmations')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' })
+      .expect(201)
+    const context = (create.body as { data: ConfirmationContext }).data
+
+    now = context.expiresAt
+    const expired = await request(baseUrl).post(`/api/v1/confirmations/${context.confirmationId}`)
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ confirm: true })
+      .expect(409)
+    expect(expired.body).toMatchObject({ error: { code: 'CONFIRMATION_EXPIRED' } })
+  })
+
   it('直接 PUT 忽略客户端链路和干扰设备反向关联并持久化规范结果', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
@@ -788,7 +927,7 @@ describe('P0 deterministic mock server', () => {
       expect(response.headers['access-control-allow-methods']).toBe(
         'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       )
-      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Demo-Role')
+      expect(response.headers['access-control-allow-headers']).toBe('Content-Type, X-Demo-Role, X-Confirmation-Id')
       expect(response.headers.vary).toBe('Origin')
     },
   )

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import type {
   ApiErrorCode,
   ScenarioConfig,
@@ -23,18 +24,28 @@ function createDraft(): ScenarioDraft {
   const config = loadFixtureProjection().scenario
   return {
     config,
-    uiExtensions: {
-      jammers: config.jammers.map((jammer) => ({
-        jammerId: jammer.id,
-        direction: jammer.type === 'BARRAGE' ? 360 : 45,
-        duration: jammer.type === 'BARRAGE' ? 120 : 60,
-        enabled: jammer.type === 'BARRAGE',
-      })),
-      sensors: [],
-    },
+    uiExtensions: createUiExtensions(config),
     revision: 4,
     officialLibraryChanged: false,
     locked: false,
+  }
+}
+
+/**
+ * 从规范配置生成当前已开放的界面扩展。
+ * @param config 场景规范配置。
+ * @returns 与干扰设备一一对应的界面扩展。
+ * @remarks 模板复制和初始草稿共用同一确定性规则。
+ */
+function createUiExtensions(config: ScenarioConfig): ScenarioDraft['uiExtensions'] {
+  return {
+    jammers: config.jammers.map((jammer) => ({
+      jammerId: jammer.id,
+      direction: jammer.type === 'BARRAGE' ? 360 : 45,
+      duration: jammer.type === 'BARRAGE' ? 120 : 60,
+      enabled: jammer.type === 'BARRAGE',
+    })),
+    sensors: [],
   }
 }
 
@@ -47,7 +58,7 @@ function createDraft(): ScenarioDraft {
  */
 function changedReadOnlyField(candidate: Record<string, unknown>, current: ScenarioConfig): string | undefined {
   const readOnlyFields = ['sensors', 'output', 'informationDemand'] as const
-  return readOnlyFields.find((field) => JSON.stringify(candidate[field]) !== JSON.stringify(current[field]))
+  return readOnlyFields.find((field) => !isDeepStrictEqual(candidate[field], current[field]))
 }
 
 /**
@@ -103,6 +114,44 @@ export class ScenarioProjection {
   get(scenarioId: string): ScenarioProjectionResult<ScenarioDraft> {
     if (scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    }
+    return { ok: true, data: structuredClone(this.draft) }
+  }
+
+  /**
+   * 将模板配置复制到当前临时工作场景。
+   * @param config 模板中的完整规范配置。
+   * @param name 临时工作场景名称。
+   * @returns 新的工作草稿，或锁定、字段校验错误。
+   * @remarks 保留当前工作场景编号，成功时替换内存草稿并递增修订号。
+   */
+  copyTemplate(config: ScenarioConfig, name: string): ScenarioProjectionResult<ScenarioDraft> {
+    if (this.draft.locked) {
+      return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
+    }
+    if (name.trim() === '') {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'name', message: '临时场景名称不能为空。' }
+    }
+    const candidate = structuredClone(config)
+    candidate.scenario.id = this.draft.config.scenario.id
+    candidate.scenario.name = name.trim()
+    const inspection = inspectScenarioConfig(candidate)
+    if (!inspection.result.valid) {
+      const issue = inspection.result.errors[0]!
+      return {
+        ok: false,
+        code: 'VALIDATION_FAILED',
+        status: 422,
+        fieldPath: issue.fieldPath,
+        message: issue.message,
+      }
+    }
+    this.draft = {
+      config: candidate,
+      uiExtensions: createUiExtensions(candidate),
+      revision: this.draft.revision + 1,
+      officialLibraryChanged: false,
+      locked: false,
     }
     return { ok: true, data: structuredClone(this.draft) }
   }
@@ -167,29 +216,29 @@ export class ScenarioProjection {
     const update = value as unknown as ScenarioDraftUpdate
     const candidate = withDerivedPlatformAssociations(update.config)
     const inspection = inspectScenarioConfig(candidate)
-    if (!inspection.result.valid || inspection.identity === undefined || inspection.platforms === undefined || inspection.links === undefined || inspection.jammers === undefined) {
-      const issue = inspection.result.errors[0]
+    if (!inspection.result.valid) {
+      const issue = inspection.result.errors[0]!
       return {
         ok: false,
-        code: issue?.code === 'NODE_LIMIT_EXCEEDED' ? 'NODE_LIMIT_EXCEEDED' : 'VALIDATION_FAILED',
+        code: issue.code === 'NODE_LIMIT_EXCEEDED' ? 'NODE_LIMIT_EXCEEDED' : 'VALIDATION_FAILED',
         status: 422,
-        fieldPath: issue?.fieldPath ?? 'config',
-        message: issue?.message ?? '场景配置校验失败。',
+        fieldPath: issue.fieldPath,
+        message: issue.message,
       }
     }
-    if (inspection.identity.id !== scenarioId) {
+    if (inspection.identity!.id !== scenarioId) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'scenario.id', message: '场景编号与请求地址不一致。' }
     }
 
-    const extensionInspection = inspectScenarioUiExtensions(update.uiExtensions, inspection.jammers.map((jammer) => jammer.id))
-    if (!extensionInspection.result.valid || extensionInspection.jammers === undefined) {
-      const issue = extensionInspection.result.errors[0]
+    const extensionInspection = inspectScenarioUiExtensions(update.uiExtensions, inspection.jammers!.map((jammer) => jammer.id))
+    if (!extensionInspection.result.valid) {
+      const issue = extensionInspection.result.errors[0]!
       return {
         ok: false,
         code: 'VALIDATION_FAILED',
         status: 422,
-        fieldPath: issue?.fieldPath ?? 'uiExtensions',
-        message: issue?.message ?? '场景界面扩展校验失败。',
+        fieldPath: issue.fieldPath,
+        message: issue.message,
       }
     }
 
@@ -197,7 +246,7 @@ export class ScenarioProjection {
     if (readOnlyField !== undefined) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: readOnlyField, message: '当前阶段不允许修改该配置。' }
     }
-    if (JSON.stringify(update.uiExtensions.sensors) !== JSON.stringify(this.draft.uiExtensions.sensors)) {
+    if (!isDeepStrictEqual(update.uiExtensions.sensors, this.draft.uiExtensions.sensors)) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'uiExtensions.sensors', message: '当前阶段不允许修改该配置。' }
     }
 
@@ -205,14 +254,14 @@ export class ScenarioProjection {
       ...this.draft,
       config: {
         ...this.draft.config,
-        scenario: inspection.identity,
-        platforms: structuredClone(inspection.platforms),
-        links: structuredClone(inspection.links),
-        jammers: structuredClone(inspection.jammers),
+        scenario: inspection.identity!,
+        platforms: structuredClone(inspection.platforms!),
+        links: structuredClone(inspection.links!),
+        jammers: structuredClone(inspection.jammers!),
       },
       uiExtensions: {
         ...this.draft.uiExtensions,
-        jammers: structuredClone(extensionInspection.jammers),
+        jammers: structuredClone(extensionInspection.jammers!),
       },
       revision: this.draft.revision + 1,
     }

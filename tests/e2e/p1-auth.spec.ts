@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import type { ApiSuccess, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
+import type { ApiSuccess, ConfirmationContext, ScenarioConfig, ScenarioDraft, ScenarioTemplate } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const AUTH_SESSION_KEY = 'wrj.auth.principal'
@@ -671,6 +671,139 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   await expect(timeStepIssue).toContainText('时间步长必须大于 0 秒。')
   await timeStepIssue.click()
   await expect(timeStep).toBeFocused()
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P2-6 template roles complete the seven actions and preserve referenced templates', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+  const baseline = await loadScenarioDraft(request)
+
+  await loginAs(page, 'admin')
+  const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await scenarioLoaded).status()).toBe(200)
+  const templatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/templates')
+  await page.getByRole('tab', { name: '场景模板' }).click()
+  expect((await templatesLoaded).status()).toBe(200)
+
+  const messageBox = page.locator('.el-message-box')
+  const createdName = 'E2E 管理员模板'
+  await page.getByTestId('create-template').click()
+  await messageBox.locator('input').fill(createdName)
+  const createdResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/templates')
+  await messageBox.getByRole('button', { name: '新建', exact: true }).click()
+  expect((await createdResponse).status()).toBe(201)
+  await expect(page.getByTestId('template-table')).toContainText(createdName)
+
+  const importedName = 'E2E 导入模板'
+  await page.getByTestId('import-template').click()
+  await messageBox.locator('textarea').fill(JSON.stringify({ name: importedName, config: baseline.config }))
+  const importedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/templates')
+  await messageBox.getByRole('button', { name: '导入', exact: true }).click()
+  expect((await importedResponse).status()).toBe(201)
+  await expect(page.getByTestId('template-table')).toContainText(importedName)
+
+  const detailResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
+  await page.getByTestId('load-template-TPL-SCN-002').click()
+  expect((await detailResponse).status()).toBe(200)
+  await expect(page.getByTestId('template-detail')).toContainText('TPL-SCN-002')
+  await expect(page.getByTestId('template-feedback')).toContainText(createdName)
+
+  await page.getByTestId('copy-template-TPL-SCN-002').click()
+  await messageBox.locator('input').fill('E2E 模板副本')
+  const copiedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002/copy')
+  await messageBox.getByRole('button', { name: '复制', exact: true }).click()
+  expect((await copiedResponse).status()).toBe(201)
+  await expect(page.getByTestId('template-feedback')).toContainText('E2E 模板副本')
+
+  await page.getByTestId('update-template-TPL-SCN-002').click()
+  const updatedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
+  await messageBox.getByRole('button', { name: '更新', exact: true }).click()
+  expect((await updatedResponse).status()).toBe(200)
+  await expect(page.getByTestId('template-table').getByRole('row').filter({ hasText: createdName })).toContainText('2')
+
+  const exportedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
+  await page.getByTestId('export-template-TPL-SCN-002').click()
+  expect((await exportedResponse).status()).toBe(200)
+  await expect(messageBox).toContainText(`"name": "${createdName}"`)
+  await messageBox.getByRole('button', { name: '关闭', exact: true }).click()
+
+  await page.getByTestId('delete-template-TPL-SCN-003').click()
+  const deletedResponse = page.waitForResponse((response) => response.request().method() === 'DELETE'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-003')
+  await page.getByRole('button', { name: '删除', exact: true }).last().click()
+  expect((await deletedResponse).status()).toBe(200)
+  await expect(page.getByTestId('template-table')).not.toContainText(importedName)
+  await expect(page.getByTestId('latest-confirmation')).toContainText(/CONF-P2-\d{3}/)
+  await expect(page.getByTestId('latest-confirmation')).toContainText('已完成')
+
+  const adminHeaders = { Origin: UI_ORIGIN, 'X-Demo-Role': 'ADMIN' }
+  const beforeReferencedDelete = await request.get(`${MOCK_ORIGIN}/api/v1/templates/TPL-SCN-001`, { headers: adminHeaders })
+  expect(beforeReferencedDelete.status()).toBe(200)
+  const beforeTemplate = ((await beforeReferencedDelete.json()) as ApiSuccess<ScenarioTemplate>).data
+  const confirmationResponse = await request.post(`${MOCK_ORIGIN}/api/v1/confirmations`, {
+    headers: adminHeaders,
+    data: { action: 'OFFICIAL_TEMPLATE_DELETE', objectId: 'TPL-SCN-001' },
+  })
+  expect(confirmationResponse.status()).toBe(201)
+  const confirmation = ((await confirmationResponse.json()) as ApiSuccess<ConfirmationContext>).data
+  const confirmedResponse = await request.post(`${MOCK_ORIGIN}/api/v1/confirmations/${confirmation.confirmationId}`, {
+    headers: adminHeaders,
+    data: { confirm: true },
+  })
+  expect(confirmedResponse.status()).toBe(200)
+  const referencedDelete = await request.delete(`${MOCK_ORIGIN}/api/v1/templates/TPL-SCN-001`, {
+    headers: { ...adminHeaders, 'X-Confirmation-Id': confirmation.confirmationId },
+  })
+  expect(referencedDelete.status()).toBe(409)
+  const afterReferencedDelete = await request.get(`${MOCK_ORIGIN}/api/v1/templates/TPL-SCN-001`, { headers: adminHeaders })
+  expect(afterReferencedDelete.status()).toBe(200)
+  expect(((await afterReferencedDelete.json()) as ApiSuccess<ScenarioTemplate>).data).toEqual(beforeTemplate)
+  await expect(page.getByTestId('template-table')).toContainText('跨海通联演示官方基线')
+
+  await page.getByTestId('logout').click()
+  await page.waitForURL('**/login')
+  await loginAs(page, 'operator')
+  const operatorScenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await operatorScenarioLoaded).status()).toBe(200)
+  const operatorTemplatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/templates')
+  await page.getByRole('tab', { name: '场景模板' }).click()
+  expect((await operatorTemplatesLoaded).status()).toBe(200)
+
+  await expect(page.getByTestId('create-template')).toHaveCount(0)
+  await expect(page.getByTestId('import-template')).toHaveCount(0)
+  await expect(page.getByTestId('update-template-TPL-SCN-001')).toHaveCount(0)
+  await expect(page.getByTestId('export-template-TPL-SCN-001')).toHaveCount(0)
+  await expect(page.getByTestId('delete-template-TPL-SCN-001')).toHaveCount(0)
+  await expect(page.getByTestId('load-template-TPL-SCN-001')).toBeVisible()
+  await expect(page.getByTestId('copy-template-TPL-SCN-001')).toBeVisible()
+
+  const operatorDetailResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-001')
+  await page.getByTestId('load-template-TPL-SCN-001').click()
+  expect((await operatorDetailResponse).status()).toBe(200)
+  await page.getByTestId('copy-template-TPL-SCN-001').click()
+  await messageBox.locator('input').fill('E2E 操作员副本')
+  const operatorCopyResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-001/copy')
+  await messageBox.getByRole('button', { name: '复制', exact: true }).click()
+  expect((await operatorCopyResponse).status()).toBe(201)
+  await expect(page.getByTestId('template-feedback')).toContainText('E2E 操作员副本')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

@@ -211,6 +211,69 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getwsV1: operationSchemaBinding(null, '101', null),
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
+const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  postapiV1AuthLogin: ['401', '423'],
+  getapiV1AuthPermissions: ['403'],
+  getapiV1MetaCapabilities: [],
+  getapiV1MetaInterfaces: [],
+  getapiV1MetaDecisions: [],
+  getapiV1MetaRoutes: [],
+  getapiV1Scenarios: [],
+  postapiV1Scenarios: ['422'],
+  getapiV1ScenariosScenarioId: ['404'],
+  putapiV1ScenariosScenarioId: ['409', '422'],
+  postapiV1ScenariosScenarioIdValidate: ['409', '422'],
+  postapiV1ScenariosScenarioIdUndo: ['409'],
+  postapiV1ScenariosScenarioIdReset: [],
+  postapiV1ScenariosImport: ['422'],
+  getapiV1Templates: [],
+  postapiV1Templates: ['403', '409', '422'],
+  getapiV1TemplatesTemplateId: ['404'],
+  putapiV1TemplatesTemplateId: ['403', '404', '409', '422'],
+  deleteapiV1TemplatesTemplateId: ['403', '404', '409', '428'],
+  postapiV1TemplatesTemplateIdCopy: ['403', '404', '409', '422'],
+  postapiV1ScriptsPreview: ['422', '428'],
+  postapiV1ScriptsScriptIdPreflight: ['422'],
+  getapiV1ContractsScenarioConfig: [],
+  getapiV1ContractsFrontendTypes: [],
+  getapiV1ContractsCsv: [],
+  getapiV1Simulations: [],
+  postapiV1Simulations: ['409'],
+  getapiV1SimulationsRunId: ['404'],
+  postapiV1SimulationsRunIdCommands: ['409', '428'],
+  getapiV1SimulationsRunIdFramesFrameId: ['404'],
+  getapiV1SimulationsRunIdEvents: [],
+  postapiV1SimulationsRunIdEvents: ['409'],
+  getapiV1Batches: [],
+  postapiV1Batches: ['422'],
+  getapiV1BatchesBatchId: [],
+  postapiV1BatchesBatchIdCommands: ['409'],
+  getapiV1Reports: [],
+  getapiV1ReportsReportId: [],
+  postapiV1ReportsReportIdExport: ['403', '428'],
+  postapiV1Confirmations: ['400', '403'],
+  postapiV1ConfirmationsConfirmationId: ['400', '403', '409'],
+  getapiV1Replays: [],
+  getapiV1ReplaysReplayId: [],
+  postapiV1ReplaysReplayIdCommands: ['409'],
+  getapiV1AdminMasterData: ['403'],
+  postapiV1AdminMasterData: [],
+  putapiV1AdminMasterDataDataId: [],
+  deleteapiV1AdminMasterDataDataId: ['409'],
+  getapiV1AdminUsers: [],
+  postapiV1AdminUsers: [],
+  putapiV1AdminUsersUserId: ['409'],
+  deleteapiV1AdminUsersUserId: ['409'],
+  getapiV1AdminAudit: [],
+  postapiV1AdminAuditExport: ['428'],
+  postapiV1AdminBackup: ['403', '428'],
+  postapiV1AdminRestore: ['422', '428'],
+  getapiV1AdminHealth: [],
+  getapiV1AdminArchives: [],
+  postapiV1Reset: [],
+  getwsV1: ['400', '403'],
+  postapiV1AdminConfigExport: ['403', '428'],
+} satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/parameters/DemoRole/schema/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/Platform/properties/type/enum', ['REAR_COMMAND_NODE','FORWARD_RELAY_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER','COMMUNICATION_SATELLITE','GROUND_JAMMER_DETECTION_STATION']],
@@ -1185,6 +1248,19 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
             'OPENAPI_SUCCESS_ENVELOPE',
             statusPath,
             `Expected exact success status ${expectedBinding.successStatus}, found [${contractSuccessStatuses.join(', ')}]`,
+          )
+        }
+
+        const actualErrorStatuses = responseEntries
+          .filter(([status]) => !/^[123]\d\d$/.test(status))
+          .map(([status]) => status)
+        const expectedErrorStatuses = EXPECTED_OPENAPI_ERROR_STATUSES[expectedOperation.operationId]
+        if (!sameStrings(actualErrorStatuses, expectedErrorStatuses)) {
+          addFinding(
+            findings,
+            'OPENAPI_ERROR_STATUS',
+            statusPath,
+            `Expected exact error statuses [${expectedErrorStatuses.join(', ')}], found [${actualErrorStatuses.join(', ')}]`,
           )
         }
 

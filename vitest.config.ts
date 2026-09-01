@@ -22,6 +22,18 @@ export default defineConfig({
         'server/ws/realtime.ts': {
           branches: 90,
         },
+        'server/scenarios/projection.ts': {
+          branches: 90,
+        },
+        'server/templates/projection.ts': {
+          branches: 90,
+        },
+        'src/components/scenarios/*.vue': {
+          branches: 90,
+        },
+        'src/features/scenarios/scenario-validation.ts': {
+          branches: 90,
+        },
         'src/stores/*.ts': {
           statements: 90,
           lines: 90,

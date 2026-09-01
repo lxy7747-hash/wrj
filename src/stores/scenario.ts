@@ -2,8 +2,12 @@ import { defineStore } from 'pinia'
 import type {
   ApiFailure,
   CapabilityState,
+  ConfirmationContext,
+  DeleteResult,
+  ScenarioConfig,
   ScenarioDraft,
   ScenarioId,
+  ScenarioTemplate,
   ValidationIssue,
   ValidationResult,
 } from '../contracts/domain-models'
@@ -31,6 +35,20 @@ function readFailure(payload: unknown): ApiFailure | undefined {
   if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== false) return undefined
   const error = (payload as { error?: { code?: unknown; message?: unknown } }).error
   return typeof error?.code === 'string' && typeof error.message === 'string' ? payload as ApiFailure : undefined
+}
+
+/**
+ * 安全解析回环 API 的 JSON 响应。
+ * @param response 浏览器 Fetch 响应。
+ * @returns 已解析载荷；响应体损坏时返回 `undefined`。
+ * @remarks 统一成功与错误路径，避免各动作重复吞掉 JSON 解析异常。
+ */
+async function readJson(response: Response): Promise<unknown> {
+  try {
+    return await response.json()
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -91,6 +109,82 @@ function readValidationResult(payload: unknown): ValidationResult | undefined {
   return result as ValidationResult
 }
 
+/**
+ * 校验未知值是否为完整场景模板。
+ * @param value 服务端成功信封中的模板候选值。
+ * @returns 字段、类型和场景配置均有效时返回模板。
+ * @remarks 只执行边界校验，不修改响应对象。
+ */
+function readScenarioTemplateValue(value: unknown): ScenarioTemplate | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Partial<ScenarioTemplate>
+  const keys = Object.keys(value)
+  if (keys.length !== 6 || !keys.every((key) => ['templateId', 'name', 'version', 'official', 'config', 'referenceCount'].includes(key))) return undefined
+  if (typeof candidate.templateId !== 'string' || candidate.templateId === ''
+    || typeof candidate.name !== 'string' || candidate.name === ''
+    || typeof candidate.version !== 'string' || candidate.version === ''
+    || typeof candidate.official !== 'boolean'
+    || !Number.isInteger(candidate.referenceCount) || (candidate.referenceCount ?? -1) < 0
+    || !inspectScenarioConfig(candidate.config).result.valid) return undefined
+  return candidate as ScenarioTemplate
+}
+
+/** 从成功信封读取单个模板。 */
+function readScenarioTemplate(payload: unknown): ScenarioTemplate | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  return readScenarioTemplateValue((payload as { data?: unknown }).data)
+}
+
+/** 从成功信封读取模板列表。 */
+function readTemplateList(payload: unknown): ScenarioTemplate[] | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (!Array.isArray(data)) return undefined
+  const templates = data.map(readScenarioTemplateValue)
+  return templates.every((template) => template !== undefined) ? templates as ScenarioTemplate[] : undefined
+}
+
+/**
+ * 从成功信封读取指定状态的确认上下文。
+ * @param payload 服务端响应载荷。
+ * @param expectedState 当前步骤要求的确认状态。
+ * @returns 合同有效且状态匹配时返回确认上下文。
+ */
+function readConfirmationContext(
+  payload: unknown,
+  expectedState: ConfirmationContext['state'],
+): ConfirmationContext | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const context = data as Partial<ConfirmationContext>
+  return Object.keys(data).length === 6
+    && Object.keys(data).every((key) => ['confirmationId', 'state', 'actor', 'role', 'createdAt', 'expiresAt'].includes(key))
+    && typeof context.confirmationId === 'string' && context.confirmationId !== ''
+    && context.state === expectedState
+    && typeof context.actor === 'string'
+    && (context.role === 'ADMIN' || context.role === 'OPERATOR')
+    && typeof context.createdAt === 'string'
+    && typeof context.expiresAt === 'string'
+    ? context as ConfirmationContext
+    : undefined
+}
+
+/** 从成功信封读取模板删除结果。 */
+function readDeleteResult(payload: unknown): DeleteResult | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const result = data as Partial<DeleteResult>
+  return Object.keys(data).length === 2
+    && Object.keys(data).every((key) => key === 'deleted' || key === 'objectId')
+    && result.deleted === true
+    && typeof result.objectId === 'string'
+    && result.objectId !== ''
+    ? result as DeleteResult
+    : undefined
+}
+
 export const useScenarioStore = defineStore('scenario', {
   state: () => ({
     draft: null as ScenarioDraft | null,
@@ -99,6 +193,12 @@ export const useScenarioStore = defineStore('scenario', {
     validation: { valid: true, errors: [], warnings: [] } as ValidationResult,
     resultCode: 'EMPTY',
     resultMessage: '尚未加载场景草稿。',
+    templates: [] as ScenarioTemplate[],
+    selectedTemplate: null as ScenarioTemplate | null,
+    templateState: 'EMPTY' as CapabilityState,
+    templateResultCode: 'EMPTY',
+    templateResultMessage: '尚未加载场景模板。',
+    lastConfirmation: null as ConfirmationContext | null,
     requestEpoch: 0,
   }),
 
@@ -132,6 +232,22 @@ export const useScenarioStore = defineStore('scenario', {
     },
 
     /**
+     * 将异常转换为模板库中文错误。
+     * @param error 捕获到的网络、合同或 API 失败对象。
+     * @param fallback 无明确消息时使用的中文提示。
+     * @returns 无返回值。
+     * @sideEffects 更新模板六态、结果代码和消息，不修改模板数组。
+     */
+    showTemplateError(error: unknown, fallback: string): void {
+      const apiFailure = readFailure(error)
+      this.templateState = 'ERROR'
+      this.templateResultCode = error instanceof InvalidScenarioResponseError
+        ? 'INVALID_RESPONSE'
+        : apiFailure?.error.code ?? 'NETWORK_ERROR'
+      this.templateResultMessage = apiFailure?.error.message ?? (error instanceof Error ? error.message : fallback)
+    },
+
+    /**
      * 从本机 Node.js Mock 服务加载指定场景草稿。
      * @param scenarioId 需要加载的场景编号，默认读取确定性场景 SCN-001。
      * @returns 加载成功时返回 `true`，失败时返回 `false`。
@@ -147,7 +263,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'
-        const payload: unknown = await response.json().catch(() => undefined)
+        const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
@@ -230,7 +346,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'
-        const payload: unknown = await response.json().catch(() => undefined)
+        const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readValidationResult(payload)
@@ -287,9 +403,10 @@ export const useScenarioStore = defineStore('scenario', {
       const inspection = inspectScenarioConfig(this.draft.config)
       this.validation = inspection.result
       if (!inspection.result.valid || inspection.jammers === undefined) {
+        const issue = inspection.result.errors[0]
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
-        this.resultMessage = inspection.result.errors[0]?.message ?? '场景配置校验失败。'
+        this.resultMessage = issue === undefined ? '场景配置校验失败。' : issue.message
         return false
       }
       const extensionInspection = inspectScenarioUiExtensions(
@@ -297,10 +414,11 @@ export const useScenarioStore = defineStore('scenario', {
         inspection.jammers.map((jammer) => jammer.id),
       )
       if (!extensionInspection.result.valid) {
+        const issue = extensionInspection.result.errors[0]
         this.validation = extensionInspection.result
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
-        this.resultMessage = extensionInspection.result.errors[0]?.message ?? '场景界面扩展校验失败。'
+        this.resultMessage = issue === undefined ? '场景界面扩展校验失败。' : issue.message
         return false
       }
 
@@ -317,7 +435,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'
-        const payload: unknown = await response.json().catch(() => undefined)
+        const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
@@ -338,6 +456,334 @@ export const useScenarioStore = defineStore('scenario', {
     },
 
     /**
+     * 加载可见模板列表。
+     * @returns 成功时返回 `true`，合同或网络失败时返回 `false`。
+     * @sideEffects 更新模板列表和模板能力六态。
+     */
+    async loadTemplates(): Promise<boolean> {
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'LOADING'
+      try {
+        const auth = useAuthStore()
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+          headers: { 'X-Demo-Role': auth.role },
+        })
+        if (requestEpoch !== this.requestEpoch) return false
+        this.templateState = 'VALIDATING'
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const templates = readTemplateList(payload)
+        if (templates === undefined) throw new InvalidScenarioResponseError()
+        this.templates = templates
+        this.templateState = templates.length === 0 ? 'EMPTY' : 'SUCCESS'
+        this.templateResultCode = templates.length === 0 ? 'EMPTY' : 'TEMPLATES_LOADED'
+        this.templateResultMessage = templates.length === 0 ? '模板库暂无数据。' : `已加载 ${templates.length} 个场景模板。`
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showTemplateError(error, '场景模板加载失败。')
+        return false
+      }
+    },
+
+    /**
+     * 加载单个模板详情。
+     * @param templateId 模板编号。
+     * @returns 成功时返回模板，否则返回 `undefined`。
+     * @sideEffects 更新当前选中模板和模板能力六态，不替换工作草稿。
+     */
+    async loadTemplate(templateId: string): Promise<ScenarioTemplate | undefined> {
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'LOADING'
+      try {
+        const auth = useAuthStore()
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+          headers: { 'X-Demo-Role': auth.role },
+        })
+        if (requestEpoch !== this.requestEpoch) return undefined
+        this.templateState = 'VALIDATING'
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return undefined
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const template = readScenarioTemplate(payload)
+        if (template === undefined) throw new InvalidScenarioResponseError()
+        this.selectedTemplate = template
+        this.templateState = 'SUCCESS'
+        this.templateResultCode = 'TEMPLATE_LOADED'
+        this.templateResultMessage = `模板“${template.name}”版本 ${template.version} 已加载。`
+        return template
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return undefined
+        this.showTemplateError(error, '模板详情加载失败。')
+        return undefined
+      }
+    },
+
+    /**
+     * 使用给定配置新建官方模板。
+     * @param name 模板名称。
+     * @param config 模板保存的完整场景配置，默认使用当前草稿。
+     * @returns 新建成功时返回 `true`。
+     * @sideEffects 管理员成功时追加模板并选中；失败不修改模板列表。
+     */
+    async createTemplate(name: string, config?: ScenarioConfig): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed) {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'PERMISSION_DENIED'
+        this.templateResultMessage = '当前账号不能维护官方模板库。'
+        return false
+      }
+      const templateConfig = config ?? this.draft?.config
+      if (templateConfig === undefined || name.trim() === '') {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'VALIDATION_FAILED'
+        this.templateResultMessage = templateConfig === undefined ? '请先加载场景草稿。' : '模板名称不能为空。'
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'VALIDATING'
+      try {
+        this.templateState = 'EXECUTING'
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ name: name.trim(), config: templateConfig }),
+        })
+        if (requestEpoch !== this.requestEpoch) return false
+        this.templateState = 'VALIDATING'
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const template = readScenarioTemplate(payload)
+        if (template === undefined) throw new InvalidScenarioResponseError()
+        this.templates.push(template)
+        this.selectedTemplate = template
+        this.templateState = 'SUCCESS'
+        this.templateResultCode = 'TEMPLATE_CREATED'
+        this.templateResultMessage = `官方模板“${template.name}”版本 ${template.version} 已新建。`
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showTemplateError(error, '官方模板新建失败。')
+        return false
+      }
+    },
+
+    /**
+     * 从 JSON 文本导入官方模板。
+     * @param text 包含 `name` 和 `config` 的 JSON 文本。
+     * @returns 导入成功时返回 `true`。
+     * @sideEffects 解析成功后复用新建模板动作；不读写真实文件。
+     */
+    async importTemplate(text: string): Promise<boolean> {
+      let value: unknown
+      try {
+        value = JSON.parse(text)
+      } catch {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'INVALID_REQUEST'
+        this.templateResultMessage = '模板 JSON 语法不正确。'
+        return false
+      }
+      if (typeof value !== 'object' || value === null || Array.isArray(value)
+        || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'name') || !Object.hasOwn(value, 'config')
+        || typeof (value as { name?: unknown }).name !== 'string') {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'VALIDATION_FAILED'
+        this.templateResultMessage = '模板 JSON 必须只包含 name 和 config。'
+        return false
+      }
+      const request = value as { name: string; config: ScenarioConfig }
+      return this.createTemplate(request.name, request.config)
+    },
+
+    /**
+     * 使用当前场景草稿更新指定官方模板。
+     * @param templateId 模板编号。
+     * @param name 模板名称。
+     * @returns 更新成功时返回 `true`。
+     * @sideEffects 成功时原位替换模板并递增服务端版本。
+     */
+    async updateTemplate(templateId: string, name: string): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed || this.draft === null) {
+        this.templateState = 'ERROR'
+        this.templateResultCode = this.draft === null ? 'EMPTY' : 'PERMISSION_DENIED'
+        this.templateResultMessage = this.draft === null ? '请先加载场景草稿。' : '当前账号不能维护官方模板库。'
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'VALIDATING'
+      try {
+        this.templateState = 'EXECUTING'
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ name, config: this.draft.config }),
+        })
+        if (requestEpoch !== this.requestEpoch) return false
+        this.templateState = 'VALIDATING'
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const template = readScenarioTemplate(payload)
+        if (template === undefined) throw new InvalidScenarioResponseError()
+        const index = this.templates.findIndex((item) => item.templateId === templateId)
+        if (index >= 0) this.templates[index] = template
+        else this.templates.push(template)
+        this.selectedTemplate = template
+        this.templateState = 'SUCCESS'
+        this.templateResultCode = 'TEMPLATE_UPDATED'
+        this.templateResultMessage = `官方模板“${template.name}”已更新为版本 ${template.version}。`
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showTemplateError(error, '官方模板更新失败。')
+        return false
+      }
+    },
+
+    /**
+     * 将官方模板复制到临时工作场景。
+     * @param templateId 模板编号。
+     * @param name 新工作场景名称。
+     * @returns 复制成功时返回 `true`。
+     * @sideEffects 成功时替换当前场景草稿并清除未保存标记。
+     */
+    async copyTemplate(templateId: string, name: string): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'PERMISSION_DENIED'
+        this.templateResultMessage = '当前账号不能复制场景模板。'
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'VALIDATING'
+      try {
+        this.templateState = 'EXECUTING'
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ name }),
+        })
+        if (requestEpoch !== this.requestEpoch) return false
+        this.templateState = 'VALIDATING'
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const draft = readScenarioDraft(payload)
+        if (draft === undefined) throw new InvalidScenarioResponseError()
+        this.draft = draft
+        this.dirty = false
+        this.validation = { valid: true, errors: [], warnings: [] }
+        this.templateState = 'SUCCESS'
+        this.templateResultCode = 'TEMPLATE_COPIED'
+        this.templateResultMessage = `模板已复制为临时工作场景“${draft.config.scenario.name}”。`
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showTemplateError(error, '模板复制失败。')
+        return false
+      }
+    },
+
+    /**
+     * 生成模板 JSON 内存预览。
+     * @param templateId 模板编号。
+     * @returns 成功时返回格式化 JSON 文本，否则返回 `undefined`。
+     * @sideEffects 复用模板详情加载并更新导出反馈，不创建文件。
+     */
+    async exportTemplate(templateId: string): Promise<string | undefined> {
+      const auth = useAuthStore()
+      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed) {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'PERMISSION_DENIED'
+        this.templateResultMessage = '当前账号不能导出官方模板。'
+        return undefined
+      }
+      const template = await this.loadTemplate(templateId)
+      if (template === undefined) return undefined
+      this.templateResultCode = 'TEMPLATE_EXPORTED'
+      this.templateResultMessage = `模板“${template.name}”JSON 预览已生成，未写入真实文件。`
+      return JSON.stringify({ name: template.name, config: template.config }, null, 2)
+    },
+
+    /**
+     * 经二次确认删除未被引用的官方模板。
+     * @param templateId 模板编号。
+     * @returns 删除成功时返回 `true`。
+     * @sideEffects 顺序创建、确认并消费一次性上下文；成功时移除模板。
+     */
+    async deleteTemplate(templateId: string): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed) {
+        this.templateState = 'ERROR'
+        this.templateResultCode = 'PERMISSION_DENIED'
+        this.templateResultMessage = '当前账号不能删除官方模板。'
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.templateState = 'VALIDATING'
+      try {
+        this.templateState = 'EXECUTING'
+        const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: templateId }),
+        })
+        const createPayload = await readJson(createResponse)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidScenarioResponseError()
+        const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
+        if (awaiting === undefined) throw new InvalidScenarioResponseError()
+        this.lastConfirmation = awaiting
+
+        const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ confirm: true }),
+        })
+        const confirmPayload = await readJson(confirmResponse)
+        if (requestEpoch !== this.requestEpoch) return false
+        const confirmed = readConfirmationContext(confirmPayload, 'CONFIRMED')
+        if (!confirmResponse.ok || confirmed === undefined) {
+          throw readFailure(confirmPayload) ?? new InvalidScenarioResponseError()
+        }
+        this.lastConfirmation = confirmed
+
+        const deleteResponse = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+          method: 'DELETE',
+          headers: { 'X-Demo-Role': auth.role, 'X-Confirmation-Id': awaiting.confirmationId },
+        })
+        const deletePayload = await readJson(deleteResponse)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!deleteResponse.ok) {
+          const deleteFailure = readFailure(deletePayload)
+          if (deleteFailure?.error.code !== 'CONFIRMATION_EXPIRED') {
+            this.lastConfirmation = { ...confirmed, state: 'CLOSED' }
+          }
+          throw deleteFailure ?? new InvalidScenarioResponseError()
+        }
+        const result = readDeleteResult(deletePayload)
+        if (result === undefined || result.objectId !== templateId) throw new InvalidScenarioResponseError()
+        this.lastConfirmation = { ...confirmed, state: 'CLOSED' }
+        this.templates = this.templates.filter((template) => template.templateId !== templateId)
+        if (this.selectedTemplate?.templateId === templateId) this.selectedTemplate = null
+        this.templateState = this.templates.length === 0 ? 'EMPTY' : 'SUCCESS'
+        this.templateResultCode = 'TEMPLATE_DELETED'
+        this.templateResultMessage = `官方模板 ${templateId} 已删除。`
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showTemplateError(error, '官方模板删除失败。')
+        return false
+      }
+    },
+
+    /**
      * 清空场景数据并恢复安全空态。
      * @returns 无返回值。
      * @sideEffects 使在途请求失效，清除草稿、校验问题和未保存标记，并将面板状态重置为空。
@@ -350,6 +796,12 @@ export const useScenarioStore = defineStore('scenario', {
       this.validation = { valid: true, errors: [], warnings: [] }
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未加载场景草稿。'
+      this.templates = []
+      this.selectedTemplate = null
+      this.templateState = 'EMPTY'
+      this.templateResultCode = 'EMPTY'
+      this.templateResultMessage = '尚未加载场景模板。'
+      this.lastConfirmation = null
     },
   },
 })

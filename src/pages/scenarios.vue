@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, toRaw } from 'vue'
+import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ValidationIssue } from '../contracts/domain-models'
+import { ElMessageBox } from 'element-plus'
+import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, ValidationIssue } from '../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   JAMMER_TYPES,
@@ -14,10 +15,26 @@ import {
 } from '../features/scenarios/scenario-validation'
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
 import { useScenarioStore } from '../stores/scenario'
+import { useAuthStore } from '../stores/auth'
+import TemplateLibrary from '../components/scenarios/TemplateLibrary.vue'
+import ValidationPanel from '../components/scenarios/ValidationPanel.vue'
 import WaypointMapPicker, { type WaypointMapPoint } from '../components/scenarios/WaypointMapPicker.vue'
 
 const scenarioStore = useScenarioStore()
-const { draft, dirty, panelState, resultCode, resultMessage, validation } = storeToRefs(scenarioStore)
+const authStore = useAuthStore()
+const {
+  draft,
+  dirty,
+  panelState,
+  resultCode,
+  resultMessage,
+  validation,
+  templates,
+  selectedTemplate,
+  templateState,
+  templateResultMessage,
+  lastConfirmation,
+} = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
@@ -75,8 +92,9 @@ const businessNodeCount = computed(() => draft.value?.config.platforms.filter((p
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
-const validationIssues = computed(() => [...validation.value.errors, ...validation.value.warnings])
 const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
+const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
+const canMaintainTemplates = computed(() => authStore.permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -818,8 +836,96 @@ async function saveScenario(): Promise<void> {
   }
 }
 
+/**
+ * 提示管理员输入模板名称并新建官方模板。
+ * @returns 操作结束后无返回值。
+ * @sideEffects 确认输入后调用模板新建动作；取消不改变状态。
+ */
+async function createTemplate(): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt('模板将保存当前完整场景草稿。', '新建官方模板', {
+      confirmButtonText: '新建',
+      cancelButtonText: '取消',
+      inputValue: draft.value === null ? '' : `${draft.value.config.scenario.name} 模板`,
+      inputValidator: (name) => name.trim() !== '' || '请输入模板名称。',
+    })
+    await scenarioStore.createTemplate(value)
+  } catch {
+    // 用户取消输入时保持模板库不变。
+  }
+}
+
+/**
+ * 从内存 JSON 文本导入官方模板。
+ * @returns 操作结束后无返回值。
+ * @sideEffects 确认输入后调用模板导入动作，不访问真实文件。
+ */
+async function importTemplate(): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt('粘贴只包含 name 和 config 的模板 JSON。', '导入官方模板', {
+      confirmButtonText: '导入',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+      inputPlaceholder: '{ "name": "模板名称", "config": { ... } }',
+      inputValidator: (text) => text.trim() !== '' || '请输入模板 JSON。',
+    })
+    await scenarioStore.importTemplate(value)
+  } catch {
+    // 用户取消输入时保持模板库不变。
+  }
+}
+
+/**
+ * 将模板复制为临时工作场景。
+ * @param template 待复制模板。
+ * @returns 操作结束后无返回值。
+ * @sideEffects 确认名称后替换当前临时场景草稿。
+ */
+async function copyTemplate(template: ScenarioTemplate): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt('复制后将替换当前临时工作场景。', '复制场景模板', {
+      confirmButtonText: '复制',
+      cancelButtonText: '取消',
+      inputValue: `${template.name} 副本`,
+      inputValidator: (name) => name.trim() !== '' || '请输入临时场景名称。',
+    })
+    await scenarioStore.copyTemplate(template.templateId, value)
+  } catch {
+    // 用户取消复制时保持工作草稿不变。
+  }
+}
+
+/** 使用当前草稿更新指定官方模板版本。 */
+async function updateTemplate(template: ScenarioTemplate): Promise<void> {
+  try {
+    await ElMessageBox.confirm(`确认使用当前场景草稿更新“${template.name}”？`, '更新官方模板', {
+      confirmButtonText: '更新',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+    await scenarioStore.updateTemplate(template.templateId, template.name)
+  } catch {
+    // 用户取消更新时保持模板版本不变。
+  }
+}
+
+/** 生成模板 JSON 内存预览。 */
+async function exportTemplate(template: ScenarioTemplate): Promise<void> {
+  const preview = await scenarioStore.exportTemplate(template.templateId)
+  if (preview === undefined) return
+  await ElMessageBox.alert(preview, `导出预览 · ${template.name}`, {
+    confirmButtonText: '关闭',
+  })
+}
+
 onMounted(() => {
   if (draft.value === null) void loadScenario()
+})
+
+watch(activeTab, (tab) => {
+  if (tab === 'templates' && templateState.value === 'EMPTY' && templates.value.length === 0) {
+    void scenarioStore.loadTemplates()
+  }
 })
 </script>
 
@@ -1148,72 +1254,35 @@ onMounted(() => {
         </el-tab-pane>
 
         <el-tab-pane label="整体校验" name="validation">
-          <section class="console-panel scenario-section validation-panel" aria-labelledby="scenario-validation-title" data-testid="validation-panel">
-            <div class="section-heading">
-              <div>
-                <p class="section-kicker">参数校验与冲突检测</p>
-                <h3 id="scenario-validation-title">场景整体校验</h3>
-              </div>
-              <div class="platform-counts" aria-label="校验问题数量">
-                <el-tag :type="validation.errors.length > 0 ? 'danger' : 'success'">错误 {{ validation.errors.length }}</el-tag>
-                <el-tag :type="validation.warnings.length > 0 ? 'warning' : 'success'">警告 {{ validation.warnings.length }}</el-tag>
-              </div>
-            </div>
+          <ValidationPanel
+            :pending="pending"
+            :panel-state="panelState"
+            :result-message="resultMessage"
+            :validation="validation"
+            :completed="validationCompleted"
+            @locate="locateValidationIssue"
+          />
+        </el-tab-pane>
 
-            <el-alert
-              v-if="pending"
-              type="info"
-              :closable="false"
-              title="正在校验当前完整场景…"
-              show-icon
-            />
-            <el-alert
-              v-else-if="panelState === 'ERROR' && validationIssues.length === 0"
-              type="error"
-              :closable="false"
-              :title="resultMessage"
-              data-testid="validation-request-error"
-              show-icon
-            />
-            <el-empty
-              v-else-if="!validationCompleted && validationIssues.length === 0"
-              description="尚未执行整体校验"
-            />
-            <el-result
-              v-else-if="validationIssues.length === 0"
-              icon="success"
-              title="整体校验通过"
-              sub-title="未发现错误或警告"
-            />
-            <div v-else class="validation-panel__results">
-              <el-alert
-                :type="validation.errors.length > 0 ? 'error' : 'warning'"
-                :closable="false"
-                :title="resultMessage"
-                show-icon
-              />
-              <ul class="validation-panel__list" aria-label="场景校验问题">
-                <li v-for="(issue, index) in validationIssues" :key="`${issue.severity}-${issue.code}-${issue.fieldPath}`">
-                  <button
-                    type="button"
-                    class="validation-issue"
-                    :data-testid="`locate-validation-issue-${index}`"
-                    @click="locateValidationIssue(issue)"
-                  >
-                    <el-tag :type="issue.severity === 'ERROR' ? 'danger' : 'warning'" size="small">
-                      {{ issue.severity === 'ERROR' ? '错误' : '警告' }}
-                    </el-tag>
-                    <code>{{ issue.fieldPath }}</code>
-                    <span>{{ issue.message }}</span>
-                    <strong>定位</strong>
-                  </button>
-                </li>
-              </ul>
-              <p v-if="validation.errors.length === 0 && validation.warnings.length > 0" class="validation-panel__notice">
-                警告不阻断保存；生成脚本前需要完成一次确认。
-              </p>
-            </div>
-          </section>
+        <el-tab-pane label="场景模板" name="templates">
+          <TemplateLibrary
+            :can-maintain="canMaintainTemplates"
+            :pending="templatePending"
+            :draft-available="draft !== null"
+            :draft-locked="draft?.locked ?? false"
+            :templates="templates"
+            :state="templateState"
+            :result-message="templateResultMessage"
+            :selected-template="selectedTemplate"
+            :last-confirmation="lastConfirmation"
+            @create="createTemplate"
+            @import="importTemplate"
+            @load="scenarioStore.loadTemplate"
+            @copy="copyTemplate"
+            @update="updateTemplate"
+            @export="exportTemplate"
+            @delete="scenarioStore.deleteTemplate"
+          />
         </el-tab-pane>
       </el-tabs>
     </el-form>
@@ -1613,51 +1682,6 @@ onMounted(() => {
 
 .platform-feedback {
   margin-bottom: 1rem;
-}
-
-.validation-panel__results {
-  display: grid;
-  gap: 0.875rem;
-}
-
-.validation-panel__list {
-  display: grid;
-  gap: 0.5rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.validation-issue {
-  display: grid;
-  width: 100%;
-  grid-template-columns: auto minmax(12rem, 0.75fr) minmax(16rem, 1.5fr) auto;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.75rem;
-  border: 1px solid var(--console-border);
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--console-panel) 88%, transparent);
-  color: var(--console-text);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-
-.validation-issue:hover,
-.validation-issue:focus-visible {
-  border-color: var(--console-cyan);
-  outline: none;
-}
-
-.validation-issue code,
-.validation-issue strong {
-  color: var(--console-cyan);
-}
-
-.validation-panel__notice {
-  margin: 0;
-  color: var(--console-text-muted);
 }
 
 .platform-editor-grid,

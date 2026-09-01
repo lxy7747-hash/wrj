@@ -140,6 +140,18 @@ describe('OpenAPI contract audit', () => {
     expect(auditOpenApi(candidate).map(({ code }) => code)).toContain('OPENAPI_ERROR_CATALOG')
   })
 
+  it('rejects removal of a frozen operation error status', () => {
+    const { openApi } = loadContractDocuments()
+    const candidate = structuredClone(openApi)
+    const responses = asObject(operationAt(candidate, '/api/v1/templates/{templateId}', 'delete').responses)
+    delete responses['409']
+
+    expect(auditOpenApi(candidate)).toContainEqual(expect.objectContaining({
+      code: 'OPENAPI_ERROR_STATUS',
+      path: '$.paths["/api/v1/templates/{templateId}"].delete.responses',
+    }))
+  })
+
   it('rejects duplicate required keys in a success envelope', () => {
     const { openApi } = loadContractDocuments()
     const candidate = structuredClone(openApi)

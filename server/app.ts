@@ -2,6 +2,7 @@ import { createServer, type Server as HttpServer } from 'node:http'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import type {
   AuditRecord,
+  ConfirmationAction,
   LoginRequest,
   PageMeta,
   ResetRequest,
@@ -19,10 +20,13 @@ import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest } from './http/loopback.js'
 import { ScenarioProjection } from './scenarios/projection.js'
 import { MockProjection } from './state/projection.js'
+import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
+import { TemplateProjection } from './templates/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 
 export interface MockServerOptions {
   port?: number
+  confirmationClock?: ConfirmationClock
 }
 
 export interface MockServer {
@@ -130,6 +134,16 @@ function isResetRequest(value: unknown): value is ResetRequest {
     && (value as Record<string, unknown>).confirm === true
 }
 
+const CONFIRMATION_ACTIONS = new Set<ConfirmationAction>([
+  'SCENARIO_WARNING_CONTINUE',
+  'OFFICIAL_TEMPLATE_DELETE',
+  'SIMULATION_STOP',
+  'BATCH_LEVEL_III_EXPORT',
+  'BACKUP_RESTORE',
+  'FULL_CONFIG_EXPORT',
+  'AUDIT_EXPORT',
+])
+
 /**
  * Validates an object against exact required and optional key sets.
  *
@@ -147,6 +161,32 @@ function isStrictObject(value: unknown, required: readonly string[], optional: r
   const keys = Object.keys(value)
   return required.every((key) => keys.includes(key))
     && keys.every((key) => required.includes(key) || optional.includes(key))
+}
+
+/**
+ * 校验二次确认创建请求。
+ * @param value 未受信任的请求体。
+ * @returns 动作和对象编号满足闭合合同时返回 `true`。
+ * @remarks 只校验结构，不创建确认上下文。
+ */
+function isConfirmationRequest(value: unknown): value is { action: ConfirmationAction; objectId: string } {
+  return isStrictObject(value, ['action', 'objectId'])
+    && typeof value.action === 'string'
+    && CONFIRMATION_ACTIONS.has(value.action as ConfirmationAction)
+    && typeof value.objectId === 'string'
+    && value.objectId.length > 0
+}
+
+/** 校验只允许 `confirm: true` 的确认决定请求。 */
+function isConfirmRequest(value: unknown): value is { confirm: true } {
+  return isStrictObject(value, ['confirm']) && value.confirm === true
+}
+
+/** 校验模板复制请求中的非空名称。 */
+function isCopyTemplateRequest(value: unknown): value is { name: string } {
+  return isStrictObject(value, ['name'])
+    && typeof value.name === 'string'
+    && value.name.trim().length > 0
 }
 
 /**
@@ -292,6 +332,27 @@ function requireAdmin(
   return true
 }
 
+/** 按确认动作授权角色；场景警告允许具备场景写权限的操作员继续。 */
+function requireConfirmationPermission(
+  role: Role,
+  action: ConfirmationAction,
+  objectId: string,
+  res: Response,
+  auth: AuthProjection,
+): boolean {
+  const allowed = role === 'ADMIN'
+    || (action === 'SCENARIO_WARNING_CONTINUE'
+      && auth.permissionSet(role).permissions.includes('SCENARIO_DRAFT_WRITE'))
+  if (allowed) return true
+
+  auth.recordDenied('operator', role, 'CONFIRMATION_CREATE', objectId)
+  res.status(403).json(failure('PERMISSION_DENIED', 403, {
+    requestId: 'REQ-P2-CONFIRMATION-CREATE',
+    generatedAt: P1_GENERATED_AT,
+  }))
+  return false
+}
+
 /**
  * Creates and starts the loopback-only HTTP and realtime development server.
  *
@@ -310,6 +371,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const projection = new MockProjection()
   const auth = new AuthProjection()
   const scenarios = new ScenarioProjection()
+  const confirmations = new ConfirmationProjection(options.confirmationClock)
+  const templates = new TemplateProjection()
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -334,7 +397,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     res.setHeader('Access-Control-Allow-Origin', decision.origin)
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role, X-Confirmation-Id')
     res.setHeader('Vary', 'Origin')
     next()
   })
@@ -506,6 +569,244 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
+   * 返回当前内存模板库。
+   * @param req 包含角色提示的请求。
+   * @param res 接收模板列表或权限错误的响应。
+   * @returns 无返回值。
+   * @remarks 两种角色均可读取，返回值为投影副本。
+   */
+  app.get('/api/v1/templates', (req, res) => {
+    const requestId = 'REQ-P2-TEMPLATES-LIST'
+    if (requireDemoRole(req, res, auth, 'TEMPLATE_LIST') === undefined) return
+    const result = templates.list()
+    res.status(200).json(success(result, pageMeta(requestId, result.length, Math.max(1, result.length))))
+  })
+
+  /**
+   * 新建或导入官方模板。
+   * @param req 包含管理员角色及模板名称、配置的请求。
+   * @param res 接收新模板或类型化错误的响应。
+   * @returns 无返回值。
+   * @remarks 只写入内存模板库；操作员在进入请求体处理前即被拒绝。
+   */
+  app.post('/api/v1/templates', (req, res) => {
+    const requestId = 'REQ-P2-TEMPLATE-CREATE'
+    if (!requireAdmin(req, res, auth, 'TEMPLATE_CREATE')) return
+    const result = templates.create(req.body)
+    if (!result.ok) {
+      auth.recordError('admin', 'ADMIN', 'TEMPLATE_CREATE')
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
+    res.status(201).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 返回指定模板详情。
+   * @param req 包含角色提示和模板编号的请求。
+   * @param res 接收模板详情或未找到错误的响应。
+   * @returns 无返回值。
+   */
+  app.get('/api/v1/templates/:templateId', (req, res) => {
+    const templateId = req.params.templateId
+    const requestId = 'REQ-P2-TEMPLATE-GET'
+    if (requireDemoRole(req, res, auth, 'TEMPLATE_READ', templateId) === undefined) return
+    const result = templates.get(templateId)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 使用当前配置更新官方模板版本。
+   * @param req 包含管理员角色、模板编号和完整配置的请求。
+   * @param res 接收递增版本后的模板或类型化错误的响应。
+   * @returns 无返回值。
+   */
+  app.put('/api/v1/templates/:templateId', (req, res) => {
+    const templateId = req.params.templateId
+    const requestId = 'REQ-P2-TEMPLATE-UPDATE'
+    if (!requireAdmin(req, res, auth, 'TEMPLATE_UPDATE', templateId)) return
+    const result = templates.update(templateId, req.body)
+    if (!result.ok) {
+      auth.recordError('admin', 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 将模板复制到当前临时工作场景。
+   * @param req 包含角色提示、模板编号和临时场景名称的请求。
+   * @param res 接收复制后的场景草稿或类型化错误的响应。
+   * @returns 无返回值。
+   * @remarks 两种角色均可复制；成功时替换场景投影中的当前草稿。
+   */
+  app.post('/api/v1/templates/:templateId/copy', (req, res) => {
+    const templateId = req.params.templateId
+    const requestId = 'REQ-P2-TEMPLATE-COPY'
+    if (requireDemoRole(req, res, auth, 'TEMPLATE_COPY', templateId) === undefined) return
+    if (!isCopyTemplateRequest(req.body)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '模板复制请求结构不正确。',
+        fieldPath: 'name',
+      }))
+      return
+    }
+    const template = templates.get(templateId)
+    if (!template.ok) {
+      res.status(template.status).json(failure(template.code, template.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: template.message,
+      }))
+      return
+    }
+    const result = scenarios.copyTemplate(template.data.config, req.body.name)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(201).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 创建受控操作的一次性确认上下文。
+   * @param req 包含管理员角色、动作和对象编号的请求。
+   * @param res 接收等待确认上下文或请求错误的响应。
+   * @returns 无返回值。
+   */
+  app.post('/api/v1/confirmations', (req, res) => {
+    const requestId = 'REQ-P2-CONFIRMATION-CREATE'
+    const role = requireDemoRole(req, res, auth, 'CONFIRMATION_CREATE')
+    if (role === undefined) return
+    if (!isConfirmationRequest(req.body)) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        fieldPath: 'request',
+      }))
+      return
+    }
+    if (!requireConfirmationPermission(role, req.body.action, req.body.objectId, res, auth)) return
+    const result = confirmations.create(req.body.action, req.body.objectId, role)
+    res.status(201).json(success(result, pageMeta(requestId)))
+  })
+
+  /**
+   * 确认一次等待中的上下文。
+   * @param req 包含管理员角色、确认编号和 `confirm: true` 的请求。
+   * @param res 接收确认结果或失效错误的响应。
+   * @returns 无返回值。
+   */
+  app.post('/api/v1/confirmations/:confirmationId', (req, res) => {
+    const confirmationId = req.params.confirmationId
+    const requestId = 'REQ-P2-CONFIRMATION-CONFIRM'
+    const role = requireDemoRole(req, res, auth, 'CONFIRMATION_CONFIRM', confirmationId)
+    if (role === undefined) return
+    if (!isConfirmRequest(req.body)) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        fieldPath: 'confirm',
+      }))
+      return
+    }
+    const result = confirmations.confirm(confirmationId, role)
+    if (!result.ok) {
+      if (result.code === 'PERMISSION_DENIED') {
+        auth.recordDenied(role === 'ADMIN' ? 'admin' : 'operator', role, 'CONFIRMATION_CONFIRM', confirmationId)
+      }
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 经一次性确认后删除未被引用的官方模板。
+   * @param req 包含管理员角色、模板编号和确认编号头的请求。
+   * @param res 接收删除结果、确认错误或引用冲突的响应。
+   * @returns 无返回值。
+   * @remarks 先确认目标存在，再消费确认，最后重新检查引用并执行原子删除。
+   */
+  app.delete('/api/v1/templates/:templateId', (req, res) => {
+    const templateId = req.params.templateId
+    const requestId = 'REQ-P2-TEMPLATE-DELETE'
+    if (!requireAdmin(req, res, auth, 'TEMPLATE_DELETE', templateId)) return
+    const template = templates.get(templateId)
+    if (!template.ok) {
+      res.status(template.status).json(failure(template.code, template.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: template.message,
+      }))
+      return
+    }
+    const confirmationId = req.get('X-Confirmation-Id')
+    if (confirmationId === undefined || confirmationId === '') {
+      res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '删除官方模板前需要二次确认。',
+      }))
+      return
+    }
+    const confirmation = confirmations.consume(confirmationId, 'OFFICIAL_TEMPLATE_DELETE', templateId, 'ADMIN')
+    if (!confirmation.ok) {
+      res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: confirmation.message,
+      }))
+      return
+    }
+    const result = templates.delete(templateId)
+    if (!result.ok) {
+      auth.recordError('admin', 'ADMIN', 'TEMPLATE_DELETE', templateId)
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_DELETE', templateId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
    * Returns the current detached user snapshot.
    *
    * @param req - Authorized administrator request.
@@ -623,6 +924,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const result: ResetResult = realtime.reset()
     auth.reset()
     scenarios.reset()
+    confirmations.reset()
+    templates.reset()
     res.status(200).json(success(result, {
       requestId: result.requestId,
       generatedAt: result.generatedAt,

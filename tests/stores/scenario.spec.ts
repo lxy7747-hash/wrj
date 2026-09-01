@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type {
   ApiFailure,
+  ApiErrorCode,
   ApiSuccess,
+  ConfirmationContext,
+  DeleteResult,
   PageMeta,
   Principal,
   ScenarioConfig,
   ScenarioDraft,
+  ScenarioTemplate,
   ValidationResult,
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
@@ -26,6 +30,12 @@ const OPERATOR: Principal = {
   username: 'operator',
   role: 'OPERATOR',
   permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
+}
+const ADMIN: Principal = {
+  userId: 'USR-ADMIN',
+  username: 'admin',
+  role: 'ADMIN',
+  permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE', 'OFFICIAL_TEMPLATE_MAINTAIN'],
 }
 
 /** 创建与服务端基线一致、可独立修改的场景草稿。 */
@@ -56,17 +66,29 @@ function jsonResponse(body: unknown, ok = true): Response {
 }
 
 /** 创建带可选字段路径的失败 API 信封。 */
-function apiFailure(message: string, fieldPath?: string): ApiFailure {
+function apiFailure(message: string, fieldPath?: string, code: ApiErrorCode = 'VALIDATION_FAILED'): ApiFailure {
   return {
     ok: false,
     error: {
-      code: 'VALIDATION_FAILED',
+      code,
       message,
       ...(fieldPath === undefined ? {} : { fieldPath }),
       retryable: false,
       correlationId: 'CORR-P2-TEST',
     },
     meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+  }
+}
+
+/** 创建模板 Store 测试使用的完整官方模板。 */
+function template(templateId = 'TPL-SCN-001', version = '4', referenceCount = 2): ScenarioTemplate {
+  return {
+    templateId,
+    name: templateId === 'TPL-SCN-001' ? '跨海通联演示官方基线' : '台海验证模板',
+    version,
+    official: true,
+    config: scenarioDraft().config,
+    referenceCount,
   }
 }
 
@@ -118,7 +140,7 @@ describe('P2-1 场景 Store', () => {
     const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success(saved)))
     vi.stubGlobal('fetch', fetchSpy)
     const auth = useAuthStore()
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const scenario = useScenarioStore()
     scenario.draft = scenarioDraft()
     scenario.draft.config.scenario.name = saved.config.scenario.name
@@ -161,6 +183,12 @@ describe('P2-1 场景 Store', () => {
     expect(scenario.validation.errors[0]?.fieldPath).toBe('scenario.environment.humidityPercent')
 
     scenario.draft.config.scenario.environment.humidityPercent = 80
+    scenario.draft.uiExtensions.jammers[0]!.enabled = 'yes' as unknown as boolean
+    await expect(scenario.saveScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('VALIDATION_FAILED')
+    expect(scenario.validation.errors[0]?.fieldPath).toBe('uiExtensions.jammers[0].enabled')
+
+    scenario.draft.uiExtensions.jammers[0]!.enabled = true
     scenario.draft.locked = true
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('CONFIG_LOCKED')
@@ -327,6 +355,357 @@ describe('P2-1 场景 Store', () => {
       await expect(scenario.validateScenario()).resolves.toBe(false)
       expect(scenario.resultCode).toBe('INVALID_RESPONSE')
     }
+  })
+})
+
+describe('P2-6 场景模板 Store', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    sessionStorage.clear()
+  })
+
+  it('加载模板列表和单个模板详情', async () => {
+    const fixtureTemplate = template()
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success([fixtureTemplate])))
+      .mockResolvedValueOnce(jsonResponse(success(fixtureTemplate)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+
+    await expect(scenario.loadTemplates()).resolves.toBe(true)
+    expect(scenario.templates).toEqual([fixtureTemplate])
+    expect(scenario.templateResultCode).toBe('TEMPLATES_LOADED')
+    await expect(scenario.loadTemplate(fixtureTemplate.templateId)).resolves.toEqual(fixtureTemplate)
+    expect(scenario.selectedTemplate).toEqual(fixtureTemplate)
+    expect(scenario.templateResultMessage).toContain('版本 4')
+  })
+
+  it('拒绝损坏的模板列表和详情响应', async () => {
+    const malformedTemplate = { ...template(), referenceCount: -1 }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success([malformedTemplate])))
+      .mockResolvedValueOnce(jsonResponse(success({ ...template(), extra: true })))
+      .mockResolvedValueOnce(jsonResponse(success(null)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+
+    await expect(scenario.loadTemplates()).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+    await expect(scenario.loadTemplate('TPL-SCN-001')).resolves.toBeUndefined()
+    expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+    await expect(scenario.loadTemplates()).resolves.toBe(false)
+  })
+
+  it('关闭校验模板字段、空列表和损坏 JSON 响应', async () => {
+    const valid = template()
+    const invalidTemplates = [
+      null,
+      [],
+      { ...valid, extra: true },
+      { ...valid, templateId: 1 },
+      { ...valid, templateId: '' },
+      { ...valid, name: 1 },
+      { ...valid, name: '' },
+      { ...valid, version: 1 },
+      { ...valid, version: '' },
+      { ...valid, official: 'yes' },
+      { ...valid, referenceCount: 1.5 },
+      { ...valid, referenceCount: -1 },
+      { ...valid, config: { ...valid.config, schemaVersion: '2.0' } },
+    ]
+    const fetchSpy = vi.fn()
+    invalidTemplates.forEach((data) => fetchSpy.mockResolvedValueOnce(jsonResponse(success(data))))
+    fetchSpy
+      .mockResolvedValueOnce(jsonResponse(success([])))
+      .mockResolvedValueOnce({ ok: true, json: vi.fn().mockRejectedValue(new Error('broken json')) } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+
+    for (const _invalid of invalidTemplates) {
+      await expect(scenario.loadTemplate('TPL-SCN-001')).resolves.toBeUndefined()
+      expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+    }
+    await expect(scenario.loadTemplates()).resolves.toBe(true)
+    expect(scenario.templateState).toBe('EMPTY')
+    expect(scenario.templateResultMessage).toBe('模板库暂无数据。')
+    await expect(scenario.loadTemplates()).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+  })
+
+  it('管理员新建、导入、更新和导出模板，操作员被拒绝维护官方库', async () => {
+    const created = template('TPL-SCN-002', '1', 0)
+    const imported = { ...template('TPL-SCN-003', '1', 0), name: '导入模板' }
+    const updated = { ...created, version: '2' }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(created)))
+      .mockResolvedValueOnce(jsonResponse(success(imported)))
+      .mockResolvedValueOnce(jsonResponse(success(updated)))
+      .mockResolvedValueOnce(jsonResponse(success(updated)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    await expect(scenario.createTemplate('越权模板')).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('PERMISSION_DENIED')
+
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    await expect(scenario.createTemplate(created.name)).resolves.toBe(true)
+    await expect(scenario.importTemplate(JSON.stringify({ name: imported.name, config: imported.config }))).resolves.toBe(true)
+    await expect(scenario.updateTemplate(created.templateId, created.name)).resolves.toBe(true)
+    await expect(scenario.exportTemplate(created.templateId)).resolves.toContain('"name": "台海验证模板"')
+    expect(scenario.templates).toEqual([updated, imported])
+    expect(scenario.templateResultMessage).toContain('未写入真实文件')
+  })
+
+  it('保留 API 失败代码并拒绝无效失败信封', async () => {
+    const typedFailure = jsonResponse(apiFailure('模板操作冲突。', 'name', 'CONFLICT'), false)
+    const malformedFailure = jsonResponse({ ok: false }, false)
+    const fetchSpy = vi.fn()
+    for (let index = 0; index < 6; index += 1) {
+      fetchSpy.mockResolvedValueOnce(typedFailure).mockResolvedValueOnce(malformedFailure)
+    }
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+
+    for (const operation of [
+      () => scenario.loadTemplates(),
+      () => scenario.loadTemplate('TPL-SCN-001'),
+      () => scenario.createTemplate('模板'),
+      () => scenario.updateTemplate('TPL-SCN-001', '模板'),
+      () => scenario.copyTemplate('TPL-SCN-001', '副本'),
+      () => scenario.deleteTemplate('TPL-SCN-001'),
+    ]) {
+      await operation()
+      expect(scenario.templateResultCode).toBe('CONFLICT')
+      await operation()
+      expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+    }
+  })
+
+  it('更新未缓存模板并在导出详情失败时停止', async () => {
+    const updated = template('TPL-SCN-009', '2', 0)
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(updated)))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('模板不存在。', undefined, 'NOT_FOUND'), false))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+
+    await expect(scenario.updateTemplate(updated.templateId, updated.name)).resolves.toBe(true)
+    expect(scenario.templates).toEqual([updated])
+    await expect(scenario.exportTemplate('TPL-NOT-FOUND')).resolves.toBeUndefined()
+    expect(scenario.templateResultCode).toBe('NOT_FOUND')
+  })
+
+  it('拒绝非法导入文本并把模板复制为临时工作场景', async () => {
+    const copiedDraft = scenarioDraft(5)
+    copiedDraft.config.scenario.name = '模板副本'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(success(copiedDraft))))
+    const auth = useAuthStore()
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+
+    await expect(scenario.importTemplate('{')).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('INVALID_REQUEST')
+    await expect(scenario.importTemplate(JSON.stringify({ name: '缺少配置' }))).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('VALIDATION_FAILED')
+    await expect(scenario.copyTemplate('TPL-SCN-001', '模板副本')).resolves.toBe(true)
+    expect(scenario.draft?.config.scenario.name).toBe('模板副本')
+    expect(scenario.dirty).toBe(false)
+  })
+
+  it('在客户端阻断模板越权、空草稿和空名称', async () => {
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({
+      principal: { ...OPERATOR, permissions: ['BUSINESS_READ'] },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ'],
+    })
+    const scenario = useScenarioStore()
+
+    await expect(scenario.createTemplate('模板')).resolves.toBe(false)
+    await expect(scenario.updateTemplate('TPL-SCN-001', '模板')).resolves.toBe(false)
+    await expect(scenario.copyTemplate('TPL-SCN-001', '副本')).resolves.toBe(false)
+    await expect(scenario.exportTemplate('TPL-SCN-001')).resolves.toBeUndefined()
+    await expect(scenario.deleteTemplate('TPL-SCN-001')).resolves.toBe(false)
+
+    auth.$patch({ principal: { ...ADMIN, permissions: [...ADMIN.permissions] }, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    await expect(scenario.createTemplate('模板')).resolves.toBe(false)
+    expect(scenario.templateResultMessage).toBe('请先加载场景草稿。')
+    await expect(scenario.updateTemplate('TPL-SCN-001', '模板')).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('EMPTY')
+    scenario.draft = scenarioDraft()
+    await expect(scenario.createTemplate('  ')).resolves.toBe(false)
+    expect(scenario.templateResultMessage).toBe('模板名称不能为空。')
+    auth.$patch({ principal: { ...OPERATOR, permissions: ['BUSINESS_READ'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ'] })
+    await expect(scenario.updateTemplate('TPL-SCN-001', '模板')).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('PERMISSION_DENIED')
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('经一次性确认删除未引用模板并保留引用冲突反馈', async () => {
+    const removable = template('TPL-SCN-002', '1', 0)
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-001',
+      state: 'AWAITING_CONFIRMATION',
+      actor: 'admin',
+      role: 'ADMIN',
+      createdAt: META.generatedAt,
+      expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const confirmed = { ...awaiting, state: 'CONFIRMED' as const }
+    const deleted: DeleteResult = { deleted: true, objectId: removable.templateId }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(awaiting)))
+      .mockResolvedValueOnce(jsonResponse(success(confirmed)))
+      .mockResolvedValueOnce(jsonResponse(success(deleted)))
+      .mockResolvedValueOnce(jsonResponse(success(awaiting)))
+      .mockResolvedValueOnce(jsonResponse(success(confirmed)))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('模板仍被历史记录引用，不能删除。', 'referenceCount', 'CONFLICT'), false))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.$patch({ templates: [template(), removable], selectedTemplate: removable })
+
+    await expect(scenario.deleteTemplate(removable.templateId)).resolves.toBe(true)
+    expect(scenario.templates).toEqual([template()])
+    expect(scenario.selectedTemplate).toBeNull()
+    expect(scenario.lastConfirmation).toEqual({ ...confirmed, state: 'CLOSED' })
+    expect(fetchSpy).toHaveBeenNthCalledWith(3,
+      'http://127.0.0.1:4173/api/v1/templates/TPL-SCN-002',
+      { method: 'DELETE', headers: { 'X-Demo-Role': 'ADMIN', 'X-Confirmation-Id': awaiting.confirmationId } },
+    )
+
+    await expect(scenario.deleteTemplate('TPL-SCN-001')).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('CONFLICT')
+    expect(scenario.templates).toEqual([template()])
+    expect(scenario.lastConfirmation).toEqual({ ...confirmed, state: 'CLOSED' })
+  })
+
+  it('确认已过期时保留已确认记录并显示失效状态', async () => {
+    const removable = template('TPL-SCN-002', '1', 0)
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-001',
+      state: 'AWAITING_CONFIRMATION',
+      actor: 'admin',
+      role: 'ADMIN',
+      createdAt: META.generatedAt,
+      expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const confirmed = { ...awaiting, state: 'CONFIRMED' as const }
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(awaiting)))
+      .mockResolvedValueOnce(jsonResponse(success(confirmed)))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('二次确认已失效。', undefined, 'CONFIRMATION_EXPIRED'), false)))
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.templates = [removable]
+
+    await expect(scenario.deleteTemplate(removable.templateId)).resolves.toBe(false)
+    expect(scenario.templateResultCode).toBe('CONFIRMATION_EXPIRED')
+    expect(scenario.lastConfirmation).toEqual(confirmed)
+    expect(scenario.templates).toEqual([removable])
+  })
+
+  it('拒绝损坏的确认上下文和删除结果', async () => {
+    const base: ConfirmationContext = {
+      confirmationId: 'CONF-P2-001',
+      state: 'AWAITING_CONFIRMATION',
+      actor: 'admin',
+      role: 'ADMIN',
+      createdAt: META.generatedAt,
+      expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const invalidAwaiting = [
+      null,
+      [],
+      { ...base, extra: true },
+      { ...base, confirmationId: '' },
+      { ...base, state: 'CONFIRMED' },
+      { ...base, actor: 1 },
+      { ...base, role: 'UNKNOWN' },
+      { ...base, createdAt: 1 },
+      { ...base, expiresAt: 1 },
+    ]
+    const confirmed = { ...base, state: 'CONFIRMED' as const }
+    const invalidConfirmed = [{ ...confirmed, state: 'AWAITING_CONFIRMATION' }, { ...confirmed, role: 'UNKNOWN' }]
+    const invalidDeletes = [null, [], { deleted: false, objectId: 'TPL-SCN-002' }, { deleted: true, objectId: '' }, { deleted: true, objectId: 'OTHER' }]
+    const fetchSpy = vi.fn()
+    invalidAwaiting.forEach((data) => fetchSpy.mockResolvedValueOnce(jsonResponse(success(data))))
+    invalidConfirmed.forEach((data) => fetchSpy
+      .mockResolvedValueOnce(jsonResponse(success(base)))
+      .mockResolvedValueOnce(jsonResponse(success(data))))
+    invalidDeletes.forEach((data) => fetchSpy
+      .mockResolvedValueOnce(jsonResponse(success(base)))
+      .mockResolvedValueOnce(jsonResponse(success(confirmed)))
+      .mockResolvedValueOnce(jsonResponse(success(data))))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.templates = [template('TPL-SCN-002', '1', 0)]
+
+    for (const _invalid of [...invalidAwaiting, ...invalidConfirmed, ...invalidDeletes]) {
+      await expect(scenario.deleteTemplate('TPL-SCN-002')).resolves.toBe(false)
+      expect(scenario.templateResultCode).toBe('INVALID_RESPONSE')
+      expect(scenario.templates).toHaveLength(1)
+    }
+  })
+
+  it('删除最后一个模板后进入空态且不清除其他选中模板', async () => {
+    const removable = template('TPL-SCN-002', '1', 0)
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-001',
+      state: 'AWAITING_CONFIRMATION',
+      actor: 'admin',
+      role: 'ADMIN',
+      createdAt: META.generatedAt,
+      expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(awaiting)))
+      .mockResolvedValueOnce(jsonResponse(success({ ...awaiting, state: 'CONFIRMED' })))
+      .mockResolvedValueOnce(jsonResponse(success<DeleteResult>({ deleted: true, objectId: removable.templateId })))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const scenario = useScenarioStore()
+    scenario.$patch({ templates: [removable], selectedTemplate: template() })
+
+    await expect(scenario.deleteTemplate(removable.templateId)).resolves.toBe(true)
+    expect(scenario.templateState).toBe('EMPTY')
+    expect(scenario.selectedTemplate?.templateId).toBe('TPL-SCN-001')
+  })
+
+  it('安全重置会清空模板投影并忽略延迟响应', async () => {
+    const response = deferred<Response>()
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(response.promise))
+    const scenario = useScenarioStore()
+    scenario.templates = [template()]
+    const pending = scenario.loadTemplates()
+
+    scenario.resetToSafeEmpty()
+    response.resolve(jsonResponse(success([template()])))
+
+    await expect(pending).resolves.toBe(false)
+    expect(scenario.$state).toMatchObject({ templates: [], selectedTemplate: null, templateState: 'EMPTY', lastConfirmation: null })
   })
 })
 
