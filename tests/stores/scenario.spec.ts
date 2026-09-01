@@ -8,6 +8,7 @@ import type {
   Principal,
   ScenarioConfig,
   ScenarioDraft,
+  ValidationResult,
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { useAuthStore } from '../../src/stores/auth'
@@ -158,6 +159,11 @@ describe('P2-1 场景 Store', () => {
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('VALIDATION_FAILED')
     expect(scenario.validation.errors[0]?.fieldPath).toBe('scenario.environment.humidityPercent')
+
+    scenario.draft.config.scenario.environment.humidityPercent = 80
+    scenario.draft.locked = true
+    await expect(scenario.saveScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('CONFIG_LOCKED')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
@@ -251,9 +257,99 @@ describe('P2-1 场景 Store', () => {
       resultMessage: '尚未加载场景草稿。',
     })
   })
+
+  it('通过整体校验接口处理通过、警告、错误和配置锁', async () => {
+    const validDraft = scenarioDraft()
+    validDraft.config.scenario.environment.rainLossDbPerKm = 0.08
+    const validResult = inspectScenarioConfig(validDraft.config).result
+    const warningDraft = scenarioDraft()
+    const warningResult = inspectScenarioConfig(warningDraft.config).result
+    const invalidDraft = scenarioDraft()
+    invalidDraft.config.links[0]!.txPower = -1
+    const invalidResult = inspectScenarioConfig(invalidDraft.config).result
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success<ValidationResult>(validResult)))
+      .mockResolvedValueOnce(jsonResponse(success<ValidationResult>(warningResult)))
+      .mockResolvedValueOnce(jsonResponse(success<ValidationResult>(invalidResult)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    const scenario = useScenarioStore()
+
+    await expect(scenario.validateScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('PERMISSION_DENIED')
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    await expect(scenario.validateScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('EMPTY')
+
+    scenario.draft = validDraft
+    await expect(scenario.validateScenario()).resolves.toBe(true)
+    expect(scenario.resultCode).toBe('VALIDATION_SUCCESS')
+    expect(scenario.validation).toEqual({ valid: true, errors: [], warnings: [] })
+
+    scenario.draft = warningDraft
+    await expect(scenario.validateScenario()).resolves.toBe(true)
+    expect(scenario.resultCode).toBe('VALIDATION_WARNING')
+    expect(scenario.validation.warnings[0]?.fieldPath).toBe('scenario.environment.rainLossDbPerKm')
+
+    scenario.draft = invalidDraft
+    await expect(scenario.validateScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('VALIDATION_FAILED')
+    expect(scenario.validation.errors[0]?.fieldPath).toBe('links[0].txPower')
+    expect(fetchSpy).toHaveBeenLastCalledWith(
+      'http://127.0.0.1:4173/api/v1/scenarios/SCN-001/validate',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ config: invalidDraft.config }) }),
+    )
+
+    scenario.draft.locked = true
+    await expect(scenario.validateScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('CONFIG_LOCKED')
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it('拒绝不一致的整体校验成功信封', async () => {
+    const malformedResults = [
+      null,
+      { valid: true, errors: [], warnings: [], extra: true },
+      { valid: true, errors: null, warnings: [] },
+      { valid: false, errors: [{ severity: 'WARNING', code: 'BAD', message: '错误级别不正确。', fieldPath: 'scenario' }], warnings: [] },
+      { valid: true, errors: [], warnings: [{ severity: 'ERROR', code: 'BAD', message: '警告级别不正确。', fieldPath: 'scenario' }] },
+      { valid: true, errors: [{ severity: 'ERROR', code: 'BAD', message: '有效性不一致。', fieldPath: 'scenario' }], warnings: [] },
+    ]
+    const fetchSpy = vi.fn()
+    malformedResults.forEach((data) => fetchSpy.mockResolvedValueOnce(jsonResponse(success(data))))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+
+    for (const _result of malformedResults) {
+      await expect(scenario.validateScenario()).resolves.toBe(false)
+      expect(scenario.resultCode).toBe('INVALID_RESPONSE')
+    }
+  })
 })
 
 describe('P2-1 场景基础字段校验', () => {
+  it('按原型规则返回可定位警告且不影响有效性', () => {
+    const defaultResult = inspectScenarioConfig(scenarioDraft().config).result
+    expect(defaultResult.valid).toBe(true)
+    expect(defaultResult.errors).toEqual([])
+    expect(defaultResult.warnings).toContainEqual(expect.objectContaining({
+      severity: 'WARNING',
+      code: 'RAIN_LOSS_DEFAULT_MISMATCH',
+      fieldPath: 'scenario.environment.rainLossDbPerKm',
+    }))
+
+    const incompleteCoverage = scenarioDraft().config
+    incompleteCoverage.scenario.environment.rainLossDbPerKm = 0.08
+    incompleteCoverage.platforms = incompleteCoverage.platforms.filter((platform) => platform.type !== 'FORWARD_RELAY_NODE')
+    expect(inspectScenarioConfig(incompleteCoverage).result.warnings).toContainEqual(expect.objectContaining({
+      code: 'CAPABILITY_COVERAGE_NOTICE',
+      fieldPath: 'platforms',
+    }))
+  })
+
   it('定位基础、时序和环境参数错误', () => {
     const cases: Array<[string, (config: ScenarioConfig) => void]> = [
       ['scenario.id', (config) => { config.scenario.id = 'BAD' as ScenarioConfig['scenario']['id'] }],

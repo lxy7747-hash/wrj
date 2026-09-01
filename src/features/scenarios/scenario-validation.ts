@@ -348,9 +348,10 @@ function inspectPlatformReferences(
  */
 export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   const errors: ValidationIssue[] = []
+  const warnings: ValidationIssue[] = []
   if (!isClosedObject(value, ROOT_KEYS)) {
     addError(errors, 'SCENARIO_SHAPE_INVALID', '场景配置结构不正确。', 'config')
-    return { result: { valid: false, errors, warnings: [] } }
+    return { result: { valid: false, errors, warnings } }
   }
   if (value.schemaVersion !== '1.0') addError(errors, 'SCHEMA_VERSION_INVALID', '配置版本必须为 1.0。', 'schemaVersion')
   if (!Array.isArray(value.platforms) || value.platforms.length === 0) addError(errors, 'PLATFORMS_INVALID', '场景至少需要一个平台。', 'platforms')
@@ -362,7 +363,7 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
 
   if (!isClosedObject(value.scenario, SCENARIO_KEYS)) {
     addError(errors, 'SCENARIO_IDENTITY_INVALID', '场景基础信息结构不正确。', 'scenario')
-    return { result: { valid: false, errors, warnings: [] } }
+    return { result: { valid: false, errors, warnings } }
   }
   const scenario = value.scenario
   if (typeof scenario.id !== 'string' || !scenario.id.startsWith('SCN-')) addError(errors, 'ID_INVALID', '场景编号必须以 SCN- 开头。', 'scenario.id')
@@ -374,7 +375,7 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
 
   if (!isClosedObject(scenario.environment, ENVIRONMENT_KEYS)) {
     addError(errors, 'ENVIRONMENT_INVALID', '环境参数结构不正确。', 'scenario.environment')
-    return { result: { valid: false, errors, warnings: [] } }
+    return { result: { valid: false, errors, warnings } }
   }
   const environment = scenario.environment
   if (!isFiniteNumber(environment.seaState, 0)) addError(errors, 'SEA_STATE_INVALID', '海况等级不能小于 0。', 'scenario.environment.seaState')
@@ -383,6 +384,14 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   if (!isFiniteNumber(environment.rainRateMmPerHour, 0)) addError(errors, 'RAIN_RATE_INVALID', '降雨率不能小于 0。', 'scenario.environment.rainRateMmPerHour')
   if (!isFiniteNumber(environment.rainLossDbPerKm, 0)) addError(errors, 'RAIN_LOSS_INVALID', '雨衰不能小于 0。', 'scenario.environment.rainLossDbPerKm')
   if (typeof environment.multipathEnabled !== 'boolean') addError(errors, 'MULTIPATH_INVALID', '多径效应开关格式不正确。', 'scenario.environment.multipathEnabled')
+  if (environment.rainLossDbPerKm === 0.07) {
+    warnings.push({
+      severity: 'WARNING',
+      code: 'RAIN_LOSS_DEFAULT_MISMATCH',
+      message: '当前雨衰值未匹配设备默认值，生成脚本前需要确认。',
+      fieldPath: 'scenario.environment.rainLossDbPerKm',
+    })
+  }
 
   if (Array.isArray(value.platforms)) {
     const platformIds = collectIds(value.platforms)
@@ -392,10 +401,21 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     const businessNodeCount = value.platforms.filter((platform) => (
       typeof platform === 'object' && platform !== null && isBusinessInformationNodeType((platform as { type?: unknown }).type)
     )).length
+    const missingBusinessTypes = BUSINESS_INFORMATION_NODE_TYPES.filter((type) => !(value.platforms as unknown[]).some((platform) => (
+      typeof platform === 'object' && platform !== null && (platform as { type?: unknown }).type === type
+    )))
 
     if (businessNodeCount === 0) addError(errors, 'MINIMUM_BUSINESS_NODE', '场景至少需要一个业务信息节点。', 'platforms')
     if (businessNodeCount > 50) addError(errors, 'NODE_LIMIT_EXCEEDED', '业务信息节点不能超过 50 个。', 'platforms')
     if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '场景实体 ID 不允许为空或重复。', 'platforms')
+    if (missingBusinessTypes.length > 0) {
+      warnings.push({
+        severity: 'WARNING',
+        code: 'CAPABILITY_COVERAGE_NOTICE',
+        message: '当前场景未覆盖全部四类业务信息节点，生成脚本前需要确认。',
+        fieldPath: 'platforms',
+      })
+    }
 
     value.platforms.forEach((platform, index) => {
       const path = `platforms[${index}]`
@@ -452,7 +472,7 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors))
   }
 
-  const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
+  const result: ValidationResult = { valid: errors.length === 0, errors, warnings }
   if (!result.valid) return { result }
 
   return {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, toRaw } from 'vue'
+import { computed, nextTick, onMounted, ref, toRaw } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig } from '../contracts/domain-models'
+import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ValidationIssue } from '../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   JAMMER_TYPES,
@@ -17,7 +17,7 @@ import { useScenarioStore } from '../stores/scenario'
 import WaypointMapPicker, { type WaypointMapPoint } from '../components/scenarios/WaypointMapPicker.vue'
 
 const scenarioStore = useScenarioStore()
-const { draft, dirty, panelState, resultMessage, validation } = storeToRefs(scenarioStore)
+const { draft, dirty, panelState, resultCode, resultMessage, validation } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
@@ -59,7 +59,7 @@ const jammerTypeOptions = JAMMER_TYPES.map((value) => ({ value, label: JAMMER_TY
 const stateLabels: Record<CapabilityState, string> = {
   LOADING: '加载中',
   VALIDATING: '校验中',
-  EXECUTING: '保存中',
+  EXECUTING: '处理中',
   SUCCESS: '已就绪',
   EMPTY: '未加载',
   ERROR: '处理失败',
@@ -75,6 +75,8 @@ const businessNodeCount = computed(() => draft.value?.config.platforms.filter((p
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
+const validationIssues = computed(() => [...validation.value.errors, ...validation.value.warnings])
+const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -712,6 +714,87 @@ function setJammerEnabled(jammerId: string, enabled: boolean): void {
 }
 
 /**
+ * 读取规范字段路径对应的页面输入标识。
+ * @param fieldPath 校验结果中的规范字段路径。
+ * @returns 可聚焦输入的测试标识；集合级问题没有单一输入时返回 `undefined`。
+ * @remarks 只完成当前已开放编辑字段的直接映射。
+ */
+function validationTargetId(fieldPath: string): string | undefined {
+  const directTargets: Record<string, string> = {
+    'scenario.id': 'scenario-id',
+    'scenario.name': 'scenario-name',
+    'scenario.description': 'scenario-description',
+    'scenario.startTime': 'scenario-start-time',
+    'scenario.duration': 'scenario-duration',
+    'scenario.timeStep': 'scenario-time-step',
+    'scenario.environment.seaState': 'scenario-sea-state',
+    'scenario.environment.temperatureC': 'scenario-temperature',
+    'scenario.environment.humidityPercent': 'scenario-humidity',
+    'scenario.environment.rainRateMmPerHour': 'scenario-rain-rate',
+    'scenario.environment.rainLossDbPerKm': 'scenario-rain-loss',
+    'scenario.environment.multipathEnabled': 'scenario-multipath',
+  }
+  return directTargets[fieldPath]
+}
+
+/**
+ * 将焦点移动到错误对应的当前输入组件。
+ * @param fieldPath 校验结果中的规范字段路径。
+ * @returns 无返回值。
+ * @sideEffects 找到可编辑输入时调用其 `focus()`，集合级问题只定位页签。
+ */
+function focusValidationField(fieldPath: string): void {
+  const testId = validationTargetId(fieldPath)
+  if (testId === undefined) return
+  const owner = document.querySelector<HTMLElement>(`[data-testid="${testId}"]`)
+  const target = owner?.matches('input, textarea, button') === true
+    ? owner
+    : owner?.querySelector<HTMLElement>('input, textarea, button')
+  target?.focus()
+}
+
+/**
+ * 定位整体校验问题所属页签、集合项和具体输入。
+ * @param issue 用户选择的字段校验问题。
+ * @returns 定位和聚焦完成后无返回值。
+ * @sideEffects 切换页签；集合项问题会打开对应编辑弹框并显示中文原因。
+ */
+async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
+  const platformIndex = Number(/^platforms\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+  const linkIndex = Number(/^links\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+  const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+
+  if (issue.fieldPath.startsWith('platforms')) activeTab.value = 'platforms'
+  else if (issue.fieldPath.startsWith('links')) activeTab.value = 'links'
+  else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers')) activeTab.value = 'jammers'
+  else activeTab.value = 'scenario'
+  await nextTick()
+
+  if (Number.isInteger(platformIndex) && draft.value?.config.platforms[platformIndex] !== undefined) {
+    openPlatformEditor(draft.value.config.platforms[platformIndex], platformIndex)
+    platformEditorError.value = issue.message
+  } else if (Number.isInteger(linkIndex) && draft.value?.config.links[linkIndex] !== undefined) {
+    openLinkEditor(draft.value.config.links[linkIndex], linkIndex)
+    linkEditorError.value = issue.message
+  } else if (Number.isInteger(jammerIndex) && draft.value?.config.jammers[jammerIndex] !== undefined) {
+    openJammerEditor(draft.value.config.jammers[jammerIndex], jammerIndex)
+    jammerEditorError.value = issue.message
+  }
+  await nextTick()
+  focusValidationField(issue.fieldPath)
+}
+
+/**
+ * 执行当前草稿的整体校验并展示结果页签。
+ * @returns 校验请求结束后无返回值。
+ * @sideEffects 切换到整体校验页签并调用场景 Store；不修改草稿内容。
+ */
+async function validateScenario(): Promise<void> {
+  activeTab.value = 'validation'
+  await scenarioStore.validateScenario()
+}
+
+/**
  * 重新加载确定性场景草稿。
  * @returns 加载流程结束后兑现且不返回值的 Promise。
  * @sideEffects 调用场景 Store，并以服务端草稿替换当前页面数据。
@@ -752,6 +835,14 @@ onMounted(() => {
           重新加载
         </el-button>
         <el-button
+          :disabled="draft === null"
+          :loading="pending && activeTab === 'validation'"
+          data-testid="validate-scenario"
+          @click="validateScenario"
+        >
+          整体校验
+        </el-button>
+        <el-button
           type="primary"
           :disabled="draft === null || draft?.locked || !dirty"
           :loading="pending"
@@ -764,7 +855,7 @@ onMounted(() => {
     </header>
 
     <el-alert
-      v-if="panelState === 'ERROR'"
+      v-if="panelState === 'ERROR' && activeTab !== 'validation'"
       class="scenario-feedback"
       type="error"
       :closable="false"
@@ -872,19 +963,19 @@ onMounted(() => {
         </div>
         <div class="form-grid form-grid--environment">
           <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
-            <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
-            <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" data-testid="scenario-temperature" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
             <el-input-number v-model="draft.config.scenario.environment.humidityPercent" controls-position="right" data-testid="scenario-humidity" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
-            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
-            <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" data-testid="scenario-rain-loss" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item class="multipath-field" label="多径效应">
             <el-switch
@@ -1052,6 +1143,75 @@ onMounted(() => {
 
             <div class="platform-actions">
               <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
+            </div>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="整体校验" name="validation">
+          <section class="console-panel scenario-section validation-panel" aria-labelledby="scenario-validation-title" data-testid="validation-panel">
+            <div class="section-heading">
+              <div>
+                <p class="section-kicker">参数校验与冲突检测</p>
+                <h3 id="scenario-validation-title">场景整体校验</h3>
+              </div>
+              <div class="platform-counts" aria-label="校验问题数量">
+                <el-tag :type="validation.errors.length > 0 ? 'danger' : 'success'">错误 {{ validation.errors.length }}</el-tag>
+                <el-tag :type="validation.warnings.length > 0 ? 'warning' : 'success'">警告 {{ validation.warnings.length }}</el-tag>
+              </div>
+            </div>
+
+            <el-alert
+              v-if="pending"
+              type="info"
+              :closable="false"
+              title="正在校验当前完整场景…"
+              show-icon
+            />
+            <el-alert
+              v-else-if="panelState === 'ERROR' && validationIssues.length === 0"
+              type="error"
+              :closable="false"
+              :title="resultMessage"
+              data-testid="validation-request-error"
+              show-icon
+            />
+            <el-empty
+              v-else-if="!validationCompleted && validationIssues.length === 0"
+              description="尚未执行整体校验"
+            />
+            <el-result
+              v-else-if="validationIssues.length === 0"
+              icon="success"
+              title="整体校验通过"
+              sub-title="未发现错误或警告"
+            />
+            <div v-else class="validation-panel__results">
+              <el-alert
+                :type="validation.errors.length > 0 ? 'error' : 'warning'"
+                :closable="false"
+                :title="resultMessage"
+                show-icon
+              />
+              <ul class="validation-panel__list" aria-label="场景校验问题">
+                <li v-for="(issue, index) in validationIssues" :key="`${issue.severity}-${issue.code}-${issue.fieldPath}`">
+                  <button
+                    type="button"
+                    class="validation-issue"
+                    :data-testid="`locate-validation-issue-${index}`"
+                    @click="locateValidationIssue(issue)"
+                  >
+                    <el-tag :type="issue.severity === 'ERROR' ? 'danger' : 'warning'" size="small">
+                      {{ issue.severity === 'ERROR' ? '错误' : '警告' }}
+                    </el-tag>
+                    <code>{{ issue.fieldPath }}</code>
+                    <span>{{ issue.message }}</span>
+                    <strong>定位</strong>
+                  </button>
+                </li>
+              </ul>
+              <p v-if="validation.errors.length === 0 && validation.warnings.length > 0" class="validation-panel__notice">
+                警告不阻断保存；生成脚本前需要完成一次确认。
+              </p>
             </div>
           </section>
         </el-tab-pane>
@@ -1455,6 +1615,51 @@ onMounted(() => {
   margin-bottom: 1rem;
 }
 
+.validation-panel__results {
+  display: grid;
+  gap: 0.875rem;
+}
+
+.validation-panel__list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.validation-issue {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(12rem, 0.75fr) minmax(16rem, 1.5fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border: 1px solid var(--console-border);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--console-panel) 88%, transparent);
+  color: var(--console-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.validation-issue:hover,
+.validation-issue:focus-visible {
+  border-color: var(--console-cyan);
+  outline: none;
+}
+
+.validation-issue code,
+.validation-issue strong {
+  color: var(--console-cyan);
+}
+
+.validation-panel__notice {
+  margin: 0;
+  color: var(--console-text-muted);
+}
+
 .platform-editor-grid,
 .position-grid {
   display: grid;
@@ -1610,7 +1815,8 @@ onMounted(() => {
   .platform-editor-grid,
   .link-editor-grid,
   .link-editor-threshold,
-  .position-grid {
+  .position-grid,
+  .validation-issue {
     grid-template-columns: 1fr;
   }
 

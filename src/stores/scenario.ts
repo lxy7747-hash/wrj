@@ -4,6 +4,7 @@ import type {
   CapabilityState,
   ScenarioDraft,
   ScenarioId,
+  ValidationIssue,
   ValidationResult,
 } from '../contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
@@ -53,6 +54,41 @@ function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   return inspectScenarioUiExtensions(uiExtensions, inspection.jammers.map((jammer) => jammer.id)).result.valid
     ? draft as ScenarioDraft
     : undefined
+}
+
+/**
+ * 判断未知值是否符合指定级别的字段校验问题合同。
+ * @param value 服务端返回的未知问题对象。
+ * @param severity 当前数组要求的错误级别。
+ * @returns 字段完整且类型正确时返回 `true`。
+ * @remarks 仅校验响应边界，不修改问题对象。
+ */
+function isValidationIssue(value: unknown, severity: ValidationIssue['severity']): value is ValidationIssue {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const issue = value as Partial<ValidationIssue>
+  return Object.keys(value).length === 4
+    && issue.severity === severity
+    && typeof issue.code === 'string'
+    && typeof issue.message === 'string'
+    && typeof issue.fieldPath === 'string'
+}
+
+/**
+ * 从成功信封中读取整体场景校验结果。
+ * @param payload 服务端返回的已解析响应体。
+ * @returns 合同有效时返回校验结果，否则返回 `undefined`。
+ * @remarks 同时验证错误级别、字段路径和 `valid` 与错误数量的一致性。
+ */
+function readValidationResult(payload: unknown): ValidationResult | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || Array.isArray(data) || Object.keys(data).length !== 3) return undefined
+  const result = data as Partial<ValidationResult>
+  if (!Array.isArray(result.errors) || !Array.isArray(result.warnings)) return undefined
+  if (!result.errors.every((issue) => isValidationIssue(issue, 'ERROR'))
+    || !result.warnings.every((issue) => isValidationIssue(issue, 'WARNING'))
+    || result.valid !== (result.errors.length === 0)) return undefined
+  return result as ValidationResult
 }
 
 export const useScenarioStore = defineStore('scenario', {
@@ -146,6 +182,81 @@ export const useScenarioStore = defineStore('scenario', {
     },
 
     /**
+     * 通过 Node.js Mock 对当前完整场景执行整体校验。
+     * @returns 没有阻断错误时返回 `true`，权限、配置锁、合同或网络失败时返回 `false`。
+     * @sideEffects 更新六态面板状态、校验问题集合及中文结果反馈，不修改场景草稿。
+     */
+    async validateScenario(): Promise<boolean> {
+      const requestEpoch = this.requestEpoch
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
+        this.panelState = 'ERROR'
+        this.resultCode = 'PERMISSION_DENIED'
+        this.resultMessage = '当前账号没有场景草稿校验权限。'
+        return false
+      }
+      if (this.draft === null) {
+        this.panelState = 'EMPTY'
+        this.resultCode = 'EMPTY'
+        this.resultMessage = '请先加载场景草稿。'
+        return false
+      }
+      if (this.draft.locked) {
+        this.validation = {
+          valid: false,
+          errors: [{
+            severity: 'ERROR',
+            code: 'CONFIG_LOCKED',
+            message: '场景正在运行，当前配置已锁定。',
+            fieldPath: 'scenario',
+          }],
+          warnings: [],
+        }
+        this.panelState = 'ERROR'
+        this.resultCode = 'CONFIG_LOCKED'
+        this.resultMessage = '场景正在运行，当前配置已锁定。'
+        return false
+      }
+
+      this.panelState = 'VALIDATING'
+      this.validation = inspectScenarioConfig(this.draft.config).result
+      try {
+        this.panelState = 'EXECUTING'
+        const scenarioId = this.draft.config.scenario.id
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ config: this.draft.config }),
+        })
+        if (requestEpoch !== this.requestEpoch) return false
+        this.panelState = 'VALIDATING'
+        const payload: unknown = await response.json().catch(() => undefined)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const result = readValidationResult(payload)
+        if (result === undefined) throw new InvalidScenarioResponseError()
+
+        this.validation = result
+        if (result.errors.length > 0) {
+          this.panelState = 'ERROR'
+          this.resultCode = 'VALIDATION_FAILED'
+          this.resultMessage = `整体校验发现 ${result.errors.length} 个错误。`
+          return false
+        }
+        this.panelState = 'SUCCESS'
+        this.resultCode = result.warnings.length > 0 ? 'VALIDATION_WARNING' : 'VALIDATION_SUCCESS'
+        this.resultMessage = result.warnings.length > 0
+          ? `整体校验通过，存在 ${result.warnings.length} 个警告。`
+          : '整体校验通过，未发现错误或警告。'
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showError(error, '场景整体校验失败。')
+        return false
+      }
+    },
+
+    /**
      * 校验并保存当前场景草稿。
      * @returns 保存成功时返回 `true`，权限、校验或网络失败时返回 `false`。
      * @sideEffects 依次更新校验和执行状态；成功时替换服务端草稿并清除未保存标记。
@@ -163,6 +274,12 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'ERROR'
         this.resultCode = 'EMPTY'
         this.resultMessage = '请先加载场景草稿。'
+        return false
+      }
+      if (this.draft.locked) {
+        this.panelState = 'ERROR'
+        this.resultCode = 'CONFIG_LOCKED'
+        this.resultMessage = '场景正在运行，当前配置已锁定。'
         return false
       }
 

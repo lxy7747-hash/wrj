@@ -272,7 +272,7 @@ test.describe('P2-1 scenario business loop', () => {
 
     const name = page.getByTestId('scenario-name')
     const startTime = page.getByTestId('scenario-start-time').locator('input')
-    const nameError = page.getByTestId('scenario-editor')
+    const nameError = page.locator('.el-form-item').filter({ has: name })
       .getByText('场景名称为必填项，且不能超过 128 个字符。', { exact: true })
     await expect(page.getByTestId('scenario-id')).toHaveValue('SCN-001')
     await expect(page.getByText('开始时间', { exact: true })).toBeVisible()
@@ -635,6 +635,42 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await expect(reloadedRow).toContainText('AIR-02')
   await expect(reloadedRow).toContainText('360')
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P2-5 OPERATOR validates warnings and locates an invalid time step', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await loaded).status()).toBe(200)
+
+  const validate = page.getByTestId('validate-scenario')
+  const warningResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
+  await validate.click()
+  expect((await warningResponse).status()).toBe(200)
+  const validationPanel = page.getByTestId('validation-panel')
+  await expect(validationPanel).toContainText('当前雨衰值未匹配设备默认值，生成脚本前需要确认。')
+
+  await page.getByRole('tab', { name: '场景基础' }).click()
+  const timeStep = page.getByTestId('scenario-time-step').locator('input')
+  await timeStep.fill('-1')
+  const errorResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
+  await validate.click()
+  expect((await errorResponse).status()).toBe(200)
+
+  const timeStepIssue = validationPanel.getByRole('button').filter({ hasText: 'scenario.timeStep' })
+  await expect(timeStepIssue).toContainText('时间步长必须大于 0 秒。')
+  await timeStepIssue.click()
+  await expect(timeStep).toBeFocused()
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

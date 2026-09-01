@@ -4,13 +4,15 @@ import type {
   ScenarioDraft,
   ScenarioDraftUpdate,
   ScenarioId,
+  ScenarioValidationRequest,
+  ValidationResult,
 } from '../../src/contracts/domain-models.js'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type ScenarioProjectionResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: ApiErrorCode; status: 404 | 422; fieldPath?: string; message: string }
+  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422; fieldPath?: string; message: string }
 
 /**
  * 创建可重置的确定性场景草稿。
@@ -106,6 +108,44 @@ export class ScenarioProjection {
   }
 
   /**
+   * 校验指定场景的完整规范配置。
+   * @param scenarioId 路由中的场景编号。
+   * @param value 客户端提交的未知 JSON 值。
+   * @returns 可定位字段的校验结果，或请求外壳、场景编号及配置锁错误。
+   * @remarks 只读取候选配置，不修改服务端草稿和修订号。
+   */
+  validate(scenarioId: string, value: unknown): ScenarioProjectionResult<ValidationResult> {
+    if (scenarioId !== this.draft.config.scenario.id) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    }
+    if (this.draft.locked) {
+      return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
+    }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'config')) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '场景校验请求结构不正确。' }
+    }
+
+    const inspection = inspectScenarioConfig((value as unknown as ScenarioValidationRequest).config)
+    if (inspection.result.valid && inspection.identity?.id !== scenarioId) {
+      return {
+        ok: true,
+        data: {
+          valid: false,
+          errors: [{
+            severity: 'ERROR',
+            code: 'SCENARIO_ID_MISMATCH',
+            message: '场景编号与请求地址不一致。',
+            fieldPath: 'scenario.id',
+          }],
+          warnings: inspection.result.warnings,
+        },
+      }
+    }
+    return { ok: true, data: structuredClone(inspection.result) }
+  }
+
+  /**
    * 校验并保存场景基础、环境、时序、平台、航点、链路和干扰设备参数。
    * @param scenarioId 路由中的场景编号。
    * @param value 客户端提交的未知 JSON 值。
@@ -115,6 +155,9 @@ export class ScenarioProjection {
   save(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
     if (scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    }
+    if (this.draft.locked) {
+      return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     }
 
     if (typeof value !== 'object' || value === null || Array.isArray(value)

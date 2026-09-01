@@ -456,6 +456,31 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
+   * 校验指定场景草稿并返回全部字段问题。
+   * @param req 包含角色提示、场景编号和完整规范配置的请求。
+   * @param res 接收校验结果或类型化请求错误的响应。
+   * @returns 无返回值。
+   * @remarks 校验不修改场景草稿；配置锁定时直接拒绝。
+   */
+  app.post('/api/v1/scenarios/:scenarioId/validate', (req, res) => {
+    const scenarioId = req.params.scenarioId
+    const requestId = 'REQ-P2-SCENARIO-VALIDATE'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_VALIDATE', scenarioId) === undefined) return
+
+    const result = scenarios.validate(scenarioId, req.body)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
    * 保存指定场景的基础、环境、时序、平台、航点、链路和干扰设备参数。
    * @param req 包含角色提示、场景编号、完整配置和界面扩展的请求。
    * @param res 接收更新后草稿或字段校验错误的响应。

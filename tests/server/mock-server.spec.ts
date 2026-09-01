@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { ScenarioDraft } from '../../src/contracts/domain-models'
+import type { ScenarioDraft, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -520,6 +520,77 @@ describe('P0 deterministic mock server', () => {
       revision: 4,
       config: { scenario: { name: '跨海通联演示', environment: { humidityPercent: 80 } } },
     })
+  })
+
+  it('返回完整场景校验结果且不修改草稿', async () => {
+    const { baseUrl } = await startServer()
+    const loaded = await request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .expect(200)
+    const original = (loaded.body as { data: ScenarioDraft }).data
+
+    const warningResponse = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/validate')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: original.config })
+      .expect(200)
+    expect((warningResponse.body as { data: ValidationResult }).data).toMatchObject({
+      valid: true,
+      errors: [],
+      warnings: [{ severity: 'WARNING', fieldPath: 'scenario.environment.rainLossDbPerKm' }],
+    })
+
+    const invalid = structuredClone(original.config)
+    invalid.links[0]!.txPower = -1
+    const invalidResponse = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/validate')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .send({ config: invalid })
+      .expect(200)
+    expect((invalidResponse.body as { data: ValidationResult }).data).toMatchObject({
+      valid: false,
+      errors: [{ severity: 'ERROR', fieldPath: 'links[0].txPower' }],
+    })
+
+    const malformed = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/validate')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: original.config, extra: true })
+      .expect(422)
+    expect(malformed.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', fieldPath: 'request' } })
+
+    const mismatchedConfig = structuredClone(original.config)
+    mismatchedConfig.scenario.id = 'SCN-OTHER'
+    const mismatched = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/validate')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: mismatchedConfig })
+      .expect(200)
+    expect((mismatched.body as { data: ValidationResult }).data).toMatchObject({
+      valid: false,
+      errors: [{ code: 'SCENARIO_ID_MISMATCH', fieldPath: 'scenario.id' }],
+    })
+
+    const missing = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-UNKNOWN/validate')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: original.config })
+      .expect(404)
+    expect(missing.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
+
+    const afterValidation = await request(baseUrl)
+      .get('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .expect(200)
+    expect((afterValidation.body as { data: ScenarioDraft }).data).toEqual(original)
   })
 
   it('直接 PUT 忽略客户端链路和干扰设备反向关联并持久化规范结果', async () => {

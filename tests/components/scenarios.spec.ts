@@ -4,8 +4,8 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ApiSuccess, PageMeta, Principal, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
-import { LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
+import type { ApiSuccess, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ValidationResult } from '../../src/contracts/domain-models'
+import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import ScenariosPage from '../../src/pages/scenarios.vue'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -44,6 +44,12 @@ function draft(revision = 4): ScenarioDraft {
 /** 创建场景成功响应。 */
 function response(data: ScenarioDraft): Response {
   const body: ApiSuccess<ScenarioDraft> = { ok: true, data, meta: META }
+  return { ok: true, json: vi.fn().mockResolvedValue(body) } as unknown as Response
+}
+
+/** 创建整体场景校验成功信封。 */
+function validationResponse(data: ValidationResult): Response {
+  const body: ApiSuccess<ValidationResult> = { ok: true, data, meta: META }
   return { ok: true, json: vi.fn().mockResolvedValue(body) } as unknown as Response
 }
 
@@ -216,6 +222,134 @@ describe('P2-1 场景管理页面', () => {
 
     expect(wrapper.text()).toContain('场景名称为必填项，且不能超过 128 个字符。')
     expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('汇总整体校验问题并定位到链路编辑字段', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS', dirty: true })
+    scenario.draft!.config.links[0]!.txPower = -1
+    const result = inspectScenarioConfig(scenario.draft!.config).result
+    const fetchSpy = vi.fn().mockResolvedValue(validationResponse(result))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+
+    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('错误 1')
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('links[0].txPower')
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('链路发射功率不能小于 0 W。')
+
+    await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('链路发射功率不能小于 0 W。')
+    expect(document.querySelector('[data-testid="link-power"] input')).not.toBeNull()
+    wrapper.unmount()
+  })
+
+  it('在没有本地问题时展示整体校验请求级失败', async () => {
+    const cases = [
+      {
+        name: '网络拒绝',
+        reply: () => Promise.reject(new Error('网络连接已中断。')),
+        message: '网络连接已中断。',
+      },
+      {
+        name: 'HTTP 500',
+        reply: () => Promise.resolve({
+          ok: false,
+          status: 500,
+          json: vi.fn().mockResolvedValue({
+            ok: false,
+            error: { code: 'INTERNAL_ERROR', message: '场景校验服务暂时不可用。' },
+            meta: META,
+          }),
+        } as unknown as Response),
+        message: '场景校验服务暂时不可用。',
+      },
+      {
+        name: '成功信封合同错误',
+        reply: () => Promise.resolve({
+          ok: true,
+          status: 200,
+          json: vi.fn().mockResolvedValue({
+            ok: true,
+            data: { valid: true, errors: [], warnings: [], extra: true },
+            meta: META,
+          }),
+        } as unknown as Response),
+        message: '场景数据格式不正确。',
+      },
+    ]
+
+    for (const failure of cases) {
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      const auth = useAuthStore(pinia)
+      auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+      const scenario = useScenarioStore(pinia)
+      const currentDraft = draft()
+      currentDraft.config.scenario.environment.rainLossDbPerKm = 0.08
+      scenario.$patch({ draft: currentDraft, panelState: 'SUCCESS' })
+      vi.stubGlobal('fetch', vi.fn().mockImplementation(failure.reply))
+      const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+
+      await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+      await flushPromises()
+
+      const panel = wrapper.get('[data-testid="validation-panel"]')
+      expect(scenario.validation, failure.name).toEqual({ valid: true, errors: [], warnings: [] })
+      expect(panel.get('[data-testid="validation-request-error"]').text(), failure.name).toContain(failure.message)
+      expect(panel.text(), failure.name).not.toContain('尚未执行整体校验')
+      wrapper.unmount()
+    }
+  })
+
+  it('将平台、干扰和基础问题分别定位到对应编辑区', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({
+      draft: draft(),
+      panelState: 'ERROR',
+      resultCode: 'VALIDATION_FAILED',
+      validation: {
+        valid: false,
+        errors: [
+          { severity: 'ERROR', code: 'LONGITUDE_INVALID', message: '经度超出范围。', fieldPath: 'platforms[0].initialPosition.longitude' },
+          { severity: 'ERROR', code: 'JAMMER_FREQUENCY_INVALID', message: '干扰频率不正确。', fieldPath: 'jammers[0].frequency' },
+          { severity: 'ERROR', code: 'TIME_STEP_INVALID', message: '时间步长不正确。', fieldPath: 'scenario.timeStep' },
+        ],
+        warnings: [],
+      },
+    })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    const openValidationTab = async (): Promise<void> => {
+      await wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '整体校验')!.trigger('click')
+      await nextTick()
+    }
+
+    await openValidationTab()
+    await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).toContain('经度超出范围。')
+    document.querySelector<HTMLElement>('[data-testid="cancel-platform"]')!.click()
+
+    await openValidationTab()
+    await wrapper.get('[data-testid="locate-validation-issue-1"]').trigger('click')
+    await flushPromises()
+    expect(document.body.textContent).toContain('干扰频率不正确。')
+    document.querySelector<HTMLElement>('[data-testid="cancel-jammer"]')!.click()
+
+    await openValidationTab()
+    await wrapper.get('[data-testid="locate-validation-issue-2"]').trigger('click')
+    await flushPromises()
+    expect(document.activeElement).toBe(document.querySelector('[data-testid="scenario-time-step"] input'))
+    wrapper.unmount()
   })
 
   it('使用平台对话框新增业务信息节点和航点且确认前不污染草稿', async () => {

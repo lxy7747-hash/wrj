@@ -450,6 +450,16 @@
               }
             }
           },
+          "409": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Typed deterministic error",
             "content": {
