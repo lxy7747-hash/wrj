@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { ConfirmationContext, ScenarioDraft, ScenarioTemplate, ValidationResult } from '../../src/contracts/domain-models'
+import type { ConfirmationContext, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -40,6 +40,7 @@ interface HttpResponse {
 
 interface RequestChain {
   set(name: string, value: string): this
+  set(fields: Record<string, string>): this
   send(body: unknown): this
   expect(status: number): Promise<HttpResponse>
 }
@@ -354,7 +355,7 @@ describe('P0 deterministic mock server', () => {
     expect(missingRoute.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('加载、校验、保存并重置 P2-4 场景草稿', async () => {
+  it('加载、校验、完整保存并全局重置场景草稿', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -366,7 +367,10 @@ describe('P0 deterministic mock server', () => {
     expect(original).toMatchObject({
       revision: 4,
       config: { scenario: { name: '跨海通联演示' } },
-      uiExtensions: { jammers: [{ jammerId: 'JAM-WB-01-TX' }, { jammerId: 'JAM-SPOT-01-TX' }], sensors: [] },
+      uiExtensions: {
+        jammers: [{ jammerId: 'JAM-WB-01-TX' }, { jammerId: 'JAM-SPOT-01-TX' }],
+        sensors: [{ sensorId: 'ESM-01', type: 'ESM' }],
+      },
     })
 
     const changed = structuredClone(original.config)
@@ -502,17 +506,26 @@ describe('P0 deterministic mock server', () => {
       error: { code: 'NODE_LIMIT_EXCEEDED', fieldPath: 'platforms' },
     })
 
-    const readOnlyMutation = structuredClone(linkMutation)
-    readOnlyMutation.output.directory = './not-open-yet'
-    const readOnlyRejected = await request(baseUrl)
+    const completeMutation = structuredClone(jammerSavedDraft.config)
+    completeMutation.sensors[0]!.detectionRange = 120000
+    completeMutation.output.directory = './scene-output'
+    completeMutation.informationDemand[0]!.maxLatencyMs = 800
+    const completeExtensions = structuredClone(original.uiExtensions)
+    completeExtensions.sensors[0]!.probability = 0.8
+    const completeSaved = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: readOnlyMutation, uiExtensions: original.uiExtensions })
-      .expect(422)
-    expect(readOnlyRejected.body).toMatchObject({
-      ok: false,
-      error: { code: 'VALIDATION_FAILED', fieldPath: 'output' },
+      .send({ config: completeMutation, uiExtensions: completeExtensions })
+      .expect(200)
+    expect((completeSaved.body as { data: ScenarioDraft }).data).toMatchObject({
+      revision: 9,
+      config: {
+        sensors: [{ detectionRange: 120000 }],
+        output: { directory: './scene-output' },
+        informationDemand: [{ maxLatencyMs: 800 }],
+      },
+      uiExtensions: { sensors: [{ probability: 0.8 }] },
     })
 
     await request(baseUrl)
@@ -526,6 +539,142 @@ describe('P0 deterministic mock server', () => {
       revision: 4,
       config: { scenario: { name: '跨海通联演示', environment: { humidityPercent: 80 } } },
     })
+  })
+
+  it('原子导入完整场景快照并支持场景级撤销和重置', async () => {
+    const { baseUrl } = await startServer()
+    const load = (scenarioId = 'SCN-001') => request(baseUrl)
+      .get(`/api/v1/scenarios/${scenarioId}`)
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+    const original = ((await load().expect(200)).body as { data: ScenarioDraft }).data
+    const importedConfig = structuredClone(original.config)
+    importedConfig.scenario.id = 'SCN-IMPORT'
+    importedConfig.scenario.name = '导入快照场景'
+
+    const importedResponse = await request(baseUrl)
+      .post('/api/v1/scenarios/import')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ items: [importedConfig] })
+      .expect(200)
+    const imported = (importedResponse.body as { data: { imported: number; rejected: number; drafts: ScenarioDraft[] } }).data
+    expect(imported).toMatchObject({ imported: 1, rejected: 0, drafts: [{ config: { scenario: { id: 'SCN-IMPORT' } } }] })
+
+    const undone = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-IMPORT/undo')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ expectedRevision: imported.drafts[0]!.revision })
+      .expect(200)
+    const undoneDraft = (undone.body as { data: ScenarioDraft }).data
+    expect(undoneDraft.config.scenario.id).toBe('SCN-001')
+
+    const changed = structuredClone(undoneDraft.config)
+    changed.scenario.name = '待重置场景'
+    const saved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: changed, uiExtensions: undoneDraft.uiExtensions })
+      .expect(200)
+    const savedDraft = (saved.body as { data: ScenarioDraft }).data
+    const reset = await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/reset')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ expectedRevision: savedDraft.revision })
+      .expect(200)
+    expect((reset.body as { data: ScenarioDraft }).data.config.scenario.name).toBe(original.config.scenario.name)
+
+    const invalidConfig = structuredClone(original.config)
+    invalidConfig.output.directory = ''
+    await request(baseUrl)
+      .post('/api/v1/scenarios/import')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ items: [importedConfig, invalidConfig] })
+      .expect(422)
+    expect(((await load().expect(200)).body as { data: ScenarioDraft }).data.config.scenario.id).toBe('SCN-001')
+  })
+
+  it('按 T-XQ-008 阻断错误、一次确认警告并执行脚本预检', async () => {
+    const { baseUrl } = await startServer()
+    const roleHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+
+    const blocked = await request(baseUrl)
+      .post('/api/v1/scripts/preview')
+      .set(roleHeaders)
+      .send({ scenarioId: 'SCN-001' })
+      .expect(428)
+    expect(blocked.body).toMatchObject({ ok: false, error: { code: 'CONFIRMATION_REQUIRED' } })
+
+    const awaitingResponse = await request(baseUrl)
+      .post('/api/v1/confirmations')
+      .set(roleHeaders)
+      .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' })
+      .expect(201)
+    const awaiting = (awaitingResponse.body as { data: ConfirmationContext }).data
+    await request(baseUrl)
+      .post(`/api/v1/confirmations/${awaiting.confirmationId}`)
+      .set(roleHeaders)
+      .send({ confirm: true })
+      .expect(200)
+
+    const previewResponse = await request(baseUrl)
+      .post('/api/v1/scripts/preview')
+      .set(roleHeaders)
+      .send({ scenarioId: 'SCN-001', warningConfirmationId: awaiting.confirmationId })
+      .expect(200)
+    const script = (previewResponse.body as { data: ScriptContract }).data
+    expect(script).toMatchObject({ target: 'AFSIM 2.9.0', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4' })
+    expect(script.preview).toContain(`output path=`)
+
+    const preflight = await request(baseUrl)
+      .post(`/api/v1/scripts/${script.scriptId}/preflight`)
+      .set(roleHeaders)
+      .send({ checksum: script.checksum })
+      .expect(200)
+    expect(preflight.body).toMatchObject({ ok: true, data: { valid: true, errors: [], warnings: [] } })
+    await request(baseUrl)
+      .post(`/api/v1/scripts/${script.scriptId}/preflight`)
+      .set(roleHeaders)
+      .send({ checksum: 'SHA256-WRONG' })
+      .expect(422)
+    await request(baseUrl)
+      .post('/api/v1/scripts/preview')
+      .set(roleHeaders)
+      .send({ scenarioId: 'SCN-001', warningConfirmationId: awaiting.confirmationId })
+      .expect(409)
+  })
+
+  it('拒绝场景快照和脚本端点的损坏请求、冲突及未知对象', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const original = ((await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body as { data: ScenarioDraft }).data
+
+    await request(baseUrl).post('/api/v1/scenarios/SCN-001/undo').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/scenarios/SCN-001/undo').set(headers).send({ expectedRevision: original.revision }).expect(409)
+    await request(baseUrl).post('/api/v1/scenarios/SCN-MISSING/undo').set(headers).send({ expectedRevision: 1 }).expect(404)
+    await request(baseUrl).post('/api/v1/scenarios/SCN-001/reset').set(headers).send({ expectedRevision: 0 }).expect(409)
+    await request(baseUrl).post('/api/v1/scenarios/SCN-MISSING/reset').set(headers).send({ expectedRevision: 1 }).expect(404)
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [] }).expect(422)
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [{ ...original.config, output: null }] }).expect(422)
+    const secondConfig = structuredClone(original.config)
+    secondConfig.scenario.id = 'SCN-SECOND'
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [original.config, secondConfig] }).expect(422)
+    await request(baseUrl).post('/api/v1/scripts/preview').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/scripts/preview').set(headers).send({ scenarioId: 'SCN-MISSING' }).expect(422)
+    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set(headers).send({ checksum: 'SHA256-MOCK-MISSING' }).expect(422)
+  })
+
+  it('拒绝未携带角色的场景撤销、脚本预览和预检', async () => {
+    const { baseUrl } = await startServer()
+    await request(baseUrl).post('/api/v1/scenarios/SCN-001/undo').set('Origin', ORIGIN).send({ expectedRevision: 4 }).expect(403)
+    await request(baseUrl).post('/api/v1/scripts/preview').set('Origin', ORIGIN).send({ scenarioId: 'SCN-001' }).expect(403)
+    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set('Origin', ORIGIN).send({ checksum: 'SHA256-MOCK-MISSING' }).expect(403)
   })
 
   it('返回完整场景校验结果且不修改草稿', async () => {
@@ -780,7 +929,7 @@ describe('P0 deterministic mock server', () => {
     expect((await load().expect(200)).body).toMatchObject({ data: saved })
   })
 
-  it('按 jammerId 原子保存扩展并拒绝不匹配、越界和只读传感器', async () => {
+  it('按设备 ID 原子保存界面扩展并拒绝不匹配和越界字段', async () => {
     const { baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
@@ -817,6 +966,7 @@ describe('P0 deterministic mock server', () => {
     changedExtensions.jammers.reverse()
     changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-SPOT-01-TX')!.direction = 360
     changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-WB-01-TX')!.enabled = false
+    changedExtensions.sensors[0]!.probability = 0.8
 
     const savedResponse = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
@@ -841,7 +991,7 @@ describe('P0 deterministic mock server', () => {
         },
       },
       {
-        fieldPath: 'uiExtensions.sensors',
+        fieldPath: 'uiExtensions.sensors[0]',
         uiExtensions: { ...changedExtensions, sensors: [{ sensorId: 'ESM-01' }] },
       },
     ]

@@ -4339,6 +4339,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'items': {
           '$ref': '#/components/schemas/ScenarioConfig'
         },
+        'maxItems': 1,
         'minItems': 1,
         'type': 'array'
       }

@@ -16,6 +16,7 @@ interface MockProjectionInstance {
 interface ScenarioProjectionInstance {
   copyTemplate(config: DeterministicFixtureSet['scenario'], name: string): unknown
   get(scenarioId: string): unknown
+  importSnapshots(value: unknown): unknown
   validate(scenarioId: string, value: unknown): unknown
   save(scenarioId: string, value: unknown): unknown
 }
@@ -159,6 +160,7 @@ describe('fixture projection', () => {
     ;(scenario as unknown as { draft: ScenarioDraft }).draft.locked = true
     expect(scenario.validate('SCN-001', {})).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
     expect(scenario.save('SCN-001', {})).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
+    expect(scenario.importSnapshots({ items: [loadFixtureProjection().scenario] })).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
   })
 
   it('只读字段按深度语义比较，不受对象键顺序影响', () => {
@@ -207,7 +209,7 @@ describe('fixture projection', () => {
     })
   })
 
-  it('保存边界拒绝编号、只读规范字段和只读界面扩展变更', () => {
+  it('保存边界拒绝编号并完整持久化场景数据和界面扩展', () => {
     const scenario = new ScenarioProjection()
     const current = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
 
@@ -216,16 +218,27 @@ describe('fixture projection', () => {
     expect(scenario.save('SCN-001', { config: mismatched.config, uiExtensions: mismatched.uiExtensions }))
       .toMatchObject({ ok: false, fieldPath: 'scenario.id' })
 
-    for (const field of ['sensors', 'output', 'informationDemand'] as const) {
-      const changed = structuredClone(current.data)
-      if (field === 'sensors') changed.config.sensors[0]!.detectionRange += 1
-      if (field === 'output') changed.config.output.directory = './changed'
-      if (field === 'informationDemand') changed.config.informationDemand = []
-      expect(scenario.save('SCN-001', { config: changed.config, uiExtensions: changed.uiExtensions }))
-        .toMatchObject({ ok: false, fieldPath: field })
-    }
+    const changed = structuredClone(current.data)
+    changed.config.sensors[0]!.detectionRange += 1
+    changed.config.output.directory = './changed'
+    changed.config.informationDemand[0]!.maxLatencyMs += 1
+    changed.uiExtensions.sensors[0]!.probability = 0.8
+    expect(scenario.save('SCN-001', { config: changed.config, uiExtensions: changed.uiExtensions }))
+      .toMatchObject({ ok: true })
+    expect(scenario.get('SCN-001')).toMatchObject({
+      ok: true,
+      data: {
+        config: { sensors: [{ detectionRange: changed.config.sensors[0]!.detectionRange }], output: { directory: './changed' }, informationDemand: [{ maxLatencyMs: changed.config.informationDemand[0]!.maxLatencyMs }] },
+        uiExtensions: { sensors: [{ probability: 0.8 }] },
+      },
+    })
 
-    const changedExtensions = structuredClone(current.data)
+    const invalidDemand = structuredClone(changed)
+    invalidDemand.config.informationDemand = []
+    expect(scenario.save('SCN-001', { config: invalidDemand.config, uiExtensions: invalidDemand.uiExtensions }))
+      .toMatchObject({ ok: false, fieldPath: 'informationDemand' })
+
+    const changedExtensions = structuredClone(changed)
     changedExtensions.uiExtensions.sensors.push({
       sensorId: 'ESM-01',
       type: 'ESM',

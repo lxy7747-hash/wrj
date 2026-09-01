@@ -1,14 +1,16 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ValidationResult } from '../../src/contracts/domain-models'
+import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import ScenariosPage from '../../src/pages/scenarios.vue'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
+
+enableAutoUnmount(afterEach)
 
 const OPERATOR: Principal = {
   userId: 'USR-OPERATOR',
@@ -39,7 +41,7 @@ function draft(revision = 4): ScenarioDraft {
         { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
         { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
       ],
-      sensors: [],
+      sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },
     revision,
     officialLibraryChanged: false,
@@ -119,6 +121,102 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.revision).toBe(5)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')
+  })
+
+  it('编辑完整数据域并进入场景快照和脚本操作', { timeout: 15_000 }, async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    const script: ScriptContract = {
+      scriptId: 'SCRIPT-P2-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0' as const, checksum: 'SHA256-MOCK-12345678', preview: 'preview', generatedTime: META.generatedAt,
+    }
+    scenario.$patch({
+      draft: draft(), panelState: 'SUCCESS', script, scriptState: 'SUCCESS',
+      preflight: {
+        valid: false,
+        errors: [
+          { severity: 'ERROR', code: 'SCRIPT_VERSION_INVALID', message: '版本错误。', fieldPath: 'preview[2:3]' },
+          { severity: 'ERROR', code: 'CHECKSUM_INVALID', message: '校验和错误。', fieldPath: 'checksum' },
+        ],
+        warnings: [],
+      },
+    })
+    const preflightSpy = vi.spyOn(scenario, 'preflightScript').mockResolvedValue(true)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-data').trigger('click')
+    await nextTick()
+
+    const component = (name: string, testId: string) => wrapper.findAllComponents({ name })
+      .find((item) => item.attributes('data-testid') === testId)!
+    component('ElSelect', 'sensor-platform-0').vm.$emit('change', 'UAV-01')
+    component('ElInputNumber', 'sensor-frequency-min-0').vm.$emit('update:modelValue', 1200)
+    component('ElInputNumber', 'sensor-frequency-max-0').vm.$emit('update:modelValue', 6200)
+    component('ElInputNumber', 'sensor-range-0').vm.$emit('update:modelValue', 120000)
+    component('ElSelect', 'sensor-direction-0').vm.$emit('change', 90)
+    component('ElInputNumber', 'sensor-probability-0').vm.$emit('update:modelValue', 0.8)
+    component('ElSwitch', 'sensor-enabled-0').vm.$emit('change', false)
+    await wrapper.get('[data-testid="add-sensor"]').trigger('click')
+    await nextTick()
+    await wrapper.get('[data-testid="delete-sensor-1"]').trigger('click')
+
+    await wrapper.get('[data-testid="output-directory"]').setValue('./edited-output')
+    component('ElInputNumber', 'output-write-interval').vm.$emit('update:modelValue', 2)
+    for (const testId of ['output-link-quality', 'output-events', 'output-link-switch']) {
+      component('ElSwitch', testId).vm.$emit('change', false)
+    }
+    const demandTable = wrapper.get('[data-testid="information-demand-table"]')
+    for (const [index, select] of demandTable.findAllComponents({ name: 'ElSelect' }).entries()) {
+      select.vm.$emit('change', index === 1 ? ['UAV-01'] : index === 2 ? 'HIGH' : 'CMD-01')
+    }
+    for (const [index, input] of demandTable.findAllComponents({ name: 'ElInputNumber' }).entries()) {
+      input.vm.$emit('update:modelValue', index + 1)
+    }
+    demandTable.findAllComponents({ name: 'ElInput' })[0]?.vm.$emit('update:modelValue', '指挥信息')
+    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
+    await nextTick()
+    await wrapper.get('[data-testid="delete-information-demand-1"]').trigger('click')
+    expect(scenario.dirty).toBe(true)
+
+    scenario.dirty = false
+    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(scenario.draft!.config) } as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(true as never)
+    const importSpy = vi.spyOn(scenario, 'importScenarioSnapshot').mockResolvedValue(true)
+    const undoSpy = vi.spyOn(scenario, 'undoScenario').mockResolvedValue(true)
+    const resetSpy = vi.spyOn(scenario, 'resetScenario').mockResolvedValue(true)
+    await wrapper.get('#tab-operations').trigger('click')
+    await wrapper.get('[data-testid="import-scenario-snapshot"]').trigger('click')
+    await wrapper.get('[data-testid="undo-scenario"]').trigger('click')
+    await wrapper.get('[data-testid="reset-scenario"]').trigger('click')
+    await flushPromises()
+    expect(promptSpy).toHaveBeenCalled()
+    expect(importSpy).toHaveBeenCalledOnce()
+    expect(undoSpy).toHaveBeenCalledOnce()
+    expect(resetSpy).toHaveBeenCalledOnce()
+
+    scenario.scriptResultCode = 'CONFIRMATION_REQUIRED'
+    scenario.scriptResultMessage = '存在警告。'
+    scenario.script = script
+    scenario.scriptState = 'SUCCESS'
+    scenario.preflight = {
+      valid: false,
+      errors: [
+        { severity: 'ERROR', code: 'SCRIPT_VERSION_INVALID', message: '版本错误。', fieldPath: 'preview[2:3]' },
+        { severity: 'ERROR', code: 'CHECKSUM_INVALID', message: '校验和错误。', fieldPath: 'checksum' },
+      ],
+      warnings: [],
+    }
+    const generateSpy = vi.spyOn(scenario, 'generateScriptPreview').mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    await wrapper.get('#tab-script').trigger('click')
+    await wrapper.get('[data-testid="generate-script"]').trigger('click')
+    await wrapper.get('[data-testid="preflight-script"]').trigger('click')
+    await flushPromises()
+    expect(generateSpy).toHaveBeenNthCalledWith(2, true)
+    expect(preflightSpy).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('2:3')
+    expect(wrapper.text()).toContain('—')
   })
 
   it.each([
@@ -285,7 +383,7 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     startTimePicker.vm.$emit('update:modelValue', '2026-08-07T09:30')
     await nextTick()
-    const numericInputs = wrapper.findAll('input[type="number"]')
+    const numericInputs = wrapper.get('#pane-scenario').findAll('input[type="number"]')
     const values = ['7201', '2', '4', '27', '75', '10', '0.08']
     expect(numericInputs).toHaveLength(values.length)
     for (const [index, value] of values.entries()) {
@@ -681,11 +779,10 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
     await flushPromises()
-    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
-    expect(selects).toHaveLength(3)
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' }).filter((select) => String(select.attributes('data-testid') ?? '').startsWith('platform-'))
+    expect(selects).toHaveLength(2)
     selects[0]!.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
     selects[1]!.vm.$emit('update:modelValue', 'ground')
-    selects[2]!.vm.$emit('update:modelValue', [])
     const dialogNumbers = wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(-3)
     dialogNumbers[0]!.vm.$emit('update:modelValue', 119)
     dialogNumbers[1]!.vm.$emit('update:modelValue', 24)

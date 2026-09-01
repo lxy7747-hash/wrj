@@ -1,9 +1,13 @@
 import type {
+  InformationDemand,
   Jammer,
   JammerUiExtension,
   Link,
+  OutputConfig,
   Platform,
   ScenarioIdentity,
+  Sensor,
+  SensorUiExtension,
   ValidationIssue,
   ValidationResult,
 } from '../../contracts/domain-models'
@@ -30,8 +34,13 @@ const ENVIRONMENT_KEYS = [
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange'] as const
+const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
+const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
+const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
+const INFORMATION_DEMAND_KEYS = ['id', 'sourcePlatformId', 'destinationPlatformIds', 'informationType', 'volumeMb', 'frequencyHz', 'priority', 'maxLatencyMs', 'minDataRateMbps'] as const
 const UI_EXTENSION_KEYS = ['jammers', 'sensors'] as const
 const JAMMER_UI_EXTENSION_KEYS = ['jammerId', 'direction', 'duration', 'enabled'] as const
+const SENSOR_UI_EXTENSION_KEYS = ['sensorId', 'type', 'direction', 'probability', 'enabled'] as const
 const ANTENNA_GAIN_KEYS = ['tx', 'rx'] as const
 const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
 const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
@@ -57,11 +66,15 @@ export interface ScenarioInspection {
   platforms?: Platform[]
   links?: Link[]
   jammers?: Jammer[]
+  sensors?: Sensor[]
+  output?: OutputConfig
+  informationDemand?: InformationDemand[]
 }
 
 export interface ScenarioUiExtensionsInspection {
   result: ValidationResult
   jammers?: JammerUiExtension[]
+  sensors?: SensorUiExtension[]
 }
 
 /**
@@ -142,7 +155,7 @@ export function isBusinessInformationNodeType(type: unknown): boolean {
  * 读取集合中可用于引用校验的字符串 ID。
  * @param value 待读取的配置集合。
  * @returns 集合内合法字符串 ID 的集合。
- * @remarks 忽略形状错误的条目，相关只读集合仍由服务端变更边界拒绝。
+ * @remarks 忽略形状错误的条目；各集合自身的完整校验负责报告具体字段错误。
  */
 function collectIds(value: unknown): Set<string> {
   if (!Array.isArray(value)) return new Set()
@@ -273,8 +286,77 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '检测范围不能小于 0 m。', `${path}.detectionRange`)
 }
 
-/** 校验干扰设备 UI 扩展与规范干扰设备 ID 的一一对应关系。 */
-export function inspectScenarioUiExtensions(value: unknown, jammerIds: readonly string[]): ScenarioUiExtensionsInspection {
+/** 校验一台传感器的规范参数和归属平台。 */
+function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+  const path = `sensors[${index}]`
+  if (!isClosedObject(value, SENSOR_KEYS)) {
+    addError(errors, 'SENSOR_SHAPE_INVALID', '传感器结构不正确。', path)
+    return
+  }
+  if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'SENSOR_ID_INVALID', '传感器 ID 为必填项。', `${path}.id`)
+  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'SENSOR_PLATFORM_INVALID', '传感器必须归属于当前场景实体。', `${path}.platformId`)
+  if (!isClosedObject(value.frequencyRange, FREQUENCY_RANGE_KEYS)) {
+    addError(errors, 'SENSOR_FREQUENCY_RANGE_INVALID', '传感器频率范围结构不正确。', `${path}.frequencyRange`)
+  } else {
+    const minimum = value.frequencyRange.min
+    const maximum = value.frequencyRange.max
+    const minimumValid = isPositiveFiniteNumber(minimum)
+    const maximumValid = isPositiveFiniteNumber(maximum)
+    if (!minimumValid) addError(errors, 'SENSOR_FREQUENCY_MIN_INVALID', '最低频率必须大于 0 MHz。', `${path}.frequencyRange.min`)
+    if (!maximumValid) addError(errors, 'SENSOR_FREQUENCY_MAX_INVALID', '最高频率必须大于 0 MHz。', `${path}.frequencyRange.max`)
+    if (minimumValid && maximumValid && maximum < minimum) {
+      addError(errors, 'SENSOR_FREQUENCY_RANGE_REVERSED', '最高频率不能小于最低频率。', `${path}.frequencyRange.max`)
+    }
+  }
+  if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'SENSOR_RANGE_INVALID', '侦测距离不能小于 0 m。', `${path}.detectionRange`)
+}
+
+/** 校验输出目录合同、写入间隔和三个输出开关。 */
+function inspectOutput(value: unknown, timeStep: unknown, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, OUTPUT_KEYS)) {
+    addError(errors, 'OUTPUT_SHAPE_INVALID', '输出配置结构不正确。', 'output')
+    return
+  }
+  if (typeof value.directory !== 'string' || value.directory.trim() === '') addError(errors, 'OUTPUT_DIRECTORY_INVALID', '输出目录合同不能为空。', 'output.directory')
+  if (!isPositiveFiniteNumber(value.writeInterval)) {
+    addError(errors, 'OUTPUT_INTERVAL_INVALID', '输出写入间隔必须大于 0 秒。', 'output.writeInterval')
+  } else if (isPositiveFiniteNumber(timeStep) && value.writeInterval < timeStep) {
+    addError(errors, 'OUTPUT_INTERVAL_BELOW_TIME_STEP', '输出写入间隔不能小于场景时间步长。', 'output.writeInterval')
+  }
+  if (typeof value.linkQualityEnabled !== 'boolean') addError(errors, 'OUTPUT_LINK_QUALITY_INVALID', '链路质量输出开关格式不正确。', 'output.linkQualityEnabled')
+  if (typeof value.eventsEnabled !== 'boolean') addError(errors, 'OUTPUT_EVENTS_INVALID', '事件输出开关格式不正确。', 'output.eventsEnabled')
+  if (typeof value.linkSwitchEnabled !== 'boolean') addError(errors, 'OUTPUT_LINK_SWITCH_INVALID', '链路切换输出开关格式不正确。', 'output.linkSwitchEnabled')
+}
+
+/** 校验一项信息需求的引用、数量、优先级和性能约束。 */
+function inspectInformationDemand(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+  const path = `informationDemand[${index}]`
+  if (!isClosedObject(value, INFORMATION_DEMAND_KEYS)) {
+    addError(errors, 'INFORMATION_DEMAND_SHAPE_INVALID', '信息需求结构不正确。', path)
+    return
+  }
+  if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'INFORMATION_DEMAND_ID_INVALID', '信息需求 ID 为必填项。', `${path}.id`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
+  if (!Array.isArray(value.destinationPlatformIds) || value.destinationPlatformIds.length === 0
+    || value.destinationPlatformIds.some((id) => typeof id !== 'string' || !platformIds.has(id))) {
+    addError(errors, 'INFORMATION_DEMAND_DESTINATION_INVALID', '信息需求至少需要一个有效目标平台。', `${path}.destinationPlatformIds`)
+  } else if (new Set(value.destinationPlatformIds).size !== value.destinationPlatformIds.length) {
+    addError(errors, 'INFORMATION_DEMAND_DESTINATION_DUPLICATED', '信息需求目标平台不允许重复。', `${path}.destinationPlatformIds`)
+  }
+  if (typeof value.informationType !== 'string') addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', '信息类型格式不正确。', `${path}.informationType`)
+  if (!isFiniteNumber(value.volumeMb, 0)) addError(errors, 'INFORMATION_DEMAND_VOLUME_INVALID', '数据量不能小于 0 MB。', `${path}.volumeMb`)
+  if (!isFiniteNumber(value.frequencyHz, 0)) addError(errors, 'INFORMATION_DEMAND_FREQUENCY_INVALID', '发送频率不能小于 0 Hz。', `${path}.frequencyHz`)
+  if (value.priority !== 'HIGH' && value.priority !== 'NORMAL') addError(errors, 'INFORMATION_DEMAND_PRIORITY_INVALID', '信息需求优先级不正确。', `${path}.priority`)
+  if (!isFiniteNumber(value.maxLatencyMs, 0)) addError(errors, 'INFORMATION_DEMAND_LATENCY_INVALID', '最大时延不能小于 0 ms。', `${path}.maxLatencyMs`)
+  if (!isFiniteNumber(value.minDataRateMbps, 0)) addError(errors, 'INFORMATION_DEMAND_RATE_INVALID', '最低速率不能小于 0 Mbps。', `${path}.minDataRateMbps`)
+}
+
+/** 校验干扰设备和传感器 UI 扩展与规范对象 ID 的一一对应关系。 */
+export function inspectScenarioUiExtensions(
+  value: unknown,
+  jammerIds: readonly string[],
+  sensorIds: readonly string[] = [],
+): ScenarioUiExtensionsInspection {
   const errors: ValidationIssue[] = []
   if (!isClosedObject(value, UI_EXTENSION_KEYS) || !Array.isArray(value.jammers) || !Array.isArray(value.sensors)) {
     addError(errors, 'UI_EXTENSIONS_SHAPE_INVALID', '场景界面扩展结构不正确。', 'uiExtensions')
@@ -304,8 +386,34 @@ export function inspectScenarioUiExtensions(value: unknown, jammerIds: readonly 
     addError(errors, 'JAMMER_UI_EXTENSION_IDS_MISMATCH', '干扰设备与界面扩展必须按 ID 一一对应。', 'uiExtensions.jammers')
   }
 
+  value.sensors.forEach((extension, index) => {
+    const path = `uiExtensions.sensors[${index}]`
+    if (!isClosedObject(extension, SENSOR_UI_EXTENSION_KEYS)) {
+      addError(errors, 'SENSOR_UI_EXTENSION_SHAPE_INVALID', '传感器界面扩展结构不正确。', path)
+      return
+    }
+    if (typeof extension.sensorId !== 'string' || extension.sensorId.trim() === '') addError(errors, 'SENSOR_UI_EXTENSION_ID_INVALID', '传感器扩展 ID 为必填项。', `${path}.sensorId`)
+    if (extension.type !== 'ESM') addError(errors, 'SENSOR_UI_EXTENSION_TYPE_INVALID', '传感器扩展类型必须为 ESM。', `${path}.type`)
+    if (extension.direction !== 'OMNI' && !isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'SENSOR_UI_EXTENSION_DIRECTION_INVALID', '传感器方向必须为全向或 0 至 360 度。', `${path}.direction`)
+    if (!isFiniteNumber(extension.probability, 0, 1)) addError(errors, 'SENSOR_UI_EXTENSION_PROBABILITY_INVALID', '传感器侦测概率必须在 0 至 1 之间。', `${path}.probability`)
+    if (typeof extension.enabled !== 'boolean') addError(errors, 'SENSOR_UI_EXTENSION_ENABLED_INVALID', '传感器启用开关格式不正确。', `${path}.enabled`)
+  })
+
+  const sensorExtensionIds = value.sensors.flatMap((extension) => (
+    typeof extension === 'object' && extension !== null && typeof extension.sensorId === 'string'
+      ? [extension.sensorId]
+      : []
+  ))
+  if (new Set(sensorExtensionIds).size !== sensorExtensionIds.length) addError(errors, 'SENSOR_UI_EXTENSION_ID_DUPLICATED', '传感器扩展 ID 不允许重复。', 'uiExtensions.sensors')
+  const canonicalSensorIds = new Set(sensorIds)
+  if (sensorExtensionIds.length !== sensorIds.length || sensorExtensionIds.some((id) => !canonicalSensorIds.has(id))) {
+    addError(errors, 'SENSOR_UI_EXTENSION_IDS_MISMATCH', '传感器与界面扩展必须按 ID 一一对应。', 'uiExtensions.sensors')
+  }
+
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings: [] }
-  return result.valid ? { result, jammers: value.jammers as JammerUiExtension[] } : { result }
+  return result.valid
+    ? { result, jammers: value.jammers as JammerUiExtension[], sensors: value.sensors as SensorUiExtension[] }
+    : { result }
 }
 
 /**
@@ -341,10 +449,10 @@ function inspectPlatformReferences(
 }
 
 /**
- * 校验场景基础信息、环境、时序、平台、航点、链路和干扰设备，并读取安全配置对象。
+ * 校验场景配置 1.0 的全部规范字段，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
- * @remarks 只覆盖 P2-4 已开放字段及完整配置外壳，不修改原始配置。
+ * @remarks 覆盖平台、链路、干扰器、传感器、输出和信息需求，不修改原始配置。
  */
 export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   const errors: ValidationIssue[] = []
@@ -472,6 +580,22 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors))
   }
 
+  if (Array.isArray(value.sensors)) {
+    const sensorIds = collectIds(value.sensors)
+    const platformIds = collectIds(value.platforms)
+    if (sensorIds.size !== value.sensors.length) addError(errors, 'SENSOR_ID_DUPLICATED', '传感器 ID 不允许为空或重复。', 'sensors')
+    value.sensors.forEach((sensor, index) => inspectSensor(sensor, index, platformIds, errors))
+  }
+
+  inspectOutput(value.output, scenario.timeStep, errors)
+
+  if (Array.isArray(value.informationDemand)) {
+    const demandIds = collectIds(value.informationDemand)
+    const platformIds = collectIds(value.platforms)
+    if (demandIds.size !== value.informationDemand.length) addError(errors, 'INFORMATION_DEMAND_ID_DUPLICATED', '信息需求 ID 不允许为空或重复。', 'informationDemand')
+    value.informationDemand.forEach((demand, index) => inspectInformationDemand(demand, index, platformIds, errors))
+  }
+
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings }
   if (!result.valid) return { result }
 
@@ -480,6 +604,9 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
     platforms: value.platforms as Platform[],
     links: value.links as Link[],
     jammers: value.jammers as Jammer[],
+    sensors: value.sensors as Sensor[],
+    output: value.output as OutputConfig,
+    informationDemand: value.informationDemand as InformationDemand[],
     identity: {
       id: scenario.id as ScenarioIdentity['id'],
       name: scenario.name as string,

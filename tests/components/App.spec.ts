@@ -37,7 +37,7 @@ function scenarioDraft(): ScenarioDraft {
         { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
         { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
       ],
-      sensors: [],
+      sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },
     revision: 4,
     officialLibraryChanged: false,

@@ -301,7 +301,7 @@ test.describe('P2-1 scenario business loop', () => {
           startTime: '2026-08-07T01:30:00Z',
         },
       },
-      uiExtensions: { jammers: expect.any(Array), sensors: [] },
+      uiExtensions: { jammers: expect.any(Array), sensors: expect.any(Array) },
     })
 
     const reloaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -806,6 +806,164 @@ test('P2-6 template roles complete the seven actions and preserve referenced tem
   await expect(page.getByTestId('template-feedback')).toContainText('E2E 操作员副本')
 
   expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P2-7 OPERATOR persists full data parameters and completes import, undo, and reset', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+  const baseline = await loadScenarioDraft(request)
+
+  await loginAs(page, 'operator')
+  const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await loaded).status()).toBe(200)
+  await page.getByRole('tab', { name: '传感器与输出' }).click()
+
+  await page.getByTestId('sensor-frequency-min-0').locator('input').fill('2100')
+  await page.getByTestId('sensor-frequency-max-0').locator('input').fill('5200')
+  await page.getByTestId('sensor-range-0').locator('input').fill('160000')
+  await page.getByTestId('sensor-direction-0').click()
+  await page.getByRole('option', { name: '90°', exact: true }).click()
+  await page.getByTestId('sensor-probability-0').locator('input').fill('0.88')
+  await page.getByTestId('sensor-enabled-0').click()
+  await page.getByTestId('output-directory').fill('./tasks/TASK-001/e2e-full')
+  await page.getByTestId('output-write-interval').locator('input').fill('2')
+  await page.getByTestId('output-events').click()
+  await page.getByTestId('demand-type-0').fill('E2E_COMMAND')
+  await page.getByTestId('demand-volume-0').locator('input').fill('3')
+  await page.getByTestId('demand-frequency-0').locator('input').fill('2')
+  await page.getByTestId('demand-priority-0').click()
+  await page.getByRole('option', { name: '普通', exact: true }).click()
+  await page.getByTestId('demand-latency-0').locator('input').fill('250')
+  await page.getByTestId('demand-rate-0').locator('input').fill('6')
+
+  const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByTestId('save-scenario').click()
+  expect((await savedResponse).status()).toBe(200)
+
+  const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.reload()
+  expect((await reloadedResponse).status()).toBe(200)
+  await page.getByRole('tab', { name: '传感器与输出' }).click()
+  await expect(page.getByTestId('sensor-frequency-min-0').locator('input')).toHaveValue('2100')
+  await expect(page.getByTestId('sensor-direction-0')).toContainText('90°')
+  await expect(page.getByTestId('output-directory')).toHaveValue('./tasks/TASK-001/e2e-full')
+  await expect(page.getByTestId('output-write-interval').locator('input')).toHaveValue('2')
+  await expect(page.getByTestId('demand-type-0')).toHaveValue('E2E_COMMAND')
+  await expect(page.getByTestId('demand-priority-0')).toContainText('普通')
+
+  const persisted = await loadScenarioDraft(request)
+  expect(persisted.config.sensors[0]).toMatchObject({ frequencyRange: { min: 2100, max: 5200 }, detectionRange: 160000 })
+  expect(persisted.uiExtensions.sensors[0]).toMatchObject({ direction: 90, probability: 0.88, enabled: false })
+  expect(persisted.config.output).toEqual({
+    directory: './tasks/TASK-001/e2e-full',
+    writeInterval: 2,
+    linkQualityEnabled: true,
+    eventsEnabled: false,
+    linkSwitchEnabled: true,
+  })
+  expect(persisted.config.informationDemand[0]).toMatchObject({
+    informationType: 'E2E_COMMAND', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
+  })
+
+  await page.getByRole('tab', { name: '场景操作' }).click()
+  const importedConfig = structuredClone(persisted.config)
+  importedConfig.output.directory = './tasks/TASK-001/e2e-import'
+  await page.getByTestId('import-scenario-snapshot').click()
+  const messageBox = page.locator('.el-message-box')
+  await messageBox.locator('textarea').fill(JSON.stringify(importedConfig))
+  const importedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/scenarios/import')
+  await messageBox.getByRole('button', { name: '导入场景', exact: true }).click()
+  expect((await importedResponse).status()).toBe(200)
+  await expect(page.getByTestId('scenario-json-preview')).toContainText('./tasks/TASK-001/e2e-import')
+
+  await page.getByTestId('undo-scenario').click()
+  const undoneResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${SCENARIO_PATH}/undo`)
+  await page.locator('.el-message-box').getByRole('button', { name: '撤销', exact: true }).click()
+  expect((await undoneResponse).status()).toBe(200)
+  await expect(page.getByTestId('scenario-json-preview')).toContainText('./tasks/TASK-001/e2e-full')
+
+  await page.getByTestId('reset-scenario').click()
+  const resetResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${SCENARIO_PATH}/reset`)
+  await page.locator('.el-message-box').getByRole('button', { name: '重置场景', exact: true }).click()
+  expect((await resetResponse).status()).toBe(200)
+  await expect(page.getByTestId('scenario-json-preview')).toContainText(baseline.config.output.directory)
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates preflight issues', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+  await loginAs(page, 'operator')
+  const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await loaded).status()).toBe(200)
+
+  await page.getByTestId('scenario-time-step').locator('input').fill('6')
+  await page.getByTestId('save-scenario').click()
+  await page.getByRole('tab', { name: '传感器与输出' }).click()
+  await expect(page.getByLabel('输出参数').getByText('输出写入间隔不能小于场景时间步长。', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: '脚本预览' }).click()
+  await expect(page.getByTestId('generate-script')).toBeDisabled()
+
+  const restored = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.reload()
+  expect((await restored).status()).toBe(200)
+  await page.getByRole('tab', { name: '脚本预览' }).click()
+
+  const confirmationRequired = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/scripts/preview'
+    && response.status() === 428)
+  await page.getByTestId('generate-script').click()
+  expect((await confirmationRequired).status()).toBe(428)
+  const messageBox = page.locator('.el-message-box')
+  await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
+
+  const previewReady = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/scripts/preview'
+    && response.status() === 200)
+  await messageBox.getByRole('button', { name: '本次继续', exact: true }).click()
+  expect((await previewReady).status()).toBe(200)
+  await expect(page.getByTestId('script-preview')).toContainText('# AFSIM 2.9.0 场景脚本预览；仅内存生成')
+
+  let upstreamPreflightPassed = false
+  await page.route('**/api/v1/scripts/*/preflight', async (route) => {
+    const response = await route.fetch()
+    const payload = await response.json() as ApiSuccess<{ valid: boolean; errors: unknown[]; warnings: unknown[] }>
+    upstreamPreflightPassed = response.status() === 200 && payload.data.valid
+    await route.fulfill({
+      response,
+      json: {
+        ...payload,
+        data: {
+          valid: false,
+          errors: [{ severity: 'ERROR', code: 'SCRIPT_VERSION_INVALID', message: '第 2 行，第 1 列：版本错误。', fieldPath: 'preview[2:1]' }],
+          warnings: [],
+        },
+      },
+    })
+  })
+  await page.getByTestId('preflight-script').click()
+  await expect(page.getByTestId('preflight-issues')).toContainText('SCRIPT_VERSION_INVALID')
+  await expect(page.getByTestId('preflight-issues')).toContainText('2:1')
+  expect(upstreamPreflightPassed).toBe(true)
+
+  expect(audit.errors).toEqual([
+    'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
+  ])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })

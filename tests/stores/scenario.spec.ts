@@ -12,6 +12,7 @@ import type {
   ScenarioConfig,
   ScenarioDraft,
   ScenarioTemplate,
+  ScriptContract,
   ValidationResult,
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
@@ -47,7 +48,7 @@ function scenarioDraft(revision = 4): ScenarioDraft {
         { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
         { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
       ],
-      sensors: [],
+      sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },
     revision,
     officialLibraryChanged: false,
@@ -172,7 +173,7 @@ describe('P2-1 场景 Store', () => {
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('PERMISSION_DENIED')
 
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('EMPTY')
 
@@ -202,7 +203,7 @@ describe('P2-1 场景 Store', () => {
       .mockRejectedValueOnce(new Error('offline'))
     vi.stubGlobal('fetch', fetchSpy)
     const auth = useAuthStore()
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const scenario = useScenarioStore()
     scenario.draft = scenarioDraft()
 
@@ -709,6 +710,253 @@ describe('P2-6 场景模板 Store', () => {
   })
 })
 
+describe('P2-7/P2-8 场景快照与脚本 Store', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    sessionStorage.clear()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+    sessionStorage.clear()
+  })
+
+  it('导入完整场景快照并依次撤销和重置', async () => {
+    const imported = scenarioDraft(5)
+    imported.config.scenario.name = '导入场景'
+    const undone = scenarioDraft(6)
+    const reset = scenarioDraft(7)
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success({ imported: 1, rejected: 0, drafts: [imported] })))
+      .mockResolvedValueOnce(jsonResponse(success(undone)))
+      .mockResolvedValueOnce(jsonResponse(success(reset)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+
+    await expect(scenario.importScenarioSnapshot(JSON.stringify(imported.config))).resolves.toBe(true)
+    expect(scenario.draft?.config.scenario.name).toBe('导入场景')
+    await expect(scenario.undoScenario()).resolves.toBe(true)
+    await expect(scenario.resetScenario()).resolves.toBe(true)
+    expect(scenario.draft?.revision).toBe(7)
+    expect(fetchSpy).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4173/api/v1/scenarios/import', expect.objectContaining({ method: 'POST' }))
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:4173/api/v1/scenarios/SCN-001/undo', expect.objectContaining({ body: JSON.stringify({ expectedRevision: 5 }) }))
+    expect(fetchSpy).toHaveBeenNthCalledWith(3, 'http://127.0.0.1:4173/api/v1/scenarios/SCN-001/reset', expect.objectContaining({ body: JSON.stringify({ expectedRevision: 6 }) }))
+  })
+
+  it('ERROR 阻断脚本，WARNING 一次确认后生成并预检', async () => {
+    const invalidDraft = scenarioDraft()
+    invalidDraft.config.output.directory = ''
+    const blocked = inspectScenarioConfig(invalidDraft.config).result
+    const warning = inspectScenarioConfig(scenarioDraft().config).result
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-SCRIPT', state: 'AWAITING_CONFIRMATION', actor: 'operator', role: 'OPERATOR',
+      createdAt: META.generatedAt, expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const script: ScriptContract = {
+      scriptId: 'SCRIPT-P2-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-12345678', preview: '# AFSIM 2.9.0 场景脚本预览；仅内存生成', generatedTime: META.generatedAt,
+    }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(blocked)))
+      .mockResolvedValueOnce(jsonResponse(success(warning)))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('场景存在校验警告，生成脚本前需要一次性确认。', undefined, 'CONFIRMATION_REQUIRED'), false))
+      .mockResolvedValueOnce(jsonResponse(success(warning)))
+      .mockResolvedValueOnce(jsonResponse(success(awaiting)))
+      .mockResolvedValueOnce(jsonResponse(success({ ...awaiting, state: 'CONFIRMED' })))
+      .mockResolvedValueOnce(jsonResponse(success(script)))
+      .mockResolvedValueOnce(jsonResponse(success({ valid: true, errors: [], warnings: [] })))
+    vi.stubGlobal('fetch', fetchSpy)
+    const auth = useAuthStore()
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = invalidDraft
+
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('VALIDATION_FAILED')
+    expect(scenario.script).toBeNull()
+    scenario.draft = scenarioDraft()
+
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('CONFIRMATION_REQUIRED')
+    await expect(scenario.generateScriptPreview(true)).resolves.toBe(true)
+    expect(scenario.script).toEqual(script)
+    expect(scenario.lastConfirmation?.state).toBe('CLOSED')
+    await expect(scenario.preflightScript()).resolves.toBe(true)
+    expect(scenario.scriptResultCode).toBe('PREFLIGHT_SUCCESS')
+
+    scenario.markDirty()
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('UNSAVED_CHANGES')
+    expect(fetchSpy).toHaveBeenCalledTimes(8)
+  })
+
+  it('拒绝损坏快照响应、非法文本和越权场景操作', async () => {
+    const auth = useAuthStore()
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+    await expect(scenario.importScenarioSnapshot('{')).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('VALIDATION_FAILED')
+    await expect(scenario.importScenarioSnapshot(JSON.stringify([scenario.draft.config]))).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('VALIDATION_FAILED')
+
+    const invalidResults = [
+      null,
+      [],
+      {},
+      { imported: 1, rejected: 0, drafts: [], extra: true },
+      { imported: 1.5, rejected: 0, drafts: [] },
+      { imported: 0, rejected: 0.5, drafts: [] },
+      { imported: 1, rejected: 0, drafts: null },
+      { imported: 1, rejected: 0, drafts: [] },
+      { imported: 0, rejected: 1, drafts: [] },
+      { imported: 1, rejected: 0, drafts: [{}] },
+      { imported: 0, rejected: 0, drafts: [] },
+    ]
+    const fetchSpy = vi.fn()
+    invalidResults.forEach((data) => fetchSpy.mockResolvedValueOnce(jsonResponse(success(data))))
+    fetchSpy.mockResolvedValueOnce(jsonResponse(apiFailure('导入冲突。', 'items', 'CONFLICT'), false))
+    vi.stubGlobal('fetch', fetchSpy)
+    for (const _data of invalidResults) {
+      await expect(scenario.importScenarioSnapshot(JSON.stringify(scenario.draft.config))).resolves.toBe(false)
+      expect(scenario.resultCode).toBe('INVALID_RESPONSE')
+    }
+    await expect(scenario.importScenarioSnapshot(JSON.stringify(scenario.draft.config))).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('CONFLICT')
+
+    scenario.draft = null
+    await expect(scenario.undoScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('NOT_FOUND')
+    scenario.draft = scenarioDraft()
+    auth.$patch({ principal: { ...OPERATOR, permissions: ['BUSINESS_READ'] }, permissions: ['BUSINESS_READ'] })
+    await expect(scenario.resetScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('PERMISSION_DENIED')
+  })
+
+  it('拒绝损坏脚本合同并展示预检失败和请求错误', async () => {
+    const auth = useAuthStore()
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    const config = scenarioDraft()
+    config.config.scenario.environment.rainLossDbPerKm = 0.08
+    scenario.draft = config
+    const cleanValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
+    const validScript: ScriptContract = {
+      scriptId: 'SCRIPT-P2-002', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-87654321', preview: 'preview', generatedTime: META.generatedAt,
+    }
+    const malformedScripts = [
+      null,
+      [],
+      {},
+      { ...validScript, extra: true },
+      { ...validScript, scriptId: '' },
+      { ...validScript, taskId: 1 },
+      { ...validScript, target: 'AFSIM 3.0' },
+    ]
+    for (const malformed of malformedScripts) {
+      auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce(jsonResponse(success(cleanValidation)))
+        .mockResolvedValueOnce(jsonResponse(success(malformed))))
+      await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+      expect(scenario.scriptResultCode).toBe('INVALID_RESPONSE')
+    }
+
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(cleanValidation)))
+      .mockResolvedValueOnce(jsonResponse(success(validScript))))
+    await expect(scenario.generateScriptPreview()).resolves.toBe(true)
+    expect(scenario.lastConfirmation).toBeNull()
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success({
+      valid: false,
+      errors: [{ severity: 'ERROR', code: 'SCRIPT_VERSION_INVALID', message: '第 2 行，第 1 列：版本错误。', fieldPath: 'preview[2:1]' }],
+      warnings: [],
+    }))))
+    await expect(scenario.preflightScript()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('PREFLIGHT_FAILED')
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(apiFailure('校验和不匹配。', 'checksum'), false)))
+    await expect(scenario.preflightScript()).resolves.toBe(false)
+    expect(scenario.scriptResultMessage).toBe('校验和不匹配。')
+    scenario.script = null
+    await expect(scenario.preflightScript()).resolves.toBe(false)
+  })
+
+  it('处理场景操作和脚本端点的失败分支', async () => {
+    const auth = useAuthStore()
+    auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    scenario.draft = scenarioDraft()
+    const imported = scenarioDraft(5)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success({ imported: 1, rejected: 0, drafts: [imported] }))))
+    await expect(scenario.importScenarioSnapshot(JSON.stringify(imported.config))).resolves.toBe(true)
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(apiFailure('修订冲突。', 'expectedRevision', 'CONFLICT'), false)))
+    await expect(scenario.undoScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('CONFLICT')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success(null))))
+    await expect(scenario.resetScenario()).resolves.toBe(false)
+    expect(scenario.resultCode).toBe('INVALID_RESPONSE')
+
+    scenario.draft = null
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('EMPTY')
+    scenario.draft = scenarioDraft()
+    auth.$patch({ principal: { ...OPERATOR, permissions: ['BUSINESS_READ'] }, permissions: ['BUSINESS_READ'] })
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('PERMISSION_DENIED')
+
+    auth.$patch({ principal: OPERATOR, permissions: [...OPERATOR.permissions] })
+    const warning = inspectScenarioConfig(scenario.draft.config).result
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(warning)))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('确认创建失败。', undefined, 'CONFLICT'), false)))
+    await expect(scenario.generateScriptPreview(true)).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('CONFLICT')
+
+    const cleanDraft = scenarioDraft()
+    cleanDraft.config.scenario.environment.rainLossDbPerKm = 0.08
+    scenario.draft = cleanDraft
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success({ valid: true, errors: [], warnings: [] })))
+      .mockResolvedValueOnce(jsonResponse(apiFailure('预览服务失败。', undefined, 'CONFLICT'), false)))
+    await expect(scenario.generateScriptPreview()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('CONFLICT')
+
+    scenario.script = {
+      scriptId: 'SCRIPT-P2-FAIL', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-FAIL', preview: 'preview', generatedTime: META.generatedAt,
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success(null))))
+    await expect(scenario.preflightScript()).resolves.toBe(false)
+    expect(scenario.scriptResultCode).toBe('INVALID_RESPONSE')
+  })
+
+  it('全局重置后丢弃在途脚本预检结果', async () => {
+    let resolveResponse!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>((resolve) => { resolveResponse = resolve })))
+    const scenario = useScenarioStore()
+    scenario.script = {
+      scriptId: 'SCRIPT-P2-PENDING', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-PENDING', preview: 'preview', generatedTime: META.generatedAt,
+    }
+
+    const pending = scenario.preflightScript()
+    scenario.resetToSafeEmpty()
+    resolveResponse(jsonResponse(success({ valid: true, errors: [], warnings: [] })))
+
+    await expect(pending).resolves.toBe(false)
+    expect(scenario.scriptState).toBe('EMPTY')
+    expect(scenario.script).toBeNull()
+  })
+})
+
 describe('P2-1 场景基础字段校验', () => {
   it('按原型规则返回可定位警告且不影响有效性', () => {
     const defaultResult = inspectScenarioConfig(scenarioDraft().config).result
@@ -768,6 +1016,66 @@ describe('P2-1 场景基础字段校验', () => {
     const inspected = inspectScenarioConfig(valid)
     expect(inspected.result.valid).toBe(true)
     expect(inspected.identity?.startTime).toBe(valid.scenario.startTime)
+  })
+})
+
+describe('P2-7 传感器、输出与信息需求字段校验', () => {
+  it('定位三个数据域的全部字段错误', () => {
+    const cases: Array<[string, (config: ScenarioConfig) => void]> = [
+      ['sensors[0]', (config) => { config.sensors[0] = null as never }],
+      ['sensors[0].id', (config) => { config.sensors[0]!.id = '' }],
+      ['sensors[0].platformId', (config) => { config.sensors[0]!.platformId = 'MISSING' }],
+      ['sensors[0].frequencyRange', (config) => { config.sensors[0]!.frequencyRange = null as never }],
+      ['sensors[0].frequencyRange.min', (config) => { config.sensors[0]!.frequencyRange.min = 0 }],
+      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange.max = 0 }],
+      ['sensors[0].frequencyRange.max', (config) => { config.sensors[0]!.frequencyRange = { min: 2, max: 1 } }],
+      ['sensors[0].detectionRange', (config) => { config.sensors[0]!.detectionRange = -1 }],
+      ['output', (config) => { config.output = null as never }],
+      ['output.directory', (config) => { config.output.directory = ' ' }],
+      ['output.writeInterval', (config) => { config.output.writeInterval = 0 }],
+      ['output.writeInterval', (config) => { config.output.writeInterval = config.scenario.timeStep / 2 }],
+      ['output.linkQualityEnabled', (config) => { config.output.linkQualityEnabled = 'yes' as never }],
+      ['output.eventsEnabled', (config) => { config.output.eventsEnabled = 'yes' as never }],
+      ['output.linkSwitchEnabled', (config) => { config.output.linkSwitchEnabled = 'yes' as never }],
+      ['informationDemand[0]', (config) => { config.informationDemand[0] = null as never }],
+      ['informationDemand[0].id', (config) => { config.informationDemand[0]!.id = '' }],
+      ['informationDemand[0].sourcePlatformId', (config) => { config.informationDemand[0]!.sourcePlatformId = 'MISSING' }],
+      ['informationDemand[0].destinationPlatformIds', (config) => { config.informationDemand[0]!.destinationPlatformIds = [] }],
+      ['informationDemand[0].destinationPlatformIds', (config) => { const id = config.platforms[0]!.id; config.informationDemand[0]!.destinationPlatformIds = [id, id] }],
+      ['informationDemand[0].informationType', (config) => { config.informationDemand[0]!.informationType = 1 as never }],
+      ['informationDemand[0].volumeMb', (config) => { config.informationDemand[0]!.volumeMb = -1 }],
+      ['informationDemand[0].frequencyHz', (config) => { config.informationDemand[0]!.frequencyHz = -1 }],
+      ['informationDemand[0].priority', (config) => { config.informationDemand[0]!.priority = 'LOW' as never }],
+      ['informationDemand[0].maxLatencyMs', (config) => { config.informationDemand[0]!.maxLatencyMs = -1 }],
+      ['informationDemand[0].minDataRateMbps', (config) => { config.informationDemand[0]!.minDataRateMbps = -1 }],
+    ]
+
+    for (const [fieldPath, mutate] of cases) {
+      const config = scenarioDraft().config
+      mutate(config)
+      expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
+  })
+
+  it('定位传感器界面扩展的闭合字段和一一对应错误', () => {
+    const { config, uiExtensions } = scenarioDraft()
+    const jammerIds = config.jammers.map((jammer) => jammer.id)
+    const sensorIds = config.sensors.map((sensor) => sensor.id)
+    const cases: Array<[string, unknown]> = [
+      ['uiExtensions.sensors[0]', [null]],
+      ['uiExtensions.sensors[0]', [{ ...uiExtensions.sensors[0], extra: true }]],
+      ['uiExtensions.sensors[0].sensorId', [{ ...uiExtensions.sensors[0], sensorId: '' }]],
+      ['uiExtensions.sensors[0].type', [{ ...uiExtensions.sensors[0], type: 'RADAR' }]],
+      ['uiExtensions.sensors[0].direction', [{ ...uiExtensions.sensors[0], direction: 361 }]],
+      ['uiExtensions.sensors[0].probability', [{ ...uiExtensions.sensors[0], probability: 2 }]],
+      ['uiExtensions.sensors[0].enabled', [{ ...uiExtensions.sensors[0], enabled: 'yes' }]],
+      ['uiExtensions.sensors', [{ ...uiExtensions.sensors[0] }, { ...uiExtensions.sensors[0] }]],
+      ['uiExtensions.sensors', []],
+    ]
+    for (const [fieldPath, sensors] of cases) {
+      expect(inspectScenarioUiExtensions({ jammers: uiExtensions.jammers, sensors }, jammerIds, sensorIds).result.errors
+        .map((issue) => issue.fieldPath)).toContain(fieldPath)
+    }
   })
 })
 
@@ -975,7 +1283,9 @@ describe('P2-4 干扰设备字段校验', () => {
 
   it('按 jammerId 校验一一对应的 UI 扩展边界', () => {
     const { config, uiExtensions } = scenarioDraft()
-    expect(inspectScenarioUiExtensions(uiExtensions, config.jammers.map((jammer) => jammer.id)).result.valid).toBe(true)
+    const jammerIds = config.jammers.map((jammer) => jammer.id)
+    const sensorIds = config.sensors.map((sensor) => sensor.id)
+    expect(inspectScenarioUiExtensions(uiExtensions, jammerIds, sensorIds).result.valid).toBe(true)
 
     const cases = [
       ['uiExtensions.jammers', [{ ...uiExtensions.jammers[0] }, { ...uiExtensions.jammers[0] }]],
@@ -985,12 +1295,12 @@ describe('P2-4 干扰设备字段校验', () => {
       ['uiExtensions.jammers[0].enabled', [{ ...uiExtensions.jammers[0], enabled: 'yes' }, uiExtensions.jammers[1]]],
     ] as const
     for (const [fieldPath, jammers] of cases) {
-      expect(inspectScenarioUiExtensions({ jammers, sensors: [] }, config.jammers.map((jammer) => jammer.id)).result.errors
+      expect(inspectScenarioUiExtensions({ jammers, sensors: uiExtensions.sensors }, jammerIds, sensorIds).result.errors
         .map((issue) => issue.fieldPath)).toContain(fieldPath)
     }
 
-    expect(inspectScenarioUiExtensions(null, config.jammers.map((jammer) => jammer.id)).result.errors[0]?.fieldPath).toBe('uiExtensions')
-    expect(inspectScenarioUiExtensions({ jammers: [null, uiExtensions.jammers[1]], sensors: [] }, config.jammers.map((jammer) => jammer.id)).result.errors
+    expect(inspectScenarioUiExtensions(null, jammerIds, sensorIds).result.errors[0]?.fieldPath).toBe('uiExtensions')
+    expect(inspectScenarioUiExtensions({ jammers: [null, uiExtensions.jammers[1]], sensors: uiExtensions.sensors }, jammerIds, sensorIds).result.errors
       .map((issue) => issue.fieldPath)).toContain('uiExtensions.jammers[0]')
     expect(inspectScenarioUiExtensions({ jammers: [], sensors: null }, []).result.errors[0]?.fieldPath).toBe('uiExtensions')
   })

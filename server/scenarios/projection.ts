@@ -1,10 +1,11 @@
-import { isDeepStrictEqual } from 'node:util'
 import type {
   ApiErrorCode,
+  MutationRequest,
   ScenarioConfig,
   ScenarioDraft,
   ScenarioDraftUpdate,
   ScenarioId,
+  ScenarioImportResult,
   ScenarioValidationRequest,
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
@@ -45,20 +46,28 @@ function createUiExtensions(config: ScenarioConfig): ScenarioDraft['uiExtensions
       duration: jammer.type === 'BARRAGE' ? 120 : 60,
       enabled: jammer.type === 'BARRAGE',
     })),
-    sensors: [],
+    sensors: config.sensors.map((sensor) => ({
+      sensorId: sensor.id,
+      type: 'ESM',
+      direction: 'OMNI',
+      probability: 0.95,
+      enabled: true,
+    })),
   }
 }
 
 /**
- * 判断请求是否修改了本阶段尚未开放的配置区段。
- * @param candidate 客户端提交的场景配置对象。
- * @param current 服务端当前场景配置。
- * @returns 首个被修改的只读字段路径；未修改时返回 `undefined`。
- * @remarks 只读取并比较值，不修改候选对象或当前草稿。
+ * 校验场景撤销或重置请求中的预期修订号。
+ * @param value 未受信任的请求体。
+ * @returns 结构闭合且修订号有效时返回规范请求。
  */
-function changedReadOnlyField(candidate: Record<string, unknown>, current: ScenarioConfig): string | undefined {
-  const readOnlyFields = ['sensors', 'output', 'informationDemand'] as const
-  return readOnlyFields.find((field) => !isDeepStrictEqual(candidate[field], current[field]))
+function readMutationRequest(value: unknown): MutationRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)
+    || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'expectedRevision')) return undefined
+  const expectedRevision = (value as { expectedRevision?: unknown }).expectedRevision
+  return Number.isInteger(expectedRevision) && (expectedRevision as number) >= 0
+    ? { expectedRevision: expectedRevision as number }
+    : undefined
 }
 
 /**
@@ -74,10 +83,12 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
 
   const linkIdsByPlatform = new Map<string, Set<string>>()
   const jammerIdsByPlatform = new Map<string, Set<string>>()
+  const sensorIdsByPlatform = new Map<string, Set<string>>()
   candidate.platforms.forEach((platform) => {
     if (typeof platform === 'object' && platform !== null && !Array.isArray(platform) && typeof platform.id === 'string') {
       linkIdsByPlatform.set(platform.id, new Set())
       jammerIdsByPlatform.set(platform.id, new Set())
+      sensorIdsByPlatform.set(platform.id, new Set())
     }
   })
   if (Array.isArray(candidate.links)) candidate.links.forEach((link) => {
@@ -90,12 +101,17 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
     if (typeof jammer !== 'object' || jammer === null || Array.isArray(jammer) || typeof jammer.id !== 'string') return
     if (typeof jammer.platformId === 'string') jammerIdsByPlatform.get(jammer.platformId)?.add(jammer.id)
   })
+  if (Array.isArray(candidate.sensors)) candidate.sensors.forEach((sensor) => {
+    if (typeof sensor !== 'object' || sensor === null || Array.isArray(sensor) || typeof sensor.id !== 'string') return
+    if (typeof sensor.platformId === 'string') sensorIdsByPlatform.get(sensor.platformId)?.add(sensor.id)
+  })
   candidate.platforms = candidate.platforms.map((platform) => (
     typeof platform === 'object' && platform !== null && !Array.isArray(platform)
       ? {
           ...platform,
           linkIds: typeof platform.id === 'string' ? [...(linkIdsByPlatform.get(platform.id) ?? [])] : [],
           jammerIds: typeof platform.id === 'string' ? [...(jammerIdsByPlatform.get(platform.id) ?? [])] : [],
+          sensorIds: typeof platform.id === 'string' ? [...(sensorIdsByPlatform.get(platform.id) ?? [])] : [],
         }
       : platform
   ))
@@ -104,6 +120,7 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
 
 export class ScenarioProjection {
   private draft = createDraft()
+  private history: ScenarioDraft[] = []
 
   /**
    * 读取指定场景的独立草稿副本。
@@ -146,6 +163,7 @@ export class ScenarioProjection {
         message: issue.message,
       }
     }
+    this.history.push(structuredClone(this.draft))
     this.draft = {
       config: candidate,
       uiExtensions: createUiExtensions(candidate),
@@ -195,7 +213,7 @@ export class ScenarioProjection {
   }
 
   /**
-   * 校验并保存场景基础、环境、时序、平台、航点、链路和干扰设备参数。
+   * 校验并保存完整场景配置和界面扩展。
    * @param scenarioId 路由中的场景编号。
    * @param value 客户端提交的未知 JSON 值。
    * @returns 保存后的草稿副本，或带字段路径的失败结果。
@@ -230,7 +248,11 @@ export class ScenarioProjection {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'scenario.id', message: '场景编号与请求地址不一致。' }
     }
 
-    const extensionInspection = inspectScenarioUiExtensions(update.uiExtensions, inspection.jammers!.map((jammer) => jammer.id))
+    const extensionInspection = inspectScenarioUiExtensions(
+      update.uiExtensions,
+      inspection.jammers!.map((jammer) => jammer.id),
+      inspection.sensors!.map((sensor) => sensor.id),
+    )
     if (!extensionInspection.result.valid) {
       const issue = extensionInspection.result.errors[0]!
       return {
@@ -242,29 +264,83 @@ export class ScenarioProjection {
       }
     }
 
-    const readOnlyField = changedReadOnlyField(candidate as Record<string, unknown>, this.draft.config)
-    if (readOnlyField !== undefined) {
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: readOnlyField, message: '当前阶段不允许修改该配置。' }
-    }
-    if (!isDeepStrictEqual(update.uiExtensions.sensors, this.draft.uiExtensions.sensors)) {
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'uiExtensions.sensors', message: '当前阶段不允许修改该配置。' }
-    }
-
+    this.history.push(structuredClone(this.draft))
     this.draft = {
       ...this.draft,
-      config: {
-        ...this.draft.config,
-        scenario: inspection.identity!,
-        platforms: structuredClone(inspection.platforms!),
-        links: structuredClone(inspection.links!),
-        jammers: structuredClone(inspection.jammers!),
-      },
+      config: structuredClone(candidate as ScenarioConfig),
       uiExtensions: {
-        ...this.draft.uiExtensions,
         jammers: structuredClone(extensionInspection.jammers!),
+        sensors: structuredClone(extensionInspection.sensors!),
       },
       revision: this.draft.revision + 1,
     }
+    return { ok: true, data: structuredClone(this.draft) }
+  }
+
+  /** 校验并导入一个完整场景配置快照。 */
+  importSnapshots(value: unknown): ScenarioProjectionResult<ScenarioImportResult> {
+    if (this.draft.locked) {
+      return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
+    }
+    if (typeof value !== 'object' || value === null || Array.isArray(value)
+      || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'items')
+      || !Array.isArray((value as { items?: unknown }).items) || (value as { items: unknown[] }).items.length !== 1) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'items', message: '场景快照导入请求结构不正确。' }
+    }
+
+    const item = (value as { items: unknown[] }).items[0]
+    const inspection = inspectScenarioConfig(item)
+    if (!inspection.result.valid) {
+      const issue = inspection.result.errors[0]!
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }
+    }
+    const config = structuredClone(item as ScenarioConfig)
+    const draft: ScenarioDraft = {
+      config,
+      uiExtensions: createUiExtensions(config),
+      revision: this.draft.revision + 1,
+      officialLibraryChanged: false,
+      locked: false,
+    }
+
+    this.history.push(structuredClone(this.draft))
+    this.draft = structuredClone(draft)
+    return { ok: true, data: { imported: 1, rejected: 0, drafts: [structuredClone(draft)] } }
+  }
+
+  /**
+   * 撤销最近一次已持久化的场景操作并恢复完整快照。
+   * @param scenarioId 当前场景编号。
+   * @param value 包含调用方预期修订号的请求体。
+   * @returns 恢复后的新修订草稿，或编号、锁、修订冲突错误。
+   */
+  undo(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    if (scenarioId !== this.draft.config.scenario.id) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    if (this.draft.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
+    const request = readMutationRequest(value)
+    if (request === undefined) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '预期修订号格式不正确。' }
+    if (request.expectedRevision !== this.draft.revision) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景修订号已变化，请重新加载。' }
+    const previous = this.history.pop()
+    if (previous === undefined) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'history', message: '没有可撤销的场景操作。' }
+    this.draft = { ...structuredClone(previous), revision: this.draft.revision + 1, locked: false }
+    return { ok: true, data: structuredClone(this.draft) }
+  }
+
+  /**
+   * 将当前场景草稿重置为冻结的 SCN-001 配置快照。
+   * @param scenarioId 当前场景编号。
+   * @param value 包含调用方预期修订号的请求体。
+   * @returns 可撤销的新修订草稿。
+   */
+  resetDraft(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    if (scenarioId !== this.draft.config.scenario.id) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    if (this.draft.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
+    const request = readMutationRequest(value)
+    if (request === undefined) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '预期修订号格式不正确。' }
+    if (request.expectedRevision !== this.draft.revision) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景修订号已变化，请重新加载。' }
+    const baseline = createDraft()
+    this.history.push(structuredClone(this.draft))
+    this.draft = { ...baseline, revision: this.draft.revision + 1 }
     return { ok: true, data: structuredClone(this.draft) }
   }
 
@@ -275,5 +351,6 @@ export class ScenarioProjection {
    */
   reset(): void {
     this.draft = createDraft()
+    this.history = []
   }
 }

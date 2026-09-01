@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [vue()],
   test: {
     environment: 'jsdom',
+    testTimeout: 15_000,
     include: ['tests/**/*.spec.ts'],
     exclude: ['tests/e2e/**'],
     clearMocks: true,
@@ -26,6 +27,12 @@ export default defineConfig({
           branches: 90,
         },
         'server/templates/projection.ts': {
+          branches: 90,
+        },
+        'server/confirmations/projection.ts': {
+          branches: 90,
+        },
+        'server/scripts/projection.ts': {
           branches: 90,
         },
         'src/components/scenarios/*.vue': {

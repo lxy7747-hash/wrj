@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import type {
+  ApiErrorCode,
   ApiFailure,
   CapabilityState,
   ConfirmationContext,
@@ -7,7 +8,9 @@ import type {
   ScenarioConfig,
   ScenarioDraft,
   ScenarioId,
+  ScenarioImportResult,
   ScenarioTemplate,
+  ScriptContract,
   ValidationIssue,
   ValidationResult,
 } from '../contracts/domain-models'
@@ -52,10 +55,10 @@ async function readJson(response: Response): Promise<unknown> {
 }
 
 /**
- * 从成功信封中读取并校验当前阶段场景草稿。
+ * 从成功信封中读取并校验完整场景草稿。
  * @param payload 服务端返回的已解析响应体。
  * @returns 合同有效时返回场景草稿，否则返回 `undefined`。
- * @remarks 校验场景外壳和本阶段字段，不修改响应载荷。
+ * @remarks 校验场景外壳、全部规范字段及界面扩展，不修改响应载荷。
  */
 function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
@@ -69,8 +72,38 @@ function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   if (typeof uiExtensions !== 'object' || uiExtensions === null || !Array.isArray(uiExtensions.jammers) || !Array.isArray(uiExtensions.sensors)) return undefined
   const inspection = inspectScenarioConfig(draft.config)
   if (!inspection.result.valid || inspection.jammers === undefined) return undefined
-  return inspectScenarioUiExtensions(uiExtensions, inspection.jammers.map((jammer) => jammer.id)).result.valid
+  return inspectScenarioUiExtensions(
+    uiExtensions,
+    inspection.jammers.map((jammer) => jammer.id),
+    inspection.sensors?.map((sensor) => sensor.id) ?? [],
+  ).result.valid
     ? draft as ScenarioDraft
+    : undefined
+}
+
+/** 从成功信封读取原子场景快照导入结果。 */
+function readScenarioImportResult(payload: unknown): ScenarioImportResult | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const result = data as Partial<ScenarioImportResult>
+  if (Object.keys(data).length !== 3 || !Number.isInteger(result.imported) || !Number.isInteger(result.rejected)
+    || !Array.isArray(result.drafts) || result.imported !== result.drafts.length || result.rejected !== 0) return undefined
+  const drafts = result.drafts.map((draft) => readScenarioDraft({ ok: true, data: draft }))
+  return drafts.every((draft) => draft !== undefined) ? result as ScenarioImportResult : undefined
+}
+
+/** 从成功信封读取脚本预览合同。 */
+function readScriptContract(payload: unknown): ScriptContract | undefined {
+  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
+  const data = (payload as { data?: unknown }).data
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  const script = data as Partial<ScriptContract>
+  const keys = ['scriptId', 'taskId', 'scenarioId', 'configVersion', 'target', 'checksum', 'preview', 'generatedTime']
+  return Object.keys(data).length === keys.length && Object.keys(data).every((key) => keys.includes(key))
+    && keys.filter((key) => key !== 'target').every((key) => typeof (data as Record<string, unknown>)[key] === 'string' && (data as Record<string, string>)[key] !== '')
+    && script.target === 'AFSIM 2.9.0'
+    ? script as ScriptContract
     : undefined
 }
 
@@ -199,6 +232,11 @@ export const useScenarioStore = defineStore('scenario', {
     templateResultCode: 'EMPTY',
     templateResultMessage: '尚未加载场景模板。',
     lastConfirmation: null as ConfirmationContext | null,
+    script: null as ScriptContract | null,
+    scriptState: 'EMPTY' as CapabilityState,
+    scriptResultCode: 'EMPTY',
+    scriptResultMessage: '尚未生成脚本预览。',
+    preflight: { valid: true, errors: [], warnings: [] } as ValidationResult,
     requestEpoch: 0,
   }),
 
@@ -210,12 +248,12 @@ export const useScenarioStore = defineStore('scenario', {
      * @returns 无返回值。
      * @sideEffects 将面板状态设为错误，并更新结果代码、消息和可选字段错误。
      */
-    showError(error: unknown, fallback: string): void {
+    showError(error: unknown, fallback: string, fallbackCode: ApiErrorCode | 'NETWORK_ERROR' = 'NETWORK_ERROR'): void {
       const apiFailure = readFailure(error)
       this.panelState = 'ERROR'
       this.resultCode = error instanceof InvalidScenarioResponseError
         ? 'INVALID_RESPONSE'
-        : apiFailure?.error.code ?? 'NETWORK_ERROR'
+        : apiFailure?.error.code ?? fallbackCode
       this.resultMessage = apiFailure?.error.message ?? (error instanceof Error ? error.message : fallback)
       if (apiFailure?.error.fieldPath !== undefined) {
         this.validation = {
@@ -275,6 +313,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
         this.resultMessage = '场景草稿已加载。'
+        this.clearScriptPreview()
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
@@ -295,6 +334,16 @@ export const useScenarioStore = defineStore('scenario', {
       this.panelState = 'SUCCESS'
       this.resultCode = 'EMPTY'
       this.resultMessage = ''
+      this.clearScriptPreview()
+    },
+
+    /** 清除与当前场景修订绑定的脚本预览和预检结果。 */
+    clearScriptPreview(): void {
+      this.script = null
+      this.scriptState = 'EMPTY'
+      this.scriptResultCode = 'EMPTY'
+      this.scriptResultMessage = '场景已变化，请重新生成脚本预览。'
+      this.preflight = { valid: true, errors: [], warnings: [] }
     },
 
     /**
@@ -412,6 +461,7 @@ export const useScenarioStore = defineStore('scenario', {
       const extensionInspection = inspectScenarioUiExtensions(
         this.draft.uiExtensions,
         inspection.jammers.map((jammer) => jammer.id),
+        inspection.sensors?.map((sensor) => sensor.id) ?? [],
       )
       if (!extensionInspection.result.valid) {
         const issue = extensionInspection.result.errors[0]
@@ -447,6 +497,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
         this.resultMessage = `场景草稿已保存，当前修订号为 ${draft.revision}。`
+        this.clearScriptPreview()
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
@@ -682,6 +733,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'SUCCESS'
         this.templateResultCode = 'TEMPLATE_COPIED'
         this.templateResultMessage = `模板已复制为临时工作场景“${draft.config.scenario.name}”。`
+        this.clearScriptPreview()
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
@@ -783,6 +835,202 @@ export const useScenarioStore = defineStore('scenario', {
       }
     },
 
+    /** 从 JSON 文本原子导入一个完整场景快照。 */
+    async importScenarioSnapshot(text: string): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
+        this.showError(undefined, '当前账号没有场景快照导入权限。', 'PERMISSION_DENIED')
+        return false
+      }
+      let value: unknown
+      try {
+        value = JSON.parse(text)
+      } catch {
+        this.showError(undefined, '场景快照 JSON 语法不正确。', 'VALIDATION_FAILED')
+        return false
+      }
+      if (Array.isArray(value)) {
+        this.showError(undefined, '一次只能导入一个完整场景快照。', 'VALIDATION_FAILED')
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.panelState = 'EXECUTING'
+      try {
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/import`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ items: [value] }),
+        })
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const result = readScenarioImportResult(payload)
+        if (result === undefined || result.imported !== 1 || result.rejected !== 0 || result.drafts.length !== 1) throw new InvalidScenarioResponseError()
+        this.draft = result.drafts[0]
+        this.dirty = false
+        this.validation = { valid: true, errors: [], warnings: [] }
+        this.panelState = 'SUCCESS'
+        this.resultCode = 'SCENARIO_IMPORTED'
+        this.resultMessage = '已导入 1 个完整场景快照。'
+        this.clearScriptPreview()
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showError(error, '场景快照导入失败。')
+        return false
+      }
+    },
+
+    /** 撤销最近一次已持久化的场景操作。 */
+    async undoScenario(): Promise<boolean> {
+      return this.mutateScenarioSnapshot('undo', '场景操作已撤销。')
+    },
+
+    /** 将当前场景恢复为确定性初始快照；该操作可撤销。 */
+    async resetScenario(): Promise<boolean> {
+      return this.mutateScenarioSnapshot('reset', '场景已恢复为初始快照。')
+    },
+
+    /** 调用场景级撤销或重置端点并替换当前完整草稿。 */
+    async mutateScenarioSnapshot(action: 'undo' | 'reset', successMessage: string): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed || this.draft === null) {
+        const missingDraft = this.draft === null
+        this.showError(
+          undefined,
+          missingDraft ? '请先加载场景草稿。' : '当前账号没有场景操作权限。',
+          missingDraft ? 'NOT_FOUND' : 'PERMISSION_DENIED',
+        )
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      this.panelState = 'EXECUTING'
+      try {
+        const scenarioId = this.draft.config.scenario.id
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/${action}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ expectedRevision: this.draft.revision }),
+        })
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const draft = readScenarioDraft(payload)
+        if (draft === undefined) throw new InvalidScenarioResponseError()
+        this.draft = draft
+        this.dirty = false
+        this.validation = { valid: true, errors: [], warnings: [] }
+        this.panelState = 'SUCCESS'
+        this.resultCode = action === 'undo' ? 'SCENARIO_UNDONE' : 'SCENARIO_RESET'
+        this.resultMessage = successMessage
+        this.clearScriptPreview()
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        this.showError(error, action === 'undo' ? '场景撤销失败。' : '场景重置失败。')
+        return false
+      }
+    },
+
+    /** 生成 T-XQ-008 脚本预览；警告只在用户明确确认后继续一次。 */
+    async generateScriptPreview(confirmWarnings = false): Promise<boolean> {
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed || this.draft === null || this.dirty) {
+        this.scriptState = 'ERROR'
+        this.scriptResultCode = this.draft === null ? 'EMPTY' : this.dirty ? 'UNSAVED_CHANGES' : 'PERMISSION_DENIED'
+        this.scriptResultMessage = this.draft === null ? '请先加载场景草稿。' : this.dirty ? '请先保存当前场景草稿。' : '当前账号没有脚本预览权限。'
+        return false
+      }
+      if (!await this.validateScenario()) {
+        this.scriptState = 'ERROR'
+        this.scriptResultCode = this.resultCode
+        this.scriptResultMessage = this.resultMessage
+        return false
+      }
+      const requestEpoch = this.requestEpoch
+      let confirmationId: string | undefined
+      this.scriptState = 'EXECUTING'
+      try {
+        if (this.validation.warnings.length > 0 && confirmWarnings) {
+          const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+            body: JSON.stringify({ action: 'SCENARIO_WARNING_CONTINUE', objectId: this.draft.config.scenario.id }),
+          })
+          const createPayload = await readJson(createResponse)
+          if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidScenarioResponseError()
+          const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
+          if (awaiting === undefined) throw new InvalidScenarioResponseError()
+          const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+            body: JSON.stringify({ confirm: true }),
+          })
+          const confirmPayload = await readJson(confirmResponse)
+          const confirmed = readConfirmationContext(confirmPayload, 'CONFIRMED')
+          if (!confirmResponse.ok || confirmed === undefined) throw readFailure(confirmPayload) ?? new InvalidScenarioResponseError()
+          this.lastConfirmation = confirmed
+          confirmationId = confirmed.confirmationId
+        }
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/preview`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ scenarioId: this.draft.config.scenario.id, ...(confirmationId === undefined ? {} : { warningConfirmationId: confirmationId }) }),
+        })
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const script = readScriptContract(payload)
+        if (script === undefined) throw new InvalidScenarioResponseError()
+        if (this.lastConfirmation !== null && confirmationId !== undefined) this.lastConfirmation = { ...this.lastConfirmation, state: 'CLOSED' }
+        this.script = script
+        this.preflight = { valid: true, errors: [], warnings: [] }
+        this.scriptState = 'SUCCESS'
+        this.scriptResultCode = 'SCRIPT_PREVIEW_READY'
+        this.scriptResultMessage = '脚本预览已生成。'
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        const failure = readFailure(error)
+        this.scriptState = 'ERROR'
+        this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
+        this.scriptResultMessage = failure?.error.message ?? (error instanceof Error ? error.message : '脚本预览生成失败。')
+        return false
+      }
+    },
+
+    /** 使用脚本编号和校验和执行 T-XQ-008 预检。 */
+    async preflightScript(): Promise<boolean> {
+      if (this.script === null) return false
+      const auth = useAuthStore()
+      const requestEpoch = this.requestEpoch
+      this.scriptState = 'VALIDATING'
+      try {
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ checksum: this.script.checksum }),
+        })
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        const result = readValidationResult(payload)
+        if (result === undefined) throw new InvalidScenarioResponseError()
+        this.preflight = result
+        this.scriptState = result.valid ? 'SUCCESS' : 'ERROR'
+        this.scriptResultCode = result.valid ? 'PREFLIGHT_SUCCESS' : 'PREFLIGHT_FAILED'
+        this.scriptResultMessage = result.valid ? '脚本结构、版本、路径和校验和预检通过。' : `脚本预检发现 ${result.errors.length} 个错误。`
+        return result.valid
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch) return false
+        const failure = readFailure(error)
+        this.scriptState = 'ERROR'
+        this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
+        this.scriptResultMessage = failure?.error.message ?? (error instanceof Error ? error.message : '脚本预检失败。')
+        return false
+      }
+    },
+
     /**
      * 清空场景数据并恢复安全空态。
      * @returns 无返回值。
@@ -802,6 +1050,11 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateResultCode = 'EMPTY'
       this.templateResultMessage = '尚未加载场景模板。'
       this.lastConfirmation = null
+      this.script = null
+      this.scriptState = 'EMPTY'
+      this.scriptResultCode = 'EMPTY'
+      this.scriptResultMessage = '尚未生成脚本预览。'
+      this.preflight = { valid: true, errors: [], warnings: [] }
     },
   },
 })

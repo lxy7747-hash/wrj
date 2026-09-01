@@ -5,9 +5,11 @@ import type {
   ConfirmationAction,
   LoginRequest,
   PageMeta,
+  PreflightRequest,
   ResetRequest,
   ResetResult,
   Role,
+  ScriptPreviewRequest,
   User,
   UserRoleCommand,
 } from '../src/contracts/domain-models.js'
@@ -19,10 +21,12 @@ import {
 import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest } from './http/loopback.js'
 import { ScenarioProjection } from './scenarios/projection.js'
+import { ScriptProjection } from './scripts/projection.js'
 import { MockProjection } from './state/projection.js'
 import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
 import { TemplateProjection } from './templates/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
+import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 
 export interface MockServerOptions {
   port?: number
@@ -187,6 +191,22 @@ function isCopyTemplateRequest(value: unknown): value is { name: string } {
   return isStrictObject(value, ['name'])
     && typeof value.name === 'string'
     && value.name.trim().length > 0
+}
+
+/** 校验脚本预览请求中的场景编号和可选警告确认编号。 */
+function isScriptPreviewRequest(value: unknown): value is ScriptPreviewRequest {
+  return isStrictObject(value, ['scenarioId'], ['warningConfirmationId'])
+    && typeof value.scenarioId === 'string'
+    && value.scenarioId.startsWith('SCN-')
+    && (value.warningConfirmationId === undefined
+      || (typeof value.warningConfirmationId === 'string' && value.warningConfirmationId.length > 0))
+}
+
+/** 校验脚本预检请求中的非空校验和。 */
+function isPreflightRequest(value: unknown): value is PreflightRequest {
+  return isStrictObject(value, ['checksum'])
+    && typeof value.checksum === 'string'
+    && value.checksum.length > 0
 }
 
 /**
@@ -373,6 +393,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const scenarios = new ScenarioProjection()
   const confirmations = new ConfirmationProjection(options.confirmationClock)
   const templates = new TemplateProjection()
+  const scripts = new ScriptProjection()
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -568,6 +589,59 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 撤销当前场景最近一次已持久化操作并恢复完整快照。 */
+  app.post('/api/v1/scenarios/:scenarioId/undo', (req, res) => {
+    const scenarioId = req.params.scenarioId
+    const requestId = 'REQ-P2-SCENARIO-UNDO'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_UNDO', scenarioId) === undefined) return
+    const result = scenarios.undo(scenarioId, req.body)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 将当前场景重置为冻结 SCN-001 快照，不触发全局 Mock reset。 */
+  app.post('/api/v1/scenarios/:scenarioId/reset', (req, res) => {
+    const scenarioId = req.params.scenarioId
+    const requestId = 'REQ-P2-SCENARIO-RESET'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_RESET', scenarioId) === undefined) return
+    const result = scenarios.resetDraft(scenarioId, req.body)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 原子校验并导入场景配置 1.0 快照，只替换临时工作场景。 */
+  app.post('/api/v1/scenarios/import', (req, res) => {
+    const requestId = 'REQ-P2-SCENARIO-IMPORT'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_IMPORT') === undefined) return
+    const result = scenarios.importSnapshots(req.body)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId, result.data.imported, result.data.imported)))
+  })
+
   /**
    * 返回当前内存模板库。
    * @param req 包含角色提示的请求。
@@ -694,6 +768,67 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     res.status(201).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 校验当前已保存场景并生成确定性 AFSIM 内存脚本预览。 */
+  app.post('/api/v1/scripts/preview', (req, res) => {
+    const requestId = 'REQ-P2-SCRIPT-PREVIEW'
+    const role = requireDemoRole(req, res, auth, 'SCRIPT_PREVIEW')
+    if (role === undefined) return
+    if (!isScriptPreviewRequest(req.body)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'request' }))
+      return
+    }
+    const draft = scenarios.get(req.body.scenarioId)
+    if (!draft.ok) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: draft.message, fieldPath: 'scenarioId' }))
+      return
+    }
+    const validation = inspectScenarioConfig(draft.data.config).result
+    if (validation.errors.length > 0) {
+      const issue = validation.errors[0]!
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: issue.message, fieldPath: issue.fieldPath }))
+      return
+    }
+    if (validation.warnings.length > 0) {
+      if (req.body.warningConfirmationId === undefined) {
+        res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, { requestId, generatedAt: P1_GENERATED_AT, message: '场景存在校验警告，生成脚本前需要一次性确认。' }))
+        return
+      }
+      const confirmation = confirmations.consume(
+        req.body.warningConfirmationId,
+        'SCENARIO_WARNING_CONTINUE',
+        req.body.scenarioId,
+        role,
+      )
+      if (!confirmation.ok) {
+        res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, { requestId, generatedAt: P1_GENERATED_AT, message: confirmation.message }))
+        return
+      }
+    }
+    res.status(200).json(success(scripts.preview(draft.data), pageMeta(requestId)))
+  })
+
+  /** 对已生成脚本执行校验和、结构、版本和路径预检。 */
+  app.post('/api/v1/scripts/:scriptId/preflight', (req, res) => {
+    const scriptId = req.params.scriptId
+    const requestId = 'REQ-P2-SCRIPT-PREFLIGHT'
+    if (requireDemoRole(req, res, auth, 'SCRIPT_PREFLIGHT', scriptId) === undefined) return
+    if (!isPreflightRequest(req.body)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'checksum' }))
+      return
+    }
+    const result = scripts.preflight(scriptId, req.body.checksum)
+    if (!result.ok) {
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
   /**
@@ -926,6 +1061,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     scenarios.reset()
     confirmations.reset()
     templates.reset()
+    scripts.reset()
     res.status(200).json(success(result, {
       requestId: result.requestId,
       generatedAt: result.generatedAt,

@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessageBox } from 'element-plus'
-import type { CapabilityState, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, ValidationIssue } from '../contracts/domain-models'
+import type { CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   JAMMER_TYPES,
@@ -34,6 +34,10 @@ const {
   templateState,
   templateResultMessage,
   lastConfirmation,
+  script,
+  scriptState,
+  scriptResultMessage,
+  preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
 const platformDialogVisible = ref(false)
@@ -61,6 +65,7 @@ const jammerFeedback = ref('')
 const jammerFeedbackStatus = ref<'success' | 'error'>('success')
 const jammerFrequencyBelowMinimum = ref(false)
 const jammerBandwidthBelowMinimum = ref(false)
+const sceneOperationFeedback = ref('')
 
 const deploymentDomainLabels = {
   ground: '地面',
@@ -95,6 +100,7 @@ const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((
 const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
 const canMaintainTemplates = computed(() => authStore.permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
+const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -731,6 +737,90 @@ function setJammerEnabled(jammerId: string, enabled: boolean): void {
   markDirty()
 }
 
+/** 按 ID 读取传感器界面扩展，避免依赖两个数组的排列顺序。 */
+function sensorExtension(sensorId: string): SensorUiExtension | undefined {
+  return draft.value?.uiExtensions.sensors.find((extension) => extension.sensorId === sensorId)
+}
+
+/** 更新一个传感器界面扩展字段并标记草稿未保存。 */
+function setSensorExtensionValue<K extends keyof SensorUiExtension>(sensorId: string, field: K, value: SensorUiExtension[K]): void {
+  const extension = sensorExtension(sensorId)
+  if (extension === undefined || field === 'sensorId' || field === 'type') return
+  extension[field] = value
+  markDirty()
+}
+
+/** 生成当前场景内未占用的传感器 ID。 */
+function nextSensorId(): string {
+  const ids = new Set(draft.value?.config.sensors.map((sensor) => sensor.id) ?? [])
+  let index = 1
+  while (ids.has(`ESM-${String(index).padStart(2, '0')}`)) index += 1
+  return `ESM-${String(index).padStart(2, '0')}`
+}
+
+/** 按传感器归属重建平台反向关联。 */
+function synchronizeAllSensorIds(): void {
+  if (draft.value === null) return
+  draft.value.config.platforms.forEach((platform) => { platform.sensorIds = [] })
+  draft.value.config.sensors.forEach((sensor) => {
+    const platform = draft.value?.config.platforms.find((item) => item.id === sensor.platformId)
+    if (platform !== undefined) platform.sensorIds.push(sensor.id)
+  })
+  markDirty()
+}
+
+/** 新增一组可立即校验的传感器及界面扩展参数。 */
+function addSensor(): void {
+  const platform = draft.value?.config.platforms[0]
+  if (draft.value === null || platform === undefined) return
+  const sensorId = nextSensorId()
+  draft.value.config.sensors.push({ id: sensorId, platformId: platform.id, frequencyRange: { min: 1000, max: 6000 }, detectionRange: 100000 })
+  draft.value.uiExtensions.sensors.push({ sensorId, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })
+  synchronizeAllSensorIds()
+}
+
+/** 删除传感器及对应界面扩展和平台关联。 */
+function removeSensor(index: number): void {
+  if (draft.value === null) return
+  const [removed] = draft.value.config.sensors.splice(index, 1)
+  if (removed === undefined) return
+  draft.value.uiExtensions.sensors = draft.value.uiExtensions.sensors.filter((extension) => extension.sensorId !== removed.id)
+  synchronizeAllSensorIds()
+}
+
+/** 生成当前场景内未占用的信息需求 ID。 */
+function nextInformationDemandId(): string {
+  const ids = new Set(draft.value?.config.informationDemand.map((demand) => demand.id) ?? [])
+  let index = 1
+  while (ids.has(`INFO-${String(index).padStart(3, '0')}`)) index += 1
+  return `INFO-${String(index).padStart(3, '0')}`
+}
+
+/** 新增一条完整的信息需求默认记录。 */
+function addInformationDemand(): void {
+  if (draft.value === null || draft.value.config.platforms.length < 2) return
+  const platforms = draft.value.config.platforms
+  const demand: InformationDemand = {
+    id: nextInformationDemandId(),
+    sourcePlatformId: platforms[0]!.id,
+    destinationPlatformIds: [platforms[1]!.id],
+    informationType: '态势信息',
+    volumeMb: 1,
+    frequencyHz: 1,
+    priority: 'NORMAL',
+    maxLatencyMs: 1000,
+    minDataRateMbps: 1,
+  }
+  draft.value.config.informationDemand.push(demand)
+  markDirty()
+}
+
+/** 删除指定信息需求。 */
+function removeInformationDemand(index: number): void {
+  draft.value?.config.informationDemand.splice(index, 1)
+  markDirty()
+}
+
 /**
  * 读取规范字段路径对应的页面输入标识。
  * @param fieldPath 校验结果中的规范字段路径。
@@ -751,6 +841,8 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.rainRateMmPerHour': 'scenario-rain-rate',
     'scenario.environment.rainLossDbPerKm': 'scenario-rain-loss',
     'scenario.environment.multipathEnabled': 'scenario-multipath',
+    'output.directory': 'output-directory',
+    'output.writeInterval': 'output-write-interval',
   }
   return directTargets[fieldPath]
 }
@@ -785,6 +877,8 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   if (issue.fieldPath.startsWith('platforms')) activeTab.value = 'platforms'
   else if (issue.fieldPath.startsWith('links')) activeTab.value = 'links'
   else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers')) activeTab.value = 'jammers'
+  else if (issue.fieldPath.startsWith('sensors') || issue.fieldPath.startsWith('uiExtensions.sensors')
+    || issue.fieldPath.startsWith('output') || issue.fieldPath.startsWith('informationDemand')) activeTab.value = 'data'
   else activeTab.value = 'scenario'
   await nextTick()
 
@@ -834,6 +928,66 @@ async function saveScenario(): Promise<void> {
     jammerFeedback.value = '场景草稿已保存。'
     jammerFeedbackStatus.value = 'success'
   }
+}
+
+/** 粘贴并导入完整场景快照；不访问模板库或全局 Mock 重置。 */
+async function importScenarioSnapshot(): Promise<void> {
+  try {
+    const { value } = await ElMessageBox.prompt('粘贴一个完整 ScenarioConfig JSON 对象。', '导入场景完整快照', {
+      confirmButtonText: '导入场景',
+      cancelButtonText: '取消',
+      inputType: 'textarea',
+      inputPlaceholder: '{ "schemaVersion": "1.0", ... }',
+      inputValidator: (text) => text.trim() !== '' || '请输入场景快照 JSON。',
+    })
+    if (await scenarioStore.importScenarioSnapshot(value)) sceneOperationFeedback.value = scenarioStore.resultMessage
+  } catch {
+    // 用户取消时保持当前场景不变。
+  }
+}
+
+/** 二次确认后撤销最近一次已持久化场景操作。 */
+async function undoScenario(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('撤销最近一次场景保存、导入或重置操作？', '撤销场景操作', {
+      confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning',
+    })
+    if (await scenarioStore.undoScenario()) sceneOperationFeedback.value = scenarioStore.resultMessage
+  } catch {
+    // 用户取消时保持当前场景不变。
+  }
+}
+
+/** 二次确认后将当前场景恢复为初始快照。 */
+async function resetScenario(): Promise<void> {
+  try {
+    await ElMessageBox.confirm('重置当前场景的全部参数？该操作完成后仍可撤销。', '重置场景', {
+      confirmButtonText: '重置场景', cancelButtonText: '取消', type: 'warning',
+    })
+    if (await scenarioStore.resetScenario()) sceneOperationFeedback.value = scenarioStore.resultMessage
+  } catch {
+    // 用户取消时保持当前场景不变。
+  }
+}
+
+/** 生成脚本预览；遇到 WARNING 时只在本次确认后继续。 */
+async function generateScriptPreview(): Promise<void> {
+  if (await scenarioStore.generateScriptPreview()) return
+  if (scenarioStore.scriptResultCode !== 'CONFIRMATION_REQUIRED') return
+  try {
+    await ElMessageBox.confirm(`${scenarioStore.scriptResultMessage} 是否继续生成？`, '脚本预览警告', {
+      confirmButtonText: '本次继续', cancelButtonText: '取消', type: 'warning',
+    })
+    await scenarioStore.generateScriptPreview(true)
+  } catch {
+    // 用户取消后不创建一次性确认上下文。
+  }
+}
+
+/** 从脚本字段路径读取一基行号和列号。 */
+function scriptLocation(fieldPath: string): string {
+  const location = /^preview\[(\d+):(\d+)\]$/.exec(fieldPath)
+  return location === null ? '—' : `${location[1]}:${location[2]}`
 }
 
 /**
@@ -1253,6 +1407,100 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
+        <el-tab-pane label="传感器与输出" name="data">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-sensor-title">
+            <div class="section-heading">
+              <div><p class="section-kicker">探测配置</p><h3 id="scenario-sensor-title">传感器</h3></div>
+              <el-tag type="primary">{{ draft.config.sensors.length }} 个</el-tag>
+            </div>
+            <el-table :data="draft.config.sensors" stripe data-testid="sensor-table">
+              <el-table-column prop="id" label="传感器 ID" width="120" />
+              <el-table-column label="类型" width="80"><template #default>ESM</template></el-table-column>
+              <el-table-column label="归属平台" min-width="150">
+                <template #default="{ row, $index }"><el-select v-model="row.platformId" :data-testid="`sensor-platform-${$index}`" @change="synchronizeAllSensorIds"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template>
+              </el-table-column>
+              <el-table-column label="最低频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="最高频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="探测范围（m）" width="150"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="0" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="方向" width="125"><template #default="{ row, $index }"><el-select :model-value="sensorExtension(row.id)?.direction" filterable :data-testid="`sensor-direction-${$index}`" @change="setSensorExtensionValue(row.id, 'direction', $event)"><el-option label="全向" value="OMNI" /><el-option v-for="degree in 361" :key="degree - 1" :label="`${degree - 1}°`" :value="degree - 1" /></el-select></template></el-table-column>
+              <el-table-column label="探测概率" width="145"><template #default="{ row, $index }"><el-input-number :model-value="sensorExtension(row.id)?.probability" :min="0" :max="1" :step="0.01" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? 0)" /></template></el-table-column>
+              <el-table-column label="启用" width="70"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
+              <el-table-column label="操作" width="70" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
+            </el-table>
+            <div class="platform-actions"><el-button type="primary" data-testid="add-sensor" @click="addSensor">新增传感器</el-button></div>
+          </section>
+
+          <section class="console-panel scenario-section" aria-labelledby="scenario-output-title">
+            <div class="section-heading"><div><p class="section-kicker">结果配置</p><h3 id="scenario-output-title">输出参数</h3></div></div>
+            <div class="form-grid form-grid--basic">
+              <el-form-item class="form-grid__wide" label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
+              <el-form-item label="写入间隔（秒）" :error="issueMessage('output.writeInterval')"><el-input-number v-model="draft.config.output.writeInterval" :min="draft.config.scenario.timeStep" :step="0.001" controls-position="right" data-testid="output-write-interval" @update:model-value="markDirty" /></el-form-item>
+              <el-form-item label="链路质量"><el-switch v-model="draft.config.output.linkQualityEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-quality" @change="markDirty" /></el-form-item>
+              <el-form-item label="事件"><el-switch v-model="draft.config.output.eventsEnabled" active-text="输出" inactive-text="关闭" data-testid="output-events" @change="markDirty" /></el-form-item>
+              <el-form-item label="链路切换"><el-switch v-model="draft.config.output.linkSwitchEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-switch" @change="markDirty" /></el-form-item>
+            </div>
+          </section>
+
+          <section class="console-panel scenario-section" aria-labelledby="scenario-demand-title">
+            <div class="section-heading"><div><p class="section-kicker">任务流量</p><h3 id="scenario-demand-title">信息需求</h3></div><el-tag>{{ draft.config.informationDemand.length }} 条</el-tag></div>
+            <el-table :data="draft.config.informationDemand" stripe data-testid="information-demand-table">
+              <el-table-column prop="id" label="需求 ID" width="115" />
+              <el-table-column label="源平台" min-width="145"><template #default="{ row, $index }"><el-select v-model="row.sourcePlatformId" :data-testid="`demand-source-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
+              <el-table-column label="目标平台" min-width="190"><template #default="{ row, $index }"><el-select v-model="row.destinationPlatformIds" multiple collapse-tags :data-testid="`demand-destinations-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
+              <el-table-column label="信息类型" width="140"><template #default="{ row, $index }"><el-input v-model="row.informationType" :data-testid="`demand-type-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="数据量（MB）" width="135"><template #default="{ row, $index }"><el-input-number v-model="row.volumeMb" :min="0" controls-position="right" :data-testid="`demand-volume-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="频率（Hz）" width="125"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyHz" :min="0" controls-position="right" :data-testid="`demand-frequency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="优先级" width="105"><template #default="{ row, $index }"><el-select v-model="row.priority" :data-testid="`demand-priority-${$index}`" @change="markDirty"><el-option label="高" value="HIGH" /><el-option label="普通" value="NORMAL" /></el-select></template></el-table-column>
+              <el-table-column label="最大时延（ms）" width="150"><template #default="{ row, $index }"><el-input-number v-model="row.maxLatencyMs" :min="0" controls-position="right" :data-testid="`demand-latency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="最低速率（Mbps）" width="160"><template #default="{ row, $index }"><el-input-number v-model="row.minDataRateMbps" :min="0" controls-position="right" :data-testid="`demand-rate-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="操作" width="70" fixed="right"><template #default="{ $index }"><el-button link type="danger" :disabled="draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`" @click="removeInformationDemand($index)">删除</el-button></template></el-table-column>
+            </el-table>
+            <div class="platform-actions"><el-button type="primary" :disabled="draft.config.platforms.length < 2" data-testid="add-information-demand" @click="addInformationDemand">新增信息需求</el-button></div>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="场景操作" name="operations">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-operation-title">
+            <div class="section-heading"><div><p class="section-kicker">完整快照</p><h3 id="scenario-operation-title">导入、撤销与重置</h3></div></div>
+            <el-alert title="以下操作仅作用于当前场景完整快照，不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
+            <el-alert v-if="sceneOperationFeedback" class="platform-feedback" :title="sceneOperationFeedback" type="success" :closable="false" show-icon />
+            <div class="platform-actions">
+              <el-button type="primary" :disabled="pending || draft.locked" data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
+              <el-button :disabled="pending || draft.locked || dirty" data-testid="undo-scenario" @click="undoScenario">撤销场景操作</el-button>
+              <el-button type="danger" plain :disabled="pending || draft.locked || dirty" data-testid="reset-scenario" @click="resetScenario">重置当前场景</el-button>
+            </div>
+            <pre class="scenario-json-preview" data-testid="scenario-json-preview">{{ JSON.stringify(draft.config, null, 2) }}</pre>
+          </section>
+        </el-tab-pane>
+
+        <el-tab-pane label="脚本预览" name="script">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-script-title">
+            <div class="section-heading"><div><p class="section-kicker">T-XQ-008</p><h3 id="scenario-script-title">脚本预览及预检</h3></div></div>
+            <el-alert v-if="scriptResultMessage" :title="scriptResultMessage" :type="scriptState === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
+            <div class="platform-actions">
+              <el-button type="primary" :loading="scriptPending" :disabled="draft.locked || dirty" data-testid="generate-script" @click="generateScriptPreview">生成脚本预览</el-button>
+              <el-button :loading="scriptPending" :disabled="script === null" data-testid="preflight-script" @click="scenarioStore.preflightScript">执行预检</el-button>
+            </div>
+            <template v-if="script">
+              <el-descriptions :column="2" border>
+                <el-descriptions-item label="目标版本">{{ script.target }}</el-descriptions-item>
+                <el-descriptions-item label="配置版本">{{ script.configVersion }}</el-descriptions-item>
+                <el-descriptions-item label="输出路径">{{ draft.config.output.directory }}</el-descriptions-item>
+                <el-descriptions-item label="校验和">{{ script.checksum }}</el-descriptions-item>
+                <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
+                <el-descriptions-item label="生成时间">{{ script.generatedTime }}</el-descriptions-item>
+              </el-descriptions>
+              <pre class="scenario-script-preview" data-testid="script-preview">{{ script.preview }}</pre>
+            </template>
+            <el-table v-if="preflight.errors.length || preflight.warnings.length" :data="[...preflight.errors, ...preflight.warnings]" stripe data-testid="preflight-issues">
+              <el-table-column prop="severity" label="级别" width="90" />
+              <el-table-column prop="code" label="代码" min-width="180" />
+              <el-table-column label="行:列" width="90"><template #default="{ row }">{{ scriptLocation(row.fieldPath) }}</template></el-table-column>
+              <el-table-column prop="message" label="问题" min-width="280" />
+            </el-table>
+          </section>
+        </el-tab-pane>
+
         <el-tab-pane label="整体校验" name="validation">
           <ValidationPanel
             :pending="pending"
@@ -1342,9 +1590,7 @@ watch(activeTab, (tab) => {
               <el-input :model-value="platformEditor.linkIds.join(', ')" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
             </el-form-item>
             <el-form-item label="传感器">
-              <el-select v-model="platformEditor.sensorIds" multiple collapse-tags collapse-tags-tooltip placeholder="请选择传感器" style="width: 100%">
-                <el-option v-for="sensor in draft?.config.sensors ?? []" :key="sensor.id" :label="sensor.id" :value="sensor.id" />
-              </el-select>
+              <el-input :model-value="platformEditor.sensorIds.join(', ')" readonly placeholder="由传感器归属自动生成" data-testid="platform-sensor-ids" />
             </el-form-item>
             <el-form-item label="干扰器">
               <el-input :model-value="platformEditor.jammerIds.join(', ')" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
@@ -1802,6 +2048,20 @@ watch(activeTab, (tab) => {
 
 .scenario-page :deep(.el-table .el-input-number) {
   width: 100%;
+}
+
+.scenario-json-preview,
+.scenario-script-preview {
+  max-height: 32rem;
+  margin: 1rem 0 0;
+  padding: 1rem;
+  overflow: auto;
+  border: 1px solid var(--console-border);
+  border-radius: 4px;
+  background: var(--console-bg-elevated);
+  color: var(--console-text);
+  font: 12px/1.6 Consolas, monospace;
+  white-space: pre;
 }
 
 .multipath-field :deep(.el-form-item__content) {
