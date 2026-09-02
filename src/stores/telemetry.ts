@@ -116,6 +116,18 @@ function isRouteCandidate(value: unknown): boolean {
     && hasFiniteNumbers(value, ['jamImpactDb', 'ber', 'stabilityFrames', 'rank'])
 }
 
+/** 校验固定帧采用的完整同步证据。 */
+function isSynchronizationEvidence(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 5) return false
+  return value.configVersion === 'SCN-001-v4'
+    && value.engineVersion === 'AFSIM-2.9.0-FIXTURE'
+    && value.uiVersion === 'FRAME-1.0'
+    && typeof value.effectiveFrameId === 'string' && value.effectiveFrameId.startsWith('F-')
+    && typeof value.effectiveSimulationTime === 'number'
+    && Number.isFinite(value.effectiveSimulationTime)
+    && value.effectiveSimulationTime >= 0
+}
+
 /** 校验 REST 或实时通道返回的完整遥测帧。 */
 export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
   if (!isRecord(value)) return false
@@ -131,6 +143,7 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.eventIds) && value.eventIds.every((eventId) => typeof eventId === 'string')
     && isRecord(value.evidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
+    && isSynchronizationEvidence(value.evidence.synchronization)
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
@@ -373,6 +386,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      */
     async recoverFromGap(): Promise<void> {
       const runtime = runtimeFor(this)
+      const recoveryEpoch = this.requestEpoch
       runtime.manuallyClosed = true
       runtime.socket?.close()
       runtime.socket = null
@@ -380,18 +394,22 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (await this.loadFrame()) {
         runtime.manuallyClosed = false
         this.connect()
+      } else if (this.requestEpoch === recoveryEpoch) {
+        this.scheduleReconnect(true)
       }
     },
 
     /**
      * 安排下一次固定退避重连。
+     * @param recoverFrame 是否先重新加载完整帧再连接。
      * @returns 无返回值。
      * @sideEffects 最多创建四次定时重连，耗尽后进入 FAILED 状态。
      */
-    scheduleReconnect(): void {
+    scheduleReconnect(recoverFrame = false): void {
       const runtime = runtimeFor(this)
       const delay = RETRY_DELAYS[runtime.retryAttempt]
       if (delay === undefined) {
+        runtime.manuallyClosed = false
         this.connectionState = 'FAILED'
         return
       }
@@ -399,7 +417,8 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.connectionState = 'RETRYING'
       runtime.retryTimer = setTimeout(() => {
         runtime.retryTimer = null
-        this.connect()
+        if (recoverFrame) void this.recoverFromGap()
+        else this.connect()
       }, delay)
     },
 

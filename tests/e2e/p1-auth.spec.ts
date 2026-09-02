@@ -25,7 +25,7 @@ const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/batches', navLabel: '仿真批次', title: '批量仿真' },
   { path: '/reports', navLabel: '报表中心', title: '报告分析' },
   { path: '/replays', navLabel: '回放复盘', title: '历史回放' },
-  { path: '/blueprint', navLabel: '资源模板库', title: '能力蓝图' },
+  { path: '/blueprint', navLabel: '能力蓝图', title: '能力蓝图' },
   { path: '/admin/data-exchange', navLabel: '数据交换与接口', title: '数据交换与接口' },
   { path: '/traceability', navLabel: '可追溯性', title: '需求追踪' },
   { path: '/interactions', navLabel: '交互管理', title: '交互管理' },
@@ -249,6 +249,32 @@ test('OPERATOR can navigate shared routes and is denied direct admin access', as
   await page.waitForURL('**/blueprint')
 
   await expect(page.getByTestId('route-denial')).toContainText('PERMISSION_DENIED')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', async ({ page }) => {
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const frameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+  await page.getByRole('link', { name: '能力蓝图', exact: true }).click()
+  expect((await frameResponse).status()).toBe(200)
+
+  const contract = page.getByTestId('link-calculator-contract')
+  await expect(contract).toBeVisible()
+  await expect(contract.getByTestId('link-contract-state')).toContainText('同帧通过')
+  await expect(contract).toContainText('F-00042')
+  await expect(contract).toContainText('L-MW-01')
+  await expect(contract).toContainText('高空前出中继节点')
+  await expect(contract).toContainText('地面无人集群指挥车')
+  await expect(contract).toContainText('4500 MHz')
+  await expect(contract).toContainText('3.2e-7')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

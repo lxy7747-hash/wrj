@@ -358,6 +358,22 @@ describe('态势主界面', () => {
     expect(document.body.textContent).toContain('当前帧仅提供摘要')
   })
 
+  it('所选链路从当前帧消失时自动关闭详情弹窗', async () => {
+    const wrapper = mountSituationPage()
+    await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('.link-quality-dialog')).not.toBeNull()
+
+    const telemetry = useTelemetryStore()
+    telemetry.frame = {
+      ...structuredClone(SITUATION_FRAME_F00042),
+      linkSummaries: SITUATION_FRAME_F00042.linkSummaries.filter((summary) => summary.currentSnr !== 7.1),
+    }
+    await flushPromises()
+
+    expect(document.querySelector('.link-quality-dialog')).toBeNull()
+  })
+
   it('通过 Leaflet 控制器同步图层、视图、选择和销毁', async () => {
     const wrapper = mountSituationPage()
     const options = mapControllerMock.latestOptions

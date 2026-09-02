@@ -293,6 +293,33 @@ describe('P3-2 遥测 Store', () => {
     store.disconnectAndReset()
   })
 
+  it('补偿加载失败后按固定退避继续恢复', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore()
+    const loadFrame = vi.spyOn(store, 'loadFrame')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
+    const connect = vi.spyOn(store, 'connect').mockImplementation(() => {})
+
+    await store.recoverFromGap()
+    expect(store.connectionState).toBe('RETRYING')
+    expect(loadFrame).toHaveBeenCalledOnce()
+
+    await vi.advanceTimersByTimeAsync(250)
+    expect(loadFrame).toHaveBeenCalledTimes(2)
+    expect(connect).toHaveBeenCalledOnce()
+
+    let finishCancelledLoad!: (loaded: boolean) => void
+    loadFrame.mockImplementationOnce(() => new Promise((resolve) => { finishCancelledLoad = resolve }))
+    const cancelledRecovery = store.recoverFromGap()
+    store.disconnectAndReset()
+    finishCancelledLoad(false)
+    await cancelledRecovery
+    await vi.runAllTimersAsync()
+    expect(loadFrame).toHaveBeenCalledTimes(3)
+    expect(store.connectionState).toBe('DISCONNECTED')
+  })
+
   it('识别最小帧合同并拒绝损坏帧', () => {
     expect(isTelemetryFrame(frame)).toBe(true)
     expect(isTelemetryFrame({ ...frame, platforms: [{}] })).toBe(false)
@@ -304,6 +331,18 @@ describe('P3-2 遥测 Store', () => {
     expect(isTelemetryFrame({ ...frame, uiLinks: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, eventIds: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [null] } })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, synchronization: undefined } })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: { ...frame.evidence, synchronization: { ...frame.evidence.synchronization, uiVersion: 'WRONG' } },
+    })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        synchronization: { ...frame.evidence.synchronization, unexpected: true },
+      },
+    })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: {} })).toBe(false)
     expect(isTelemetryFrame(null)).toBe(false)
   })

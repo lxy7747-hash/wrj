@@ -85,6 +85,9 @@ watch(frame, (nextFrame) => {
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
+watch(selectedLink, (link) => {
+  if (link === null) linkDialogVisible.value = false
+})
 const situationMetrics = computed(() => frame.value === null ? null : selectSituationMetrics(frame.value, events.value))
 const displayedBusinessPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
@@ -537,7 +540,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
+    <LinkQualityDialog v-if="selectedLink" v-model="linkDialogVisible" :link="selectedLink" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
       <p class="stop-dialog-copy">停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。</p>
       <template #footer>

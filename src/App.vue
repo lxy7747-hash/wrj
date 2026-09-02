@@ -75,7 +75,7 @@ async function logout(): Promise<void> {
 
           <section class="nav-group" aria-label="能力治理">
             <div class="nav-group__links">
-              <router-link to="/blueprint">资源模板库</router-link>
+              <router-link to="/blueprint">能力蓝图</router-link>
               <router-link to="/traceability">可追溯性</router-link>
               <router-link to="/interactions">交互管理</router-link>
             </div>

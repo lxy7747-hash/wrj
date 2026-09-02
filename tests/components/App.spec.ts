@@ -166,6 +166,7 @@ describe('App shell', () => {
     expect(operatorWrapper.findAll('nav a')).toHaveLength(9)
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
     expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(true)
+    expect(operatorWrapper.get('a[href="/blueprint"]').text()).toBe('能力蓝图')
     const operatorSystemGroup = operatorWrapper.get('[aria-label="系统管理"]')
     expect(operatorSystemGroup.find('a[href="/admin/data-exchange"]').exists()).toBe(true)
     expect(operatorSystemGroup.find('a[href="/admin"]').exists()).toBe(false)
