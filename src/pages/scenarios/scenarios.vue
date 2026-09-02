@@ -1153,7 +1153,6 @@ watch(activeTab, (tab) => {
             <p class="section-kicker">基础信息</p>
             <h3 id="scenario-basic-title">场景标识</h3>
           </div>
-          <span class="section-note">场景编号由系统维护</span>
         </div>
         <div class="form-grid form-grid--basic">
           <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
@@ -1184,7 +1183,6 @@ watch(activeTab, (tab) => {
             <p class="section-kicker">时序参数</p>
             <h3 id="scenario-timing-title">仿真时间</h3>
           </div>
-          <span class="section-note">时长和步长单位均为秒</span>
         </div>
         <div class="form-grid form-grid--timing">
           <el-form-item label="开始时间" :error="issueMessage('scenario.startTime')">
@@ -1223,7 +1221,6 @@ watch(activeTab, (tab) => {
             <p class="section-kicker">环境参数</p>
             <h3 id="scenario-environment-title">传播环境</h3>
           </div>
-          <span class="section-note">按详细设计中的环境字段录入</span>
         </div>
         <div class="form-grid form-grid--environment">
           <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
@@ -1769,6 +1766,8 @@ watch(activeTab, (tab) => {
   flex-direction: column;
   padding-right: 0;
   padding-left: 0;
+  padding-top: 5px;
+  padding-bottom: 5px;
   overflow: hidden;
 }
 
@@ -1785,10 +1784,6 @@ watch(activeTab, (tab) => {
   justify-content: flex-end
 }
 
-.section-note {
-  margin: 0;
-  color: var(--console-text-muted);
-}
 
 .scenario-header__actions {
   flex-wrap: wrap;
@@ -1871,12 +1866,6 @@ watch(activeTab, (tab) => {
   letter-spacing: 0.08em;
 }
 
-.section-note {
-  max-width: 26rem;
-  color: color-mix(in srgb, var(--console-text) 72%, transparent);
-  font-size: 0.8rem;
-  text-align: right;
-}
 
 .form-grid {
   display: grid;
@@ -2118,8 +2107,5 @@ watch(activeTab, (tab) => {
     flex-direction: column;
   }
 
-  .section-note {
-    text-align: left;
-  }
 }
 </style>
