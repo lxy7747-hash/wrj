@@ -170,6 +170,28 @@ describe('P3-1 仿真 Store', () => {
     expect(simulation.resultCode).toBe('INVALID_RESPONSE')
   })
 
+  it('实时运行同步失败可见，并可由后续通知恢复完整状态', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    simulation.applyRun(run('COMPLETED', false))
+    vi.stubGlobal('fetch', vi.fn()
+      .mockRejectedValueOnce(new Error('连接已断开'))
+      .mockResolvedValueOnce(successResponse([run('RUNNING', true)])))
+
+    await expect(simulation.synchronizeRuntimeState()).resolves.toBe(false)
+    expect(simulation).toMatchObject({
+      resultCode: 'RUNTIME_SYNC_FAILED',
+      resultMessage: '仿真运行状态同步失败：连接已断开',
+    })
+    await expect(simulation.synchronizeRuntimeState()).resolves.toBe(true)
+    expect(simulation).toMatchObject({
+      uiStatus: 'RUNNING',
+      configurationLockState: 'LOCKED',
+      resultCode: 'SUCCESS',
+      resultMessage: '仿真运行状态已同步。',
+    })
+  })
+
   it('创建并开始运行，同时同步已加载场景的配置锁', async () => {
     authorizeOperator()
     const scenario = useScenarioStore()

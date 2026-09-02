@@ -7,7 +7,6 @@ import type {
   SimulationCommand,
   SimulationMode,
   SimulationRun,
-  SimulationState,
   UiSimulationStatus,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
@@ -106,6 +105,7 @@ export const useSimulationStore = defineStore('simulation', {
     resultMessage: '尚未创建仿真运行。',
     lastConfirmation: null as ConfirmationContext | null,
     requestEpoch: 0,
+    runtimeSyncEpoch: 0,
   }),
 
   getters: {
@@ -148,23 +148,38 @@ export const useSimulationStore = defineStore('simulation', {
     },
 
     /**
-     * 将实时规范状态投影到当前运行。
-     * @param canonical 已通过实时信封校验的规范仿真状态。
-     * @returns 无返回值。
-     * @sideEffects 更新当前运行状态；终态同时解除配置锁。
+     * 收到实时状态后重新读取完整运行，避免从规范 IDLE 猜测 UI 状态和配置锁。
+     * @returns 同步成功或请求已被安全重置淘汰时返回 `true`，当前同步失败时返回 `false`。
+     * @sideEffects 读取运行列表并原子更新当前运行及场景配置锁；失败时显示同步错误。
      */
-    projectRuntimeState(canonical: SimulationState): void {
-      if (this.run === null) return
-      const terminal = canonical.status === 'COMPLETED' || canonical.status === 'ERROR'
-      const uiStatus = canonical.status === 'IDLE'
-        ? (this.run.uiStatus === 'RUNNING' || this.run.uiStatus === 'PAUSED' ? 'STOPPED' : this.run.uiStatus)
-        : canonical.status
-      this.applyRun({
-        ...this.run,
-        uiStatus,
-        canonical: structuredClone(canonical),
-        configLocked: terminal ? false : this.run.configLocked,
-      })
+    async synchronizeRuntimeState(): Promise<boolean> {
+      const requestEpoch = this.requestEpoch
+      const runtimeSyncEpoch = ++this.runtimeSyncEpoch
+      try {
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations`, {
+          headers: { 'X-Demo-Role': useAuthStore().role },
+        })
+        if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
+        const payload = await readJson(response)
+        if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
+        if (!response.ok) throw readFailure(payload) ?? new InvalidSimulationResponseError()
+        const runs = readRuns(payload)
+        const run = runs?.find((candidate) => candidate.runId === 'RUN-001')
+        if (run === undefined) throw new InvalidSimulationResponseError()
+        this.applyRun(run)
+        if (this.resultCode === 'RUNTIME_SYNC_FAILED') {
+          this.capabilityState = 'SUCCESS'
+          this.resultCode = 'SUCCESS'
+          this.resultMessage = '仿真运行状态已同步。'
+        }
+        return true
+      } catch (error) {
+        if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
+        this.showError(error, '仿真运行状态同步失败。')
+        this.resultCode = 'RUNTIME_SYNC_FAILED'
+        this.resultMessage = `仿真运行状态同步失败：${this.resultMessage}`
+        return false
+      }
     },
 
     /**
@@ -417,6 +432,7 @@ export const useSimulationStore = defineStore('simulation', {
      */
     resetToSafeEmpty(): void {
       this.requestEpoch += 1
+      this.runtimeSyncEpoch += 1
       if (this.run !== null) useScenarioStore().projectRuntimeLock(this.run.scenarioId, false)
       this.run = null
       this.capabilityState = 'EMPTY'

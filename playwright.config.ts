@@ -2,7 +2,7 @@ import { defineConfig, devices } from '@playwright/test'
 
 // Two fixed viewports per the baseline acceptance rule: 1920×1080 primary, 1366×768 secondary.
 // The webServer array boots the deterministic loopback mock and the Vite UI on their canonical
-// ports; both are reused when already running locally.
+// ports. E2E always owns a fresh Mock process; the local Vite UI may be reused.
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -31,7 +31,7 @@ export default defineConfig({
       // GET /api/v1/auth/permissions without a role answers 403, which proves the server is up.
       url: 'http://127.0.0.1:4173/api/v1/auth/permissions',
       timeout: 120_000,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     },
     {
       command: 'npm run dev:ui',

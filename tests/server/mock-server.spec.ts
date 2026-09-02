@@ -1151,6 +1151,40 @@ describe('P0 deterministic mock server', () => {
     await closePromise
   })
 
+  it('replays one cached topic envelope to later clients without creating a sequence gap', async () => {
+    const { baseUrl, wsUrl } = await startServer()
+    const firstClient = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const firstInitial = nextJsonMessages(firstClient, 2)
+    firstClient.send(JSON.stringify({
+      type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0,
+    }))
+    const firstMessages = await firstInitial
+
+    const secondClient = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const secondInitial = nextJsonMessages(secondClient, 2)
+    secondClient.send(JSON.stringify({
+      type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0,
+    }))
+    const secondMessages = await secondInitial
+
+    expect(firstMessages[1]).toMatchObject({ topic: 'runtime.state', sequence: 1, payload: { status: 'COMPLETED' } })
+    expect(secondMessages[1]).toEqual(firstMessages[1])
+
+    const firstBroadcast = nextJsonMessage(firstClient)
+    const secondBroadcast = nextJsonMessage(secondClient)
+    await request(baseUrl)
+      .post('/api/v1/simulations')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+      .expect(201)
+    await expect(firstBroadcast).resolves.toMatchObject({ topic: 'runtime.state', sequence: 2, payload: { status: 'IDLE' } })
+    await expect(secondBroadcast).resolves.toMatchObject({ topic: 'runtime.state', sequence: 2, payload: { status: 'IDLE' } })
+
+    firstClient.close()
+    secondClient.close()
+  })
+
   it('accepts the native-browser role query adapter on the canonical WebSocket path', async () => {
     const { wsUrl } = await startServer()
     const client = await openWebSocket(`${wsUrl}?role=OPERATOR`)
@@ -1219,6 +1253,14 @@ describe('P0 deterministic mock server', () => {
       expect(controller.activeClientCount()).toBe(0)
       const client = await openWebSocket(`ws://127.0.0.1:${address.port}/ws/v1`, { role: 'ADMIN' })
       expect(controller.activeClientCount()).toBe(1)
+      const initialMessages = nextJsonMessages(client, 2)
+      client.send(JSON.stringify({
+        type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0,
+      }))
+      await expect(initialMessages).resolves.toEqual([
+        expect.objectContaining({ type: 'subscribed' }),
+        expect.objectContaining({ topic: 'runtime.state', sequence: 1, payload: expect.objectContaining({ status: 'COMPLETED' }) }),
+      ])
       const closePromise = nextClose(client)
 
       controller.invalidateForReset()

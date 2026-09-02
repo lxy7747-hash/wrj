@@ -18,6 +18,11 @@ type SituationEvent = DetectionEvent | SwitchEvent
 
 const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric']
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
+const PLATFORM_TYPES = new Set([
+  'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE',
+  'AIRBORNE_MISSION_CLUSTER', 'COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION',
+])
+const LINK_TYPES = new Set(['SAT', 'MICROWAVE', 'DATALINK', 'LASER'])
 
 interface TelemetryRuntime {
   socket: WebSocket | null
@@ -42,31 +47,73 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/** 校验对象的一组字段均为字符串。 */
+function hasStrings(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => typeof value[key] === 'string')
+}
+
+/** 校验对象的一组字段均为有限数值。 */
+function hasFiniteNumbers(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]))
+}
+
+/** 校验平台内嵌的干扰设备遥测。 */
+function isJammerStatus(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return hasStrings(value, ['jammerId', 'platformId'])
+    && (value.targetPlatform === undefined || typeof value.targetPlatform === 'string')
+    && hasFiniteNumbers(value, ['time', 'power', 'frequency', 'bandwidth'])
+    && typeof value.active === 'boolean'
+}
+
 /** 校验态势页会读取的平台状态字段。 */
 function isPlatform(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return typeof value.platformId === 'string'
-    && typeof value.name === 'string'
-    && typeof value.type === 'string'
-    && typeof value.longitude === 'number'
-    && typeof value.latitude === 'number'
-    && typeof value.altitude === 'number'
-    && typeof value.speed === 'number'
-    && Array.isArray(value.linkIds)
-    && Array.isArray(value.jammers)
+  return hasStrings(value, ['platformId', 'name'])
+    && PLATFORM_TYPES.has(String(value.type))
+    && hasFiniteNumbers(value, ['longitude', 'latitude', 'altitude', 'speed', 'updatedAt'])
+    && Array.isArray(value.linkIds) && value.linkIds.every((linkId) => typeof linkId === 'string')
+    && Array.isArray(value.jammers) && value.jammers.every(isJammerStatus)
 }
 
 /** 校验态势页会读取的链路摘要字段。 */
 function isLinkSummary(value: unknown): value is LinkStatusSummary {
   if (!isRecord(value)) return false
-  return typeof value.linkKey === 'string'
-    && typeof value.sourcePlatform === 'string'
-    && typeof value.destPlatform === 'string'
-    && ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'].includes(String(value.linkType))
-    && typeof value.currentSnr === 'number'
-    && typeof value.currentBer === 'number'
+  return hasStrings(value, ['linkKey', 'sourcePlatform', 'destPlatform'])
+    && LINK_TYPES.has(String(value.linkType))
+    && hasFiniteNumbers(value, ['currentSnr', 'currentBer', 'updatedAt'])
     && (value.status === 'UP' || value.status === 'DOWN')
-    && typeof value.updatedAt === 'number'
+}
+
+/** 校验链路详情面板会读取的完整遥测成员。 */
+function isTelemetryLink(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return hasStrings(value, ['linkId', 'sourcePlatform', 'destPlatform'])
+    && LINK_TYPES.has(String(value.linkType))
+    && hasFiniteNumbers(value, [
+      'time', 'frequency', 'bandwidth', 'distance', 'txPower', 'txAntennaGain', 'rxAntennaGain',
+      'pathLoss', 'jammingPower', 'receivedPower', 'snr', 'ber', 'berThreshold', 'dataRate',
+    ])
+    && (value.modulation === 'BPSK' || value.modulation === 'QPSK')
+    && (value.linkStatus === 'UP' || value.linkStatus === 'DOWN')
+}
+
+/** 校验界面链路状态投影成员。 */
+function isUiLink(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return hasStrings(value, ['linkId', 'frameId', 'reason'])
+    && (value.status === 'UP' || value.status === 'DEGRADED' || value.status === 'DOWN')
+    && (value.canonicalStatus === 'UP' || value.canonicalStatus === 'DOWN')
+    && hasFiniteNumbers(value, ['consecutiveFrames', 'ageMs'])
+}
+
+/** 校验链路标识解析和状态回退会读取的候选链路证据。 */
+function isRouteCandidate(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return typeof value.linkId === 'string'
+    && (value.direction === 'FORWARD' || value.direction === 'REVERSE')
+    && typeof value.eligible === 'boolean'
+    && hasFiniteNumbers(value, ['jamImpactDb', 'ber', 'stabilityFrames', 'rank'])
 }
 
 /** 校验 REST 或实时通道返回的完整遥测帧。 */
@@ -75,15 +122,15 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
   return typeof value.frameId === 'string'
     && typeof value.taskId === 'string'
     && typeof value.runId === 'string'
-    && typeof value.simulationTime === 'number'
-    && Number.isSafeInteger(value.sequence)
+    && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime)
+    && Number.isSafeInteger(value.sequence) && Number(value.sequence) > 0
     && Array.isArray(value.platforms) && value.platforms.every(isPlatform)
-    && Array.isArray(value.links)
+    && Array.isArray(value.links) && value.links.every(isTelemetryLink)
     && Array.isArray(value.linkSummaries) && value.linkSummaries.every(isLinkSummary)
-    && Array.isArray(value.uiLinks)
-    && Array.isArray(value.eventIds)
+    && Array.isArray(value.uiLinks) && value.uiLinks.every(isUiLink)
+    && Array.isArray(value.eventIds) && value.eventIds.every((eventId) => typeof eventId === 'string')
     && isRecord(value.evidence)
-    && Array.isArray(value.evidence.routeCandidates)
+    && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
@@ -176,7 +223,15 @@ export const useTelemetryStore = defineStore('telemetry', {
           readSuccess(eventResponse, (value): value is SituationEvent[] => Array.isArray(value) && value.every(isSituationEvent)),
         ])
         if (epoch !== this.requestEpoch) return false
-        if (frame.runId !== runId || frame.frameId !== frameId || events.some((event) => event.frameId !== frame.frameId)) {
+        const eventIds = events.map((event) => event.eventId)
+        const eventIdSet = new Set(eventIds)
+        if (frame.runId !== runId
+          || frame.frameId !== frameId
+          || events.some((event) => event.frameId !== frame.frameId || event.time !== frame.simulationTime)
+          || frame.eventIds.length !== eventIds.length
+          || new Set(frame.eventIds).size !== frame.eventIds.length
+          || eventIdSet.size !== eventIds.length
+          || frame.eventIds.some((eventId) => !eventIdSet.has(eventId))) {
           throw new Error('遥测帧与事件不属于同一帧。')
         }
         this.frame = structuredClone(frame)
@@ -237,11 +292,27 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.frame = { ...this.frame, linkSummaries: structuredClone(envelope.payload) }
       } else if (envelope.topic === 'runtime.state') {
         if (!isSimulationState(envelope.payload)) return false
-        useSimulationStore().projectRuntimeState(envelope.payload)
+        void this.applyRuntimeState(envelope.sequence, previous)
       }
 
       this.topicSequences[envelope.topic] = envelope.sequence
       return true
+    },
+
+    /**
+     * 读取实时通知对应的完整运行，失败时保留可重放序号并执行完整重同步。
+     * @param sequence 当前实时通知序号。
+     * @param previous 同步前已确认的主题序号。
+     * @returns 同步流程完成后兑现且不返回值的 Promise。
+     * @sideEffects 可能更新运行锁、显示错误、回退主题序号并重建实时订阅。
+     */
+    async applyRuntimeState(sequence: number, previous: number): Promise<void> {
+      if (await useSimulationStore().synchronizeRuntimeState()) return
+      if (this.topicSequences['runtime.state'] !== sequence) return
+      this.topicSequences['runtime.state'] = previous
+      this.resultCode = 'RUNTIME_STATE_SYNC_FAILED'
+      this.resultMessage = '仿真运行状态同步失败，正在重新同步。'
+      await this.recoverFromGap()
     },
 
     /**

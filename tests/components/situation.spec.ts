@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import L from 'leaflet'
-import { createPinia } from 'pinia'
+import { createPinia, setActivePinia } from 'pinia'
 import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG } from '../../src/config/map.config'
@@ -126,6 +126,7 @@ describe('态势主界面', () => {
    */
   function mountSituationPage() {
     const pinia = createPinia()
+    setActivePinia(pinia)
     const auth = useAuthStore(pinia)
     auth.$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
     useTelemetryStore(pinia).$patch({
@@ -334,6 +335,20 @@ describe('态势主界面', () => {
     expect(document.body.textContent).toContain('规范状态中断')
     expect(document.body.textContent).toContain('数据年龄0 ms')
     expect(document.body.textContent).toContain('数据新鲜度新鲜')
+
+    const telemetry = useTelemetryStore()
+    const updatedSummaries = structuredClone(SITUATION_FRAME_F00042.linkSummaries)
+    const updatedLink = updatedSummaries.find((link) => link.currentSnr === 7.1)
+    expect(updatedLink).toBeDefined()
+    updatedLink!.currentSnr = 9.25
+    updatedLink!.currentBer = 0.00012
+    expect(telemetry.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: updatedSummaries,
+    })).toBe(true)
+    await flushPromises()
+    expect(document.body.textContent).toContain('信噪比 SNR9.25 dB')
+    expect(document.body.textContent).toContain('误码率 BER1.2e-4')
 
     const closeButton = document.querySelector<HTMLElement>('.el-dialog__headerbtn')
     closeButton?.click()

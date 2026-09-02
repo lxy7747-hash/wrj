@@ -54,18 +54,24 @@ const {
 } = storeToRefs(telemetryStore)
 const stopDialogVisible = ref(false)
 const selectedNodeId = ref('')
-const selectedLink = ref<SituationLinkView | null>(null)
+const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
+let unmounted = false
 
 onMounted(async () => {
-  await simulationStore.resetProjection()
-  if (await telemetryStore.loadFrame()) telemetryStore.connect()
+  const simulationLoaded = await simulationStore.resetProjection()
+  if (unmounted || !simulationLoaded) return
+  const loaded = await telemetryStore.loadFrame()
+  if (!unmounted && loaded) telemetryStore.connect()
 })
 
-onBeforeUnmount(() => telemetryStore.disconnectAndReset())
+onBeforeUnmount(() => {
+  unmounted = true
+  telemetryStore.disconnectAndReset()
+})
 
 watch(frame, (nextFrame) => {
   if (nextFrame === null) {
@@ -78,6 +84,7 @@ watch(frame, (nextFrame) => {
 }, { immediate: true })
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
+const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
 const situationMetrics = computed(() => frame.value === null ? null : selectSituationMetrics(frame.value, events.value))
 const displayedBusinessPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
@@ -101,7 +108,8 @@ const connectionLabel = computed(() => ({
 
 /** 重新加载完整帧，并在成功后恢复实时订阅。 */
 async function retryTelemetry(): Promise<void> {
-  if (await telemetryStore.loadFrame()) telemetryStore.connect()
+  const loaded = await telemetryStore.loadFrame()
+  if (!unmounted && loaded) telemetryStore.connect()
 }
 
 /**
@@ -194,7 +202,7 @@ function updateMode(mode: SimulationMode): void {
  * @sideeffect 更新所选链路并打开详情框。
  */
 function openLinkDetails(link: SituationLinkView): void {
-  selectedLink.value = link
+  selectedLinkId.value = link.linkId
   linkDialogVisible.value = true
 }
 

@@ -131,11 +131,15 @@ async function resetMock(request: APIRequestContext): Promise<void> {
 
 async function loadScenarioDraft(request: APIRequestContext): Promise<ScenarioDraft> {
   const response = await request.get(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
-    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR', Connection: 'close' },
   })
   expect(response.status()).toBe(200)
   return ((await response.json()) as ApiSuccess<ScenarioDraft>).data
 }
+
+test.beforeEach(async ({ request }) => {
+  await resetMock(request)
+})
 
 test('anonymous access keeps login public and redirects every protected route', async ({ page }) => {
   const audit = auditConsole(page)
@@ -319,7 +323,6 @@ test.describe('P2-1 scenario business loop', () => {
 
 test.describe('P2-2 platform and waypoint acceptance', () => {
   test('OPERATOR adds and edits a platform waypoint, saves, and reloads it', async ({ page, request }) => {
-    await resetMock(request)
     const audit = auditConsole(page)
 
     await loginAs(page, 'operator')
@@ -389,7 +392,6 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
   })
 
   test('real mock accepts exactly 50 business nodes and atomically rejects node 51', async ({ request }) => {
-    await resetMock(request)
     const baseline = await loadScenarioDraft(request)
     const fiftyConfig = structuredClone(baseline.config)
     const source = structuredClone(fiftyConfig.platforms[3]!)
@@ -442,7 +444,6 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
 })
 
 test('P2-3 OPERATOR edits a link across validation, associations, save, and reload', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
@@ -537,7 +538,6 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
 })
 
 test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and independent switches', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
@@ -642,7 +642,6 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
 })
 
 test('P2-5 OPERATOR validates warnings and locates an invalid time step', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
@@ -678,7 +677,6 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
 })
 
 test('P2-6 template roles complete the seven actions and preserve referenced templates', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
   const baseline = await loadScenarioDraft(request)
 
@@ -811,7 +809,6 @@ test('P2-6 template roles complete the seven actions and preserve referenced tem
 })
 
 test('P2-7 OPERATOR persists full data parameters and completes import, undo, and reset', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
   const baseline = await loadScenarioDraft(request)
 
@@ -905,7 +902,6 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
 })
 
 test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates preflight issues', async ({ page, request }) => {
-  await resetMock(request)
   const audit = auditConsole(page)
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -970,8 +966,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P3-1 OPERATOR controls a run and unlocks scenario configuration after confirmed stop', async ({ page, request }) => {
-  await resetMock(request)
+test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame', async ({ page, request }) => {
   const audit = auditConsole(page)
   const runLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/simulations')
@@ -983,6 +978,56 @@ test('P3-1 OPERATOR controls a run and unlocks scenario configuration after conf
   expect((await runLoaded).status()).toBe(200)
   const toolbar = page.getByLabel('仿真控制', { exact: true })
   await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
+  const footer = page.locator('.situation-footer')
+  await expect(footer).toContainText('实时已订阅')
+  await expect(footer).toContainText('固定帧 F-00042')
+  await expect(footer).toContainText('数据时刻 42 s')
+  const telemetryPanel = page.getByLabel('链路、干扰与事件', { exact: true })
+  await expect(telemetryPanel).toContainText('DET-042 · F-00042')
+  await expect(telemetryPanel).toContainText('SW-003 · F-00042')
+  const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
+  await expect(degradedLink).toContainText('7.10')
+  await expect(degradedLink).toContainText('2.4e-4')
+  await degradedLink.click()
+  const linkDialog = page.locator('.link-quality-dialog')
+  await expect(linkDialog.locator('[data-frame-id="F-00042"]')).toBeVisible()
+  await expect(linkDialog).toContainText('信噪比 SNR7.10 dB')
+  await expect(linkDialog).toContainText('误码率 BER2.4e-4')
+  await linkDialog.locator('.el-dialog__headerbtn').click()
+  await expect(linkDialog).not.toBeVisible()
+
+  const remotePage = await page.context().newPage()
+  const remoteAudit = auditConsole(remotePage)
+  const remoteRunLoaded = remotePage.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/simulations')
+  const waitForRemoteCommand = (command: string) => remotePage.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/commands'
+    && response.request().postDataJSON().command === command)
+  await loginAs(remotePage, 'operator')
+  expect((await remoteRunLoaded).status()).toBe(200)
+  const remoteToolbar = remotePage.getByLabel('仿真控制', { exact: true })
+  const remoteCreated = remotePage.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations')
+  const remoteStarted = waitForRemoteCommand('START')
+  await remoteToolbar.getByTestId('simulation-start').click()
+  expect((await remoteCreated).status()).toBe(201)
+  expect((await remoteStarted).status()).toBe(200)
+  await expect(toolbar.getByText('运行中', { exact: true })).toBeVisible()
+  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置已锁定')
+  expect((await loadScenarioDraft(request)).locked).toBe(true)
+
+  await remoteToolbar.getByTestId('simulation-stop').click()
+  const remoteStopDialog = remotePage.getByRole('dialog', { name: '确认停止仿真' })
+  const remoteStopped = waitForRemoteCommand('STOP')
+  await remoteStopDialog.getByTestId('confirm-stop').click()
+  expect((await remoteStopped).status()).toBe(200)
+  await expect(toolbar.getByText('已停止', { exact: true })).toBeVisible()
+  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
+  expect((await loadScenarioDraft(request)).locked).toBe(false)
+  expect(remoteAudit.errors).toEqual([])
+  expect(remoteAudit.http404s).toEqual([])
+  expect([...remoteAudit.nonLoopbackHosts]).toEqual([])
+  await remotePage.close()
 
   const created = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/simulations')

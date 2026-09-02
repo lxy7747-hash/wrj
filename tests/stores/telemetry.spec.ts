@@ -1,8 +1,9 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { Principal, RealtimeEnvelope, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
+import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
 import { isTelemetryFrame, useTelemetryStore } from '../../src/stores/telemetry'
 
@@ -118,6 +119,24 @@ describe('P3-2 遥测 Store', () => {
     }
   })
 
+  it('要求事件 ID 集合完整且事件时间与帧时刻一致', async () => {
+    const store = useTelemetryStore()
+    const cases = [
+      { frame: { ...frame, eventIds: ['DET-042'] }, events: fixtureSource.events },
+      { frame: { ...frame, eventIds: ['DET-042', 'DET-042'] }, events: fixtureSource.events },
+      { frame, events: [{ ...fixtureSource.events[0], time: 41 }, fixtureSource.events[1]] },
+      { frame, events: [fixtureSource.events[0], { ...fixtureSource.events[1], eventId: 'DET-042' }] },
+    ]
+
+    for (const item of cases) {
+      vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+        successResponse(String(input).endsWith('/events') ? item.events : item.frame),
+      )))
+      await expect(store.loadFrame()).resolves.toBe(false)
+      expect(store).toMatchObject({ frame: null, events: [], capabilityState: 'ERROR' })
+    }
+  })
+
   it('校验实时信封、忽略重复消息并在序号断档时补偿', () => {
     const store = useTelemetryStore()
     const recover = vi.spyOn(store, 'recoverFromGap').mockResolvedValue()
@@ -135,7 +154,7 @@ describe('P3-2 遥测 Store', () => {
     expect(store.acceptEnvelope({ type: 'event' })).toBe(false)
   })
 
-  it('只应用与当前帧一致的链路指标，并投影 runtime.state', () => {
+  it('只应用与当前帧一致的链路指标，并按 runtime.state 重拉完整运行', async () => {
     const store = useTelemetryStore()
     const linkEnvelope = {
       type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 3,
@@ -143,8 +162,6 @@ describe('P3-2 遥测 Store', () => {
     } as const
     expect(store.acceptEnvelope(linkEnvelope)).toBe(false)
     store.frame = structuredClone(frame)
-    const simulation = useSimulationStore()
-    simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
 
     expect(store.acceptEnvelope({
       type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 3,
@@ -154,15 +171,79 @@ describe('P3-2 遥测 Store', () => {
     expect(store.acceptEnvelope({ ...linkEnvelope, payload: null })).toBe(false)
     expect(store.acceptEnvelope({ ...linkEnvelope, payload: [null] })).toBe(false)
     expect(store.acceptEnvelope(linkEnvelope)).toBe(true)
+    const simulation = useSimulationStore()
+    const scenario = useScenarioStore()
+    scenario.draft = {
+      config: structuredClone(fixtureSource.scenario),
+      uiExtensions: { jammers: [], sensors: [] },
+      revision: 4,
+      officialLibraryChanged: false,
+      locked: false,
+    } as ScenarioDraft
+    simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
+    const running = {
+      ...structuredClone(fixtureSource.run),
+      uiStatus: 'RUNNING',
+      canonical: { ...structuredClone(fixtureSource.run.canonical), status: 'RUNNING', currentTime: 43, progress: 1 },
+      configLocked: true,
+    } as SimulationRun
+    const stopped = {
+      ...running,
+      uiStatus: 'STOPPED',
+      canonical: { ...running.canonical, status: 'IDLE', currentTime: 0, progress: 0 },
+      configLocked: false,
+    } as SimulationRun
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(successResponse([running]))
+      .mockResolvedValueOnce(successResponse([stopped]))
+    vi.stubGlobal('fetch', fetchSpy)
+
     expect(store.acceptEnvelope({
       type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 8,
       simulationTime: 43,
-      payload: { status: 'RUNNING', currentTime: 43, totalDuration: 7200, processId: 12, progress: 1 },
+      payload: running.canonical,
     })).toBe(true)
-    expect(simulation.run).toMatchObject({ uiStatus: 'RUNNING', canonical: { currentTime: 43 } })
+    await vi.waitFor(() => expect(simulation.run).toMatchObject({ uiStatus: 'RUNNING', configLocked: true }))
+    expect(scenario.draft.locked).toBe(true)
     expect(store.acceptEnvelope({
-      type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 9, payload: null,
+      type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 9,
+      simulationTime: 0,
+      payload: stopped.canonical,
+    })).toBe(true)
+    await vi.waitFor(() => expect(simulation.run).toMatchObject({ uiStatus: 'STOPPED', configLocked: false }))
+    expect(scenario.draft.locked).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:4173/api/v1/simulations', {
+      headers: { 'X-Demo-Role': 'OPERATOR' },
+    })
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 10, payload: null,
     })).toBe(false)
+  })
+
+  it('运行状态重拉失败时显示错误、回退序号并触发完整重同步', async () => {
+    const store = useTelemetryStore()
+    const simulation = useSimulationStore()
+    simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('连接已断开')))
+    const recover = vi.spyOn(store, 'recoverFromGap').mockResolvedValue()
+
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 4,
+      simulationTime: 43,
+      payload: { ...fixtureSource.run.canonical, status: 'RUNNING', currentTime: 43, progress: 1 },
+    })).toBe(true)
+
+    await vi.waitFor(() => expect(recover).toHaveBeenCalledOnce())
+    expect(store.topicSequences['runtime.state']).toBe(0)
+    expect(store).toMatchObject({
+      resultCode: 'RUNTIME_STATE_SYNC_FAILED',
+      resultMessage: '仿真运行状态同步失败，正在重新同步。',
+    })
+    expect(simulation).toMatchObject({
+      resultCode: 'RUNTIME_SYNC_FAILED',
+      resultMessage: '仿真运行状态同步失败：连接已断开',
+    })
   })
 
   it('建立浏览器实时订阅、处理确认并按退避重连', async () => {
@@ -216,7 +297,13 @@ describe('P3-2 遥测 Store', () => {
     expect(isTelemetryFrame(frame)).toBe(true)
     expect(isTelemetryFrame({ ...frame, platforms: [{}] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, platforms: [null] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, platforms: [{ ...frame.platforms[0], linkIds: [null] }] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, platforms: [{ ...frame.platforms[0], jammers: [null] }] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, links: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, linkSummaries: [null] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, uiLinks: [null] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, eventIds: [null] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [null] } })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: {} })).toBe(false)
     expect(isTelemetryFrame(null)).toBe(false)
   })

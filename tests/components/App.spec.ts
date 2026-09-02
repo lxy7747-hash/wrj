@@ -30,6 +30,7 @@ import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
+import { useTelemetryStore } from '../../src/stores/telemetry'
 
 function scenarioDraft(): ScenarioDraft {
   return {
@@ -149,6 +150,7 @@ describe('App shell', () => {
     await router.push('/situation')
 
     const operatorWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
+    await flushPromises()
 
     expect(router.currentRoute.value.meta.layout).toBe('workspace')
     expect(operatorWrapper.get('h1').text()).toBe('多手段集群通联仿真软件')
@@ -255,6 +257,50 @@ describe('App shell', () => {
 
     expect(auth.principal).toBeNull()
     expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
+    wrapper.unmount()
+  })
+
+  it('does not load telemetry or reconnect after logout during situation bootstrap', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({
+      principal: {
+        userId: 'USR-OPERATOR',
+        username: 'operator',
+        role: 'OPERATOR',
+        permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+      },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+    })
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/situation')
+    await router.isReady()
+    let resolveSimulation!: (response: Response) => void
+    const fetchSpy = vi.fn().mockReturnValue(new Promise<Response>((resolve) => { resolveSimulation = resolve }))
+    const webSocketSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('WebSocket', webSocketSpy)
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce())
+
+    await wrapper.get('[data-testid="logout"]').trigger('click')
+    resolveSimulation({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+    } as unknown as Response)
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(webSocketSpy).not.toHaveBeenCalled()
+    expect(useTelemetryStore(pinia)).toMatchObject({
+      frame: null,
+      events: [],
+      connectionState: 'DISCONNECTED',
+      capabilityState: 'EMPTY',
+    })
     wrapper.unmount()
   })
 

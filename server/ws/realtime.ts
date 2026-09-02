@@ -131,7 +131,7 @@ function trackClient(
   client: WebSocket,
   clients: Map<WebSocket, Set<WsTopic>>,
   projection: MockProjection,
-  currentRun: () => SimulationRun | undefined,
+  replayTopic: (client: WebSocket, topic: WsTopic) => void,
 ): void {
   client.on('error', () => clients.delete(client))
   clients.set(client, new Set())
@@ -174,41 +174,28 @@ function trackClient(
     }
     client.send(JSON.stringify(acknowledgement))
 
-    const snapshot = projection.snapshot()
-    for (const topic of parsed.request.topics) {
-      if (topic === 'simulation.frame') {
-        sendEnvelope(client, projection, topic, snapshot.frame, snapshot.frame.simulationTime, snapshot.frame.frameId)
-      } else if (topic === 'link.metric') {
-        sendEnvelope(client, projection, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
-      } else if (topic === 'runtime.state') {
-        const run = currentRun()
-        if (run !== undefined) sendEnvelope(client, projection, topic, run.canonical, run.canonical.currentTime)
-      }
-    }
+    parsed.request.topics.forEach((topic) => replayTopic(client, topic))
   })
 }
 
 /**
- * 向单个已订阅客户端发送规范实时信封。
- * @param client 接收消息的 WebSocket 客户端。
+ * 创建一条具有新主题序号的规范实时信封。
  * @param projection 提供任务标识和分主题序号的 Mock 投影。
  * @param topic 当前消息主题。
  * @param payload 主题对应的已校验载荷。
  * @param simulationTime 当前仿真时刻。
  * @param frameId 同帧主题使用的帧标识。
- * @returns 无返回值。
- * @remarks 仅分配当前主题的下一序号并发送一条 JSON 消息。
+ * @returns 可缓存、重放或广播的实时信封。
  */
-function sendEnvelope<T>(
-  client: WebSocket,
+function createEnvelope<T>(
   projection: MockProjection,
   topic: WsTopic,
   payload: T,
   simulationTime?: number,
   frameId?: FrameId,
-): void {
+): RealtimeEnvelope<T> {
   const taskId = projection.snapshot().task.taskId
-  const envelope: RealtimeEnvelope<T> = {
+  return {
     type: 'event',
     schemaVersion: '1.0',
     topic,
@@ -218,7 +205,6 @@ function sendEnvelope<T>(
     ...(frameId === undefined ? {} : { frameId }),
     payload,
   }
-  client.send(JSON.stringify(envelope))
 }
 
 export function attachRealtimeServer(
@@ -227,12 +213,33 @@ export function attachRealtimeServer(
   currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
 ): RealtimeController {
   const clients = new Map<WebSocket, Set<WsTopic>>()
+  const currentEnvelopes = new Map<WsTopic, string>()
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_TRANSPORT_PAYLOAD_BYTES,
   })
 
-  webSocketServer.on('connection', (client) => trackClient(client, clients, projection, currentRun))
+  const replayTopic = (client: WebSocket, topic: WsTopic): void => {
+    let message = currentEnvelopes.get(topic)
+    if (message === undefined) {
+      const snapshot = projection.snapshot()
+      let envelope: RealtimeEnvelope<unknown> | undefined
+      if (topic === 'simulation.frame') {
+        envelope = createEnvelope(projection, topic, snapshot.frame, snapshot.frame.simulationTime, snapshot.frame.frameId)
+      } else if (topic === 'link.metric') {
+        envelope = createEnvelope(projection, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
+      } else if (topic === 'runtime.state') {
+        const run = currentRun()
+        if (run !== undefined) envelope = createEnvelope(projection, topic, run.canonical, run.canonical.currentTime)
+      }
+      if (envelope === undefined) return
+      message = JSON.stringify(envelope)
+      currentEnvelopes.set(topic, message)
+    }
+    client.send(message)
+  }
+
+  webSocketServer.on('connection', (client) => trackClient(client, clients, projection, replayTopic))
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
     const requestUrl = new URL(request.url ?? '/', 'ws://127.0.0.1')
@@ -265,24 +272,25 @@ export function attachRealtimeServer(
       client.close(1008, 'RESET')
     }
     clients.clear()
+    currentEnvelopes.clear()
   }
 
   return {
     activeClientCount: () => clients.size,
     publishRuntimeState: (run): void => {
       const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
-      if (subscribers.length === 0) return
-      const taskId = projection.snapshot().task.taskId
-      const envelope: RealtimeEnvelope<SimulationState> = {
-        type: 'event',
-        schemaVersion: '1.0',
-        topic: 'runtime.state',
-        taskId,
-        sequence: projection.nextSequence(taskId, 'runtime.state'),
-        simulationTime: run.canonical.currentTime,
-        payload: run.canonical,
+      if (subscribers.length === 0) {
+        currentEnvelopes.delete('runtime.state')
+        return
       }
+      const envelope: RealtimeEnvelope<SimulationState> = createEnvelope(
+        projection,
+        'runtime.state',
+        run.canonical,
+        run.canonical.currentTime,
+      )
       const message = JSON.stringify(envelope)
+      currentEnvelopes.set('runtime.state', message)
       subscribers.forEach(([client]) => client.send(message))
     },
     invalidateForReset,
