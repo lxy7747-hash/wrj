@@ -1,13 +1,16 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import L from 'leaflet'
+import { createPinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG } from '../../src/config/map.config'
+import type { ConfirmationContext, Principal, SimulationRun } from '../../src/contracts/domain-models'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import {
   SITUATION_FRAME_F00042,
   SITUATION_LINKS_F00042,
 } from '../../src/features/situation/situation-model'
+import { useAuthStore } from '../../src/stores/auth'
 
 type SituationMapControllerOptions = {
   onSelectNode: (platformId: string) => void
@@ -59,6 +62,37 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 
 import SituationPage from '../../src/pages/situation/situation.vue'
 
+const OPERATOR: Principal = {
+  userId: 'USR-OPERATOR',
+  username: 'operator',
+  role: 'OPERATOR',
+  permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+}
+
+/** 创建组件测试使用的仿真运行投影。 */
+function simulationRun(uiStatus: SimulationRun['uiStatus'], configLocked: boolean): SimulationRun {
+  return {
+    runId: 'RUN-001',
+    taskId: 'TASK-001',
+    scenarioId: 'SCN-001',
+    uiStatus,
+    canonical: {
+      status: uiStatus === 'STOPPED' ? 'IDLE' : uiStatus,
+      currentTime: 0,
+      totalDuration: 7200,
+      processId: null,
+      progress: 0,
+    },
+    configLocked,
+    ...(uiStatus === 'RUNNING' || uiStatus === 'PAUSED' ? { startedAt: '2026-08-06T08:05:00Z' } : {}),
+  }
+}
+
+/** 创建组件测试使用的成功响应。 */
+function successResponse(data: unknown): Response {
+  return { ok: true, json: vi.fn().mockResolvedValue({ ok: true, data }) } as unknown as Response
+}
+
 describe('态势主界面', () => {
   let mountedWrapper: ReturnType<typeof mount> | null = null
 
@@ -68,10 +102,13 @@ describe('态势主界面', () => {
    * @sideeffect 向 document.body 添加页面及 Element Plus 的关联 DOM。
    */
   function mountSituationPage() {
+    const pinia = createPinia()
+    const auth = useAuthStore(pinia)
+    auth.$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
     mountedWrapper = mount(SituationPage, {
       attachTo: document.body,
       global: {
-        plugins: [ElementPlus],
+        plugins: [pinia, ElementPlus],
         stubs: { RouterLink: { template: '<a><slot /></a>' } },
       },
     })
@@ -81,6 +118,7 @@ describe('态势主界面', () => {
   beforeEach(() => {
     mapControllerMock.latestOptions = null
     vi.clearAllMocks()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([])))
   })
 
   afterEach(() => {
@@ -90,13 +128,14 @@ describe('态势主界面', () => {
     vi.unstubAllGlobals()
   })
 
-  it('呈现原型要求的关键区域且不发起网络请求', () => {
-    const fetchSpy = vi.fn()
+  it('呈现原型要求的关键区域并只读取运行快照', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(successResponse([]))
     const webSocketSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
 
     const wrapper = mountSituationPage()
+    await flushPromises()
 
     expect(wrapper.get('#situation-title').text()).toBe('态势主界面')
     expect(wrapper.get('[aria-label="仿真控制"]')).toBeTruthy()
@@ -123,19 +162,43 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('空中无人作业节点 U03')
     expect(wrapper.text()).toContain('机载瞄准式干扰设备')
     expect(wrapper.text()).toContain('地面宽带压制干扰设备')
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://127.0.0.1:4173/api/v1/simulations',
+      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+    )
     expect(webSocketSpy).not.toHaveBeenCalled()
   })
 
   it('支持开始、暂停并在确认后停止', async () => {
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-001',
+      state: 'AWAITING_CONFIRMATION',
+      actor: 'operator',
+      role: 'OPERATOR',
+      createdAt: '2026-08-06T08:00:00Z',
+      expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(successResponse([simulationRun('COMPLETED', false)]))
+      .mockResolvedValueOnce(successResponse(simulationRun('IDLE', true)))
+      .mockResolvedValueOnce(successResponse(simulationRun('RUNNING', true)))
+      .mockResolvedValueOnce(successResponse(simulationRun('PAUSED', true)))
+      .mockResolvedValueOnce(successResponse(awaiting))
+      .mockResolvedValueOnce(successResponse({ ...awaiting, state: 'CONFIRMED' }))
+      .mockResolvedValueOnce(successResponse(simulationRun('STOPPED', false)))
+    vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mountSituationPage()
+    await flushPromises()
 
     expect(wrapper.text()).not.toContain('配置可查看')
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('运行中')
-    expect(wrapper.text()).not.toContain('配置已锁定')
+    expect(wrapper.text()).toContain('场景配置已锁定')
 
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    await flushPromises()
     expect(wrapper.text()).toContain('已暂停')
 
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
@@ -146,6 +209,8 @@ describe('态势主界面', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
+    expect(wrapper.text()).toContain('场景配置未锁定')
+    expect(fetchSpy).toHaveBeenCalledTimes(7)
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {

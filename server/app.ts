@@ -21,6 +21,7 @@ import {
 import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest } from './http/loopback.js'
 import { ScenarioProjection } from './scenarios/projection.js'
+import { SimulationProjection, type SimulationProjectionResult } from './simulations/projection.js'
 import { ScriptProjection } from './scripts/projection.js'
 import { MockProjection } from './state/projection.js'
 import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
@@ -289,6 +290,29 @@ function sendProjectionFailure<T>(
 }
 
 /**
+ * 将仿真投影错误转换为统一 API 失败信封。
+ * @param res 接收错误状态和信封的 Express 响应。
+ * @param result 仿真投影返回的成功或失败结果。
+ * @param requestId 当前仿真操作的固定请求编号。
+ * @returns 失败并已写出响应时返回 `true`，成功时返回 `false`。
+ * @remarks 只在失败分支写响应，不修改仿真或场景投影。
+ */
+function sendSimulationFailure<T>(
+  res: Response,
+  result: SimulationProjectionResult<T>,
+  requestId: string,
+): result is Extract<SimulationProjectionResult<T>, { ok: false }> {
+  if (result.ok) return false
+  res.status(result.status).json(failure(result.code, result.status, {
+    requestId,
+    generatedAt: P1_GENERATED_AT,
+    message: result.message,
+    ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+  }))
+  return true
+}
+
+/**
  * Requires a valid internal role hint and records malformed/missing hints as denied.
  *
  * @param req - Express request containing the role header.
@@ -363,6 +387,8 @@ function requireConfirmationPermission(
   const allowed = role === 'ADMIN'
     || (action === 'SCENARIO_WARNING_CONTINUE'
       && auth.permissionSet(role).permissions.includes('SCENARIO_DRAFT_WRITE'))
+    || (action === 'SIMULATION_STOP'
+      && auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL'))
   if (allowed) return true
 
   auth.recordDenied('operator', role, 'CONFIRMATION_CREATE', objectId)
@@ -391,6 +417,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const projection = new MockProjection()
   const auth = new AuthProjection()
   const scenarios = new ScenarioProjection()
+  const simulations = new SimulationProjection(scenarios)
   const confirmations = new ConfirmationProjection(options.confirmationClock)
   const templates = new TemplateProjection()
   const scripts = new ScriptProjection()
@@ -513,6 +540,73 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     auth.recordSuccess(role === 'ADMIN' ? 'admin' : 'operator', role, 'AUTH_PERMISSIONS')
     res.status(200).json(success(auth.permissionSet(role), pageMeta(requestId)))
+  })
+
+  /** 返回当前确定性仿真运行列表。 */
+  app.get('/api/v1/simulations', (req, res) => {
+    const requestId = 'REQ-P3-SIMULATION-LIST'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_LIST') === undefined) return
+    const runs = simulations.list()
+    res.status(200).json(success(runs, pageMeta(requestId, runs.length, Math.max(1, runs.length))))
+  })
+
+  /** 创建单实例仿真运行并锁定场景配置。 */
+  app.post('/api/v1/simulations', (req, res) => {
+    const requestId = 'REQ-P3-SIMULATION-CREATE'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_CREATE') === undefined) return
+    const result = simulations.create(req.body)
+    if (sendSimulationFailure(res, result, requestId)) return
+    res.status(201).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回指定仿真运行的 UI 与规范状态投影。 */
+  app.get('/api/v1/simulations/:runId', (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-P3-SIMULATION-GET'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_READ', runId) === undefined) return
+    const result = simulations.get(runId)
+    if (sendSimulationFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /**
+   * 执行开始、暂停、继续、单步、停止或倍速命令。
+   * @remarks STOP 在状态校验后消费绑定运行和角色的一次性确认，其余命令不创建确认上下文。
+   */
+  app.post('/api/v1/simulations/:runId/commands', (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-P3-SIMULATION-COMMAND'
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_COMMAND', runId)
+    if (role === undefined) return
+
+    const inspected = simulations.inspectCommand(runId, req.body)
+    if (sendSimulationFailure(res, inspected, requestId)) return
+    const command = inspected.data
+    let stopConfirmed = false
+    if (command.command === 'STOP') {
+      if (command.confirmationId === undefined) {
+        res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
+          requestId,
+          generatedAt: P1_GENERATED_AT,
+          message: '停止仿真前需要二次确认。',
+        }))
+        return
+      }
+      const confirmed = confirmations.consume(command.confirmationId, 'SIMULATION_STOP', runId, role)
+      if (!confirmed.ok) {
+        res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
+          requestId,
+          generatedAt: P1_GENERATED_AT,
+          message: confirmed.message,
+        }))
+        return
+      }
+      stopConfirmed = true
+    }
+
+    const result = simulations.command(runId, command, stopConfirmed)
+    if (sendSimulationFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
   /**
@@ -1059,6 +1153,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const result: ResetResult = realtime.reset()
     auth.reset()
     scenarios.reset()
+    simulations.reset()
     confirmations.reset()
     templates.reset()
     scripts.reset()

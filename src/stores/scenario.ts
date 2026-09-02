@@ -323,6 +323,17 @@ export const useScenarioStore = defineStore('scenario', {
     },
 
     /**
+     * 同步仿真接口返回的场景配置锁投影。
+     * @param scenarioId 仿真运行绑定的场景编号。
+     * @param locked 当前运行是否持有配置锁。
+     * @returns 无返回值。
+     * @sideEffects 仅在已加载同一场景时更新草稿锁标记，不改变配置、修订号或未保存状态。
+     */
+    projectRuntimeLock(scenarioId: ScenarioId, locked: boolean): void {
+      if (this.draft?.config.scenario.id === scenarioId) this.draft.locked = locked
+    },
+
+    /**
      * 标记当前场景草稿存在未保存修改。
      * @returns 无返回值。
      * @sideEffects 草稿存在时将 `dirty` 设为 `true`，恢复就绪态并清除旧校验与操作反馈。

@@ -123,6 +123,21 @@ export class ScenarioProjection {
   private history: ScenarioDraft[] = []
 
   /**
+   * 同步仿真运行持有的场景配置锁。
+   * @param scenarioId 需要加锁或解锁的场景编号。
+   * @param locked `true` 表示锁定，`false` 表示解锁。
+   * @returns 更新后的场景草稿，场景不存在时返回 404 结果。
+   * @remarks 只改变运行期锁投影，不递增配置修订号，也不写入撤销历史。
+   */
+  setLocked(scenarioId: string, locked: boolean): ScenarioProjectionResult<ScenarioDraft> {
+    if (scenarioId !== this.draft.config.scenario.id) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
+    }
+    this.draft.locked = locked
+    return { ok: true, data: structuredClone(this.draft) }
+  }
+
+  /**
    * 读取指定场景的独立草稿副本。
    * @param scenarioId 路由中的场景编号。
    * @returns 找到时返回草稿副本，否则返回 404 结果。

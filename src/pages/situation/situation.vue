@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import type { DetectionEvent, SwitchEvent } from '../../contracts/domain-models'
+import { computed, onMounted, ref } from 'vue'
+import { storeToRefs } from 'pinia'
+import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
-import SimulationToolbar, { type LocalSimulationStatus } from '../../components/situation/SimulationToolbar.vue'
+import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
@@ -18,6 +19,7 @@ import {
   getPlatformName,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
+import { useSimulationStore } from '../../stores/simulation'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -33,10 +35,16 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 ]
 
 const activeTab = ref<SummaryTab>('nodes')
-const simulationStatus = ref<LocalSimulationStatus>('STOPPED')
-const simulationTime = ref(0)
-const simulationSpeed = ref(1)
-const simulationMode = ref('single')
+const simulationStore = useSimulationStore()
+const {
+  uiStatus: simulationStatus,
+  currentTime: simulationTime,
+  speedMultiplier: simulationSpeed,
+  mode: simulationMode,
+  configurationLockState,
+  resultMessage: simulationFeedback,
+  pending: simulationPending,
+} = storeToRefs(simulationStore)
 const stopDialogVisible = ref(false)
 const selectedNodeId = ref(SITUATION_FRAME_F00042.platforms[0]?.platformId ?? '')
 const selectedLink = ref<SituationLinkView | null>(null)
@@ -44,6 +52,10 @@ const linkDialogVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
+
+onMounted(() => {
+  void simulationStore.resetProjection()
+})
 
 const displayedBusinessPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
@@ -77,32 +89,30 @@ function toggleTelemetryPanel(): void {
 }
 
 /**
- * 开始或继续本地确定性仿真状态机。
- * @returns 无返回值。
- * @sideeffect 将本地运行状态改为运行中。
+ * 创建并开始仿真，或继续当前暂停运行。
+ * @returns 操作完成后兑现且不返回值的 Promise。
+ * @sideeffect 通过 simulationStore 调用 Mock API，并同步运行状态和场景配置锁。
  */
-function startSimulation(): void {
-  simulationStatus.value = 'RUNNING'
+async function startSimulation(): Promise<void> {
+  await simulationStore.start()
 }
 
 /**
- * 暂停本地确定性仿真状态机。
- * @returns 无返回值。
- * @sideeffect 仅在运行中将状态改为暂停，固定遥测帧不变。
+ * 暂停当前仿真运行。
+ * @returns 操作完成后兑现且不返回值的 Promise。
+ * @sideeffect 通过 simulationStore 发送 PAUSE 命令并更新运行投影。
  */
-function pauseSimulation(): void {
-  if (simulationStatus.value === 'RUNNING') simulationStatus.value = 'PAUSED'
+async function pauseSimulation(): Promise<void> {
+  await simulationStore.pause()
 }
 
 /**
- * 执行一次本地单步。
- * @returns 无返回值。
- * @sideeffect 仿真时钟增加一秒并保持暂停，固定遥测帧不变。
+ * 对暂停运行执行一个场景时间步。
+ * @returns 操作完成后兑现且不返回值的 Promise。
+ * @sideeffect 通过 simulationStore 发送 STEP 命令并更新规范仿真时刻。
  */
-function stepSimulation(): void {
-  if (simulationStatus.value === 'RUNNING') return
-  simulationTime.value += 1
-  simulationStatus.value = 'PAUSED'
+async function stepSimulation(): Promise<void> {
+  await simulationStore.step()
 }
 
 /**
@@ -111,38 +121,36 @@ function stepSimulation(): void {
  * @sideeffect 修改停止确认框的可见状态。
  */
 function requestStop(): void {
-  if (simulationStatus.value !== 'STOPPED') stopDialogVisible.value = true
+  if (simulationStatus.value === 'RUNNING' || simulationStatus.value === 'PAUSED') stopDialogVisible.value = true
 }
 
 /**
- * 确认停止本地仿真状态机。
- * @returns 无返回值。
- * @sideeffect 停止运行、清零本地时钟并关闭确认框。
+ * 创建并消费一次性确认后停止当前仿真。
+ * @returns 停止流程完成后兑现且不返回值的 Promise。
+ * @sideeffect 成功时停止运行、清零规范时钟、解除配置锁并关闭确认框。
  */
-function confirmStop(): void {
-  simulationStatus.value = 'STOPPED'
-  simulationTime.value = 0
-  stopDialogVisible.value = false
+async function confirmStop(): Promise<void> {
+  if (await simulationStore.stop()) stopDialogVisible.value = false
 }
 
 /**
- * 更新本地仿真倍速选择。
+ * 更新仿真倍速选择并在运行期间同步到 Mock 服务。
  * @param speed 用户选择的倍速。
- * @returns 无返回值。
- * @sideeffect 修改本地倍速显示，不启动计时器或运行服务。
+ * @returns 操作完成后兑现且不返回值的 Promise。
+ * @sideeffect 调用 simulationStore 更新本地选择或发送 SET_SPEED 命令。
  */
-function updateSpeed(speed: number): void {
-  simulationSpeed.value = speed
+async function updateSpeed(speed: number): Promise<void> {
+  await simulationStore.setSpeed(speed)
 }
 
 /**
- * 更新本地运行模式选择。
- * @param mode 用户选择的运行模式代码。
+ * 更新下一次 START 使用的运行模式。
+ * @param mode 合同定义的运行模式。
  * @returns 无返回值。
- * @sideeffect 修改本地模式反馈，不创建任务或运行进程。
+ * @sideeffect 只更新 simulationStore 中的模式选择。
  */
-function updateMode(mode: string): void {
-  simulationMode.value = mode
+function updateMode(mode: SimulationMode): void {
+  simulationStore.setMode(mode)
 }
 
 /**
@@ -249,6 +257,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :current-time="simulationTime"
       :speed="simulationSpeed"
       :mode="simulationMode"
+      :lock-state="configurationLockState"
+      :pending="simulationPending"
+      :feedback="simulationFeedback"
       @start="startSimulation"
       @pause="pauseSimulation"
       @step="stepSimulation"
@@ -478,10 +489,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">停止后本地仿真时钟将清零。固定帧 F-00042 不会改变。</p>
+      <p class="stop-dialog-copy">停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。</p>
       <template #footer>
-        <el-button @click="stopDialogVisible = false">取消</el-button>
-        <el-button type="danger" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
+        <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
       </template>
     </el-dialog>
   </section>

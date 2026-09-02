@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ApiSuccess, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
+import type { ApiSuccess, ScenarioConfig, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models'
 
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
@@ -28,6 +28,7 @@ import App from '../../src/App.vue'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
+import { useSimulationStore } from '../../src/stores/simulation'
 
 function scenarioDraft(): ScenarioDraft {
   return {
@@ -68,7 +69,10 @@ describe('App shell', () => {
   it('renders login independently and protected routes in the product shell', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const fetchSpy = vi.fn()
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ ok: true, data: [] }),
+    } as unknown as Response)
     const webSocketSpy = vi.fn()
     const xhrOpen = vi.spyOn(XMLHttpRequest.prototype, 'open')
     vi.stubGlobal('fetch', fetchSpy)
@@ -172,17 +176,24 @@ describe('App shell', () => {
     expect(adminWrapper.get('[data-testid="identity-role"]').text()).toBe('角色：管理员')
 
     const scenario = useScenarioStore(pinia)
+    const simulation = useSimulationStore(pinia)
     scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
+    simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
 
     await adminWrapper.get('[data-testid="logout"]').trigger('click')
     await flushPromises()
     expect(auth.principal).toBeNull()
     expect(auth.permissions).toEqual([])
     expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
+    expect(simulation.$state).toMatchObject({ run: null, capabilityState: 'EMPTY', lastConfirmation: null })
     expect(router.currentRoute.value.path).toBe('/login')
     expect(adminWrapper.find('.app-shell').exists()).toBe(false)
     expect(adminWrapper.find('[data-testid="identity-panel"]').exists()).toBe(false)
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(fetchSpy).toHaveBeenCalledWith(
+      'http://127.0.0.1:4173/api/v1/simulations',
+      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+    )
     expect(webSocketSpy).not.toHaveBeenCalled()
     expect(xhrOpen).not.toHaveBeenCalled()
     expect(consoleError).not.toHaveBeenCalled()

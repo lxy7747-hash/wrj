@@ -1337,4 +1337,120 @@ describe('P0 deterministic mock server', () => {
     await expect(closePromise).resolves.toMatchObject({ code: 1008, reason: 'RESET' })
     expect(server.projection.nextSequence('TASK-001', 'simulation.frame')).toBe(1)
   })
+
+  it('executes P3 simulation commands and keeps the scenario lock lifecycle consistent', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+
+    const initialRuns = await request(baseUrl).get('/api/v1/simulations').set(headers).expect(200)
+    expect((initialRuns.body as { data: Array<{ uiStatus: string }> }).data[0]?.uiStatus).toBe('COMPLETED')
+
+    const created = await request(baseUrl)
+      .post('/api/v1/simulations')
+      .set(headers)
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+      .expect(201)
+    expect(created.body).toMatchObject({ data: { runId: 'RUN-001', uiStatus: 'IDLE', configLocked: true } })
+
+    const lockedScenario = await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)
+    expect((lockedScenario.body as { data: ScenarioDraft }).data.locked).toBe(true)
+    await request(baseUrl)
+      .post('/api/v1/scenarios/SCN-001/validate')
+      .set(headers)
+      .send({ config: (lockedScenario.body as { data: ScenarioDraft }).data.config })
+      .expect(409)
+
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' })
+      .expect(200)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'PAUSE' })
+      .expect(200)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'STEP', stepCount: 1 })
+      .expect(200)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'STOP' })
+      .expect(428)
+
+    const awaitingResponse = await request(baseUrl)
+      .post('/api/v1/confirmations')
+      .set(headers)
+      .send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' })
+      .expect(201)
+    const awaiting = (awaitingResponse.body as { data: ConfirmationContext }).data
+    await request(baseUrl)
+      .post(`/api/v1/confirmations/${awaiting.confirmationId}`)
+      .set(headers)
+      .send({ confirm: true })
+      .expect(200)
+    const stopped = await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'STOP', confirmationId: awaiting.confirmationId })
+      .expect(200)
+    expect(stopped.body).toMatchObject({
+      data: {
+        uiStatus: 'STOPPED',
+        configLocked: false,
+        canonical: { status: 'IDLE', currentTime: 0, progress: 0 },
+      },
+    })
+
+    const unlockedScenario = await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)
+    expect((unlockedScenario.body as { data: ScenarioDraft }).data.locked).toBe(false)
+
+    await request(baseUrl)
+      .post('/api/v1/simulations')
+      .set({ Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' })
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+      .expect(201)
+  })
+
+  it('returns typed P3 simulation permission, request, lookup, transition and confirmation errors', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+
+    await request(baseUrl).get('/api/v1/simulations').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/simulations').set('Origin', ORIGIN).send({}).expect(403)
+    await request(baseUrl).get('/api/v1/simulations/RUN-001').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/simulations/RUN-001/commands').set('Origin', ORIGIN).send({ command: 'PAUSE' }).expect(403)
+
+    await request(baseUrl).post('/api/v1/simulations').set(headers).send({}).expect(422)
+    await request(baseUrl).get('/api/v1/simulations/RUN-MISSING').set(headers).expect(404)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-MISSING/commands')
+      .set(headers)
+      .send({ command: 'PAUSE' })
+      .expect(404)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'PAUSE' })
+      .expect(409)
+
+    await request(baseUrl)
+      .post('/api/v1/simulations')
+      .set(headers)
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+      .expect(201)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' })
+      .expect(200)
+    await request(baseUrl)
+      .post('/api/v1/simulations/RUN-001/commands')
+      .set(headers)
+      .send({ command: 'STOP', confirmationId: 'CONF-MISSING' })
+      .expect(409)
+  })
 })

@@ -4,15 +4,20 @@ import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
 import { useScenarioStore } from './stores/scenario'
+import { useSimulationStore } from './stores/simulation'
 
 const auth = useAuthStore()
 const scenario = useScenarioStore()
+const simulation = useSimulationStore()
 const router = useRouter()
 
 watch(
   () => auth.principal,
   (principal) => {
-    if (principal === null) scenario.resetToSafeEmpty()
+    if (principal === null) {
+      simulation.resetToSafeEmpty()
+      scenario.resetToSafeEmpty()
+    }
   },
   { immediate: true, flush: 'sync' },
 )

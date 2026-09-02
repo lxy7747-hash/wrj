@@ -35,6 +35,9 @@ export default defineConfig({
         'server/scripts/projection.ts': {
           branches: 90,
         },
+        'server/simulations/projection.ts': {
+          branches: 90,
+        },
         'src/components/scenarios/*.vue': {
           branches: 90,
         },

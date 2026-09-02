@@ -969,3 +969,65 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
+
+test('P3-1 OPERATOR controls a run and unlocks scenario configuration after confirmed stop', async ({ page, request }) => {
+  await resetMock(request)
+  const audit = auditConsole(page)
+  const runLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === '/api/v1/simulations')
+  const waitForCommand = (command: string) => page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/commands'
+    && response.request().postDataJSON().command === command)
+
+  await loginAs(page, 'operator')
+  expect((await runLoaded).status()).toBe(200)
+  const toolbar = page.getByLabel('仿真控制', { exact: true })
+  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
+
+  const created = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations')
+  const started = waitForCommand('START')
+  await toolbar.getByTestId('simulation-start').click()
+  expect((await created).status()).toBe(201)
+  expect((await started).status()).toBe(200)
+  await expect(toolbar.getByText('运行中', { exact: true })).toBeVisible()
+  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置已锁定 · 仿真已开始。')
+  expect((await loadScenarioDraft(request)).locked).toBe(true)
+
+  const paused = waitForCommand('PAUSE')
+  await toolbar.getByTestId('simulation-pause').click()
+  expect((await paused).status()).toBe(200)
+  await expect(toolbar.getByText('已暂停', { exact: true })).toBeVisible()
+
+  const stepped = waitForCommand('STEP')
+  await toolbar.getByTestId('simulation-step').click()
+  expect((await stepped).status()).toBe(200)
+  await expect(toolbar.getByTestId('simulation-clock')).toHaveText('T+ 00:00:01')
+
+  await toolbar.getByTestId('simulation-stop').click()
+  const stopDialog = page.getByRole('dialog', { name: '确认停止仿真' })
+  await expect(stopDialog).toBeVisible()
+  const confirmationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/confirmations')
+  const confirmationAccepted = page.waitForResponse((response) => response.request().method() === 'POST'
+    && /^\/api\/v1\/confirmations\/[^/]+$/.test(new URL(response.url()).pathname))
+  const stopped = waitForCommand('STOP')
+  await stopDialog.getByTestId('confirm-stop').click()
+  expect((await confirmationCreated).status()).toBe(201)
+  expect((await confirmationAccepted).status()).toBe(200)
+  expect((await stopped).status()).toBe(200)
+  await expect(stopDialog).toHaveCount(0)
+  await expect(toolbar.getByText('已停止', { exact: true })).toBeVisible()
+  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定 · 仿真已停止，场景配置已解锁。')
+  expect((await loadScenarioDraft(request)).locked).toBe(false)
+
+  const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
+    && new URL(response.url()).pathname === SCENARIO_PATH)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  expect((await scenarioLoaded).status()).toBe(200)
+  await expect(page.getByTestId('scenario-name')).toBeEnabled()
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})

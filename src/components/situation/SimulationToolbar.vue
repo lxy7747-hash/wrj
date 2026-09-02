@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { ConfigurationLockState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
 import { formatSimulationTime } from '../../features/situation/situation-model'
 
-export type LocalSimulationStatus = 'STOPPED' | 'RUNNING' | 'PAUSED'
-
 const props = defineProps<{
-  status: LocalSimulationStatus
+  status: UiSimulationStatus
   currentTime: number
   speed: number
-  mode: string
+  mode: SimulationMode
+  lockState: ConfigurationLockState
+  pending: boolean
+  feedback: string
 }>()
 
 defineEmits<{
@@ -17,14 +19,25 @@ defineEmits<{
   step: []
   stop: []
   'update:speed': [value: number]
-  'update:mode': [value: string]
+  'update:mode': [value: SimulationMode]
 }>()
 
 const statusLabel = computed(() => ({
+  IDLE: '待运行',
   STOPPED: '已停止',
   RUNNING: '运行中',
   PAUSED: '已暂停',
+  COMPLETED: '已完成',
+  ERROR: '运行异常',
 })[props.status])
+
+const lockLabel = computed(() => ({
+  UNLOCKED: '场景配置未锁定',
+  LOCKING: '正在锁定场景配置',
+  LOCKED: '场景配置已锁定',
+  UNLOCKING: '正在解除场景配置锁',
+  ERROR: '场景配置锁异常',
+})[props.lockState])
 </script>
 
 <template>
@@ -39,7 +52,8 @@ const statusLabel = computed(() => ({
         type="primary"
         size="small"
         data-testid="simulation-start"
-        :disabled="status === 'RUNNING'"
+        :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
+        :disabled="pending || status === 'RUNNING'"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
@@ -49,13 +63,13 @@ const statusLabel = computed(() => ({
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="status !== 'RUNNING'"
+        :disabled="pending || status !== 'RUNNING'"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
         size="small"
         data-testid="simulation-step"
-        :disabled="status === 'RUNNING'"
+        :disabled="pending || status !== 'PAUSED'"
         @click="$emit('step')"
       ><span aria-hidden="true">⏭</span> 单步</el-button>
       <el-button
@@ -63,7 +77,7 @@ const statusLabel = computed(() => ({
         plain
         size="small"
         data-testid="simulation-stop"
-        :disabled="status === 'STOPPED'"
+        :disabled="pending || (status !== 'RUNNING' && status !== 'PAUSED')"
         @click="$emit('stop')"
       ><span aria-hidden="true">■</span> 停止</el-button>
 
@@ -71,6 +85,7 @@ const statusLabel = computed(() => ({
         <select
           :value="speed"
           aria-label="仿真倍速"
+          :disabled="pending"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
@@ -83,12 +98,13 @@ const statusLabel = computed(() => ({
         <select
           :value="mode"
           aria-label="运行模式"
-          @change="$emit('update:mode', ($event.target as HTMLSelectElement).value)"
+          :disabled="pending || status === 'RUNNING' || status === 'PAUSED'"
+          @change="$emit('update:mode', ($event.target as HTMLSelectElement).value as SimulationMode)"
         >
-          <option value="single">单次仿真</option>
-          <option value="batch">批量仿真</option>
-          <option value="scan">参数扫描</option>
-          <option value="replay">历史回放</option>
+          <option value="INTERACTIVE_SINGLE">单次仿真</option>
+          <option value="BATCH_PARAMETER_TRAVERSAL">批量仿真</option>
+          <option value="PARAMETER_SCAN">参数扫描</option>
+          <option value="HISTORICAL_REPLAY">历史回放</option>
         </select>
       </label>
     </div>
@@ -98,7 +114,7 @@ const statusLabel = computed(() => ({
       <span :class="['runtime-state', `runtime-state--${status.toLowerCase()}`]">
         <i aria-hidden="true"></i>{{ statusLabel }}
       </span>
-      <small>未连接运行服务</small>
+      <small data-testid="simulation-feedback">{{ lockLabel }} · {{ feedback }}</small>
     </div>
   </header>
 </template>
@@ -230,6 +246,14 @@ const statusLabel = computed(() => ({
 
 .runtime-state--paused i {
   background: var(--console-amber);
+}
+
+.runtime-state--completed i {
+  background: var(--console-cyan);
+}
+
+.runtime-state--error i {
+  background: #ff5b5b;
 }
 
 @media (max-width: 1500px) {
