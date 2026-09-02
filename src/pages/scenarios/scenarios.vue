@@ -105,7 +105,7 @@ const canMaintainTemplates = computed(() => authStore.permissions.includes('OFFI
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
 
-/** 将 RFC 3339 时间转换为北京时间的分钟精度日期时间。 */
+/** 将 RFC 3339 时间转换为北京时间的分钟精度日期时间；仅适用固定 UTC+8，不处理夏令时。 */
 function toBeijingDateTime(value: string): string {
   if (value === '') return ''
   const match = RFC3339_DATE_TIME.exec(value)
@@ -127,7 +127,7 @@ function toBeijingDateTime(value: string): string {
   return `${formattedYear}-${pad(beijing.getUTCMonth() + 1)}-${pad(beijing.getUTCDate())}T${pad(beijing.getUTCHours())}:${pad(beijing.getUTCMinutes())}`
 }
 
-/** 将北京时间转换为秒精度 UTC RFC 3339；无效文本或日历值原样保留供校验。 */
+/** 将北京时间转换为秒精度 UTC RFC 3339；固定按 UTC+8 且不处理夏令时，无效值原样保留供校验。 */
 function beijingDateTimeToUtc(value: string): string {
   if (value === '') return ''
   const parts = /^(\d{4,5})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
