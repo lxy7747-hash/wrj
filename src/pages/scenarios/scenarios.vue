@@ -1788,8 +1788,7 @@ watch(activeTab, (tab) => {
 }
 
 .scenario-header {
-  justify-content: flex-end;
-  margin-bottom: 1rem;
+  justify-content: flex-end
 }
 
 .section-note {
