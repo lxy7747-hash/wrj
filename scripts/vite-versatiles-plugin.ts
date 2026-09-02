@@ -8,9 +8,11 @@ import type { Plugin, PreviewServer, ViteDevServer } from 'vite'
 const mapHost = '127.0.0.1'
 const mapPort = 4174
 const frontendRootUrl = new URL('../', import.meta.url)
-const versaTilesPath = fileURLToPath(
-  new URL('../_tools/versatiles/versatiles.exe', frontendRootUrl),
-)
+const isWindows = process.platform === 'win32'
+/** Windows 使用项目配套程序，macOS 和 Linux 使用 PATH 中安装的 VersaTiles。 */
+const versaTilesCommand = isWindows
+  ? fileURLToPath(new URL('../_tools/versatiles/versatiles.exe', frontendRootUrl))
+  : 'versatiles'
 const probeTimeoutMs = 800
 const startupTimeoutMs = 15_000
 const startupPollIntervalMs = 250
@@ -223,15 +225,18 @@ export function createVersaTilesPlugin(): Plugin {
   }
 
   /**
-   * 校验工具与全部地图文件均可访问。
-   * @returns 工具和全部地图文件均可访问时完成的 Promise。
+   * 校验 Windows 配套工具与全部地图文件均可访问。
+   * @returns 所需本地文件均可访问时完成的 Promise。
    * @sideEffects 读取文件系统元数据，不修改文件。
+   * @remarks macOS 和 Linux 的命令由 spawn 通过 PATH 解析，启动失败时返回明确错误。
    */
   async function validateInputs(): Promise<void> {
-    try {
-      await access(versaTilesPath)
-    } catch (error) {
-      throw new Error(`VersaTiles 工具不可用：${versaTilesPath}`, { cause: error })
+    if (isWindows) {
+      try {
+        await access(versaTilesCommand)
+      } catch (error) {
+        throw new Error(`VersaTiles 工具不可用：${versaTilesCommand}`, { cause: error })
+      }
     }
 
     for (const source of tileSources) {
@@ -254,7 +259,7 @@ export function createVersaTilesPlugin(): Plugin {
     await validateInputs()
 
     const child = spawn(
-      versaTilesPath,
+      versaTilesCommand,
       [
         'serve',
         '-i',
