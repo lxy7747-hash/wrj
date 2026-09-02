@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-08-31.5",
+  "fixtureVersion": "2026-09-02.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -861,9 +861,9 @@
         {
           "linkId": "L-MW-01",
           "freeSpaceLossDb": 120,
-          "seaSurfaceLossDb": 12,
-          "rainLossDb": 5,
-          "multipathLossDb": 5.5,
+          "systemLossDb": 12,
+          "obstructionLossDb": 5,
+          "interferenceLossDb": 5.5,
           "totalPathLossDb": 142.5,
           "noisePowerDbm": -104,
           "effectiveNoiseAndInterferenceDbm": -102.62,
@@ -872,9 +872,9 @@
         {
           "linkId": "L-DL-03",
           "freeSpaceLossDb": 115,
-          "seaSurfaceLossDb": 9,
-          "rainLossDb": 4,
-          "multipathLossDb": 6.8,
+          "systemLossDb": 9,
+          "obstructionLossDb": 4,
+          "interferenceLossDb": 6.8,
           "totalPathLossDb": 134.8,
           "noisePowerDbm": -102.5,
           "effectiveNoiseAndInterferenceDbm": -98.7,
@@ -1574,7 +1574,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"

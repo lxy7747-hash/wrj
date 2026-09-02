@@ -7,7 +7,7 @@
 | Type/schema | TypeScript、AJV、Vitest | ScenarioConfig、五 SRS 接口、API/WS envelope、fixture 全量 | `tsc --noEmit`；正/负 schema；类型名/枚举/单位快照一致 |
 | State/store | Vitest | capability、simulation UI/canonical、link UI/canonical、confirmation、replay、batch、config lock | 每条合法边和非法边；reset 后深相等；核心 unit line/branch ≥90% |
 | RBAC | Vitest、Supertest | 角色×route×endpoint×敏感 action | UI guard 与 server reject 均有证据；last-admin 和 Level III 组合覆盖 |
-| Component | Vue Test Utils | 29 capability 目的地、7 interface 目的地、共享表单/表格/对话框 | 六态、键盘、错误/空状态、fieldPath、单位、无颜色唯一语义 |
+| Component | Vue Test Utils | 29 capability 目的地、7 interface 目的地、共享表单/表格/对话框 | 已声明状态、键盘、错误/空状态、fieldPath、单位、无颜色唯一语义 |
 | Contract/API | Supertest、`ws` test client | OpenAPI 每个 operation、error catalog、5 个 canonical topics | 成功/错误 envelope；127.0.0.1；序号/gap/close 1008/reconnect；禁止副作用 |
 | E2E | Playwright | 11 routes、主链、数据交换、回放、报告、admin 拒绝、reset | Chromium；1920×1080 与 1366×768；除负向登录场景中明确白名单的 401/423，以及 P2-8 警告确认场景中首次脚本预览明确白名单的 428 浏览器资源错误外，console error=0。HTTP 404=0；非回环请求=0 |
 
@@ -28,7 +28,7 @@
 
 ### 状态与投影
 
-- 六态 capability：验证前不得 EXECUTING；ERROR 重试；EMPTY 不显示旧数据。
+- capability：验证前不得 EXECUTING；ERROR 重试；EMPTY 不显示旧数据；T-XQ-011 固定证据卡只验证无 EXECUTING 的五态。
 - simulation：START 必须选择运行模式并锁配置；PAUSE/RESUME/STEP/STOP/SET_SPEED 合法性与倍速正数边界；STOPPED→canonical IDLE；ERROR/COMPLETED 清锁。
 - link：连续帧/滞回；F-00042 的 L-MW-01=UP，L-DL-03 UI DEGRADED/canonical DOWN。
 - confirmation：场景 WARNING 继续、官方模板删除、仿真停止和敏感管理员动作均覆盖确认/取消；过期、重新认证、重复确认、reset 全部失效；场景存在 ERROR 时不得以确认绕过。
@@ -109,7 +109,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 一项 capability/interface 只有同时满足以下条件才算完成：
 
 - 追踪行中的 route、page/component、store、type、endpoint/topic、fixture、test 均已实现且命名一致。
-- 六态完整可见，SUCCESS/EMPTY/ERROR 不复用旧内容，错误有 code 与 fieldPath（适用时）。
+- 已声明状态完整可见，SUCCESS/EMPTY/ERROR 不复用旧内容，错误有 code 与 fieldPath（适用时）。
 - canonical/UI 投影只发生在声明 adapter；单位、枚举、ID 与 frame/task ownership 不漂移。
 - OPERATOR/ADMIN 的 allow/deny 与 mock 二次校验一致；敏感操作的确认、引用和 last-admin guard 有负例。
 - component、store、contract test 通过；核心覆盖率阈值满足；相关路由 E2E 按上述 P1、P2～P7、P8 三阶段在双 viewport 通过。

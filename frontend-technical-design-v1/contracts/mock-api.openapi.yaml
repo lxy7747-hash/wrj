@@ -3846,9 +3846,9 @@
         "required": [
           "linkId",
           "freeSpaceLossDb",
-          "seaSurfaceLossDb",
-          "rainLossDb",
-          "multipathLossDb",
+          "systemLossDb",
+          "obstructionLossDb",
+          "interferenceLossDb",
           "totalPathLossDb",
           "noisePowerDbm",
           "effectiveNoiseAndInterferenceDbm",
@@ -3862,13 +3862,13 @@
           "freeSpaceLossDb": {
             "type": "number"
           },
-          "seaSurfaceLossDb": {
+          "systemLossDb": {
             "type": "number"
           },
-          "rainLossDb": {
+          "obstructionLossDb": {
             "type": "number"
           },
-          "multipathLossDb": {
+          "interferenceLossDb": {
             "type": "number"
           },
           "totalPathLossDb": {
@@ -5196,6 +5196,41 @@
       "CapabilityMetadata": {
         "type": "object",
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "id": {
+                  "const": "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX"
+                }
+              },
+              "required": [
+                "id"
+              ]
+            },
+            "then": {
+              "properties": {
+                "states": {
+                  "minItems": 5,
+                  "maxItems": 5,
+                  "not": {
+                    "contains": {
+                      "const": "EXECUTING"
+                    }
+                  }
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "states": {
+                  "minItems": 6,
+                  "maxItems": 6
+                }
+              }
+            }
+          }
+        ],
         "required": [
           "id",
           "module",
@@ -5226,8 +5261,7 @@
           },
           "states": {
             "type": "array",
-            "minItems": 6,
-            "maxItems": 6,
+            "uniqueItems": true,
             "items": {
               "enum": [
                 "LOADING",

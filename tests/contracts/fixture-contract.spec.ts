@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-08-31.5')
+    expect(fixture.fixtureVersion).toBe('2026-09-02.1')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -201,6 +201,7 @@ describe('deterministic fixture contract', () => {
     const states = candidate.metadata.capabilities[0].states as CapabilityState[]
     states.pop()
 
+    expect(validateFixture(candidate)).toBe(false)
     expect(auditFixtureClosure(candidate).map(({ code }) => code))
       .toContain('FIXTURE_METADATA_CONTRACT')
   })
@@ -210,6 +211,7 @@ describe('deterministic fixture contract', () => {
     const states = candidate.metadata.capabilities[0].states as CapabilityState[]
     states[5] = 'LOADING'
 
+    expect(validateFixture(candidate)).toBe(false)
     expect(auditFixtureClosure(candidate).map(({ code }) => code))
       .toContain('FIXTURE_METADATA_CONTRACT')
   })
@@ -219,7 +221,28 @@ describe('deterministic fixture contract', () => {
     const states = candidate.metadata.capabilities[0].states as CapabilityState[]
     states.reverse()
 
+    expect(validateFixture(candidate), JSON.stringify(validateFixture.errors)).toBe(true)
     expect(auditFixtureClosure(candidate)).toEqual([])
+  })
+
+  it('freezes the fixed composite-loss evidence card without an EXECUTING state', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const capability = fixture.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
+    ))
+
+    expect(capability?.states).toEqual(['LOADING', 'VALIDATING', 'SUCCESS', 'EMPTY', 'ERROR'])
+    expect(validateFixture(fixture), JSON.stringify(validateFixture.errors)).toBe(true)
+
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const candidateCapability = candidate.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
+    ))
+    if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-011 capability metadata')
+    ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
+    expect(validateFixture(candidate)).toBe(false)
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
   })
 
   it('rejects a changed canonical CSV field order', () => {

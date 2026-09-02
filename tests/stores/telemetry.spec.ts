@@ -330,6 +330,40 @@ describe('P3-2 遥测 Store', () => {
     expect(isTelemetryFrame({ ...frame, linkSummaries: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, uiLinks: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, eventIds: [null] })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, losses: [null] } })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        losses: [{ ...frame.evidence.losses[0], linkId: '' }],
+      },
+    })).toBe(false)
+    const missingLossComponent = structuredClone(frame) as unknown as {
+      evidence: { losses: Record<string, unknown>[] }
+    }
+    delete missingLossComponent.evidence.losses[0]?.systemLossDb
+    expect(isTelemetryFrame(missingLossComponent)).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        losses: [{ ...frame.evidence.losses[0], modelVersion: 'WRONG' }],
+      },
+    })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        losses: [{ ...frame.evidence.losses[0], totalPathLossDb: Number.NaN }],
+      },
+    })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        losses: [{ ...frame.evidence.losses[0], unexpected: true }],
+      },
+    })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [null] } })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, synchronization: undefined } })).toBe(false)
     expect(isTelemetryFrame({

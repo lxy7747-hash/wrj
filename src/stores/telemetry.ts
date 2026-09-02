@@ -116,6 +116,17 @@ function isRouteCandidate(value: unknown): boolean {
     && hasFiniteNumbers(value, ['jamImpactDb', 'ber', 'stabilityFrames', 'rank'])
 }
 
+/** 校验传播损耗页面会读取的完整分量证据。 */
+function isCompositeLossEvidence(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 9) return false
+  return typeof value.linkId === 'string' && value.linkId.length > 0
+    && hasFiniteNumbers(value, [
+      'freeSpaceLossDb', 'systemLossDb', 'obstructionLossDb', 'interferenceLossDb',
+      'totalPathLossDb', 'noisePowerDbm', 'effectiveNoiseAndInterferenceDbm',
+    ])
+    && value.modelVersion === 'COMPOSITE-LOSS-1.0'
+}
+
 /** 校验固定帧采用的完整同步证据。 */
 function isSynchronizationEvidence(value: unknown): boolean {
   if (!isRecord(value) || Object.keys(value).length !== 5) return false
@@ -142,6 +153,7 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.uiLinks) && value.uiLinks.every(isUiLink)
     && Array.isArray(value.eventIds) && value.eventIds.every((eventId) => typeof eventId === 'string')
     && isRecord(value.evidence)
+    && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
     && isSynchronizationEvidence(value.evidence.synchronization)
 }

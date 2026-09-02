@@ -3,6 +3,7 @@ import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
+import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import App from '../../src/App.vue'
 import WorkspacePreview from '../../src/components/WorkspacePreview.vue'
 import AdminPage from '../../src/pages/admin/admin.vue'
@@ -26,9 +27,11 @@ import type {
   Principal,
   Role,
   User,
+  TelemetryFrame,
 } from '../../src/contracts/domain-models'
 import { createAppRouter, requireAdmin, requirePrincipal, routeRecords } from '../../src/router'
 import { resolveMockOrigin, useAuthStore } from '../../src/stores/auth'
+import { useTelemetryStore } from '../../src/stores/telemetry'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 
@@ -101,6 +104,10 @@ async function mountAt(
     auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
   } else if (path === '/interactions') {
     auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    useTelemetryStore(pinia).$patch({
+      frame: structuredClone(fixtureSource.frame) as unknown as TelemetryFrame,
+      capabilityState: 'SUCCESS',
+    })
   }
   const router = createAppRouter(createMemoryHistory(), pinia)
   await router.push(path)
@@ -717,18 +724,19 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.text()).toContain('SUCCESS')
   })
 
-  it('renders InteractionsPage as a formal construction entry without business side effects', async () => {
+  it('renders InteractionsPage with propagation evidence and planned interaction domains', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountAt(InteractionsPage, '/interactions')
 
     expect(wrapper.text()).toContain('交互管理')
-    expect(wrapper.text()).toContain('功能建设中')
+    expect(wrapper.text()).toContain('组合传播损耗固定算例')
+    expect(wrapper.text()).toContain('固定算例一致')
+    expect(wrapper.text()).toContain('142.5 dB')
     expect(wrapper.text()).toContain('感知与侦测')
     expect(wrapper.text()).toContain('干扰控制')
     expect(wrapper.text()).toContain('链路优选与切换')
     expect(wrapper.findAll('button')).toHaveLength(0)
-    expect(wrapper.findAll('[data-state]')).toHaveLength(0)
     expect(wrapper.find('[data-testid="state-chart"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('100%')
     expect(wrapper.text()).not.toMatch(/LOADING|VALIDATING|EXECUTING|SUCCESS|EMPTY|ERROR/)

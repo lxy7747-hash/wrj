@@ -537,6 +537,41 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'CapabilityMetadata': {
     'additionalProperties': false,
+    'allOf': [
+      {
+        'else': {
+          'properties': {
+            'states': {
+              'maxItems': 6,
+              'minItems': 6
+            }
+          }
+        },
+        'if': {
+          'properties': {
+            'id': {
+              'const': 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
+            }
+          },
+          'required': [
+            'id'
+          ]
+        },
+        'then': {
+          'properties': {
+            'states': {
+              'maxItems': 5,
+              'minItems': 5,
+              'not': {
+                'contains': {
+                  'const': 'EXECUTING'
+                }
+              }
+            }
+          }
+        }
+      }
+    ],
     'properties': {
       'coverage': {
         'enum': [
@@ -568,9 +603,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             'ERROR'
           ]
         },
-        'maxItems': 6,
-        'minItems': 6,
-        'type': 'array'
+        'type': 'array',
+        'uniqueItems': true
       }
     },
     'required': [
@@ -607,6 +641,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'freeSpaceLossDb': {
         'type': 'number'
       },
+      'interferenceLossDb': {
+        'type': 'number'
+      },
       'linkId': {
         'minLength': 1,
         'type': 'string'
@@ -614,16 +651,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'modelVersion': {
         'const': 'COMPOSITE-LOSS-1.0'
       },
-      'multipathLossDb': {
-        'type': 'number'
-      },
       'noisePowerDbm': {
         'type': 'number'
       },
-      'rainLossDb': {
+      'obstructionLossDb': {
         'type': 'number'
       },
-      'seaSurfaceLossDb': {
+      'systemLossDb': {
         'type': 'number'
       },
       'totalPathLossDb': {
@@ -633,9 +667,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'required': [
       'linkId',
       'freeSpaceLossDb',
-      'seaSurfaceLossDb',
-      'rainLossDb',
-      'multipathLossDb',
+      'systemLossDb',
+      'obstructionLossDb',
+      'interferenceLossDb',
       'totalPathLossDb',
       'noisePowerDbm',
       'effectiveNoiseAndInterferenceDbm',

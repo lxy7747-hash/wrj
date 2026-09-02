@@ -281,6 +281,29 @@ test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', asy
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P3-4 OPERATOR verifies the F-00042 composite propagation loss example', async ({ page }) => {
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const frameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+  await page.getByRole('link', { name: '交互管理', exact: true }).click()
+  expect((await frameResponse).status()).toBe(200)
+
+  const example = page.getByTestId('composite-loss-example')
+  await expect(example).toBeVisible()
+  await expect(example.getByTestId('composite-loss-state')).toContainText('算例通过')
+  await expect(example).toContainText('120 + 12 + 5 + 5.5 = 142.5 dB')
+  await expect(example).toContainText('COMPOSITE-LOSS-1.0')
+  await expect(example).toContainText('F-00042 @ 42 s')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test.describe('P2-1 scenario business loop', () => {
   test.use({ timezoneId: 'America/New_York' })
 

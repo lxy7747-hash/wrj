@@ -332,6 +332,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
   ['#/components/schemas/AuthResult/properties/sessionCreated/const', false],
   ['#/components/schemas/PermissionSet/properties/role/enum', ['ADMIN','OPERATOR']],
+  ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/const', 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'],
+  ['#/components/schemas/CapabilityMetadata/allOf/0/then/properties/states/not/contains/const', 'EXECUTING'],
   ['#/components/schemas/CapabilityMetadata/properties/coverage/enum', ['INTERACTIVE_UI','VISIBLE_CONTRACT']],
   ['#/components/schemas/CapabilityMetadata/properties/states/items/enum', ['LOADING','VALIDATING','EXECUTING','SUCCESS','EMPTY','ERROR']],
   ['#/components/schemas/InterfaceMetadata/properties/kind/enum', ['外部','内部']],
@@ -555,6 +557,13 @@ const EXPECTED_CAPABILITY_STATES = Object.freeze([
   'LOADING',
   'VALIDATING',
   'EXECUTING',
+  'SUCCESS',
+  'EMPTY',
+  'ERROR',
+] as const)
+const EXPECTED_COMPOSITE_LOSS_STATES = Object.freeze([
+  'LOADING',
+  'VALIDATING',
   'SUCCESS',
   'EMPTY',
   'ERROR',
@@ -1565,12 +1574,15 @@ export function auditFixtureClosure(fixtures: DeterministicFixtureSet): Validati
         findings,
       )
     }
-    if (!sameStrings(capability.states, EXPECTED_CAPABILITY_STATES)) {
+    const expectedStates = capability.id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
+      ? EXPECTED_COMPOSITE_LOSS_STATES
+      : EXPECTED_CAPABILITY_STATES
+    if (!sameStrings(capability.states, expectedStates)) {
       addFinding(
         findings,
         'FIXTURE_METADATA_CONTRACT',
         `$.metadata.capabilities[${index}].states`,
-        `Capability states must be the complete duplicate-free set [${EXPECTED_CAPABILITY_STATES.join(', ')}]`,
+        `Capability states must be the complete duplicate-free set [${expectedStates.join(', ')}]`,
       )
     }
   })

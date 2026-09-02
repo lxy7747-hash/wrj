@@ -1,3 +1,7 @@
+<script setup lang="ts">
+import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
+</script>
+
 <template>
   <section class="page interactions-page" aria-labelledby="interactions-title">
     <header class="interactions-page__header">
@@ -5,25 +9,19 @@
         <p class="eyebrow">能力治理 / 交互管理</p>
         <h2 id="interactions-title">交互管理</h2>
         <p class="interactions-page__summary">
-          以感知、控制与链路决策的关系组织未来交互信息；当前页面仅说明规划边界。
+          展示传播损耗计算证据，并按感知、控制与链路决策关系组织后续交互能力。
         </p>
       </div>
-      <span class="console-chip interactions-page__chip">规划信息架构</span>
+      <span class="console-chip interactions-page__chip">传播损耗证据</span>
     </header>
 
-    <el-alert
-      class="construction-alert"
-      type="info"
-      :closable="false"
-      title="功能建设中"
-      description="本入口将承载交互管理业务域；当前不提供业务操作或业务数据。"
-    />
+    <CompositeLossExample class="interaction-loss" />
 
     <section class="console-panel interaction-topology" aria-labelledby="topology-title">
       <header class="interaction-topology__header">
         <div>
-          <p class="section-kicker">PLANNING TOPOLOGY</p>
-          <h3 id="topology-title">交互规划关系</h3>
+          <p class="section-kicker">后续能力</p>
+          <h3 id="topology-title">交互能力规划关系</h3>
         </div>
         <p>以下拓扑仅表达感知输入、控制边界与链路决策之间的规划关系。</p>
       </header>
@@ -84,7 +82,7 @@
 <style scoped>
 .interactions-page {
   min-width: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .interactions-page__header,
@@ -124,7 +122,7 @@
   color: var(--console-teal);
 }
 
-.construction-alert {
+.interaction-loss {
   margin-top: var(--space-5);
 }
 

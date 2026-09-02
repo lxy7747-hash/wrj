@@ -170,8 +170,8 @@ export interface SimulationCommand {
   mode?: SimulationMode; speedMultiplier?: number; stepCount?: 1; confirmationId?: Identifier;
 }
 export interface CompositeLossEvidence {
-  linkId: Identifier; freeSpaceLossDb: Decibels; seaSurfaceLossDb: Decibels;
-  rainLossDb: Decibels; multipathLossDb: Decibels; totalPathLossDb: Decibels;
+  linkId: Identifier; freeSpaceLossDb: Decibels; systemLossDb: Decibels;
+  obstructionLossDb: Decibels; interferenceLossDb: Decibels; totalPathLossDb: Decibels;
   noisePowerDbm: DecibelMilliwatts; effectiveNoiseAndInterferenceDbm: DecibelMilliwatts;
   modelVersion: 'COMPOSITE-LOSS-1.0';
 }
