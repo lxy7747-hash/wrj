@@ -131,7 +131,7 @@ describe('P2-1 场景管理页面', () => {
     const scenario = useScenarioStore(pinia)
     const script: ScriptContract = {
       scriptId: 'SCRIPT-P2-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
-      target: 'AFSIM 2.9.0' as const, checksum: 'SHA256-MOCK-12345678', preview: 'preview', generatedTime: META.generatedAt,
+      target: 'AFSIM 2.9.0' as const, checksum: 'FNV1A-MOCK-12345678', preview: 'preview', generatedTime: META.generatedAt,
     }
     scenario.$patch({
       draft: draft(), panelState: 'SUCCESS', script, scriptState: 'SUCCESS',
@@ -181,6 +181,11 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     await wrapper.get('[data-testid="delete-information-demand-1"]').trigger('click')
     expect(scenario.dirty).toBe(true)
+
+    await wrapper.get('#tab-script').trigger('click')
+    await nextTick()
+    expect(wrapper.get('[data-testid="generate-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.findAllComponents({ name: 'ElTooltip' }).some((item) => item.props('content') === '请先保存草稿')).toBe(true)
 
     scenario.dirty = false
     const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(scenario.draft!.config) } as never)

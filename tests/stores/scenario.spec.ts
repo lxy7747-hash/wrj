@@ -758,7 +758,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     }
     const script: ScriptContract = {
       scriptId: 'SCRIPT-P2-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
-      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-12345678', preview: '# AFSIM 2.9.0 场景脚本预览；仅内存生成', generatedTime: META.generatedAt,
+      target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-12345678', preview: '# AFSIM 2.9.0 场景脚本预览；仅内存生成', generatedTime: META.generatedAt,
     }
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(jsonResponse(success(blocked)))
@@ -847,7 +847,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     const cleanValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
     const validScript: ScriptContract = {
       scriptId: 'SCRIPT-P2-002', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
-      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-87654321', preview: 'preview', generatedTime: META.generatedAt,
+      target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-87654321', preview: 'preview', generatedTime: META.generatedAt,
     }
     const malformedScripts = [
       null,
@@ -931,7 +931,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
 
     scenario.script = {
       scriptId: 'SCRIPT-P2-FAIL', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
-      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-FAIL', preview: 'preview', generatedTime: META.generatedAt,
+      target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-FAIL', preview: 'preview', generatedTime: META.generatedAt,
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success(null))))
     await expect(scenario.preflightScript()).resolves.toBe(false)
@@ -944,7 +944,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     const scenario = useScenarioStore()
     scenario.script = {
       scriptId: 'SCRIPT-P2-PENDING', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
-      target: 'AFSIM 2.9.0', checksum: 'SHA256-MOCK-PENDING', preview: 'preview', generatedTime: META.generatedAt,
+      target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-PENDING', preview: 'preview', generatedTime: META.generatedAt,
     }
 
     const pending = scenario.preflightScript()
