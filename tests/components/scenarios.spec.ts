@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
-import ScenariosPage from '../../src/pages/scenarios.vue'
+import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
@@ -155,7 +155,9 @@ describe('P2-1 场景管理页面', () => {
     component('ElInputNumber', 'sensor-frequency-min-0').vm.$emit('update:modelValue', 1200)
     component('ElInputNumber', 'sensor-frequency-max-0').vm.$emit('update:modelValue', 6200)
     component('ElInputNumber', 'sensor-range-0').vm.$emit('update:modelValue', 120000)
-    component('ElSelect', 'sensor-direction-0').vm.$emit('change', 90)
+    component('ElSelect', 'sensor-direction-mode-0').vm.$emit('change', 'DIRECTIONAL')
+    await nextTick()
+    component('ElInputNumber', 'sensor-direction-0').vm.$emit('update:modelValue', 90)
     component('ElInputNumber', 'sensor-probability-0').vm.$emit('update:modelValue', 0.8)
     component('ElSwitch', 'sensor-enabled-0').vm.$emit('change', false)
     await wrapper.get('[data-testid="add-sensor"]').trigger('click')

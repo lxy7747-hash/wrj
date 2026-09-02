@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue'
 import { useRouter } from 'vue-router'
-import BrandIcon from '../components/BrandIcon.vue'
-import { useAuthStore, type LoginCredentials } from '../stores/auth'
+import BrandIcon from '../../components/BrandIcon.vue'
+import { useAuthStore, type LoginCredentials } from '../../stores/auth'
 
 const auth = useAuthStore()
 const router = useRouter()

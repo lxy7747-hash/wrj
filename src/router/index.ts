@@ -7,17 +7,17 @@ import {
   type RouteLocationNormalized,
   type RouteRecordRaw,
 } from 'vue-router'
-import AdminPage from '../pages/admin.vue'
-import AdminDataExchangePage from '../pages/admin-data-exchange.vue'
-import BatchesPage from '../pages/batches.vue'
-import BlueprintPage from '../pages/blueprint.vue'
-import InteractionsPage from '../pages/interactions.vue'
-import LoginPage from '../pages/login.vue'
-import ReplaysPage from '../pages/replays.vue'
-import ReportsPage from '../pages/reports.vue'
-import ScenariosPage from '../pages/scenarios.vue'
-import SituationPage from '../pages/situation.vue'
-import TraceabilityPage from '../pages/traceability.vue'
+import AdminPage from '../pages/admin/admin.vue'
+import AdminDataExchangePage from '../pages/admin-data-exchange/admin-data-exchange.vue'
+import BatchesPage from '../pages/batches/batches.vue'
+import BlueprintPage from '../pages/blueprint/blueprint.vue'
+import InteractionsPage from '../pages/interactions/interactions.vue'
+import LoginPage from '../pages/login/login.vue'
+import ReplaysPage from '../pages/replays/replays.vue'
+import ReportsPage from '../pages/reports/reports.vue'
+import ScenariosPage from '../pages/scenarios/scenarios.vue'
+import SituationPage from '../pages/situation/situation.vue'
+import TraceabilityPage from '../pages/traceability/traceability.vue'
 import { useAuthStore } from '../stores/auth'
 
 declare module 'vue-router' {

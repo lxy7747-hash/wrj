@@ -2,7 +2,7 @@
 import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessageBox } from 'element-plus'
-import type { CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../contracts/domain-models'
+import type { CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   JAMMER_TYPES,
@@ -12,13 +12,14 @@ import {
   inspectScenarioConfig,
   inspectScenarioUiExtensions,
   isBusinessInformationNodeType,
-} from '../features/scenarios/scenario-validation'
-import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../features/situation/situation-model'
-import { useScenarioStore } from '../stores/scenario'
-import { useAuthStore } from '../stores/auth'
-import TemplateLibrary from '../components/scenarios/TemplateLibrary.vue'
-import ValidationPanel from '../components/scenarios/ValidationPanel.vue'
-import WaypointMapPicker, { type WaypointMapPoint } from '../components/scenarios/WaypointMapPicker.vue'
+} from '../../features/scenarios/scenario-validation'
+import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
+import { useScenarioStore } from '../../stores/scenario'
+import { useAuthStore } from '../../stores/auth'
+import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
+import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
+import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
+import WaypointMapPicker, { type WaypointMapPoint } from '../../components/scenarios/WaypointMapPicker.vue'
 
 const scenarioStore = useScenarioStore()
 const authStore = useAuthStore()
@@ -100,7 +101,6 @@ const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((
 const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
 const canMaintainTemplates = computed(() => authStore.permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
-const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -750,6 +750,22 @@ function setSensorExtensionValue<K extends keyof SensorUiExtension>(sensorId: st
   markDirty()
 }
 
+/** 读取传感器方向的编辑模式。 */
+function sensorDirectionMode(sensorId: string): 'OMNI' | 'DIRECTIONAL' {
+  return typeof sensorExtension(sensorId)?.direction === 'number' ? 'DIRECTIONAL' : 'OMNI'
+}
+
+/** 切换全向或定向模式；首次切换到定向时使用 0 度。 */
+function setSensorDirectionMode(sensorId: string, mode: 'OMNI' | 'DIRECTIONAL'): void {
+  const direction = sensorExtension(sensorId)?.direction
+  setSensorExtensionValue(sensorId, 'direction', mode === 'OMNI' ? 'OMNI' : typeof direction === 'number' ? direction : 0)
+}
+
+/** 更新定向模式的角度。 */
+function setSensorDirection(sensorId: string, direction: number | undefined): void {
+  if (direction !== undefined) setSensorExtensionValue(sensorId, 'direction', direction)
+}
+
 /** 生成当前场景内未占用的传感器 ID。 */
 function nextSensorId(): string {
   const ids = new Set(draft.value?.config.sensors.map((sensor) => sensor.id) ?? [])
@@ -933,7 +949,7 @@ async function saveScenario(): Promise<void> {
 /** 粘贴并导入完整场景快照；不访问模板库或全局 Mock 重置。 */
 async function importScenarioSnapshot(): Promise<void> {
   try {
-    const { value } = await ElMessageBox.prompt('粘贴一个完整 ScenarioConfig JSON 对象。', '导入场景完整快照', {
+    const { value } = await ElMessageBox.prompt('粘贴一个完整 ScenarioConfig 规范快照。UI 扩展将按规则重建。', '导入场景规范快照', {
       confirmButtonText: '导入场景',
       cancelButtonText: '取消',
       inputType: 'textarea',
@@ -982,12 +998,6 @@ async function generateScriptPreview(): Promise<void> {
   } catch {
     // 用户取消后不创建一次性确认上下文。
   }
-}
-
-/** 从脚本字段路径读取一基行号和列号。 */
-function scriptLocation(fieldPath: string): string {
-  const location = /^preview\[(\d+):(\d+)\]$/.exec(fieldPath)
-  return location === null ? '—' : `${location[1]}:${location[2]}`
 }
 
 /**
@@ -1422,7 +1432,17 @@ watch(activeTab, (tab) => {
               <el-table-column label="最低频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
               <el-table-column label="最高频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
               <el-table-column label="探测范围（m）" width="150"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="0" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="方向" width="125"><template #default="{ row, $index }"><el-select :model-value="sensorExtension(row.id)?.direction" filterable :data-testid="`sensor-direction-${$index}`" @change="setSensorExtensionValue(row.id, 'direction', $event)"><el-option label="全向" value="OMNI" /><el-option v-for="degree in 361" :key="degree - 1" :label="`${degree - 1}°`" :value="degree - 1" /></el-select></template></el-table-column>
+              <el-table-column label="方向" width="250">
+                <template #default="{ row, $index }">
+                  <div class="sensor-direction-editor">
+                    <el-select :model-value="sensorDirectionMode(row.id)" :data-testid="`sensor-direction-mode-${$index}`" @change="setSensorDirectionMode(row.id, $event)">
+                      <el-option label="全向" value="OMNI" />
+                      <el-option label="定向" value="DIRECTIONAL" />
+                    </el-select>
+                    <el-input-number v-if="sensorDirectionMode(row.id) === 'DIRECTIONAL'" :model-value="sensorExtension(row.id)?.direction" :min="0" :max="360" controls-position="right" :data-testid="`sensor-direction-${$index}`" @update:model-value="setSensorDirection(row.id, $event)" />
+                  </div>
+                </template>
+              </el-table-column>
               <el-table-column label="探测概率" width="145"><template #default="{ row, $index }"><el-input-number :model-value="sensorExtension(row.id)?.probability" :min="0" :max="1" :step="0.01" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? 0)" /></template></el-table-column>
               <el-table-column label="启用" width="70"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
               <el-table-column label="操作" width="70" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
@@ -1462,7 +1482,7 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="场景操作" name="operations">
           <section class="console-panel scenario-section" aria-labelledby="scenario-operation-title">
             <div class="section-heading"><div><p class="section-kicker">完整快照</p><h3 id="scenario-operation-title">导入、撤销与重置</h3></div></div>
-            <el-alert title="以下操作仅作用于当前场景完整快照，不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
+            <el-alert title="导入 ScenarioConfig 规范快照，UI 扩展按规则重建。以下操作不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
             <el-alert v-if="sceneOperationFeedback" class="platform-feedback" :title="sceneOperationFeedback" type="success" :closable="false" show-icon />
             <div class="platform-actions">
               <el-button type="primary" :disabled="pending || draft.locked" data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
@@ -1474,31 +1494,17 @@ watch(activeTab, (tab) => {
         </el-tab-pane>
 
         <el-tab-pane label="脚本预览" name="script">
-          <section class="console-panel scenario-section" aria-labelledby="scenario-script-title">
-            <div class="section-heading"><div><p class="section-kicker">T-XQ-008</p><h3 id="scenario-script-title">脚本预览及预检</h3></div></div>
-            <el-alert v-if="scriptResultMessage" :title="scriptResultMessage" :type="scriptState === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
-            <div class="platform-actions">
-              <el-button type="primary" :loading="scriptPending" :disabled="draft.locked || dirty" data-testid="generate-script" @click="generateScriptPreview">生成脚本预览</el-button>
-              <el-button :loading="scriptPending" :disabled="script === null" data-testid="preflight-script" @click="scenarioStore.preflightScript">执行预检</el-button>
-            </div>
-            <template v-if="script">
-              <el-descriptions :column="2" border>
-                <el-descriptions-item label="目标版本">{{ script.target }}</el-descriptions-item>
-                <el-descriptions-item label="配置版本">{{ script.configVersion }}</el-descriptions-item>
-                <el-descriptions-item label="输出路径">{{ draft.config.output.directory }}</el-descriptions-item>
-                <el-descriptions-item label="校验和">{{ script.checksum }}</el-descriptions-item>
-                <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
-                <el-descriptions-item label="生成时间">{{ script.generatedTime }}</el-descriptions-item>
-              </el-descriptions>
-              <pre class="scenario-script-preview" data-testid="script-preview">{{ script.preview }}</pre>
-            </template>
-            <el-table v-if="preflight.errors.length || preflight.warnings.length" :data="[...preflight.errors, ...preflight.warnings]" stripe data-testid="preflight-issues">
-              <el-table-column prop="severity" label="级别" width="90" />
-              <el-table-column prop="code" label="代码" min-width="180" />
-              <el-table-column label="行:列" width="90"><template #default="{ row }">{{ scriptLocation(row.fieldPath) }}</template></el-table-column>
-              <el-table-column prop="message" label="问题" min-width="280" />
-            </el-table>
-          </section>
+          <ScriptPreview
+            :state="scriptState"
+            :result-message="scriptResultMessage"
+            :script="script"
+            :preflight="preflight"
+            :output-directory="draft.config.output.directory"
+            :locked="draft.locked"
+            :dirty="dirty"
+            @generate="generateScriptPreview"
+            @preflight="scenarioStore.preflightScript"
+          />
         </el-tab-pane>
 
         <el-tab-pane label="整体校验" name="validation">
@@ -2050,8 +2056,7 @@ watch(activeTab, (tab) => {
   width: 100%;
 }
 
-.scenario-json-preview,
-.scenario-script-preview {
+.scenario-json-preview {
   max-height: 32rem;
   margin: 1rem 0 0;
   padding: 1rem;
@@ -2062,6 +2067,12 @@ watch(activeTab, (tab) => {
   color: var(--console-text);
   font: 12px/1.6 Consolas, monospace;
   white-space: pre;
+}
+
+.sensor-direction-editor {
+  display: grid;
+  grid-template-columns: 5rem minmax(0, 1fr);
+  gap: 0.5rem;
 }
 
 .multipath-field :deep(.el-form-item__content) {

@@ -23,7 +23,7 @@
 | Store | 唯一拥有的 state | Actions | 不得拥有 |
 |---|---|---|---|
 | `authStore` | principal、role、permissions、最近授权结果 | `login`, `refreshPermissions`, `authorize`, `resetToSafeEmpty` | 业务数据、真实 token/session |
-| `scenarioStore` | canonical draft、UI 扩展、history、revision、validation、warning confirmation、templates、script preview、lock projection | `load`, `edit`, `validate`, `requestWarningConfirmation`, `importBatch`, `undo`, `resetDraft`, `copyTemplate`, `previewScript`, `resetToSafeEmpty` | 仿真计时器、官方持久化假象 |
+| `scenarioStore` | canonical draft、UI 扩展、history、revision、validation、warning confirmation、templates、script preview、lock projection | `load`, `edit`, `validate`, `requestWarningConfirmation`, `importScenarioSnapshot`, `undo`, `resetDraft`, `copyTemplate`, `previewScript`, `resetToSafeEmpty` | 仿真计时器、官方持久化假象 |
 | `simulationStore` | RUN-001 UI/canonical 状态、time/progress/mode/speed、config lock、command feedback | `create`, `command`, `setSpeed`, `step`, `clearTimers`, `resetProjection`, `resetToSafeEmpty` | telemetry 数组、浏览器定时期望值 |
 | `telemetryStore` | 按 frameId 的平台/链路/事件、topic sequence、新鲜度 | `connect`, `subscribe`, `acceptEnvelope`, `markDisconnected`, `disconnectAndReset`, `loadFrame`, `resetToSafeEmpty` | 仿真命令、地图实例 |
 | `batchStore` | batch form、BATCH-001、12 行、状态、selected run | `validate`, `create`, `command`, `loadComparison`, `resetToSafeEmpty` | report export 权限/确认 |

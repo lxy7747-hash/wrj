@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { DetectionEvent, SwitchEvent } from '../contracts/domain-models'
-import LinkQualityDialog from '../components/situation/LinkQualityDialog.vue'
-import MetricPanel from '../components/situation/MetricPanel.vue'
-import OfflineSituationMap from '../components/situation/OfflineSituationMap.vue'
-import SimulationToolbar, { type LocalSimulationStatus } from '../components/situation/SimulationToolbar.vue'
-import type { SituationMapFocusTarget } from '../components/situation/situation-map-controller'
+import type { DetectionEvent, SwitchEvent } from '../../contracts/domain-models'
+import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
+import MetricPanel from '../../components/situation/MetricPanel.vue'
+import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
+import SimulationToolbar, { type LocalSimulationStatus } from '../../components/situation/SimulationToolbar.vue'
+import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
   SITUATION_EVENTS_F00042,
@@ -17,7 +17,7 @@ import {
   getJammerTypeLabel,
   getPlatformName,
   type SituationLinkView,
-} from '../features/situation/situation-model'
+} from '../../features/situation/situation-model'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 

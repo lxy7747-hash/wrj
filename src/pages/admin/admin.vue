@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Role, User } from '../contracts/domain-models'
-import { useAdminStore } from '../stores/admin'
+import type { CapabilityState, Role, User } from '../../contracts/domain-models'
+import { useAdminStore } from '../../stores/admin'
 
 const admin = useAdminStore()
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)

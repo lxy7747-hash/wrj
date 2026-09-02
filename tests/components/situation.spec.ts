@@ -57,7 +57,7 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
   createSituationMapController: mapControllerMock.createSituationMapController,
 }))
 
-import SituationPage from '../../src/pages/situation.vue'
+import SituationPage from '../../src/pages/situation/situation.vue'
 
 describe('态势主界面', () => {
   let mountedWrapper: ReturnType<typeof mount> | null = null
