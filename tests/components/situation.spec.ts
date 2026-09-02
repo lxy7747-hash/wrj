@@ -2,15 +2,18 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import L from 'leaflet'
 import { createPinia } from 'pinia'
+import { reactive } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG } from '../../src/config/map.config'
 import type { ConfirmationContext, Principal, SimulationRun } from '../../src/contracts/domain-models'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import {
+  SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
   SITUATION_LINKS_F00042,
 } from '../../src/features/situation/situation-model'
 import { useAuthStore } from '../../src/stores/auth'
+import { useTelemetryStore } from '../../src/stores/telemetry'
 
 type SituationMapControllerOptions = {
   onSelectNode: (platformId: string) => void
@@ -19,6 +22,7 @@ type SituationMapControllerOptions = {
 
 const mapControllerMock = vi.hoisted(() => {
   const controller = {
+    setFrame: vi.fn(),
     setLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
@@ -93,6 +97,25 @@ function successResponse(data: unknown): Response {
   return { ok: true, json: vi.fn().mockResolvedValue({ ok: true, data }) } as unknown as Response
 }
 
+/** 为态势页提供按 URL 区分的确定性接口响应。 */
+function situationFetch(fallbacks: unknown[] = [[]]) {
+  return vi.fn().mockImplementation((input: RequestInfo | URL) => {
+    const url = String(input)
+    if (url.includes('/frames/')) return Promise.resolve(successResponse(SITUATION_FRAME_F00042))
+    if (url.endsWith('/events')) return Promise.resolve(successResponse(SITUATION_EVENTS_F00042))
+    return Promise.resolve(successResponse(fallbacks.shift() ?? []))
+  })
+}
+
+class SilentWebSocket {
+  static readonly OPEN = 1
+  static readonly CONNECTING = 0
+  readonly readyState = SilentWebSocket.CONNECTING
+  addEventListener(): void {}
+  send(): void {}
+  close(): void {}
+}
+
 describe('态势主界面', () => {
   let mountedWrapper: ReturnType<typeof mount> | null = null
 
@@ -105,6 +128,11 @@ describe('态势主界面', () => {
     const pinia = createPinia()
     const auth = useAuthStore(pinia)
     auth.$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
+    useTelemetryStore(pinia).$patch({
+      frame: structuredClone(SITUATION_FRAME_F00042),
+      events: structuredClone(SITUATION_EVENTS_F00042),
+      capabilityState: 'SUCCESS',
+    })
     mountedWrapper = mount(SituationPage, {
       attachTo: document.body,
       global: {
@@ -118,7 +146,8 @@ describe('态势主界面', () => {
   beforeEach(() => {
     mapControllerMock.latestOptions = null
     vi.clearAllMocks()
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([])))
+    vi.stubGlobal('fetch', situationFetch())
+    vi.stubGlobal('WebSocket', SilentWebSocket)
   })
 
   afterEach(() => {
@@ -129,8 +158,9 @@ describe('态势主界面', () => {
   })
 
   it('呈现原型要求的关键区域并只读取运行快照', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(successResponse([]))
-    const webSocketSpy = vi.fn()
+    const fetchSpy = situationFetch()
+    const webSocketSpy = vi.fn(function WebSocketMock() { return new SilentWebSocket() })
+    Object.assign(webSocketSpy, { OPEN: 1, CONNECTING: 0 })
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
 
@@ -162,12 +192,12 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('空中无人作业节点 U03')
     expect(wrapper.text()).toContain('机载瞄准式干扰设备')
     expect(wrapper.text()).toContain('地面宽带压制干扰设备')
-    expect(fetchSpy).toHaveBeenCalledOnce()
-    expect(fetchSpy).toHaveBeenCalledWith(
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenNthCalledWith(1,
       'http://127.0.0.1:4173/api/v1/simulations',
       { headers: { 'X-Demo-Role': 'OPERATOR' } },
     )
-    expect(webSocketSpy).not.toHaveBeenCalled()
+    expect(webSocketSpy).toHaveBeenCalledOnce()
   })
 
   it('支持开始、暂停并在确认后停止', async () => {
@@ -179,14 +209,15 @@ describe('态势主界面', () => {
       createdAt: '2026-08-06T08:00:00Z',
       expiresAt: '2026-08-06T08:05:00Z',
     }
-    const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(successResponse([simulationRun('COMPLETED', false)]))
-      .mockResolvedValueOnce(successResponse(simulationRun('IDLE', true)))
-      .mockResolvedValueOnce(successResponse(simulationRun('RUNNING', true)))
-      .mockResolvedValueOnce(successResponse(simulationRun('PAUSED', true)))
-      .mockResolvedValueOnce(successResponse(awaiting))
-      .mockResolvedValueOnce(successResponse({ ...awaiting, state: 'CONFIRMED' }))
-      .mockResolvedValueOnce(successResponse(simulationRun('STOPPED', false)))
+    const fetchSpy = situationFetch([
+      [simulationRun('COMPLETED', false)],
+      simulationRun('IDLE', true),
+      simulationRun('RUNNING', true),
+      simulationRun('PAUSED', true),
+      awaiting,
+      { ...awaiting, state: 'CONFIRMED' },
+      simulationRun('STOPPED', false),
+    ])
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mountSituationPage()
     await flushPromises()
@@ -210,7 +241,7 @@ describe('态势主界面', () => {
 
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
     expect(wrapper.text()).toContain('场景配置未锁定')
-    expect(fetchSpy).toHaveBeenCalledTimes(7)
+    expect(fetchSpy).toHaveBeenCalledTimes(9)
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
@@ -458,6 +489,7 @@ describe('Leaflet 控制器回归', () => {
 
     const controller = createSituationMapController({
       container,
+      frame: reactive(structuredClone(SITUATION_FRAME_F00042)),
       links: SITUATION_LINKS_F00042,
       selectedNodeId: 'CMD-01',
       onSelectNode: options.onSelectNode ?? vi.fn(),

@@ -175,6 +175,29 @@ function nextJsonMessage(client: WebSocketClient): Promise<Record<string, unknow
   })
 }
 
+/** 收集指定数量的连续 WebSocket JSON 消息。 */
+function nextJsonMessages(client: WebSocketClient, count: number): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve, reject) => {
+    const messages: Record<string, unknown>[] = []
+    const listen = (): void => {
+      client.once('message', (...args) => {
+        try {
+          messages.push(JSON.parse(String(args[0])) as Record<string, unknown>)
+          if (messages.length === count) {
+            resolve(messages)
+          } else {
+            listen()
+          }
+        } catch (error) {
+          reject(error)
+        }
+      })
+    }
+    listen()
+    client.once('error', reject)
+  })
+}
+
 function nextClose(client: WebSocketClient): Promise<{ code: number; reason: string }> {
   return new Promise((resolve) => {
     client.once('close', (...args) => resolve({ code: args[0] as number, reason: String(args[1]) }))
@@ -1095,10 +1118,10 @@ describe('P0 deterministic mock server', () => {
     expect(rejected.headers['access-control-allow-methods']).toBeUndefined()
   })
 
-  it('accepts one canonical WebSocket subscription and emits no feature stream', async () => {
+  it('accepts one canonical WebSocket subscription and emits initial topic snapshots', async () => {
     const { wsUrl } = await startServer()
     const client = await openWebSocket(wsUrl, { role: 'ADMIN' })
-    const messagePromise = nextJsonMessage(client)
+    const messagePromise = nextJsonMessages(client, 3)
 
     client.send(JSON.stringify({
       type: 'subscribe',
@@ -1108,7 +1131,8 @@ describe('P0 deterministic mock server', () => {
       lastSequence: 0,
     }))
 
-    await expect(messagePromise).resolves.toEqual({
+    const messages = await messagePromise
+    expect(messages[0]).toEqual({
       type: 'subscribed',
       schemaVersion: '1.0',
       taskId: 'TASK-001',
@@ -1116,9 +1140,51 @@ describe('P0 deterministic mock server', () => {
       lastSequence: 0,
       nextSequence: 1,
     })
+    expect(messages[1]).toMatchObject({
+      type: 'event', topic: 'simulation.frame', sequence: 1, frameId: 'F-00042', payload: { frameId: 'F-00042' },
+    })
+    expect(messages[2]).toMatchObject({
+      type: 'event', topic: 'runtime.state', sequence: 1, payload: { status: 'COMPLETED' },
+    })
     const closePromise = nextClose(client)
     client.close()
     await closePromise
+  })
+
+  it('accepts the native-browser role query adapter on the canonical WebSocket path', async () => {
+    const { wsUrl } = await startServer()
+    const client = await openWebSocket(`${wsUrl}?role=OPERATOR`)
+    const messagesPromise = nextJsonMessages(client, 2)
+    client.send(JSON.stringify({
+      type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['link.metric'], lastSequence: 0,
+    }))
+    const messages = await messagesPromise
+    expect(messages[0]).toMatchObject({ type: 'subscribed', topics: ['link.metric'] })
+    expect(messages[1]).toMatchObject({ topic: 'link.metric', frameId: 'F-00042' })
+    expect((messages[1]?.payload as Array<{ linkType: string }>)[0]).toMatchObject({ linkType: 'MICROWAVE' })
+    client.close()
+  })
+
+  it('publishes runtime.state after a successful REST control mutation', async () => {
+    const { baseUrl, wsUrl } = await startServer()
+    const client = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const initialMessages = nextJsonMessages(client, 2)
+    client.send(JSON.stringify({
+      type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0,
+    }))
+    await initialMessages
+
+    const runtimeMessage = nextJsonMessage(client)
+    await request(baseUrl)
+      .post('/api/v1/simulations')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+      .expect(201)
+    await expect(runtimeMessage).resolves.toMatchObject({
+      topic: 'runtime.state', sequence: 2, payload: { status: 'IDLE' },
+    })
+    client.close()
   })
 
   it('destroys upgrades for non-canonical WebSocket paths', async () => {
@@ -1254,6 +1320,14 @@ describe('P0 deterministic mock server', () => {
         topics: ['simulation.frame'],
       },
     })
+    await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'OPERATOR', payload: null })
+    await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'OPERATOR', payload: [] })
+    await expectRejected(wsUrl, 'INVALID_ENVELOPE', {
+      role: 'OPERATOR',
+      payload: {
+        type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['simulation.frame'], extra: true,
+      },
+    })
   })
 
   it('rejects unknown tasks, unsupported resume gaps, and unsafe sequences', async () => {
@@ -1323,8 +1397,8 @@ describe('P0 deterministic mock server', () => {
     }))
     await acknowledgementPromise
 
-    expect(server.projection.nextSequence('TASK-001', 'simulation.frame')).toBe(1)
     expect(server.projection.nextSequence('TASK-001', 'simulation.frame')).toBe(2)
+    expect(server.projection.nextSequence('TASK-001', 'simulation.frame')).toBe(3)
 
     const closePromise = nextClose(client)
     await request(baseUrl)
@@ -1336,6 +1410,26 @@ describe('P0 deterministic mock server', () => {
 
     await expect(closePromise).resolves.toMatchObject({ code: 1008, reason: 'RESET' })
     expect(server.projection.nextSequence('TASK-001', 'simulation.frame')).toBe(1)
+  })
+
+  it('returns P3 same-frame telemetry and events through role-protected REST routes', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const frame = await request(baseUrl)
+      .get('/api/v1/simulations/RUN-001/frames/F-00042')
+      .set(headers)
+      .expect(200)
+    expect(frame.body).toMatchObject({ ok: true, data: { frameId: 'F-00042', runId: 'RUN-001', simulationTime: 42 } })
+
+    const events = await request(baseUrl)
+      .get('/api/v1/simulations/RUN-001/events')
+      .set(headers)
+      .expect(200)
+    expect(events.body).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }], meta: { total: 2 } })
+
+    await request(baseUrl).get('/api/v1/simulations/RUN-001/frames/F-MISSING').set(headers).expect(404)
+    await request(baseUrl).get('/api/v1/simulations/RUN-MISSING/events').set(headers).expect(404)
+    await request(baseUrl).get('/api/v1/simulations/RUN-001/events').set('Origin', ORIGIN).expect(403)
   })
 
   it('executes P3 simulation commands and keeps the scenario lock lifecycle consistent', async () => {

@@ -3,6 +3,9 @@ import type {
   SimulationCommand,
   SimulationCreateRequest,
   SimulationRun,
+  TelemetryFrame,
+  DetectionEvent,
+  SwitchEvent,
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
@@ -111,6 +114,32 @@ export class SimulationProjection {
   get(runId: string): SimulationProjectionResult<SimulationRun> {
     return runId === this.run.runId
       ? { ok: true, data: structuredClone(this.run) }
+      : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定仿真运行。' }
+  }
+
+  /**
+   * 读取指定运行的冻结遥测帧。
+   * @param runId 帧所属仿真运行编号。
+   * @param frameId 要读取的固定帧编号。
+   * @returns 找到时返回独立帧副本，否则返回 404 结果。
+   * @remarks 只读取冻结事实，不随控制命令改写帧内容。
+   */
+  getFrame(runId: string, frameId: string): SimulationProjectionResult<TelemetryFrame> {
+    const frame = loadFixtureProjection().frame
+    return runId === this.run.runId && frameId === frame.frameId
+      ? { ok: true, data: structuredClone(frame) }
+      : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定遥测帧。' }
+  }
+
+  /**
+   * 读取指定运行的冻结侦测与切换事件。
+   * @param runId 事件所属仿真运行编号。
+   * @returns 找到运行时返回独立事件列表，否则返回 404 结果。
+   * @remarks 只读取冻结事实，不接受或生成新事件。
+   */
+  listEvents(runId: string): SimulationProjectionResult<Array<DetectionEvent | SwitchEvent>> {
+    return runId === this.run.runId
+      ? { ok: true, data: structuredClone(loadFixtureProjection().events) }
       : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定仿真运行。' }
   }
 

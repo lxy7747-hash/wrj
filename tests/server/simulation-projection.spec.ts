@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import type { ScenarioDraft, SimulationCommand, SimulationRun } from '../../src/contracts/domain-models'
+import type { DetectionEvent, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 
 type ProjectionResult<T> = { ok: true; data: T } | { ok: false; code: string; status: number; fieldPath?: string }
 
@@ -11,6 +11,8 @@ interface ScenarioProjectionInstance {
 interface SimulationProjectionInstance {
   list(): SimulationRun[]
   get(runId: string): ProjectionResult<SimulationRun>
+  getFrame(runId: string, frameId: string): ProjectionResult<TelemetryFrame>
+  listEvents(runId: string): ProjectionResult<Array<DetectionEvent | SwitchEvent>>
   create(value: unknown): ProjectionResult<SimulationRun>
   inspectCommand(runId: string, value: unknown): ProjectionResult<SimulationCommand>
   command(runId: string, value: unknown, stopConfirmed?: boolean): ProjectionResult<SimulationRun>
@@ -44,6 +46,17 @@ describe('P3-1 仿真服务端投影', () => {
     expect(simulations.list()).toHaveLength(1)
     expect(simulations.get('RUN-001')).toMatchObject({ ok: true, data: { uiStatus: 'COMPLETED' } })
     expect(simulations.get('RUN-MISSING')).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 })
+  })
+
+  it('读取指定运行的同帧遥测和事件且拒绝未知编号', () => {
+    const { simulations } = projections()
+    expect(simulations.getFrame('RUN-001', 'F-00042')).toMatchObject({
+      ok: true,
+      data: { runId: 'RUN-001', frameId: 'F-00042', simulationTime: 42 },
+    })
+    expect(simulations.listEvents('RUN-001')).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }] })
+    expect(simulations.getFrame('RUN-001', 'F-MISSING')).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 })
+    expect(simulations.listEvents('RUN-MISSING')).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 })
   })
 
   it('校验创建请求、任务场景匹配和单实例限制', () => {

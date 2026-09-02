@@ -1,7 +1,11 @@
 import type { Server as HttpServer, IncomingMessage } from 'node:http'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
+  RealtimeEnvelope,
+  FrameId,
   ResetResult,
+  SimulationRun,
+  SimulationState,
   TaskId,
   WsRejection,
   WsSubscribeRequest,
@@ -22,6 +26,7 @@ const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
 
 export interface RealtimeController {
   activeClientCount(): number
+  publishRuntimeState(run: SimulationRun): void
   invalidateForReset(): void
   reset(): ResetResult
   close(): Promise<void>
@@ -124,11 +129,12 @@ function reject(client: WebSocket, code: WsRejection['code'], message: string): 
 
 function trackClient(
   client: WebSocket,
-  clients: Set<WebSocket>,
+  clients: Map<WebSocket, Set<WsTopic>>,
   projection: MockProjection,
+  currentRun: () => SimulationRun | undefined,
 ): void {
   client.on('error', () => clients.delete(client))
-  clients.add(client)
+  clients.set(client, new Set())
   client.once('close', () => clients.delete(client))
 
   let subscribed = false
@@ -157,6 +163,7 @@ function trackClient(
     }
 
     subscribed = true
+    clients.set(client, new Set(parsed.request.topics))
     const acknowledgement: SubscriptionAcknowledgement = {
       type: 'subscribed',
       schemaVersion: '1.0',
@@ -166,30 +173,77 @@ function trackClient(
       nextSequence: lastSequence + 1,
     }
     client.send(JSON.stringify(acknowledgement))
+
+    const snapshot = projection.snapshot()
+    for (const topic of parsed.request.topics) {
+      if (topic === 'simulation.frame') {
+        sendEnvelope(client, projection, topic, snapshot.frame, snapshot.frame.simulationTime, snapshot.frame.frameId)
+      } else if (topic === 'link.metric') {
+        sendEnvelope(client, projection, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
+      } else if (topic === 'runtime.state') {
+        const run = currentRun()
+        if (run !== undefined) sendEnvelope(client, projection, topic, run.canonical, run.canonical.currentTime)
+      }
+    }
   })
+}
+
+/**
+ * 向单个已订阅客户端发送规范实时信封。
+ * @param client 接收消息的 WebSocket 客户端。
+ * @param projection 提供任务标识和分主题序号的 Mock 投影。
+ * @param topic 当前消息主题。
+ * @param payload 主题对应的已校验载荷。
+ * @param simulationTime 当前仿真时刻。
+ * @param frameId 同帧主题使用的帧标识。
+ * @returns 无返回值。
+ * @remarks 仅分配当前主题的下一序号并发送一条 JSON 消息。
+ */
+function sendEnvelope<T>(
+  client: WebSocket,
+  projection: MockProjection,
+  topic: WsTopic,
+  payload: T,
+  simulationTime?: number,
+  frameId?: FrameId,
+): void {
+  const taskId = projection.snapshot().task.taskId
+  const envelope: RealtimeEnvelope<T> = {
+    type: 'event',
+    schemaVersion: '1.0',
+    topic,
+    taskId,
+    sequence: projection.nextSequence(taskId, topic),
+    ...(simulationTime === undefined ? {} : { simulationTime }),
+    ...(frameId === undefined ? {} : { frameId }),
+    payload,
+  }
+  client.send(JSON.stringify(envelope))
 }
 
 export function attachRealtimeServer(
   httpServer: HttpServer,
   projection: MockProjection,
+  currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
 ): RealtimeController {
-  const clients = new Set<WebSocket>()
+  const clients = new Map<WebSocket, Set<WsTopic>>()
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_TRANSPORT_PAYLOAD_BYTES,
   })
 
-  webSocketServer.on('connection', (client) => trackClient(client, clients, projection))
+  webSocketServer.on('connection', (client) => trackClient(client, clients, projection, currentRun))
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
-    if (request.url !== '/ws/v1') {
+    const requestUrl = new URL(request.url ?? '/', 'ws://127.0.0.1')
+    if (requestUrl.pathname !== '/ws/v1') {
       socket.destroy()
       return
     }
 
     const loopback = assertLoopbackRequest(request)
     const role = request.headers['x-demo-role']
-    const roleValue = Array.isArray(role) ? undefined : role
+    const roleValue = (Array.isArray(role) ? undefined : role) ?? requestUrl.searchParams.get('role') ?? undefined
 
     webSocketServer.handleUpgrade(request, socket, head, (client) => {
       webSocketServer.emit('connection', client, request)
@@ -200,14 +254,14 @@ export function attachRealtimeServer(
       }
 
       if (!isDemoRole(roleValue)) {
-        reject(client, 'INVALID_ENVELOPE', 'A valid X-Demo-Role header is required.')
+        reject(client, 'INVALID_ENVELOPE', 'A valid demo role is required.')
       }
     })
   })
 
   function invalidateForReset(): void {
     // Clear ownership before reset so no old connection can remain part of the new projection epoch.
-    for (const client of clients) {
+    for (const client of clients.keys()) {
       client.close(1008, 'RESET')
     }
     clients.clear()
@@ -215,13 +269,29 @@ export function attachRealtimeServer(
 
   return {
     activeClientCount: () => clients.size,
+    publishRuntimeState: (run): void => {
+      const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
+      if (subscribers.length === 0) return
+      const taskId = projection.snapshot().task.taskId
+      const envelope: RealtimeEnvelope<SimulationState> = {
+        type: 'event',
+        schemaVersion: '1.0',
+        topic: 'runtime.state',
+        taskId,
+        sequence: projection.nextSequence(taskId, 'runtime.state'),
+        simulationTime: run.canonical.currentTime,
+        payload: run.canonical,
+      }
+      const message = JSON.stringify(envelope)
+      subscribers.forEach(([client]) => client.send(message))
+    },
     invalidateForReset,
     reset: () => {
       invalidateForReset()
       return projection.reset()
     },
     close: () => new Promise<void>((resolve, rejectClose) => {
-      for (const client of clients) {
+      for (const client of clients.keys()) {
         client.terminate()
       }
       clients.clear()

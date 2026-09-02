@@ -2,9 +2,9 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
+import type { TelemetryFrame } from '../../contracts/domain-models'
 import {
   PLATFORM_TYPE_LABELS,
-  SITUATION_FRAME_F00042,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 import {
@@ -15,6 +15,7 @@ import {
 } from './situation-map-controller'
 
 const props = defineProps<{
+  frame: TelemetryFrame
   links: SituationLinkView[]
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
@@ -45,8 +46,8 @@ const layers = reactive<Record<MapLayer, boolean>>({
 })
 
 const selectedNode = computed(() => (
-  SITUATION_FRAME_F00042.platforms.find((platform) => platform.platformId === props.selectedNodeId)
-  ?? SITUATION_FRAME_F00042.platforms[0]
+  props.frame.platforms.find((platform) => platform.platformId === props.selectedNodeId)
+  ?? props.frame.platforms[0]
 ))
 
 /**
@@ -172,6 +173,7 @@ onMounted(() => {
 
   mapController.value = createSituationMapController({
     container: mapContainer.value,
+    frame: props.frame,
     links: props.links,
     selectedNodeId: props.selectedNodeId,
     onSelectNode: handleSelectNode,
@@ -189,6 +191,11 @@ onMounted(() => {
  */
 watch(() => props.links, (links) => {
   mapController.value?.setLinks(links)
+})
+
+/** 在完整帧变化时同步地图节点、链路端点和干扰范围。 */
+watch(() => props.frame, (frame) => {
+  mapController.value?.setFrame(frame)
 })
 
 /**
@@ -223,7 +230,7 @@ onBeforeUnmount(() => {
   <section
     class="offline-map"
     aria-label="Leaflet 离线态势图"
-    :data-frame-id="SITUATION_FRAME_F00042.frameId"
+    :data-frame-id="frame.frameId"
     :data-map-theme="theme"
     :data-map-basemap="basemap"
   >
@@ -232,7 +239,7 @@ onBeforeUnmount(() => {
       class="offline-map__canvas"
       data-testid="leaflet-situation-map"
       role="application"
-      aria-label="固定帧 F-00042 Leaflet 节点、链路和干扰态势图"
+      :aria-label="`固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图`"
     ></div>
 
     <div class="offline-map__topbar">
@@ -389,7 +396,7 @@ onBeforeUnmount(() => {
       <div><i class="legend-line legend-line--unavailable"></i>受干扰 / 失效链路</div>
     </div>
 
-    <span class="offline-map__frame">固定帧 {{ SITUATION_FRAME_F00042.frameId }} · 数据时刻 {{ SITUATION_FRAME_F00042.simulationTime }} s</span>
+    <span class="offline-map__frame">固定帧 {{ frame.frameId }} · 数据时刻 {{ frame.simulationTime }} s</span>
   </section>
 </template>
 

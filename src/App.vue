@@ -5,16 +5,19 @@ import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
 import { useScenarioStore } from './stores/scenario'
 import { useSimulationStore } from './stores/simulation'
+import { useTelemetryStore } from './stores/telemetry'
 
 const auth = useAuthStore()
 const scenario = useScenarioStore()
 const simulation = useSimulationStore()
+const telemetry = useTelemetryStore()
 const router = useRouter()
 
 watch(
   () => auth.principal,
   (principal) => {
     if (principal === null) {
+      telemetry.disconnectAndReset()
       simulation.resetToSafeEmpty()
       scenario.resetToSafeEmpty()
     }

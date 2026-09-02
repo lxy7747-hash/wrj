@@ -8,6 +8,7 @@ import type { ApiSuccess, ScenarioConfig, ScenarioDraft, SimulationRun } from '.
 
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
+    setFrame: vi.fn(),
     setLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
     setLayerVisible: vi.fn(),
@@ -69,11 +70,28 @@ describe('App shell', () => {
   it('renders login independently and protected routes in the product shell', async () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-    const fetchSpy = vi.fn().mockResolvedValue({
-      ok: true,
-      json: vi.fn().mockResolvedValue({ ok: true, data: [] }),
-    } as unknown as Response)
-    const webSocketSpy = vi.fn()
+    const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      const data = url.includes('/frames/')
+        ? fixtureSource.frame
+        : url.endsWith('/events')
+          ? fixtureSource.events
+          : []
+      return Promise.resolve({
+        ok: true,
+        json: vi.fn().mockResolvedValue({ ok: true, data }),
+      } as unknown as Response)
+    })
+    class SilentWebSocket {
+      static readonly OPEN = 1
+      static readonly CONNECTING = 0
+      readonly readyState = SilentWebSocket.CONNECTING
+      addEventListener(): void {}
+      send(): void {}
+      close(): void {}
+    }
+    const webSocketSpy = vi.fn(function WebSocketMock() { return new SilentWebSocket() })
+    Object.assign(webSocketSpy, { OPEN: 1, CONNECTING: 0 })
     const xhrOpen = vi.spyOn(XMLHttpRequest.prototype, 'open')
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
@@ -189,12 +207,13 @@ describe('App shell', () => {
     expect(router.currentRoute.value.path).toBe('/login')
     expect(adminWrapper.find('.app-shell').exists()).toBe(false)
     expect(adminWrapper.find('[data-testid="identity-panel"]').exists()).toBe(false)
-    expect(fetchSpy).toHaveBeenCalledOnce()
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4173/api/v1/simulations',
       { headers: { 'X-Demo-Role': 'OPERATOR' } },
     )
-    expect(webSocketSpy).not.toHaveBeenCalled()
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/frames/F-00042'))).toBe(true)
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/events'))).toBe(true)
+    expect(webSocketSpy).toHaveBeenCalled()
     expect(xhrOpen).not.toHaveBeenCalled()
     expect(consoleError).not.toHaveBeenCalled()
     expect(

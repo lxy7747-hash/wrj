@@ -85,8 +85,8 @@ const BUSINESS_NODE_TYPES = new Set<PlatformStatus['type']>([
  * @returns 固定帧中的平台名称；找不到时返回平台标识。
  * @sideeffect 无副作用，只读取固定帧。
  */
-export function getPlatformName(platformId: string): string {
-  return SITUATION_FRAME_F00042.platforms.find((platform) => platform.platformId === platformId)?.name
+export function getPlatformName(platformId: string, frame = SITUATION_FRAME_F00042): string {
+  return frame.platforms.find((platform) => platform.platformId === platformId)?.name
     ?? platformId
 }
 
@@ -96,15 +96,15 @@ export function getPlatformName(platformId: string): string {
  * @returns 与摘要对应的链路标识。
  * @sideeffect 无副作用，只读取固定帧。
  */
-function resolveLinkId(summary: LinkStatusSummary): string {
-  const detailed = SITUATION_FRAME_F00042.links.find((link) => (
+function resolveLinkId(summary: LinkStatusSummary, frame: TelemetryFrame): string {
+  const detailed = frame.links.find((link) => (
     link.sourcePlatform === summary.sourcePlatform
     && link.destPlatform === summary.destPlatform
     && link.linkType === summary.linkType
   ))
   if (detailed) return detailed.linkId
 
-  return SITUATION_FRAME_F00042.evidence.routeCandidates.find((candidate) => candidate.ber === summary.currentBer)?.linkId
+  return frame.evidence.routeCandidates.find((candidate) => candidate.ber === summary.currentBer)?.linkId
     ?? summary.linkKey
 }
 
@@ -115,17 +115,17 @@ function resolveLinkId(summary: LinkStatusSummary): string {
  * @returns 带中文原因和稳定帧数的界面投影。
  * @sideeffect 无副作用，只读取固定帧。
  */
-function getProjection(linkId: string, summary: LinkStatusSummary): {
+function getProjection(linkId: string, summary: LinkStatusSummary, frame: TelemetryFrame): {
   status: UiLinkStatus
   canonicalStatus: LinkStatusSummary['status']
   reason: string
   consecutiveFrames: number | null
   ageMs: number
 } {
-  const projection = SITUATION_FRAME_F00042.uiLinks.find((item) => item.linkId === linkId)
+  const projection = frame.uiLinks.find((item) => item.linkId === linkId)
   if (projection) return projection
 
-  const routeCandidate = SITUATION_FRAME_F00042.evidence.routeCandidates.find(
+  const routeCandidate = frame.evidence.routeCandidates.find(
     (candidate) => candidate.linkId === linkId,
   )
   return {
@@ -133,7 +133,7 @@ function getProjection(linkId: string, summary: LinkStatusSummary): {
     canonicalStatus: summary.status,
     reason: summary.status === 'UP' ? '当前帧链路正常' : '当前帧链路中断',
     consecutiveFrames: routeCandidate?.stabilityFrames ?? null,
-    ageMs: Math.max(0, (SITUATION_FRAME_F00042.simulationTime - summary.updatedAt) * 1000),
+    ageMs: Math.max(0, (frame.simulationTime - summary.updatedAt) * 1000),
   }
 }
 
@@ -142,17 +142,17 @@ function getProjection(linkId: string, summary: LinkStatusSummary): {
  * @returns 当前固定帧的链路视图列表。
  * @sideeffect 无副作用，只读取固定帧。
  */
-export function selectSituationLinks(): SituationLinkView[] {
-  return SITUATION_FRAME_F00042.linkSummaries.map((summary) => {
-    const linkId = resolveLinkId(summary)
-    const projection = getProjection(linkId, summary)
-    const detailed = SITUATION_FRAME_F00042.links.find((link) => link.linkId === linkId) ?? null
+export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationLinkView[] {
+  return frame.linkSummaries.map((summary) => {
+    const linkId = resolveLinkId(summary, frame)
+    const projection = getProjection(linkId, summary, frame)
+    const detailed = frame.links.find((link) => link.linkId === linkId) ?? null
 
     return {
-      frameId: SITUATION_FRAME_F00042.frameId,
+      frameId: frame.frameId,
       linkId,
-      sourceName: getPlatformName(summary.sourcePlatform),
-      destinationName: getPlatformName(summary.destPlatform),
+      sourceName: getPlatformName(summary.sourcePlatform, frame),
+      destinationName: getPlatformName(summary.destPlatform, frame),
       type: summary.linkType,
       snrDb: summary.currentSnr,
       ber: summary.currentBer,
@@ -172,23 +172,26 @@ export function selectSituationLinks(): SituationLinkView[] {
  * @returns 带帧标识的节点、链路、干扰和切换指标。
  * @sideeffect 无副作用，只读取固定帧和同帧事件。
  */
-export function selectSituationMetrics(): SituationMetrics {
-  const links = selectSituationLinks()
-  const businessNodeCount = SITUATION_FRAME_F00042.platforms
+export function selectSituationMetrics(
+  frame = SITUATION_FRAME_F00042,
+  events: SituationEvent[] = SITUATION_EVENTS_F00042,
+): SituationMetrics {
+  const links = selectSituationLinks(frame)
+  const businessNodeCount = frame.platforms
     .filter((platform) => BUSINESS_NODE_TYPES.has(platform.type)).length
-  const activeJammerCount = SITUATION_FRAME_F00042.platforms
+  const activeJammerCount = frame.platforms
     .flatMap((platform) => platform.jammers)
     .filter((jammer) => jammer.active).length
 
   return {
-    frameId: SITUATION_FRAME_F00042.frameId,
+    frameId: frame.frameId,
     businessNodeCount,
-    supportingEntityCount: SITUATION_FRAME_F00042.platforms.length - businessNodeCount,
+    supportingEntityCount: frame.platforms.length - businessNodeCount,
     upLinkCount: links.filter((link) => link.status === 'UP').length,
     degradedLinkCount: links.filter((link) => link.status === 'DEGRADED').length,
     downLinkCount: links.filter((link) => link.status === 'DOWN').length,
     activeJammerCount,
-    switchEventCount: SITUATION_EVENTS_F00042.filter((event) => event.type === 'LINK_SWITCH').length,
+    switchEventCount: events.filter((event) => event.type === 'LINK_SWITCH').length,
   }
 }
 

@@ -4,11 +4,11 @@ import 'leaflet.vectorgrid'
 
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
+import type { PlatformStatus, TelemetryFrame } from '../../contracts/domain-models'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
 import {
   LINK_TYPE_LABELS,
   PLATFORM_TYPE_LABELS,
-  SITUATION_FRAME_F00042,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 
@@ -21,6 +21,7 @@ export interface SituationMapFocusTarget {
 
 export interface SituationMapControllerOptions {
   container: HTMLElement
+  frame: TelemetryFrame
   links: SituationLinkView[]
   selectedNodeId: string
   onSelectNode: (platformId: string) => void
@@ -36,6 +37,14 @@ export interface SituationMapController {
    * @sideeffect 清空并重建链路图层及其键盘交互标记。
    */
   setLinks: (links: SituationLinkView[]) => void
+
+  /**
+   * 替换地图当前使用的完整遥测帧。
+   * @param frame 新的同帧节点、链路和干扰数据。
+   * @returns 无返回值。
+   * @sideeffect 重建全部业务图层并保留仍有效的选中目标。
+   */
+  setFrame: (frame: TelemetryFrame) => void
 
   /**
    * 更新当前选中节点。
@@ -107,7 +116,7 @@ export interface SituationMapController {
   destroy: () => void
 }
 
-type SituationPlatform = (typeof SITUATION_FRAME_F00042.platforms)[number]
+type SituationPlatform = PlatformStatus
 
 interface VectorTilePathOptions extends L.PathOptions {
   radius?: number
@@ -345,6 +354,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     preferCanvas: false,
   })
   let currentLinks = [...options.links]
+  let currentFrame = options.frame
   let selectedNodeId = options.selectedNodeId
   let focusedTarget: SituationMapFocusTarget | null = null
   let currentTheme: MapTheme = MAP_CONFIG.defaults.theme
@@ -394,22 +404,24 @@ export function createSituationMapController(options: SituationMapControllerOpti
     if (focusedTarget?.kind === 'link') highlightedNodeId = ''
     if (focusedTarget?.kind === 'node') highlightedNodeId = focusedTarget.targetId
     if (focusedTarget?.kind === 'interference') {
-      highlightedNodeId = SITUATION_FRAME_F00042.platforms.find((platform) => (
+      highlightedNodeId = currentFrame.platforms.find((platform) => (
         platform.jammers.some((jammer) => jammer.jammerId === focusedTarget?.targetId)
       ))?.platformId ?? selectedNodeId
     }
 
     renderInterference(
       layerGroups.interference,
+      currentFrame,
       focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '',
     )
     renderLinks(
       layerGroups.links,
+      currentFrame,
       currentLinks,
       focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
       handleMapLinkSelect,
     )
-    renderNodes(layerGroups.nodes, highlightedNodeId, handleMapNodeSelect)
+    renderNodes(layerGroups.nodes, currentFrame, highlightedNodeId, handleMapNodeSelect)
   }
 
   const leaflet = L as LeafletWithVectorGrid
@@ -469,10 +481,20 @@ export function createSituationMapController(options: SituationMapControllerOpti
       currentLinks = [...links]
       renderLinks(
         layerGroups.links,
+        currentFrame,
         currentLinks,
         focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
         handleMapLinkSelect,
       )
+    },
+
+    setFrame(frame): void {
+      if (!map) return
+      currentFrame = frame
+      if (!currentFrame.platforms.some((platform) => platform.platformId === selectedNodeId)) {
+        selectedNodeId = currentFrame.platforms[0]?.platformId ?? ''
+      }
+      renderBusinessLayers()
     },
 
     setSelectedNodeId(platformId): void {
@@ -488,7 +510,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       const animation = { animate: true, duration: 0.45 }
 
       if (target.kind === 'node') {
-        const platform = SITUATION_FRAME_F00042.platforms.find(
+        const platform = currentFrame.platforms.find(
           (candidate) => candidate.platformId === target.targetId,
         )
         if (platform) {
@@ -502,7 +524,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
 
       if (target.kind === 'link') {
         const link = currentLinks.find((candidate) => candidate.linkId === target.targetId)
-        const points = link ? sampleLinkCurve(link) : []
+        const points = link ? sampleLinkCurve(currentFrame, link) : []
         if (points.length > 0) {
           focusedTarget = target
           renderBusinessLayers()
@@ -515,7 +537,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         return
       }
 
-      const platform = SITUATION_FRAME_F00042.platforms.find((candidate) => (
+      const platform = currentFrame.platforms.find((candidate) => (
         candidate.jammers.some((jammer) => jammer.jammerId === target.targetId)
       ))
       const jammer = platform?.jammers.find((candidate) => candidate.jammerId === target.targetId)
@@ -709,12 +731,13 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
  */
 function renderNodes(
   group: L.LayerGroup,
+  frame: TelemetryFrame,
   selectedNodeId: string,
   onSelectNode: (platformId: string) => void,
 ): void {
   group.clearLayers()
 
-  SITUATION_FRAME_F00042.platforms.forEach((platform) => {
+  frame.platforms.forEach((platform) => {
     const selected = platform.platformId === selectedNodeId
     const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
     const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
@@ -753,13 +776,13 @@ function renderNodes(
  * @returns 匹配摘要在固定帧中的索引；无法稳妥匹配时返回 -1。
  * @sideeffect 无副作用，只读取固定帧和链路视图。
  */
-function resolveLinkSummaryIndex(link: SituationLinkView): number {
+function resolveLinkSummaryIndex(frame: TelemetryFrame, link: SituationLinkView): number {
   const detailed = link.detailed?.linkId === link.linkId
     ? link.detailed
-    : SITUATION_FRAME_F00042.links.find((candidate) => candidate.linkId === link.linkId)
+    : frame.links.find((candidate) => candidate.linkId === link.linkId)
 
   if (detailed) {
-    const detailedIndex = SITUATION_FRAME_F00042.linkSummaries.findIndex((summary) => (
+    const detailedIndex = frame.linkSummaries.findIndex((summary) => (
       summary.sourcePlatform === detailed.sourcePlatform
       && summary.destPlatform === detailed.destPlatform
       && summary.linkType === detailed.linkType
@@ -767,21 +790,21 @@ function resolveLinkSummaryIndex(link: SituationLinkView): number {
     if (detailedIndex >= 0) return detailedIndex
   }
 
-  const routeCandidate = SITUATION_FRAME_F00042.evidence.routeCandidates.find(
+  const routeCandidate = frame.evidence.routeCandidates.find(
     (candidate) => candidate.linkId === link.linkId,
   )
   if (routeCandidate) {
-    const candidateIndex = SITUATION_FRAME_F00042.linkSummaries.findIndex(
+    const candidateIndex = frame.linkSummaries.findIndex(
       (summary) => summary.currentBer === routeCandidate.ber && summary.linkType === link.type,
     )
     if (candidateIndex >= 0) return candidateIndex
   }
 
-  return SITUATION_FRAME_F00042.linkSummaries.findIndex((summary) => {
-    const source = SITUATION_FRAME_F00042.platforms.find(
+  return frame.linkSummaries.findIndex((summary) => {
+    const source = frame.platforms.find(
       (platform) => platform.platformId === summary.sourcePlatform,
     )
-    const destination = SITUATION_FRAME_F00042.platforms.find(
+    const destination = frame.platforms.find(
       (platform) => platform.platformId === summary.destPlatform,
     )
     return summary.linkType === link.type
@@ -796,15 +819,15 @@ function resolveLinkSummaryIndex(link: SituationLinkView): number {
  * @returns 从源节点到目标节点的 Leaflet 折线采样点；端点缺失时返回空数组。
  * @sideeffect 无副作用，只读取固定帧。
  */
-function sampleLinkCurve(link: SituationLinkView): L.LatLngTuple[] {
-  const summaryIndex = resolveLinkSummaryIndex(link)
-  const summary = SITUATION_FRAME_F00042.linkSummaries[summaryIndex]
+function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView): L.LatLngTuple[] {
+  const summaryIndex = resolveLinkSummaryIndex(frame, link)
+  const summary = frame.linkSummaries[summaryIndex]
   if (!summary) return []
 
-  const source = SITUATION_FRAME_F00042.platforms.find(
+  const source = frame.platforms.find(
     (platform) => platform.platformId === summary.sourcePlatform,
   )
-  const destination = SITUATION_FRAME_F00042.platforms.find(
+  const destination = frame.platforms.find(
     (platform) => platform.platformId === summary.destPlatform,
   )
   if (!source || !destination) return []
@@ -843,6 +866,7 @@ function sampleLinkCurve(link: SituationLinkView): L.LatLngTuple[] {
  */
 function renderLinks(
   group: L.LayerGroup,
+  frame: TelemetryFrame,
   links: SituationLinkView[],
   selectedLinkId: string,
   onSelectLink: (link: SituationLinkView) => void,
@@ -850,7 +874,7 @@ function renderLinks(
   group.clearLayers()
 
   links.forEach((link) => {
-    const points = sampleLinkCurve(link)
+    const points = sampleLinkCurve(frame, link)
     if (points.length === 0) return
     const selected = link.linkId === selectedLinkId
 
@@ -905,10 +929,10 @@ function renderLinks(
  * @returns 无返回值。
  * @sideeffect 清空并向图层组添加固定半径的活动干扰圈和永久标签。
  */
-function renderInterference(group: L.LayerGroup, selectedJammerId: string): void {
+function renderInterference(group: L.LayerGroup, frame: TelemetryFrame, selectedJammerId: string): void {
   group.clearLayers()
 
-  SITUATION_FRAME_F00042.platforms
+  frame.platforms
     .filter((platform) => platform.jammers.some((jammer) => jammer.active))
     .forEach((platform) => {
       const selected = platform.jammers.some((jammer) => (

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
@@ -9,17 +9,16 @@ import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
-  SITUATION_EVENTS_F00042,
-  SITUATION_FRAME_F00042,
-  SITUATION_LINKS_F00042,
-  SITUATION_METRICS_F00042,
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
   getPlatformName,
+  selectSituationLinks,
+  selectSituationMetrics,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
+import { useTelemetryStore } from '../../stores/telemetry'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -36,6 +35,7 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 
 const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
+const telemetryStore = useTelemetryStore()
 const {
   uiStatus: simulationStatus,
   currentTime: simulationTime,
@@ -45,30 +45,64 @@ const {
   resultMessage: simulationFeedback,
   pending: simulationPending,
 } = storeToRefs(simulationStore)
+const {
+  frame,
+  events,
+  capabilityState: telemetryCapabilityState,
+  connectionState,
+  resultMessage: telemetryFeedback,
+} = storeToRefs(telemetryStore)
 const stopDialogVisible = ref(false)
-const selectedNodeId = ref(SITUATION_FRAME_F00042.platforms[0]?.platformId ?? '')
+const selectedNodeId = ref('')
 const selectedLink = ref<SituationLinkView | null>(null)
 const linkDialogVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 
-onMounted(() => {
-  void simulationStore.resetProjection()
+onMounted(async () => {
+  await simulationStore.resetProjection()
+  if (await telemetryStore.loadFrame()) telemetryStore.connect()
 })
 
-const displayedBusinessPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
+onBeforeUnmount(() => telemetryStore.disconnectAndReset())
+
+watch(frame, (nextFrame) => {
+  if (nextFrame === null) {
+    selectedNodeId.value = ''
+    return
+  }
+  if (!nextFrame.platforms.some((platform) => platform.platformId === selectedNodeId.value)) {
+    selectedNodeId.value = nextFrame.platforms[0]?.platformId ?? ''
+  }
+}, { immediate: true })
+
+const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
+const situationMetrics = computed(() => frame.value === null ? null : selectSituationMetrics(frame.value, events.value))
+const displayedBusinessPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
 ))
-const supportingPlatforms = computed(() => SITUATION_FRAME_F00042.platforms.filter(
+const supportingPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => !BUSINESS_NODE_TYPES.has(platform.type),
 ))
-const jammers = computed(() => SITUATION_FRAME_F00042.platforms.flatMap((platform) => platform.jammers))
-const detectionEvent = computed(() => SITUATION_EVENTS_F00042.find(
+const jammers = computed(() => (frame.value?.platforms ?? []).flatMap((platform) => platform.jammers))
+const detectionEvent = computed(() => events.value.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
-const maximumLinkAgeMs = computed(() => Math.max(...SITUATION_LINKS_F00042.map((link) => link.ageMs)))
+const maximumLinkAgeMs = computed(() => Math.max(0, ...situationLinks.value.map((link) => link.ageMs)))
 const frameFreshnessLabel = computed(() => (maximumLinkAgeMs.value === 0 ? '新鲜' : '存在延迟'))
+const connectionLabel = computed(() => ({
+  DISCONNECTED: '未连接',
+  CONNECTING: '连接中',
+  SUBSCRIBED: '实时已订阅',
+  RETRYING: '重新连接中',
+  FAILED: '连接失败',
+}[connectionState.value]))
+
+/** 重新加载完整帧，并在成功后恢复实时订阅。 */
+async function retryTelemetry(): Promise<void> {
+  if (await telemetryStore.loadFrame()) telemetryStore.connect()
+}
 
 /**
  * 切换场景配置悬浮面板的折叠状态。
@@ -227,7 +261,7 @@ function linkStatusLabel(link: SituationLinkView): string {
  * @sideeffect 无副作用。
  */
 function jammerTypeLabel(jammerId: string, platformId: string): string {
-  const location = SITUATION_FRAME_F00042.platforms
+  const location = frame.value?.platforms
     .find((platform) => platform.platformId === platformId)?.type === 'AIRBORNE_MISSION_CLUSTER'
     ? '机载'
     : '地面'
@@ -269,6 +303,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     />
 
     <div
+      v-if="frame && situationMetrics"
       class="situation-page__workspace"
       :class="{
         'situation-page__workspace--scene-collapsed': sceneSummaryCollapsed,
@@ -281,7 +316,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         aria-label="场景配置"
         :data-collapsed="sceneSummaryCollapsed"
       >
-      <strong class="node-jammer-count">{{ SITUATION_METRICS_F00042.businessNodeCount }} / {{ BUSINESS_NODE_CAPACITY }}</strong>
+      <strong class="node-jammer-count">{{ situationMetrics.businessNodeCount }} / {{ BUSINESS_NODE_CAPACITY }}</strong>
         <button
           type="button"
           class="floating-panel__toggle floating-panel__toggle--left"
@@ -310,7 +345,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <div class="scene-summary__content" :aria-label="`${summaryTabs.find((tab) => tab.key === activeTab)?.label}摘要`">
           <template v-if="activeTab === 'nodes'">
             <div class="summary-group">
-              <h3>信息节点 · {{ SITUATION_METRICS_F00042.businessNodeCount }} 个</h3>
+              <h3>信息节点 · {{ situationMetrics.businessNodeCount }} 个</h3>
               <ul>
                 <li v-for="platform in displayedBusinessPlatforms" :key="platform.platformId">
                   <button
@@ -345,7 +380,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
           <div v-else-if="activeTab === 'links'" class="summary-group">
             <ul>
-              <li v-for="link in SITUATION_LINKS_F00042" :key="link.linkId">
+              <li v-for="link in situationLinks" :key="link.linkId">
                 <button
                   type="button"
                   class="summary-focus-button"
@@ -379,10 +414,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           <div v-else class="summary-group">
             <h3>固定帧时序</h3>
             <dl class="timing-list">
-              <div><dt>帧标识</dt><dd>{{ SITUATION_FRAME_F00042.frameId }}</dd></div>
-              <div><dt>任务 / 运行</dt><dd>{{ SITUATION_FRAME_F00042.taskId }} / {{ SITUATION_FRAME_F00042.runId }}</dd></div>
-              <div><dt>仿真时刻</dt><dd>{{ SITUATION_FRAME_F00042.simulationTime }} s</dd></div>
-              <div><dt>帧序号</dt><dd>{{ SITUATION_FRAME_F00042.sequence }}</dd></div>
+              <div><dt>帧标识</dt><dd>{{ frame.frameId }}</dd></div>
+              <div><dt>任务 / 运行</dt><dd>{{ frame.taskId }} / {{ frame.runId }}</dd></div>
+              <div><dt>仿真时刻</dt><dd>{{ frame.simulationTime }} s</dd></div>
+              <div><dt>帧序号</dt><dd>{{ frame.sequence }}</dd></div>
             </dl>
           </div>
         </div>
@@ -391,14 +426,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
       <main class="situation-center" data-testid="situation-center">
         <OfflineSituationMap
-          :links="SITUATION_LINKS_F00042"
+          :frame="frame"
+          :links="situationLinks"
           :selected-node-id="selectedNodeId"
           :focus-target="mapFocusTarget"
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
         >
           <template #topbar>
-            <MetricPanel :metrics="SITUATION_METRICS_F00042" />
+            <MetricPanel :metrics="situationMetrics" />
           </template>
         </OfflineSituationMap>
       </main>
@@ -417,17 +453,17 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :aria-label="telemetryPanelCollapsed ? '展开链路、干扰与事件' : '折叠链路、干扰与事件'"
           @click="toggleTelemetryPanel"
         ><span aria-hidden="true">{{ telemetryPanelCollapsed ? '‹' : '›' }}</span></button>
-        <section class="telemetry-section telemetry-section--links" :data-frame-id="SITUATION_FRAME_F00042.frameId">
+        <section class="telemetry-section telemetry-section--links" :data-frame-id="frame.frameId">
           <div class="panel-heading">
             <div><strong>全链路状态</strong></div>
-            <span class="panel-heading__more">异常 {{ SITUATION_METRICS_F00042.degradedLinkCount + SITUATION_METRICS_F00042.downLinkCount }} 条</span>
+            <span class="panel-heading__more">异常 {{ situationMetrics.degradedLinkCount + situationMetrics.downLinkCount }} 条</span>
           </div>
           <div class="link-table-wrap">
             <table class="link-table">
               <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
-                  v-for="link in SITUATION_LINKS_F00042"
+                  v-for="link in situationLinks"
                   :key="link.linkId"
                   tabindex="0"
                   role="button"
@@ -452,7 +488,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           <div class="jammer-list">
             <article v-for="jammer in jammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
               <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active ? '活动' : '待机' }}</span></div>
-              <small>搭载平台：{{ getPlatformName(jammer.platformId) }} · {{ jammer.platformId }}</small>
+              <small>搭载平台：{{ getPlatformName(jammer.platformId, frame) }} · {{ jammer.platformId }}</small>
               <dl>
                 <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
                 <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
@@ -467,9 +503,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--events">
-          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ SITUATION_EVENTS_F00042.length }} 条</span></div>
+          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ events.length }} 条</span></div>
           <ol class="event-list">
-            <li v-for="event in SITUATION_EVENTS_F00042" :key="event.eventId">
+            <li v-for="event in events" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.type === 'DETECTION' ? '侦测' : '链路切换' }}</strong></div>
               <p>{{ eventDescription(event) }}</p><small>{{ event.eventId }} · {{ event.frameId }}</small>
             </li>
@@ -478,11 +514,17 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       </aside>
     </div>
 
-    <footer class="situation-footer" :data-frame-id="SITUATION_FRAME_F00042.frameId">
-      <span><i class="footer-dot"></i>未连接运行服务</span>
-      <span>固定帧 {{ SITUATION_FRAME_F00042.frameId }}</span>
-      <span>数据时刻 {{ SITUATION_FRAME_F00042.simulationTime }} s</span>
-      <span>帧序号 {{ SITUATION_FRAME_F00042.sequence }}</span>
+    <section v-else class="telemetry-empty" aria-live="polite">
+      <strong>{{ telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
+      <p>{{ telemetryFeedback }}</p>
+      <el-button v-if="telemetryCapabilityState === 'ERROR'" type="primary" @click="retryTelemetry">重新加载</el-button>
+    </section>
+
+    <footer v-if="frame" class="situation-footer" :data-frame-id="frame.frameId">
+      <span><i class="footer-dot"></i>{{ connectionLabel }}</span>
+      <span>固定帧 {{ frame.frameId }}</span>
+      <span>数据时刻 {{ frame.simulationTime }} s</span>
+      <span>帧序号 {{ frame.sequence }}</span>
       <span data-testid="frame-freshness">最大数据年龄 {{ maximumLinkAgeMs }} ms · {{ frameFreshnessLabel }}</span>
       <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
     </footer>
@@ -513,6 +555,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   box-shadow: var(--console-shadow);
 }
 .situation-page__semantic-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.telemetry-empty { display: grid; place-content: center; justify-items: center; gap: .65rem; color: var(--console-text-muted); text-align: center; }
+.telemetry-empty strong { color: var(--console-text); }
+.telemetry-empty p { margin: 0; }
 .situation-page__workspace {
   --scene-panel-clearance: 17.5rem;
   --telemetry-panel-clearance: 24rem;

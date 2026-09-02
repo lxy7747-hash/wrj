@@ -7,6 +7,7 @@ import type {
   SimulationCommand,
   SimulationMode,
   SimulationRun,
+  SimulationState,
   UiSimulationStatus,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
@@ -144,6 +145,26 @@ export const useSimulationStore = defineStore('simulation', {
       this.run = structuredClone(run)
       this.configurationLockState = run.configLocked ? 'LOCKED' : 'UNLOCKED'
       useScenarioStore().projectRuntimeLock(run.scenarioId, run.configLocked)
+    },
+
+    /**
+     * 将实时规范状态投影到当前运行。
+     * @param canonical 已通过实时信封校验的规范仿真状态。
+     * @returns 无返回值。
+     * @sideEffects 更新当前运行状态；终态同时解除配置锁。
+     */
+    projectRuntimeState(canonical: SimulationState): void {
+      if (this.run === null) return
+      const terminal = canonical.status === 'COMPLETED' || canonical.status === 'ERROR'
+      const uiStatus = canonical.status === 'IDLE'
+        ? (this.run.uiStatus === 'RUNNING' || this.run.uiStatus === 'PAUSED' ? 'STOPPED' : this.run.uiStatus)
+        : canonical.status
+      this.applyRun({
+        ...this.run,
+        uiStatus,
+        canonical: structuredClone(canonical),
+        configLocked: terminal ? false : this.run.configLocked,
+      })
     },
 
     /**

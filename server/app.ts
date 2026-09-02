@@ -556,6 +556,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (requireDemoRole(req, res, auth, 'SIMULATION_CREATE') === undefined) return
     const result = simulations.create(req.body)
     if (sendSimulationFailure(res, result, requestId)) return
+    realtime.publishRuntimeState(result.data)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -567,6 +568,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const result = simulations.get(runId)
     if (sendSimulationFailure(res, result, requestId)) return
     res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回指定运行和帧编号对应的确定性遥测帧。 */
+  app.get('/api/v1/simulations/:runId/frames/:frameId', (req, res) => {
+    const { runId, frameId } = req.params
+    const requestId = 'REQ-P3-FRAME-GET'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_FRAME_READ', frameId) === undefined) return
+    const result = simulations.getFrame(runId, frameId)
+    if (sendSimulationFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回指定运行的同帧侦测与链路切换事件。 */
+  app.get('/api/v1/simulations/:runId/events', (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-P3-EVENT-LIST'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_EVENT_LIST', runId) === undefined) return
+    const result = simulations.listEvents(runId)
+    if (sendSimulationFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId, result.data.length, Math.max(1, result.data.length))))
   })
 
   /**
@@ -606,6 +627,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result = simulations.command(runId, command, stopConfirmed)
     if (sendSimulationFailure(res, result, requestId)) return
+    realtime.publishRuntimeState(result.data)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1194,7 +1216,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   const httpServer = createServer(app)
-  realtime = attachRealtimeServer(httpServer, projection)
+  realtime = attachRealtimeServer(httpServer, projection, () => simulations.list()[0])
   httpServer.listen(port, '127.0.0.1')
 
   let closePromise: Promise<void> | undefined
