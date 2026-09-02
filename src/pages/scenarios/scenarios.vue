@@ -1179,9 +1179,6 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
         </div>
-      </section>
-
-      <section class="console-panel scenario-section" aria-labelledby="scenario-timing-title">
         <div class="section-heading">
           <div>
             <p class="section-kicker">时序参数</p>
@@ -1193,37 +1190,34 @@ watch(activeTab, (tab) => {
           <el-form-item label="开始时间" :error="issueMessage('scenario.startTime')">
             <div class="scenario-start-time" data-testid="scenario-start-time">
               <el-date-picker
-                v-if="useStartTimeDatePicker"
-                v-model="startTimeBeijing"
-                type="datetime"
-                format="YYYY-MM-DD HH:mm"
-                value-format="YYYY-MM-DDTHH:mm"
-                placeholder="请选择开始时间"
-                style="width: 100%"
+                  v-if="useStartTimeDatePicker"
+                  v-model="startTimeBeijing"
+                  type="datetime"
+                  format="YYYY-MM-DD HH:mm"
+                  value-format="YYYY-MM-DDTHH:mm"
+                  placeholder="请选择开始时间"
+                  style="width: 100%"
               />
               <el-input v-else v-model="startTimeBeijing" />
             </div>
           </el-form-item>
           <el-form-item label="仿真时长（秒）" :error="issueMessage('scenario.duration')">
             <el-input-number
-              v-model="draft.config.scenario.duration"
-              controls-position="right"
-              data-testid="scenario-duration"
-              @update:model-value="markDirty"
+                v-model="draft.config.scenario.duration"
+                controls-position="right"
+                data-testid="scenario-duration"
+                @update:model-value="markDirty"
             />
           </el-form-item>
           <el-form-item label="时间步长（秒）" :error="issueMessage('scenario.timeStep')">
             <el-input-number
-              v-model="draft.config.scenario.timeStep"
-              controls-position="right"
-              data-testid="scenario-time-step"
-              @update:model-value="markDirty"
+                v-model="draft.config.scenario.timeStep"
+                controls-position="right"
+                data-testid="scenario-time-step"
+                @update:model-value="markDirty"
             />
           </el-form-item>
         </div>
-      </section>
-
-      <section class="console-panel scenario-section" aria-labelledby="scenario-environment-title">
         <div class="section-heading">
           <div>
             <p class="section-kicker">环境参数</p>
@@ -1249,12 +1243,12 @@ watch(activeTab, (tab) => {
           </el-form-item>
           <el-form-item class="multipath-field" label="多径效应">
             <el-switch
-              v-model="draft.config.scenario.environment.multipathEnabled"
-              inline-prompt
-              active-text="启用"
-              inactive-text="关闭"
-              data-testid="scenario-multipath"
-              @update:model-value="markDirty"
+                v-model="draft.config.scenario.environment.multipathEnabled"
+                inline-prompt
+                active-text="启用"
+                inactive-text="关闭"
+                data-testid="scenario-multipath"
+                @update:model-value="markDirty"
             />
           </el-form-item>
         </div>
