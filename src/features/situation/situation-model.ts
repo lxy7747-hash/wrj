@@ -123,7 +123,7 @@ function getProjection(linkId: string, summary: LinkStatusSummary, frame: Teleme
   ageMs: number
 } {
   const projection = frame.uiLinks.find((item) => item.linkId === linkId)
-  if (projection) return projection
+  if (projection) return { ...projection, canonicalStatus: summary.status }
 
   const routeCandidate = frame.evidence.routeCandidates.find(
     (candidate) => candidate.linkId === linkId,

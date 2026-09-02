@@ -358,6 +358,29 @@ describe('态势主界面', () => {
     expect(document.body.textContent).toContain('当前帧仅提供摘要')
   })
 
+  it('link.metric 将 L-MW-01 规范状态实时更新为中断', async () => {
+    const wrapper = mountSituationPage()
+    await flushPromises()
+    const telemetry = useTelemetryStore()
+    const updatedSummaries = structuredClone(SITUATION_FRAME_F00042.linkSummaries)
+    const target = updatedSummaries.find((summary) => (
+      summary.sourcePlatform === 'UAV-01'
+      && summary.destPlatform === 'GCC-01'
+      && summary.linkType === 'MICROWAVE'
+    ))
+    if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 链路摘要')
+    target.status = 'DOWN'
+
+    expect(telemetry.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: updatedSummaries,
+    })).toBe(true)
+    await wrapper.get('tr[data-link-id="L-MW-01"]').trigger('click')
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('规范状态中断')
+  })
+
   it('所选链路从当前帧消失时自动关闭详情弹窗', async () => {
     const wrapper = mountSituationPage()
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')

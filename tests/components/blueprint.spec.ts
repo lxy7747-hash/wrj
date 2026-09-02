@@ -103,6 +103,7 @@ describe('P3-3 同帧链路计算合同', () => {
     if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 链路摘要')
     target.currentSnr = 21.5
     target.currentBer = 0.000004
+    target.status = 'DOWN'
 
     expect(telemetryStore.acceptEnvelope({
       type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1,
@@ -112,6 +113,7 @@ describe('P3-3 同帧链路计算合同', () => {
 
     expect(wrapper.text()).toContain('21.5 dB')
     expect(wrapper.text()).toContain('4.0e-6')
+    expect(wrapper.text()).toContain('规范状态中断')
   })
 
   it('空态挂载时复用 telemetryStore 加载固定帧', () => {
