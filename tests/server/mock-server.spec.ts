@@ -639,7 +639,7 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl)
       .post(`/api/v1/scripts/${script.scriptId}/preflight`)
       .set(roleHeaders)
-      .send({ checksum: 'SHA256-WRONG' })
+      .send({ checksum: 'FNV1A-MOCK-WRONG' })
       .expect(422)
     await request(baseUrl)
       .post('/api/v1/scripts/preview')
@@ -667,14 +667,14 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).post('/api/v1/scripts/preview').set(headers).send({}).expect(422)
     await request(baseUrl).post('/api/v1/scripts/preview').set(headers).send({ scenarioId: 'SCN-MISSING' }).expect(422)
     await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set(headers).send({}).expect(422)
-    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set(headers).send({ checksum: 'SHA256-MOCK-MISSING' }).expect(422)
+    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set(headers).send({ checksum: 'FNV1A-MOCK-MISSING' }).expect(422)
   })
 
   it('拒绝未携带角色的场景撤销、脚本预览和预检', async () => {
     const { baseUrl } = await startServer()
     await request(baseUrl).post('/api/v1/scenarios/SCN-001/undo').set('Origin', ORIGIN).send({ expectedRevision: 4 }).expect(403)
     await request(baseUrl).post('/api/v1/scripts/preview').set('Origin', ORIGIN).send({ scenarioId: 'SCN-001' }).expect(403)
-    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set('Origin', ORIGIN).send({ checksum: 'SHA256-MOCK-MISSING' }).expect(403)
+    await request(baseUrl).post('/api/v1/scripts/SCRIPT-MISSING/preflight').set('Origin', ORIGIN).send({ checksum: 'FNV1A-MOCK-MISSING' }).expect(403)
   })
 
   it('返回完整场景校验结果且不修改草稿', async () => {

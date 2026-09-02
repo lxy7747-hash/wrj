@@ -37,7 +37,11 @@ function scriptLocation(fieldPath: string): string {
     </div>
     <el-alert v-if="resultMessage" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
     <div class="platform-actions">
-      <el-button type="primary" :loading="pending" :disabled="locked || dirty" data-testid="generate-script" @click="emit('generate')">生成脚本预览</el-button>
+      <el-tooltip content="请先保存草稿" placement="top" :disabled="!dirty">
+        <span class="script-action-tooltip">
+          <el-button type="primary" :loading="pending" :disabled="locked || dirty" data-testid="generate-script" @click="emit('generate')">生成脚本预览</el-button>
+        </span>
+      </el-tooltip>
       <el-button :loading="pending" :disabled="script === null" data-testid="preflight-script" @click="emit('preflight')">执行预检</el-button>
     </div>
     <template v-if="script">
@@ -95,6 +99,10 @@ function scriptLocation(fieldPath: string): string {
 .platform-actions {
   flex-wrap: wrap;
   margin-top: 1rem;
+}
+
+.script-action-tooltip {
+  display: inline-flex;
 }
 
 .scenario-script-preview {

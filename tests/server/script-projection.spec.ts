@@ -54,8 +54,9 @@ describe('T-XQ-008 脚本结构预检', () => {
     const script = projection.preview(scenario.data)
 
     expect(script).toMatchObject({ scriptId: 'SCRIPT-P2-001', target: 'AFSIM 2.9.0' })
+    expect(script.checksum).toMatch(/^FNV1A-MOCK-[0-9A-F]{8}$/)
     expect(script.preview).toContain('platform "CMD-01"')
-    expect(projection.preflight(script.scriptId, 'SHA256-WRONG')).toMatchObject({ ok: false, fieldPath: 'checksum' })
+    expect(projection.preflight(script.scriptId, 'FNV1A-MOCK-WRONG')).toMatchObject({ ok: false, fieldPath: 'checksum' })
     expect(projection.preflight('SCRIPT-MISSING', script.checksum)).toMatchObject({ ok: false, fieldPath: 'scriptId' })
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: true, data: { valid: true } })
 

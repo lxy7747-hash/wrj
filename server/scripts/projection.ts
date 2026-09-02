@@ -12,14 +12,14 @@ export type ScriptProjectionResult<T> =
 
 const GENERATED_TIME = '2026-08-06T08:03:02Z'
 
-/** 将文本转换为稳定的非加密 Mock 校验和。 */
-function mockChecksum(value: string): string {
+/** 使用 FNV-1a 将文本转换为稳定的非加密 Mock 校验和。 */
+function fnv1aMockChecksum(value: string): string {
   let hash = 0x811c9dc5
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index)
     hash = Math.imul(hash, 0x01000193)
   }
-  return `SHA256-MOCK-${(hash >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
+  return `FNV1A-MOCK-${(hash >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
 }
 
 /** 从当前完整草稿生成不访问文件或进程的 AFSIM 文本预览。 */
@@ -89,7 +89,7 @@ export class ScriptProjection {
       scenarioId: draft.config.scenario.id,
       configVersion: `${draft.config.scenario.id}-v${draft.revision}`,
       target: 'AFSIM 2.9.0',
-      checksum: mockChecksum(preview),
+      checksum: fnv1aMockChecksum(preview),
       preview,
       generatedTime: GENERATED_TIME,
     }
