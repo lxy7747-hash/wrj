@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-03.2')
+    expect(fixture.fixtureVersion).toBe('2026-09-03.4')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -115,6 +115,20 @@ describe('deterministic fixture contract', () => {
 
     expect(validateFixture(candidate)).toBe(false)
     expect(validateFixture.errors?.some(({ keyword }) => keyword === 'required')).toBe(true)
+  })
+
+  it('keeps the degraded link state decision evidence closed', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const degraded = fixture.frame.uiLinks.find(({ linkId }) => linkId === 'L-DL-03')
+
+    expect(degraded).toMatchObject({
+      frameId: 'F-00042',
+      status: 'DEGRADED',
+      canonicalStatus: 'DOWN',
+      reason: 'BER_THRESHOLD_AND_HYSTERESIS',
+      thresholdVersion: 'LLZT-1.0',
+      consecutiveFrames: 3,
+    })
   })
 
   it('rejects an unknown schemaVersion', () => {
@@ -272,6 +286,26 @@ describe('deterministic fixture contract', () => {
       .toContain('FIXTURE_METADATA_CONTRACT')
   })
 
+  it('freezes T-XQ-013 as fixed evidence without an EXECUTING state', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const capability = fixture.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
+    ))
+
+    expect(capability?.states).toEqual(['LOADING', 'VALIDATING', 'SUCCESS', 'EMPTY', 'ERROR'])
+    expect(validateFixture(fixture), JSON.stringify(validateFixture.errors)).toBe(true)
+
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const candidateCapability = candidate.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
+    ))
+    if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-013 capability metadata')
+    ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
+    expect(validateFixture(candidate)).toBe(false)
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
   it('rejects a changed canonical CSV field order', () => {
     const candidate = structuredClone(fixtures) as DeterministicFixtureSet
     const fields = candidate.contracts.csv[0].fields
@@ -285,5 +319,19 @@ describe('deterministic fixture contract', () => {
     candidate.frame.evidence.synchronization.effectiveSimulationTime = 43
 
     expect(auditFixtureClosure(candidate).map(({ code }) => code)).toContain('FIXTURE_TIME_42')
+  })
+
+  it.each([
+    ['空阈值版本', 'thresholdVersion', ''],
+    ['未知阈值版本', 'thresholdVersion', 'LLZT-2.0'],
+    ['空判定原因', 'reason', ''],
+    ['负稳定帧数', 'consecutiveFrames', -1],
+    ['小数稳定帧数', 'consecutiveFrames', 1.5],
+    ['负数据年龄', 'ageMs', -1],
+  ])('OpenAPI 拒绝 UiLinkProjection 的%s', (_label, field, value) => {
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    Reflect.set(candidate.frame.uiLinks[0]!, field, value)
+
+    expect(validateFixture(candidate)).toBe(false)
   })
 })

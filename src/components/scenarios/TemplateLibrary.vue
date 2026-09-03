@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import type { CapabilityState, ConfirmationContext, ScenarioTemplate } from '../../contracts/domain-models'
 
-defineProps<{
+withDefaults(defineProps<{
   canMaintain: boolean
+  allowApply?: boolean
   pending: boolean
   draftAvailable: boolean
   draftLocked: boolean
@@ -11,7 +12,9 @@ defineProps<{
   resultMessage: string
   selectedTemplate: ScenarioTemplate | null
   lastConfirmation: ConfirmationContext | null
-}>()
+}>(), {
+  allowApply: true,
+})
 
 const emit = defineEmits<{
   create: []
@@ -41,7 +44,7 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
         <h3 id="scenario-template-title">场景模板库</h3>
       </div>
       <div class="platform-counts" aria-label="模板库权限和数量">
-        <el-tag :type="canMaintain ? 'success' : 'info'">{{ canMaintain ? '管理员维护' : '操作员只读' }}</el-tag>
+        <el-tag :type="canMaintain ? 'success' : 'info'">{{ canMaintain ? '管理员维护' : '场景配置使用' }}</el-tag>
         <el-tag>模板 {{ templates.length }}</el-tag>
       </div>
     </div>
@@ -68,10 +71,10 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       <el-table-column prop="version" label="版本" width="80" />
       <el-table-column label="类型" width="90"><template #default>官方模板</template></el-table-column>
       <el-table-column prop="referenceCount" label="历史引用" width="90" />
-      <el-table-column label="操作" fixed="right" :width="canMaintain ? 310 : 140">
+      <el-table-column label="操作" fixed="right" :width="canMaintain ? 270 : 210">
         <template #default="{ row }">
-          <el-button link type="primary" :disabled="pending" :data-testid="`load-template-${row.templateId}`" @click="emit('load', row.templateId)">加载</el-button>
-          <el-button link type="primary" :disabled="pending || draftLocked" :data-testid="`copy-template-${row.templateId}`" @click="emit('copy', row)">复制</el-button>
+          <el-button link type="primary" :disabled="pending" :data-testid="`load-template-${row.templateId}`" @click="emit('load', row.templateId)">查看详情</el-button>
+          <el-button v-if="allowApply" link type="primary" :disabled="pending || draftLocked" :data-testid="`copy-template-${row.templateId}`" @click="emit('copy', row)">应用到当前场景</el-button>
           <template v-if="canMaintain">
             <el-button link type="primary" :disabled="pending || !draftAvailable" :data-testid="`update-template-${row.templateId}`" @click="emit('update', row)">更新</el-button>
             <el-button link type="primary" :disabled="pending" :data-testid="`export-template-${row.templateId}`" @click="emit('export', row)">导出</el-button>
@@ -83,7 +86,7 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       </el-table-column>
     </el-table>
 
-    <el-descriptions v-if="selectedTemplate" class="template-detail" :column="3" border title="已加载模板详情" data-testid="template-detail">
+    <el-descriptions v-if="selectedTemplate" class="template-detail" :column="3" border title="模板详情" data-testid="template-detail">
       <el-descriptions-item label="模板 ID">{{ selectedTemplate.templateId }}</el-descriptions-item>
       <el-descriptions-item label="版本">{{ selectedTemplate.version }}</el-descriptions-item>
       <el-descriptions-item label="历史引用">{{ selectedTemplate.referenceCount }}</el-descriptions-item>

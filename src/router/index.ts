@@ -143,7 +143,7 @@ export const routeRecords: RouteRecordRaw[] = [
     name: 'interactions',
     component: InteractionsPage,
     beforeEnter: requirePrincipal,
-    meta: { title: '交互管理', guard: 'principal', layout: 'workspace' },
+    meta: { title: '感知、干扰与选路', guard: 'principal', layout: 'workspace' },
   },
 ]
 

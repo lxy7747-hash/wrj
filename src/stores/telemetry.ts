@@ -101,12 +101,15 @@ function isTelemetryLink(value: unknown): boolean {
 }
 
 /** 校验界面链路状态投影成员。 */
-function isUiLink(value: unknown): boolean {
+function isUiLink(value: unknown): value is TelemetryFrame['uiLinks'][number] {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['linkId', 'frameId', 'reason'])
+  return hasStrings(value, ['linkId', 'frameId'])
+    && typeof value.reason === 'string' && value.reason.length > 0
+    && value.thresholdVersion === 'LLZT-1.0'
     && (value.status === 'UP' || value.status === 'DEGRADED' || value.status === 'DOWN')
     && (value.canonicalStatus === 'UP' || value.canonicalStatus === 'DOWN')
-    && hasFiniteNumbers(value, ['consecutiveFrames', 'ageMs'])
+    && Number.isInteger(value.consecutiveFrames) && Number(value.consecutiveFrames) >= 0
+    && typeof value.ageMs === 'number' && Number.isFinite(value.ageMs) && value.ageMs >= 0
 }
 
 /** 校验链路标识解析和状态回退会读取的候选链路证据。 */
@@ -152,7 +155,8 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.platforms) && value.platforms.every(isPlatform)
     && Array.isArray(value.links) && value.links.every(isTelemetryLink)
     && Array.isArray(value.linkSummaries) && value.linkSummaries.every(isLinkSummary)
-    && Array.isArray(value.uiLinks) && value.uiLinks.every(isUiLink)
+    && Array.isArray(value.uiLinks)
+    && value.uiLinks.every((uiLink) => isUiLink(uiLink) && uiLink.frameId === value.frameId)
     && Array.isArray(value.eventIds) && value.eventIds.every((eventId) => typeof eventId === 'string')
     && isRecord(value.evidence)
     && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
@@ -204,6 +208,18 @@ class TelemetryFieldError extends Error {
 /** 返回固定帧质量映射中可定位的字段错误。 */
 function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
   if (!isRecord(value) || !Array.isArray(value.links)) return null
+  if (typeof value.frameId === 'string' && Array.isArray(value.uiLinks)) {
+    const index = value.uiLinks.findIndex((uiLink) => (
+      isRecord(uiLink) && typeof uiLink.frameId === 'string' && uiLink.frameId !== value.frameId
+    ))
+    if (index >= 0) {
+      return new TelemetryFieldError(
+        'FRAME_ID_MISMATCH',
+        `uiLinks[${index}].frameId`,
+        '链路状态投影与遥测帧不属于同一帧。',
+      )
+    }
+  }
   for (const [index, link] of value.links.entries()) {
     if (!isRecord(link)) continue
     if (link.modulation !== 'BPSK' && link.modulation !== 'QPSK') {

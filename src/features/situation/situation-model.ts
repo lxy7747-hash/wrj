@@ -24,6 +24,7 @@ export interface SituationLinkView {
   status: UiLinkStatus
   canonicalStatus: LinkStatusSummary['status']
   reason: string
+  thresholdVersion: string | null
   consecutiveFrames: number | null
   ageMs: number
   detailed: TelemetryLinkRecord | null
@@ -119,10 +120,11 @@ function getProjection(linkId: string, summary: LinkStatusSummary, frame: Teleme
   status: UiLinkStatus
   canonicalStatus: LinkStatusSummary['status']
   reason: string
+  thresholdVersion: string | null
   consecutiveFrames: number | null
   ageMs: number
 } {
-  const projection = frame.uiLinks.find((item) => item.linkId === linkId)
+  const projection = frame.uiLinks.find((item) => item.linkId === linkId && item.frameId === frame.frameId)
   if (projection) return { ...projection, canonicalStatus: summary.status }
 
   const routeCandidate = frame.evidence.routeCandidates.find(
@@ -132,6 +134,7 @@ function getProjection(linkId: string, summary: LinkStatusSummary, frame: Teleme
     status: summary.status,
     canonicalStatus: summary.status,
     reason: summary.status === 'UP' ? '当前帧链路正常' : '当前帧链路中断',
+    thresholdVersion: null,
     consecutiveFrames: routeCandidate?.stabilityFrames ?? null,
     ageMs: Math.max(0, (frame.simulationTime - summary.updatedAt) * 1000),
   }
@@ -160,6 +163,7 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
       status: projection.status,
       canonicalStatus: projection.canonicalStatus,
       reason: projection.reason,
+      thresholdVersion: projection.thresholdVersion,
       consecutiveFrames: projection.consecutiveFrames,
       ageMs: projection.ageMs,
       detailed,

@@ -131,7 +131,7 @@ export type BatchState = 'DRAFT' | 'VALIDATING' | 'QUEUED' | 'RUNNING' | 'COMPLE
 export type ConfigurationLockState = 'UNLOCKED' | 'LOCKING' | 'LOCKED' | 'UNLOCKING' | 'ERROR';
 export interface UiLinkProjection {
   linkId: Identifier; frameId: FrameId; status: UiLinkStatus; canonicalStatus: CanonicalLinkStatus;
-  reason: string; consecutiveFrames: number; ageMs: Milliseconds;
+  reason: string; thresholdVersion: 'LLZT-1.0'; consecutiveFrames: number; ageMs: Milliseconds;
 }
 export interface LinkStatusAggregateExtension {
   totalLinks: number; upLinks: number; degradedUiLinks: number; downLinks: number;

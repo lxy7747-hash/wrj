@@ -7,6 +7,7 @@ import {
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
+  selectSituationLinks,
 } from '../../src/features/situation/situation-model'
 
 describe('态势固定帧模型', () => {
@@ -54,6 +55,17 @@ describe('态势固定帧模型', () => {
       consecutiveFrames: 4,
       ageMs: 0,
     })
+  })
+
+  it('不把跨帧投影静默重标为当前帧', () => {
+    const candidate = structuredClone(SITUATION_FRAME_F00042)
+    const projection = candidate.uiLinks.find((item) => item.linkId === 'L-DL-03')
+    if (projection === undefined) throw new Error('测试固定帧缺少 L-DL-03 状态投影')
+    projection.frameId = 'F-OTHER'
+
+    const link = selectSituationLinks(candidate).find((item) => item.linkId === 'L-DL-03')
+
+    expect(link).toMatchObject({ frameId: 'F-00042', status: 'DOWN', thresholdVersion: null })
   })
 
   it('保持参考图中的代表节点链路拓扑', () => {

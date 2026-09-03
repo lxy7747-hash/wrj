@@ -552,7 +552,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             'id': {
               'enum': [
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX',
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER'
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER',
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
               ]
             }
           },
@@ -5115,7 +5116,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'type': 'string'
       },
       'reason': {
+        'minLength': 1,
         'type': 'string'
+      },
+      'thresholdVersion': {
+        'const': 'LLZT-1.0'
       },
       'status': {
         'enum': [
@@ -5131,6 +5136,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'status',
       'canonicalStatus',
       'reason',
+      'thresholdVersion',
       'consecutiveFrames',
       'ageMs'
     ],

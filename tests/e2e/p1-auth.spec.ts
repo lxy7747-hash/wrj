@@ -19,27 +19,33 @@ interface WorkspaceRoute {
   title: string
 }
 
-const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
+const SHARED_TOP_MENU_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
   { path: '/scenarios', navLabel: '场景配置', title: '场景标识' },
-  { path: '/batches', navLabel: '仿真批次', title: '批量仿真' },
+  { path: '/batches', navLabel: '批量仿真', title: '批量仿真' },
   { path: '/reports', navLabel: '报表中心', title: '报告分析' },
-  { path: '/replays', navLabel: '回放复盘', title: '历史回放' },
-  { path: '/blueprint', navLabel: '能力蓝图', title: '能力蓝图' },
-  { path: '/admin/data-exchange', navLabel: '数据交换与接口', title: '数据交换与接口' },
-  { path: '/traceability', navLabel: '可追溯性', title: '需求追踪' },
-  { path: '/interactions', navLabel: '交互管理', title: '交互管理' },
+  { path: '/replays', navLabel: '历史回放', title: '历史回放' },
+  { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图' },
 ]
 
 const ADMIN_WORKSPACE_ROUTE: WorkspaceRoute = {
   path: '/admin',
-  navLabel: '用户与角色',
+  navLabel: '系统管理',
   title: '用户与角色管理',
 }
 
-const PROTECTED_WORKSPACE_ROUTES = [
-  ...SHARED_WORKSPACE_ROUTES,
-  ADMIN_WORKSPACE_ROUTE,
+const OPERATOR_SYSTEM_ROUTE: WorkspaceRoute = {
+  path: '/admin/data-exchange',
+  navLabel: '系统管理',
+  title: '数据交换与接口',
+}
+
+const PROTECTED_WORKSPACE_PATHS = [
+  ...SHARED_TOP_MENU_ROUTES.map((route) => route.path),
+  ADMIN_WORKSPACE_ROUTE.path,
+  OPERATOR_SYSTEM_ROUTE.path,
+  '/traceability',
+  '/interactions',
 ] as const
 
 function auditConsole(page: Page): ConsoleAudit {
@@ -106,6 +112,12 @@ async function loginAs(page: Page, username: 'admin' | 'operator'): Promise<void
   expect(await page.context().cookies()).toEqual([])
 }
 
+async function openInteractions(page: Page): Promise<void> {
+  await page.getByRole('link', { name: '能力与追踪', exact: true }).click()
+  await page.getByRole('menuitem', { name: '感知、干扰与选路', exact: true }).click()
+  await page.waitForURL('**/interactions')
+}
+
 async function visitWorkspaceRouteFromNavigation(page: Page, route: WorkspaceRoute): Promise<void> {
   const navigation = page.getByRole('navigation', { name: '主导航' })
   const link = navigation.getByRole('link', { name: route.navLabel, exact: true })
@@ -153,8 +165,8 @@ test('anonymous access keeps login public and redirects every protected route', 
   await expect(page.getByTestId('login-submit')).toBeVisible()
   await expect(page.locator('.app-shell')).toHaveCount(0)
 
-  for (const route of PROTECTED_WORKSPACE_ROUTES) {
-    await page.goto(route.path)
+  for (const path of PROTECTED_WORKSPACE_PATHS) {
+    await page.goto(path)
     await page.waitForURL('**/login')
     await expect(page.getByTestId('login-submit')).toBeVisible()
     await expect(page.locator('.app-shell')).toHaveCount(0)
@@ -192,14 +204,16 @@ for (const credentials of [
   })
 }
 
-test('ADMIN can navigate every workspace route from the main navigation', async ({ page }) => {
+test('ADMIN can navigate every prototype top menu from the main navigation', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'admin')
-  for (const route of PROTECTED_WORKSPACE_ROUTES) {
+  for (const route of [...SHARED_TOP_MENU_ROUTES, ADMIN_WORKSPACE_ROUTE]) {
     await visitWorkspaceRouteFromNavigation(page, route)
   }
 
+  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('底层模型参数')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('数据交换与接口')
   await expect(page.getByTestId('user-role-panel')).toBeVisible()
   await expect(page.getByTestId('role-permission-map')).toContainText('BUSINESS_READ')
 
@@ -233,14 +247,19 @@ test('session identity survives reload and logout stays anonymous after reload',
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('OPERATOR can navigate shared routes and is denied direct admin access', async ({ page }) => {
+test('OPERATOR can navigate prototype top menus and is denied direct admin access', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
-  await expect(page.getByRole('link', { name: '用户与角色', exact: true })).toHaveCount(0)
-  for (const route of SHARED_WORKSPACE_ROUTES) {
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(7)
+  await expect(page.getByRole('link', { name: '需求追踪矩阵', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '弹窗交互', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: '登录页', exact: true })).toHaveCount(0)
+  for (const route of [...SHARED_TOP_MENU_ROUTES, OPERATOR_SYSTEM_ROUTE]) {
     await visitWorkspaceRouteFromNavigation(page, route)
   }
+  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('账号管理')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('系统/操作员')
 
   await page.evaluate(() => {
     window.history.pushState({}, '', '/admin')
@@ -263,7 +282,7 @@ test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', asy
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
-  await page.getByRole('link', { name: '能力蓝图', exact: true }).click()
+  await page.getByRole('link', { name: '能力与追踪', exact: true }).click()
   expect((await frameResponse).status()).toBe(200)
 
   const contract = page.getByTestId('link-calculator-contract')
@@ -289,7 +308,7 @@ test('P3-4 OPERATOR verifies the F-00042 composite propagation loss example', as
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
-  await page.getByRole('link', { name: '交互管理', exact: true }).click()
+  await openInteractions(page)
   expect((await frameResponse).status()).toBe(200)
 
   const example = page.getByTestId('composite-loss-example')
@@ -312,7 +331,7 @@ test('P3-5 OPERATOR verifies the F-00042 SNR and BER calculation evidence', asyn
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
-  await page.getByRole('link', { name: '交互管理', exact: true }).click()
+  await openInteractions(page)
   expect((await frameResponse).status()).toBe(200)
 
   const example = page.getByTestId('snr-ber-example')
@@ -324,6 +343,32 @@ test('P3-5 OPERATOR verifies the F-00042 SNR and BER calculation evidence', asyn
   await expect(example).toContainText('3.2e-7')
   await expect(example).toContainText('QPSK')
   await expect(example).toContainText('SNBER-1.2')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page }) => {
+  const audit = auditConsole(page)
+  const frameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+
+  await loginAs(page, 'operator')
+  expect((await frameResponse).status()).toBe(200)
+
+  const telemetryPanel = page.getByLabel('链路、干扰与事件', { exact: true })
+  const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
+  await expect(degradedLink.locator('.link-status')).toHaveText('劣化')
+  await degradedLink.click()
+
+  const dialog = page.locator('.link-quality-dialog')
+  await expect(dialog).toContainText('规范状态中断')
+  await expect(dialog).toContainText('阈值版本LLZT-1.0')
+  await expect(dialog).toContainText('稳定帧数3')
+  await expect(dialog).toContainText('判定依据误码率超过阈值并满足稳定帧条件')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
@@ -751,19 +796,21 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P2-6 template roles complete the seven actions and preserve referenced templates', async ({ page, request }) => {
+test('P2-6 maintains templates in system management and applies them in scenario configuration', async ({ page, request }) => {
   const audit = auditConsole(page)
   const baseline = await loadScenarioDraft(request)
 
   await loginAs(page, 'admin')
+  await page.getByRole('link', { name: '系统管理', exact: true }).click()
   const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
-  await page.getByRole('link', { name: '场景配置', exact: true }).click()
-  expect((await scenarioLoaded).status()).toBe(200)
   const templatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates')
-  await page.getByRole('tab', { name: '场景模板' }).click()
+  await page.getByRole('menuitem', { name: '场景模板维护', exact: true }).click()
+  expect((await scenarioLoaded).status()).toBe(200)
   expect((await templatesLoaded).status()).toBe(200)
+  await expect(page.getByRole('heading', { name: '场景模板维护', exact: true })).toBeVisible()
+  await expect(page.getByTestId('template-library')).not.toContainText('应用到当前场景')
 
   const messageBox = page.locator('.el-message-box')
   const createdName = 'E2E 管理员模板'
@@ -791,14 +838,6 @@ test('P2-6 template roles complete the seven actions and preserve referenced tem
   await expect(page.getByTestId('template-detail')).toContainText('TPL-SCN-002')
   await expect(page.getByTestId('template-feedback')).toContainText(createdName)
 
-  await page.getByTestId('copy-template-TPL-SCN-002').click()
-  await messageBox.locator('input').fill('E2E 模板副本')
-  const copiedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002/copy')
-  await messageBox.getByRole('button', { name: '复制', exact: true }).click()
-  expect((await copiedResponse).status()).toBe(201)
-  await expect(page.getByTestId('template-feedback')).toContainText('E2E 模板副本')
-
   await page.getByTestId('update-template-TPL-SCN-002').click()
   const updatedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-002')
@@ -812,11 +851,14 @@ test('P2-6 template roles complete the seven actions and preserve referenced tem
   expect((await exportedResponse).status()).toBe(200)
   await expect(messageBox).toContainText(`"name": "${createdName}"`)
   await messageBox.getByRole('button', { name: '关闭', exact: true }).click()
+  await expect(messageBox).toHaveCount(0)
 
   await page.getByTestId('delete-template-TPL-SCN-003').click()
+  const deleteConfirmation = page.locator('.el-popconfirm').filter({ hasText: '确认删除该官方模板？' })
+  await expect(deleteConfirmation).toBeVisible()
   const deletedResponse = page.waitForResponse((response) => response.request().method() === 'DELETE'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-003')
-  await page.getByRole('button', { name: '删除', exact: true }).last().click()
+  await deleteConfirmation.getByRole('button', { name: '删除', exact: true }).click()
   expect((await deletedResponse).status()).toBe(200)
   await expect(page.getByTestId('template-table')).not.toContainText(importedName)
   await expect(page.getByTestId('latest-confirmation')).toContainText(/CONF-P2-\d{3}/)
@@ -865,18 +907,20 @@ test('P2-6 template roles complete the seven actions and preserve referenced tem
   await expect(page.getByTestId('delete-template-TPL-SCN-001')).toHaveCount(0)
   await expect(page.getByTestId('load-template-TPL-SCN-001')).toBeVisible()
   await expect(page.getByTestId('copy-template-TPL-SCN-001')).toBeVisible()
+  await expect(page.getByTestId('load-template-TPL-SCN-001')).toHaveText('查看详情')
+  await expect(page.getByTestId('copy-template-TPL-SCN-001')).toHaveText('应用到当前场景')
 
   const operatorDetailResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-001')
   await page.getByTestId('load-template-TPL-SCN-001').click()
   expect((await operatorDetailResponse).status()).toBe(200)
   await page.getByTestId('copy-template-TPL-SCN-001').click()
-  await messageBox.locator('input').fill('E2E 操作员副本')
+  await messageBox.locator('input').fill('E2E 操作员场景')
   const operatorCopyResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-001/copy')
-  await messageBox.getByRole('button', { name: '复制', exact: true }).click()
+  await messageBox.getByRole('button', { name: '应用', exact: true }).click()
   expect((await operatorCopyResponse).status()).toBe(201)
-  await expect(page.getByTestId('template-feedback')).toContainText('E2E 操作员副本')
+  await expect(page.getByTestId('template-feedback')).toContainText('E2E 操作员场景')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

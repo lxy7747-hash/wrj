@@ -3810,6 +3810,7 @@
           "status",
           "canonicalStatus",
           "reason",
+          "thresholdVersion",
           "consecutiveFrames",
           "ageMs"
         ],
@@ -3836,7 +3837,11 @@
             ]
           },
           "reason": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
+          },
+          "thresholdVersion": {
+            "const": "LLZT-1.0"
           },
           "consecutiveFrames": {
             "type": "integer",
@@ -5211,7 +5216,8 @@
                 "id": {
                   "enum": [
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX",
-                    "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER"
+                    "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER",
+                    "DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT"
                   ]
                 }
               },

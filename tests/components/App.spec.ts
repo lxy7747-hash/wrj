@@ -114,7 +114,7 @@ describe('App shell', () => {
       .toEqual([routeRecords[0]])
     expect(routeRecords[0]?.meta?.title).toBe('登录')
     expect(routeRecords[8]?.meta?.title).toBe('数据交换与接口')
-    expect(routeRecords[10]?.meta?.title).toBe('交互管理')
+    expect(routeRecords[10]?.meta?.title).toBe('感知、干扰与选路')
 
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -158,22 +158,49 @@ describe('App shell', () => {
     expect(operatorWrapper.find('.app-shell__header > .app-shell__navigation').exists()).toBe(true)
     expect(operatorWrapper.html()).not.toContain('brand' + '__status')
     expect(operatorWrapper.html()).not.toContain('status' + '-indicator')
-    expect(operatorWrapper.findAll('nav .nav-group')).toHaveLength(3)
-    expect(operatorWrapper.findAll('nav .nav-group').map((group) => group.attributes('aria-label')))
-      .toEqual(['仿真作业', '能力治理', '系统管理'])
     expect(operatorWrapper.get('#situation-title').text()).toBe('态势主界面')
     expect(operatorWrapper.find('a[href="/login"]').exists()).toBe(false)
-    expect(operatorWrapper.findAll('nav a')).toHaveLength(9)
+    expect(operatorWrapper.findAll('nav a').map((link) => link.text())).toEqual([
+      '态势主界面',
+      '场景配置',
+      '批量仿真',
+      '报表中心',
+      '历史回放',
+      '系统管理',
+      '能力与追踪',
+    ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
-    expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(true)
-    expect(operatorWrapper.get('a[href="/blueprint"]').text()).toBe('能力蓝图')
-    const operatorSystemGroup = operatorWrapper.get('[aria-label="系统管理"]')
-    expect(operatorSystemGroup.find('a[href="/admin/data-exchange"]').exists()).toBe(true)
-    expect(operatorSystemGroup.find('a[href="/admin"]').exists()).toBe(false)
+    expect(operatorWrapper.get('a[href="/admin/data-exchange"]').text()).toBe('系统管理')
+    expect(operatorWrapper.get('a[href="/blueprint"]').text()).toBe('能力与追踪')
+    expect(operatorWrapper.get('nav').text()).not.toMatch(/需求追踪矩阵|弹窗交互|登录页|可追溯性|交互管理/)
     expect(operatorWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：operator')
     expect(operatorWrapper.get('[data-testid="identity-role"]').text()).toBe('角色：操作员')
     expect(operatorWrapper.get('.app-shell__navigation').text())
       .not.toMatch(/夹具|演示|P0|P1|Mock|页面外壳|shell/)
+
+    await router.push('/blueprint')
+    await flushPromises()
+    const capabilityNavigation = operatorWrapper.get('[aria-label="能力与接口导航"]')
+    expect(capabilityNavigation.findAll('.el-menu-item').map((item) => item.text())).toEqual([
+      '能力/接口蓝图',
+      '需求追踪',
+      '感知、干扰与选路',
+    ])
+    expect(capabilityNavigation.get('.el-menu-item.is-active').text()).toBe('能力/接口蓝图')
+
+    await router.push('/traceability')
+    await flushPromises()
+    expect(capabilityNavigation.get('.el-menu-item.is-active').text()).toBe('需求追踪')
+    expect(operatorWrapper.get('nav[aria-label="主导航"] a[href="/blueprint"]').classes())
+      .toContain('router-link-active')
+
+    await router.push('/interactions')
+    await flushPromises()
+    expect(operatorWrapper.findAll('main')).toHaveLength(1)
+    expect(capabilityNavigation.get('.el-menu-item.is-active').text()).toBe('感知、干扰与选路')
+    expect(operatorWrapper.get('#interactions-title').text()).toBe('感知、干扰与选路')
+    expect(operatorWrapper.get('nav[aria-label="主导航"] a[href="/blueprint"]').classes())
+      .toContain('router-link-active')
 
     operatorWrapper.unmount()
     auth.$patch({
@@ -188,13 +215,27 @@ describe('App shell', () => {
     })
 
     const adminWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
-    expect(adminWrapper.findAll('nav a')).toHaveLength(10)
-    const adminSystemGroup = adminWrapper.get('[aria-label="系统管理"]')
-    expect(adminSystemGroup.find('a[href="/admin/data-exchange"]').exists()).toBe(true)
-    expect(adminSystemGroup.find('a[href="/admin"]').exists()).toBe(true)
-    expect(adminSystemGroup.findAll('a')).toHaveLength(2)
+    expect(adminWrapper.findAll('nav a')).toHaveLength(7)
+    expect(adminWrapper.get('a[href="/admin"]').text()).toBe('系统管理')
+    expect(adminWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
     expect(adminWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：admin')
     expect(adminWrapper.get('[data-testid="identity-role"]').text()).toBe('角色：管理员')
+
+    await router.push('/admin')
+    await flushPromises()
+    expect(adminWrapper.findAll('main')).toHaveLength(1)
+    const systemManagementNavigation = adminWrapper.get('[aria-label="系统管理导航"]')
+    expect(systemManagementNavigation.findAll('.el-menu-item')).toHaveLength(9)
+    expect(systemManagementNavigation.text()).toContain('底层模型参数')
+    expect(systemManagementNavigation.text()).toContain('装备参数库')
+    expect(systemManagementNavigation.text()).toContain('场景模板维护')
+    expect(systemManagementNavigation.text()).toContain('操作审计日志')
+    expect(systemManagementNavigation.text()).toContain('账号管理')
+    expect(systemManagementNavigation.text()).toContain('数据库备份 / 恢复')
+    expect(systemManagementNavigation.text()).toContain('仿真数据管理')
+    expect(systemManagementNavigation.text()).toContain('系统运行状态')
+    expect(systemManagementNavigation.text()).toContain('数据交换与接口')
+    expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)

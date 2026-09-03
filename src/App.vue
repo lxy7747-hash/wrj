@@ -34,6 +34,15 @@ watch(
 const roleLabel = computed(() => auth.principal?.role === 'ADMIN' ? '管理员' : '操作员')
 
 /**
+ * 返回当前角色进入系统管理时的默认路由。
+ *
+ * @returns 管理员进入用户与角色页，操作员进入数据交换与接口页。
+ */
+const systemManagementPath = computed(() => (
+  auth.principal?.role === 'ADMIN' ? '/admin' : '/admin/data-exchange'
+))
+
+/**
  * 结束当前内存会话并返回独立登录路由。
  *
  * @returns 登录导航替换浏览器历史记录后兑现且不返回值的 Promise。
@@ -63,30 +72,18 @@ async function logout(): Promise<void> {
 
       <div class="app-shell__navigation">
         <nav aria-label="主导航">
-          <section class="nav-group" aria-label="仿真作业">
-            <div class="nav-group__links">
-              <router-link to="/situation">态势主界面</router-link>
-              <router-link to="/scenarios">场景配置</router-link>
-              <router-link to="/batches">仿真批次</router-link>
-              <router-link to="/reports">报表中心</router-link>
-              <router-link to="/replays">回放复盘</router-link>
-            </div>
-          </section>
-
-          <section class="nav-group" aria-label="能力治理">
-            <div class="nav-group__links">
-              <router-link to="/blueprint">能力蓝图</router-link>
-              <router-link to="/traceability">可追溯性</router-link>
-              <router-link to="/interactions">交互管理</router-link>
-            </div>
-          </section>
-
-          <section class="nav-group" aria-label="系统管理">
-            <div class="nav-group__links">
-              <router-link to="/admin/data-exchange">数据交换与接口</router-link>
-              <router-link v-if="auth.principal?.role === 'ADMIN'" to="/admin">用户与角色</router-link>
-            </div>
-          </section>
+          <router-link to="/situation">态势主界面</router-link>
+          <router-link to="/scenarios">场景配置</router-link>
+          <router-link to="/batches">批量仿真</router-link>
+          <router-link to="/reports">报表中心</router-link>
+          <router-link to="/replays">历史回放</router-link>
+          <router-link :to="systemManagementPath">系统管理</router-link>
+          <router-link
+            to="/blueprint"
+            :class="{ 'router-link-active': ['/traceability', '/interactions'].includes($route.path) }"
+          >
+            能力与追踪
+          </router-link>
         </nav>
       </div>
 
@@ -104,7 +101,75 @@ async function logout(): Promise<void> {
     </header>
 
     <el-main class="app-shell__main">
-      <router-view />
+      <section
+        v-if="$route.path.startsWith('/admin')"
+        class="page system-management-page"
+        aria-labelledby="system-management-title"
+      >
+        <header class="system-management__header">
+          <div>
+            <div class="system-management__title-line">
+              <h2 id="system-management-title">系统管理</h2>
+              <el-tag type="warning" effect="plain">管理员功能 / 数据交换可用</el-tag>
+            </div>
+            <p>管理员管理页面与系统/操作员数据交换子功能</p>
+          </div>
+        </header>
+
+        <div class="system-management__body">
+          <aside class="system-management__sidebar" aria-label="系统管理导航">
+            <el-menu router :default-active="$route.fullPath">
+              <el-menu-item-group title="模型与参数">
+                <el-menu-item index="model-parameters" disabled>底层模型参数</el-menu-item>
+                <el-menu-item index="equipment-library" disabled>装备参数库</el-menu-item>
+                <el-menu-item index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
+              </el-menu-item-group>
+              <el-menu-item-group title="账号与维护">
+                <el-menu-item index="audit-logs" disabled>操作审计日志</el-menu-item>
+                <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
+                <el-menu-item index="database-backup" disabled>数据库备份 / 恢复</el-menu-item>
+              </el-menu-item-group>
+              <el-menu-item-group title="数据与运行">
+                <el-menu-item index="simulation-data" disabled>仿真数据管理</el-menu-item>
+                <el-menu-item index="runtime-status" disabled>系统运行状态</el-menu-item>
+              </el-menu-item-group>
+              <el-menu-item-group title="数据交换">
+                <el-menu-item index="/admin/data-exchange">
+                  <span>数据交换与接口</span>
+                  <small>系统/操作员</small>
+                </el-menu-item>
+              </el-menu-item-group>
+            </el-menu>
+          </aside>
+
+          <div class="system-management__content">
+            <router-view />
+          </div>
+        </div>
+      </section>
+
+      <section
+        v-else-if="['/blueprint', '/traceability', '/interactions'].includes($route.path)"
+        class="capability-page"
+      >
+        <div class="system-management__body">
+          <aside class="system-management__sidebar" aria-label="能力与接口导航">
+            <el-menu router :default-active="$route.path">
+              <el-menu-item-group title="能力与追踪">
+                <el-menu-item index="/blueprint">能力/接口蓝图</el-menu-item>
+                <el-menu-item index="/traceability">需求追踪</el-menu-item>
+                <el-menu-item index="/interactions">感知、干扰与选路</el-menu-item>
+              </el-menu-item-group>
+            </el-menu>
+          </aside>
+
+          <div class="system-management__content">
+            <router-view />
+          </div>
+        </div>
+      </section>
+
+      <router-view v-else />
     </el-main>
   </el-container>
 </template>
@@ -246,24 +311,6 @@ nav {
   padding: 0 clamp(0.75rem, 2vw, 1.5rem);
 }
 
-.nav-group {
-  display: flex;
-  min-width: max-content;
-  align-items: stretch;
-}
-
-.nav-group+.nav-group {
-  margin-left: 0.75rem;
-  padding-left: 0.75rem;
-  border-left: 1px solid color-mix(in srgb, var(--shell-border) 70%, transparent);
-}
-
-.nav-group__links {
-  display: flex;
-  align-items: stretch;
-  gap: 0.15rem;
-}
-
 nav a {
   display: flex;
   align-items: center;
@@ -294,6 +341,117 @@ nav a.router-link-exact-active {
   padding: 0;
   margin: 0;
   background: transparent;
+}
+
+.system-management-page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+
+.system-management__header {
+  flex: 0 0 auto;
+  padding: var(--space-3, 0.75rem) var(--space-5, 1.5rem);
+  border-bottom: 1px solid var(--console-border);
+  background: var(--console-surface-raised);
+}
+
+.system-management__title-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2, 0.5rem);
+}
+
+.system-management__title-line h2 {
+  margin: 0;
+  color: var(--console-text);
+  font-size: 1.1rem;
+}
+
+.system-management__header p {
+  margin: var(--space-1, 0.25rem) 0 0;
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
+}
+
+.system-management__body {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+
+.system-management__sidebar {
+  width: 11.875rem;
+  flex: 0 0 11.875rem;
+  overflow-y: auto;
+  border-right: 1px solid var(--console-border);
+  background: var(--console-bg-elevated);
+}
+
+.system-management__sidebar :deep(.el-menu) {
+  --el-menu-bg-color: transparent;
+  --el-menu-text-color: var(--console-text-muted);
+  --el-menu-hover-bg-color: var(--shell-accent-soft);
+  --el-menu-active-color: var(--console-cyan);
+  border-right: 0;
+}
+
+.system-management__sidebar :deep(.el-menu-item-group__title) {
+  padding: var(--space-3, 0.75rem) var(--space-4, 1rem) var(--space-1, 0.25rem) !important;
+  color: var(--console-text-dim);
+  font-size: var(--console-font-size-min);
+  line-height: 1.4;
+}
+
+.system-management__sidebar :deep(.el-menu-item) {
+  height: 2.5rem;
+  padding-left: var(--space-4, 1rem) !important;
+  border-left: 2px solid transparent;
+  line-height: 2.5rem;
+}
+
+.system-management__sidebar :deep(.el-menu-item.is-active) {
+  border-left-color: var(--console-cyan);
+  background: var(--shell-accent-soft);
+  font-weight: 600;
+}
+
+.system-management__sidebar :deep(.el-menu-item.is-disabled) {
+  color: var(--console-text-muted);
+  cursor: default;
+  opacity: 1;
+}
+
+.system-management__sidebar :deep(.el-menu-item small) {
+  margin-left: auto;
+  color: var(--console-amber);
+  font-size: var(--console-font-size-min);
+}
+
+.system-management__content {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.capability-page {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+@media (max-width: 720px) {
+  .system-management__sidebar {
+    width: 10rem;
+    flex-basis: 10rem;
+  }
 }
 
 :global(.page) {

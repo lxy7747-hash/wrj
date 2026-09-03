@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
+import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
@@ -254,17 +255,6 @@ function focusInterferenceOnMap(jammerId: string, platformId: string): void {
 }
 
 /**
- * 返回链路状态的中文标签。
- * @param link 来自固定帧的链路视图。
- * @returns 链路界面状态的中文文本。
- * @sideeffect 无副作用。
- */
-function linkStatusLabel(link: SituationLinkView): string {
-  if (link.status === 'DEGRADED') return '劣化'
-  return link.status === 'UP' ? '正常' : '中断'
-}
-
-/**
  * 返回干扰设备类型的中文名称。
  * @param jammerId 固定帧干扰设备标识。
  * @param platformId 搭载干扰设备的平台标识。
@@ -487,7 +477,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   <td>{{ link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '') }}</td>
                   <td>{{ link.snrDb.toFixed(2) }}</td>
                   <td>{{ formatBer(link.ber) }}</td>
-                  <td><span :class="`link-status link-status--${link.status.toLowerCase()}`">{{ linkStatusLabel(link) }}</span></td>
+                  <td><LinkStateBadge :link="link" /></td>
                 </tr>
               </tbody>
             </table>
@@ -631,10 +621,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
 .link-table td strong, .link-table td small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link-table td small { margin-top: .1rem; color: #6b8299; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; }
-.link-status { display: inline-flex; padding: .1rem .45rem; border-radius: 999px; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; line-height: 1.25; }
-.link-status--up { color: #6fd68a; background: #12351f; }
-.link-status--degraded { color: #ffb84d; background: #3a2c10; }
-.link-status--down { color: #ff7b7b; background: #3a1620; }
 .jammer-list { display: block; padding: 0; }
 .jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
 .jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }

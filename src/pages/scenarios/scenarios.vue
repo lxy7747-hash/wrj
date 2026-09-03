@@ -15,14 +15,12 @@ import {
 } from '../../features/scenarios/scenario-validation'
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
-import { useAuthStore } from '../../stores/auth'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import WaypointMapPicker, { type WaypointMapPoint } from '../../components/scenarios/WaypointMapPicker.vue'
 
 const scenarioStore = useScenarioStore()
-const authStore = useAuthStore()
 const {
   draft,
   dirty,
@@ -100,7 +98,6 @@ const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
 const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
-const canMaintainTemplates = computed(() => authStore.permissions.includes('OFFICIAL_TEMPLATE_MAINTAIN'))
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -1001,85 +998,23 @@ async function generateScriptPreview(): Promise<void> {
 }
 
 /**
- * 提示管理员输入模板名称并新建官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认输入后调用模板新建动作；取消不改变状态。
- */
-async function createTemplate(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('模板将保存当前完整场景草稿。', '新建官方模板', {
-      confirmButtonText: '新建',
-      cancelButtonText: '取消',
-      inputValue: draft.value === null ? '' : `${draft.value.config.scenario.name} 模板`,
-      inputValidator: (name) => name.trim() !== '' || '请输入模板名称。',
-    })
-    await scenarioStore.createTemplate(value)
-  } catch {
-    // 用户取消输入时保持模板库不变。
-  }
-}
-
-/**
- * 从内存 JSON 文本导入官方模板。
- * @returns 操作结束后无返回值。
- * @sideEffects 确认输入后调用模板导入动作，不访问真实文件。
- */
-async function importTemplate(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('粘贴只包含 name 和 config 的模板 JSON。', '导入官方模板', {
-      confirmButtonText: '导入',
-      cancelButtonText: '取消',
-      inputType: 'textarea',
-      inputPlaceholder: '{ "name": "模板名称", "config": { ... } }',
-      inputValidator: (text) => text.trim() !== '' || '请输入模板 JSON。',
-    })
-    await scenarioStore.importTemplate(value)
-  } catch {
-    // 用户取消输入时保持模板库不变。
-  }
-}
-
-/**
- * 将模板复制为临时工作场景。
- * @param template 待复制模板。
+ * 将模板应用为当前临时工作场景。
+ * @param template 待应用模板。
  * @returns 操作结束后无返回值。
  * @sideEffects 确认名称后替换当前临时场景草稿。
  */
-async function copyTemplate(template: ScenarioTemplate): Promise<void> {
+async function applyTemplate(template: ScenarioTemplate): Promise<void> {
   try {
-    const { value } = await ElMessageBox.prompt('复制后将替换当前临时工作场景。', '复制场景模板', {
-      confirmButtonText: '复制',
+    const { value } = await ElMessageBox.prompt('应用后将替换当前临时工作场景。', '应用场景模板', {
+      confirmButtonText: '应用',
       cancelButtonText: '取消',
-      inputValue: `${template.name} 副本`,
+      inputValue: `${template.name} 场景`,
       inputValidator: (name) => name.trim() !== '' || '请输入临时场景名称。',
     })
     await scenarioStore.copyTemplate(template.templateId, value)
   } catch {
-    // 用户取消复制时保持工作草稿不变。
+    // 用户取消应用时保持工作草稿不变。
   }
-}
-
-/** 使用当前草稿更新指定官方模板版本。 */
-async function updateTemplate(template: ScenarioTemplate): Promise<void> {
-  try {
-    await ElMessageBox.confirm(`确认使用当前场景草稿更新“${template.name}”？`, '更新官方模板', {
-      confirmButtonText: '更新',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
-    await scenarioStore.updateTemplate(template.templateId, template.name)
-  } catch {
-    // 用户取消更新时保持模板版本不变。
-  }
-}
-
-/** 生成模板 JSON 内存预览。 */
-async function exportTemplate(template: ScenarioTemplate): Promise<void> {
-  const preview = await scenarioStore.exportTemplate(template.templateId)
-  if (preview === undefined) return
-  await ElMessageBox.alert(preview, `导出预览 · ${template.name}`, {
-    confirmButtonText: '关闭',
-  })
 }
 
 onMounted(() => {
@@ -1511,7 +1446,8 @@ watch(activeTab, (tab) => {
 
         <el-tab-pane label="场景模板" name="templates">
           <TemplateLibrary
-            :can-maintain="canMaintainTemplates"
+            :can-maintain="false"
+            :allow-apply="true"
             :pending="templatePending"
             :draft-available="draft !== null"
             :draft-locked="draft?.locked ?? false"
@@ -1520,13 +1456,8 @@ watch(activeTab, (tab) => {
             :result-message="templateResultMessage"
             :selected-template="selectedTemplate"
             :last-confirmation="lastConfirmation"
-            @create="createTemplate"
-            @import="importTemplate"
             @load="scenarioStore.loadTemplate"
-            @copy="copyTemplate"
-            @update="updateTemplate"
-            @export="exportTemplate"
-            @delete="scenarioStore.deleteTemplate"
+            @copy="applyTemplate"
           />
         </el-tab-pane>
       </el-tabs>

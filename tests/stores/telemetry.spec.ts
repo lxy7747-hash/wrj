@@ -116,6 +116,72 @@ describe('P3-2 遥测 Store', () => {
     }
   })
 
+  it('固定证据五态与 T-XQ-013 声明一致', async () => {
+    const declaredStates = fixtureSource.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
+    ))?.states
+    let resolveEvents!: (value: unknown) => void
+    const eventsResult = new Promise<unknown>((resolve) => {
+      resolveEvents = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      String(input).endsWith('/events')
+        ? { ok: true, json: () => eventsResult }
+        : successResponse(frame),
+    )))
+    const store = useTelemetryStore()
+    const observed = [store.capabilityState]
+
+    const loading = store.loadFrame()
+    observed.push(store.capabilityState)
+    await vi.waitFor(() => expect(store.capabilityState).toBe('VALIDATING'))
+    observed.push(store.capabilityState)
+    resolveEvents({ ok: true, data: fixtureSource.events })
+    await expect(loading).resolves.toBe(true)
+    observed.push(store.capabilityState)
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({})))
+    await expect(store.loadFrame()).resolves.toBe(false)
+    observed.push(store.capabilityState)
+
+    expect([...new Set(observed)]).toEqual(['EMPTY', 'LOADING', 'VALIDATING', 'SUCCESS', 'ERROR'])
+    expect(new Set(declaredStates)).toEqual(new Set(observed))
+  })
+
+  it('拒绝跨帧链路状态投影并清空旧数据', async () => {
+    const candidate = structuredClone(frame)
+    candidate.uiLinks[0]!.frameId = 'F-OTHER'
+    expect(isTelemetryFrame(candidate)).toBe(false)
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidate),
+    )))
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+
+    await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({
+      frame: null,
+      capabilityState: 'ERROR',
+      resultCode: 'FRAME_ID_MISMATCH',
+      resultFieldPath: 'uiLinks[0].frameId',
+    })
+  })
+
+  it.each([
+    ['空阈值版本', 'thresholdVersion', ''],
+    ['未知阈值版本', 'thresholdVersion', 'LLZT-2.0'],
+    ['空判定原因', 'reason', ''],
+    ['负稳定帧数', 'consecutiveFrames', -1],
+    ['小数稳定帧数', 'consecutiveFrames', 1.5],
+    ['负数据年龄', 'ageMs', -1],
+  ])('拒绝%s', (_label, field, value) => {
+    const candidate = structuredClone(frame)
+    Reflect.set(candidate.uiLinks[0]!, field, value)
+
+    expect(isTelemetryFrame(candidate)).toBe(false)
+  })
+
   it('在途加载失效或跨帧事件出现时拒绝原子替换', async () => {
     let resolveFrame!: (value: Response) => void
     let resolveEvents!: (value: Response) => void
@@ -357,6 +423,10 @@ describe('P3-2 遥测 Store', () => {
     expect(isTelemetryFrame({ ...frame, links: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, linkSummaries: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, uiLinks: [null] })).toBe(false)
+    expect(isTelemetryFrame({
+      ...frame,
+      uiLinks: [{ ...frame.uiLinks[0], thresholdVersion: null }],
+    })).toBe(false)
     expect(isTelemetryFrame({ ...frame, eventIds: [null] })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, losses: [null] } })).toBe(false)
     expect(isTelemetryFrame({

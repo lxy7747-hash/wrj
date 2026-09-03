@@ -708,7 +708,7 @@ export const useScenarioStore = defineStore('scenario', {
     },
 
     /**
-     * 将官方模板复制到临时工作场景。
+     * 将官方模板以复制方式应用到临时工作场景。
      * @param templateId 模板编号。
      * @param name 新工作场景名称。
      * @returns 复制成功时返回 `true`。
@@ -719,7 +719,7 @@ export const useScenarioStore = defineStore('scenario', {
       if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
         this.templateState = 'ERROR'
         this.templateResultCode = 'PERMISSION_DENIED'
-        this.templateResultMessage = '当前账号不能复制场景模板。'
+        this.templateResultMessage = '当前账号不能应用场景模板。'
         return false
       }
       const requestEpoch = this.requestEpoch
@@ -743,12 +743,12 @@ export const useScenarioStore = defineStore('scenario', {
         this.validation = { valid: true, errors: [], warnings: [] }
         this.templateState = 'SUCCESS'
         this.templateResultCode = 'TEMPLATE_COPIED'
-        this.templateResultMessage = `模板已复制为临时工作场景“${draft.config.scenario.name}”。`
+        this.templateResultMessage = `模板已应用到临时工作场景“${draft.config.scenario.name}”。`
         this.clearScriptPreview()
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
-        this.showTemplateError(error, '模板复制失败。')
+        this.showTemplateError(error, '模板应用失败。')
         return false
       }
     },

@@ -328,11 +328,19 @@ describe('态势主界面', () => {
   it('展示 L-DL-03 的劣化详情并区分只有摘要的链路', async () => {
     const wrapper = mountSituationPage()
 
-    expect(wrapper.get('tr[data-link-id="L-DL-03"] .link-status').text()).toBe('劣化')
+    const degradedBadge = wrapper.get('tr[data-link-id="L-DL-03"] .link-status')
+    expect(degradedBadge.text()).toBe('劣化')
+    expect(degradedBadge.attributes('data-canonical-status')).toBe('DOWN')
+    expect(degradedBadge.attributes('data-threshold-version')).toBe('LLZT-1.0')
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
     await flushPromises()
     expect(document.body.textContent).toContain('界面状态劣化')
     expect(document.body.textContent).toContain('规范状态中断')
+    expect(document.body.textContent).toContain('阈值版本LLZT-1.0')
+    expect(document.body.textContent).toContain('稳定帧数3')
+    expect(document.body.textContent).toContain('判定依据误码率超过阈值并满足稳定帧条件')
+    expect(document.body.textContent).toContain('接收功率-91.6 dBm')
+    expect(document.body.textContent).toContain('误码率阈值1.0e-5')
     expect(document.body.textContent).toContain('数据年龄0 ms')
     expect(document.body.textContent).toContain('数据新鲜度新鲜')
 
@@ -356,6 +364,23 @@ describe('态势主界面', () => {
     await wrapper.get('tr[data-link-id="L-SAT-02"]').trigger('click')
     await flushPromises()
     expect(document.body.textContent).toContain('当前帧仅提供摘要')
+  })
+
+  it('链路状态徽标同步展示正常、劣化和中断三态', async () => {
+    const wrapper = mountSituationPage()
+    await flushPromises()
+    const telemetry = useTelemetryStore()
+    const nextFrame = structuredClone(SITUATION_FRAME_F00042)
+    const target = nextFrame.uiLinks.find((link) => link.linkId === 'L-MW-01')
+    if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 状态投影')
+    target.status = 'DOWN'
+    target.canonicalStatus = 'DOWN'
+    telemetry.frame = nextFrame
+    await flushPromises()
+
+    expect(wrapper.findAll('.link-status--up').length).toBeGreaterThan(0)
+    expect(wrapper.get('tr[data-link-id="L-DL-03"] .link-status--degraded').text()).toBe('劣化')
+    expect(wrapper.get('tr[data-link-id="L-MW-01"] .link-status--down').text()).toBe('中断')
   })
 
   it('link.metric 将 L-MW-01 规范状态实时更新为中断', async () => {

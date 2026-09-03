@@ -71,13 +71,15 @@ function reasonLabel(reason: string): string {
         <div><dt>数据新鲜度</dt><dd>{{ freshnessLabel }}</dd></div>
         <div><dt>界面状态</dt><dd :class="`status--${link.status.toLowerCase()}`">{{ uiStatusLabel }}</dd></div>
         <div><dt>规范状态</dt><dd :class="`status--${link.canonicalStatus.toLowerCase()}`">{{ canonicalStatusLabel }}</dd></div>
-        <div class="link-quality-dialog__wide"><dt>判定依据</dt><dd>{{ reasonLabel(link.reason) }}</dd></div>
+        <div><dt>阈值版本</dt><dd>{{ link.thresholdVersion ?? '未提供' }}</dd></div>
         <div><dt>稳定帧数</dt><dd>{{ link.consecutiveFrames ?? '未提供' }}</dd></div>
+        <div class="link-quality-dialog__wide"><dt>判定依据</dt><dd>{{ reasonLabel(link.reason) }}</dd></div>
         <template v-if="link.detailed">
           <div><dt>传输距离</dt><dd>{{ (link.detailed.distance / 1000).toFixed(1) }} km</dd></div>
           <div><dt>频率</dt><dd>{{ link.detailed.frequency }} MHz</dd></div>
           <div><dt>带宽</dt><dd>{{ link.detailed.bandwidth }} MHz</dd></div>
           <div><dt>接收功率</dt><dd>{{ link.detailed.receivedPower }} dBm</dd></div>
+          <div><dt>误码率阈值</dt><dd>{{ formatBer(link.detailed.berThreshold) }}</dd></div>
           <div><dt>路径损耗</dt><dd>{{ link.detailed.pathLoss }} dB</dd></div>
           <div><dt>数据速率</dt><dd>{{ link.detailed.dataRate }} Mbps</dd></div>
         </template>

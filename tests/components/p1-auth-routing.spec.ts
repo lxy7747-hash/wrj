@@ -724,22 +724,17 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.text()).toContain('SUCCESS')
   })
 
-  it('renders InteractionsPage with propagation evidence and planned interaction domains', async () => {
+  it('keeps fixed calculation evidence on the authoritative interactions route', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountAt(InteractionsPage, '/interactions')
 
-    expect(wrapper.text()).toContain('交互管理')
-    expect(wrapper.text()).toContain('组合传播损耗固定算例')
-    expect(wrapper.text()).toContain('固定算例一致')
-    expect(wrapper.text()).toContain('142.5 dB')
+    expect(wrapper.text()).toContain('感知、干扰与选路')
     expect(wrapper.text()).toContain('感知与侦测')
     expect(wrapper.text()).toContain('干扰控制')
     expect(wrapper.text()).toContain('链路优选与切换')
-    expect(wrapper.findAll('button')).toHaveLength(0)
-    expect(wrapper.find('[data-testid="state-chart"]').exists()).toBe(false)
-    expect(wrapper.text()).not.toContain('100%')
-    expect(wrapper.text()).not.toMatch(/LOADING|VALIDATING|EXECUTING|SUCCESS|EMPTY|ERROR/)
+    expect(wrapper.get('[data-testid="composite-loss-example"]')).toBeTruthy()
+    expect(wrapper.get('[data-testid="snr-ber-example"]')).toBeTruthy()
     expect(wrapper.text()).not.toMatch(/P0|P1|P4|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
     expect(fetchSpy).not.toHaveBeenCalled()
   })

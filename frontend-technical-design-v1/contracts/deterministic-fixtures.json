@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-03.2",
+  "fixtureVersion": "2026-09-03.4",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -771,6 +771,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -780,6 +781,7 @@
         "status": "DEGRADED",
         "canonicalStatus": "DOWN",
         "reason": "BER_THRESHOLD_AND_HYSTERESIS",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 3,
         "ageMs": 0
       },
@@ -789,6 +791,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -798,6 +801,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -807,6 +811,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -816,6 +821,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -825,6 +831,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -834,6 +841,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -843,6 +851,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       },
@@ -852,6 +861,7 @@
         "status": "UP",
         "canonicalStatus": "UP",
         "reason": "BER_BELOW_THRESHOLD",
+        "thresholdVersion": "LLZT-1.0",
         "consecutiveFrames": 4,
         "ageMs": 0
       }
@@ -1606,7 +1616,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"

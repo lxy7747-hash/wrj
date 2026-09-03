@@ -7,17 +7,19 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
   <section class="page interactions-page" aria-labelledby="interactions-title">
     <header class="interactions-page__header">
       <div>
-        <p class="eyebrow">能力治理 / 交互管理</p>
-        <h2 id="interactions-title">交互管理</h2>
+        <p class="eyebrow">能力治理 / 感知、干扰与选路</p>
+        <h2 id="interactions-title">感知、干扰与选路</h2>
         <p class="interactions-page__summary">
-          展示传播损耗与 SNR/BER 计算证据，并按感知、控制与链路决策关系组织后续交互能力。
+          展示传播损耗与 SNR/BER 固定证据，并按感知、控制与链路决策关系组织后续能力。
         </p>
       </div>
-      <span class="console-chip interactions-page__chip">链路计算证据</span>
+      <span class="console-chip interactions-page__chip">后续能力规划</span>
     </header>
 
-    <CompositeLossExample class="interaction-loss" />
-    <SnrBerExample class="interaction-quality" />
+    <div class="interactions-page__evidence">
+      <CompositeLossExample />
+      <SnrBerExample />
+    </div>
 
     <section class="console-panel interaction-topology" aria-labelledby="topology-title">
       <header class="interaction-topology__header">
@@ -124,12 +126,10 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
   color: var(--console-teal);
 }
 
-.interaction-loss {
+.interactions-page__evidence {
+  display: grid;
+  gap: var(--space-4);
   margin-top: var(--space-5);
-}
-
-.interaction-quality {
-  margin-top: var(--space-4);
 }
 
 .interaction-topology {

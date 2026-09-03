@@ -2,11 +2,14 @@ import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
+import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
+import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
+import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
@@ -227,9 +230,9 @@ describe('P2-1 场景管理页面', () => {
   })
 
   it.each([
-    { principal: OPERATOR, permissionText: '操作员只读', canMaintain: false },
-    { principal: ADMIN, permissionText: '管理员维护', canMaintain: true },
-  ])('按 $principal.role 展示模板库动作边界', async ({ principal, permissionText, canMaintain }) => {
+    OPERATOR,
+    ADMIN,
+  ])('场景配置对 $role 仅提供模板查看和应用', async (principal) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -251,81 +254,43 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     const panel = wrapper.get('[data-testid="template-library"]')
 
-    expect(panel.text()).toContain(permissionText)
+    expect(panel.text()).toContain('场景配置使用')
     expect(panel.text()).toContain('跨海通联演示官方基线')
-    expect(panel.text()).toContain('加载')
-    expect(panel.text()).toContain('复制')
-    expect(panel.find('[data-testid="create-template"]').exists()).toBe(canMaintain)
-    expect(panel.find('[data-testid="import-template"]').exists()).toBe(canMaintain)
-    expect(panel.text().includes('更新')).toBe(canMaintain)
-    expect(panel.text().includes('导出')).toBe(canMaintain)
-    expect(panel.text().includes('删除')).toBe(canMaintain)
+    expect(panel.text()).toContain('查看详情')
+    expect(panel.text()).toContain('应用到当前场景')
+    expect(panel.find('[data-testid="create-template"]').exists()).toBe(false)
+    expect(panel.find('[data-testid="import-template"]').exists()).toBe(false)
+    expect(panel.text()).not.toMatch(/更新|导出|删除/)
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('CONF-P2-001')
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('已完成')
   })
 
-  it('复用 Element Plus 完成模板七类动作入口', { timeout: 15_000 }, async () => {
+  it('在场景配置中查看并应用模板', { timeout: 15_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
     auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
     const scenario = useScenarioStore(pinia)
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS', templates: [template()], templateState: 'SUCCESS' })
-    const promptSpy = vi.spyOn(ElMessageBox, 'prompt')
-      .mockResolvedValueOnce({ value: '新建模板' } as never)
-      .mockResolvedValueOnce({ value: '{"name":"导入模板","config":{}}' } as never)
-      .mockResolvedValueOnce({ value: '模板副本' } as never)
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
-    vi.spyOn(ElMessageBox, 'alert').mockResolvedValue('confirm' as never)
-    const createSpy = vi.spyOn(scenario, 'createTemplate').mockResolvedValue(true)
-    const importSpy = vi.spyOn(scenario, 'importTemplate').mockResolvedValue(true)
+    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '模板场景' } as never)
     const copySpy = vi.spyOn(scenario, 'copyTemplate').mockResolvedValue(true)
-    const updateSpy = vi.spyOn(scenario, 'updateTemplate').mockResolvedValue(true)
-    const exportSpy = vi.spyOn(scenario, 'exportTemplate').mockResolvedValue('{"name":"跨海通联演示官方基线"}')
-    const deleteSpy = vi.spyOn(scenario, 'deleteTemplate').mockResolvedValue(true)
     const loadSpy = vi.spyOn(scenario, 'loadTemplate').mockResolvedValue(template())
-    const wrapper = mount(ScenariosPage, {
-      global: {
-        plugins: [pinia, ElementPlus],
-        stubs: {
-          ElPopconfirm: {
-            emits: ['confirm'],
-            template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>',
-          },
-        },
-      },
-    })
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
     const templateTab = wrapper.findAll('[role="tab"]').find((tab) => tab.text() === '场景模板')!
     await templateTab.trigger('click')
     await nextTick()
     const panel = wrapper.get('[data-testid="template-library"]')
-    const action = (name: string) => panel.findAll('button').filter((button) => button.text() === name).at(-1)!
-
-    await panel.get('[data-testid="create-template"]').trigger('click')
-    await flushPromises()
-    await panel.get('[data-testid="import-template"]').trigger('click')
-    await flushPromises()
-    await action('加载').trigger('click')
-    await action('复制').trigger('click')
-    await flushPromises()
-    await action('更新').trigger('click')
-    await flushPromises()
-    await action('导出').trigger('click')
-    await flushPromises()
-    await action('删除').trigger('click')
+    await panel.get('[data-testid="load-template-TPL-SCN-001"]').trigger('click')
+    await panel.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
     await flushPromises()
 
-    expect(promptSpy).toHaveBeenCalledTimes(3)
-    expect(createSpy).toHaveBeenCalledWith('新建模板')
-    expect(importSpy).toHaveBeenCalledWith('{"name":"导入模板","config":{}}')
+    expect(promptSpy).toHaveBeenCalledOnce()
+    expect(promptSpy).toHaveBeenCalledWith('应用后将替换当前临时工作场景。', '应用场景模板', expect.objectContaining({ confirmButtonText: '应用' }))
     expect(loadSpy).toHaveBeenCalledWith('TPL-SCN-001')
-    expect(copySpy).toHaveBeenCalledWith('TPL-SCN-001', '模板副本')
-    expect(updateSpy).toHaveBeenCalledWith('TPL-SCN-001', '跨海通联演示官方基线')
-    expect(exportSpy).toHaveBeenCalledWith('TPL-SCN-001')
-    expect(deleteSpy).toHaveBeenCalledWith('TPL-SCN-001')
+    expect(copySpy).toHaveBeenCalledWith('TPL-SCN-001', '模板场景')
   })
 
-  it('取消模板输入和确认时不执行维护动作，并展示模板错误反馈', { timeout: 15_000 }, async () => {
+  it('在系统管理中完成官方模板维护动作', { timeout: 15_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -335,34 +300,83 @@ describe('P2-1 场景管理页面', () => {
       draft: draft(),
       panelState: 'SUCCESS',
       templates: [template()],
+      templateState: 'SUCCESS',
+    })
+    const promptSpy = vi.spyOn(ElMessageBox, 'prompt')
+      .mockResolvedValueOnce({ value: '新建模板' } as never)
+      .mockResolvedValueOnce({ value: '{"name":"导入模板","config":{}}' } as never)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+    vi.spyOn(ElMessageBox, 'alert').mockResolvedValue('confirm' as never)
+    const createSpy = vi.spyOn(scenario, 'createTemplate').mockResolvedValue(true)
+    const importSpy = vi.spyOn(scenario, 'importTemplate').mockResolvedValue(true)
+    const updateSpy = vi.spyOn(scenario, 'updateTemplate').mockResolvedValue(true)
+    const exportSpy = vi.spyOn(scenario, 'exportTemplate').mockResolvedValue('{"name":"跨海通联演示官方基线"}')
+    const deleteSpy = vi.spyOn(scenario, 'deleteTemplate').mockResolvedValue(true)
+    const loadSpy = vi.spyOn(scenario, 'loadTemplate').mockResolvedValue(template())
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push({ path: '/admin', query: { section: 'scenario-templates' } })
+    const wrapper = mount(AdminPage, {
+      global: {
+        plugins: [pinia, router, ElementPlus],
+        stubs: {
+          ElPopconfirm: {
+            emits: ['confirm'],
+            template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>',
+          },
+        },
+      },
+    })
+    await nextTick()
+    const panel = wrapper.get('[data-testid="template-library"]')
+    expect(wrapper.text()).toContain('场景模板维护')
+    expect(panel.text()).toContain('管理员维护')
+    expect(panel.text()).not.toContain('应用到当前场景')
+    await panel.get('[data-testid="create-template"]').trigger('click')
+    await flushPromises()
+    await panel.get('[data-testid="import-template"]').trigger('click')
+    await flushPromises()
+    await panel.get('[data-testid="load-template-TPL-SCN-001"]').trigger('click')
+    await panel.get('[data-testid="update-template-TPL-SCN-001"]').trigger('click')
+    await flushPromises()
+    await panel.get('[data-testid="export-template-TPL-SCN-001"]').trigger('click')
+    await flushPromises()
+    await panel.get('[data-testid="delete-template-TPL-SCN-001"]').trigger('click')
+    await flushPromises()
+
+    expect(promptSpy).toHaveBeenCalledTimes(2)
+    expect(createSpy).toHaveBeenCalledWith('新建模板')
+    expect(importSpy).toHaveBeenCalledWith('{"name":"导入模板","config":{}}')
+    expect(loadSpy).toHaveBeenCalledWith('TPL-SCN-001')
+    expect(updateSpy).toHaveBeenCalledWith('TPL-SCN-001', '跨海通联演示官方基线')
+    expect(exportSpy).toHaveBeenCalledWith('TPL-SCN-001')
+    expect(deleteSpy).toHaveBeenCalledWith('TPL-SCN-001')
+  })
+
+  it('取消应用模板时保持当前场景不变并展示模板错误反馈', { timeout: 15_000 }, async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({
+      draft: draft(),
+      panelState: 'SUCCESS',
+      templates: [template()],
       templateState: 'ERROR',
       templateResultMessage: '模板服务不可用。',
     })
     vi.spyOn(ElMessageBox, 'prompt').mockRejectedValue(new Error('cancelled'))
-    vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue(new Error('cancelled'))
-    const createSpy = vi.spyOn(scenario, 'createTemplate')
-    const importSpy = vi.spyOn(scenario, 'importTemplate')
     const copySpy = vi.spyOn(scenario, 'copyTemplate')
-    const updateSpy = vi.spyOn(scenario, 'updateTemplate')
-    const exportSpy = vi.spyOn(scenario, 'exportTemplate').mockResolvedValue(undefined)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
     await wrapper.get('#tab-templates').trigger('click')
     await nextTick()
     const panel = wrapper.get('[data-testid="template-library"]')
     expect(panel.get('[data-testid="template-feedback"]').text()).toContain('模板服务不可用')
-    await panel.get('[data-testid="create-template"]').trigger('click')
-    await panel.get('[data-testid="import-template"]').trigger('click')
     await panel.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
-    await panel.get('[data-testid="update-template-TPL-SCN-001"]').trigger('click')
-    await panel.get('[data-testid="export-template-TPL-SCN-001"]').trigger('click')
     await flushPromises()
 
-    expect(createSpy).not.toHaveBeenCalled()
-    expect(importSpy).not.toHaveBeenCalled()
     expect(copySpy).not.toHaveBeenCalled()
-    expect(updateSpy).not.toHaveBeenCalled()
-    expect(exportSpy).toHaveBeenCalledWith('TPL-SCN-001')
   })
 
   it('首次进入时自动加载，并允许编辑全部 P2-1 参数', async () => {
