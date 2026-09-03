@@ -191,8 +191,10 @@ export interface FrameEvidence {
   losses: CompositeLossEvidence[]; routeCandidates: RouteCandidateEvidence[];
   jammerExecution: JammerExecutionEvidence; synchronization: SynchronizationEvidence;
 }
-/** Mock transport extension that adds identity without changing SRS LinkQualityData. */
-export interface TelemetryLinkRecord extends LinkQualityData { linkId: Identifier; }
+/** Mock 传输扩展：补充链路身份与质量计算证据，不修改 SRS LinkQualityData。 */
+export interface TelemetryLinkRecord extends LinkQualityData {
+  linkId: Identifier; coding: 'UNCODED'; qualityModelVersion: 'SNBER-1.2';
+}
 export interface TelemetryFrame {
   frameId: FrameId; taskId: TaskId; runId: RunId; simulationTime: Seconds; sequence: SequenceNumber;
   platforms: PlatformStatus[]; links: TelemetryLinkRecord[]; linkSummaries: LinkStatusSummary[];

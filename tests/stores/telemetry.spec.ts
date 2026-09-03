@@ -88,6 +88,34 @@ describe('P3-2 遥测 Store', () => {
     await expect(store.loadFrame()).resolves.toBe(false)
   })
 
+  it('拒绝无效调制、编码和质量模型版本并保留字段定位', async () => {
+    expect(isTelemetryFrame(frame)).toBe(true)
+    const store = useTelemetryStore()
+
+    for (const [field, value, code] of [
+      ['modulation', '16QAM', 'UNSUPPORTED_MODULATION'],
+      ['coding', 'LDPC', 'UNSUPPORTED_CODING'],
+      ['qualityModelVersion', 'SNBER-2.0', 'QUALITY_MODEL_VERSION_MISMATCH'],
+    ] as const) {
+      const candidate = structuredClone(frame)
+      const index = candidate.links.findIndex((link) => link.linkId === 'L-MW-01')
+      if (index < 0) throw new Error('测试固定帧缺少 L-MW-01 链路')
+      Reflect.set(candidate.links[index]!, field, value)
+      expect(isTelemetryFrame(candidate)).toBe(false)
+
+      vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+        successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidate),
+      )))
+      await expect(store.loadFrame()).resolves.toBe(false)
+      expect(store).toMatchObject({
+        frame: null,
+        capabilityState: 'ERROR',
+        resultCode: code,
+        resultFieldPath: `links[${index}].${field}`,
+      })
+    }
+  })
+
   it('在途加载失效或跨帧事件出现时拒绝原子替换', async () => {
     let resolveFrame!: (value: Response) => void
     let resolveEvents!: (value: Response) => void

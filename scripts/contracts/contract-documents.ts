@@ -295,6 +295,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/UiLinkProjection/properties/status/enum', ['UP','DEGRADED','DOWN']],
   ['#/components/schemas/UiLinkProjection/properties/canonicalStatus/enum', ['UP','DOWN']],
   ['#/components/schemas/CompositeLossEvidence/properties/modelVersion/const', 'COMPOSITE-LOSS-1.0'],
+  ['#/components/schemas/TelemetryLinkRecord/properties/coding/const', 'UNCODED'],
+  ['#/components/schemas/TelemetryLinkRecord/properties/qualityModelVersion/const', 'SNBER-1.2'],
   ['#/components/schemas/RouteCandidateEvidence/properties/direction/enum', ['FORWARD','REVERSE']],
   ['#/components/schemas/SynchronizationEvidence/properties/configVersion/const', 'SCN-001-v4'],
   ['#/components/schemas/SynchronizationEvidence/properties/engineVersion/const', 'AFSIM-2.9.0-FIXTURE'],
@@ -332,7 +334,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
   ['#/components/schemas/AuthResult/properties/sessionCreated/const', false],
   ['#/components/schemas/PermissionSet/properties/role/enum', ['ADMIN','OPERATOR']],
-  ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/const', 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'],
+  ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/enum', ['DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX','DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER']],
   ['#/components/schemas/CapabilityMetadata/allOf/0/then/properties/states/not/contains/const', 'EXECUTING'],
   ['#/components/schemas/CapabilityMetadata/properties/coverage/enum', ['INTERACTIVE_UI','VISIBLE_CONTRACT']],
   ['#/components/schemas/CapabilityMetadata/properties/states/items/enum', ['LOADING','VALIDATING','EXECUTING','SUCCESS','EMPTY','ERROR']],
@@ -561,7 +563,7 @@ const EXPECTED_CAPABILITY_STATES = Object.freeze([
   'EMPTY',
   'ERROR',
 ] as const)
-const EXPECTED_COMPOSITE_LOSS_STATES = Object.freeze([
+const EXPECTED_FIXED_EVIDENCE_STATES = Object.freeze([
   'LOADING',
   'VALIDATING',
   'SUCCESS',
@@ -1575,7 +1577,8 @@ export function auditFixtureClosure(fixtures: DeterministicFixtureSet): Validati
       )
     }
     const expectedStates = capability.id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
-      ? EXPECTED_COMPOSITE_LOSS_STATES
+      || capability.id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER'
+      ? EXPECTED_FIXED_EVIDENCE_STATES
       : EXPECTED_CAPABILITY_STATES
     if (!sameStrings(capability.states, expectedStates)) {
       addFinding(

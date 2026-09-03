@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-02.1')
+    expect(fixture.fixtureVersion).toBe('2026-09-03.2')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -239,6 +239,33 @@ describe('deterministic fixture contract', () => {
       id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
     ))
     if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-011 capability metadata')
+    ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
+    expect(validateFixture(candidate)).toBe(false)
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('freezes the five-state SNR/BER fixture inputs, outputs, and model mapping', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const capability = fixture.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER'
+    ))
+    const link = fixture.frame.links.find(({ linkId }) => linkId === 'L-MW-01')
+    const loss = fixture.frame.evidence.losses.find(({ linkId }) => linkId === 'L-MW-01')
+
+    expect(capability?.states).toEqual(['LOADING', 'VALIDATING', 'SUCCESS', 'EMPTY', 'ERROR'])
+    expect(link).toMatchObject({
+      receivedPower: -84, bandwidth: 20, modulation: 'QPSK', coding: 'UNCODED',
+      qualityModelVersion: 'SNBER-1.2', snr: 18.62, ber: 3.2e-7,
+    })
+    expect(loss?.noisePowerDbm).toBe(-104)
+    expect(validateFixture(fixture), JSON.stringify(validateFixture.errors)).toBe(true)
+
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const candidateCapability = candidate.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER'
+    ))
+    if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-012 capability metadata')
     ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
     expect(validateFixture(candidate)).toBe(false)
     expect(auditFixtureClosure(candidate).map(({ code }) => code))

@@ -1,6 +1,6 @@
 # 05 需求、接口与来源决策追踪
 
-本矩阵是实现目的地清单。来源采用顺序固定为 SRS → DD → 已评审通过的前端需求基线；HTML 仅保留能力卡锚点，不构成上位需求。`六态证据` 均要求组件测试覆盖 LOADING、VALIDATING、EXECUTING、SUCCESS、EMPTY、ERROR，并在 SUCCESS/ERROR 中断言列出的 fixture 或错误；T-XQ-011 固定证据卡例外为无 EXECUTING 的五态。29 个能力行与 7 个接口行各自唯一，不以来源决策行重复计数。
+本矩阵是实现目的地清单。来源采用顺序固定为 SRS → DD → 已评审通过的前端需求基线；HTML 仅保留能力卡锚点，不构成上位需求。`六态证据` 均要求组件测试覆盖 LOADING、VALIDATING、EXECUTING、SUCCESS、EMPTY、ERROR，并在 SUCCESS/ERROR 中断言列出的 fixture 或错误；T-XQ-011、T-XQ-012 固定证据卡例外为无 EXECUTING 的五态。29 个能力行与 7 个接口行各自唯一，不以来源决策行重复计数。
 
 ## 29 项能力
 
@@ -17,7 +17,7 @@
 | DSDWRJQTLJS-XQ-FZYXYLLJS-YQQD | SRS 3.2.1.3/3.3.3.1; DD 4.1.3/4.2.3.1/5.3.2.1; 基线 3/4.2; HTML cap-yqqd | `/situation` | `SituationPage/SimulationToolbar` | `simulationStore` | `SimulationRun`, `SimulationCommand`, `SimulationMode`, `UiSimulationStatus` | `POST .../simulations/{runId}/commands`; `runtime.state` | RUN-001 | 六态+开始/暂停/继续/单步/停止/倍速/模式+UI/canonical/锁清理 | T-XQ-009 | VISIBLE_CONTRACT |
 | DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS | SRS 3.2.1.3/3.3.3.2; DD 4.1.3/4.2.3.2/5.3.2.2; HTML cap-lljs | `/blueprint` | `BlueprintPage/LinkCalculatorContractCard` | `traceabilityStore`, `telemetryStore` | `LinkQualityData` | `link.metric` | F-00042, L-MW-01 | 六态+同 frame 标准字段 | T-XQ-010 | VISIBLE_CONTRACT |
 | DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX | SRS 3.2.1.3/3.3.3.3; DD 4.1.3/4.2.3.3/5.3.2.3; HTML cap-fhsx | `/interactions` | `InteractionsPage/CompositeLossExample` | `telemetryStore`, `uiStore` | `LinkQualityData`, `CompositeLossEvidence` | `GET .../frames/F-00042` | `frame.evidence.losses[L-MW-01]` 四分量=142.5 dB/model 1.0 | 五态（固定证据无 EXECUTING）+总损耗/分量/版本 | T-XQ-011 | INTERACTIVE_UI |
-| DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER | SRS 3.2.1.3/3.3.3.4; DD 4.1.3/4.2.3.4/5.3.2.4; HTML cap-snber | `/interactions` | `InteractionsPage/SnrBerExample` | `telemetryStore`, `uiStore` | `TelemetryLinkRecord`, `CompositeLossEvidence` | `GET .../frames/F-00042` | L-MW-01 receivedPower=-84/noise=-104/SNR=18.62/BER=3.2e-7 | 六态+Pr/noise/SNR/BER | T-XQ-012 | INTERACTIVE_UI |
+| DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER | SRS 3.2.1.3/3.3.3.4; DD 4.1.3/4.2.3.4/5.3.2.4; HTML cap-snber | `/interactions` | `InteractionsPage/SnrBerExample` | `telemetryStore`, `uiStore` | `TelemetryLinkRecord`, `CompositeLossEvidence` | `GET .../frames/F-00042` | L-MW-01 receivedPower=-84/noise=-104/SNR=18.62/BER=3.2e-7 | 五态（固定证据无 EXECUTING）+Pr/noise/SNR/BER | T-XQ-012 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT | SRS 3.2.1.3/3.3.3.5; DD 4.1.3/4.2.3.5/5.3.2.5; HTML cap-llzt | `/situation` | `SituationPage/LinkStateBadge` | `telemetryStore` | `UiLinkProjection`, `CanonicalLinkStatus` | `link.metric` | L-DL-03 DEGRADED→DOWN | 六态+连续帧/滞回/投影 | T-XQ-013 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-GRYGZ-ESMGL | SRS 3.2.1.4/3.3.4.1; DD 4.1.4/4.2.4.1/5.4.2.1; HTML cap-esmgl | `/interactions` | `InteractionsPage/EsmSensorPanel` | `telemetryStore` | `Sensor`, `DetectionEvent` | `jammer.event` | ESM-01 2000..5000 MHz；DET-042 probability=.95/time=42 | 六态+启停/频带/概率/时刻 | T-XQ-014 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-GRYGZ-RFGR | SRS 3.2.1.4/3.3.4.2; DD 4.1.4/4.2.4.2/5.4.2.2; HTML cap-rfgr | `/interactions` | `InteractionsPage/RfJammerPanel` | `telemetryStore` | `Jammer`, `JammerExecutionEvidence` | `jammer.event` | `frame.evidence.jammerExecution` 72W/2200MHz/1470s/AUTO_DETECTION | 六态+频带/功率/持续/原因 | T-XQ-015 | INTERACTIVE_UI |

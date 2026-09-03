@@ -304,6 +304,32 @@ test('P3-4 OPERATOR verifies the F-00042 composite propagation loss example', as
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P3-5 OPERATOR verifies the F-00042 SNR and BER calculation evidence', async ({ page }) => {
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  const frameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+  await page.getByRole('link', { name: '交互管理', exact: true }).click()
+  expect((await frameResponse).status()).toBe(200)
+
+  const example = page.getByTestId('snr-ber-example')
+  await expect(example).toBeVisible()
+  await expect(example.getByTestId('snr-ber-state')).toContainText('算例通过')
+  await expect(example).toContainText('-84 dBm')
+  await expect(example).toContainText('-104 dBm')
+  await expect(example).toContainText('18.62 dB')
+  await expect(example).toContainText('3.2e-7')
+  await expect(example).toContainText('QPSK')
+  await expect(example).toContainText('SNBER-1.2')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test.describe('P2-1 scenario business loop', () => {
   test.use({ timezoneId: 'America/New_York' })
 

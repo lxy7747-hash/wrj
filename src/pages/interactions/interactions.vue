@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
+import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
 </script>
 
 <template>
@@ -9,13 +10,14 @@ import CompositeLossExample from '../../components/interactions/CompositeLossExa
         <p class="eyebrow">能力治理 / 交互管理</p>
         <h2 id="interactions-title">交互管理</h2>
         <p class="interactions-page__summary">
-          展示传播损耗计算证据，并按感知、控制与链路决策关系组织后续交互能力。
+          展示传播损耗与 SNR/BER 计算证据，并按感知、控制与链路决策关系组织后续交互能力。
         </p>
       </div>
-      <span class="console-chip interactions-page__chip">传播损耗证据</span>
+      <span class="console-chip interactions-page__chip">链路计算证据</span>
     </header>
 
     <CompositeLossExample class="interaction-loss" />
+    <SnrBerExample class="interaction-quality" />
 
     <section class="console-panel interaction-topology" aria-labelledby="topology-title">
       <header class="interaction-topology__header">
@@ -124,6 +126,10 @@ import CompositeLossExample from '../../components/interactions/CompositeLossExa
 
 .interaction-loss {
   margin-top: var(--space-5);
+}
+
+.interaction-quality {
+  margin-top: var(--space-4);
 }
 
 .interaction-topology {

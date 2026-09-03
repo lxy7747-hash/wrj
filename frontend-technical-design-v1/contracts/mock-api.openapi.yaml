@@ -3536,6 +3536,8 @@
           "receivedPower",
           "snr",
           "modulation",
+          "coding",
+          "qualityModelVersion",
           "ber",
           "linkStatus",
           "berThreshold",
@@ -3607,6 +3609,12 @@
               "BPSK",
               "QPSK"
             ]
+          },
+          "coding": {
+            "const": "UNCODED"
+          },
+          "qualityModelVersion": {
+            "const": "SNBER-1.2"
           },
           "ber": {
             "type": "number",
@@ -5201,7 +5209,10 @@
             "if": {
               "properties": {
                 "id": {
-                  "const": "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX"
+                  "enum": [
+                    "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX",
+                    "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER"
+                  ]
                 }
               },
               "required": [

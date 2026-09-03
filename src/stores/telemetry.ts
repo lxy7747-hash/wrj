@@ -95,6 +95,8 @@ function isTelemetryLink(value: unknown): boolean {
       'pathLoss', 'jammingPower', 'receivedPower', 'snr', 'ber', 'berThreshold', 'dataRate',
     ])
     && (value.modulation === 'BPSK' || value.modulation === 'QPSK')
+    && value.coding === 'UNCODED'
+    && value.qualityModelVersion === 'SNBER-1.2'
     && (value.linkStatus === 'UP' || value.linkStatus === 'DOWN')
 }
 
@@ -189,11 +191,50 @@ function isSimulationState(value: unknown): value is SimulationState {
     && (value.errorMessage === undefined || typeof value.errorMessage === 'string')
 }
 
+class TelemetryFieldError extends Error {
+  constructor(
+    readonly code: string,
+    readonly fieldPath: string,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+/** 返回固定帧质量映射中可定位的字段错误。 */
+function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
+  if (!isRecord(value) || !Array.isArray(value.links)) return null
+  for (const [index, link] of value.links.entries()) {
+    if (!isRecord(link)) continue
+    if (link.modulation !== 'BPSK' && link.modulation !== 'QPSK') {
+      return new TelemetryFieldError('UNSUPPORTED_MODULATION', `links[${index}].modulation`, '不支持的调制方式。')
+    }
+    if (link.coding !== 'UNCODED') {
+      return new TelemetryFieldError('UNSUPPORTED_CODING', `links[${index}].coding`, '不支持的编码方式。')
+    }
+    if (link.qualityModelVersion !== 'SNBER-1.2') {
+      return new TelemetryFieldError(
+        'QUALITY_MODEL_VERSION_MISMATCH',
+        `links[${index}].qualityModelVersion`,
+        '质量模型版本与调制编码映射不一致。',
+      )
+    }
+  }
+  return null
+}
+
 /** 从统一成功信封读取并校验业务数据。 */
-async function readSuccess<T>(response: Response, validate: (value: unknown) => value is T): Promise<T> {
+async function readSuccess<T>(
+  response: Response,
+  validate: (value: unknown) => value is T,
+  findFieldError?: (value: unknown) => TelemetryFieldError | null,
+): Promise<T> {
   const payload = await response.json() as unknown
   if (!response.ok) throw payload as ApiFailure
-  if (!isRecord(payload) || payload.ok !== true || !validate(payload.data)) throw new Error('遥测响应格式不正确。')
+  if (!isRecord(payload) || payload.ok !== true) throw new Error('遥测响应格式不正确。')
+  const fieldError = findFieldError?.(payload.data)
+  if (fieldError !== undefined && fieldError !== null) throw fieldError
+  if (!validate(payload.data)) throw new Error('遥测响应格式不正确。')
   return payload.data
 }
 
@@ -221,6 +262,7 @@ export const useTelemetryStore = defineStore('telemetry', {
     capabilityState: 'EMPTY' as CapabilityState,
     resultCode: 'EMPTY',
     resultMessage: '尚未加载态势遥测。',
+    resultFieldPath: null as string | null,
     requestEpoch: 0,
   }),
 
@@ -235,6 +277,7 @@ export const useTelemetryStore = defineStore('telemetry', {
     async loadFrame(runId = 'RUN-001', frameId = 'F-00042'): Promise<boolean> {
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
+      this.resultFieldPath = null
       try {
         const headers = { 'X-Demo-Role': useAuthStore().role }
         const [frameResponse, eventResponse] = await Promise.all([
@@ -243,10 +286,12 @@ export const useTelemetryStore = defineStore('telemetry', {
         ])
         if (epoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'
-        const [frame, events] = await Promise.all([
-          readSuccess(frameResponse, isTelemetryFrame),
-          readSuccess(eventResponse, (value): value is SituationEvent[] => Array.isArray(value) && value.every(isSituationEvent)),
-        ])
+        const frame = await readSuccess(frameResponse, isTelemetryFrame, findTelemetryFieldError)
+        if (epoch !== this.requestEpoch) return false
+        const events = await readSuccess(
+          eventResponse,
+          (value): value is SituationEvent[] => Array.isArray(value) && value.every(isSituationEvent),
+        )
         if (epoch !== this.requestEpoch) return false
         const eventIds = events.map((event) => event.eventId)
         const eventIdSet = new Set(eventIds)
@@ -264,14 +309,16 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.capabilityState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
         this.resultMessage = '同帧态势遥测已加载。'
+        this.resultFieldPath = null
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
         this.frame = null
         this.events = []
         this.capabilityState = 'ERROR'
-        this.resultCode = 'TELEMETRY_LOAD_FAILED'
+        this.resultCode = error instanceof TelemetryFieldError ? error.code : 'TELEMETRY_LOAD_FAILED'
         this.resultMessage = error instanceof Error ? error.message : '态势遥测加载失败。'
+        this.resultFieldPath = error instanceof TelemetryFieldError ? error.fieldPath : null
         return false
       }
     },
@@ -297,6 +344,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (previous > 0 && envelope.sequence > previous + 1) {
         this.resultCode = 'SEQUENCE_GAP'
         this.resultMessage = '实时消息序号不连续，正在重新同步。'
+        this.resultFieldPath = null
         void this.recoverFromGap()
         return false
       }
@@ -337,6 +385,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.topicSequences['runtime.state'] = previous
       this.resultCode = 'RUNTIME_STATE_SYNC_FAILED'
       this.resultMessage = '仿真运行状态同步失败，正在重新同步。'
+      this.resultFieldPath = null
       await this.recoverFromGap()
     },
 
@@ -388,6 +437,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       socket.addEventListener('error', () => {
         this.resultCode = 'REALTIME_CONNECTION_FAILED'
         this.resultMessage = '实时连接暂时不可用。'
+        this.resultFieldPath = null
       })
     },
 
@@ -464,6 +514,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.capabilityState = 'EMPTY'
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未加载态势遥测。'
+      this.resultFieldPath = null
     },
   },
 })

@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-02.1",
+  "fixtureVersion": "2026-09-03.2",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -732,6 +732,8 @@
         "receivedPower": -84,
         "snr": 18.62,
         "modulation": "QPSK",
+        "coding": "UNCODED",
+        "qualityModelVersion": "SNBER-1.2",
         "ber": 3.2e-7,
         "linkStatus": "UP",
         "berThreshold": 0.00001,
@@ -754,6 +756,8 @@
         "receivedPower": -91.6,
         "snr": 7.1,
         "modulation": "QPSK",
+        "coding": "UNCODED",
+        "qualityModelVersion": "SNBER-1.2",
         "ber": 0.00024,
         "linkStatus": "DOWN",
         "berThreshold": 0.00001,
@@ -1588,7 +1592,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"

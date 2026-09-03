@@ -550,7 +550,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'if': {
           'properties': {
             'id': {
-              'const': 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX'
+              'enum': [
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX',
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER'
+              ]
             }
           },
           'required': [
@@ -4958,6 +4961,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'minimum': 0,
         'type': 'number'
       },
+      'coding': {
+        'const': 'UNCODED'
+      },
       'dataRate': {
         'minimum': 0,
         'type': 'number'
@@ -5006,6 +5012,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'pathLoss': {
         'type': 'number'
       },
+      'qualityModelVersion': {
+        'const': 'SNBER-1.2'
+      },
       'receivedPower': {
         'type': 'number'
       },
@@ -5048,6 +5057,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'receivedPower',
       'snr',
       'modulation',
+      'coding',
+      'qualityModelVersion',
       'ber',
       'linkStatus',
       'berThreshold',
