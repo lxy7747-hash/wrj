@@ -128,15 +128,7 @@ watch(templateMaintenanceVisible, (visible) => {
 </script>
 
 <template>
-  <section v-if="templateMaintenanceVisible" class="page admin-page" aria-labelledby="template-maintenance-title">
-    <header class="admin-header">
-      <div class="admin-header__copy">
-        <p class="eyebrow">系统管理 / 模板与参数</p>
-        <h2 id="template-maintenance-title">场景模板维护</h2>
-        <p class="admin-header__description">维护官方场景模板及其版本，模板内容取自当前场景草稿。</p>
-      </div>
-    </header>
-
+  <section v-if="templateMaintenanceVisible" class="page admin-page" aria-label="场景模板维护">
     <TemplateLibrary
       :can-maintain="true"
       :allow-apply="false"
@@ -161,7 +153,7 @@ watch(templateMaintenanceVisible, (visible) => {
     <AuditLog />
   </section>
 
-  <section v-else class="page admin-page" aria-labelledby="admin-title">
+  <section v-else class="page admin-page" aria-label="账号管理">
     <AccountManagement />
   </section>
 </template>
@@ -173,39 +165,8 @@ watch(templateMaintenanceVisible, (visible) => {
   gap: var(--space-4, 1rem);
 }
 
-.admin-header {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5, 1.5rem);
-  padding-bottom: var(--space-4, 1rem);
-  border-bottom: 1px solid var(--console-border);
-}
-
-.admin-header__copy {
-  min-width: 0;
-}
-
-.admin-header__description {
-  margin: 0;
-  color: var(--console-text-muted);
-  font-size: 0.88rem;
-}
-
-@media (max-width: 980px) {
-  .admin-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-}
-
 @media (max-width: 560px) {
   .admin-page {
-    gap: var(--space-3, 0.75rem);
-  }
-
-  .admin-header {
     gap: var(--space-3, 0.75rem);
   }
 }

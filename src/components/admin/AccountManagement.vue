@@ -104,11 +104,6 @@ async function confirmDelete(): Promise<void> {
 <template>
   <div class="account-management">
     <header class="admin-header">
-      <div class="admin-header__copy">
-        <p class="eyebrow">系统管理 / 访问控制</p>
-        <h2 id="admin-title">用户与角色管理</h2>
-        <p class="admin-header__description">管理系统用户、角色及账号状态。</p>
-      </div>
       <div class="summary-strip" aria-label="用户摘要">
         <span class="console-chip"><b>{{ userSummary.total }}</b> 用户总数</span>
         <span class="console-chip"><b>{{ userSummary.administrators }}</b> 管理员</span>
@@ -279,16 +274,6 @@ async function confirmDelete(): Promise<void> {
   gap: var(--space-5, 1.5rem);
   padding-bottom: var(--space-4, 1rem);
   border-bottom: 1px solid var(--console-border);
-}
-
-.admin-header__copy {
-  min-width: 0;
-}
-
-.admin-header__description {
-  margin: 0;
-  color: var(--console-text-muted);
-  font-size: 0.88rem;
 }
 
 .summary-strip {

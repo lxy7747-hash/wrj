@@ -933,7 +933,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   await page.getByRole('menuitem', { name: '场景模板维护', exact: true }).click()
   expect((await scenarioLoaded).status()).toBe(200)
   expect((await templatesLoaded).status()).toBe(200)
-  await expect(page.getByRole('heading', { name: '场景模板维护', exact: true })).toBeVisible()
+  await expect(page.getByLabel('场景模板维护', { exact: true })).toBeVisible()
   await expect(page.getByTestId('template-library')).not.toContainText('应用到当前场景')
 
   const messageBox = page.locator('.el-message-box')

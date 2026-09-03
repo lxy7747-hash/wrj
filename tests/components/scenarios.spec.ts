@@ -328,7 +328,7 @@ describe('P2-1 场景管理页面', () => {
     })
     await nextTick()
     const panel = wrapper.get('[data-testid="template-library"]')
-    expect(wrapper.text()).toContain('场景模板维护')
+    expect(wrapper.get('.admin-page').attributes('aria-label')).toBe('场景模板维护')
     expect(panel.text()).toContain('管理员维护')
     expect(panel.text()).not.toContain('应用到当前场景')
     await panel.get('[data-testid="create-template"]').trigger('click')
