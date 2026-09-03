@@ -1121,13 +1121,13 @@ describe('P0 deterministic mock server', () => {
   it('accepts one canonical WebSocket subscription and emits initial topic snapshots', async () => {
     const { wsUrl } = await startServer()
     const client = await openWebSocket(wsUrl, { role: 'ADMIN' })
-    const messagePromise = nextJsonMessages(client, 3)
+    const messagePromise = nextJsonMessages(client, 4)
 
     client.send(JSON.stringify({
       type: 'subscribe',
       schemaVersion: '1.0',
       taskId: 'TASK-001',
-      topics: ['simulation.frame', 'runtime.state'],
+      topics: ['simulation.frame', 'runtime.state', 'jammer.event'],
       lastSequence: 0,
     }))
 
@@ -1136,7 +1136,7 @@ describe('P0 deterministic mock server', () => {
       type: 'subscribed',
       schemaVersion: '1.0',
       taskId: 'TASK-001',
-      topics: ['simulation.frame', 'runtime.state'],
+      topics: ['simulation.frame', 'runtime.state', 'jammer.event'],
       lastSequence: 0,
       nextSequence: 1,
     })
@@ -1145,6 +1145,10 @@ describe('P0 deterministic mock server', () => {
     })
     expect(messages[2]).toMatchObject({
       type: 'event', topic: 'runtime.state', sequence: 1, payload: { status: 'COMPLETED' },
+    })
+    expect(messages[3]).toMatchObject({
+      type: 'event', topic: 'jammer.event', sequence: 1, frameId: 'F-00042',
+      simulationTime: 42, payload: { eventId: 'DET-042', type: 'DETECTION', sensorId: 'ESM-01' },
     })
     const closePromise = nextClose(client)
     client.close()
@@ -1588,5 +1592,91 @@ describe('P0 deterministic mock server', () => {
       .set(headers)
       .send({ command: 'STOP', confirmationId: 'CONF-MISSING' })
       .expect(409)
+  })
+
+  it('提供 P3 单次与批量报告读取，并执行分级导出验证', async () => {
+    const { baseUrl } = await startServer()
+    const operatorHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const adminHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+
+    const list = await request(baseUrl).get('/api/v1/reports').set(operatorHeaders).expect(200)
+    expect(list.body).toMatchObject({
+      ok: true,
+      data: [{ reportId: 'RPT-001', classification: 'LEVEL_II' }, { reportId: 'RPT-BATCH-001', classification: 'LEVEL_III' }],
+      meta: { total: 2 },
+    })
+    await request(baseUrl).get('/api/v1/reports/RPT-001').set(operatorHeaders).expect(200)
+    await request(baseUrl).get('/api/v1/reports/RPT-BATCH-001').set(operatorHeaders).expect(200)
+    await request(baseUrl).get('/api/v1/reports/RPT-MISSING').set(operatorHeaders).expect(404)
+    await request(baseUrl).get('/api/v1/reports').set('Origin', ORIGIN).expect(403)
+
+    const ordinary = await request(baseUrl)
+      .post('/api/v1/reports/RPT-001/export')
+      .set(operatorHeaders)
+      .send({ reportId: 'RPT-001', format: 'HTML' })
+      .expect(200)
+    expect(ordinary.body).toMatchObject({
+      data: { reportId: 'RPT-001', generated: false, status: 'FIXTURE_SUCCESS', verifiedAt: '2026-08-06T10:06:30Z' },
+    })
+
+    await request(baseUrl)
+      .post('/api/v1/reports/RPT-BATCH-001/export')
+      .set(operatorHeaders)
+      .send({ reportId: 'RPT-BATCH-001', format: 'CSV' })
+      .expect(403)
+    await request(baseUrl)
+      .post('/api/v1/reports/RPT-BATCH-001/export')
+      .set(adminHeaders)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF' })
+      .expect(428)
+
+    const awaitingResponse = await request(baseUrl)
+      .post('/api/v1/confirmations')
+      .set(adminHeaders)
+      .send({ action: 'BATCH_LEVEL_III_EXPORT', objectId: 'RPT-BATCH-001' })
+      .expect(201)
+    const awaiting = (awaitingResponse.body as { data: ConfirmationContext }).data
+    await request(baseUrl)
+      .post(`/api/v1/confirmations/${awaiting.confirmationId}`)
+      .set(adminHeaders)
+      .send({ confirm: true })
+      .expect(200)
+    const aggregate = await request(baseUrl)
+      .post('/api/v1/reports/RPT-BATCH-001/export')
+      .set(adminHeaders)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF', confirmationId: awaiting.confirmationId })
+      .expect(200)
+    expect(aggregate.body).toMatchObject({
+      data: { reportId: 'RPT-BATCH-001', generated: false, verifiedAt: '2026-08-06T10:08:00Z' },
+    })
+    await request(baseUrl)
+      .post('/api/v1/reports/RPT-BATCH-001/export')
+      .set(adminHeaders)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF', confirmationId: awaiting.confirmationId })
+      .expect(409)
+  })
+
+  it('拒绝 P3 报告导出的无角色、无效请求和未知报告', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    await request(baseUrl)
+      .post('/api/v1/reports/RPT-001/export')
+      .set('Origin', ORIGIN)
+      .send({ reportId: 'RPT-001', format: 'HTML' })
+      .expect(403)
+    for (const body of [
+      {},
+      { reportId: 'RPT-WRONG', format: 'HTML' },
+      { reportId: 'RPT-001', format: 'DOCX' },
+      { reportId: 'RPT-001', format: 'HTML', confirmationId: '' },
+      { reportId: 'RPT-001', format: 'HTML', extra: true },
+    ]) {
+      await request(baseUrl).post('/api/v1/reports/RPT-001/export').set(headers).send(body).expect(422)
+    }
+    await request(baseUrl)
+      .post('/api/v1/reports/RPT-MISSING/export')
+      .set(headers)
+      .send({ reportId: 'RPT-MISSING', format: 'CSV' })
+      .expect(404)
   })
 })

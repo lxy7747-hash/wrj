@@ -117,6 +117,41 @@ describe('P3-2 遥测 Store', () => {
     }
   })
 
+  it('拒绝越界坐标和非当前时刻图层并保留错误字段', async () => {
+    const cases: Array<{ candidate: TelemetryFrame; code: string; path: string }> = []
+    const invalidCoordinate = structuredClone(frame)
+    invalidCoordinate.platforms[0]!.longitude = 181
+    cases.push({ candidate: invalidCoordinate, code: 'COORDINATE_INVALID', path: 'platforms[0].longitude' })
+    const stalePlatform = structuredClone(frame)
+    stalePlatform.platforms[0]!.updatedAt = 41
+    cases.push({ candidate: stalePlatform, code: 'STALE_FRAME_DATA', path: 'platforms[0].updatedAt' })
+    const staleJammer = structuredClone(frame)
+    const jammerPlatformIndex = staleJammer.platforms.findIndex((platform) => platform.jammers.length > 0)
+    staleJammer.platforms[jammerPlatformIndex]!.jammers[0]!.time = 41
+    cases.push({ candidate: staleJammer, code: 'STALE_FRAME_DATA', path: `platforms[${jammerPlatformIndex}].jammers[0].time` })
+    const staleDetail = structuredClone(frame)
+    staleDetail.links[0]!.time = 41
+    cases.push({ candidate: staleDetail, code: 'STALE_FRAME_DATA', path: 'links[0].time' })
+    const staleProjection = structuredClone(frame)
+    staleProjection.uiLinks[0]!.ageMs = 1
+    cases.push({ candidate: staleProjection, code: 'STALE_FRAME_DATA', path: 'uiLinks[0].ageMs' })
+
+    const store = useTelemetryStore()
+    for (const item of cases) {
+      expect(isTelemetryFrame(item.candidate)).toBe(false)
+      vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+        successResponse(String(input).endsWith('/events') ? fixtureSource.events : item.candidate),
+      )))
+      await expect(store.loadFrame()).resolves.toBe(false)
+      expect(store).toMatchObject({
+        frame: null,
+        capabilityState: 'ERROR',
+        resultCode: item.code,
+        resultFieldPath: item.path,
+      })
+    }
+  })
+
   it('固定证据五态与 T-XQ-013 声明一致', async () => {
     const declaredStates = fixtureSource.metadata.capabilities.find(({ id }) => (
       id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
@@ -310,9 +345,33 @@ describe('P3-2 遥测 Store', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:4173/api/v1/simulations', {
       headers: { 'X-Demo-Role': 'OPERATOR' },
+      signal: expect.any(AbortSignal),
     })
     expect(store.acceptEnvelope({
       type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-001', sequence: 10, payload: null,
+    })).toBe(false)
+  })
+
+  it('接收同帧 ESM 侦测事件并按事件身份去重', () => {
+    const store = useTelemetryStore()
+    const detection = structuredClone(fixtureSource.events[0]!)
+    store.frame = structuredClone(frame)
+
+    const envelope = {
+      type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: detection,
+    } as const
+    expect(store.acceptEnvelope(envelope)).toBe(true)
+    expect(store.events).toEqual([detection])
+
+    expect(store.acceptEnvelope({ ...envelope, sequence: 2 })).toBe(true)
+    expect(store.events).toHaveLength(1)
+    expect(store).toMatchObject({ resultCode: 'DUPLICATE_EVENT', resultFieldPath: 'dedupeKey' })
+
+    expect(store.acceptEnvelope({
+      ...envelope,
+      sequence: 3,
+      payload: { ...detection, eventId: 'DET-OTHER', dedupeKey: 'DET-OTHER', targetPlatformId: 'UNKNOWN' },
     })).toBe(false)
   })
 
@@ -352,7 +411,7 @@ describe('P3-2 遥测 Store', () => {
 
     socket?.emit('open')
     expect(JSON.parse(socket?.sent[0] ?? '{}')).toMatchObject({
-      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric'], lastSequence: 0,
+      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event'], lastSequence: 0,
     })
     socket?.emit('message', JSON.stringify({ type: 'subscribed' }))
     expect(store.connectionState).toBe('SUBSCRIBED')

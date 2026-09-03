@@ -11,12 +11,14 @@ import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
+  filterSituationLinks,
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
   getPlatformName,
   selectSituationLinks,
   selectSituationMetrics,
+  type SituationMetricFilters,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
@@ -39,11 +41,13 @@ const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
 const telemetryStore = useTelemetryStore()
 const {
+  run: simulationRun,
   uiStatus: simulationStatus,
   currentTime: simulationTime,
   speedMultiplier: simulationSpeed,
   mode: simulationMode,
   configurationLockState,
+  capabilityState: simulationCapabilityState,
   resultMessage: simulationFeedback,
   pending: simulationPending,
 } = storeToRefs(simulationStore)
@@ -62,6 +66,7 @@ const candidatePanelVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
+const metricFilters = ref<SituationMetricFilters>({ nodeId: '', linkId: '', windowMs: null })
 let unmounted = false
 
 onMounted(async () => {
@@ -87,11 +92,13 @@ watch(frame, (nextFrame) => {
 }, { immediate: true })
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
+const monitoredLinks = computed(() => frame.value === null
+  ? []
+  : filterSituationLinks(situationLinks.value, metricFilters.value, frame.value))
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
-watch(selectedLink, (link) => {
-  if (link === null) linkDialogVisible.value = false
-})
-const situationMetrics = computed(() => frame.value === null ? null : selectSituationMetrics(frame.value, events.value))
+const situationMetrics = computed(() => frame.value === null
+  ? null
+  : selectSituationMetrics(frame.value, events.value, monitoredLinks.value))
 const displayedBusinessPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
 ))
@@ -102,8 +109,10 @@ const jammers = computed(() => (frame.value?.platforms ?? []).flatMap((platform)
 const detectionEvent = computed(() => events.value.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
-const maximumLinkAgeMs = computed(() => Math.max(0, ...situationLinks.value.map((link) => link.ageMs)))
-const frameFreshnessLabel = computed(() => (maximumLinkAgeMs.value === 0 ? '新鲜' : '存在延迟'))
+const maximumLinkAgeMs = computed(() => Math.max(0, ...monitoredLinks.value.map((link) => link.ageMs)))
+const frameFreshnessLabel = computed(() => monitoredLinks.value.length === 0
+  ? '筛选无结果'
+  : maximumLinkAgeMs.value === 0 ? '新鲜' : '存在延迟')
 const connectionLabel = computed(() => ({
   DISCONNECTED: '未连接',
   CONNECTING: '连接中',
@@ -199,6 +208,15 @@ async function updateSpeed(speed: number): Promise<void> {
  */
 function updateMode(mode: SimulationMode): void {
   simulationStore.setMode(mode)
+}
+
+/**
+ * 原子替换链路指标筛选条件。
+ * @param filters 节点、链路和时间窗口的完整筛选对象。
+ * @sideeffect 同步更新地图链路、右侧表格和顶部 KPI 投影。
+ */
+function updateMetricFilters(filters: SituationMetricFilters): void {
+  metricFilters.value = filters
 }
 
 /**
@@ -304,6 +322,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :speed="simulationSpeed"
       :mode="simulationMode"
       :lock-state="configurationLockState"
+      :capability-state="simulationCapabilityState"
+      :process-id="simulationRun?.canonical.processId ?? null"
+      :progress="simulationRun?.canonical.progress ?? 0"
       :pending="simulationPending"
       :feedback="simulationFeedback"
       @start="startSimulation"
@@ -439,14 +460,20 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <main class="situation-center" data-testid="situation-center">
         <OfflineSituationMap
           :frame="frame"
-          :links="situationLinks"
+          :links="monitoredLinks"
           :selected-node-id="selectedNodeId"
           :focus-target="mapFocusTarget"
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
         >
           <template #topbar>
-            <MetricPanel :metrics="situationMetrics" />
+            <MetricPanel
+              :metrics="situationMetrics"
+              :filters="metricFilters"
+              :nodes="frame.platforms.map((platform) => ({ id: platform.platformId, label: platform.name }))"
+              :links="situationLinks.map((link) => ({ id: link.linkId, label: `${link.linkId} · ${LINK_TYPE_LABELS[link.type]}` }))"
+              @update:filters="updateMetricFilters"
+            />
           </template>
         </OfflineSituationMap>
       </main>
@@ -480,7 +507,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
-                  v-for="link in situationLinks"
+                  v-for="link in monitoredLinks"
                   :key="link.linkId"
                   tabindex="0"
                   role="button"
@@ -497,6 +524,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                 </tr>
               </tbody>
             </table>
+            <el-empty v-if="monitoredLinks.length === 0" description="当前筛选条件下没有链路" :image-size="48" />
           </div>
         </section>
 
@@ -546,7 +574,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
     </footer>
 
-    <LinkQualityDialog v-if="selectedLink" v-model="linkDialogVisible" :link="selectedLink" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
     <LinkCandidatePanel
       v-model="candidatePanelVisible"
       :frame="frame"

@@ -84,7 +84,7 @@ function simulationRun(uiStatus: SimulationRun['uiStatus'], configLocked: boolea
       status: uiStatus === 'STOPPED' ? 'IDLE' : uiStatus,
       currentTime: 0,
       totalDuration: 7200,
-      processId: null,
+      processId: uiStatus === 'RUNNING' || uiStatus === 'PAUSED' ? 2900 : null,
       progress: 0,
     },
     configLocked,
@@ -196,7 +196,7 @@ describe('态势主界面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3)
     expect(fetchSpy).toHaveBeenNthCalledWith(1,
       'http://127.0.0.1:4173/api/v1/simulations',
-      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+      expect.objectContaining({ headers: { 'X-Demo-Role': 'OPERATOR' } }),
     )
     expect(webSocketSpy).toHaveBeenCalledOnce()
   })
@@ -228,6 +228,7 @@ describe('态势主界面', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('运行中')
     expect(wrapper.text()).toContain('场景配置已锁定')
+    expect(wrapper.get('[data-testid="engine-resource"]').text()).toContain('模拟进程 2900')
 
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
@@ -242,7 +243,23 @@ describe('态势主界面', () => {
 
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
     expect(wrapper.text()).toContain('场景配置未锁定')
+    expect(wrapper.get('[data-testid="engine-resource"]').text()).toContain('模拟进程资源已释放')
     expect(fetchSpy).toHaveBeenCalledTimes(9)
+  })
+
+  it('按链路条件同步筛选地图、表格和 KPI', async () => {
+    const wrapper = mountSituationPage()
+    await flushPromises()
+
+    await wrapper.get('select[aria-label="按链路筛选"]').setValue('L-DL-03')
+    await flushPromises()
+
+    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(1)
+    expect(wrapper.get('tr[data-link-id="L-DL-03"]')).toBeTruthy()
+    expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('平均 SNR7.10 dB')
+    expect(mapControllerMock.controller.setLinks).toHaveBeenLastCalledWith([
+      expect.objectContaining({ linkId: 'L-DL-03' }),
+    ])
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
@@ -464,7 +481,7 @@ describe('态势主界面', () => {
     expect(document.body.textContent).toContain('规范状态中断')
   })
 
-  it('所选链路从当前帧消失时自动关闭详情弹窗', async () => {
+  it('所选链路从当前帧消失时显示缺失态且不回显历史数据', async () => {
     const wrapper = mountSituationPage()
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
     await flushPromises()
@@ -477,7 +494,26 @@ describe('态势主界面', () => {
     }
     await flushPromises()
 
-    expect(document.querySelector('.link-quality-dialog')).toBeNull()
+    expect(document.querySelector('[data-testid="link-detail-missing"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('未找到所选链路，未显示历史数据')
+  })
+
+  it('所选链路过期时阻止显示历史质量值', async () => {
+    const wrapper = mountSituationPage()
+    await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
+    await flushPromises()
+
+    const telemetry = useTelemetryStore()
+    const staleFrame = structuredClone(SITUATION_FRAME_F00042)
+    const projection = staleFrame.uiLinks.find((link) => link.linkId === 'L-DL-03')
+    if (projection === undefined) throw new Error('测试固定帧缺少 L-DL-03 状态投影')
+    projection.ageMs = 1_000
+    telemetry.frame = staleFrame
+    await flushPromises()
+
+    expect(document.querySelector('[data-testid="link-detail-stale"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('链路数据已过期 1000 ms')
+    expect(document.body.textContent).not.toContain('接收功率-91.6 dBm')
   })
 
   it('通过 Leaflet 控制器同步图层、视图、选择和销毁', async () => {

@@ -349,6 +349,28 @@ test('P3-5 OPERATOR verifies the F-00042 SNR and BER calculation evidence', asyn
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P4-1 OPERATOR reads ESM configuration and one deduplicated detection', async ({ page }) => {
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  await openInteractions(page)
+
+  const panel = page.getByTestId('esm-sensor-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel.getByTestId('esm-state')).toContainText('已检出')
+  await expect(panel).toContainText('ESM-01')
+  await expect(panel).toContainText('2000–5000 MHz')
+  await expect(panel).toContainText('150 km')
+  await expect(panel).toContainText('高空前出中继节点（UAV-01）')
+  await expect(panel).toContainText('95%')
+  await expect(panel).toContainText('42 s')
+  await expect(panel).toContainText('重复侦测事件已忽略')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page }) => {
   const audit = auditConsole(page)
   const frameResponse = page.waitForResponse((response) => (
@@ -422,6 +444,59 @@ test('P3-7 OPERATOR reads the fixed link candidate snapshot and empty state', as
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P3 reports atomically switch sources and enforce Level II/III export paths', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'operator')
+  const reportList = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports')
+  await page.getByRole('link', { name: '报表中心', exact: true }).click()
+  expect((await reportList).status()).toBe(200)
+  await expect(page.getByRole('heading', { name: '报告分析', exact: true })).toBeVisible()
+  await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
+  await expect(page.getByTestId('report-tabs')).toContainText('RUN-001 · T+0～7200 s')
+
+  const batchLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001')
+  await page.getByTestId('report-source').click()
+  await page.getByRole('option', { name: /RPT-BATCH-001/ }).click()
+  expect((await batchLoaded).status()).toBe(200)
+  await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
+  await expect(page.getByTestId('report-tabs')).toContainText('BATCH-001 · 12 次确定性运行')
+  await page.getByTestId('report-export').click()
+  await expect(page.locator('.reports-page__status')).toContainText('当前账号没有三级批量报告导出权限。')
+
+  const ordinaryLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-001')
+  await page.getByTestId('report-source').click()
+  await page.getByRole('option', { name: /RPT-001 · 单次仿真/ }).click()
+  expect((await ordinaryLoaded).status()).toBe(200)
+  const ordinaryExport = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-001/export')
+  await page.getByTestId('report-export').click()
+  expect((await ordinaryExport).status()).toBe(200)
+  await expect(page.locator('.reports-page__export-result')).toContainText('未生成文件')
+
+  const adminPage = await page.context().newPage()
+  const adminAudit = auditConsole(adminPage)
+  await loginAs(adminPage, 'admin')
+  await adminPage.getByRole('link', { name: '报表中心', exact: true }).click()
+  await adminPage.getByTestId('report-tabs').waitFor()
+  await adminPage.getByTestId('report-source').click()
+  await adminPage.getByRole('option', { name: /RPT-BATCH-001/ }).click()
+  await expect(adminPage.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
+  await adminPage.getByTestId('report-export').click()
+  const dialog = adminPage.getByRole('dialog', { name: '确认验证三级批量报告导出' })
+  await expect(dialog).toBeVisible()
+  const aggregateExport = adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001/export')
+  await dialog.getByTestId('confirm-report-export').click()
+  expect((await aggregateExport).status()).toBe(200)
+  await expect(adminPage.locator('.reports-page__export-result')).toContainText('2026-08-06T10:08:00Z')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+  expect(adminAudit.errors).toEqual([])
+  expect(adminAudit.http404s).toEqual([])
+  expect([...adminAudit.nonLoopbackHosts]).toEqual([])
+  await adminPage.close()
 })
 
 test.describe('P2-1 scenario business loop', () => {
@@ -1146,6 +1221,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   expect((await runLoaded).status()).toBe(200)
   const toolbar = page.getByLabel('仿真控制', { exact: true })
   await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
+  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程资源已释放')
   const footer = page.locator('.situation-footer')
   await expect(footer).toContainText('实时已订阅')
   await expect(footer).toContainText('固定帧 F-00042')
@@ -1156,6 +1232,9 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
   await expect(degradedLink).toContainText('7.10')
   await expect(degradedLink).toContainText('2.4e-4')
+  await page.getByLabel('按链路筛选').selectOption('L-DL-03')
+  await expect(telemetryPanel.locator('tr[data-link-id]')).toHaveCount(1)
+  await expect(page.getByLabel('当前帧指标')).toContainText('平均 SNR7.10 dB')
   await degradedLink.click()
   const linkDialog = page.locator('.link-quality-dialog')
   await expect(linkDialog.locator('[data-frame-id="F-00042"]')).toBeVisible()
@@ -1205,6 +1284,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   expect((await started).status()).toBe(200)
   await expect(toolbar.getByText('运行中', { exact: true })).toBeVisible()
   await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置已锁定 · 仿真已开始。')
+  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程 2900')
   expect((await loadScenarioDraft(request)).locked).toBe(true)
 
   const paused = waitForCommand('PAUSE')
@@ -1232,6 +1312,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await expect(stopDialog).toHaveCount(0)
   await expect(toolbar.getByText('已停止', { exact: true })).toBeVisible()
   await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定 · 仿真已停止，场景配置已解锁。')
+  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程资源已释放')
   expect((await loadScenarioDraft(request)).locked).toBe(false)
 
   const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'

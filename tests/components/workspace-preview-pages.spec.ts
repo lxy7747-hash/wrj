@@ -10,15 +10,13 @@ vi.mock('../../src/components/WorkspacePreview.vue', () => ({
 
 import WorkspacePreview from '../../src/components/WorkspacePreview.vue'
 import BatchesPage from '../../src/pages/batches/batches.vue'
-import ReportsPage from '../../src/pages/reports/reports.vue'
 import ReplaysPage from '../../src/pages/replays/replays.vue'
 import TraceabilityPage from '../../src/pages/traceability/traceability.vue'
 
 describe('工作区预览页面', () => {
-  it('将四个薄页面统一委托给 WorkspacePreview', () => {
+  it('将三个薄页面统一委托给 WorkspacePreview', () => {
     const pages = [
       BatchesPage,
-      ReportsPage,
       ReplaysPage,
       TraceabilityPage,
     ]

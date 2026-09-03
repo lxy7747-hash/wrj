@@ -15,6 +15,7 @@ export type SimulationProjectionResult<T> =
   | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 428; fieldPath?: string; message: string }
 
 const STARTED_AT = '2026-08-06T08:05:00Z'
+const FIXTURE_PROCESS_ID = 2900
 const ACTIVE_STATUSES = new Set<SimulationRun['uiStatus']>(['RUNNING', 'PAUSED'])
 const MODES = new Set(['INTERACTIVE_SINGLE', 'BATCH_PARAMETER_TRAVERSAL', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'])
 
@@ -217,6 +218,7 @@ export class SimulationProjection {
     if (command.command === 'START') {
       this.run.uiStatus = 'RUNNING'
       this.run.canonical.status = 'RUNNING'
+      this.run.canonical.processId = FIXTURE_PROCESS_ID
       this.run.startedAt = STARTED_AT
       delete this.run.completedAt
     } else if (command.command === 'PAUSE') {
@@ -239,6 +241,7 @@ export class SimulationProjection {
         this.run.uiStatus = 'COMPLETED'
         this.run.canonical.status = 'COMPLETED'
         this.run.configLocked = false
+        this.run.canonical.processId = null
         this.run.completedAt = loadFixtureProjection().run.completedAt
         this.scenarios.setLocked(this.run.scenarioId, false)
       }
@@ -249,6 +252,7 @@ export class SimulationProjection {
       this.run.canonical.status = 'IDLE'
       this.run.canonical.currentTime = 0
       this.run.canonical.progress = 0
+      this.run.canonical.processId = null
       this.run.configLocked = false
       delete this.run.completedAt
     }

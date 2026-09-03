@@ -5,16 +5,79 @@ import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import CompositeLossExample from '../../src/components/interactions/CompositeLossExample.vue'
+import EsmSensorPanel from '../../src/components/interactions/EsmSensorPanel.vue'
 import SnrBerExample from '../../src/components/interactions/SnrBerExample.vue'
-import type { TelemetryFrame } from '../../src/contracts/domain-models'
+import type { DetectionEvent, ScenarioDraft, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import { useScenarioStore } from '../../src/stores/scenario'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
 const frame = fixtureSource.frame as unknown as TelemetryFrame
+const events = fixtureSource.events as unknown as Array<DetectionEvent | SwitchEvent>
+const scenarioDraft: ScenarioDraft = {
+  config: structuredClone(fixtureSource.scenario) as ScenarioDraft['config'],
+  uiExtensions: {
+    jammers: [],
+    sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
+  },
+  revision: 4,
+  officialLibraryChanged: false,
+  locked: false,
+}
 
 /** 创建统一成功响应。 */
 function successResponse(data: unknown): Response {
   return { ok: true, json: vi.fn().mockResolvedValue({ ok: true, data }) } as unknown as Response
 }
+
+describe('P4-1 ESM 传感器与侦测', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('展示配置、侦测事件和六态反馈', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    scenarioStore.$patch({ draft: structuredClone(scenarioDraft), panelState: 'SUCCESS' })
+    telemetryStore.$patch({
+      frame: structuredClone(frame),
+      events: structuredClone(events),
+      capabilityState: 'SUCCESS',
+    })
+    const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已检出')
+    expect(wrapper.text()).toContain('2000–5000 MHz')
+    expect(wrapper.text()).toContain('150 km')
+    expect(wrapper.text()).toContain('高空前出中继节点（UAV-01）')
+    expect(wrapper.text()).toContain('95%')
+    expect(wrapper.text()).toContain('42 s')
+
+    for (const [state, label] of [
+      ['LOADING', '加载中'], ['VALIDATING', '校验中'], ['EXECUTING', '扫描中'],
+    ] as const) {
+      telemetryStore.capabilityState = state
+      await nextTick()
+      expect(wrapper.get('[data-testid="esm-state"]').text()).toBe(label)
+    }
+
+    telemetryStore.$patch({ capabilityState: 'SUCCESS', events: [] })
+    await nextTick()
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('未检出')
+    expect(wrapper.text()).toContain('当前帧未检出目标')
+
+    telemetryStore.events = [{ ...structuredClone(events[0] as DetectionEvent), targetPlatformId: 'UNKNOWN' }]
+    await nextTick()
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('数据错误')
+    expect(wrapper.text()).toContain('侦测目标不存在')
+
+    telemetryStore.$patch({
+      events: [structuredClone(events[0] as DetectionEvent)],
+      resultCode: 'DUPLICATE_EVENT',
+    })
+    await nextTick()
+    expect(wrapper.text()).toContain('重复侦测事件已忽略')
+  })
+})
 
 describe('P3-4 传播损耗固定算例', () => {
   beforeEach(() => {

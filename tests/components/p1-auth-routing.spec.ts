@@ -736,6 +736,10 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.get('[data-testid="composite-loss-example"]')).toBeTruthy()
     expect(wrapper.get('[data-testid="snr-ber-example"]')).toBeTruthy()
     expect(wrapper.text()).not.toMatch(/P0|P1|P4|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
+      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/frames/F-00042',
+      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/events',
+    ])
   })
 })

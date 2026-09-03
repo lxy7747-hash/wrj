@@ -231,6 +231,9 @@ export function attachRealtimeServer(
       } else if (topic === 'runtime.state') {
         const run = currentRun()
         if (run !== undefined) envelope = createEnvelope(projection, topic, run.canonical, run.canonical.currentTime)
+      } else if (topic === 'jammer.event') {
+        const event = snapshot.events.find((item) => item.type === 'DETECTION')
+        if (event !== undefined) envelope = createEnvelope(projection, topic, event, event.time, event.frameId)
       }
       if (envelope === undefined) return
       message = JSON.stringify(envelope)

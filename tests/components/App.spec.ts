@@ -237,6 +237,12 @@ describe('App shell', () => {
     expect(systemManagementNavigation.text()).toContain('数据交换与接口')
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 
+    await router.push('/admin?section=audit-logs')
+    await flushPromises()
+    expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('操作审计日志')
+    expect(adminWrapper.get('#audit-logs-title').text()).toBe('操作审计日志')
+    expect(adminWrapper.get('.el-empty').text()).toContain('暂无审计日志')
+
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)
     scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
@@ -253,7 +259,7 @@ describe('App shell', () => {
     expect(adminWrapper.find('[data-testid="identity-panel"]').exists()).toBe(false)
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4173/api/v1/simulations',
-      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+      expect.objectContaining({ headers: { 'X-Demo-Role': 'OPERATOR' } }),
     )
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/frames/F-00042'))).toBe(true)
     expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/events'))).toBe(true)

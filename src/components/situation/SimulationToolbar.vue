@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ConfigurationLockState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
+import type { CapabilityState, ConfigurationLockState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
 import { formatSimulationTime } from '../../features/situation/situation-model'
 
 const props = defineProps<{
@@ -9,6 +9,9 @@ const props = defineProps<{
   speed: number
   mode: SimulationMode
   lockState: ConfigurationLockState
+  capabilityState: CapabilityState
+  processId: number | null
+  progress: number
   pending: boolean
   feedback: string
 }>()
@@ -115,6 +118,10 @@ const lockLabel = computed(() => ({
         <i aria-hidden="true"></i>{{ statusLabel }}
       </span>
       <small data-testid="simulation-feedback">{{ lockLabel }} · {{ feedback }}</small>
+      <small data-testid="engine-resource">
+        AFSIM 2.9.0 · {{ processId === null ? '模拟进程资源已释放' : `模拟进程 ${processId}` }} · 进度 {{ progress.toFixed(1) }}%
+      </small>
+      <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">运行控制异常</small>
     </div>
   </header>
 </template>
@@ -222,6 +229,10 @@ const lockLabel = computed(() => ({
 
 .simulation-toolbar__runtime small {
   grid-column: 1 / -1;
+}
+
+.simulation-toolbar__error {
+  color: var(--console-danger) !important;
 }
 
 .runtime-state {

@@ -125,7 +125,12 @@ async function logout(): Promise<void> {
                 <el-menu-item index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group title="账号与维护">
-                <el-menu-item index="audit-logs" disabled>操作审计日志</el-menu-item>
+                <el-menu-item
+                  index="/admin?section=audit-logs"
+                  :disabled="auth.principal?.role !== 'ADMIN'"
+                >
+                  操作审计日志
+                </el-menu-item>
                 <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
                 <el-menu-item index="database-backup" disabled>数据库备份 / 恢复</el-menu-item>
               </el-menu-item-group>

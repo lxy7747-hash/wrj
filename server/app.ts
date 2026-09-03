@@ -6,6 +6,9 @@ import type {
   LoginRequest,
   PageMeta,
   PreflightRequest,
+  Report,
+  ReportExportRequest,
+  ReportExportResult,
   ResetRequest,
   ResetResult,
   Role,
@@ -208,6 +211,15 @@ function isPreflightRequest(value: unknown): value is PreflightRequest {
   return isStrictObject(value, ['checksum'])
     && typeof value.checksum === 'string'
     && value.checksum.length > 0
+}
+
+/** 校验报表导出请求的闭合字段、格式和路径编号一致性。 */
+function isReportExportRequest(value: unknown, reportId: string): value is ReportExportRequest {
+  return isStrictObject(value, ['reportId', 'format'], ['confirmationId'])
+    && value.reportId === reportId
+    && (value.format === 'HTML' || value.format === 'PDF' || value.format === 'CSV')
+    && (value.confirmationId === undefined
+      || (typeof value.confirmationId === 'string' && value.confirmationId.length > 0))
 }
 
 /**
@@ -945,6 +957,96 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回单次仿真报告和批量聚合报告目录。 */
+  app.get('/api/v1/reports', (req, res) => {
+    const requestId = 'REQ-P3-REPORT-LIST'
+    if (requireDemoRole(req, res, auth, 'REPORT_LIST') === undefined) return
+    const snapshot = projection.snapshot()
+    const reports: Report[] = [snapshot.report, snapshot.batchAggregateReport]
+    res.status(200).json(success(reports, pageMeta(requestId, reports.length, reports.length)))
+  })
+
+  /** 返回指定的确定性报告，不把另一个来源的数据混入当前报告。 */
+  app.get('/api/v1/reports/:reportId', (req, res) => {
+    const reportId = req.params.reportId
+    const requestId = 'REQ-P3-REPORT-GET'
+    if (requireDemoRole(req, res, auth, 'REPORT_READ', reportId) === undefined) return
+    const snapshot = projection.snapshot()
+    const report = [snapshot.report, snapshot.batchAggregateReport]
+      .find((candidate) => candidate.reportId === reportId)
+    if (report === undefined) {
+      res.status(404).json(failure('NOT_FOUND', 404, { requestId, generatedAt: P1_GENERATED_AT }))
+      return
+    }
+    res.status(200).json(success(report, pageMeta(requestId)))
+  })
+
+  /**
+   * 校验报表导出权限并返回“未生成文件”的固定结果。
+   * @remarks 三级批量报告仅允许管理员在消费一次性确认后验证；本接口不写文件。
+   */
+  app.post('/api/v1/reports/:reportId/export', (req, res) => {
+    const reportId = req.params.reportId
+    const requestId = 'REQ-P3-REPORT-EXPORT'
+    const role = requireDemoRole(req, res, auth, 'REPORT_EXPORT', reportId)
+    if (role === undefined) return
+    if (!isReportExportRequest(req.body, reportId)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        fieldPath: 'request',
+      }))
+      return
+    }
+
+    const snapshot = projection.snapshot()
+    const report = [snapshot.report, snapshot.batchAggregateReport]
+      .find((candidate) => candidate.reportId === reportId)
+    if (report === undefined) {
+      res.status(404).json(failure('NOT_FOUND', 404, { requestId, generatedAt: P1_GENERATED_AT }))
+      return
+    }
+
+    if (report.classification === 'LEVEL_III') {
+      if (role !== 'ADMIN' || !auth.permissionSet(role).permissions.includes('BATCH_LEVEL_III_EXPORT')) {
+        auth.recordDenied('operator', role, 'REPORT_EXPORT', reportId)
+        res.status(403).json(failure('PERMISSION_DENIED', 403, { requestId, generatedAt: P1_GENERATED_AT }))
+        return
+      }
+      if (req.body.confirmationId === undefined) {
+        res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
+          requestId,
+          generatedAt: P1_GENERATED_AT,
+          message: '验证三级批量报告导出前需要二次确认。',
+        }))
+        return
+      }
+      const confirmed = confirmations.consume(req.body.confirmationId, 'BATCH_LEVEL_III_EXPORT', reportId, role)
+      if (!confirmed.ok) {
+        res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
+          requestId,
+          generatedAt: P1_GENERATED_AT,
+          message: confirmed.message,
+        }))
+        return
+      }
+    } else if (!auth.permissionSet(role).permissions.includes('ORDINARY_REPORT_EXPORT')) {
+      res.status(403).json(failure('PERMISSION_DENIED', 403, { requestId, generatedAt: P1_GENERATED_AT }))
+      return
+    }
+
+    const result: ReportExportResult = {
+      reportId: report.reportId,
+      generated: false,
+      status: 'FIXTURE_SUCCESS',
+      watermark: '仅供验证 · 未生成文件',
+      verifiedAt: report.classification === 'LEVEL_III'
+        ? snapshot.clock.levelThreeVerifiedAt
+        : snapshot.clock.reportGeneratedAt,
+    }
+    res.status(200).json(success(result, pageMeta(requestId)))
   })
 
   /**

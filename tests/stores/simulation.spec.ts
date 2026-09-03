@@ -32,7 +32,7 @@ function run(uiStatus: SimulationRun['uiStatus'] = 'IDLE', configLocked = uiStat
       status: canonicalStatus,
       currentTime: uiStatus === 'COMPLETED' ? 7200 : 0,
       totalDuration: 7200,
-      processId: null,
+      processId: uiStatus === 'RUNNING' || uiStatus === 'PAUSED' ? 2900 : null,
       progress: uiStatus === 'COMPLETED' ? 100 : 0,
     },
     configLocked,
@@ -190,6 +190,23 @@ describe('P3-1 仿真 Store', () => {
       resultCode: 'SUCCESS',
       resultMessage: '仿真运行状态已同步。',
     })
+  })
+
+  it('请求超时进入错误态并释放超时定时器', async () => {
+    vi.useFakeTimers()
+    authorizeOperator()
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('已超时', 'AbortError')))
+    })))
+    const simulation = useSimulationStore()
+
+    const loading = simulation.resetProjection()
+    await vi.advanceTimersByTimeAsync(5_000)
+
+    await expect(loading).resolves.toBe(false)
+    expect(simulation).toMatchObject({ capabilityState: 'ERROR', resultCode: 'TIMEOUT', resultMessage: '仿真服务响应超时。' })
+    expect(vi.getTimerCount()).toBe(0)
+    vi.useRealTimers()
   })
 
   it('创建并开始运行，同时同步已加载场景的配置锁', async () => {

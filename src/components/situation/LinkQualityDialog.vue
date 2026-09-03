@@ -25,6 +25,7 @@ const canonicalStatusLabel = computed(() => ({
 })[props.link?.canonicalStatus ?? 'UP'])
 
 const freshnessLabel = computed(() => (props.link?.ageMs === 0 ? '新鲜' : '存在延迟'))
+const stale = computed(() => props.link !== null && props.link.ageMs > 0)
 
 /**
  * 把链路状态原因转换为中文说明。
@@ -49,13 +50,22 @@ function reasonLabel(reason: string): string {
     @update:model-value="$emit('update:modelValue', $event)"
   >
     <template #header>
-      <div v-if="link" class="link-quality-dialog__header">
+      <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ link.linkId }} · 固定帧 {{ link.frameId }}</strong>
+        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
-    <div v-if="link" class="link-quality-dialog__body" :data-frame-id="link.frameId">
+    <el-empty v-if="!link" description="未找到所选链路，未显示历史数据" :image-size="64" data-testid="link-detail-missing" />
+    <el-alert
+      v-else-if="stale"
+      type="warning"
+      :closable="false"
+      show-icon
+      data-testid="link-detail-stale"
+      :title="`链路数据已过期 ${link.ageMs} ms，已停止显示历史质量值。`"
+    />
+    <div v-else class="link-quality-dialog__body" :data-frame-id="link.frameId" data-testid="link-detail-fresh">
       <div class="link-quality-dialog__route">
         <span>{{ link.sourceName }}</span>
         <i aria-hidden="true">→</i>

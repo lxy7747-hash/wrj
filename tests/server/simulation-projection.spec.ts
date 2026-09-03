@@ -120,7 +120,7 @@ describe('P3-1 仿真服务端投影', () => {
 
     expect(simulations.command('RUN-001', { command: 'START', mode: 'INTERACTIVE_SINGLE' })).toMatchObject({
       ok: true,
-      data: { uiStatus: 'RUNNING', canonical: { status: 'RUNNING' } },
+      data: { uiStatus: 'RUNNING', canonical: { status: 'RUNNING', processId: 2900 } },
     })
     expect(simulations.command('RUN-001', { command: 'SET_SPEED', speedMultiplier: 4 })).toMatchObject({ ok: true })
     expect(simulations.command('RUN-001', { command: 'PAUSE' })).toMatchObject({ ok: true, data: { uiStatus: 'PAUSED' } })
@@ -137,7 +137,7 @@ describe('P3-1 仿真服务端投影', () => {
     })
     expect(simulations.command('RUN-001', { command: 'STOP', confirmationId: 'CONF-P2-001' }, true)).toMatchObject({
       ok: true,
-      data: { uiStatus: 'STOPPED', configLocked: false, canonical: { status: 'IDLE', currentTime: 0, progress: 0 } },
+      data: { uiStatus: 'STOPPED', configLocked: false, canonical: { status: 'IDLE', currentTime: 0, progress: 0, processId: null } },
     })
     expect(scenarios.get('SCN-001')).toMatchObject({ ok: true, data: { locked: false } })
   })
@@ -162,7 +162,7 @@ describe('P3-1 仿真服务端投影', () => {
         uiStatus: 'COMPLETED',
         configLocked: false,
         completedAt: '2026-08-06T10:05:00Z',
-        canonical: { status: 'COMPLETED', currentTime: 7200, progress: 100 },
+        canonical: { status: 'COMPLETED', currentTime: 7200, progress: 100, processId: null },
       },
     })
     expect(scenarios.get('SCN-001')).toMatchObject({ ok: true, data: { locked: false } })

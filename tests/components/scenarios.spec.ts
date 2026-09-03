@@ -110,7 +110,7 @@ describe('P2-1 场景管理页面', () => {
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
     expect(wrapper.get('.scenario-page').attributes('aria-label')).toBe('场景配置')
-    expect(wrapper.text()).toContain('基础信息')
+    expect(wrapper.text()).toContain('场景基础')
     expect(wrapper.text()).toContain('时序参数')
     expect(wrapper.text()).toContain('环境参数')
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)

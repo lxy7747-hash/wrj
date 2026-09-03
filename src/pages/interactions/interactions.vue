@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
+import EsmSensorPanel from '../../components/interactions/EsmSensorPanel.vue'
 import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
 </script>
 
@@ -10,13 +11,14 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
         <p class="eyebrow">能力治理 / 感知、干扰与选路</p>
         <h2 id="interactions-title">感知、干扰与选路</h2>
         <p class="interactions-page__summary">
-          展示传播损耗与 SNR/BER 固定证据，并按感知、控制与链路决策关系组织后续能力。
+          展示 ESM 传感器与侦测事件、传播损耗及 SNR/BER 固定证据，并按感知、控制与链路决策关系组织后续能力。
         </p>
       </div>
-      <span class="console-chip interactions-page__chip">后续能力规划</span>
+      <span class="console-chip interactions-page__chip">建设中</span>
     </header>
 
     <div class="interactions-page__evidence">
+      <EsmSensorPanel />
       <CompositeLossExample />
       <SnrBerExample />
     </div>
@@ -43,11 +45,11 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
           <div class="domain-card__heading">
             <span class="domain-card__marker" aria-hidden="true"></span>
             <div>
-              <p class="domain-card__label">规划区域</p>
+              <p class="domain-card__label">已接入</p>
               <h4>感知与侦测</h4>
             </div>
           </div>
-          <p>后续用于呈现感知设备状态与侦测结果，作为交互信息的输入边界。</p>
+          <p>展示 ESM 传感器启停与覆盖参数，并呈现同帧侦测目标、概率和时戳。</p>
           <span class="console-chip">感知输入</span>
         </li>
 

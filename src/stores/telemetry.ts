@@ -17,7 +17,7 @@ import { useSimulationStore } from './simulation'
 
 type SituationEvent = DetectionEvent | SwitchEvent
 
-const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric']
+const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event']
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
 const PLATFORM_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE',
@@ -73,6 +73,8 @@ function isPlatform(value: unknown): boolean {
   return hasStrings(value, ['platformId', 'name'])
     && PLATFORM_TYPES.has(String(value.type))
     && hasFiniteNumbers(value, ['longitude', 'latitude', 'altitude', 'speed', 'updatedAt'])
+    && Number(value.longitude) >= -180 && Number(value.longitude) <= 180
+    && Number(value.latitude) >= -90 && Number(value.latitude) <= 90
     && Array.isArray(value.linkIds) && value.linkIds.every((linkId) => typeof linkId === 'string')
     && Array.isArray(value.jammers) && value.jammers.every(isJammerStatus)
 }
@@ -162,6 +164,61 @@ function candidateSnapshotIssue(value: Record<string, unknown>): CandidateSnapsh
   return validateCandidateSnapshot(value as unknown as TelemetryFrame)
 }
 
+/** 返回地图图层相对当前仿真时刻的首个坐标或数据新鲜度错误。 */
+function frameConsistencyIssue(value: Record<string, unknown>): CandidateSnapshotIssue | null {
+  if (typeof value.simulationTime !== 'number' || !Number.isFinite(value.simulationTime)) return null
+  const simulationTime = value.simulationTime
+  if (Array.isArray(value.platforms)) {
+    for (const [index, platform] of value.platforms.entries()) {
+      if (!isRecord(platform)) continue
+      if (typeof platform.longitude === 'number' && typeof platform.latitude === 'number'
+        && (platform.longitude < -180 || platform.longitude > 180 || platform.latitude < -90 || platform.latitude > 90)) {
+        return {
+          code: 'COORDINATE_INVALID',
+          fieldPath: `platforms[${index}].longitude`,
+          message: '节点坐标超出二维地图有效范围。',
+        }
+      }
+      if (typeof platform.updatedAt === 'number' && platform.updatedAt !== simulationTime) {
+        return {
+          code: 'STALE_FRAME_DATA',
+          fieldPath: `platforms[${index}].updatedAt`,
+          message: '节点状态与当前仿真时刻不一致。',
+        }
+      }
+      if (Array.isArray(platform.jammers)) {
+        const jammerIndex = platform.jammers.findIndex((jammer) => isRecord(jammer) && jammer.time !== simulationTime)
+        if (jammerIndex >= 0) {
+          return {
+            code: 'STALE_FRAME_DATA',
+            fieldPath: `platforms[${index}].jammers[${jammerIndex}].time`,
+            message: '干扰状态与当前仿真时刻不一致。',
+          }
+        }
+      }
+    }
+  }
+  if (Array.isArray(value.links)) {
+    const index = value.links.findIndex((link) => isRecord(link) && link.time !== simulationTime)
+    if (index >= 0) {
+      return { code: 'STALE_FRAME_DATA', fieldPath: `links[${index}].time`, message: '链路详情与当前仿真时刻不一致。' }
+    }
+  }
+  if (Array.isArray(value.linkSummaries)) {
+    const index = value.linkSummaries.findIndex((link) => isRecord(link) && link.updatedAt !== simulationTime)
+    if (index >= 0) {
+      return { code: 'STALE_FRAME_DATA', fieldPath: `linkSummaries[${index}].updatedAt`, message: '链路状态与当前仿真时刻不一致。' }
+    }
+  }
+  if (Array.isArray(value.uiLinks)) {
+    const index = value.uiLinks.findIndex((link) => isRecord(link) && link.ageMs !== 0)
+    if (index >= 0) {
+      return { code: 'STALE_FRAME_DATA', fieldPath: `uiLinks[${index}].ageMs`, message: '链路界面投影不是当前时刻的新鲜数据。' }
+    }
+  }
+  return null
+}
+
 /** 校验 REST 或实时通道返回的完整遥测帧。 */
 export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
   if (!isRecord(value)) return false
@@ -182,21 +239,25 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && isSynchronizationEvidence(value.evidence.synchronization)
   if (!structurallyValid) return false
 
-  return validateCandidateSnapshot(value as unknown as TelemetryFrame) === null
+  return frameConsistencyIssue(value) === null
+    && validateCandidateSnapshot(value as unknown as TelemetryFrame) === null
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
 function isSituationEvent(value: unknown): value is SituationEvent {
   if (!isRecord(value)) return false
-  const common = typeof value.eventId === 'string'
-    && typeof value.frameId === 'string'
-    && typeof value.time === 'number'
-    && typeof value.dedupeKey === 'string'
+  const common = typeof value.eventId === 'string' && value.eventId.length > 0
+    && typeof value.frameId === 'string' && value.frameId.length > 0
+    && typeof value.time === 'number' && Number.isFinite(value.time) && value.time >= 0
+    && typeof value.dedupeKey === 'string' && value.dedupeKey.length > 0
   if (!common) return false
   if (value.type === 'DETECTION') {
-    return typeof value.sensorId === 'string'
-      && typeof value.targetPlatformId === 'string'
+    return typeof value.sensorId === 'string' && value.sensorId.length > 0
+      && typeof value.targetPlatformId === 'string' && value.targetPlatformId.length > 0
       && typeof value.detectionProbability === 'number'
+      && Number.isFinite(value.detectionProbability)
+      && value.detectionProbability >= 0
+      && value.detectionProbability <= 1
   }
   return value.type === 'LINK_SWITCH'
     && typeof value.oldLinkId === 'string'
@@ -226,6 +287,44 @@ class TelemetryFieldError extends Error {
   }
 }
 
+/** 返回事件集合相对当前遥测帧的首个可定位错误。 */
+function findEventCollectionError(frame: TelemetryFrame, events: SituationEvent[]): TelemetryFieldError | null {
+  const eventIds = events.map((event) => event.eventId)
+  const duplicateEventIndex = eventIds.findIndex((eventId, index) => eventIds.indexOf(eventId) !== index)
+  if (duplicateEventIndex >= 0) {
+    return new TelemetryFieldError('DUPLICATE_EVENT', `events[${duplicateEventIndex}].eventId`, '存在重复事件。')
+  }
+
+  const dedupeKeys = events.map((event) => event.dedupeKey)
+  const duplicateKeyIndex = dedupeKeys.findIndex((dedupeKey, index) => dedupeKeys.indexOf(dedupeKey) !== index)
+  if (duplicateKeyIndex >= 0) {
+    return new TelemetryFieldError('DUPLICATE_EVENT', `events[${duplicateKeyIndex}].dedupeKey`, '存在重复事件。')
+  }
+
+  const mismatchedIndex = events.findIndex((event) => (
+    event.frameId !== frame.frameId || event.time !== frame.simulationTime
+  ))
+  if (mismatchedIndex >= 0) {
+    return new TelemetryFieldError('EVENT_FRAME_MISMATCH', `events[${mismatchedIndex}].frameId`, '事件与遥测帧不属于同一帧。')
+  }
+
+  const invalidTargetIndex = events.findIndex((event) => (
+    event.type === 'DETECTION'
+    && !frame.platforms.some((platform) => platform.platformId === event.targetPlatformId)
+  ))
+  if (invalidTargetIndex >= 0) {
+    return new TelemetryFieldError('TARGET_NOT_FOUND', `events[${invalidTargetIndex}].targetPlatformId`, '侦测目标不存在。')
+  }
+
+  const eventIdSet = new Set(eventIds)
+  if (frame.eventIds.length !== eventIds.length
+    || new Set(frame.eventIds).size !== frame.eventIds.length
+    || frame.eventIds.some((eventId) => !eventIdSet.has(eventId))) {
+    return new TelemetryFieldError('EVENT_SET_MISMATCH', 'eventIds', '遥测帧与事件集合不一致。')
+  }
+  return null
+}
+
 /** 返回固定帧质量映射中可定位的字段错误。 */
 function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
   if (!isRecord(value) || !Array.isArray(value.links)) return null
@@ -241,6 +340,8 @@ function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
       )
     }
   }
+  const frameIssue = frameConsistencyIssue(value)
+  if (frameIssue !== null) return new TelemetryFieldError(frameIssue.code, frameIssue.fieldPath, frameIssue.message)
   const issue = candidateSnapshotIssue(value)
   if (issue !== null) return new TelemetryFieldError(issue.code, issue.fieldPath, issue.message)
   for (const [index, link] of value.links.entries()) {
@@ -332,17 +433,9 @@ export const useTelemetryStore = defineStore('telemetry', {
           (value): value is SituationEvent[] => Array.isArray(value) && value.every(isSituationEvent),
         )
         if (epoch !== this.requestEpoch) return false
-        const eventIds = events.map((event) => event.eventId)
-        const eventIdSet = new Set(eventIds)
-        if (frame.runId !== runId
-          || frame.frameId !== frameId
-          || events.some((event) => event.frameId !== frame.frameId || event.time !== frame.simulationTime)
-          || frame.eventIds.length !== eventIds.length
-          || new Set(frame.eventIds).size !== frame.eventIds.length
-          || eventIdSet.size !== eventIds.length
-          || frame.eventIds.some((eventId) => !eventIdSet.has(eventId))) {
-          throw new Error('遥测帧与事件不属于同一帧。')
-        }
+        if (frame.runId !== runId || frame.frameId !== frameId) throw new Error('返回的遥测帧与请求不一致。')
+        const eventError = findEventCollectionError(frame, events)
+        if (eventError !== null) throw eventError
         this.frame = structuredClone(frame)
         this.events = structuredClone(events)
         this.capabilityState = 'SUCCESS'
@@ -405,6 +498,28 @@ export const useTelemetryStore = defineStore('telemetry', {
       } else if (envelope.topic === 'runtime.state') {
         if (!isSimulationState(envelope.payload)) return false
         void this.applyRuntimeState(envelope.sequence, previous)
+      } else if (envelope.topic === 'jammer.event') {
+        const payload = envelope.payload
+        if (this.frame === null
+          || !isSituationEvent(payload)
+          || payload.type !== 'DETECTION'
+          || envelope.frameId !== this.frame.frameId
+          || envelope.simulationTime !== this.frame.simulationTime
+          || payload.frameId !== this.frame.frameId
+          || payload.time !== this.frame.simulationTime
+          || !this.frame.eventIds.includes(payload.eventId)
+          || !this.frame.platforms.some((platform) => platform.platformId === payload.targetPlatformId)) return false
+
+        if (this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
+          this.resultCode = 'DUPLICATE_EVENT'
+          this.resultMessage = '重复侦测事件已忽略。'
+          this.resultFieldPath = 'dedupeKey'
+        } else {
+          this.events = [...this.events, structuredClone(payload)]
+          this.resultCode = 'SUCCESS'
+          this.resultMessage = '侦测事件已接收。'
+          this.resultFieldPath = null
+        }
       }
 
       this.topicSequences[envelope.topic] = envelope.sequence
@@ -429,7 +544,7 @@ export const useTelemetryStore = defineStore('telemetry', {
     },
 
     /**
-     * 建立本机实时连接并订阅态势所需的三个主题。
+     * 建立本机实时连接并订阅态势与侦测所需的四个主题。
      * @returns 无返回值。
      * @sideEffects 创建 WebSocket，更新连接状态，并在断线时按固定退避重试。
      */

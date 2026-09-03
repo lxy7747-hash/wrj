@@ -16,11 +16,39 @@ const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonica
 const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage'])
 const UI_STATUSES = new Set<UiSimulationStatus>(['IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'])
 const CANONICAL_STATUSES = new Set(['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'])
+const REQUEST_TIMEOUT_MS = 5_000
 
 class InvalidSimulationResponseError extends Error {
   /** 创建仿真响应不符合合同时使用的标记错误。 */
   constructor() {
     super('仿真运行数据格式不正确。')
+  }
+}
+
+class SimulationTimeoutError extends Error {
+  /** 创建仿真接口超时错误。 */
+  constructor() {
+    super('仿真服务响应超时。')
+  }
+}
+
+/**
+ * 为仿真控制请求增加统一超时和取消清理。
+ * @param input fetch 请求地址。
+ * @param init fetch 请求选项。
+ * @returns 在超时前完成的 HTTP 响应。
+ * @throws 超时时抛出 `SimulationTimeoutError`，其他异常保持原样。
+ */
+async function fetchSimulation(input: string, init?: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (controller.signal.aborted) throw new SimulationTimeoutError()
+    throw error
+  } finally {
+    window.clearTimeout(timer)
   }
 }
 
@@ -131,6 +159,8 @@ export const useSimulationStore = defineStore('simulation', {
       this.capabilityState = 'ERROR'
       this.resultCode = error instanceof InvalidSimulationResponseError
         ? 'INVALID_RESPONSE'
+        : error instanceof SimulationTimeoutError
+          ? 'TIMEOUT'
         : failure?.error.code ?? 'NETWORK_ERROR'
       this.resultMessage = failure?.error.message ?? (error instanceof Error ? error.message : fallback)
     },
@@ -156,7 +186,7 @@ export const useSimulationStore = defineStore('simulation', {
       const requestEpoch = this.requestEpoch
       const runtimeSyncEpoch = ++this.runtimeSyncEpoch
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations`, {
+        const response = await fetchSimulation(`${resolveMockOrigin()}/api/v1/simulations`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
@@ -192,7 +222,7 @@ export const useSimulationStore = defineStore('simulation', {
       this.capabilityState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations`, {
+        const response = await fetchSimulation(`${resolveMockOrigin()}/api/v1/simulations`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return false
@@ -235,7 +265,7 @@ export const useSimulationStore = defineStore('simulation', {
       this.capabilityState = 'EXECUTING'
       this.configurationLockState = 'LOCKING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations`, {
+        const response = await fetchSimulation(`${resolveMockOrigin()}/api/v1/simulations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ taskId: 'TASK-001', scenarioId: 'SCN-001' }),
@@ -278,7 +308,7 @@ export const useSimulationStore = defineStore('simulation', {
       this.capabilityState = 'EXECUTING'
       if (command.command === 'STOP') this.configurationLockState = 'UNLOCKING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/commands`, {
+        const response = await fetchSimulation(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/commands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify(command),
@@ -389,7 +419,7 @@ export const useSimulationStore = defineStore('simulation', {
       const runId = this.run.runId
       try {
         this.capabilityState = 'EXECUTING'
-        const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+        const createResponse = await fetchSimulation(`${resolveMockOrigin()}/api/v1/confirmations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ action: 'SIMULATION_STOP', objectId: runId }),
@@ -402,7 +432,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (awaiting === undefined) throw new InvalidSimulationResponseError()
         this.lastConfirmation = awaiting
 
-        const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+        const confirmResponse = await fetchSimulation(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ confirm: true }),
