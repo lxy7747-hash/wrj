@@ -29,12 +29,12 @@ function scriptLocation(fieldPath: string): string {
 
 <template>
   <section class="console-panel scenario-section" aria-labelledby="scenario-script-title" data-testid="script-preview-panel">
-    <div class="section-heading">
-      <div>
-        <p class="section-kicker">T-XQ-008</p>
-        <h3 id="scenario-script-title">脚本预览及预检</h3>
-      </div>
-    </div>
+<!--    <div class="section-heading">-->
+<!--      <div>-->
+<!--        <p class="section-kicker">T-XQ-008</p>-->
+<!--        <h3 id="scenario-script-title">脚本预览及预检</h3>-->
+<!--      </div>-->
+<!--    </div>-->
     <el-alert v-if="resultMessage" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
     <div class="platform-actions">
       <el-tooltip content="请先保存草稿" placement="top" :disabled="!dirty">

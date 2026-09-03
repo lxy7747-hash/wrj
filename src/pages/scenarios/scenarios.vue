@@ -1083,12 +1083,12 @@ watch(activeTab, (tab) => {
       <el-tabs v-model="activeTab" class="scenario-tabs">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-labelledby="scenario-basic-title">
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">基础信息</p>
-            <h3 id="scenario-basic-title">场景标识</h3>
-          </div>
-        </div>
+<!--        <div class="section-heading">-->
+<!--          <div>-->
+<!--            <p class="section-kicker">基础信息</p>-->
+<!--            <h3 id="scenario-basic-title">场景标识</h3>-->
+<!--          </div>-->
+<!--        </div>-->
         <div class="form-grid form-grid--basic">
           <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
@@ -1190,10 +1190,10 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="平台与航点" name="platforms">
           <section class="console-panel scenario-section" aria-labelledby="scenario-platform-title">
             <div class="section-heading">
-              <div>
-                <p class="section-kicker">平台与航点</p>
-                <h3 id="scenario-platform-title">场景实体配置</h3>
-              </div>
+<!--              <div>-->
+<!--                <p class="section-kicker">平台与航点</p>-->
+<!--                <h3 id="scenario-platform-title">场景实体配置</h3>-->
+<!--              </div>-->
               <div class="platform-counts" aria-label="场景实体数量">
                 <el-tag type="primary">业务信息节点 {{ businessNodeCount }} / 50</el-tag>
                 <el-tag>支撑实体 {{ supportingEntityCount }}</el-tag>
@@ -1246,10 +1246,10 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="链路配置" name="links">
           <section class="console-panel scenario-section" aria-labelledby="scenario-link-title">
             <div class="section-heading">
-              <div>
-                <p class="section-kicker">信息链路</p>
-                <h3 id="scenario-link-title">链路参数配置</h3>
-              </div>
+<!--              <div>-->
+<!--                <p class="section-kicker">信息链路</p>-->
+<!--                <h3 id="scenario-link-title">链路参数配置</h3>-->
+<!--              </div>-->
               <div class="platform-counts" aria-label="链路类型覆盖">
                 <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
                 <el-tag :type="linkTypeCount === 4 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 4 类</el-tag>
@@ -1292,10 +1292,10 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="干扰设备" name="jammers">
           <section class="console-panel scenario-section" aria-labelledby="scenario-jammer-title">
             <div class="section-heading">
-              <div>
-                <p class="section-kicker">干扰设备</p>
-                <h3 id="scenario-jammer-title">干扰参数配置</h3>
-              </div>
+<!--              <div>-->
+<!--                <p class="section-kicker">干扰设备</p>-->
+<!--                <h3 id="scenario-jammer-title">干扰参数配置</h3>-->
+<!--              </div>-->
               <div class="platform-counts" aria-label="干扰设备类型覆盖">
                 <el-tag type="primary">设备 {{ draft.config.jammers.length }}</el-tag>
                 <el-tag :type="jammerTypeCount === 2 ? 'success' : 'warning'">已配置 {{ jammerTypeCount }} / 2 类</el-tag>
@@ -1313,16 +1313,16 @@ watch(activeTab, (tab) => {
 
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
               <el-table-column prop="id" label="设备 ID" min-width="130" />
-              <el-table-column label="类型" min-width="110"><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
-              <el-table-column prop="platformId" label="归属平台" min-width="130" />
-              <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
-              <el-table-column prop="bandwidth" label="带宽（MHz）" min-width="110" />
-              <el-table-column prop="defaultPower" label="默认功率（W）" min-width="115" />
-              <el-table-column label="自动检测" width="90"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
-              <el-table-column prop="detectionRange" label="检测范围（m）" min-width="120" />
-              <el-table-column label="方向（°）" width="90"><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
-              <el-table-column label="持续时间（s）" width="110"><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
-              <el-table-column label="启用" width="80">
+              <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
+              <el-table-column prop="platformId" label="归属平台"/>
+              <el-table-column prop="frequency" label="频率（MHz）" />
+              <el-table-column prop="bandwidth" label="带宽（MHz）" />
+              <el-table-column prop="defaultPower" label="默认功率（W）"  />
+              <el-table-column label="自动检测"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
+              <el-table-column prop="detectionRange" label="检测范围（m）"/>
+              <el-table-column label="方向（°）" ><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
+              <el-table-column label="持续时间（s）" ><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
+              <el-table-column label="启用">
                 <template #default="{ row }">
                   <el-switch :model-value="jammerExtension(row.id)?.enabled" :disabled="pending || draft.locked" :data-testid="`toggle-jammer-${row.id}`" @update:model-value="setJammerEnabled(row.id, $event)" />
                 </template>
@@ -1346,19 +1346,22 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="传感器与输出" name="data">
           <section class="console-panel scenario-section" aria-labelledby="scenario-sensor-title">
             <div class="section-heading">
-              <div><p class="section-kicker">探测配置</p><h3 id="scenario-sensor-title">传感器</h3></div>
+<!--              <div>-->
+<!--                <p class="section-kicker">探测配置</p>-->
+<!--                <h3 id="scenario-sensor-title">传感器</h3>-->
+<!--              </div>-->
               <el-tag type="primary">{{ draft.config.sensors.length }} 个</el-tag>
             </div>
             <el-table :data="draft.config.sensors" stripe data-testid="sensor-table">
-              <el-table-column prop="id" label="传感器 ID" width="120" />
-              <el-table-column label="类型" width="80"><template #default>ESM</template></el-table-column>
-              <el-table-column label="归属平台" min-width="150">
+              <el-table-column prop="id" label="传感器 ID"/>
+              <el-table-column label="类型"><template #default>ESM</template></el-table-column>
+              <el-table-column label="归属平台" min-width="160">
                 <template #default="{ row, $index }"><el-select v-model="row.platformId" :data-testid="`sensor-platform-${$index}`" @change="synchronizeAllSensorIds"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template>
               </el-table-column>
-              <el-table-column label="最低频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="最高频率（MHz）" width="155"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="探测范围（m）" width="150"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="0" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="方向" width="250">
+              <el-table-column label="最低频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="最高频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="0" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="方向">
                 <template #default="{ row, $index }">
                   <div class="sensor-direction-editor">
                     <el-select :model-value="sensorDirectionMode(row.id)" :data-testid="`sensor-direction-mode-${$index}`" @change="setSensorDirectionMode(row.id, $event)">
@@ -1369,9 +1372,9 @@ watch(activeTab, (tab) => {
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column label="探测概率" width="145"><template #default="{ row, $index }"><el-input-number :model-value="sensorExtension(row.id)?.probability" :min="0" :max="1" :step="0.01" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? 0)" /></template></el-table-column>
-              <el-table-column label="启用" width="70"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
-              <el-table-column label="操作" width="70" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
+              <el-table-column label="探测概率" min-width="90"><template #default="{ row, $index }"><el-input-number :model-value="sensorExtension(row.id)?.probability" :min="0" :max="1" :step="0.01" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? 0)" /></template></el-table-column>
+              <el-table-column label="启用"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
+              <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
             </el-table>
             <div class="platform-actions"><el-button type="primary" data-testid="add-sensor" @click="addSensor">新增传感器</el-button></div>
           </section>
@@ -1390,16 +1393,16 @@ watch(activeTab, (tab) => {
           <section class="console-panel scenario-section" aria-labelledby="scenario-demand-title">
             <div class="section-heading"><div><p class="section-kicker">任务流量</p><h3 id="scenario-demand-title">信息需求</h3></div><el-tag>{{ draft.config.informationDemand.length }} 条</el-tag></div>
             <el-table :data="draft.config.informationDemand" stripe data-testid="information-demand-table">
-              <el-table-column prop="id" label="需求 ID" width="115" />
-              <el-table-column label="源平台" min-width="145"><template #default="{ row, $index }"><el-select v-model="row.sourcePlatformId" :data-testid="`demand-source-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
-              <el-table-column label="目标平台" min-width="190"><template #default="{ row, $index }"><el-select v-model="row.destinationPlatformIds" multiple collapse-tags :data-testid="`demand-destinations-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
-              <el-table-column label="信息类型" width="140"><template #default="{ row, $index }"><el-input v-model="row.informationType" :data-testid="`demand-type-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="数据量（MB）" width="135"><template #default="{ row, $index }"><el-input-number v-model="row.volumeMb" :min="0" controls-position="right" :data-testid="`demand-volume-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="频率（Hz）" width="125"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyHz" :min="0" controls-position="right" :data-testid="`demand-frequency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="优先级" width="105"><template #default="{ row, $index }"><el-select v-model="row.priority" :data-testid="`demand-priority-${$index}`" @change="markDirty"><el-option label="高" value="HIGH" /><el-option label="普通" value="NORMAL" /></el-select></template></el-table-column>
-              <el-table-column label="最大时延（ms）" width="150"><template #default="{ row, $index }"><el-input-number v-model="row.maxLatencyMs" :min="0" controls-position="right" :data-testid="`demand-latency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="最低速率（Mbps）" width="160"><template #default="{ row, $index }"><el-input-number v-model="row.minDataRateMbps" :min="0" controls-position="right" :data-testid="`demand-rate-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="操作" width="70" fixed="right"><template #default="{ $index }"><el-button link type="danger" :disabled="draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`" @click="removeInformationDemand($index)">删除</el-button></template></el-table-column>
+              <el-table-column prop="id" label="需求 ID" />
+              <el-table-column label="源平台"  min-width="160"><template #default="{ row, $index }"><el-select v-model="row.sourcePlatformId" :data-testid="`demand-source-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
+              <el-table-column label="目标平台"  min-width="160"><template #default="{ row, $index }"><el-select v-model="row.destinationPlatformIds" multiple collapse-tags :data-testid="`demand-destinations-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
+              <el-table-column label="信息类型" min-width="100"><template #default="{ row, $index }"><el-input v-model="row.informationType" :data-testid="`demand-type-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="数据量（MB）"><template #default="{ row, $index }"><el-input-number v-model="row.volumeMb" :min="0" controls-position="right" :data-testid="`demand-volume-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="频率（Hz）" ><template #default="{ row, $index }"><el-input-number v-model="row.frequencyHz" :min="0" controls-position="right" :data-testid="`demand-frequency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="优先级" ><template #default="{ row, $index }"><el-select v-model="row.priority" :data-testid="`demand-priority-${$index}`" @change="markDirty"><el-option label="高" value="HIGH" /><el-option label="普通" value="NORMAL" /></el-select></template></el-table-column>
+              <el-table-column label="最大时延（ms）"  min-width="100"><template #default="{ row, $index }"><el-input-number v-model="row.maxLatencyMs" :min="0" controls-position="right" :data-testid="`demand-latency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="最低速率（Mbps）"><template #default="{ row, $index }"><el-input-number v-model="row.minDataRateMbps" :min="0" controls-position="right" :data-testid="`demand-rate-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :disabled="draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`" @click="removeInformationDemand($index)">删除</el-button></template></el-table-column>
             </el-table>
             <div class="platform-actions"><el-button type="primary" :disabled="draft.config.platforms.length < 2" data-testid="add-information-demand" @click="addInformationDemand">新增信息需求</el-button></div>
           </section>
@@ -1407,7 +1410,12 @@ watch(activeTab, (tab) => {
 
         <el-tab-pane label="场景操作" name="operations">
           <section class="console-panel scenario-section" aria-labelledby="scenario-operation-title">
-            <div class="section-heading"><div><p class="section-kicker">完整快照</p><h3 id="scenario-operation-title">导入、撤销与重置</h3></div></div>
+<!--            <div class="section-heading">-->
+<!--              <div>-->
+<!--                <p class="section-kicker">完整快照</p>-->
+<!--                <h3 id="scenario-operation-title">导入、撤销与重置</h3>-->
+<!--              </div>-->
+<!--            </div>-->
             <el-alert title="导入 ScenarioConfig 规范快照，UI 扩展按规则重建。以下操作不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
             <el-alert v-if="sceneOperationFeedback" class="platform-feedback" :title="sceneOperationFeedback" type="success" :closable="false" show-icon />
             <div class="platform-actions">
@@ -1736,7 +1744,7 @@ watch(activeTab, (tab) => {
 .scenario-tabs {
   display: flex;
   min-height: 0;
-  flex-direction: column;
+  flex-direction: column
 }
 
 .scenario-tabs :deep(.el-tabs__header) {

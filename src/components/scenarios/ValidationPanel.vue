@@ -20,10 +20,10 @@ const issues = computed(() => [...props.validation.errors, ...props.validation.w
 <template>
   <section class="console-panel scenario-section validation-panel" aria-labelledby="scenario-validation-title" data-testid="validation-panel">
     <div class="section-heading">
-      <div>
-        <p class="section-kicker">参数校验与冲突检测</p>
-        <h3 id="scenario-validation-title">场景整体校验</h3>
-      </div>
+<!--      <div>-->
+<!--        <p class="section-kicker">参数校验与冲突检测</p>-->
+<!--        <h3 id="scenario-validation-title">场景整体校验</h3>-->
+<!--      </div>-->
       <div class="platform-counts" aria-label="校验问题数量">
         <el-tag :type="validation.errors.length > 0 ? 'danger' : 'success'">错误 {{ validation.errors.length }}</el-tag>
         <el-tag :type="validation.warnings.length > 0 ? 'warning' : 'success'">警告 {{ validation.warnings.length }}</el-tag>

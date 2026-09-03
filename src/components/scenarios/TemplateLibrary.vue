@@ -39,10 +39,10 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
 <template>
   <section class="console-panel scenario-section" aria-labelledby="scenario-template-title" data-testid="template-library">
     <div class="section-heading">
-      <div>
-        <p class="section-kicker">模板与版本</p>
-        <h3 id="scenario-template-title">场景模板库</h3>
-      </div>
+<!--      <div>-->
+<!--        <p class="section-kicker">模板与版本</p>-->
+<!--        <h3 id="scenario-template-title">场景模板库</h3>-->
+<!--      </div>-->
       <div class="platform-counts" aria-label="模板库权限和数量">
         <el-tag :type="canMaintain ? 'success' : 'info'">{{ canMaintain ? '管理员维护' : '场景配置使用' }}</el-tag>
         <el-tag>模板 {{ templates.length }}</el-tag>
