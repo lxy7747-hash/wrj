@@ -28,7 +28,7 @@
 
 ### 状态与投影
 
-- capability：验证前不得 EXECUTING；ERROR 重试；EMPTY 不显示旧数据；T-XQ-011、T-XQ-012、T-XQ-013 固定证据能力只验证无 EXECUTING 的五态。
+- capability：验证前不得 EXECUTING；ERROR 重试；EMPTY 不显示旧数据；T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-018 固定证据能力只验证无 EXECUTING 的五态。
 - simulation：START 必须选择运行模式并锁配置；PAUSE/RESUME/STEP/STOP/SET_SPEED 合法性与倍速正数边界；STOPPED→canonical IDLE；ERROR/COMPLETED 清锁。
 - link：连续帧/滞回；F-00042 的 L-MW-01=UP，L-DL-03 UI DEGRADED/canonical DOWN。
 - confirmation：场景 WARNING 继续、官方模板删除、仿真停止和敏感管理员动作均覆盖确认/取消；过期、重新认证、重复确认、reset 全部失效；场景存在 ERROR 时不得以确认绕过。
@@ -87,7 +87,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/
 阶段化 E2E 口径：
 
 - P1 只验证 11 条路由的页面壳、主导航、匿名重定向及 OPERATOR/ADMIN 权限矩阵，不断言 P2–P8 尚未实现的业务功能。
-- P2–P7 随对应能力实现补充业务主链、六态、错误路径和权限操作断言。
+- P2–P7 随对应能力实现补充业务主链、已声明状态、错误路径和权限操作断言。
 - P8 汇总全部路由及业务链路，执行完整双视口集成验收。
 
 ## 后续实现顺序

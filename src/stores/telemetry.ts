@@ -11,6 +11,7 @@ import type {
   WsConnectionState,
   WsTopic,
 } from '../contracts/domain-models'
+import { validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -112,13 +113,17 @@ function isUiLink(value: unknown): value is TelemetryFrame['uiLinks'][number] {
     && typeof value.ageMs === 'number' && Number.isFinite(value.ageMs) && value.ageMs >= 0
 }
 
-/** 校验链路标识解析和状态回退会读取的候选链路证据。 */
-function isRouteCandidate(value: unknown): boolean {
+/** 校验链路候选面板会读取的完整候选证据。 */
+function isRouteCandidate(value: unknown): value is TelemetryFrame['evidence']['routeCandidates'][number] {
   if (!isRecord(value)) return false
-  return typeof value.linkId === 'string'
+  return Object.keys(value).length === 7
+    && typeof value.linkId === 'string' && value.linkId.length > 0
     && (value.direction === 'FORWARD' || value.direction === 'REVERSE')
     && typeof value.eligible === 'boolean'
     && hasFiniteNumbers(value, ['jamImpactDb', 'ber', 'stabilityFrames', 'rank'])
+    && Number(value.ber) >= 0 && Number(value.ber) <= 1
+    && Number.isInteger(value.stabilityFrames) && Number(value.stabilityFrames) >= 0
+    && Number.isInteger(value.rank) && Number(value.rank) >= 1
 }
 
 /** 校验传播损耗页面会读取的完整分量证据。 */
@@ -144,10 +149,23 @@ function isSynchronizationEvidence(value: unknown): boolean {
     && value.effectiveSimulationTime >= 0
 }
 
+/** 在其余帧字段尚未完成校验时读取可定位的候选快照问题。 */
+function candidateSnapshotIssue(value: Record<string, unknown>): CandidateSnapshotIssue | null {
+  if (typeof value.frameId !== 'string'
+    || typeof value.simulationTime !== 'number'
+    || !Array.isArray(value.linkSummaries)
+    || !value.linkSummaries.every(isLinkSummary)
+    || !isRecord(value.evidence)
+    || !Array.isArray(value.evidence.routeCandidates)
+    || !value.evidence.routeCandidates.every(isRouteCandidate)
+    || !isSynchronizationEvidence(value.evidence.synchronization)) return null
+  return validateCandidateSnapshot(value as unknown as TelemetryFrame)
+}
+
 /** 校验 REST 或实时通道返回的完整遥测帧。 */
 export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
   if (!isRecord(value)) return false
-  return typeof value.frameId === 'string'
+  const structurallyValid = typeof value.frameId === 'string'
     && typeof value.taskId === 'string'
     && typeof value.runId === 'string'
     && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime)
@@ -162,6 +180,9 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
     && isSynchronizationEvidence(value.evidence.synchronization)
+  if (!structurallyValid) return false
+
+  return validateCandidateSnapshot(value as unknown as TelemetryFrame) === null
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
@@ -220,6 +241,8 @@ function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
       )
     }
   }
+  const issue = candidateSnapshotIssue(value)
+  if (issue !== null) return new TelemetryFieldError(issue.code, issue.fieldPath, issue.message)
   for (const [index, link] of value.links.entries()) {
     if (!isRecord(link)) continue
     if (link.modulation !== 'BPSK' && link.modulation !== 'QPSK') {

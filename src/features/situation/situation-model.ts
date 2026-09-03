@@ -12,6 +12,14 @@ import deterministicData from '../../../frontend-technical-design-v1/contracts/d
 
 type SituationEvent = DetectionEvent | SwitchEvent
 
+const SCENARIO_LINKS = (deterministicData.scenario as ScenarioConfig).links
+
+export interface CandidateSnapshotIssue {
+  code: string
+  fieldPath: string
+  message: string
+}
+
 export interface SituationLinkView {
   frameId: TelemetryFrame['frameId']
   linkId: string
@@ -105,8 +113,88 @@ function resolveLinkId(summary: LinkStatusSummary, frame: TelemetryFrame): strin
   ))
   if (detailed) return detailed.linkId
 
-  return frame.evidence.routeCandidates.find((candidate) => candidate.ber === summary.currentBer)?.linkId
+  return SCENARIO_LINKS.find((link) => (
+    link.sourcePlatformId === summary.sourcePlatform
+    && link.targetPlatformId === summary.destPlatform
+    && link.type === summary.linkType
+  ))?.id
     ?? summary.linkKey
+}
+
+/** 校验固定候选集合与当前链路摘要是否属于同一质量快照。 */
+export function validateCandidateSnapshot(frame: TelemetryFrame): CandidateSnapshotIssue | null {
+  if (frame.evidence.synchronization.effectiveFrameId !== frame.frameId) {
+    return {
+      code: 'CANDIDATE_FRAME_MISMATCH',
+      fieldPath: 'evidence.synchronization.effectiveFrameId',
+      message: '链路候选快照与遥测帧不属于同一帧。',
+    }
+  }
+  if (frame.evidence.synchronization.effectiveSimulationTime !== frame.simulationTime) {
+    return {
+      code: 'CANDIDATE_TIME_MISMATCH',
+      fieldPath: 'evidence.synchronization.effectiveSimulationTime',
+      message: '链路候选快照与遥测帧不属于同一仿真时刻。',
+    }
+  }
+
+  const seen = new Set<string>()
+  for (const [index, candidate] of frame.evidence.routeCandidates.entries()) {
+    const candidatePath = `evidence.routeCandidates[${index}]`
+    if (seen.has(candidate.linkId)) {
+      return {
+        code: 'DUPLICATE_ROUTE_CANDIDATE',
+        fieldPath: `${candidatePath}.linkId`,
+        message: '链路候选快照包含重复链路。',
+      }
+    }
+    seen.add(candidate.linkId)
+
+    const link = SCENARIO_LINKS.find((item) => item.id === candidate.linkId)
+    if (link === undefined) {
+      return {
+        code: 'CANDIDATE_LINK_NOT_FOUND',
+        fieldPath: `${candidatePath}.linkId`,
+        message: `候选链路 ${candidate.linkId} 不存在。`,
+      }
+    }
+    const summaryIndex = frame.linkSummaries.findIndex((summary) => (
+      summary.sourcePlatform === link.sourcePlatformId
+      && summary.destPlatform === link.targetPlatformId
+      && summary.linkType === link.type
+    ))
+    if (summaryIndex < 0) {
+      return {
+        code: 'CANDIDATE_SUMMARY_NOT_FOUND',
+        fieldPath: `${candidatePath}.linkId`,
+        message: `候选链路 ${candidate.linkId} 缺少对应质量摘要。`,
+      }
+    }
+
+    const summary = frame.linkSummaries[summaryIndex]
+    if (candidate.ber !== summary.currentBer) {
+      return {
+        code: 'CANDIDATE_METRIC_MISMATCH',
+        fieldPath: `${candidatePath}.ber`,
+        message: `候选链路 ${candidate.linkId} 的质量快照已经过期。`,
+      }
+    }
+    if (candidate.eligible !== (summary.status === 'UP')) {
+      return {
+        code: 'CANDIDATE_STATUS_MISMATCH',
+        fieldPath: `${candidatePath}.eligible`,
+        message: `候选链路 ${candidate.linkId} 的可用状态不一致。`,
+      }
+    }
+    if (summary.updatedAt !== frame.simulationTime) {
+      return {
+        code: 'STALE_ROUTE_CANDIDATE',
+        fieldPath: `linkSummaries[${summaryIndex}].updatedAt`,
+        message: `候选链路 ${candidate.linkId} 与当前仿真时刻不一致。`,
+      }
+    }
+  }
+  return null
 }
 
 /**

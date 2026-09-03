@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
+import LinkCandidatePanel from '../../components/situation/LinkCandidatePanel.vue'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
@@ -57,6 +58,7 @@ const stopDialogVisible = ref(false)
 const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
+const candidatePanelVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
@@ -208,6 +210,15 @@ function updateMode(mode: SimulationMode): void {
 function openLinkDetails(link: SituationLinkView): void {
   selectedLinkId.value = link.linkId
   linkDialogVisible.value = true
+}
+
+/**
+ * 打开当前固定帧的链路候选快照。
+ * @returns 无返回值。
+ * @sideeffect 显示链路候选集合弹框。
+ */
+function openLinkCandidates(): void {
+  candidatePanelVisible.value = true
 }
 
 /**
@@ -457,7 +468,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <section class="telemetry-section telemetry-section--links" :data-frame-id="frame.frameId">
           <div class="panel-heading">
             <div><strong>全链路状态</strong></div>
-            <span class="panel-heading__more">异常 {{ situationMetrics.degradedLinkCount + situationMetrics.downLinkCount }} 条</span>
+            <div>
+              <span class="panel-heading__more">异常 {{ situationMetrics.degradedLinkCount + situationMetrics.downLinkCount }} 条</span>
+              <el-button link type="primary" data-testid="open-link-candidates" @click="openLinkCandidates">
+                候选 {{ frame.evidence.routeCandidates.length }} 条
+              </el-button>
+            </div>
           </div>
           <div class="link-table-wrap">
             <table class="link-table">
@@ -531,6 +547,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </footer>
 
     <LinkQualityDialog v-if="selectedLink" v-model="linkDialogVisible" :link="selectedLink" />
+    <LinkCandidatePanel
+      v-model="candidatePanelVisible"
+      :frame="frame"
+      :links="situationLinks"
+      :capability-state="telemetryCapabilityState"
+      :feedback="telemetryFeedback"
+      @reload="retryTelemetry"
+    />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
       <p class="stop-dialog-copy">停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。</p>
       <template #footer>
@@ -585,6 +609,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-panel .panel-heading { min-height: 2.35rem; padding: .55rem .85rem; border-bottom-color: #1e3448; color: #e8f0f8; background: transparent; }
 .telemetry-panel .panel-heading strong { color: #e8f0f8; font-size: 13px; }
 .telemetry-panel .panel-heading__more { color: #4fd6ff; font-size: 12px; font-weight: 400; }
+.telemetry-panel .panel-heading .el-button { height: auto; padding: 0; font-size: 12px; }
 .scene-summary__tabs { display: grid; grid-template-columns: repeat(4,1fr); margin: .5rem .6rem 0; border: 1px solid var(--console-border); border-radius: 5px; overflow: hidden; }
 .scene-summary__tabs button { min-height: 1.75rem; border: 0; border-right: 1px solid var(--console-border); color: var(--console-text-muted); background: var(--console-bg-elevated); font-size: var(--console-font-size-min); cursor: pointer; }
 .scene-summary__tabs button:last-child { border-right: 0; }

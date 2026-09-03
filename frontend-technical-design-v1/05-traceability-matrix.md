@@ -1,6 +1,6 @@
 # 05 需求、接口与来源决策追踪
 
-本矩阵是实现目的地清单。来源采用顺序固定为 SRS → DD → 已评审通过的前端需求基线；HTML 仅保留能力卡锚点，不构成上位需求。`六态证据` 均要求组件测试覆盖 LOADING、VALIDATING、EXECUTING、SUCCESS、EMPTY、ERROR，并在 SUCCESS/ERROR 中断言列出的 fixture 或错误；T-XQ-011、T-XQ-012、T-XQ-013 固定证据能力例外为无 EXECUTING 的五态。29 个能力行与 7 个接口行各自唯一，不以来源决策行重复计数。
+本矩阵是实现目的地清单。来源采用顺序固定为 SRS → DD → 已评审通过的前端需求基线；HTML 仅保留能力卡锚点，不构成上位需求。`六态证据` 均要求组件测试覆盖 LOADING、VALIDATING、EXECUTING、SUCCESS、EMPTY、ERROR，并在 SUCCESS/ERROR 中断言列出的 fixture 或错误；T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-018 固定证据能力例外为无 EXECUTING 的五态。29 个能力行与 7 个接口行各自唯一，不以来源决策行重复计数。
 
 ## 29 项能力
 
@@ -23,7 +23,7 @@
 | DSDWRJQTLJS-XQ-GRYGZ-RFGR | SRS 3.2.1.4/3.3.4.2; DD 4.1.4/4.2.4.2/5.4.2.2; HTML cap-rfgr | `/interactions` | `InteractionsPage/RfJammerPanel` | `telemetryStore` | `Jammer`, `JammerExecutionEvidence` | `jammer.event` | `frame.evidence.jammerExecution` 72W/2200MHz/1470s/AUTO_DETECTION | 六态+频带/功率/持续/原因 | T-XQ-015 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-GRYGZ-BHC | SRS 3.2.1.4/3.3.4.3; DD 4.1.4/4.2.4.3/5.4.2.3; HTML cap-bhc | `/interactions` | `InteractionsPage/ClosedLoopStepper` | `telemetryStore` | `DetectionEvent`, `JammerExecutionEvidence`, `UiLinkProjection` | `POST .../simulations/{runId}/events`; jammer/link topics | F-00042@42: DET-042→JAM-WB-01-TX→L-DL-03 DEGRADED/DOWN | 六态+同帧/重复拒绝 | T-XQ-016 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-GRYGZ-CSS | SRS 3.2.1.4/3.3.4.4; DD 4.1.4/4.2.4.4/5.4.2.4; HTML cap-css | `/interactions` | `InteractionsPage/JammerSyncPanel` | `telemetryStore` | `RealtimeEnvelope<JammerStatusData>`, `SynchronizationEvidence` | `jammer.event`, `simulation.frame` | config/engine/UI versions；effectiveFrame=F-00042@42 | 六态+三端版本/生效帧 | T-XQ-017 | INTERACTIVE_UI |
-| DSDWRJQTLJS-XQ-LLQHYYX-LLJC | SRS 3.2.1.5/3.3.5.1; DD 4.1.5/4.2.5.1/5.5.2.1; HTML cap-lljc | `/situation` | `SituationPage/LinkCandidatePanel` | `telemetryStore` | `LinkStatusSummary` | `link.metric` | `frame.linkSummaries` 四链路@42 + routeCandidates | 六态+一致历史/候选快照 | T-XQ-018 | INTERACTIVE_UI |
+| DSDWRJQTLJS-XQ-LLQHYYX-LLJC | SRS 3.2.1.5/3.3.5.1; DD 4.1.5/4.2.5.1/5.5.2.1; HTML cap-lljc | `/situation` | `SituationPage/LinkCandidatePanel` | `telemetryStore` | `LinkStatusSummary` | `link.metric` | `frame.linkSummaries` 四链路@42 + routeCandidates | 五态（固定证据无 EXECUTING）+一致历史/候选快照 | T-XQ-018 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-LLQHYYX-QXL | SRS 3.2.1.5/3.3.5.2; DD 4.1.5/4.2.5.2/5.5.2.2; HTML cap-qxl | `/interactions` | `InteractionsPage/ForwardRouteRanking` | `telemetryStore` | `RouteCandidateEvidence` | `link.metric` | FORWARD ranks: L-MW-01#1, L-SAT-02#2 | 六态+连通后 jamImpact 排名 | T-XQ-019 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-LLQHYYX-HXL | SRS 3.2.1.5/3.3.5.3; DD 4.1.5/4.2.5.3/5.5.2.3; HTML cap-hxl | `/interactions` | `InteractionsPage/ReturnRouteRanking` | `telemetryStore` | `RouteCandidateEvidence` | `link.metric` | REVERSE ranks: L-LASER-04#1, L-DL-03#2 | 六态+BER/稳定/滞回排名 | T-XQ-020 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-LLQHYYX-QHJY | SRS 3.2.1.5/3.3.5.4; DD 4.1.5/4.2.5.4/5.5.2.4; HTML cap-qhjy | `/interactions` | `InteractionsPage/SwitchDecisionPanel` | `telemetryStore` | `SwitchEvent` | `switch.event` | SW-003, L-DL-03→L-MW-01 | 六态+接受/拒绝/冷却/前后路由 | T-XQ-021 | INTERACTIVE_UI |

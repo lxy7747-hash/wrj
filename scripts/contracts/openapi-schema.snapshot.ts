@@ -553,7 +553,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               'enum': [
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX',
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER',
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT',
+                'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
               ]
             }
           },

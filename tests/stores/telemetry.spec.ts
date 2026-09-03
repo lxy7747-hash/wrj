@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
+import { validateCandidateSnapshot } from '../../src/features/situation/situation-model'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
@@ -414,6 +415,68 @@ describe('P3-2 遥测 Store', () => {
     expect(store.connectionState).toBe('DISCONNECTED')
   })
 
+  it('按链路身份拒绝不一致的候选快照并保留结构化错误', async () => {
+    const candidateFrame = structuredClone(frame)
+    const microwave = candidateFrame.evidence.routeCandidates.find(({ linkId }) => linkId === 'L-MW-01')
+    const satellite = candidateFrame.evidence.routeCandidates.find(({ linkId }) => linkId === 'L-SAT-02')
+    if (microwave === undefined || satellite === undefined) throw new Error('测试固定帧缺少候选链路')
+    microwave.ber = satellite.ber
+
+    expect(isTelemetryFrame(frame)).toBe(true)
+    expect(isTelemetryFrame(candidateFrame)).toBe(false)
+    expect(validateCandidateSnapshot(candidateFrame)).toMatchObject({
+      code: 'CANDIDATE_METRIC_MISMATCH',
+      fieldPath: 'evidence.routeCandidates[0].ber',
+    })
+
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidateFrame),
+    )))
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({
+      frame: null,
+      capabilityState: 'ERROR',
+      resultCode: 'CANDIDATE_METRIC_MISMATCH',
+      resultFieldPath: 'evidence.routeCandidates[0].ber',
+    })
+  })
+
+  it('拒绝错误身份、重复、跨帧、跨时刻和状态不一致的候选', () => {
+    const wrongLink = structuredClone(frame)
+    wrongLink.evidence.routeCandidates[0]!.linkId = 'L-UNKNOWN'
+    expect(validateCandidateSnapshot(wrongLink)?.code).toBe('CANDIDATE_LINK_NOT_FOUND')
+
+    const duplicate = structuredClone(frame)
+    duplicate.evidence.routeCandidates[1] = structuredClone(duplicate.evidence.routeCandidates[0]!)
+    expect(validateCandidateSnapshot(duplicate)?.code).toBe('DUPLICATE_ROUTE_CANDIDATE')
+
+    const crossFrame = structuredClone(frame)
+    crossFrame.evidence.synchronization.effectiveFrameId = 'F-OTHER'
+    expect(validateCandidateSnapshot(crossFrame)?.code).toBe('CANDIDATE_FRAME_MISMATCH')
+
+    const crossTime = structuredClone(frame)
+    crossTime.evidence.synchronization.effectiveSimulationTime = 43
+    expect(validateCandidateSnapshot(crossTime)?.code).toBe('CANDIDATE_TIME_MISMATCH')
+
+    const statusMismatch = structuredClone(frame)
+    statusMismatch.evidence.routeCandidates[0]!.eligible = false
+    expect(validateCandidateSnapshot(statusMismatch)?.code).toBe('CANDIDATE_STATUS_MISMATCH')
+
+    const staleSummary = structuredClone(frame)
+    staleSummary.linkSummaries[0]!.updatedAt = 41
+    expect(validateCandidateSnapshot(staleSummary)?.code).toBe('STALE_ROUTE_CANDIDATE')
+
+    const missingSummary = structuredClone(frame)
+    missingSummary.linkSummaries.shift()
+    expect(validateCandidateSnapshot(missingSummary)?.code).toBe('CANDIDATE_SUMMARY_NOT_FOUND')
+
+    for (const invalid of [wrongLink, duplicate, crossFrame, crossTime, statusMismatch, staleSummary, missingSummary]) {
+      expect(isTelemetryFrame(invalid)).toBe(false)
+    }
+  })
+
   it('识别最小帧合同并拒绝损坏帧', () => {
     expect(isTelemetryFrame(frame)).toBe(true)
     expect(isTelemetryFrame({ ...frame, platforms: [{}] })).toBe(false)
@@ -463,6 +526,14 @@ describe('P3-2 遥测 Store', () => {
       },
     })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [null] } })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [] } })).toBe(true)
+    expect(isTelemetryFrame({
+      ...frame,
+      evidence: {
+        ...frame.evidence,
+        routeCandidates: [{ ...frame.evidence.routeCandidates[0], ber: 2 }],
+      },
+    })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, synchronization: undefined } })).toBe(false)
     expect(isTelemetryFrame({
       ...frame,

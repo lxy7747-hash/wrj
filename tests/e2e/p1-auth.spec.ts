@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import type { ApiSuccess, ConfirmationContext, ScenarioConfig, ScenarioDraft, ScenarioTemplate } from '../../src/contracts/domain-models'
+import type { ApiSuccess, ConfirmationContext, ScenarioConfig, ScenarioDraft, ScenarioTemplate, TelemetryFrame } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const AUTH_SESSION_KEY = 'wrj.auth.principal'
@@ -369,6 +369,55 @@ test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page 
   await expect(dialog).toContainText('阈值版本LLZT-1.0')
   await expect(dialog).toContainText('稳定帧数3')
   await expect(dialog).toContainText('判定依据误码率超过阈值并满足稳定帧条件')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P3-7 OPERATOR reads the fixed link candidate snapshot and empty state', async ({ page }) => {
+  const audit = auditConsole(page)
+  await page.routeWebSocket(/\/ws\/v1(?:\?|$)/, () => {})
+  const frameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+
+  await loginAs(page, 'operator')
+  expect((await frameResponse).status()).toBe(200)
+  await page.getByTestId('open-link-candidates').click()
+
+  const dialog = page.locator('.link-candidate-dialog')
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('TASK-001')
+  await expect(dialog).toContainText('F-00042')
+  await expect(dialog).toContainText('42 s')
+  await expect(dialog).toContainText('候选数量4 条')
+  await expect(dialog.locator('[data-candidate-id]')).toHaveCount(4)
+  const microwave = dialog.locator('[data-candidate-id="L-MW-01"]')
+  await expect(microwave).toContainText('前向')
+  await expect(microwave).toContainText('正常')
+  await expect(microwave).toContainText('可用')
+  await expect(microwave).toContainText('3.2e-7')
+  await expect(microwave).toContainText('1.38 dB')
+  await expect(microwave).toContainText('连续 5 帧')
+
+  await page.route('**/api/v1/simulations/RUN-001/frames/F-00042', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json() as ApiSuccess<TelemetryFrame>
+    body.data.evidence.routeCandidates = []
+    await route.fulfill({ response, json: body })
+  })
+  const emptyFrameResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
+  ))
+  await page.reload()
+  const emptyPayload = await (await emptyFrameResponse).json() as ApiSuccess<TelemetryFrame>
+  expect(emptyPayload.data.evidence.routeCandidates).toHaveLength(0)
+  await page.getByTestId('open-link-candidates').click()
+  await expect(page.locator('.link-candidate-dialog')).toContainText('当前帧没有候选链路')
+  await expect(page.locator('.link-candidate-dialog [data-candidate-id]')).toHaveCount(0)
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

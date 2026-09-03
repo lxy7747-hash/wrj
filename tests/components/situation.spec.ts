@@ -366,6 +366,64 @@ describe('态势主界面', () => {
     expect(document.body.textContent).toContain('当前帧仅提供摘要')
   })
 
+  it('展示同帧候选快照并识别空集合和过期结果', async () => {
+    const wrapper = mountSituationPage()
+    await flushPromises()
+    const telemetry = useTelemetryStore()
+
+    await wrapper.get('[data-testid="open-link-candidates"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelectorAll('[data-candidate-id]')).toHaveLength(4)
+    expect(document.body.textContent).toContain('TASK-001 · F-00042 · 42 s')
+    expect(document.querySelector('[data-candidate-id="L-MW-01"]')?.textContent).toContain('前向')
+    expect(document.querySelector('[data-candidate-id="L-MW-01"]')?.textContent).toContain('连续 5 帧')
+    expect(document.querySelector('[data-candidate-id="L-DL-03"]')?.textContent).toContain('返向')
+    expect(document.querySelector('[data-candidate-id="L-DL-03"]')?.textContent).toContain('不可用')
+
+    for (const [state, message] of [
+      ['LOADING', '正在加载链路质量数据'],
+      ['VALIDATING', '正在校验候选快照'],
+    ] as const) {
+      telemetry.capabilityState = state
+      await flushPromises()
+      expect(document.querySelector(`[data-state="${state}"]`)).not.toBeNull()
+      expect(document.body.textContent).toContain(message)
+    }
+    telemetry.capabilityState = 'SUCCESS'
+
+    const emptyFrame = structuredClone(SITUATION_FRAME_F00042)
+    emptyFrame.evidence.routeCandidates = []
+    telemetry.frame = emptyFrame
+    await flushPromises()
+    expect(document.body.textContent).toContain('当前帧没有候选链路')
+    expect(document.querySelectorAll('[data-candidate-id]')).toHaveLength(0)
+
+    telemetry.frame = structuredClone(SITUATION_FRAME_F00042)
+    await flushPromises()
+    const updatedSummaries = structuredClone(SITUATION_FRAME_F00042.linkSummaries)
+    const microwave = updatedSummaries.find((link) => link.currentBer === 3.2e-7)
+    if (microwave === undefined) throw new Error('测试固定帧缺少 L-MW-01 链路摘要')
+    microwave.currentBer = 4.6e-7
+    expect(telemetry.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: updatedSummaries,
+    })).toBe(true)
+    await flushPromises()
+    expect(document.body.textContent).toContain('候选快照不可用')
+    expect(document.body.textContent).toContain('候选链路 L-MW-01 的质量快照已经过期。')
+    expect(document.querySelector('[data-testid="candidate-error-code"]')?.textContent)
+      .toBe('CANDIDATE_METRIC_MISMATCH')
+    expect(document.querySelector('[data-testid="candidate-error-path"]')?.textContent)
+      .toBe('evidence.routeCandidates[0].ber')
+    expect(document.querySelectorAll('[data-candidate-id]')).toHaveLength(0)
+
+    const reload = document.querySelector<HTMLElement>('[data-testid="candidate-reload"]')
+    expect(reload).not.toBeNull()
+    reload?.click()
+    await flushPromises()
+    expect(document.querySelectorAll('[data-candidate-id]')).toHaveLength(4)
+  })
+
   it('链路状态徽标同步展示正常、劣化和中断三态', async () => {
     const wrapper = mountSituationPage()
     await flushPromises()

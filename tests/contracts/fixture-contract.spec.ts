@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-03.4')
+    expect(fixture.fixtureVersion).toBe('2026-09-03.5')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -300,6 +300,26 @@ describe('deterministic fixture contract', () => {
       id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
     ))
     if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-013 capability metadata')
+    ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
+    expect(validateFixture(candidate)).toBe(false)
+    expect(auditFixtureClosure(candidate).map(({ code }) => code))
+      .toContain('FIXTURE_METADATA_CONTRACT')
+  })
+
+  it('freezes T-XQ-018 as fixed evidence without an EXECUTING state', () => {
+    const fixture = fixtures as DeterministicFixtureSet
+    const capability = fixture.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
+    ))
+
+    expect(capability?.states).toEqual(['LOADING', 'VALIDATING', 'SUCCESS', 'EMPTY', 'ERROR'])
+    expect(validateFixture(fixture), JSON.stringify(validateFixture.errors)).toBe(true)
+
+    const candidate = structuredClone(fixtures) as DeterministicFixtureSet
+    const candidateCapability = candidate.metadata.capabilities.find(({ id }) => (
+      id === 'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
+    ))
+    if (candidateCapability === undefined) throw new Error('测试夹具缺少 T-XQ-018 capability metadata')
     ;(candidateCapability.states as CapabilityState[]).push('EXECUTING')
     expect(validateFixture(candidate)).toBe(false)
     expect(auditFixtureClosure(candidate).map(({ code }) => code))
