@@ -423,6 +423,31 @@ test('P4-1 OPERATOR reads ESM configuration and one deduplicated detection', asy
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P4-2 OPERATOR executes RF jammer control and sees the effective frame', async ({ page }) => {
+  const audit = auditConsole(page)
+
+  await loginAs(page, 'operator')
+  await openInteractions(page)
+
+  const panel = page.getByTestId('rf-jammer-panel')
+  await expect(panel).toBeVisible()
+  await expect(panel).toContainText('2180–2220 MHz')
+  await expect(panel).toContainText('72 W')
+  const commandResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands'
+  ))
+  await panel.getByRole('button', { name: '执行命令' }).click()
+  expect((await commandResponse).status()).toBe(200)
+
+  await expect(panel.getByTestId('rf-state')).toContainText('执行成功')
+  await expect(panel).toContainText('任务手动启扰，生效帧 F-00042。')
+  await expect(panel).toContainText('72 W / 2200 MHz / 1470 s')
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page }) => {
   const audit = auditConsole(page)
   const frameResponse = page.waitForResponse((response) => (

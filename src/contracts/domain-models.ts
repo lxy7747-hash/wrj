@@ -169,6 +169,14 @@ export interface SimulationCommand {
   command: 'START' | 'PAUSE' | 'RESUME' | 'STEP' | 'STOP' | 'SET_SPEED';
   mode?: SimulationMode; speedMultiplier?: number; stepCount?: 1; confirmationId?: Identifier;
 }
+export interface JammingCommand {
+  enabled: boolean; frequency: Megahertz; bandwidth: Megahertz;
+  power: Watts; direction: Degrees; duration: Seconds;
+}
+export interface JammerState extends JammingCommand {
+  taskId: TaskId; jammerId: Identifier; executionStatus: 'SUCCESS';
+  effectiveFrameId: FrameId; reason: string;
+}
 export interface CompositeLossEvidence {
   linkId: Identifier; freeSpaceLossDb: Decibels; systemLossDb: Decibels;
   obstructionLossDb: Decibels; interferenceLossDb: Decibels; totalPathLossDb: Decibels;
@@ -263,6 +271,7 @@ export type ApiErrorCode =
   | 'INVALID_TRANSITION' | 'NODE_LIMIT_EXCEEDED' | 'DUPLICATE_EVENT'
   | 'HEADER_INVALID' | 'TYPE_INVALID' | 'ENCODING_INVALID' | 'ATOMIC_REPLACE_FAILED'
   | 'START_FAILED' | 'TIMEOUT' | 'EXIT_NONZERO' | 'CORRUPT_FIXTURE'
+  | 'OUT_OF_RANGE' | 'DEVICE_DISABLED'
   | 'LOOPBACK_ONLY' | 'TOPIC_FORBIDDEN' | 'SEQUENCE_GAP' | 'INTERNAL_FIXTURE_ERROR';
 export interface ListRequest { page?: number; pageSize?: number; query?: string; }
 export interface IdRequest<TId extends Identifier = Identifier> { id: TId; }

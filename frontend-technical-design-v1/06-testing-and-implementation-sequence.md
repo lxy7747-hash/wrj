@@ -64,7 +64,7 @@ reset 所有权测试必须证明 `InteractionsPage` 只调用一次 `uiStore.re
 
 在测试中拦截 `fetch`, XHR, WebSocket, image/font/tile 请求；host 不是 `127.0.0.1` 或静态 app origin 时立即失败。mock 启动后检查监听地址。对 `fs`, SQLite module, `child_process`, crypto 和 export generator 设置 fail-fast spy；调用所有 endpoints 后调用次数保持 0。检查工作目录文件清单与哈希不变。
 
-OpenAPI 静态审计逐 operation 检查：唯一 operationId；30 个 POST/PUT/PATCH 均有非空 typed requestBody；除 login 外每个 operation 均引用 `DemoRole`；每个 2xx JSON response 均指向独立 typed envelope 且 `data` 再指向具体业务 schema；path 参数全部声明；场景 WARNING 继续、官方模板删除、仿真停止以及 backup/restore/audit/full-config 的确认缺失均声明 428。任何 `{}` 业务 data schema 都直接失败。
+OpenAPI 静态审计逐 operation 检查：唯一 operationId；31 个 POST/PUT/PATCH 均有非空 typed requestBody；除 login 外每个 operation 均引用 `DemoRole`；每个 2xx JSON response 均指向独立 typed envelope 且 `data` 再指向具体业务 schema；path 参数全部声明；场景 WARNING 继续、官方模板删除、仿真停止以及 backup/restore/audit/full-config 的确认缺失均声明 428。任何 `{}` 业务 data schema 都直接失败。
 
 ### E2E 路由清单
 

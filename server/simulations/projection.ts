@@ -1,5 +1,7 @@
 import type {
   ApiErrorCode,
+  JammingCommand,
+  JammerState,
   SimulationCommand,
   SimulationCreateRequest,
   SimulationRun,
@@ -18,6 +20,20 @@ const STARTED_AT = '2026-08-06T08:05:00Z'
 const FIXTURE_PROCESS_ID = 2900
 const ACTIVE_STATUSES = new Set<SimulationRun['uiStatus']>(['RUNNING', 'PAUSED'])
 const MODES = new Set(['INTERACTIVE_SINGLE', 'BATCH_PARAMETER_TRAVERSAL', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'])
+
+/** 从未受信任值读取闭合的 RF 干扰控制命令。 */
+function readJammingCommand(value: unknown): JammingCommand | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Partial<JammingCommand>
+  const keys = Object.keys(value)
+  const numbers = [candidate.frequency, candidate.bandwidth, candidate.power, candidate.direction, candidate.duration]
+  return keys.length === 6
+    && keys.every((key) => ['enabled', 'frequency', 'bandwidth', 'power', 'direction', 'duration'].includes(key))
+    && typeof candidate.enabled === 'boolean'
+    && numbers.every((item) => typeof item === 'number' && Number.isFinite(item))
+    ? candidate as JammingCommand
+    : undefined
+}
 
 /** 判断未知值是否为闭合的仿真创建请求。 */
 function readCreateRequest(value: unknown): SimulationCreateRequest | undefined {
@@ -258,6 +274,58 @@ export class SimulationProjection {
     }
 
     return { ok: true, data: structuredClone(this.run) }
+  }
+
+  /**
+   * 校验并执行任务级 RF 干扰机命令。
+   * @param taskId 命令所属任务编号。
+   * @param jammerId 目标干扰设备编号。
+   * @param value 未受信任的命令请求体。
+   * @returns 成功时返回带生效帧的设备状态，失败时返回可定位的拒绝原因。
+   * @remarks 能力上限直接取当前场景配置；仅更新确定性控制结果，不连接真实设备。
+   */
+  controlJammer(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<JammerState> {
+    if (taskId !== this.run.taskId) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'taskId', message: '未找到指定任务。' }
+    }
+    const command = readJammingCommand(value)
+    if (command === undefined) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'command', message: 'RF 干扰控制命令结构不正确。' }
+    }
+    const draft = this.scenarios.get(this.run.scenarioId)
+    if (!draft.ok) return draft
+    const jammer = draft.data.config.jammers.find((item) => item.id === jammerId)
+    const extension = draft.data.uiExtensions.jammers.find((item) => item.jammerId === jammerId)
+    if (jammer === undefined || extension === undefined || !extension.enabled) {
+      return { ok: false, code: 'DEVICE_DISABLED', status: 409, fieldPath: 'jammerId', message: '所选干扰设备不可用。' }
+    }
+
+    // ponytail: 原始设备合同未给独立上下限；Mock 暂以中心频率±半带宽、默认功率和场景时长形成可测边界，接入真实设备能力合同后替换。
+    const frequencyMin = jammer.frequency - jammer.bandwidth / 2
+    const frequencyMax = jammer.frequency + jammer.bandwidth / 2
+    const checks: Array<[boolean, keyof JammingCommand, string]> = [
+      [command.frequency >= frequencyMin && command.frequency <= frequencyMax, 'frequency', `频率必须在 ${frequencyMin}–${frequencyMax} MHz 范围内。`],
+      [command.bandwidth > 0 && command.bandwidth <= jammer.bandwidth, 'bandwidth', `带宽必须大于 0 且不超过 ${jammer.bandwidth} MHz。`],
+      [command.power >= 0 && command.power <= jammer.defaultPower, 'power', `功率必须在 0–${jammer.defaultPower} W 范围内。`],
+      [command.direction >= 0 && command.direction <= 360, 'direction', '方向必须在 0–360° 范围内。'],
+      [command.duration > 0 && command.duration <= draft.data.config.scenario.duration, 'duration', `持续时间必须大于 0 且不超过 ${draft.data.config.scenario.duration} 秒。`],
+    ]
+    const rejected = checks.find(([valid]) => !valid)
+    if (rejected !== undefined) {
+      return { ok: false, code: 'OUT_OF_RANGE', status: 422, fieldPath: rejected[1], message: rejected[2] }
+    }
+
+    return {
+      ok: true,
+      data: {
+        taskId: this.run.taskId,
+        jammerId,
+        ...command,
+        executionStatus: 'SUCCESS',
+        effectiveFrameId: loadFixtureProjection().frame.frameId,
+        reason: command.enabled ? '任务手动启扰' : '任务手动停扰',
+      },
+    }
   }
 
   /** 恢复冻结的完成态运行；场景投影由全局 reset 独立恢复。 */

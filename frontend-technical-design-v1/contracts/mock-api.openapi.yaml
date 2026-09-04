@@ -1410,6 +1410,89 @@
         }
       }
     },
+    "/api/v1/tasks/{taskId}/jammers/{jammerId}/commands": {
+      "post": {
+        "tags": [
+          "simulations"
+        ],
+        "summary": "Validate and execute a task-level RF jammer command",
+        "x-rbac": "SIMULATION_CONTROL",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          },
+          {
+            "$ref": "#/components/parameters/JammerId"
+          },
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Typed deterministic success with effective frame",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdCommandsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed permission error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Typed task error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed device availability error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Typed device capability validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postapiV1TasksTaskIdJammersJammerIdCommands",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdCommandsRequest"
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/simulations/{runId}/frames/{frameId}": {
       "get": {
         "tags": [
@@ -2887,6 +2970,24 @@
           "pattern": "^RUN-"
         }
       },
+      "TaskId": {
+        "name": "taskId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^TASK-"
+        }
+      },
+      "JammerId": {
+        "name": "jammerId",
+        "in": "path",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
       "FrameId": {
         "name": "frameId",
         "in": "path",
@@ -3329,6 +3430,106 @@
           "detectionRange": {
             "type": "number",
             "minimum": 0
+          }
+        }
+      },
+      "JammingCommand": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabled",
+          "frequency",
+          "bandwidth",
+          "power",
+          "direction",
+          "duration"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "frequency": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "bandwidth": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "power": {
+            "type": "number",
+            "minimum": 0
+          },
+          "direction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 360
+          },
+          "duration": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        }
+      },
+      "JammerState": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "jammerId",
+          "enabled",
+          "frequency",
+          "bandwidth",
+          "power",
+          "direction",
+          "duration",
+          "executionStatus",
+          "effectiveFrameId",
+          "reason"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "pattern": "^TASK-"
+          },
+          "jammerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "frequency": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "bandwidth": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "power": {
+            "type": "number",
+            "minimum": 0
+          },
+          "direction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 360
+          },
+          "duration": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "executionStatus": {
+            "const": "SUCCESS"
+          },
+          "effectiveFrameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
           }
         }
       },
@@ -5231,6 +5432,8 @@
           "TIMEOUT",
           "EXIT_NONZERO",
           "CORRUPT_FIXTURE",
+          "OUT_OF_RANGE",
+          "DEVICE_DISABLED",
           "LOOPBACK_ONLY",
           "TOPIC_FORBIDDEN",
           "SEQUENCE_GAP",
@@ -7479,6 +7682,29 @@
           },
           "data": {
             "$ref": "#/components/schemas/SimulationRun"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PostapiV1TasksTaskIdJammersJammerIdCommandsRequest": {
+        "$ref": "#/components/schemas/JammingCommand"
+      },
+      "PostapiV1TasksTaskIdJammersJammerIdCommandsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/JammerState"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"

@@ -735,6 +735,32 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 按任务执行 RF 干扰机启停和参数设置，并返回确定性生效帧。 */
+  app.post('/api/v1/tasks/:taskId/jammers/:jammerId/commands', (req, res) => {
+    const { taskId, jammerId } = req.params
+    const requestId = 'REQ-P4-JAMMER-COMMAND'
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_COMMAND', jammerId)
+    if (role === undefined) return
+    if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
+      auth.recordDenied(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+      res.status(403).json(failure('PERMISSION_DENIED', 403, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '当前账号没有干扰控制权限。',
+      }))
+      return
+    }
+
+    const result = simulations.controlJammer(taskId, jammerId, req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
   /**
    * 返回指定场景的当前内存草稿。
    * @param req 包含角色提示和场景编号的请求。

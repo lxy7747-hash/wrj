@@ -3,11 +3,14 @@ import type {
   ApiFailure,
   CapabilityState,
   DetectionEvent,
+  JammingCommand,
+  JammerState,
   LinkStatusSummary,
   RealtimeEnvelope,
   SimulationState,
   SwitchEvent,
   TelemetryFrame,
+  TaskId,
   WsConnectionState,
   WsTopic,
 } from '../contracts/domain-models'
@@ -364,6 +367,69 @@ class TelemetryFieldError extends Error {
   }
 }
 
+class JammerControlError extends Error {
+  constructor(
+    readonly code: string,
+    readonly fieldPath: string | null,
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+/** 校验 RF 干扰控制命令的闭合结构和基础数值类型。 */
+function isJammingCommand(value: unknown): value is JammingCommand {
+  return isRecord(value)
+    && Object.keys(value).length === 6
+    && ['enabled', 'frequency', 'bandwidth', 'power', 'direction', 'duration'].every((key) => Object.hasOwn(value, key))
+    && typeof value.enabled === 'boolean'
+    && hasFiniteNumbers(value, ['frequency', 'bandwidth', 'power', 'direction', 'duration'])
+    && Number(value.frequency) > 0
+    && Number(value.bandwidth) > 0
+    && Number(value.power) >= 0
+    && Number(value.direction) >= 0 && Number(value.direction) <= 360
+    && Number(value.duration) > 0
+}
+
+/** 校验服务端返回的 RF 干扰机执行状态。 */
+function isJammerState(value: unknown, taskId: TaskId, jammerId: string): value is JammerState {
+  return isRecord(value)
+    && Object.keys(value).length === 11
+    && hasNonEmptyStrings(value, ['taskId', 'jammerId', 'effectiveFrameId', 'reason'])
+    && value.taskId === taskId
+    && value.jammerId === jammerId
+    && String(value.effectiveFrameId).startsWith('F-')
+    && value.executionStatus === 'SUCCESS'
+    && isJammingCommand({
+      enabled: value.enabled,
+      frequency: value.frequency,
+      bandwidth: value.bandwidth,
+      power: value.power,
+      direction: value.direction,
+      duration: value.duration,
+    })
+}
+
+/** 从统一信封读取 RF 干扰机状态，并保留类型化拒绝原因。 */
+async function readJammerState(response: Response, taskId: TaskId, jammerId: string): Promise<JammerState> {
+  const payload = await response.json() as unknown
+  if (!response.ok) {
+    if (isRecord(payload) && isRecord(payload.error)
+      && typeof payload.error.code === 'string' && typeof payload.error.message === 'string') {
+      throw new JammerControlError(
+        payload.error.code,
+        typeof payload.error.fieldPath === 'string' ? payload.error.fieldPath : null,
+        payload.error.message,
+      )
+    }
+    throw new JammerControlError('JAMMER_CONTROL_FAILED', null, '干扰控制请求失败。')
+  }
+  if (!isRecord(payload) || payload.ok !== true || !isJammerState(payload.data, taskId, jammerId)) {
+    throw new JammerControlError('INVALID_RESPONSE', null, '干扰控制响应格式不正确。')
+  }
+  return payload.data
+}
+
 /** 返回事件集合相对当前遥测帧的首个可定位错误。 */
 function findEventCollectionError(frame: TelemetryFrame, events: SituationEvent[]): TelemetryFieldError | null {
   const eventIds = events.map((event) => event.eventId)
@@ -480,10 +546,68 @@ export const useTelemetryStore = defineStore('telemetry', {
     resultCode: 'EMPTY',
     resultMessage: '尚未加载态势遥测。',
     resultFieldPath: null as string | null,
+    jammerState: null as JammerState | null,
+    jammerControlState: 'EMPTY' as CapabilityState,
+    jammerResultCode: 'EMPTY',
+    jammerResultMessage: '尚未执行干扰控制命令。',
+    jammerResultFieldPath: null as string | null,
     requestEpoch: 0,
   }),
 
   actions: {
+    /**
+     * 执行任务级 RF 干扰机命令。
+     * @param taskId 命令所属任务编号。
+     * @param jammerId 目标干扰设备编号。
+     * @param command 启停、频段、功率、方向和持续时间参数。
+     * @returns 服务端确认命令并返回生效帧时返回 `true`。
+     * @sideEffects 更新干扰控制六态、执行结果与可定位的中文失败原因。
+     */
+    async controlJammer(taskId: TaskId, jammerId: string, command: JammingCommand): Promise<boolean> {
+      const auth = useAuthStore()
+      this.jammerState = null
+      this.jammerResultFieldPath = null
+      if (!auth.authorize('SIMULATION_CONTROL').allowed) {
+        this.jammerControlState = 'ERROR'
+        this.jammerResultCode = 'PERMISSION_DENIED'
+        this.jammerResultMessage = '当前账号没有干扰控制权限。'
+        return false
+      }
+
+      this.jammerControlState = 'VALIDATING'
+      if (!isJammingCommand(command)) {
+        this.jammerControlState = 'ERROR'
+        this.jammerResultCode = 'INVALID_REQUEST'
+        this.jammerResultMessage = '干扰控制参数格式不正确。'
+        return false
+      }
+
+      this.jammerControlState = 'EXECUTING'
+      try {
+        const response = await fetch(
+          `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/commands`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+            body: JSON.stringify(command),
+          },
+        )
+        const state = await readJammerState(response, taskId, jammerId)
+        this.jammerState = structuredClone(state)
+        this.jammerControlState = 'SUCCESS'
+        this.jammerResultCode = 'SUCCESS'
+        this.jammerResultMessage = `${state.reason}，生效帧 ${state.effectiveFrameId}。`
+        return true
+      } catch (error) {
+        const failure = error instanceof JammerControlError ? error : null
+        this.jammerControlState = 'ERROR'
+        this.jammerResultCode = failure?.code ?? 'NETWORK_ERROR'
+        this.jammerResultMessage = failure?.message ?? '干扰控制服务暂时不可用。'
+        this.jammerResultFieldPath = failure?.fieldPath ?? null
+        return false
+      }
+    },
+
     /**
      * 原子加载固定帧及其事件。
      * @param runId 仿真运行编号，默认 RUN-001。
@@ -769,6 +893,11 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未加载态势遥测。'
       this.resultFieldPath = null
+      this.jammerState = null
+      this.jammerControlState = 'EMPTY'
+      this.jammerResultCode = 'EMPTY'
+      this.jammerResultMessage = '尚未执行干扰控制命令。'
+      this.jammerResultFieldPath = null
     },
   },
 })

@@ -31,6 +31,8 @@ const DEFAULT_MESSAGES: Record<ApiErrorCode, string> = {
   TIMEOUT: 'The operation timed out.',
   EXIT_NONZERO: 'The operation exited unsuccessfully.',
   CORRUPT_FIXTURE: 'The deterministic fixture is corrupt.',
+  OUT_OF_RANGE: '参数超出设备能力范围。',
+  DEVICE_DISABLED: '干扰设备不可用。',
   LOOPBACK_ONLY: 'The mock server accepts only its canonical loopback boundary.',
   TOPIC_FORBIDDEN: 'The requested WebSocket topic is not canonical.',
   SEQUENCE_GAP: 'The requested sequence cannot be resumed.',

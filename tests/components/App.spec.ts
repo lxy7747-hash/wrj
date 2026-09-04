@@ -252,7 +252,7 @@ describe('App shell', () => {
     await router.push('/admin?section=equipment-library')
     await flushPromises()
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('装备参数库')
-    expect(adminWrapper.get('[data-testid="equipment-library"]').text()).toBe('')
+    expect(adminWrapper.get('[data-testid="equipment-library"]').text()).toContain('装备基础参数库')
 
     await router.push('/admin?section=audit-logs')
     await flushPromises()

@@ -1164,6 +1164,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'TIMEOUT',
       'EXIT_NONZERO',
       'CORRUPT_FIXTURE',
+      'OUT_OF_RANGE',
+      'DEVICE_DISABLED',
       'LOOPBACK_ONLY',
       'TOPIC_FORBIDDEN',
       'SEQUENCE_GAP',
@@ -2232,6 +2234,44 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'minItems': 7,
     'type': 'array'
   },
+  'JammingCommand': {
+    'additionalProperties': false,
+    'properties': {
+      'bandwidth': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'direction': {
+        'maximum': 360,
+        'minimum': 0,
+        'type': 'number'
+      },
+      'duration': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'enabled': {
+        'type': 'boolean'
+      },
+      'frequency': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'power': {
+        'minimum': 0,
+        'type': 'number'
+      }
+    },
+    'required': [
+      'enabled',
+      'frequency',
+      'bandwidth',
+      'power',
+      'direction',
+      'duration'
+    ],
+    'type': 'object'
+  },
   'Jammer': {
     'additionalProperties': false,
     'properties': {
@@ -2326,6 +2366,68 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'bandwidth',
       'startTime',
       'duration',
+      'reason'
+    ],
+    'type': 'object'
+  },
+  'JammerState': {
+    'additionalProperties': false,
+    'properties': {
+      'bandwidth': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'direction': {
+        'maximum': 360,
+        'minimum': 0,
+        'type': 'number'
+      },
+      'duration': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'effectiveFrameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'enabled': {
+        'type': 'boolean'
+      },
+      'executionStatus': {
+        'const': 'SUCCESS'
+      },
+      'frequency': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'jammerId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'power': {
+        'minimum': 0,
+        'type': 'number'
+      },
+      'reason': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'taskId': {
+        'pattern': '^TASK-',
+        'type': 'string'
+      }
+    },
+    'required': [
+      'taskId',
+      'jammerId',
+      'enabled',
+      'frequency',
+      'bandwidth',
+      'power',
+      'direction',
+      'duration',
+      'executionStatus',
+      'effectiveFrameId',
       'reason'
     ],
     'type': 'object'
@@ -3541,6 +3643,29 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'properties': {
       'data': {
         '$ref': '#/components/schemas/EventRecord'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
+  'PostapiV1TasksTaskIdJammersJammerIdCommandsRequest': {
+    '$ref': '#/components/schemas/JammingCommand'
+  },
+  'PostapiV1TasksTaskIdJammersJammerIdCommandsResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/JammerState'
       },
       'meta': {
         '$ref': '#/components/schemas/Meta'

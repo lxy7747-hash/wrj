@@ -1,6 +1,6 @@
 # 04 本机确定性 Mock API
 
-`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是未来 Express/`ws` 实现的合同，不是可运行服务。61 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 30 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
+`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。62 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 31 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
 
 ## 启动与安全不变量
 
@@ -16,7 +16,7 @@
 
 | 类别 | Codes | UI 行为 |
 |---|---|---|
-| 输入/数据 | `INVALID_REQUEST`, `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `NODE_LIMIT_EXCEEDED`, `CORRUPT_FIXTURE` | 字段定位或错误面板；不可静默降级 |
+| 输入/数据 | `INVALID_REQUEST`, `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `NODE_LIMIT_EXCEEDED`, `CORRUPT_FIXTURE`, `OUT_OF_RANGE`, `DEVICE_DISABLED` | 字段定位或错误面板；不可静默降级 |
 | 身份/权限 | `INVALID_CREDENTIALS`, `ACCOUNT_LOCKED`, `PERMISSION_DENIED`, `LAST_ADMIN_GUARD` | 保留输入、显示拒绝证据、写内存审计 |
 | 确认/锁 | `CONFIRMATION_REQUIRED`, `CONFIRMATION_EXPIRED`, `CONFIG_LOCKED`, `INVALID_TRANSITION` | 打开确认、刷新状态或禁用冲突动作 |
 | 事件/CSV | `DUPLICATE_EVENT`, `HEADER_INVALID`, `TYPE_INVALID`, `ENCODING_INVALID`, `ATOMIC_REPLACE_FAILED` | 去重或合同错误；mock 不触碰文件 |
@@ -33,7 +33,7 @@
 - metadata：capabilities 固定 29、interfaces 固定 7、decisions 固定 8、routes 固定 11。
 - scenario/template：临时草稿可由两角色编辑；官方库写操作仅 ADMIN；校验含 schema/引用/单位/时序/频段、四类业务信息节点 50 个容量、至少一项信息需求、四类链路和两类干扰设备。WARNING 继续预览需一次性确认，ERROR 直接拒绝；官方模板删除需确认和引用检查。
 - script/contract：只返回预览、预检、五接口与三 CSV 描述。
-- simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实；重复 eventId 返回 `DUPLICATE_EVENT`。
+- simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实；重复 eventId 返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`，输入 `JammingCommand` 并返回带生效帧的 `JammerState`；Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
 - batch/report/replay：BATCH-001 固定 12 对；普通与批次 report source 不混用；回放只移动游标；export 始终 `generated:false`。
 - admin：所有 master/user/audit/backup/archive/health 都是内存状态；恢复失败仅展示回滚合同。backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；所有导出结果固定 `generated:false`。
 - reset：清理定时器、连接、确认和可变 projection，重载 fixture，并把 WS sequence 恢复为 1。

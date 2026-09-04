@@ -6,8 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import CompositeLossExample from '../../src/components/interactions/CompositeLossExample.vue'
 import EsmSensorPanel from '../../src/components/interactions/EsmSensorPanel.vue'
+import RfJammerPanel from '../../src/components/interactions/RfJammerPanel.vue'
 import SnrBerExample from '../../src/components/interactions/SnrBerExample.vue'
-import type { DetectionEvent, ScenarioDraft, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { DetectionEvent, Principal, ScenarioDraft, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
@@ -22,6 +24,9 @@ const scenarioDraft: ScenarioDraft = {
   revision: 4,
   officialLibraryChanged: false,
   locked: false,
+}
+const operator: Principal = {
+  userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
 }
 
 /** 创建统一成功响应。 */
@@ -102,6 +107,127 @@ describe('P4-1 ESM 传感器与侦测', () => {
     expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已检出')
     expect(wrapper.text()).toContain('DET-NEW')
     expect(wrapper.text()).not.toContain('存在重复侦测事件')
+  })
+})
+
+describe('P4-2 RF 干扰机控制', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+    useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('展示设备能力并在执行后显示确认与生效帧', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    const draft: ScenarioDraft = {
+      ...structuredClone(scenarioDraft),
+      config: structuredClone(fixtureSource.scenario) as ScenarioDraft['config'],
+      uiExtensions: {
+        ...scenarioDraft.uiExtensions,
+        jammers: [
+          { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+          { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+        ],
+      },
+    }
+    scenarioStore.$patch({ draft, panelState: 'SUCCESS' })
+    telemetryStore.$patch({ frame: structuredClone(frame), capabilityState: 'SUCCESS' })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001',
+      jammerId: 'JAM-WB-01-TX',
+      enabled: true,
+      frequency: 2200,
+      bandwidth: 40,
+      power: 72,
+      direction: 360,
+      duration: 1470,
+      executionStatus: 'SUCCESS',
+      effectiveFrameId: 'F-00042',
+      reason: '任务手动启扰',
+    })))
+
+    const wrapper = mount(RfJammerPanel, { global: { plugins: [ElementPlus] } })
+    expect(wrapper.text()).toContain('2180–2220 MHz')
+    expect(wrapper.text()).toContain('72 W')
+    const executeButton = wrapper.findAll('button').find((button) => button.text().includes('执行命令'))
+    if (executeButton === undefined) throw new Error('未找到 RF 干扰控制执行按钮')
+    await executeButton.trigger('click')
+    await vi.waitFor(() => expect(telemetryStore.jammerControlState).toBe('SUCCESS'))
+
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
+    expect(wrapper.text()).toContain('任务手动启扰，生效帧 F-00042。')
+    expect(wrapper.text()).toContain('72 W / 2200 MHz / 1470 s')
+  })
+
+  it('覆盖六态并优先显示加载错误且不展示其他设备的旧结果', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    scenarioStore.$patch({ draft: null, panelState: 'ERROR', resultMessage: '场景配置加载失败。' })
+    const wrapper = mount(RfJammerPanel, { global: { plugins: [ElementPlus] } })
+
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行失败')
+    expect(wrapper.text()).toContain('场景配置加载失败。')
+    expect(wrapper.text()).not.toContain('暂无可配置的干扰设备')
+
+    const draft: ScenarioDraft = {
+      ...structuredClone(scenarioDraft),
+      config: structuredClone(fixtureSource.scenario) as ScenarioDraft['config'],
+      uiExtensions: {
+        ...scenarioDraft.uiExtensions,
+        jammers: [
+          { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+          { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+        ],
+      },
+    }
+    scenarioStore.$patch({ draft, panelState: 'LOADING' })
+    await nextTick()
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('加载中')
+
+    scenarioStore.panelState = 'SUCCESS'
+    for (const [state, label] of [
+      ['EMPTY', '待执行'],
+      ['VALIDATING', '校验中'],
+      ['EXECUTING', '执行中'],
+      ['ERROR', '执行失败'],
+    ] as const) {
+      telemetryStore.jammerControlState = state
+      telemetryStore.jammerResultMessage = state === 'ERROR' ? '命令校验失败。' : ''
+      await nextTick()
+      expect(wrapper.get('[data-testid="rf-state"]').text()).toBe(label)
+    }
+    expect(wrapper.text()).toContain('命令校验失败。')
+
+    telemetryStore.$patch({
+      jammerControlState: 'SUCCESS',
+      jammerResultMessage: '任务手动启扰，生效帧 F-00042。',
+      jammerState: {
+        taskId: 'TASK-001',
+        jammerId: 'JAM-WB-01-TX',
+        enabled: true,
+        frequency: 2200,
+        bandwidth: 40,
+        power: 72,
+        direction: 360,
+        duration: 1470,
+        executionStatus: 'SUCCESS',
+        effectiveFrameId: 'F-00042',
+        reason: '任务手动启扰',
+      },
+    })
+    await nextTick()
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
+    const options = wrapper.findAllComponents({ name: 'ElOption' })
+    expect(options[0]?.props('label')).toContain('宽带压制')
+
+    wrapper.getComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'JAM-SPOT-01-TX')
+    await nextTick()
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('待执行')
+    expect(wrapper.find('.el-result').exists()).toBe(false)
   })
 })
 

@@ -52,7 +52,7 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
-  it('accepts the authoritative 61-operation contract', () => {
+  it('accepts the authoritative 62-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(auditOpenApi(openApi)).toEqual([])
@@ -64,9 +64,9 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(61)
-    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(30)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(61)
+    expect(operations).toHaveLength(62)
+    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(31)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(62)
   })
 
   it('uses the minimal scenario draft update wrapper without server-owned fields', () => {

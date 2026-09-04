@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import type { DetectionEvent, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { DetectionEvent, JammerState, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 
 type ProjectionResult<T> = { ok: true; data: T } | { ok: false; code: string; status: number; fieldPath?: string }
 
@@ -16,6 +16,7 @@ interface SimulationProjectionInstance {
   create(value: unknown): ProjectionResult<SimulationRun>
   inspectCommand(runId: string, value: unknown): ProjectionResult<SimulationCommand>
   command(runId: string, value: unknown, stopConfirmed?: boolean): ProjectionResult<SimulationRun>
+  controlJammer(taskId: string, jammerId: string, value: unknown): ProjectionResult<JammerState>
   reset(): void
 }
 
@@ -177,5 +178,58 @@ describe('P3-1 仿真服务端投影', () => {
     simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
     simulations.reset()
     expect(simulations.get('RUN-001')).toMatchObject({ ok: true, data: { uiStatus: 'COMPLETED', configLocked: false } })
+  })
+
+  it('执行合法 RF 干扰命令并返回确定性生效帧', () => {
+    const { simulations } = projections()
+    expect(simulations.controlJammer('TASK-001', 'JAM-WB-01-TX', {
+      enabled: true,
+      frequency: 2200,
+      bandwidth: 40,
+      power: 72,
+      direction: 360,
+      duration: 1470,
+    })).toEqual({
+      ok: true,
+      data: {
+        taskId: 'TASK-001',
+        jammerId: 'JAM-WB-01-TX',
+        enabled: true,
+        frequency: 2200,
+        bandwidth: 40,
+        power: 72,
+        direction: 360,
+        duration: 1470,
+        executionStatus: 'SUCCESS',
+        effectiveFrameId: 'F-00042',
+        reason: '任务手动启扰',
+      },
+    })
+  })
+
+  it('分别拒绝越界参数、不可用设备和未知任务', () => {
+    const valid = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const { simulations } = projections()
+    for (const [field, value] of [['frequency', 2100], ['power', 73], ['duration', 7201]] as const) {
+      expect(simulations.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...valid, [field]: value })).toMatchObject({
+        ok: false,
+        code: 'OUT_OF_RANGE',
+        fieldPath: field,
+      })
+    }
+    expect(simulations.controlJammer('TASK-001', 'JAM-SPOT-01-TX', valid)).toMatchObject({
+      ok: false,
+      code: 'DEVICE_DISABLED',
+      fieldPath: 'jammerId',
+    })
+    expect(simulations.controlJammer('TASK-MISSING', 'JAM-WB-01-TX', valid)).toMatchObject({
+      ok: false,
+      code: 'NOT_FOUND',
+      fieldPath: 'taskId',
+    })
+    expect(simulations.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...valid, extra: true })).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+    })
   })
 })

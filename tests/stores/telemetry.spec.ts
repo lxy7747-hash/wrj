@@ -65,6 +65,88 @@ describe('P3-2 遥测 Store', () => {
     vi.unstubAllGlobals()
   })
 
+  it('执行 RF 干扰命令并在失败时清除旧成功结果', async () => {
+    const store = useTelemetryStore()
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001',
+      jammerId: 'JAM-WB-01-TX',
+      ...command,
+      executionStatus: 'SUCCESS',
+      effectiveFrameId: 'F-00042',
+      reason: '任务手动启扰',
+    })))
+
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(true)
+    expect(store).toMatchObject({
+      jammerControlState: 'SUCCESS',
+      jammerResultCode: 'SUCCESS',
+      jammerState: { effectiveFrameId: 'F-00042', power: 72 },
+    })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: vi.fn().mockResolvedValue({
+        ok: false,
+        error: { code: 'OUT_OF_RANGE', message: '功率超出设备能力范围。', fieldPath: 'power' },
+      }),
+    } as unknown as Response))
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...command, power: 73 })).resolves.toBe(false)
+    expect(store).toMatchObject({
+      jammerControlState: 'ERROR',
+      jammerResultCode: 'OUT_OF_RANGE',
+      jammerResultMessage: '功率超出设备能力范围。',
+      jammerResultFieldPath: 'power',
+      jammerState: null,
+    })
+  })
+
+  it('在 RF 干扰命令权限、输入和响应异常时安全失败', async () => {
+    const auth = useAuthStore()
+    const store = useTelemetryStore()
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    auth.principal = { ...operator, permissions: ['BUSINESS_READ'] }
+    auth.permissions = ['BUSINESS_READ']
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
+    expect(store).toMatchObject({ jammerResultCode: 'PERMISSION_DENIED', jammerControlState: 'ERROR' })
+
+    auth.principal = { ...operator, permissions: [...operator.permissions] }
+    auth.permissions = [...operator.permissions]
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...command, power: Number.NaN })).resolves.toBe(false)
+    expect(store.jammerResultCode).toBe('INVALID_REQUEST')
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({})))
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
+    expect(store).toMatchObject({ jammerResultCode: 'INVALID_RESPONSE', jammerResultFieldPath: null })
+
+    const validState = {
+      taskId: 'TASK-001',
+      jammerId: 'JAM-WB-01-TX',
+      ...command,
+      executionStatus: 'SUCCESS',
+      effectiveFrameId: 'F-00042',
+      reason: '任务手动启扰',
+    }
+    for (const invalidState of [
+      { ...validState, taskId: 'TASK-OTHER' },
+      { ...validState, jammerId: 'JAM-OTHER' },
+      { ...validState, frequency: 0 },
+      { ...validState, bandwidth: 0 },
+      { ...validState, power: -1 },
+      { ...validState, direction: -1 },
+      { ...validState, direction: 361 },
+      { ...validState, duration: 0 },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(invalidState)))
+      await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
+      expect(store).toMatchObject({ jammerControlState: 'ERROR', jammerResultCode: 'INVALID_RESPONSE', jammerState: null })
+    }
+
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
+    expect(store).toMatchObject({ jammerResultCode: 'NETWORK_ERROR', jammerResultMessage: '干扰控制服务暂时不可用。' })
+  })
+
   it('原子加载同帧遥测和事件，失败时不保留旧数据', async () => {
     const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
       successResponse(String(input).endsWith('/events') ? fixtureSource.events : frame),

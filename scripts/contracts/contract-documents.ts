@@ -70,6 +70,8 @@ const EXPECTED_ERROR_CODES = [
   'TIMEOUT',
   'EXIT_NONZERO',
   'CORRUPT_FIXTURE',
+  'OUT_OF_RANGE',
+  'DEVICE_DISABLED',
   'LOOPBACK_ONLY',
   'TOPIC_FORBIDDEN',
   'SEQUENCE_GAP',
@@ -115,6 +117,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'post', path: '/api/v1/simulations', operationId: 'postapiV1Simulations' },
   { method: 'get', path: '/api/v1/simulations/{runId}', operationId: 'getapiV1SimulationsRunId' },
   { method: 'post', path: '/api/v1/simulations/{runId}/commands', operationId: 'postapiV1SimulationsRunIdCommands' },
+  { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', operationId: 'postapiV1TasksTaskIdJammersJammerIdCommands' },
   { method: 'get', path: '/api/v1/simulations/{runId}/frames/{frameId}', operationId: 'getapiV1SimulationsRunIdFramesFrameId' },
   { method: 'get', path: '/api/v1/simulations/{runId}/events', operationId: 'getapiV1SimulationsRunIdEvents' },
   { method: 'post', path: '/api/v1/simulations/{runId}/events', operationId: 'postapiV1SimulationsRunIdEvents' },
@@ -178,6 +181,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1Simulations: operationSchemaBinding('#/components/schemas/SimulationCreateRequest', '201', '#/components/schemas/SimulationRun'),
   getapiV1SimulationsRunId: operationSchemaBinding(null, '200', '#/components/schemas/SimulationRun'),
   postapiV1SimulationsRunIdCommands: operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'),
+  postapiV1TasksTaskIdJammersJammerIdCommands: operationSchemaBinding('#/components/schemas/JammingCommand', '200', '#/components/schemas/JammerState'),
   getapiV1SimulationsRunIdFramesFrameId: operationSchemaBinding(null, '200', '#/components/schemas/TelemetryFrame'),
   getapiV1SimulationsRunIdEvents: operationSchemaBinding(null, '200', '#/components/schemas/EventList'),
   postapiV1SimulationsRunIdEvents: operationSchemaBinding('#/components/schemas/EventRecord', '200', '#/components/schemas/EventRecord'),
@@ -241,6 +245,7 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1Simulations: ['409'],
   getapiV1SimulationsRunId: ['404'],
   postapiV1SimulationsRunIdCommands: ['409', '428'],
+  postapiV1TasksTaskIdJammersJammerIdCommands: ['403', '404', '409', '422'],
   getapiV1SimulationsRunIdFramesFrameId: ['404'],
   getapiV1SimulationsRunIdEvents: [],
   postapiV1SimulationsRunIdEvents: ['409'],
@@ -328,7 +333,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SystemHealth/properties/database/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/SystemHealth/properties/channel/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/ArchiveRecord/properties/status/const', 'INDEXED'],
-  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
+  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
   ['#/components/schemas/ErrorEnvelope/properties/ok/const', false],
   ['#/components/schemas/LoginRequest/properties/username/enum', ['admin','operator','locked']],
   ['#/components/schemas/AuthResult/properties/principal/properties/role/enum', ['ADMIN','OPERATOR']],
@@ -353,6 +358,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SimulationCommand/properties/command/enum', ['START','PAUSE','RESUME','STEP','STOP','SET_SPEED']],
   ['#/components/schemas/SimulationCommand/properties/mode/enum', ['INTERACTIVE_SINGLE','BATCH_PARAMETER_TRAVERSAL','PARAMETER_SCAN','HISTORICAL_REPLAY']],
   ['#/components/schemas/SimulationCommand/properties/stepCount/const', 1],
+  ['#/components/schemas/JammerState/properties/executionStatus/const', 'SUCCESS'],
   ['#/components/schemas/BatchRequest/properties/deterministicOrder/const', true],
   ['#/components/schemas/BatchCommand/properties/command/enum', ['START','CANCEL']],
   ['#/components/schemas/ReportExportRequest/properties/format/enum', ['HTML','PDF','CSV']],
@@ -388,6 +394,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/ScenarioCoverageFixture/properties/minimumInformationDemandCount/const', 1],
   ['#/components/schemas/DeterministicFixtures/properties/schemaVersion/const', '1.0'],
   ['#/components/schemas/PostapiV1AuthLoginResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdCommandsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AuthPermissionsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1MetaCapabilitiesResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1MetaInterfacesResponse/properties/ok/const', true],
@@ -659,7 +666,9 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
   ]),
   'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT': capabilityTrace('/situation', [], ['link.metric']),
   'DSDWRJQTLJS-XQ-GRYGZ-ESMGL': capabilityTrace('/interactions', [], ['jammer.event']),
-  'DSDWRJQTLJS-XQ-GRYGZ-RFGR': capabilityTrace('/interactions', [], ['jammer.event']),
+  'DSDWRJQTLJS-XQ-GRYGZ-RFGR': capabilityTrace('/interactions', [
+    operationReference('post', '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', 'postapiV1TasksTaskIdJammersJammerIdCommands'),
+  ], ['jammer.event']),
   'DSDWRJQTLJS-XQ-GRYGZ-BHC': capabilityTrace('/interactions', [
     operationReference('post', '/api/v1/simulations/{runId}/events', 'postapiV1SimulationsRunIdEvents'),
   ], ['jammer.event', 'link.metric']),
@@ -1387,12 +1396,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 61) {
+  if (operationCount !== 62) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 61 operations, found ${operationCount}`,
+      `Expected exactly 62 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1411,12 +1420,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 30 || requestSchemaOwners.size !== 30) {
+  if (writeCount !== 31 || requestSchemaOwners.size !== 31) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 30 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 31 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

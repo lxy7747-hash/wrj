@@ -1611,6 +1611,43 @@ describe('P0 deterministic mock server', () => {
       .expect(409)
   })
 
+  it('执行 P4 RF 干扰控制并返回参数拒绝原因', async () => {
+    const { server, baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const successResponse = await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands')
+      .set(headers)
+      .send(command)
+      .expect(200)
+    expect(successResponse.body).toMatchObject({
+      ok: true,
+      data: { executionStatus: 'SUCCESS', effectiveFrameId: 'F-00042', reason: '任务手动启扰' },
+    })
+
+    const outOfRange = await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands')
+      .set(headers)
+      .send({ ...command, power: 73 })
+      .expect(422)
+    expect(outOfRange.body).toMatchObject({ error: { code: 'OUT_OF_RANGE', fieldPath: 'power' } })
+    const unavailable = await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-SPOT-01-TX/commands')
+      .set(headers)
+      .send(command)
+      .expect(409)
+    expect(unavailable.body).toMatchObject({ error: { code: 'DEVICE_DISABLED', fieldPath: 'jammerId' } })
+    await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands')
+      .set('Origin', ORIGIN)
+      .send(command)
+      .expect(403)
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'SUCCESS' }),
+      expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'ERROR' }),
+    ]))
+  })
+
   it('提供 P3 单次与批量报告读取，并执行分级导出验证', async () => {
     const { baseUrl } = await startServer()
     const operatorHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }

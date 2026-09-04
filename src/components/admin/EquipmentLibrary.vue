@@ -1,5 +1,5 @@
 <template>
-  <div class="param-db-card">
+  <div class="param-db-card" data-testid="equipment-library">
     <!-- 头部 -->
     <div class="card-header">
       <h3 class="card-title">装备基础参数库（内置主数据）</h3>

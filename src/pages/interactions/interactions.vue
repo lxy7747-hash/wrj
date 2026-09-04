@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
 import EsmSensorPanel from '../../components/interactions/EsmSensorPanel.vue'
+import RfJammerPanel from '../../components/interactions/RfJammerPanel.vue'
 import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
 </script>
 
@@ -19,6 +20,7 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
 
     <div class="interactions-page__evidence">
       <EsmSensorPanel />
+      <RfJammerPanel />
       <CompositeLossExample />
       <SnrBerExample />
     </div>
@@ -57,11 +59,11 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
           <div class="domain-card__heading">
             <span class="domain-card__marker" aria-hidden="true"></span>
             <div>
-              <p class="domain-card__label">规划区域</p>
+              <p class="domain-card__label">已接入</p>
               <h4>干扰控制</h4>
             </div>
           </div>
-          <p>后续用于管理干扰控制参数与执行过程，明确控制信息的呈现边界。</p>
+          <p>按任务设置干扰启停、频段、功率、方向和持续时间，并显示拒绝原因与生效帧。</p>
           <span class="console-chip">控制边界</span>
         </li>
 
@@ -79,7 +81,7 @@ import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
       </ol>
 
       <p class="interaction-topology__note">
-        此处为静态信息架构示例，不表示设备、链路、控制指令或运行状态。
+        此处仅表达交互能力关系；设备状态和控制结果以各能力面板返回的数据为准。
       </p>
     </section>
   </section>
