@@ -389,7 +389,7 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
-function isSituationEvent(value: unknown): value is SituationEvent {
+export function isSituationEvent(value: unknown): value is SituationEvent {
   if (!isRecord(value)) return false
   const hasRegistryTime = Object.prototype.hasOwnProperty.call(value, 'sourceRegistryTime')
   const common = typeof value.eventId === 'string' && value.eventId.length > 0

@@ -1922,4 +1922,78 @@ describe('P0 deterministic mock server', () => {
       .send({ export: true, confirmationId: context.confirmationId })
       .expect(409)
   })
+
+  it('提供 P6 固定批次的创建、控制和 12 行结果', async () => {
+    const { server, baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const listed = await request(baseUrl).get('/api/v1/batches').set(headers).expect(200)
+    expect(listed.body).toMatchObject({ data: [{ batchId: 'BATCH-001', state: 'COMPLETED' }] })
+    const detail = await request(baseUrl).get('/api/v1/batches/BATCH-001').set(headers).expect(200)
+    expect((detail.body as { data: { runs: unknown[] } }).data.runs).toHaveLength(12)
+
+    const created = await request(baseUrl)
+      .post('/api/v1/batches')
+      .set(headers)
+      .send({ scenarioId: 'SCN-001', powersW: [50, 100, 150, 200], distancesKm: [80, 100, 120], deterministicOrder: true })
+      .expect(201)
+    expect(created.body).toMatchObject({ data: { state: 'QUEUED' } })
+    await request(baseUrl).get('/api/v1/batches/BATCH-001').set(headers).expect(409)
+    const started = await request(baseUrl)
+      .post('/api/v1/batches/BATCH-001/commands')
+      .set(headers)
+      .send({ command: 'START' })
+      .expect(200)
+    expect(started.body).toMatchObject({ data: { state: 'COMPLETED' } })
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'BATCH_CREATE', result: 'SUCCESS' }),
+      expect.objectContaining({ action: 'BATCH_COMMAND', result: 'SUCCESS' }),
+    ]))
+  })
+
+  it('拒绝 P6 批次的无角色、无效请求、未知编号和非法迁移', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    await request(baseUrl).get('/api/v1/batches').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/batches').set('Origin', ORIGIN).send({}).expect(403)
+    await request(baseUrl).get('/api/v1/batches/BATCH-001').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set('Origin', ORIGIN).send({ command: 'START' }).expect(403)
+    await request(baseUrl).post('/api/v1/batches').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/batches').set(headers)
+      .send({ scenarioId: 'SCN-001', powersW: [50], distancesKm: [80], deterministicOrder: true }).expect(422)
+    await request(baseUrl).post('/api/v1/batches').set(headers)
+      .send({ scenarioId: 'SCN-001', powersW: [1, 2, 3], distancesKm: [4, 5, 6, 7], deterministicOrder: true }).expect(422)
+    await request(baseUrl).get('/api/v1/batches/BATCH-MISSING').set(headers).expect(404)
+    await request(baseUrl).post('/api/v1/batches/BATCH-MISSING/commands').set(headers).send({ command: 'START' }).expect(404)
+    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set(headers).send({ command: 'BAD' }).expect(422)
+    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set(headers).send({ command: 'START' }).expect(409)
+  })
+
+  it('提供 P6 只读回放命令并在全局重置后恢复游标', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const listed = await request(baseUrl).get('/api/v1/replays').set(headers).expect(200)
+    expect(listed.body).toMatchObject({ data: [{ replayId: 'REPLAY-001', runId: 'RUN-001' }] })
+    await request(baseUrl).get('/api/v1/replays/REPLAY-001').set(headers).expect(200)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'PLAY' }).expect(200)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'SEEK', value: 2539 }).expect(200)
+    const paused = await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'PAUSE' }).expect(200)
+    expect(paused.body).toMatchObject({ data: { currentTimeS: 2539, state: 'PAUSED' } })
+    const moved = await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'SEEK', value: 42 }).expect(200)
+    expect(moved.body).toMatchObject({ data: { currentTimeS: 42, state: 'PAUSED' } })
+    await request(baseUrl).post('/api/v1/reset').set({ Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }).send({ confirm: true }).expect(200)
+    const restored = await request(baseUrl).get('/api/v1/replays/REPLAY-001').set(headers).expect(200)
+    expect(restored.body).toMatchObject({ data: { currentTimeS: 2537, state: 'PAUSED' } })
+  })
+
+  it('拒绝 P6 回放的无角色、未知编号、无效命令和非法迁移', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    await request(baseUrl).get('/api/v1/replays').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).get('/api/v1/replays/REPLAY-001').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set('Origin', ORIGIN).send({ command: 'PLAY' }).expect(403)
+    await request(baseUrl).get('/api/v1/replays/REPLAY-MISSING').set(headers).expect(404)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-MISSING/commands').set(headers).send({ command: 'PLAY' }).expect(404)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'BAD' }).expect(422)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'PAUSE' }).expect(409)
+  })
 })

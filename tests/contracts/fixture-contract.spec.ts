@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-04.4')
+    expect(fixture.fixtureVersion).toBe('2026-09-04.5')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)

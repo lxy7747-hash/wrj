@@ -123,10 +123,11 @@ export const useReportStore = defineStore('report', {
   actions: {
     /**
      * 加载报告目录并选择第一份报告。
+     * @param preferredReportId 可选的预选报告编号，不在目录中时回退首份报告。
      * @returns 目录和首份报告均有效时返回 `true`，否则返回 `false`。
      * @sideEffects 原子替换报告目录和当前来源；失败时清空旧报告，避免来源混用。
      */
-    async load(): Promise<boolean> {
+    async load(preferredReportId?: string): Promise<boolean> {
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
       try {
@@ -141,7 +142,10 @@ export const useReportStore = defineStore('report', {
           return true
         }
         this.reports = structuredClone(reports)
-        return await this.selectReport(reports[0]!.reportId)
+        const selectedId = reports.some((report) => report.reportId === preferredReportId)
+          ? preferredReportId!
+          : reports[0]!.reportId
+        return await this.selectReport(selectedId)
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
         this.showError(error, '报告加载失败。')

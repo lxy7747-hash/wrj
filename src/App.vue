@@ -3,13 +3,17 @@ import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
+import { useBatchStore } from './stores/batch'
 import { useDataExchangeStore } from './stores/data-exchange'
+import { useReplayStore } from './stores/replay'
 import { useScenarioStore } from './stores/scenario'
 import { useSimulationStore } from './stores/simulation'
 import { useTelemetryStore } from './stores/telemetry'
 
 const auth = useAuthStore()
+const batch = useBatchStore()
 const dataExchange = useDataExchangeStore()
+const replay = useReplayStore()
 const scenario = useScenarioStore()
 const simulation = useSimulationStore()
 const telemetry = useTelemetryStore()
@@ -22,6 +26,8 @@ watch(
       telemetry.disconnectAndReset()
       simulation.resetToSafeEmpty()
       scenario.resetToSafeEmpty()
+      batch.resetToSafeEmpty()
+      replay.resetToSafeEmpty()
       dataExchange.resetToSafeEmpty()
     }
   },

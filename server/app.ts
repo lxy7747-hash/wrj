@@ -33,6 +33,7 @@ import { ConfirmationProjection, type ConfirmationClock } from './confirmations/
 import { TemplateProjection } from './templates/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
+import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
 
 export interface MockServerOptions {
   port?: number
@@ -399,6 +400,22 @@ function sendSimulationFailure<T>(
   return true
 }
 
+/** 将批次或回放投影错误转换为统一 API 失败信封。 */
+function sendBatchReplayFailure<T>(
+  res: Response,
+  result: BatchReplayResult<T>,
+  requestId: string,
+): result is Extract<BatchReplayResult<T>, { ok: false }> {
+  if (result.ok) return false
+  res.status(result.status).json(failure(result.code, result.status, {
+    requestId,
+    generatedAt: P1_GENERATED_AT,
+    message: result.message,
+    ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+  }))
+  return true
+}
+
 /**
  * Requires a valid internal role hint and records malformed/missing hints as denied.
  *
@@ -508,6 +525,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const confirmations = new ConfirmationProjection(options.confirmationClock)
   const templates = new TemplateProjection()
   const scripts = new ScriptProjection()
+  const batchReplay = new BatchReplayProjection()
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -1184,6 +1202,86 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 返回当前确定性批次目录。 */
+  app.get('/api/v1/batches', (req, res) => {
+    const requestId = 'REQ-P6-BATCH-LIST'
+    if (requireDemoRole(req, res, auth, 'BATCH_LIST') === undefined) return
+    const batches = batchReplay.listBatches()
+    res.status(200).json(success(batches, pageMeta(requestId, batches.length, batches.length)))
+  })
+
+  /** 校验批量参数并创建 BATCH-001 排队投影。 */
+  app.post('/api/v1/batches', (req, res) => {
+    const requestId = 'REQ-P6-BATCH-CREATE'
+    const role = requireDemoRole(req, res, auth, 'BATCH_CREATE')
+    if (role === undefined) return
+    const result = batchReplay.createBatch(req.body)
+    if (sendBatchReplayFailure(res, result, requestId)) {
+      auth.recordError(actorForRole(role), role, 'BATCH_CREATE')
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'BATCH_CREATE', result.data.batchId)
+    res.status(201).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回批次与固定 12 行运行/报告对照详情。 */
+  app.get('/api/v1/batches/:batchId', (req, res) => {
+    const batchId = req.params.batchId
+    const requestId = 'REQ-P6-BATCH-GET'
+    if (requireDemoRole(req, res, auth, 'BATCH_READ', batchId) === undefined) return
+    const result = batchReplay.getBatch(batchId)
+    if (sendBatchReplayFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 执行批次 START 或 CANCEL 命令。 */
+  app.post('/api/v1/batches/:batchId/commands', (req, res) => {
+    const batchId = req.params.batchId
+    const requestId = 'REQ-P6-BATCH-COMMAND'
+    const role = requireDemoRole(req, res, auth, 'BATCH_COMMAND', batchId)
+    if (role === undefined) return
+    const result = batchReplay.commandBatch(batchId, req.body)
+    if (sendBatchReplayFailure(res, result, requestId)) {
+      auth.recordError(actorForRole(role), role, 'BATCH_COMMAND', batchId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'BATCH_COMMAND', batchId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 返回当前历史回放目录。 */
+  app.get('/api/v1/replays', (req, res) => {
+    const requestId = 'REQ-P6-REPLAY-LIST'
+    if (requireDemoRole(req, res, auth, 'REPLAY_LIST') === undefined) return
+    const replays = batchReplay.listReplays()
+    res.status(200).json(success(replays, pageMeta(requestId, replays.length, replays.length)))
+  })
+
+  /** 返回指定回放的只读运行引用与游标。 */
+  app.get('/api/v1/replays/:replayId', (req, res) => {
+    const replayId = req.params.replayId
+    const requestId = 'REQ-P6-REPLAY-GET'
+    if (requireDemoRole(req, res, auth, 'REPLAY_READ', replayId) === undefined) return
+    const result = batchReplay.getReplay(replayId)
+    if (sendBatchReplayFailure(res, result, requestId)) return
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 执行仅改变回放游标和播放状态的命令。 */
+  app.post('/api/v1/replays/:replayId/commands', (req, res) => {
+    const replayId = req.params.replayId
+    const requestId = 'REQ-P6-REPLAY-COMMAND'
+    const role = requireDemoRole(req, res, auth, 'REPLAY_COMMAND', replayId)
+    if (role === undefined) return
+    const result = batchReplay.commandReplay(replayId, req.body)
+    if (sendBatchReplayFailure(res, result, requestId)) {
+      auth.recordError(actorForRole(role), role, 'REPLAY_COMMAND', replayId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'REPLAY_COMMAND', replayId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
   /** 返回单次仿真报告和批量聚合报告目录。 */
   app.get('/api/v1/reports', (req, res) => {
     const requestId = 'REQ-P3-REPORT-LIST'
@@ -1562,6 +1660,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     confirmations.reset()
     templates.reset()
     scripts.reset()
+    batchReplay.reset()
     res.status(200).json(success(result, {
       requestId: result.requestId,
       generatedAt: result.generatedAt,

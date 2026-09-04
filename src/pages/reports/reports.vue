@@ -1,17 +1,42 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute } from 'vue-router'
 import ReportTabs from '../../components/reports/ReportTabs.vue'
 import type { ReportExportRequest } from '../../contracts/domain-models'
+import { useBatchStore } from '../../stores/batch'
 import { useReportStore } from '../../stores/report'
+import { useTelemetryStore } from '../../stores/telemetry'
 
 const reportStore = useReportStore()
+const batchStore = useBatchStore()
+const telemetryStore = useTelemetryStore()
+const route = useRoute()
 const { reports, selectedReport, capabilityState, resultMessage, confirmation, exportResult } = storeToRefs(reportStore)
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
 
-onMounted(() => { void reportStore.load() })
-onBeforeUnmount(() => reportStore.resetToSafeEmpty())
+/** 加载当前报告所引用的正式批次或遥测证据。 */
+async function loadEvidence(): Promise<void> {
+  const report = selectedReport.value
+  if (report?.batchId !== undefined) {
+    telemetryStore.resetToSafeEmpty()
+    await batchStore.loadComparison(report.batchId)
+  } else if (report?.runId !== undefined) {
+    batchStore.resetToSafeEmpty()
+    await telemetryStore.loadFrame(report.runId, 'F-00042')
+  }
+}
+
+onMounted(async () => {
+  const requestedReportId = typeof route.query.reportId === 'string' ? route.query.reportId : undefined
+  if (await reportStore.load(requestedReportId)) await loadEvidence()
+})
+onBeforeUnmount(() => {
+  reportStore.resetToSafeEmpty()
+  batchStore.resetToSafeEmpty()
+  telemetryStore.resetToSafeEmpty()
+})
 
 /**
  * 切换当前报告来源。
@@ -20,7 +45,7 @@ onBeforeUnmount(() => reportStore.resetToSafeEmpty())
  * @sideEffects 通过 reportStore 原子替换当前报告，并清除上一来源的导出状态。
  */
 async function changeReport(reportId: string): Promise<void> {
-  await reportStore.selectReport(reportId)
+  if (await reportStore.selectReport(reportId)) await loadEvidence()
 }
 
 /** 发起当前格式的无文件导出验证。 */
@@ -70,7 +95,13 @@ async function confirmExport(): Promise<void> {
 
     <main class="reports-page__content">
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
-      <ReportTabs v-else-if="selectedReport" :report="selectedReport" />
+      <ReportTabs
+        v-else-if="selectedReport"
+        :report="selectedReport"
+        :batch-runs="batchStore.runs"
+        :frame="telemetryStore.frame"
+        :events="telemetryStore.events"
+      />
       <el-result v-else-if="capabilityState === 'ERROR'" icon="error" title="报告加载失败" :sub-title="resultMessage">
         <template #extra><el-button type="primary" @click="reportStore.load()">重新加载</el-button></template>
       </el-result>

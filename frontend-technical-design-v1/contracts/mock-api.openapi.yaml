@@ -1740,6 +1740,26 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1BatchesBatchId"
@@ -6510,6 +6530,12 @@
           },
           "powersW": {
             "type": "array",
+            "const": [
+              50,
+              100,
+              150,
+              200
+            ],
             "minItems": 1,
             "items": {
               "type": "number",
@@ -6518,6 +6544,11 @@
           },
           "distancesKm": {
             "type": "array",
+            "const": [
+              80,
+              100,
+              120
+            ],
             "minItems": 1,
             "items": {
               "type": "number",

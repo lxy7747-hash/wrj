@@ -450,6 +450,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'const': true
       },
       'distancesKm': {
+        'const': [
+          80,
+          100,
+          120
+        ],
         'items': {
           'minimum': 0,
           'type': 'number'
@@ -458,6 +463,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'type': 'array'
       },
       'powersW': {
+        'const': [
+          50,
+          100,
+          150,
+          200
+        ],
         'items': {
           'minimum': 0,
           'type': 'number'

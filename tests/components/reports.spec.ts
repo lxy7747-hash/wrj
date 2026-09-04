@@ -1,6 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import ReportTabs from '../../src/components/reports/ReportTabs.vue'
@@ -23,6 +24,11 @@ function success(data: unknown): Response {
   return { ok: true, json: vi.fn().mockResolvedValue({ ok: true, data }) } as unknown as Response
 }
 
+/** 创建报告页测试使用的内存路由。 */
+function reportsRouter() {
+  return createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
+}
+
 describe('P3 报表内容', () => {
   afterEach(() => {
     document.body.innerHTML = ''
@@ -32,7 +38,11 @@ describe('P3 报表内容', () => {
   it('单次报告展示范围、单位和五类内容且不混入批量运行', async () => {
     const wrapper = mount(ReportTabs, {
       attachTo: document.body,
-      props: { report: fixtureSource.report as Report },
+      props: {
+        report: fixtureSource.report as Report,
+        frame: fixtureSource.frame,
+        events: fixtureSource.events,
+      },
       global: { plugins: [ElementPlus] },
     })
     expect(wrapper.text()).toContain('RUN-001 · T+0～7200 s')
@@ -67,7 +77,10 @@ describe('P3 报表内容', () => {
   it('批量报告只使用 12 次批量运行生成聚合和对比数据', async () => {
     const wrapper = mount(ReportTabs, {
       attachTo: document.body,
-      props: { report: fixtureSource.batchAggregateReport as Report },
+      props: {
+        report: fixtureSource.batchAggregateReport as Report,
+        batchRuns: fixtureSource.batchRuns,
+      },
       global: { plugins: [ElementPlus] },
     })
     expect(wrapper.text()).toContain('BATCH-001 · 12 次确定性运行')
@@ -117,8 +130,12 @@ describe('P3 报表内容', () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(success([fixtureSource.report, fixtureSource.batchAggregateReport]))
       .mockResolvedValueOnce(success(fixtureSource.report))
+      .mockResolvedValueOnce(success(fixtureSource.frame))
+      .mockResolvedValueOnce(success(fixtureSource.events))
       .mockResolvedValueOnce(success(result)))
-    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    const router = reportsRouter()
+    await router.push('/reports')
+    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
     await flushPromises()
 
     expect(wrapper.attributes('aria-label')).toBe('报告分析')
@@ -156,11 +173,20 @@ describe('P3 报表内容', () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(success([fixtureSource.report, fixtureSource.batchAggregateReport]))
       .mockResolvedValueOnce(success(fixtureSource.report))
+      .mockResolvedValueOnce(success(fixtureSource.frame))
+      .mockResolvedValueOnce(success(fixtureSource.events))
       .mockResolvedValueOnce(success(fixtureSource.batchAggregateReport))
+      .mockResolvedValueOnce(success({
+        batch: fixtureSource.batch,
+        runs: fixtureSource.batchRuns,
+        aggregateReport: fixtureSource.batchAggregateReport,
+      }))
       .mockResolvedValueOnce(success(awaiting))
       .mockResolvedValueOnce(success({ ...awaiting, state: 'CONFIRMED' }))
       .mockResolvedValueOnce(success(result)))
-    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    const router = reportsRouter()
+    await router.push('/reports')
+    const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
     await flushPromises()
 
     const selects = wrapper.findAllComponents({ name: 'ElSelect' })

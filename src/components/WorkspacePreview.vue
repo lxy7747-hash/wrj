@@ -12,9 +12,7 @@ interface WorkspacePreview {
 
 type WorkspaceRouteName =
   | 'situation'
-  | 'batches'
   | 'reports'
-  | 'replays'
   | 'blueprint'
   | 'admin-data-exchange'
   | 'traceability'
@@ -30,16 +28,6 @@ const WORKSPACE_PREVIEWS: Record<WorkspaceRouteName, WorkspacePreview> = {
       { title: '观察摘要', description: '将汇集选中对象与关联事件的上下文。' },
     ],
   },
-  batches: {
-    eyebrow: '仿真批次',
-    summary: '规划中的批次空间将区分参数范围、作业编排与结果归档。',
-    variant: 'queue',
-    regions: [
-      { title: '参数范围', description: '将描述批次变量与组合边界。' },
-      { title: '任务编排', description: '将按作业层级组织待处理项目。' },
-      { title: '结果归档', description: '将汇集批次产物与后续分析入口。' },
-    ],
-  },
   reports: {
     eyebrow: '报表中心',
     summary: '规划中的分析空间将组合指标摘要、图表区域与报告章节。',
@@ -49,16 +37,6 @@ const WORKSPACE_PREVIEWS: Record<WorkspaceRouteName, WorkspacePreview> = {
       { title: '趋势与分布', description: '将承载按时间和类别组织的图表区域。' },
       { title: '对比分析', description: '将并列呈现可比较的任务结果。' },
       { title: '报告章节', description: '将按主题组织结论与依据。' },
-    ],
-  },
-  replays: {
-    eyebrow: '回放复盘',
-    summary: '规划中的复盘空间将把态势视窗、事件时序与对象详情并置。',
-    variant: 'timeline',
-    regions: [
-      { title: '回放视窗', description: '将重现已归档场景的空间上下文。' },
-      { title: '事件时序', description: '将沿统一时间轴组织关键事件。' },
-      { title: '对象详情', description: '将呈现所选节点与链路的历史信息。' },
     ],
   },
   blueprint: {

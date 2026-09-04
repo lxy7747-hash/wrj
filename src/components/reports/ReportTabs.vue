@@ -10,22 +10,20 @@ import type {
   TelemetryFrame,
 } from '../../contracts/domain-models'
 import { formatBer } from '../../features/situation/situation-model'
-import fixtureSource from '../../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 
-const props = defineProps<{ report: Report }>()
-
-const fixture = fixtureSource as unknown as {
-  frame: TelemetryFrame
-  events: Array<DetectionEvent | SwitchEvent>
-  batchRuns: BatchRunResult[]
-}
+const props = withDefaults(defineProps<{
+  report: Report
+  batchRuns?: BatchRunResult[]
+  frame?: TelemetryFrame | null
+  events?: Array<DetectionEvent | SwitchEvent>
+}>(), { batchRuns: () => [], frame: null, events: () => [] })
 
 const isBatch = computed(() => props.report.batchId !== undefined)
-const batchRuns = computed(() => isBatch.value ? fixture.batchRuns : [])
-const ordinaryFrame = computed(() => isBatch.value ? null : fixture.frame)
+const batchRuns = computed(() => isBatch.value ? props.batchRuns : [])
+const ordinaryFrame = computed(() => isBatch.value ? null : props.frame)
 const ordinarySwitchEvents = computed(() => isBatch.value
   ? []
-  : fixture.events.filter((event): event is SwitchEvent => event.type === 'LINK_SWITCH'))
+  : props.events.filter((event): event is SwitchEvent => event.type === 'LINK_SWITCH'))
 
 /** 计算一组数值的平均值，并在空集合时返回 0。 */
 function average(values: number[]): number {

@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ApiSuccess, ScenarioConfig, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models'
+import type { ApiSuccess, Batch, BatchRunResult, Replay, ScenarioConfig, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models'
 
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
@@ -28,7 +28,9 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 import App from '../../src/App.vue'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
+import { useBatchStore } from '../../src/stores/batch'
 import { useDataExchangeStore } from '../../src/stores/data-exchange'
+import { useReplayStore } from '../../src/stores/replay'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
@@ -263,6 +265,8 @@ describe('App shell', () => {
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)
+    const batch = useBatchStore(pinia)
+    const replay = useReplayStore(pinia)
     const dataExchange = useDataExchangeStore(pinia)
     scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
     simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
@@ -290,6 +294,11 @@ describe('App shell', () => {
         resourcesReleased: true,
       },
     })
+    batch.$patch({
+      batch: structuredClone(fixtureSource.batch) as Batch,
+      runs: structuredClone(fixtureSource.batchRuns) as BatchRunResult[],
+    })
+    replay.$patch({ replay: structuredClone(fixtureSource.replay) as Replay, state: 'PAUSED' })
 
     await adminWrapper.get('[data-testid="logout"]').trigger('click')
     await flushPromises()
@@ -302,6 +311,8 @@ describe('App shell', () => {
       jsonState: 'EMPTY', jsonResult: null,
       processState: 'EMPTY', processResult: null,
     })
+    expect(batch.$state).toMatchObject({ batch: null, runs: [], capabilityState: 'EMPTY' })
+    expect(replay.$state).toMatchObject({ replay: null, events: [], state: 'EMPTY' })
     auth.$patch({
       principal: { userId: 'USR-OPERATOR-2', username: 'operator-2', role: 'OPERATOR', permissions: ['BUSINESS_READ'] },
       role: 'OPERATOR',
