@@ -32,7 +32,7 @@
 
 `LOADING → VALIDATING → EXECUTING → SUCCESS | EMPTY | ERROR`。允许 `ERROR → LOADING` 重试、`EMPTY → LOADING` 刷新。请求开始即清除旧错误；校验失败直接 `VALIDATING → ERROR`；无记录必须使用 `EMPTY`，不能伪装成功。每张能力卡同时显示当前状态、最后成功夹具 ID、错误代码/fieldPath 和重试入口。
 
-T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-018 的固定帧传播损耗、SNR/BER、链路状态判定及候选快照证据没有计算任务入口，状态流为 `LOADING → VALIDATING → SUCCESS | EMPTY | ERROR`；不得为凑齐六态显示无来源的 `EXECUTING`。
+T-XQ-010、T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-014、T-XQ-018 的固定帧链路计算、传播损耗、SNR/BER、链路状态判定、ESM 侦测及候选快照证据没有真实执行信号，状态流为 `LOADING → VALIDATING → SUCCESS | EMPTY | ERROR`；不得为凑齐六态显示无来源的 `EXECUTING`。
 
 ### 仿真 UI 与 canonical 投影
 

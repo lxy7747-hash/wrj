@@ -217,7 +217,11 @@ export interface ReportKpis {
   connectivityRate: Percent0To100; switchCount: number; avgBer: Ratio01; avgSnrDb: Decibels;
   interferenceDurationS: Seconds; avgConnectivityDurationS: Seconds; minSnrDb: Decibels; maxBer: Ratio01;
 }
-export interface Report { reportId: ReportId; runId?: RunId; batchId?: Identifier; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; }
+export interface ReportTimeSeriesPoint { time: Seconds; snrDb: Decibels; ber: Ratio01; interferencePowerDbm: Decibels; }
+export interface ReportTimeSeries {
+  linkId: Identifier; sourcePlatformId: Identifier; targetPlatformId: Identifier; points: ReportTimeSeriesPoint[];
+}
+export interface Report { reportId: ReportId; runId?: RunId; batchId?: Identifier; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; }
 export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; }
 export interface ReportExportResult { reportId: ReportId; generated: false; status: 'FIXTURE_SUCCESS'; watermark: string; verifiedAt: Iso8601Utc; }
 export interface Replay { replayId: ReplayId; runId: RunId; state: ReplayState; durationS: Seconds; currentTimeS: Seconds; eventIds: Identifier[]; }
@@ -235,8 +239,8 @@ export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | '
 export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE'; checksum: string; createdAt: Iso8601Utc; }
 export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; confirmationId: Identifier; }
 export interface RestoreRequest { operation: 'RESTORE'; backupId: Identifier; confirmationId: Identifier; }
-export interface AuditRecord { auditId: Identifier; actor: string; role: Role; action: string; objectId?: Identifier; result: 'SUCCESS' | 'DENIED' | 'ERROR'; occurredAt: Iso8601Utc; immutableFixture: true; }
-export interface AuditRequest { from?: Iso8601Utc; to?: Iso8601Utc; actor?: string; role?: Role; action?: string; result?: AuditRecord['result']; export?: boolean; confirmationId?: Identifier; }
+export interface AuditRecord { auditId: Identifier; actor: string; role: Role; module: string; action: string; objectId?: Identifier; result: 'SUCCESS' | 'DENIED' | 'ERROR'; occurredAt: Iso8601Utc; immutableFixture: true; }
+export interface AuditRequest { from?: Iso8601Utc; to?: Iso8601Utc; actor?: string; role?: Role; module?: string; action?: string; result?: AuditRecord['result']; export?: boolean; confirmationId?: Identifier; }
 export interface AuditExportRequest extends AuditRequest { export: true; confirmationId: Identifier; }
 export interface SystemHealth { ui: 'HEALTHY'; engine: 'NOT_CONNECTED_BY_DESIGN'; database: 'NOT_CONNECTED_BY_DESIGN'; channel: 'NOT_CONNECTED_BY_DESIGN'; }
 export interface ArchiveRecord { archiveId: ArchiveId; taskId: TaskId; scenarioId: ScenarioId; runId: RunId; replayId: ReplayId; reportId: ReportId; status: 'INDEXED'; }

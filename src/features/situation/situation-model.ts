@@ -117,7 +117,7 @@ export function getPlatformName(platformId: string, frame = SITUATION_FRAME_F000
  * @returns 与摘要对应的链路标识。
  * @sideeffect 无副作用，只读取固定帧。
  */
-function resolveLinkId(summary: LinkStatusSummary, frame: TelemetryFrame): string {
+export function resolveLinkId(summary: LinkStatusSummary, frame: TelemetryFrame): string {
   const detailed = frame.links.find((link) => (
     link.sourcePlatform === summary.sourcePlatform
     && link.destPlatform === summary.destPlatform

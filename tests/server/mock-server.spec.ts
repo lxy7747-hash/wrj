@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { ConfirmationContext, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
+import type { ApiSuccess, AuditRecord, ConfirmationContext, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -30,6 +30,7 @@ interface IsolatedHttpServerInstance extends HttpServerInstance {
 interface MockServerInstance {
   httpServer: HttpServerInstance
   projection: MockProjectionInstance
+  auditSnapshot(): AuditRecord[]
   close(): Promise<void>
 }
 
@@ -379,7 +380,7 @@ describe('P0 deterministic mock server', () => {
   })
 
   it('加载、校验、完整保存并全局重置场景草稿', async () => {
-    const { baseUrl } = await startServer()
+    const { server, baseUrl } = await startServer()
     const load = () => request(baseUrl)
       .get('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
@@ -551,6 +552,11 @@ describe('P0 deterministic mock server', () => {
       uiExtensions: { sensors: [{ probability: 0.8 }] },
     })
 
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ actor: 'operator', module: 'SCENARIO_CONFIGURATION', action: 'SCENARIO_UPDATE', result: 'SUCCESS' }),
+      expect.objectContaining({ actor: 'admin', module: 'SCENARIO_CONFIGURATION', action: 'SCENARIO_UPDATE', result: 'ERROR' }),
+    ]))
+
     await request(baseUrl)
       .post('/api/v1/reset')
       .set('Origin', ORIGIN)
@@ -622,7 +628,7 @@ describe('P0 deterministic mock server', () => {
   })
 
   it('按 T-XQ-008 阻断错误、一次确认警告并执行脚本预检', async () => {
-    const { baseUrl } = await startServer()
+    const { server, baseUrl } = await startServer()
     const roleHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
 
     const blocked = await request(baseUrl)
@@ -669,6 +675,12 @@ describe('P0 deterministic mock server', () => {
       .set(roleHeaders)
       .send({ scenarioId: 'SCN-001', warningConfirmationId: awaiting.confirmationId })
       .expect(409)
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ module: 'SCRIPT_GENERATION', action: 'SCRIPT_PREVIEW', result: 'SUCCESS' }),
+      expect.objectContaining({ module: 'SCRIPT_GENERATION', action: 'SCRIPT_PREVIEW', result: 'ERROR' }),
+      expect.objectContaining({ module: 'SCRIPT_GENERATION', action: 'SCRIPT_PREFLIGHT', result: 'SUCCESS' }),
+      expect.objectContaining({ module: 'SCRIPT_GENERATION', action: 'SCRIPT_PREFLIGHT', result: 'ERROR' }),
+    ]))
   })
 
   it('拒绝场景快照和脚本端点的损坏请求、冲突及未知对象', async () => {
@@ -1479,7 +1491,7 @@ describe('P0 deterministic mock server', () => {
   })
 
   it('executes P3 simulation commands and keeps the scenario lock lifecycle consistent', async () => {
-    const { baseUrl } = await startServer()
+    const { server, baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
 
     const initialRuns = await request(baseUrl).get('/api/v1/simulations').set(headers).expect(200)
@@ -1553,6 +1565,11 @@ describe('P0 deterministic mock server', () => {
       .set({ Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' })
       .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
       .expect(201)
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_CREATE', result: 'SUCCESS' }),
+      expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_COMMAND', result: 'SUCCESS' }),
+      expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_COMMAND', result: 'ERROR' }),
+    ]))
   })
 
   it('returns typed P3 simulation permission, request, lookup, transition and confirmation errors', async () => {
@@ -1605,7 +1622,12 @@ describe('P0 deterministic mock server', () => {
       data: [{ reportId: 'RPT-001', classification: 'LEVEL_II' }, { reportId: 'RPT-BATCH-001', classification: 'LEVEL_III' }],
       meta: { total: 2 },
     })
-    await request(baseUrl).get('/api/v1/reports/RPT-001').set(operatorHeaders).expect(200)
+    const report = await request(baseUrl).get('/api/v1/reports/RPT-001').set(operatorHeaders).expect(200)
+    const reportBody = report.body as ApiSuccess<Report>
+    expect(reportBody.data.timeSeries).toMatchObject([
+      { linkId: 'L-MW-01', sourcePlatformId: 'UAV-01', targetPlatformId: 'GCC-01' },
+    ])
+    expect(reportBody.data.timeSeries?.[0].points).toHaveLength(3)
     await request(baseUrl).get('/api/v1/reports/RPT-BATCH-001').set(operatorHeaders).expect(200)
     await request(baseUrl).get('/api/v1/reports/RPT-MISSING').set(operatorHeaders).expect(404)
     await request(baseUrl).get('/api/v1/reports').set('Origin', ORIGIN).expect(403)
@@ -1678,5 +1700,96 @@ describe('P0 deterministic mock server', () => {
       .set(headers)
       .send({ reportId: 'RPT-MISSING', format: 'CSV' })
       .expect(404)
+  })
+
+  it('filters immutable audit records for ADMIN and rejects invalid roles and filters', async () => {
+    const { baseUrl } = await startServer()
+    const adminHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const records = await request(baseUrl).get('/api/v1/admin/audit').set(adminHeaders).expect(200)
+    expect(records.body).toMatchObject({
+      data: [{
+        auditId: 'AUD-001',
+        actor: 'admin',
+        role: 'ADMIN',
+        module: 'SCENARIO_CONFIGURATION',
+        result: 'SUCCESS',
+        immutableFixture: true,
+      }],
+      meta: { total: 1 },
+    })
+
+    const filtered = await request(baseUrl)
+      .get('/api/v1/admin/audit?actor=admin&role=ADMIN&module=SCENARIO_CONFIGURATION&result=SUCCESS&from=2026-08-06T08%3A00%3A00Z&to=2026-08-06T09%3A00%3A00Z')
+      .set(adminHeaders)
+      .expect(200)
+    expect((filtered.body as { data: unknown[] }).data).toHaveLength(1)
+    const empty = await request(baseUrl).get('/api/v1/admin/audit?module=REPORTING').set(adminHeaders).expect(200)
+    expect(empty.body).toMatchObject({ data: [], meta: { total: 0, pageSize: 1 } })
+
+    await request(baseUrl).get('/api/v1/admin/audit').set('Origin', ORIGIN).expect(403)
+    await request(baseUrl).get('/api/v1/admin/audit').set({ Origin: ORIGIN, 'X-Demo-Role': 'ROOT' }).expect(403)
+    await request(baseUrl).get('/api/v1/admin/audit').set({ Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }).expect(403)
+    await request(baseUrl).get('/api/v1/admin/audit?role=ROOT').set(adminHeaders).expect(400)
+    await request(baseUrl).get('/api/v1/admin/audit?from=invalid').set(adminHeaders).expect(400)
+    await request(baseUrl)
+      .get('/api/v1/admin/audit?from=2026-08-07T00%3A00%3A00Z&to=2026-08-06T00%3A00%3A00Z')
+      .set(adminHeaders)
+      .expect(400)
+  })
+
+  it('consumes AUDIT_EXPORT confirmation once and returns read-only classification evidence', async () => {
+    const { baseUrl } = await startServer()
+    const adminHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set(adminHeaders)
+      .send({ export: true })
+      .expect(428)
+    await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set({ Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' })
+      .send({ export: true })
+      .expect(403)
+    await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set({ Origin: ORIGIN, 'X-Demo-Role': 'ROOT' })
+      .send({ export: true })
+      .expect(403)
+    await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set(adminHeaders)
+      .send({ export: false })
+      .expect(400)
+
+    const created = await request(baseUrl)
+      .post('/api/v1/confirmations')
+      .set(adminHeaders)
+      .send({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' })
+      .expect(201)
+    const context = (created.body as { data: ConfirmationContext }).data
+    await request(baseUrl)
+      .post(`/api/v1/confirmations/${context.confirmationId}`)
+      .set(adminHeaders)
+      .send({ confirm: true })
+      .expect(200)
+    const exported = await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set(adminHeaders)
+      .send({ export: true, confirmationId: context.confirmationId, module: 'SCENARIO_CONFIGURATION' })
+      .expect(200)
+    expect(exported.body).toMatchObject({
+      data: {
+        objectId: 'AUDIT-LOG',
+        generated: false,
+        classification: 'INTERNAL',
+        watermark: '内部使用 · admin · AUDIT-LOG',
+        verifiedAt: '2026-08-06T08:00:00Z',
+      },
+    })
+    await request(baseUrl)
+      .post('/api/v1/admin/audit/export')
+      .set(adminHeaders)
+      .send({ export: true, confirmationId: context.confirmationId })
+      .expect(409)
   })
 })

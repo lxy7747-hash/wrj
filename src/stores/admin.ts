@@ -1,8 +1,26 @@
 import { defineStore } from 'pinia'
-import type { ApiFailure, CapabilityState, DeleteResult, Role, User, UserRoleCommand } from '../contracts/domain-models'
+import type {
+  ApiFailure,
+  AuditRecord,
+  AuditRequest,
+  CapabilityState,
+  ConfirmationContext,
+  DeleteResult,
+  ExportStatus,
+  PageMeta,
+  Role,
+  User,
+  UserRoleCommand,
+} from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
 const USER_KEYS = new Set(['userId', 'username', 'role', 'status', 'lastLoginAt'])
+const AUDIT_KEYS = new Set(['auditId', 'actor', 'role', 'module', 'action', 'objectId', 'result', 'occurredAt', 'immutableFixture'])
+const META_KEYS = new Set(['requestId', 'generatedAt', 'page', 'pageSize', 'total'])
+const CONFIRMATION_KEYS = new Set(['confirmationId', 'state', 'actor', 'role', 'createdAt', 'expiresAt'])
+const EXPORT_STATUS_KEYS = new Set(['objectId', 'generated', 'classification', 'watermark', 'verifiedAt'])
+
+export type AuditFilters = Omit<AuditRequest, 'export' | 'confirmationId'>
 
 /**
  * 创建首次刷新前展示的确定性用户初始投影。
@@ -26,6 +44,12 @@ class InvalidResponseError extends Error {
    */
   constructor() {
     super('用户数据格式不正确。')
+  }
+}
+
+class InvalidAuditResponseError extends Error {
+  constructor() {
+    super('审计日志响应格式不正确。')
   }
 }
 
@@ -165,12 +189,104 @@ function readDeleteResult(payload: unknown): DeleteResult | undefined {
     : undefined
 }
 
+function isPageMeta(value: unknown): value is PageMeta {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (Object.keys(value).some((key) => !META_KEYS.has(key)) || Object.keys(value).length !== META_KEYS.size) return false
+  const meta = value as Partial<PageMeta>
+  return typeof meta.requestId === 'string'
+    && meta.requestId.length > 0
+    && typeof meta.generatedAt === 'string'
+    && isRfc3339DateTime(meta.generatedAt)
+    && Number.isInteger(meta.page)
+    && (meta.page ?? 0) >= 1
+    && Number.isInteger(meta.pageSize)
+    && (meta.pageSize ?? 0) >= 1
+    && Number.isInteger(meta.total)
+    && (meta.total ?? -1) >= 0
+}
+
+function readStrictData(payload: unknown): unknown {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return undefined
+  if (Object.keys(payload).sort().join(',') !== 'data,meta,ok') return undefined
+  const envelope = payload as { ok?: unknown; data?: unknown; meta?: unknown }
+  return envelope.ok === true && isPageMeta(envelope.meta) ? envelope.data : undefined
+}
+
+export function isAuditRecord(value: unknown): value is AuditRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const keys = Object.keys(value)
+  if (keys.some((key) => !AUDIT_KEYS.has(key))) return false
+  const record = value as Partial<AuditRecord>
+  return typeof record.auditId === 'string'
+    && record.auditId.length > 0
+    && typeof record.actor === 'string'
+    && record.actor.length > 0
+    && (record.role === 'ADMIN' || record.role === 'OPERATOR')
+    && typeof record.module === 'string'
+    && record.module.length > 0
+    && typeof record.action === 'string'
+    && record.action.length > 0
+    && (record.objectId === undefined || (typeof record.objectId === 'string' && record.objectId.length > 0))
+    && (record.result === 'SUCCESS' || record.result === 'DENIED' || record.result === 'ERROR')
+    && typeof record.occurredAt === 'string'
+    && isRfc3339DateTime(record.occurredAt)
+    && record.immutableFixture === true
+}
+
+function readAuditRecords(payload: unknown): AuditRecord[] | undefined {
+  const data = readStrictData(payload)
+  return Array.isArray(data) && data.every(isAuditRecord) ? data : undefined
+}
+
+function readConfirmation(payload: unknown, state: ConfirmationContext['state']): ConfirmationContext | undefined {
+  const data = readStrictData(payload)
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  if (Object.keys(data).some((key) => !CONFIRMATION_KEYS.has(key)) || Object.keys(data).length !== CONFIRMATION_KEYS.size) return undefined
+  const context = data as Partial<ConfirmationContext>
+  return typeof context.confirmationId === 'string'
+    && context.confirmationId.length > 0
+    && context.state === state
+    && typeof context.actor === 'string'
+    && context.actor.length > 0
+    && context.role === 'ADMIN'
+    && typeof context.createdAt === 'string'
+    && isRfc3339DateTime(context.createdAt)
+    && typeof context.expiresAt === 'string'
+    && isRfc3339DateTime(context.expiresAt)
+    ? context as ConfirmationContext
+    : undefined
+}
+
+function readExportStatus(payload: unknown): ExportStatus | undefined {
+  const data = readStrictData(payload)
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  if (Object.keys(data).some((key) => !EXPORT_STATUS_KEYS.has(key)) || Object.keys(data).length !== EXPORT_STATUS_KEYS.size) return undefined
+  const status = data as Partial<ExportStatus>
+  return typeof status.objectId === 'string'
+    && status.objectId.length > 0
+    && status.generated === false
+    && (status.classification === 'INTERNAL' || status.classification === 'LEVEL_II' || status.classification === 'LEVEL_III')
+    && typeof status.watermark === 'string'
+    && typeof status.verifiedAt === 'string'
+    && isRfc3339DateTime(status.verifiedAt)
+    ? status as ExportStatus
+    : undefined
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
     users: initialUsers(),
     panelState: 'SUCCESS' as CapabilityState,
     resultCode: 'READY',
     resultMessage: '用户列表已就绪。',
+    auditRecords: [] as AuditRecord[],
+    auditFilters: {} as AuditFilters,
+    auditState: 'EMPTY' as CapabilityState,
+    auditResultCode: 'EMPTY',
+    auditResultMessage: '暂无审计记录。',
+    auditConfirmation: null as ConfirmationContext | null,
+    auditExportFilters: {} as AuditFilters,
+    auditExportStatus: null as ExportStatus | null,
   }),
 
   actions: {
@@ -308,6 +424,135 @@ export const useAdminStore = defineStore('admin', {
       return this.mutateUser(user, 'CREATE', user)
     },
 
+    /** Loads immutable audit records using the closed administrator filter contract. */
+    async loadAudit(filters: AuditFilters = {}): Promise<boolean> {
+      this.auditState = 'LOADING'
+      await Promise.resolve()
+      this.auditState = 'VALIDATING'
+      const query = new URLSearchParams()
+      for (const [key, value] of Object.entries(filters)) {
+        if (value !== undefined && value !== '') query.set(key, value)
+      }
+      try {
+        await Promise.resolve()
+        this.auditState = 'EXECUTING'
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/admin/audit${query.size === 0 ? '' : `?${query}`}`, {
+          headers: { 'X-Demo-Role': useAuthStore().role },
+        })
+        this.auditState = 'VALIDATING'
+        const payload: unknown = await response.json().catch(() => undefined)
+        if (!response.ok) throw readFailure(payload) ?? new InvalidAuditResponseError()
+        const records = readAuditRecords(payload)
+        if (records === undefined) throw new InvalidAuditResponseError()
+        this.auditRecords = records
+        this.auditFilters = { ...filters }
+        this.auditState = records.length === 0 ? 'EMPTY' : 'SUCCESS'
+        this.auditResultCode = 'SUCCESS'
+        this.auditResultMessage = records.length === 0 ? '没有符合条件的审计记录。' : `已加载 ${records.length} 条审计记录。`
+        return true
+      } catch (error) {
+        this.auditRecords = []
+        this.showAuditError(error, '审计日志加载失败。')
+        return false
+      }
+    },
+
+    /** Creates an AUDIT_EXPORT confirmation for the currently displayed filter values. */
+    async exportAudit(filters: AuditFilters = {}): Promise<boolean> {
+      this.auditState = 'EXECUTING'
+      this.auditConfirmation = null
+      this.auditExportFilters = { ...filters }
+      this.auditExportStatus = null
+      try {
+        const headers = { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role }
+        const createdResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' }),
+        })
+        this.auditState = 'VALIDATING'
+        const createdPayload: unknown = await createdResponse.json().catch(() => undefined)
+        if (!createdResponse.ok) throw readFailure(createdPayload) ?? new InvalidAuditResponseError()
+        const created = readConfirmation(createdPayload, 'AWAITING_CONFIRMATION')
+        if (created === undefined) throw new InvalidAuditResponseError()
+        this.auditConfirmation = created
+        this.auditState = 'SUCCESS'
+        this.auditResultCode = 'CONFIRMATION_REQUIRED'
+        this.auditResultMessage = '请确认当前筛选条件后导出审计日志。'
+        return true
+      } catch (error) {
+        this.auditConfirmation = null
+        this.auditExportFilters = {}
+        this.showAuditError(error, '审计日志导出申请失败。')
+        return false
+      }
+    },
+
+    /** Confirms the pending AUDIT_EXPORT request and consumes it exactly once. */
+    async confirmAuditExport(): Promise<boolean> {
+      const created = this.auditConfirmation
+      if (created === null || created.state !== 'AWAITING_CONFIRMATION') return false
+      this.auditState = 'EXECUTING'
+      try {
+        const headers = { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role }
+        const confirmedResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(created.confirmationId)}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ confirm: true }),
+        })
+        this.auditState = 'VALIDATING'
+        const confirmedPayload: unknown = await confirmedResponse.json().catch(() => undefined)
+        if (!confirmedResponse.ok) throw readFailure(confirmedPayload) ?? new InvalidAuditResponseError()
+        const confirmed = readConfirmation(confirmedPayload, 'CONFIRMED')
+        if (confirmed === undefined) throw new InvalidAuditResponseError()
+        this.auditConfirmation = confirmed
+
+        this.auditState = 'EXECUTING'
+        const exportResponse = await fetch(`${resolveMockOrigin()}/api/v1/admin/audit/export`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ ...this.auditExportFilters, export: true, confirmationId: confirmed.confirmationId }),
+        })
+        this.auditState = 'VALIDATING'
+        const exportPayload: unknown = await exportResponse.json().catch(() => undefined)
+        if (!exportResponse.ok) throw readFailure(exportPayload) ?? new InvalidAuditResponseError()
+        const status = readExportStatus(exportPayload)
+        if (status === undefined || status.objectId !== 'AUDIT-LOG') throw new InvalidAuditResponseError()
+        this.auditExportStatus = status
+        this.auditConfirmation = null
+        this.auditExportFilters = {}
+        this.auditState = 'SUCCESS'
+        this.auditResultCode = 'SUCCESS'
+        this.auditResultMessage = '审计日志导出验证通过，未生成文件。'
+        return true
+      } catch (error) {
+        this.auditConfirmation = null
+        this.auditExportFilters = {}
+        this.auditExportStatus = null
+        this.showAuditError(error, '审计日志导出失败。')
+        return false
+      }
+    },
+
+    /** Cancels a pending audit export without consuming its confirmation context. */
+    cancelAuditExport(): void {
+      this.auditConfirmation = null
+      this.auditExportFilters = {}
+      this.auditState = this.auditRecords.length === 0 ? 'EMPTY' : 'SUCCESS'
+      this.auditResultCode = 'CANCELLED'
+      this.auditResultMessage = '已取消审计日志导出。'
+    },
+
+    /** Converts audit request or contract failures into a stable safe error projection. */
+    showAuditError(error: unknown, fallback: string): void {
+      const failure = error as ApiFailure
+      this.auditState = 'ERROR'
+      this.auditResultCode = error instanceof InvalidAuditResponseError
+        ? 'INVALID_RESPONSE'
+        : failure.error?.code ?? 'NETWORK_ERROR'
+      this.auditResultMessage = failure.error?.message ?? (error instanceof Error ? error.message : fallback)
+    },
+
     /**
      * 清空用户列表并恢复安全的空状态。
      * @returns 无返回值。
@@ -318,6 +563,13 @@ export const useAdminStore = defineStore('admin', {
       this.panelState = 'EMPTY'
       this.resultCode = 'EMPTY'
       this.resultMessage = '用户列表已清空。'
+      this.auditRecords = []
+      this.auditState = 'EMPTY'
+      this.auditResultCode = 'EMPTY'
+      this.auditResultMessage = '暂无审计记录。'
+      this.auditConfirmation = null
+      this.auditExportFilters = {}
+      this.auditExportStatus = null
     },
   },
 })

@@ -121,7 +121,12 @@ async function logout(): Promise<void> {
             <el-menu router :default-active="$route.fullPath">
               <el-menu-item-group title="模型与参数">
                 <el-menu-item index="model-parameters" disabled>底层模型参数</el-menu-item>
-                <el-menu-item index="equipment-library" disabled>装备参数库</el-menu-item>
+                <el-menu-item
+                  index="/admin?section=equipment-library"
+                  :disabled="auth.principal?.role !== 'ADMIN'"
+                >
+                  装备参数库
+                </el-menu-item>
                 <el-menu-item index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group title="账号与维护">

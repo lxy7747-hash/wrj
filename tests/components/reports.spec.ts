@@ -39,7 +39,7 @@ describe('P3 报表内容', () => {
     expect(wrapper.text()).toContain('2026-08-06T10:06:30Z')
     expect(wrapper.text()).toContain('单位：dB')
     expect(wrapper.findAll('.el-tabs__item').map((tab) => tab.text())).toEqual([
-      '汇总', '分链路', '干扰影响', '切换事件', '批量对比',
+      '汇总', '分链路', '干扰影响', '切换事件', '批量对比', '时序曲线',
     ])
 
     await wrapper.findAll('.el-tabs__item')[1]!.trigger('click')
@@ -55,6 +55,13 @@ describe('P3 报表内容', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('当前为单次仿真报告，无批量参数组合')
     expect(wrapper.text()).not.toContain('RUN-B01')
+    await wrapper.findAll('.el-tabs__item')[5]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="report-time-series"]')).toHaveLength(1)
+    expect(wrapper.findAll('[data-testid="report-time-series"] polyline')).toHaveLength(3)
+    expect(wrapper.findAll('[data-testid="report-time-series-table"] .el-table__row')).toHaveLength(3)
+    expect(wrapper.text()).toContain('L-MW-01 · UAV-01 → GCC-01')
+    expect(wrapper.text()).toContain('3.2e-7')
   })
 
   it('批量报告只使用 12 次批量运行生成聚合和对比数据', async () => {
@@ -76,6 +83,27 @@ describe('P3 报表内容', () => {
     expect(wrapper.findAll('[data-testid="batch-report-table"] .el-table__row')).toHaveLength(12)
     expect(wrapper.text()).toContain('RUN-B01')
     expect(wrapper.text()).not.toContain('RUN-001 · T+0')
+    await wrapper.findAll('.el-tabs__item')[5]!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('当前报告没有时序曲线数据')
+  })
+
+  it('按不等间隔采样时刻定位曲线横坐标', async () => {
+    const report = structuredClone(fixtureSource.report) as Report
+    if (report.timeSeries === undefined) throw new Error('测试报告缺少时序点')
+    report.timeSeries[0]!.points[0]!.time = 0
+    report.timeSeries[0]!.points[1]!.time = 10
+    report.timeSeries[0]!.points[2]!.time = 40
+    const wrapper = mount(ReportTabs, {
+      attachTo: document.body,
+      props: { report },
+      global: { plugins: [ElementPlus] },
+    })
+
+    await wrapper.findAll('.el-tabs__item')[5]!.trigger('click')
+    await flushPromises()
+    const points = wrapper.get('[data-testid="report-time-series"] polyline').attributes('points') ?? ''
+    expect(points.split(' ').map((point) => Number(point.split(',')[0]))).toEqual([4, 27, 96])
   })
 
   it('报告页面加载来源、验证二级导出并展示空态和错误态', async () => {
@@ -93,7 +121,7 @@ describe('P3 报表内容', () => {
     const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.get('#reports-title').text()).toBe('报告分析')
+    expect(wrapper.attributes('aria-label')).toBe('报告分析')
     expect(wrapper.get('[data-testid="report-tabs"]').attributes('data-report-id')).toBe('RPT-001')
     await wrapper.get('[data-testid="report-export"]').trigger('click')
     await flushPromises()

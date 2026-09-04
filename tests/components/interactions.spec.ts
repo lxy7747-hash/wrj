@@ -34,7 +34,7 @@ describe('P4-1 ESM 传感器与侦测', () => {
     setActivePinia(createPinia())
   })
 
-  it('展示配置、侦测事件和六态反馈', async () => {
+  it('展示配置、侦测事件和固定证据五态反馈', async () => {
     const scenarioStore = useScenarioStore()
     const telemetryStore = useTelemetryStore()
     scenarioStore.$patch({ draft: structuredClone(scenarioDraft), panelState: 'SUCCESS' })
@@ -53,7 +53,7 @@ describe('P4-1 ESM 传感器与侦测', () => {
     expect(wrapper.text()).toContain('42 s')
 
     for (const [state, label] of [
-      ['LOADING', '加载中'], ['VALIDATING', '校验中'], ['EXECUTING', '扫描中'],
+      ['LOADING', '加载中'], ['VALIDATING', '校验中'],
     ] as const) {
       telemetryStore.capabilityState = state
       await nextTick()
@@ -76,6 +76,32 @@ describe('P4-1 ESM 传感器与侦测', () => {
     })
     await nextTick()
     expect(wrapper.text()).toContain('重复侦测事件已忽略')
+  })
+
+  it('通过实时入口追加同传感器事件并展示最新侦测', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    scenarioStore.$patch({ draft: structuredClone(scenarioDraft), panelState: 'SUCCESS' })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : frame),
+    )))
+    await expect(telemetryStore.loadFrame()).resolves.toBe(true)
+    const latest = {
+      ...structuredClone(events[0] as DetectionEvent),
+      eventId: 'DET-NEW',
+      dedupeKey: 'DET-NEW',
+    }
+    const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+
+    expect(telemetryStore.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: latest,
+    })).toBe(true)
+    await nextTick()
+
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已检出')
+    expect(wrapper.text()).toContain('DET-NEW')
+    expect(wrapper.text()).not.toContain('存在重复侦测事件')
   })
 })
 

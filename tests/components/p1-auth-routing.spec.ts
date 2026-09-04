@@ -523,7 +523,7 @@ describe('P1 authentication and routing', () => {
     const { wrapper } = await mountAt(AdminPage, '/admin')
     await flushPromises()
 
-    expect(wrapper.text()).toContain('用户与角色管理')
+    expect(wrapper.get('[aria-label="账号管理"]').attributes('aria-label')).toBe('账号管理')
     expect(wrapper.get('[data-testid="create-user"]').text()).toBe('创建用户')
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('管理员（ADMIN）')
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('启用（ACTIVE）')

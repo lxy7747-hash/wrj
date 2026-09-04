@@ -20,7 +20,7 @@ const hostPlatform = computed(() => (
 const detections = computed(() => telemetryStore.events.filter(
   (event): event is DetectionEvent => event.type === 'DETECTION' && event.sensorId === SENSOR_ID,
 ))
-const detection = computed(() => detections.value[0] ?? null)
+const detection = computed(() => detections.value.at(-1) ?? null)
 const targetPlatform = computed(() => (
   telemetryStore.frame?.platforms.find((item) => item.platformId === detection.value?.targetPlatformId) ?? null
 ))
@@ -32,7 +32,6 @@ const evidenceIssue = computed(() => {
   if (currentSensor === null || extension === null || frame === null) return null
   if (currentSensor.frequencyRange.min >= currentSensor.frequencyRange.max) return 'ESM 频率范围无效'
   if (currentSensor.detectionRange <= 0) return 'ESM 探测距离无效'
-  if (detections.value.length > 1) return '存在重复侦测事件'
   if (detection.value !== null && !extension.enabled) return '停用的 ESM 传感器不能发布侦测事件'
   if (detection.value !== null && targetPlatform.value === null) return '侦测目标不存在'
   if (detection.value !== null
@@ -42,10 +41,12 @@ const evidenceIssue = computed(() => {
   return null
 })
 
-const displayState = computed<CapabilityState>(() => {
+type FixedEvidenceState = Exclude<CapabilityState, 'EXECUTING'>
+
+const displayState = computed<FixedEvidenceState>(() => {
   if (scenarioStore.panelState === 'LOADING' || telemetryStore.capabilityState === 'LOADING') return 'LOADING'
   if (scenarioStore.panelState === 'VALIDATING' || telemetryStore.capabilityState === 'VALIDATING') return 'VALIDATING'
-  if (scenarioStore.panelState === 'EXECUTING' || telemetryStore.capabilityState === 'EXECUTING') return 'EXECUTING'
+  if (scenarioStore.panelState === 'EXECUTING' || telemetryStore.capabilityState === 'EXECUTING') return 'LOADING'
   if (scenarioStore.panelState === 'ERROR' || telemetryStore.capabilityState === 'ERROR') return 'ERROR'
   if (evidenceIssue.value !== null) return 'ERROR'
   if (sensor.value === null || sensorExtension.value === null || telemetryStore.frame === null) return 'EMPTY'
@@ -54,12 +55,12 @@ const displayState = computed<CapabilityState>(() => {
 })
 
 const stateLabel = computed(() => ({
-  LOADING: '加载中', VALIDATING: '校验中', EXECUTING: '扫描中',
+  LOADING: '加载中', VALIDATING: '校验中',
   SUCCESS: '已检出', EMPTY: '未检出', ERROR: '数据错误',
 })[displayState.value])
 
 const stateType = computed(() => ({
-  LOADING: 'info', VALIDATING: 'warning', EXECUTING: 'warning',
+  LOADING: 'info', VALIDATING: 'warning',
   SUCCESS: 'success', EMPTY: 'info', ERROR: 'danger',
 } as const)[displayState.value])
 
@@ -113,7 +114,6 @@ onBeforeUnmount(() => {
 
     <el-skeleton v-if="displayState === 'LOADING'" :rows="4" animated />
     <el-alert v-else-if="displayState === 'VALIDATING'" type="warning" :closable="false" show-icon title="正在校验传感器配置和同帧侦测事件" />
-    <el-alert v-else-if="displayState === 'EXECUTING'" type="warning" :closable="false" show-icon title="ESM 传感器正在扫描" />
     <el-result v-else-if="displayState === 'ERROR'" icon="error" title="ESM 侦测数据不可用" :sub-title="errorMessage">
       <template #extra><el-button type="primary" @click="reload">重新加载</el-button></template>
     </el-result>

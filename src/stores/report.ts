@@ -30,12 +30,35 @@ function isReportKpis(value: unknown): boolean {
       && Number.isFinite((value as Record<string, number>)[key]))
 }
 
+/** 校验单条正式报告时序曲线及严格递增的仿真时刻。 */
+function isReportTimeSeries(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const series = value as Record<string, unknown>
+  if (Object.keys(series).length !== 4
+    || !['linkId', 'sourcePlatformId', 'targetPlatformId'].every(
+      (key) => typeof series[key] === 'string' && series[key].length > 0,
+    )
+    || !Array.isArray(series.points)
+    || series.points.length < 2) return false
+  return series.points.every((point, index) => {
+    if (typeof point !== 'object' || point === null || Array.isArray(point)) return false
+    const values = point as Record<string, unknown>
+    return Object.keys(values).length === 4
+      && ['time', 'snrDb', 'ber', 'interferencePowerDbm'].every(
+        (key) => typeof values[key] === 'number' && Number.isFinite(values[key]),
+      )
+      && Number(values.time) >= 0
+      && Number(values.ber) >= 0 && Number(values.ber) <= 1
+      && (index === 0 || Number(values.time) > Number((series.points as Array<Record<string, unknown>>)[index - 1]!.time))
+  })
+}
+
 /** 校验服务端返回的单次或批量聚合报告。 */
 export function isReport(value: unknown): value is Report {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const report = value as Partial<Report>
   const keys = Object.keys(value)
-  return keys.every((key) => ['reportId', 'runId', 'batchId', 'classification', 'generatedTime', 'status', 'kpis'].includes(key))
+  return keys.every((key) => ['reportId', 'runId', 'batchId', 'classification', 'generatedTime', 'status', 'kpis', 'timeSeries'].includes(key))
     && typeof report.reportId === 'string' && report.reportId.startsWith('RPT-')
     && (report.runId === undefined || (typeof report.runId === 'string' && report.runId.startsWith('RUN-')))
     && (report.batchId === undefined || (typeof report.batchId === 'string' && report.batchId.length > 0))
@@ -43,7 +66,10 @@ export function isReport(value: unknown): value is Report {
     && typeof report.generatedTime === 'string'
     && report.status === 'READY'
     && (report.kpis === undefined || isReportKpis(report.kpis))
+    && (report.timeSeries === undefined || (Array.isArray(report.timeSeries)
+      && report.timeSeries.length > 0 && report.timeSeries.every(isReportTimeSeries)))
     && ((report.runId !== undefined) !== (report.batchId !== undefined))
+    && (report.runId === undefined || report.timeSeries !== undefined)
 }
 
 /** 校验一次性确认上下文的关键字段。 */

@@ -35,13 +35,13 @@ describe('P3-3 同帧链路计算合同', () => {
     expect(wrapper.text()).toContain('浏览器仅校验和展示结果证据')
   })
 
-  it('覆盖六态并拒绝跨帧链路证据', async () => {
+  it('覆盖固定证据五态并拒绝跨帧链路证据', async () => {
     const telemetryStore = useTelemetryStore()
     telemetryStore.$patch({ frame: structuredClone(frame), capabilityState: 'SUCCESS' })
     const wrapper = mount(LinkCalculatorContractCard, { global: { plugins: [ElementPlus] } })
 
     const expected = {
-      LOADING: '加载中', VALIDATING: '校验中', EXECUTING: '计算中', EMPTY: '暂无数据', ERROR: '证据错误',
+      LOADING: '加载中', VALIDATING: '校验中', EMPTY: '暂无数据', ERROR: '证据错误',
     } as const
     for (const [state, label] of Object.entries(expected)) {
       telemetryStore.capabilityState = state as CapabilityState

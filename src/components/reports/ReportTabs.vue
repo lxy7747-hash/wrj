@@ -5,6 +5,7 @@ import type {
   DetectionEvent,
   Report,
   ReportKpis,
+  ReportTimeSeriesPoint,
   SwitchEvent,
   TelemetryFrame,
 } from '../../contracts/domain-models'
@@ -51,6 +52,23 @@ const kpis = computed<ReportKpis | null>(() => {
 const sourceRange = computed(() => isBatch.value
   ? `${props.report.batchId} · ${batchRuns.value.length} 次确定性运行`
   : `${props.report.runId} · T+0～7200 s`)
+
+type CurveMetric = 'snrDb' | 'ber' | 'interferencePowerDbm'
+const CURVE_METRICS: readonly CurveMetric[] = ['snrDb', 'ber', 'interferencePowerDbm']
+
+/** 将正式时序点按当前指标缩放为 SVG 折线坐标。 */
+function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): string {
+  const values = points.map((point) => point[metric])
+  const minimum = Math.min(...values)
+  const span = Math.max(Number.EPSILON, Math.max(...values) - minimum)
+  const startTime = points[0]?.time ?? 0
+  const timeSpan = Math.max(Number.EPSILON, (points.at(-1)?.time ?? startTime) - startTime)
+  return points.map((point) => {
+    const x = 4 + (point.time - startTime) / timeSpan * 92
+    const y = 92 - (point[metric] - minimum) / span * 84
+    return `${x.toFixed(2)},${y.toFixed(2)}`
+  }).join(' ')
+}
 </script>
 
 <template>
@@ -140,6 +158,31 @@ const sourceRange = computed(() => isBatch.value
         </el-table>
         <el-empty v-else description="当前为单次仿真报告，无批量参数组合" :image-size="72" />
       </el-tab-pane>
+
+      <el-tab-pane label="时序曲线" name="timeline">
+        <div v-if="report.timeSeries" class="report-series">
+          <article v-for="series in report.timeSeries" :key="series.linkId" data-testid="report-time-series">
+            <h4>{{ series.linkId }} · {{ series.sourcePlatformId }} → {{ series.targetPlatformId }}</h4>
+            <div class="report-curves">
+              <figure v-for="metric in CURVE_METRICS" :key="metric">
+                <figcaption>{{ metric === 'snrDb' ? 'SNR（dB）' : metric === 'ber' ? 'BER（比率）' : '干扰功率（dBm）' }}</figcaption>
+                <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" :aria-label="`${series.linkId} ${metric} 时序曲线`">
+                  <path d="M4 8 V92 H96" class="report-curve__axis" />
+                  <polyline :points="curvePoints(series.points, metric)" class="report-curve__line" />
+                </svg>
+                <small>{{ series.points[0]?.time }} s → {{ series.points.at(-1)?.time }} s</small>
+              </figure>
+            </div>
+            <el-table :data="series.points" size="small" stripe data-testid="report-time-series-table">
+              <el-table-column prop="time" label="仿真时刻（s）" />
+              <el-table-column prop="snrDb" label="SNR（dB）" />
+              <el-table-column label="BER（比率）"><template #default="scope">{{ formatBer(scope.row.ber) }}</template></el-table-column>
+              <el-table-column prop="interferencePowerDbm" label="干扰功率（dBm）" />
+            </el-table>
+          </article>
+        </div>
+        <el-empty v-else description="当前报告没有时序曲线数据" :image-size="72" />
+      </el-tab-pane>
     </el-tabs>
   </section>
 </template>
@@ -193,6 +236,54 @@ const sourceRange = computed(() => isBatch.value
   font-size: 1.4rem;
 }
 
+.report-series,
+.report-series article {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.report-series h4,
+.report-curves figure {
+  margin: 0;
+}
+
+.report-curves {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.report-curves figure {
+  padding: 0.75rem;
+  border: 1px solid var(--console-border);
+  border-radius: 7px;
+  background: rgba(11, 29, 45, 0.72);
+}
+
+.report-curves svg {
+  width: 100%;
+  height: 8rem;
+}
+
+.report-curve__axis {
+  fill: none;
+  stroke: var(--console-border);
+  stroke-width: 1;
+}
+
+.report-curve__line {
+  fill: none;
+  stroke: var(--console-cyan);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.report-curves figcaption,
+.report-curves small {
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
+}
+
 .report-tabs__body :deep(.el-tabs__item),
 .report-tabs__body :deep(.el-table),
 .report-tabs__body :deep(.el-descriptions) {
@@ -201,7 +292,8 @@ const sourceRange = computed(() => isBatch.value
 
 @media (max-width: 1000px) {
   .report-tabs__meta,
-  .report-kpis {
+  .report-kpis,
+  .report-curves {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

@@ -17,13 +17,14 @@ interface WorkspaceRoute {
   path: string
   navLabel: string
   title: string
+  titleRole?: 'heading' | 'region'
 }
 
 const SHARED_TOP_MENU_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
-  { path: '/scenarios', navLabel: '场景配置', title: '场景标识' },
+  { path: '/scenarios', navLabel: '场景配置', title: '场景配置', titleRole: 'region' },
   { path: '/batches', navLabel: '批量仿真', title: '批量仿真' },
-  { path: '/reports', navLabel: '报表中心', title: '报告分析' },
+  { path: '/reports', navLabel: '报表中心', title: '报告分析', titleRole: 'region' },
   { path: '/replays', navLabel: '历史回放', title: '历史回放' },
   { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图' },
 ]
@@ -31,7 +32,8 @@ const SHARED_TOP_MENU_ROUTES: readonly WorkspaceRoute[] = [
 const ADMIN_WORKSPACE_ROUTE: WorkspaceRoute = {
   path: '/admin',
   navLabel: '系统管理',
-  title: '用户与角色管理',
+  title: '账号管理',
+  titleRole: 'region',
 }
 
 const OPERATOR_SYSTEM_ROUTE: WorkspaceRoute = {
@@ -129,7 +131,7 @@ async function visitWorkspaceRouteFromNavigation(page: Page, route: WorkspaceRou
   await expect(page.locator('.app-shell')).toBeVisible()
   await expect(navigation).toBeVisible()
   await expect(page.getByTestId('identity-panel')).toBeVisible()
-  await expect(page.getByRole('heading', { name: route.title, exact: true })).toBeVisible()
+  await expect(page.getByRole(route.titleRole ?? 'heading', { name: route.title, exact: true })).toBeVisible()
   await expect(link).toHaveAttribute('aria-current', 'page')
 }
 
@@ -143,7 +145,7 @@ async function resetMock(request: APIRequestContext): Promise<void> {
 
 async function loadScenarioDraft(request: APIRequestContext): Promise<ScenarioDraft> {
   const response = await request.get(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
-    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR', Connection: 'close' },
+    headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
   })
   expect(response.status()).toBe(200)
   return ((await response.json()) as ApiSuccess<ScenarioDraft>).data
@@ -216,6 +218,56 @@ test('ADMIN can navigate every prototype top menu from the main navigation', asy
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('数据交换与接口')
   await expect(page.getByTestId('user-role-panel')).toBeVisible()
   await expect(page.getByTestId('role-permission-map')).toContainText('BUSINESS_READ')
+
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P7 ADMIN filters and confirms audit export while OPERATOR remains denied', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'admin')
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
+  await page.getByRole('menuitem', { name: '操作审计日志' }).click()
+  await page.waitForURL('**/admin?section=audit-logs')
+  await expect(page.getByRole('heading', { name: '操作审计日志' })).toBeVisible()
+  await expect(page.getByTestId('audit-table')).toContainText('THRESHOLD_UPDATE')
+
+  await page.getByRole('textbox', { name: '用户' }).fill('admin')
+  await page.getByRole('textbox', { name: '模块' }).fill('SCENARIO_CONFIGURATION')
+  const filteredResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url())
+    return response.request().method() === 'GET'
+      && url.pathname === '/api/v1/admin/audit'
+      && url.searchParams.get('actor') === 'admin'
+      && url.searchParams.get('module') === 'SCENARIO_CONFIGURATION'
+  })
+  await page.getByRole('button', { name: '查询' }).click()
+  expect((await filteredResponse).status()).toBe(200)
+  await expect(page.getByTestId('audit-table')).toContainText('SCENARIO_CONFIGURATION')
+
+  const confirmationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/confirmations')
+  await page.getByRole('button', { name: '确认并验证导出' }).click()
+  expect((await confirmationCreated).status()).toBe(201)
+  await expect(page.getByRole('dialog', { name: '确认导出审计日志' })).toBeVisible()
+
+  const confirmationAccepted = page.waitForResponse((response) => response.request().method() === 'POST'
+    && /^\/api\/v1\/confirmations\/[^/]+$/.test(new URL(response.url()).pathname))
+  const exported = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/admin/audit/export')
+  await page.getByTestId('confirm-audit-export').click()
+  expect((await confirmationAccepted).status()).toBe(200)
+  expect((await exported).status()).toBe(200)
+  await expect(page.getByTestId('audit-export-status')).toContainText('INTERNAL')
+  await expect(page.getByTestId('audit-export-status')).toContainText('内部使用 · admin · AUDIT-LOG')
+  await expect(page.getByTestId('audit-export-status')).toContainText('2026-08-06T08:00:00Z')
+
+  await page.getByTestId('logout').click()
+  await loginAs(page, 'operator')
+  await page.goto('/admin?section=audit-logs')
+  await page.waitForURL('**/blueprint')
+  await expect(page.getByTestId('route-denial')).toContainText('PERMISSION_DENIED')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
@@ -452,9 +504,12 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   const reportList = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports')
   await page.getByRole('link', { name: '报表中心', exact: true }).click()
   expect((await reportList).status()).toBe(200)
-  await expect(page.getByRole('heading', { name: '报告分析', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '报告分析', exact: true })).toBeVisible()
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
   await expect(page.getByTestId('report-tabs')).toContainText('RUN-001 · T+0～7200 s')
+  await page.getByRole('tab', { name: '时序曲线', exact: true }).click()
+  await expect(page.getByRole('img', { name: 'L-MW-01 snrDb 时序曲线', exact: true })).toBeVisible()
+  await expect(page.getByTestId('report-time-series-table').locator('.el-table__row')).toHaveCount(3)
 
   const batchLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001')
   await page.getByTestId('report-source').click()
@@ -463,7 +518,7 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
   await expect(page.getByTestId('report-tabs')).toContainText('BATCH-001 · 12 次确定性运行')
   await page.getByTestId('report-export').click()
-  await expect(page.locator('.reports-page__status')).toContainText('当前账号没有三级批量报告导出权限。')
+  await expect(page.getByText('当前账号没有三级批量报告导出权限。', { exact: true })).toBeVisible()
 
   const ordinaryLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-001')
   await page.getByTestId('report-source').click()

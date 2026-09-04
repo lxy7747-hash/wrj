@@ -113,6 +113,19 @@ function inferredRole(username: string): Role {
   return username === 'admin' ? 'ADMIN' : 'OPERATOR'
 }
 
+/** Maps audited actions to the stable module used by filtering and export. */
+function moduleForAction(action: string): string {
+  if (action.startsWith('AUTH_')) return 'AUTHENTICATION'
+  if (action.startsWith('USER_')) return 'USER_MANAGEMENT'
+  if (action.startsWith('TEMPLATE_') || action.startsWith('SCENARIO_')) return 'SCENARIO_CONFIGURATION'
+  if (action.startsWith('SIMULATION_')) return 'SIMULATION_CONTROL'
+  if (action.startsWith('SCRIPT_')) return 'SCRIPT_GENERATION'
+  if (action.startsWith('REPORT_')) return 'REPORTING'
+  if (action.startsWith('AUDIT_')) return 'AUDIT'
+  if (action.startsWith('CONFIRMATION_')) return 'CONFIRMATION'
+  return 'SYSTEM'
+}
+
 export class AuthProjection {
   private runtimeState = createRuntimeState()
 
@@ -398,6 +411,7 @@ export class AuthProjection {
       auditId,
       actor,
       role,
+      module: moduleForAction(action),
       action,
       ...(objectId === undefined ? {} : { objectId }),
       result,

@@ -68,9 +68,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'action': {
+        'minLength': 1,
         'type': 'string'
       },
       'actor': {
+        'minLength': 1,
         'type': 'string'
       },
       'confirmationId': {
@@ -82,6 +84,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'from': {
         'format': 'date-time',
+        'type': 'string'
+      },
+      'module': {
+        'minLength': 1,
         'type': 'string'
       },
       'result': {
@@ -120,9 +126,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'action': {
+        'minLength': 1,
         'type': 'string'
       },
       'actor': {
+        'minLength': 1,
         'type': 'string'
       },
       'auditId': {
@@ -131,6 +139,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'immutableFixture': {
         'const': true
+      },
+      'module': {
+        'minLength': 1,
+        'type': 'string'
       },
       'objectId': {
         'minLength': 1,
@@ -159,6 +171,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'auditId',
       'actor',
       'role',
+      'module',
       'action',
       'result',
       'occurredAt',
@@ -170,9 +183,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'action': {
+        'minLength': 1,
         'type': 'string'
       },
       'actor': {
+        'minLength': 1,
         'type': 'string'
       },
       'confirmationId': {
@@ -184,6 +199,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'from': {
         'format': 'date-time',
+        'type': 'string'
+      },
+      'module': {
+        'minLength': 1,
         'type': 'string'
       },
       'result': {
@@ -551,9 +570,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'properties': {
             'id': {
               'enum': [
+                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS',
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX',
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER',
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT',
+                'DSDWRJQTLJS-XQ-GRYGZ-ESMGL',
                 'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
               ]
             }
@@ -698,6 +719,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'actor': {
+        'minLength': 1,
         'type': 'string'
       },
       'confirmationId': {
@@ -3764,6 +3786,20 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'Report': {
     'additionalProperties': false,
+    'allOf': [
+      {
+        'if': {
+          'required': [
+            'runId'
+          ]
+        },
+        'then': {
+          'required': [
+            'timeSeries'
+          ]
+        }
+      }
+    ],
     'properties': {
       'batchId': {
         'pattern': '^BATCH-',
@@ -3792,6 +3828,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'status': {
         'const': 'READY'
+      },
+      'timeSeries': {
+        'items': {
+          '$ref': '#/components/schemas/ReportTimeSeries'
+        },
+        'minItems': 1,
+        'type': 'array'
       }
     },
     'required': [
@@ -3911,6 +3954,64 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       '$ref': '#/components/schemas/Report'
     },
     'type': 'array'
+  },
+  'ReportTimeSeries': {
+    'additionalProperties': false,
+    'properties': {
+      'linkId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'points': {
+        'items': {
+          '$ref': '#/components/schemas/ReportTimeSeriesPoint'
+        },
+        'minItems': 2,
+        'type': 'array'
+      },
+      'sourcePlatformId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'targetPlatformId': {
+        'minLength': 1,
+        'type': 'string'
+      }
+    },
+    'required': [
+      'linkId',
+      'sourcePlatformId',
+      'targetPlatformId',
+      'points'
+    ],
+    'type': 'object'
+  },
+  'ReportTimeSeriesPoint': {
+    'additionalProperties': false,
+    'properties': {
+      'ber': {
+        'maximum': 1,
+        'minimum': 0,
+        'type': 'number'
+      },
+      'interferencePowerDbm': {
+        'type': 'number'
+      },
+      'snrDb': {
+        'type': 'number'
+      },
+      'time': {
+        'minimum': 0,
+        'type': 'number'
+      }
+    },
+    'required': [
+      'time',
+      'snrDb',
+      'ber',
+      'interferencePowerDbm'
+    ],
+    'type': 'object'
   },
   'ResetFixture': {
     'additionalProperties': false,
@@ -5095,6 +5196,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'ageMs': {
+        'maximum': 5000,
         'minimum': 0,
         'type': 'number'
       },

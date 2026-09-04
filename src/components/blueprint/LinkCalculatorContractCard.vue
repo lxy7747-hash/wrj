@@ -86,8 +86,12 @@ const contractIssues = computed(() => {
   return issues
 })
 
-const displayState = computed<CapabilityState>(() => {
-  if (telemetryStore.capabilityState !== 'SUCCESS') return telemetryStore.capabilityState
+type FixedEvidenceState = Exclude<CapabilityState, 'EXECUTING'>
+
+const displayState = computed<FixedEvidenceState>(() => {
+  if (telemetryStore.capabilityState !== 'SUCCESS') {
+    return telemetryStore.capabilityState === 'EXECUTING' ? 'LOADING' : telemetryStore.capabilityState
+  }
   if (link.value === null) return 'EMPTY'
   return contractIssues.value.length === 0 ? 'SUCCESS' : 'ERROR'
 })
@@ -95,7 +99,6 @@ const displayState = computed<CapabilityState>(() => {
 const stateLabel = computed(() => ({
   LOADING: '加载中',
   VALIDATING: '校验中',
-  EXECUTING: '计算中',
   SUCCESS: '同帧通过',
   EMPTY: '暂无数据',
   ERROR: '证据错误',
@@ -104,7 +107,6 @@ const stateLabel = computed(() => ({
 const stateType = computed(() => ({
   LOADING: 'info',
   VALIDATING: 'warning',
-  EXECUTING: 'primary',
   SUCCESS: 'success',
   EMPTY: 'info',
   ERROR: 'danger',
@@ -172,14 +174,6 @@ onBeforeUnmount(() => {
       :closable="false"
       show-icon
       title="正在校验帧号、仿真时刻和标准字段"
-    />
-
-    <el-alert
-      v-else-if="displayState === 'EXECUTING'"
-      type="info"
-      :closable="false"
-      show-icon
-      title="仿真计算模块正在形成链路指标"
     />
 
     <el-result v-else-if="displayState === 'ERROR'" icon="error" title="链路计算证据不可用" :sub-title="errorMessage">

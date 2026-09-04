@@ -73,14 +73,26 @@ describe('App shell', () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
-      const data = url.includes('/frames/')
+      const data = url.includes('/admin/audit')
+        ? fixtureSource.audit
+        : url.includes('/frames/')
         ? fixtureSource.frame
         : url.endsWith('/events')
           ? fixtureSource.events
           : []
       return Promise.resolve({
         ok: true,
-        json: vi.fn().mockResolvedValue({ ok: true, data }),
+        json: vi.fn().mockResolvedValue({
+          ok: true,
+          data,
+          meta: {
+            requestId: 'REQ-APP',
+            generatedAt: '2026-08-06T08:00:00Z',
+            page: 1,
+            pageSize: Array.isArray(data) ? Math.max(1, data.length) : 1,
+            total: Array.isArray(data) ? data.length : 1,
+          },
+        }),
       } as unknown as Response)
     })
     class SilentWebSocket {
@@ -237,11 +249,16 @@ describe('App shell', () => {
     expect(systemManagementNavigation.text()).toContain('数据交换与接口')
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 
+    await router.push('/admin?section=equipment-library')
+    await flushPromises()
+    expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('装备参数库')
+    expect(adminWrapper.get('[data-testid="equipment-library"]').text()).toBe('')
+
     await router.push('/admin?section=audit-logs')
     await flushPromises()
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('操作审计日志')
     expect(adminWrapper.get('#audit-logs-title').text()).toBe('操作审计日志')
-    expect(adminWrapper.get('.el-empty').text()).toContain('暂无审计日志')
+    expect(adminWrapper.get('.audit-log-card .el-table').text()).toContain('THRESHOLD_UPDATE')
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)

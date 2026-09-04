@@ -11,7 +11,7 @@ import type {
   WsConnectionState,
   WsTopic,
 } from '../contracts/domain-models'
-import { validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
+import { resolveLinkId, validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -24,6 +24,8 @@ const PLATFORM_TYPES = new Set([
   'AIRBORNE_MISSION_CLUSTER', 'COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION',
 ])
 const LINK_TYPES = new Set(['SAT', 'MICROWAVE', 'DATALINK', 'LASER'])
+const MAX_TELEMETRY_AGE_SECONDS = 5
+const MAX_TELEMETRY_AGE_MS = MAX_TELEMETRY_AGE_SECONDS * 1_000
 
 interface TelemetryRuntime {
   socket: WebSocket | null
@@ -53,6 +55,11 @@ function hasStrings(value: Record<string, unknown>, keys: readonly string[]): bo
   return keys.every((key) => typeof value[key] === 'string')
 }
 
+/** 校验对象的一组字段均为非空字符串。 */
+function hasNonEmptyStrings(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((key) => typeof value[key] === 'string' && value[key].length > 0)
+}
+
 /** 校验对象的一组字段均为有限数值。 */
 function hasFiniteNumbers(value: Record<string, unknown>, keys: readonly string[]): boolean {
   return keys.every((key) => typeof value[key] === 'number' && Number.isFinite(value[key]))
@@ -61,42 +68,67 @@ function hasFiniteNumbers(value: Record<string, unknown>, keys: readonly string[
 /** 校验平台内嵌的干扰设备遥测。 */
 function isJammerStatus(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['jammerId', 'platformId'])
-    && (value.targetPlatform === undefined || typeof value.targetPlatform === 'string')
+  const hasTarget = Object.prototype.hasOwnProperty.call(value, 'targetPlatform')
+  return Object.keys(value).length === (hasTarget ? 8 : 7)
+    && hasNonEmptyStrings(value, ['jammerId', 'platformId'])
+    && (!hasTarget || (typeof value.targetPlatform === 'string' && value.targetPlatform.length > 0))
     && hasFiniteNumbers(value, ['time', 'power', 'frequency', 'bandwidth'])
+    && Number(value.time) >= 0
+    && Number(value.power) >= 0
+    && Number(value.frequency) > 0
+    && Number(value.bandwidth) > 0
     && typeof value.active === 'boolean'
 }
 
 /** 校验态势页会读取的平台状态字段。 */
 function isPlatform(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['platformId', 'name'])
+  return Object.keys(value).length === 10
+    && hasNonEmptyStrings(value, ['platformId'])
+    && hasStrings(value, ['name'])
     && PLATFORM_TYPES.has(String(value.type))
     && hasFiniteNumbers(value, ['longitude', 'latitude', 'altitude', 'speed', 'updatedAt'])
     && Number(value.longitude) >= -180 && Number(value.longitude) <= 180
     && Number(value.latitude) >= -90 && Number(value.latitude) <= 90
-    && Array.isArray(value.linkIds) && value.linkIds.every((linkId) => typeof linkId === 'string')
+    && Number(value.altitude) >= 0
+    && Number(value.speed) >= 0
+    && Number(value.updatedAt) >= 0
+    && Array.isArray(value.linkIds)
+    && value.linkIds.every((linkId) => typeof linkId === 'string' && linkId.length > 0)
+    && new Set(value.linkIds).size === value.linkIds.length
     && Array.isArray(value.jammers) && value.jammers.every(isJammerStatus)
 }
 
 /** 校验态势页会读取的链路摘要字段。 */
 function isLinkSummary(value: unknown): value is LinkStatusSummary {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['linkKey', 'sourcePlatform', 'destPlatform'])
+  return Object.keys(value).length === 8
+    && hasNonEmptyStrings(value, ['linkKey', 'sourcePlatform', 'destPlatform'])
     && LINK_TYPES.has(String(value.linkType))
     && hasFiniteNumbers(value, ['currentSnr', 'currentBer', 'updatedAt'])
+    && Number(value.currentBer) >= 0 && Number(value.currentBer) <= 1
+    && Number(value.updatedAt) >= 0
     && (value.status === 'UP' || value.status === 'DOWN')
 }
 
 /** 校验链路详情面板会读取的完整遥测成员。 */
 function isTelemetryLink(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['linkId', 'sourcePlatform', 'destPlatform'])
+  return Object.keys(value).length === 22
+    && hasNonEmptyStrings(value, ['linkId', 'sourcePlatform', 'destPlatform'])
     && LINK_TYPES.has(String(value.linkType))
     && hasFiniteNumbers(value, [
       'time', 'frequency', 'bandwidth', 'distance', 'txPower', 'txAntennaGain', 'rxAntennaGain',
       'pathLoss', 'jammingPower', 'receivedPower', 'snr', 'ber', 'berThreshold', 'dataRate',
     ])
+    && Number(value.time) >= 0
+    && Number(value.frequency) > 0
+    && Number(value.bandwidth) > 0
+    && Number(value.distance) >= 0
+    && Number(value.txPower) >= 0
+    && Number(value.ber) >= 0 && Number(value.ber) <= 1
+    && Number(value.berThreshold) >= 0 && Number(value.berThreshold) <= 1
+    && Number(value.dataRate) >= 0
     && (value.modulation === 'BPSK' || value.modulation === 'QPSK')
     && value.coding === 'UNCODED'
     && value.qualityModelVersion === 'SNBER-1.2'
@@ -106,13 +138,16 @@ function isTelemetryLink(value: unknown): boolean {
 /** 校验界面链路状态投影成员。 */
 function isUiLink(value: unknown): value is TelemetryFrame['uiLinks'][number] {
   if (!isRecord(value)) return false
-  return hasStrings(value, ['linkId', 'frameId'])
+  return Object.keys(value).length === 8
+    && hasNonEmptyStrings(value, ['linkId'])
+    && typeof value.frameId === 'string' && value.frameId.startsWith('F-')
     && typeof value.reason === 'string' && value.reason.length > 0
     && value.thresholdVersion === 'LLZT-1.0'
     && (value.status === 'UP' || value.status === 'DEGRADED' || value.status === 'DOWN')
     && (value.canonicalStatus === 'UP' || value.canonicalStatus === 'DOWN')
     && Number.isInteger(value.consecutiveFrames) && Number(value.consecutiveFrames) >= 0
-    && typeof value.ageMs === 'number' && Number.isFinite(value.ageMs) && value.ageMs >= 0
+    && typeof value.ageMs === 'number' && Number.isFinite(value.ageMs)
+    && value.ageMs >= 0 && value.ageMs <= MAX_TELEMETRY_AGE_MS
 }
 
 /** 校验链路候选面板会读取的完整候选证据。 */
@@ -151,6 +186,18 @@ function isSynchronizationEvidence(value: unknown): boolean {
     && value.effectiveSimulationTime >= 0
 }
 
+/** 校验固定帧内的干扰执行证据。 */
+function isJammerExecutionEvidence(value: unknown): boolean {
+  if (!isRecord(value) || Object.keys(value).length !== 8) return false
+  return hasNonEmptyStrings(value, ['jammerId', 'targetPlatformId', 'reason'])
+    && hasFiniteNumbers(value, ['power', 'frequency', 'bandwidth', 'startTime', 'duration'])
+    && Number(value.power) >= 0
+    && Number(value.frequency) > 0
+    && Number(value.bandwidth) > 0
+    && Number(value.startTime) >= 0
+    && Number(value.duration) >= 0
+}
+
 /** 在其余帧字段尚未完成校验时读取可定位的候选快照问题。 */
 function candidateSnapshotIssue(value: Record<string, unknown>): CandidateSnapshotIssue | null {
   if (typeof value.frameId !== 'string'
@@ -179,11 +226,12 @@ function frameConsistencyIssue(value: Record<string, unknown>): CandidateSnapsho
           message: '节点坐标超出二维地图有效范围。',
         }
       }
-      if (typeof platform.updatedAt === 'number' && platform.updatedAt !== simulationTime) {
+      if (typeof platform.updatedAt === 'number'
+        && (platform.updatedAt > simulationTime || simulationTime - platform.updatedAt > MAX_TELEMETRY_AGE_SECONDS)) {
         return {
           code: 'STALE_FRAME_DATA',
           fieldPath: `platforms[${index}].updatedAt`,
-          message: '节点状态与当前仿真时刻不一致。',
+          message: '节点状态不在当前或最近 5 秒的数据窗口内。',
         }
       }
       if (Array.isArray(platform.jammers)) {
@@ -205,15 +253,33 @@ function frameConsistencyIssue(value: Record<string, unknown>): CandidateSnapsho
     }
   }
   if (Array.isArray(value.linkSummaries)) {
-    const index = value.linkSummaries.findIndex((link) => isRecord(link) && link.updatedAt !== simulationTime)
+    const index = value.linkSummaries.findIndex((link) => isRecord(link)
+      && typeof link.updatedAt === 'number'
+      && (link.updatedAt > simulationTime || simulationTime - link.updatedAt > MAX_TELEMETRY_AGE_SECONDS))
     if (index >= 0) {
-      return { code: 'STALE_FRAME_DATA', fieldPath: `linkSummaries[${index}].updatedAt`, message: '链路状态与当前仿真时刻不一致。' }
+      return { code: 'STALE_FRAME_DATA', fieldPath: `linkSummaries[${index}].updatedAt`, message: '链路状态不在当前或最近 5 秒的数据窗口内。' }
     }
   }
   if (Array.isArray(value.uiLinks)) {
-    const index = value.uiLinks.findIndex((link) => isRecord(link) && link.ageMs !== 0)
+    const index = value.uiLinks.findIndex((link) => isRecord(link)
+      && typeof link.ageMs === 'number' && (link.ageMs < 0 || link.ageMs > MAX_TELEMETRY_AGE_MS))
     if (index >= 0) {
-      return { code: 'STALE_FRAME_DATA', fieldPath: `uiLinks[${index}].ageMs`, message: '链路界面投影不是当前时刻的新鲜数据。' }
+      return { code: 'STALE_FRAME_DATA', fieldPath: `uiLinks[${index}].ageMs`, message: '链路界面投影不在当前或最近 5 秒的数据窗口内。' }
+    }
+    if (Array.isArray(value.linkSummaries) && Array.isArray(value.links)) {
+      const frame = value as unknown as TelemetryFrame
+      const linkSummaries = value.linkSummaries
+      const mismatchIndex = value.uiLinks.findIndex((link) => {
+        if (!isUiLink(link)) return false
+        const summary = linkSummaries.find((item) => (
+          isLinkSummary(item) && resolveLinkId(item, frame) === link.linkId
+        ))
+        return summary !== undefined
+          && Math.abs(link.ageMs - (simulationTime - summary.updatedAt) * 1_000) > 1e-6
+      })
+      if (mismatchIndex >= 0) {
+        return { code: 'LINK_AGE_MISMATCH', fieldPath: `uiLinks[${mismatchIndex}].ageMs`, message: '链路界面投影的数据年龄与链路摘要不一致。' }
+      }
     }
   }
   return null
@@ -222,21 +288,25 @@ function frameConsistencyIssue(value: Record<string, unknown>): CandidateSnapsho
 /** 校验 REST 或实时通道返回的完整遥测帧。 */
 export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
   if (!isRecord(value)) return false
-  const structurallyValid = typeof value.frameId === 'string'
-    && typeof value.taskId === 'string'
-    && typeof value.runId === 'string'
-    && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime)
+  const structurallyValid = Object.keys(value).length === 11
+    && typeof value.frameId === 'string' && value.frameId.startsWith('F-')
+    && typeof value.taskId === 'string' && value.taskId.startsWith('TASK-')
+    && typeof value.runId === 'string' && value.runId.startsWith('RUN-')
+    && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && value.simulationTime >= 0
     && Number.isSafeInteger(value.sequence) && Number(value.sequence) > 0
     && Array.isArray(value.platforms) && value.platforms.every(isPlatform)
     && Array.isArray(value.links) && value.links.every(isTelemetryLink)
     && Array.isArray(value.linkSummaries) && value.linkSummaries.every(isLinkSummary)
     && Array.isArray(value.uiLinks)
     && value.uiLinks.every((uiLink) => isUiLink(uiLink) && uiLink.frameId === value.frameId)
-    && Array.isArray(value.eventIds) && value.eventIds.every((eventId) => typeof eventId === 'string')
-    && isRecord(value.evidence)
+    && Array.isArray(value.eventIds)
+    && value.eventIds.every((eventId) => typeof eventId === 'string' && eventId.length > 0)
+    && new Set(value.eventIds).size === value.eventIds.length
+    && isRecord(value.evidence) && Object.keys(value.evidence).length === 4
     && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
     && isSynchronizationEvidence(value.evidence.synchronization)
+    && isJammerExecutionEvidence(value.evidence.jammerExecution)
   if (!structurallyValid) return false
 
   return frameConsistencyIssue(value) === null
@@ -246,22 +316,27 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
 function isSituationEvent(value: unknown): value is SituationEvent {
   if (!isRecord(value)) return false
+  const hasRegistryTime = Object.prototype.hasOwnProperty.call(value, 'sourceRegistryTime')
   const common = typeof value.eventId === 'string' && value.eventId.length > 0
-    && typeof value.frameId === 'string' && value.frameId.length > 0
+    && typeof value.frameId === 'string' && value.frameId.startsWith('F-')
     && typeof value.time === 'number' && Number.isFinite(value.time) && value.time >= 0
     && typeof value.dedupeKey === 'string' && value.dedupeKey.length > 0
+    && (!hasRegistryTime || (typeof value.sourceRegistryTime === 'number'
+      && Number.isFinite(value.sourceRegistryTime) && value.sourceRegistryTime >= 0))
   if (!common) return false
   if (value.type === 'DETECTION') {
-    return typeof value.sensorId === 'string' && value.sensorId.length > 0
+    return Object.keys(value).length === (hasRegistryTime ? 9 : 8)
+      && typeof value.sensorId === 'string' && value.sensorId.length > 0
       && typeof value.targetPlatformId === 'string' && value.targetPlatformId.length > 0
       && typeof value.detectionProbability === 'number'
       && Number.isFinite(value.detectionProbability)
       && value.detectionProbability >= 0
       && value.detectionProbability <= 1
   }
-  return value.type === 'LINK_SWITCH'
-    && typeof value.oldLinkId === 'string'
-    && typeof value.newLinkId === 'string'
+  return Object.keys(value).length === (hasRegistryTime ? 10 : 9)
+    && value.type === 'LINK_SWITCH'
+    && typeof value.oldLinkId === 'string' && value.oldLinkId.length > 0
+    && typeof value.newLinkId === 'string' && value.newLinkId.length > 0
     && (value.decision === 'ACCEPTED' || value.decision === 'REJECTED')
     && typeof value.reason === 'string'
 }
@@ -269,12 +344,14 @@ function isSituationEvent(value: unknown): value is SituationEvent {
 /** 校验实时规范仿真状态。 */
 function isSimulationState(value: unknown): value is SimulationState {
   if (!isRecord(value)) return false
-  return ['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'].includes(String(value.status))
-    && typeof value.currentTime === 'number' && value.currentTime >= 0
-    && typeof value.totalDuration === 'number' && value.totalDuration >= 0
+  const hasErrorMessage = Object.prototype.hasOwnProperty.call(value, 'errorMessage')
+  return Object.keys(value).length === (hasErrorMessage ? 6 : 5)
+    && ['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'].includes(String(value.status))
+    && typeof value.currentTime === 'number' && Number.isFinite(value.currentTime) && value.currentTime >= 0
+    && typeof value.totalDuration === 'number' && Number.isFinite(value.totalDuration) && value.totalDuration >= 0
     && (value.processId === null || (Number.isInteger(value.processId) && Number(value.processId) > 0))
-    && typeof value.progress === 'number' && value.progress >= 0 && value.progress <= 100
-    && (value.errorMessage === undefined || typeof value.errorMessage === 'string')
+    && typeof value.progress === 'number' && Number.isFinite(value.progress) && value.progress >= 0 && value.progress <= 100
+    && (!hasErrorMessage || typeof value.errorMessage === 'string')
 }
 
 class TelemetryFieldError extends Error {
@@ -471,6 +548,15 @@ export const useTelemetryStore = defineStore('telemetry', {
         || Number(value.sequence) <= 0) return false
 
       const envelope = value as unknown as RealtimeEnvelope<unknown>
+      if (envelope.topic === 'simulation.frame') {
+        if (!isTelemetryFrame(envelope.payload)
+          || envelope.taskId !== envelope.payload.taskId
+          || (this.frame !== null && envelope.taskId !== this.frame.taskId)) return false
+      } else if (envelope.topic === 'runtime.state') {
+        const currentTaskId = useSimulationStore().run?.taskId ?? this.frame?.taskId
+        if (currentTaskId === undefined || envelope.taskId !== currentTaskId) return false
+      } else if (this.frame === null || envelope.taskId !== this.frame.taskId) return false
+
       const previous = this.topicSequences[envelope.topic]
       if (envelope.sequence <= previous) return true
       if (previous > 0 && envelope.sequence > previous + 1) {
@@ -482,19 +568,31 @@ export const useTelemetryStore = defineStore('telemetry', {
       }
 
       if (envelope.topic === 'simulation.frame') {
-        const payload = envelope.payload
-        if (!isTelemetryFrame(payload)
-          || envelope.frameId !== payload.frameId
-          || envelope.simulationTime !== payload.simulationTime) return false
+        const payload = envelope.payload as TelemetryFrame
+        if (envelope.frameId !== payload.frameId || envelope.simulationTime !== payload.simulationTime) return false
         this.frame = structuredClone(payload)
         this.events = this.events.filter((event) => event.frameId === payload.frameId)
       } else if (envelope.topic === 'link.metric') {
-        if (this.frame === null
-          || envelope.frameId !== this.frame.frameId
-          || envelope.simulationTime !== this.frame.simulationTime
+        const frame = this.frame
+        if (frame === null
+          || envelope.frameId !== frame.frameId
+          || envelope.simulationTime !== frame.simulationTime
           || !Array.isArray(envelope.payload)
           || !envelope.payload.every(isLinkSummary)) return false
-        this.frame = { ...this.frame, linkSummaries: structuredClone(envelope.payload) }
+        const linkSummaries = envelope.payload
+        if (frameConsistencyIssue({ simulationTime: frame.simulationTime, linkSummaries }) !== null) return false
+        const uiLinks = frame.uiLinks.map((projection) => {
+          const summary = linkSummaries.find((item) => resolveLinkId(item, frame) === projection.linkId)
+          return summary === undefined
+            ? null
+            : { ...projection, ageMs: (frame.simulationTime - summary.updatedAt) * 1_000 }
+        })
+        if (uiLinks.some((projection) => projection === null)) return false
+        this.frame = {
+          ...frame,
+          linkSummaries: structuredClone(linkSummaries),
+          uiLinks: uiLinks as TelemetryFrame['uiLinks'],
+        }
       } else if (envelope.topic === 'runtime.state') {
         if (!isSimulationState(envelope.payload)) return false
         void this.applyRuntimeState(envelope.sequence, previous)
@@ -507,15 +605,17 @@ export const useTelemetryStore = defineStore('telemetry', {
           || envelope.simulationTime !== this.frame.simulationTime
           || payload.frameId !== this.frame.frameId
           || payload.time !== this.frame.simulationTime
-          || !this.frame.eventIds.includes(payload.eventId)
           || !this.frame.platforms.some((platform) => platform.platformId === payload.targetPlatformId)) return false
 
-        if (this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
+        if (this.frame.eventIds.includes(payload.eventId)
+          || this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
           this.resultCode = 'DUPLICATE_EVENT'
           this.resultMessage = '重复侦测事件已忽略。'
           this.resultFieldPath = 'dedupeKey'
         } else {
-          this.events = [...this.events, structuredClone(payload)]
+          const event = structuredClone(payload)
+          this.frame = { ...this.frame, eventIds: [...this.frame.eventIds, event.eventId] }
+          this.events = [...this.events, event]
           this.resultCode = 'SUCCESS'
           this.resultMessage = '侦测事件已接收。'
           this.resultFieldPath = null

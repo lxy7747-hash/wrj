@@ -1,8 +1,10 @@
 import { createServer, type Server as HttpServer } from 'node:http'
 import express, { type NextFunction, type Request, type Response } from 'express'
 import type {
+  AuditRequest,
   AuditRecord,
   ConfirmationAction,
+  ExportStatus,
   LoginRequest,
   PageMeta,
   PreflightRequest,
@@ -102,6 +104,27 @@ function isRfc3339DateTime(value: string): boolean {
   return day >= 1 && day <= daysInMonth(year, month)
 }
 
+/** Converts a validated RFC 3339 timestamp to a timezone-neutral sortable scalar. */
+function rfc3339Scalar(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[Tt](\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?([Zz]|([+-])(\d{2}):(\d{2}))$/.exec(value)
+  if (match === null) return Number.NaN
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const priorYear = year - 1
+  let days = priorYear * 365 + Math.floor(priorYear / 4) - Math.floor(priorYear / 100) + Math.floor(priorYear / 400)
+  for (let currentMonth = 1; currentMonth < month; currentMonth += 1) days += daysInMonth(year, currentMonth)
+  days += day - 1
+  const offset = match[8]?.toUpperCase() === 'Z'
+    ? 0
+    : (match[9] === '-' ? -1 : 1) * (Number(match[10]) * 60 + Number(match[11]))
+  return days * 86_400
+    + Number(match[4]) * 3_600
+    + (Number(match[5]) - offset) * 60
+    + Number(match[6])
+    + Number(`0.${match[7] ?? '0'}`)
+}
+
 /**
  * Builds deterministic pagination metadata for P1 HTTP envelopes.
  *
@@ -125,6 +148,11 @@ function pageMeta(requestId: string, total = 1, pageSize = 1): PageMeta {
 function readDemoRole(req: Request): Role | undefined {
   const value = req.get('X-Demo-Role')
   return value === 'ADMIN' || value === 'OPERATOR' ? value : undefined
+}
+
+/** Returns the deterministic principal name represented by a validated role hint. */
+function actorForRole(role: Role): 'admin' | 'operator' {
+  return role === 'ADMIN' ? 'admin' : 'operator'
 }
 
 /**
@@ -220,6 +248,53 @@ function isReportExportRequest(value: unknown, reportId: string): value is Repor
     && (value.format === 'HTML' || value.format === 'PDF' || value.format === 'CSV')
     && (value.confirmationId === undefined
       || (typeof value.confirmationId === 'string' && value.confirmationId.length > 0))
+}
+
+const AUDIT_RESULTS = new Set<AuditRecord['result']>(['SUCCESS', 'DENIED', 'ERROR'])
+
+/** Validates the shared audit filters and their closed field vocabulary. */
+function isAuditRequest(value: unknown, exportRequest = false): value is AuditRequest {
+  const optional = ['from', 'to', 'actor', 'role', 'module', 'action', 'result']
+  if (!isStrictObject(value, exportRequest ? ['export'] : [], exportRequest
+    ? [...optional, 'confirmationId']
+    : optional)) return false
+  const request = value as AuditRequest
+  if (exportRequest && request.export !== true) return false
+  if (request.from !== undefined && (typeof request.from !== 'string' || !isRfc3339DateTime(request.from))) return false
+  if (request.to !== undefined && (typeof request.to !== 'string' || !isRfc3339DateTime(request.to))) return false
+  if (request.from !== undefined && request.to !== undefined && rfc3339Scalar(request.from) > rfc3339Scalar(request.to)) return false
+  if (request.actor !== undefined && (typeof request.actor !== 'string' || request.actor.length === 0)) return false
+  if (request.role !== undefined && request.role !== 'ADMIN' && request.role !== 'OPERATOR') return false
+  if (request.module !== undefined && (typeof request.module !== 'string' || request.module.length === 0)) return false
+  if (request.action !== undefined && (typeof request.action !== 'string' || request.action.length === 0)) return false
+  if (request.result !== undefined && !AUDIT_RESULTS.has(request.result)) return false
+  return request.confirmationId === undefined
+    || (typeof request.confirmationId === 'string' && request.confirmationId.length > 0)
+}
+
+/** Projects a query string into the closed audit filter contract. */
+function auditRequestFromQuery(req: Request): AuditRequest | undefined {
+  const request: Record<string, unknown> = {}
+  for (const key of ['from', 'to', 'actor', 'role', 'module', 'action', 'result'] as const) {
+    if (req.query[key] !== undefined) request[key] = req.query[key]
+  }
+  return isAuditRequest(request) ? request : undefined
+}
+
+/** Applies the exact audit filters without mutating the append-only projection. */
+function filterAudit(records: AuditRecord[], filters: AuditRequest): AuditRecord[] {
+  const from = filters.from === undefined ? undefined : rfc3339Scalar(filters.from)
+  const to = filters.to === undefined ? undefined : rfc3339Scalar(filters.to)
+  return records.filter((record) => {
+    const occurredAt = rfc3339Scalar(record.occurredAt)
+    return (from === undefined || occurredAt >= from)
+      && (to === undefined || occurredAt <= to)
+      && (filters.actor === undefined || record.actor === filters.actor)
+      && (filters.role === undefined || record.role === filters.role)
+      && (filters.module === undefined || record.module === filters.module)
+      && (filters.action === undefined || record.action === filters.action)
+      && (filters.result === undefined || record.result === filters.result)
+  })
 }
 
 /**
@@ -565,9 +640,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   /** 创建单实例仿真运行并锁定场景配置。 */
   app.post('/api/v1/simulations', (req, res) => {
     const requestId = 'REQ-P3-SIMULATION-CREATE'
-    if (requireDemoRole(req, res, auth, 'SIMULATION_CREATE') === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_CREATE')
+    if (role === undefined) return
     const result = simulations.create(req.body)
-    if (sendSimulationFailure(res, result, requestId)) return
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_CREATE')
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_CREATE', result.data.runId)
     realtime.publishRuntimeState(result.data)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
@@ -613,11 +694,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
 
     const inspected = simulations.inspectCommand(runId, req.body)
-    if (sendSimulationFailure(res, inspected, requestId)) return
+    if (!inspected.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+      sendSimulationFailure(res, inspected, requestId)
+      return
+    }
     const command = inspected.data
     let stopConfirmed = false
     if (command.command === 'STOP') {
       if (command.confirmationId === undefined) {
+        auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
         res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
           requestId,
           generatedAt: P1_GENERATED_AT,
@@ -627,6 +713,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       const confirmed = confirmations.consume(command.confirmationId, 'SIMULATION_STOP', runId, role)
       if (!confirmed.ok) {
+        auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
         res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
           requestId,
           generatedAt: P1_GENERATED_AT,
@@ -638,7 +725,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     const result = simulations.command(runId, command, stopConfirmed)
-    if (sendSimulationFailure(res, result, requestId)) return
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
     realtime.publishRuntimeState(result.data)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
@@ -677,10 +769,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/scenarios/:scenarioId/validate', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-VALIDATE'
-    if (requireDemoRole(req, res, auth, 'SCENARIO_VALIDATE', scenarioId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_VALIDATE', scenarioId)
+    if (role === undefined) return
 
     const result = scenarios.validate(scenarioId, req.body)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_VALIDATE', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -689,6 +783,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_VALIDATE', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -702,10 +797,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.put('/api/v1/scenarios/:scenarioId', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-PUT'
-    if (requireDemoRole(req, res, auth, 'SCENARIO_UPDATE', scenarioId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_UPDATE', scenarioId)
+    if (role === undefined) return
 
     const result = scenarios.save(scenarioId, req.body)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_UPDATE', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -714,6 +811,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_UPDATE', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -721,9 +819,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/scenarios/:scenarioId/undo', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-UNDO'
-    if (requireDemoRole(req, res, auth, 'SCENARIO_UNDO', scenarioId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_UNDO', scenarioId)
+    if (role === undefined) return
     const result = scenarios.undo(scenarioId, req.body)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_UNDO', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -732,6 +832,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_UNDO', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -739,9 +840,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/scenarios/:scenarioId/reset', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-RESET'
-    if (requireDemoRole(req, res, auth, 'SCENARIO_RESET', scenarioId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_RESET', scenarioId)
+    if (role === undefined) return
     const result = scenarios.resetDraft(scenarioId, req.body)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_RESET', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -750,15 +853,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_RESET', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
   /** 原子校验并导入场景配置 1.0 快照，只替换临时工作场景。 */
   app.post('/api/v1/scenarios/import', (req, res) => {
     const requestId = 'REQ-P2-SCENARIO-IMPORT'
-    if (requireDemoRole(req, res, auth, 'SCENARIO_IMPORT') === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_IMPORT')
+    if (role === undefined) return
     const result = scenarios.importSnapshots(req.body)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_IMPORT')
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -767,6 +873,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_IMPORT')
     res.status(200).json(success(result.data, pageMeta(requestId, result.data.imported, result.data.imported)))
   })
 
@@ -904,22 +1011,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SCRIPT_PREVIEW')
     if (role === undefined) return
     if (!isScriptPreviewRequest(req.body)) {
+      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW')
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'request' }))
       return
     }
     const draft = scenarios.get(req.body.scenarioId)
     if (!draft.ok) {
+      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: draft.message, fieldPath: 'scenarioId' }))
       return
     }
     const validation = inspectScenarioConfig(draft.data.config).result
     if (validation.errors.length > 0) {
       const issue = validation.errors[0]!
+      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: issue.message, fieldPath: issue.fieldPath }))
       return
     }
     if (validation.warnings.length > 0) {
       if (req.body.warningConfirmationId === undefined) {
+        auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
         res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, { requestId, generatedAt: P1_GENERATED_AT, message: '场景存在校验警告，生成脚本前需要一次性确认。' }))
         return
       }
@@ -930,10 +1041,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         role,
       )
       if (!confirmation.ok) {
+        auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
         res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, { requestId, generatedAt: P1_GENERATED_AT, message: confirmation.message }))
         return
       }
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
     res.status(200).json(success(scripts.preview(draft.data), pageMeta(requestId)))
   })
 
@@ -941,13 +1054,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/scripts/:scriptId/preflight', (req, res) => {
     const scriptId = req.params.scriptId
     const requestId = 'REQ-P2-SCRIPT-PREFLIGHT'
-    if (requireDemoRole(req, res, auth, 'SCRIPT_PREFLIGHT', scriptId) === undefined) return
+    const role = requireDemoRole(req, res, auth, 'SCRIPT_PREFLIGHT', scriptId)
+    if (role === undefined) return
     if (!isPreflightRequest(req.body)) {
+      auth.recordError(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'checksum' }))
       return
     }
     const result = scripts.preflight(scriptId, req.body.checksum)
     if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -956,6 +1072,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    auth.recordSuccess(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1157,6 +1274,62 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_DELETE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** Returns the immutable audit projection after applying validated administrator filters. */
+  app.get('/api/v1/admin/audit', (req, res) => {
+    const requestId = 'REQ-P7-AUDIT-LIST'
+    if (!requireAdmin(req, res, auth, 'AUDIT_LIST')) return
+    const filters = auditRequestFromQuery(req)
+    if (filters === undefined) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        fieldPath: 'query',
+      }))
+      return
+    }
+    const records = filterAudit(auth.auditSnapshot(), filters)
+    res.status(200).json(success(records, pageMeta(requestId, records.length, Math.max(1, records.length))))
+  })
+
+  /** Validates a confirmed audit export and returns classification evidence without creating a file. */
+  app.post('/api/v1/admin/audit/export', (req, res) => {
+    const requestId = 'REQ-P7-AUDIT-EXPORT'
+    if (!requireAdmin(req, res, auth, 'AUDIT_EXPORT', 'AUDIT-LOG')) return
+    if (!isAuditRequest(req.body, true)) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        fieldPath: 'request',
+      }))
+      return
+    }
+    if (req.body.confirmationId === undefined) {
+      res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '导出操作审计日志前需要二次确认。',
+      }))
+      return
+    }
+    const confirmation = confirmations.consume(req.body.confirmationId, 'AUDIT_EXPORT', 'AUDIT-LOG', 'ADMIN')
+    if (!confirmation.ok) {
+      res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: confirmation.message,
+      }))
+      return
+    }
+    const result: ExportStatus = {
+      objectId: 'AUDIT-LOG',
+      generated: false,
+      classification: 'INTERNAL',
+      watermark: '内部使用 · admin · AUDIT-LOG',
+      verifiedAt: P1_GENERATED_AT,
+    }
+    res.status(200).json(success(result, pageMeta(requestId)))
   })
 
   /**

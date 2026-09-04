@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-03.5",
+  "fixtureVersion": "2026-09-04.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -68,6 +68,7 @@
       "auditId": "AUD-001",
       "actor": "admin",
       "role": "ADMIN",
+      "module": "SCENARIO_CONFIGURATION",
       "action": "THRESHOLD_UPDATE",
       "objectId": "MW-COMM",
       "result": "SUCCESS",
@@ -1105,7 +1106,34 @@
       "avgConnectivityDurationS": 5202,
       "minSnrDb": 4.2,
       "maxBer": 0.000038
-    }
+    },
+    "timeSeries": [
+      {
+        "linkId": "L-MW-01",
+        "sourcePlatformId": "UAV-01",
+        "targetPlatformId": "GCC-01",
+        "points": [
+          {
+            "time": 0,
+            "snrDb": 22.4,
+            "ber": 1.2e-8,
+            "interferencePowerDbm": -128
+          },
+          {
+            "time": 21,
+            "snrDb": 20.1,
+            "ber": 7.8e-8,
+            "interferencePowerDbm": -118
+          },
+          {
+            "time": 42,
+            "snrDb": 18.62,
+            "ber": 3.2e-7,
+            "interferencePowerDbm": -110
+          }
+        ]
+      }
+    ]
   },
   "archive": {
     "archiveId": "ARCH-001",
@@ -1573,7 +1601,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"
@@ -1630,7 +1657,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"

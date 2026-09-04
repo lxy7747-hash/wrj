@@ -35,13 +35,8 @@ async function confirmExport(): Promise<void> {
 </script>
 
 <template>
-  <section class="reports-page" aria-labelledby="reports-title">
+  <section class="reports-page" aria-label="报告分析">
     <header class="reports-page__header">
-      <div>
-        <span>评估报表可视化</span>
-        <h2 id="reports-title">报告分析</h2>
-        <p>查看单次仿真与批量聚合结果；导出操作仅验证权限和合同，不生成文件。</p>
-      </div>
       <div class="reports-page__actions">
         <el-select
           :model-value="selectedReport?.reportId ?? ''"
@@ -72,13 +67,6 @@ async function confirmExport(): Promise<void> {
         >验证导出</el-button>
       </div>
     </header>
-
-    <div class="reports-page__status" aria-live="polite">
-      <el-tag :type="capabilityState === 'ERROR' ? 'danger' : capabilityState === 'SUCCESS' ? 'success' : 'info'">
-        {{ capabilityState }}
-      </el-tag>
-      <span>{{ resultMessage }}</span>
-    </div>
 
     <main class="reports-page__content">
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
@@ -153,8 +141,7 @@ async function confirmExport(): Promise<void> {
   font-size: 12px;
 }
 
-.reports-page__actions,
-.reports-page__status {
+.reports-page__actions{
   display: flex;
   align-items: center;
   gap: 0.6rem;
@@ -166,12 +153,6 @@ async function confirmExport(): Promise<void> {
 
 .reports-page__actions :deep(.el-select:nth-child(2)) {
   width: 7rem;
-}
-
-.reports-page__status {
-  min-height: 2rem;
-  color: var(--console-text-muted);
-  font-size: 12px;
 }
 
 .reports-page__content {

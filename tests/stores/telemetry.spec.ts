@@ -123,7 +123,7 @@ describe('P3-2 遥测 Store', () => {
     invalidCoordinate.platforms[0]!.longitude = 181
     cases.push({ candidate: invalidCoordinate, code: 'COORDINATE_INVALID', path: 'platforms[0].longitude' })
     const stalePlatform = structuredClone(frame)
-    stalePlatform.platforms[0]!.updatedAt = 41
+    stalePlatform.platforms[0]!.updatedAt = 36
     cases.push({ candidate: stalePlatform, code: 'STALE_FRAME_DATA', path: 'platforms[0].updatedAt' })
     const staleJammer = structuredClone(frame)
     const jammerPlatformIndex = staleJammer.platforms.findIndex((platform) => platform.jammers.length > 0)
@@ -133,8 +133,11 @@ describe('P3-2 遥测 Store', () => {
     staleDetail.links[0]!.time = 41
     cases.push({ candidate: staleDetail, code: 'STALE_FRAME_DATA', path: 'links[0].time' })
     const staleProjection = structuredClone(frame)
-    staleProjection.uiLinks[0]!.ageMs = 1
+    staleProjection.uiLinks[0]!.ageMs = 5_001
     cases.push({ candidate: staleProjection, code: 'STALE_FRAME_DATA', path: 'uiLinks[0].ageMs' })
+    const inconsistentAge = structuredClone(frame)
+    inconsistentAge.linkSummaries[0]!.updatedAt = 37
+    cases.push({ candidate: inconsistentAge, code: 'LINK_AGE_MISMATCH', path: 'uiLinks[0].ageMs' })
 
     const store = useTelemetryStore()
     for (const item of cases) {
@@ -150,6 +153,24 @@ describe('P3-2 遥测 Store', () => {
         resultFieldPath: item.path,
       })
     }
+  })
+
+  it('通过正式加载入口接受当前、最近 1 秒和最近 5 秒数据', async () => {
+    const candidate = structuredClone(frame)
+    const oneSecondSummary = candidate.linkSummaries.find((summary) => summary.linkKey === 'L-SAT-05')
+    const oneSecondProjection = candidate.uiLinks.find((projection) => projection.linkId === 'L-SAT-05')
+    if (oneSecondSummary === undefined || oneSecondProjection === undefined) throw new Error('测试固定帧缺少 L-SAT-05')
+    candidate.platforms[0]!.updatedAt = 37
+    oneSecondSummary.updatedAt = 41
+    oneSecondProjection.ageMs = 1_000
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidate),
+    )))
+    const store = useTelemetryStore()
+
+    await expect(store.loadFrame()).resolves.toBe(true)
+    expect(store.frame?.platforms[0]?.updatedAt).toBe(37)
+    expect(store.frame?.uiLinks.find(({ linkId }) => linkId === 'L-SAT-05')?.ageMs).toBe(1_000)
   })
 
   it('固定证据五态与 T-XQ-013 声明一致', async () => {
@@ -352,27 +373,124 @@ describe('P3-2 遥测 Store', () => {
     })).toBe(false)
   })
 
-  it('接收同帧 ESM 侦测事件并按事件身份去重', () => {
+  it('按 0～5 秒窗口接收链路指标并同步界面投影数据年龄', () => {
     const store = useTelemetryStore()
-    const detection = structuredClone(fixtureSource.events[0]!)
     store.frame = structuredClone(frame)
+    const recent = structuredClone(frame.linkSummaries)
+    const target = recent.find((summary) => (
+      summary.sourcePlatform === 'UAV-01'
+      && summary.destPlatform === 'GCC-01'
+      && summary.linkType === 'MICROWAVE'
+    ))
+    if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 摘要')
+    target.updatedAt = 40
+
+    const envelope = {
+      type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: recent,
+    } as const
+    expect(store.acceptEnvelope(envelope)).toBe(true)
+    expect(store.frame?.uiLinks.find(({ linkId }) => linkId === 'L-MW-01')?.ageMs).toBe(2_000)
+
+    const acceptedFrame = JSON.parse(JSON.stringify(store.frame)) as TelemetryFrame
+    const future = structuredClone(recent)
+    future[0]!.updatedAt = 43
+    expect(store.acceptEnvelope({ ...envelope, sequence: 2, payload: future })).toBe(false)
+    const stale = structuredClone(recent)
+    stale[0]!.updatedAt = 36
+    expect(store.acceptEnvelope({ ...envelope, sequence: 2, payload: stale })).toBe(false)
+    expect(store.topicSequences['link.metric']).toBe(1)
+    expect(store.frame).toEqual(acceptedFrame)
+  })
+
+  it('从完整快照原子追加同帧 ESM 侦测事件并按事件身份去重', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : frame),
+    )))
+    const store = useTelemetryStore()
+    await expect(store.loadFrame()).resolves.toBe(true)
+    const detection = {
+      ...structuredClone(fixtureSource.events[0]!),
+      eventId: 'DET-NEW',
+      dedupeKey: 'DET-NEW',
+    }
 
     const envelope = {
       type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-001', sequence: 1,
       simulationTime: 42, frameId: 'F-00042', payload: detection,
     } as const
     expect(store.acceptEnvelope(envelope)).toBe(true)
-    expect(store.events).toEqual([detection])
+    expect(store.events).toHaveLength(3)
+    expect(store.events.at(-1)).toEqual(detection)
+    expect(store.frame?.eventIds).toContain('DET-NEW')
 
     expect(store.acceptEnvelope({ ...envelope, sequence: 2 })).toBe(true)
-    expect(store.events).toHaveLength(1)
+    expect(store.events).toHaveLength(3)
     expect(store).toMatchObject({ resultCode: 'DUPLICATE_EVENT', resultFieldPath: 'dedupeKey' })
 
     expect(store.acceptEnvelope({
       ...envelope,
       sequence: 3,
+      payload: { ...detection, eventId: 'DET-SAME-KEY' },
+    })).toBe(true)
+    expect(store.events).toHaveLength(3)
+
+    expect(store.acceptEnvelope({
+      ...envelope,
+      sequence: 4,
       payload: { ...detection, eventId: 'DET-OTHER', dedupeKey: 'DET-OTHER', targetPlatformId: 'UNKNOWN' },
     })).toBe(false)
+    expect(store.acceptEnvelope({
+      ...envelope,
+      sequence: 4,
+      frameId: 'F-OTHER',
+      payload: { ...detection, eventId: 'DET-OTHER', dedupeKey: 'DET-OTHER', frameId: 'F-OTHER' },
+    })).toBe(false)
+    expect(store.acceptEnvelope({
+      ...envelope,
+      sequence: 4,
+      simulationTime: 41,
+      payload: { ...detection, eventId: 'DET-OTHER', dedupeKey: 'DET-OTHER', time: 41 },
+    })).toBe(false)
+    expect(store.topicSequences['jammer.event']).toBe(3)
+    expect(store.events).toHaveLength(3)
+  })
+
+  it('拒绝四类实时主题的跨任务信封且不推进任何投影', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : frame),
+    )))
+    const store = useTelemetryStore()
+    const simulation = useSimulationStore()
+    await expect(store.loadFrame()).resolves.toBe(true)
+    simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
+    const detection = {
+      ...structuredClone(fixtureSource.events[0]!), eventId: 'DET-NEW', dedupeKey: 'DET-NEW',
+    }
+    const beforeTelemetry = JSON.parse(JSON.stringify(store.$state)) as typeof store.$state
+    const beforeSimulation = JSON.parse(JSON.stringify(simulation.$state)) as typeof simulation.$state
+    const envelopes = [
+      {
+        type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId: 'TASK-OTHER', sequence: 1,
+        simulationTime: 42, frameId: 'F-00042', payload: structuredClone(frame),
+      },
+      {
+        type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-OTHER', sequence: 1,
+        simulationTime: 42, frameId: 'F-00042', payload: structuredClone(frame.linkSummaries),
+      },
+      {
+        type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: 'TASK-OTHER', sequence: 1,
+        simulationTime: 42, payload: structuredClone(fixtureSource.run.canonical),
+      },
+      {
+        type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-OTHER', sequence: 1,
+        simulationTime: 42, frameId: 'F-00042', payload: detection,
+      },
+    ]
+
+    for (const envelope of envelopes) expect(store.acceptEnvelope(envelope)).toBe(false)
+    expect(store.$state).toEqual(beforeTelemetry)
+    expect(simulation.$state).toEqual(beforeSimulation)
   })
 
   it('运行状态重拉失败时显示错误、回退序号并触发完整重同步', async () => {
@@ -607,5 +725,29 @@ describe('P3-2 遥测 Store', () => {
     })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: {} })).toBe(false)
     expect(isTelemetryFrame(null)).toBe(false)
+  })
+
+  it.each([
+    ['零频率', (candidate: TelemetryFrame) => { candidate.links[0]!.frequency = 0 }],
+    ['零带宽', (candidate: TelemetryFrame) => { candidate.links[0]!.bandwidth = 0 }],
+    ['零干扰频率', (candidate: TelemetryFrame) => { candidate.platforms.find(({ jammers }) => jammers.length > 0)!.jammers[0]!.frequency = 0 }],
+    ['零干扰带宽', (candidate: TelemetryFrame) => { candidate.platforms.find(({ jammers }) => jammers.length > 0)!.jammers[0]!.bandwidth = 0 }],
+    ['负误码率', (candidate: TelemetryFrame) => { candidate.linkSummaries[0]!.currentBer = -0.1 }],
+    ['超界误码率', (candidate: TelemetryFrame) => { candidate.links[0]!.ber = 1.1 }],
+    ['负速度', (candidate: TelemetryFrame) => { candidate.platforms[0]!.speed = -1 }],
+    ['负功率', (candidate: TelemetryFrame) => { candidate.links[0]!.txPower = -1 }],
+    ['负时间', (candidate: TelemetryFrame) => { candidate.links[0]!.time = -1 }],
+    ['重复链路编号', (candidate: TelemetryFrame) => { candidate.platforms[0]!.linkIds[1] = candidate.platforms[0]!.linkIds[0]! }],
+    ['额外字段', (candidate: TelemetryFrame) => { Reflect.set(candidate.links[0]!, 'unexpected', true) }],
+  ])('通过正式加载入口拒绝%s', async (_label, mutate) => {
+    const candidate = structuredClone(frame)
+    mutate(candidate)
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidate),
+    )))
+    const store = useTelemetryStore()
+
+    await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({ frame: null, events: [], capabilityState: 'ERROR' })
   })
 })

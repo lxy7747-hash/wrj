@@ -6,6 +6,7 @@ import { useRoute } from 'vue-router'
 import type { ScenarioTemplate } from '../../contracts/domain-models'
 import AccountManagement from '../../components/admin/AccountManagement.vue'
 import AuditLog from '../../components/admin/AuditLog.vue'
+import EquipmentLibrary from '../../components/admin/EquipmentLibrary.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import { useScenarioStore } from '../../stores/scenario'
 
@@ -27,7 +28,13 @@ const route = useRoute()
 const templateMaintenanceVisible = computed(() => route.query.section === 'scenario-templates')
 
 /**
- * 判断当前是否显示操作审计日志空态页面。
+ * 判断当前是否显示装备参数库页面。
+ * @returns 路由查询参数选中装备参数库时返回 `true`。
+ */
+const equipmentLibraryVisible = computed(() => route.query.section === 'equipment-library')
+
+/**
+ * 判断当前是否显示操作审计日志页面。
  * @returns 路由查询参数选中操作审计日志时返回 `true`。
  */
 const auditLogsVisible = computed(() => route.query.section === 'audit-logs')
@@ -149,7 +156,11 @@ watch(templateMaintenanceVisible, (visible) => {
     />
   </section>
 
-  <section v-else-if="auditLogsVisible" class="page admin-page" aria-labelledby="audit-logs-title">
+  <section v-else-if="equipmentLibraryVisible" class="page admin-page">
+    <EquipmentLibrary />
+  </section>
+
+  <section v-else-if="auditLogsVisible" class="page admin-page" aria-label="操作审计日志">
     <AuditLog />
   </section>
 

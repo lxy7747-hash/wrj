@@ -2353,12 +2353,95 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1AdminAudit",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          {
+            "name": "actor",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "role",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ADMIN",
+                "OPERATOR"
+              ]
+            }
+          },
+          {
+            "name": "module",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "action",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          {
+            "name": "result",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "SUCCESS",
+                "DENIED",
+                "ERROR"
+              ]
+            }
           }
         ]
       }
@@ -2377,6 +2460,36 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminAuditExportResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -3849,7 +3962,8 @@
           },
           "ageMs": {
             "type": "number",
-            "minimum": 0
+            "minimum": 0,
+            "maximum": 5000
           }
         }
       },
@@ -4623,6 +4737,64 @@
         },
         "x-fixture-path": "$.batch"
       },
+      "ReportTimeSeriesPoint": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "time",
+          "snrDb",
+          "ber",
+          "interferencePowerDbm"
+        ],
+        "properties": {
+          "time": {
+            "type": "number",
+            "minimum": 0
+          },
+          "snrDb": {
+            "type": "number"
+          },
+          "ber": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "interferencePowerDbm": {
+            "type": "number"
+          }
+        }
+      },
+      "ReportTimeSeries": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "linkId",
+          "sourcePlatformId",
+          "targetPlatformId",
+          "points"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourcePlatformId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetPlatformId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "points": {
+            "type": "array",
+            "minItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/ReportTimeSeriesPoint"
+            }
+          }
+        }
+      },
       "ReportKpis": {
         "type": "object",
         "additionalProperties": false,
@@ -4675,6 +4847,20 @@
       "Report": {
         "type": "object",
         "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "runId"
+              ]
+            },
+            "then": {
+              "required": [
+                "timeSeries"
+              ]
+            }
+          }
+        ],
         "required": [
           "reportId",
           "classification",
@@ -4709,6 +4895,13 @@
           },
           "kpis": {
             "$ref": "#/components/schemas/ReportKpis"
+          },
+          "timeSeries": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/ReportTimeSeries"
+            }
           }
         }
       },
@@ -4865,6 +5058,7 @@
           "auditId",
           "actor",
           "role",
+          "module",
           "action",
           "result",
           "occurredAt",
@@ -4876,7 +5070,8 @@
             "minLength": 1
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "role": {
             "type": "string",
@@ -4885,8 +5080,13 @@
               "OPERATOR"
             ]
           },
+          "module": {
+            "type": "string",
+            "minLength": 1
+          },
           "action": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "objectId": {
             "type": "string",
@@ -5215,9 +5415,11 @@
               "properties": {
                 "id": {
                   "enum": [
+                    "DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS",
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX",
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER",
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT",
+                    "DSDWRJQTLJS-XQ-GRYGZ-ESMGL",
                     "DSDWRJQTLJS-XQ-LLQHYYX-LLJC"
                   ]
                 }
@@ -5500,7 +5702,8 @@
             ]
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "role": {
             "type": "string",
@@ -6109,7 +6312,8 @@
             "format": "date-time"
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "role": {
             "type": "string",
@@ -6118,8 +6322,13 @@
               "OPERATOR"
             ]
           },
+          "module": {
+            "type": "string",
+            "minLength": 1
+          },
           "action": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "result": {
             "enum": [
@@ -8009,7 +8218,8 @@
             "format": "date-time"
           },
           "actor": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "role": {
             "type": "string",
@@ -8018,8 +8228,13 @@
               "OPERATOR"
             ]
           },
+          "module": {
+            "type": "string",
+            "minLength": 1
+          },
           "action": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "result": {
             "type": "string",
