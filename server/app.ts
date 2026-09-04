@@ -629,6 +629,37 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(auth.permissionSet(role), pageMeta(requestId)))
   })
 
+  /** 返回七类接口的确定性元数据。 */
+  app.get('/api/v1/meta/interfaces', (req, res) => {
+    const requestId = 'REQ-P5-INTERFACES'
+    if (requireDemoRole(req, res, auth, 'INTERFACE_LIST') === undefined) return
+    const interfaces = projection.snapshot().metadata.interfaces
+    res.status(200).json(success(interfaces, pageMeta(requestId, interfaces.length, interfaces.length)))
+  })
+
+  /** 返回场景配置 1.0 的字段合同。 */
+  app.get('/api/v1/contracts/scenario-config', (req, res) => {
+    const requestId = 'REQ-P5-SCENARIO-CONTRACT'
+    if (requireDemoRole(req, res, auth, 'SCENARIO_CONTRACT_READ') === undefined) return
+    res.status(200).json(success(projection.snapshot().contracts.scenarioConfig, pageMeta(requestId)))
+  })
+
+  /** 返回五个前端规范数据结构合同。 */
+  app.get('/api/v1/contracts/frontend-types', (req, res) => {
+    const requestId = 'REQ-P5-FRONTEND-CONTRACTS'
+    if (requireDemoRole(req, res, auth, 'FRONTEND_CONTRACT_LIST') === undefined) return
+    const contracts = projection.snapshot().contracts.frontendTypes
+    res.status(200).json(success(contracts, pageMeta(requestId, contracts.length, contracts.length)))
+  })
+
+  /** 返回三个 canonical CSV 合同，不执行文件读写。 */
+  app.get('/api/v1/contracts/csv', (req, res) => {
+    const requestId = 'REQ-P5-CSV-CONTRACTS'
+    if (requireDemoRole(req, res, auth, 'CSV_CONTRACT_LIST') === undefined) return
+    const contracts = projection.snapshot().contracts.csv
+    res.status(200).json(success(contracts, pageMeta(requestId, contracts.length, contracts.length)))
+  })
+
   /** 返回当前确定性仿真运行列表。 */
   app.get('/api/v1/simulations', (req, res) => {
     const requestId = 'REQ-P3-SIMULATION-LIST'
@@ -681,6 +712,31 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const result = simulations.listEvents(runId)
     if (sendSimulationFailure(res, result, requestId)) return
     res.status(200).json(success(result.data, pageMeta(requestId, result.data.length, Math.max(1, result.data.length))))
+  })
+
+  /** 执行一次同目标同帧的侦测、启扰与链路劣化闭环。 */
+  app.post('/api/v1/simulations/:runId/events', (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-P4-CLOSED-LOOP'
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_CLOSED_LOOP', runId)
+    if (role === undefined) return
+    if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
+      auth.recordDenied(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+      res.status(403).json(failure('PERMISSION_DENIED', 403, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '当前账号没有闭环控制权限。',
+      }))
+      return
+    }
+    const result = simulations.runClosedLoop(runId, req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
   /**
@@ -758,6 +814,32 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     auth.recordSuccess(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 在明确仿真帧边界同步一版干扰参数，并发布规范设备状态。 */
+  app.post('/api/v1/tasks/:taskId/jammers/:jammerId/parameters', (req, res) => {
+    const { taskId, jammerId } = req.params
+    const requestId = 'REQ-P4-JAMMER-SYNC'
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_SYNC', jammerId)
+    if (role === undefined) return
+    if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
+      auth.recordDenied(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      res.status(403).json(failure('PERMISSION_DENIED', 403, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '当前账号没有干扰参数同步权限。',
+      }))
+      return
+    }
+    const result = simulations.syncJammerParameters(taskId, jammerId, req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+    realtime.publishJammerStatus(result.data.jammerStatus, result.data.effectiveFrameId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 

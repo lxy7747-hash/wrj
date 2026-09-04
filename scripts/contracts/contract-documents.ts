@@ -62,6 +62,8 @@ const EXPECTED_ERROR_CODES = [
   'INVALID_TRANSITION',
   'NODE_LIMIT_EXCEEDED',
   'DUPLICATE_EVENT',
+  'VERSION_CONFLICT',
+  'FRAME_MISMATCH',
   'HEADER_INVALID',
   'TYPE_INVALID',
   'ENCODING_INVALID',
@@ -118,6 +120,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/simulations/{runId}', operationId: 'getapiV1SimulationsRunId' },
   { method: 'post', path: '/api/v1/simulations/{runId}/commands', operationId: 'postapiV1SimulationsRunIdCommands' },
   { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', operationId: 'postapiV1TasksTaskIdJammersJammerIdCommands' },
+  { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', operationId: 'postapiV1TasksTaskIdJammersJammerIdParameters' },
   { method: 'get', path: '/api/v1/simulations/{runId}/frames/{frameId}', operationId: 'getapiV1SimulationsRunIdFramesFrameId' },
   { method: 'get', path: '/api/v1/simulations/{runId}/events', operationId: 'getapiV1SimulationsRunIdEvents' },
   { method: 'post', path: '/api/v1/simulations/{runId}/events', operationId: 'postapiV1SimulationsRunIdEvents' },
@@ -182,9 +185,10 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1SimulationsRunId: operationSchemaBinding(null, '200', '#/components/schemas/SimulationRun'),
   postapiV1SimulationsRunIdCommands: operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'),
   postapiV1TasksTaskIdJammersJammerIdCommands: operationSchemaBinding('#/components/schemas/JammingCommand', '200', '#/components/schemas/JammerState'),
+  postapiV1TasksTaskIdJammersJammerIdParameters: operationSchemaBinding('#/components/schemas/JammingParameterSet', '200', '#/components/schemas/SyncResult'),
   getapiV1SimulationsRunIdFramesFrameId: operationSchemaBinding(null, '200', '#/components/schemas/TelemetryFrame'),
   getapiV1SimulationsRunIdEvents: operationSchemaBinding(null, '200', '#/components/schemas/EventList'),
-  postapiV1SimulationsRunIdEvents: operationSchemaBinding('#/components/schemas/EventRecord', '200', '#/components/schemas/EventRecord'),
+  postapiV1SimulationsRunIdEvents: operationSchemaBinding('#/components/schemas/ClosedLoopContext', '200', '#/components/schemas/JammingDecision'),
   getapiV1Batches: operationSchemaBinding(null, '200', '#/components/schemas/BatchList'),
   postapiV1Batches: operationSchemaBinding('#/components/schemas/BatchRequest', '201', '#/components/schemas/Batch'),
   getapiV1BatchesBatchId: operationSchemaBinding(null, '200', '#/components/schemas/BatchDetail'),
@@ -246,9 +250,10 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1SimulationsRunId: ['404'],
   postapiV1SimulationsRunIdCommands: ['409', '428'],
   postapiV1TasksTaskIdJammersJammerIdCommands: ['403', '404', '409', '422'],
+  postapiV1TasksTaskIdJammersJammerIdParameters: ['403', '404', '409', '422'],
   getapiV1SimulationsRunIdFramesFrameId: ['404'],
   getapiV1SimulationsRunIdEvents: [],
-  postapiV1SimulationsRunIdEvents: ['409'],
+  postapiV1SimulationsRunIdEvents: ['403', '404', '409', '422'],
   getapiV1Batches: [],
   postapiV1Batches: ['422'],
   getapiV1BatchesBatchId: [],
@@ -309,6 +314,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SynchronizationEvidence/properties/uiVersion/const', 'FRAME-1.0'],
   ['#/components/schemas/EventRecord/properties/type/enum', ['DETECTION','LINK_SWITCH']],
   ['#/components/schemas/EventRecord/properties/decision/enum', ['ACCEPTED','REJECTED']],
+  ['#/components/schemas/EventRecord/properties/direction/enum', ['FORWARD','REVERSE']],
   ['#/components/schemas/EventRecord/allOf/0/if/properties/type/const', 'DETECTION'],
   ['#/components/schemas/EventRecord/allOf/1/if/properties/type/const', 'LINK_SWITCH'],
   ['#/components/schemas/SimulationRun/properties/uiStatus/enum', ['IDLE','RUNNING','PAUSED','STOPPED','COMPLETED','ERROR']],
@@ -333,14 +339,14 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SystemHealth/properties/database/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/SystemHealth/properties/channel/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/ArchiveRecord/properties/status/const', 'INDEXED'],
-  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
+  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
   ['#/components/schemas/ErrorEnvelope/properties/ok/const', false],
   ['#/components/schemas/LoginRequest/properties/username/enum', ['admin','operator','locked']],
   ['#/components/schemas/AuthResult/properties/principal/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
   ['#/components/schemas/AuthResult/properties/sessionCreated/const', false],
   ['#/components/schemas/PermissionSet/properties/role/enum', ['ADMIN','OPERATOR']],
-  ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/enum', ['DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS','DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX','DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER','DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT','DSDWRJQTLJS-XQ-GRYGZ-ESMGL','DSDWRJQTLJS-XQ-LLQHYYX-LLJC']],
+  ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/enum', ['DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS','DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX','DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER','DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT','DSDWRJQTLJS-XQ-GRYGZ-ESMGL','DSDWRJQTLJS-XQ-LLQHYYX-LLJC','DSDWRJQTLJS-XQ-LLQHYYX-QXL','DSDWRJQTLJS-XQ-LLQHYYX-HXL','DSDWRJQTLJS-XQ-LLQHYYX-QHJY']],
   ['#/components/schemas/CapabilityMetadata/allOf/0/then/properties/states/not/contains/const', 'EXECUTING'],
   ['#/components/schemas/CapabilityMetadata/properties/coverage/enum', ['INTERACTIVE_UI','VISIBLE_CONTRACT']],
   ['#/components/schemas/CapabilityMetadata/properties/states/items/enum', ['LOADING','VALIDATING','EXECUTING','SUCCESS','EMPTY','ERROR']],
@@ -359,6 +365,11 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SimulationCommand/properties/mode/enum', ['INTERACTIVE_SINGLE','BATCH_PARAMETER_TRAVERSAL','PARAMETER_SCAN','HISTORICAL_REPLAY']],
   ['#/components/schemas/SimulationCommand/properties/stepCount/const', 1],
   ['#/components/schemas/JammerState/properties/executionStatus/const', 'SUCCESS'],
+  ['#/components/schemas/RouteDecision/properties/direction/enum', ['FORWARD','REVERSE']],
+  ['#/components/schemas/RouteDecision/properties/strategy/enum', ['MIN_JAM_IMPACT','MIN_BER_WITH_HYSTERESIS']],
+  ['#/components/schemas/JammingDecision/properties/action/const', 'START'],
+  ['#/components/schemas/JammingDecision/properties/linkStatus/enum', ['UP','DEGRADED','DOWN']],
+  ['#/components/schemas/SyncResult/properties/status/const', 'SYNCHRONIZED'],
   ['#/components/schemas/BatchRequest/properties/deterministicOrder/const', true],
   ['#/components/schemas/BatchCommand/properties/command/enum', ['START','CANCEL']],
   ['#/components/schemas/ReportExportRequest/properties/format/enum', ['HTML','PDF','CSV']],
@@ -395,6 +406,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/DeterministicFixtures/properties/schemaVersion/const', '1.0'],
   ['#/components/schemas/PostapiV1AuthLoginResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdCommandsResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AuthPermissionsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1MetaCapabilitiesResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1MetaInterfacesResponse/properties/ok/const', true],
@@ -587,7 +599,7 @@ const EXPECTED_ROUTE_CONTRACTS = Object.freeze({
   '/replays': routeContract('ReplaysPage', ['replayStore', 'telemetryStore', 'uiStore'], 'requirePrincipal'),
   '/admin': routeContract('AdminPage', ['adminStore', 'authStore', 'uiStore'], 'requireAdmin'),
   '/blueprint': routeContract('BlueprintPage', ['traceabilityStore', 'authStore', 'uiStore'], 'requirePrincipal'),
-  '/admin/data-exchange': routeContract('DataExchangePage', ['scenarioStore', 'simulationStore', 'telemetryStore', 'traceabilityStore', 'uiStore'], 'requirePrincipal'),
+  '/admin/data-exchange': routeContract('DataExchangePage', ['scenarioStore', 'simulationStore', 'telemetryStore', 'dataExchangeStore', 'uiStore'], 'requirePrincipal'),
   '/traceability': routeContract('TraceabilityPage', ['traceabilityStore', 'uiStore'], 'requirePrincipal'),
   '/interactions': routeContract('InteractionsPage', ['authStore', 'scenarioStore', 'simulationStore', 'telemetryStore', 'batchStore', 'reportStore', 'replayStore', 'adminStore', 'traceabilityStore', 'uiStore'], 'requirePrincipal'),
 } satisfies Record<(typeof EXPECTED_UI_ROUTES)[number], {
@@ -668,6 +680,7 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
   'DSDWRJQTLJS-XQ-GRYGZ-ESMGL': capabilityTrace('/interactions', [], ['jammer.event']),
   'DSDWRJQTLJS-XQ-GRYGZ-RFGR': capabilityTrace('/interactions', [
     operationReference('post', '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', 'postapiV1TasksTaskIdJammersJammerIdCommands'),
+    operationReference('post', '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', 'postapiV1TasksTaskIdJammersJammerIdParameters'),
   ], ['jammer.event']),
   'DSDWRJQTLJS-XQ-GRYGZ-BHC': capabilityTrace('/interactions', [
     operationReference('post', '/api/v1/simulations/{runId}/events', 'postapiV1SimulationsRunIdEvents'),
@@ -1396,12 +1409,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 62) {
+  if (operationCount !== 63) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 62 operations, found ${operationCount}`,
+      `Expected exactly 63 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1420,12 +1433,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 31 || requestSchemaOwners.size !== 31) {
+  if (writeCount !== 32 || requestSchemaOwners.size !== 32) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 31 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 32 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 
@@ -1592,6 +1605,9 @@ export function auditFixtureClosure(fixtures: DeterministicFixtureSet): Validati
       || capability.id === 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT'
       || capability.id === 'DSDWRJQTLJS-XQ-GRYGZ-ESMGL'
       || capability.id === 'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
+      || capability.id === 'DSDWRJQTLJS-XQ-LLQHYYX-QXL'
+      || capability.id === 'DSDWRJQTLJS-XQ-LLQHYYX-HXL'
+      || capability.id === 'DSDWRJQTLJS-XQ-LLQHYYX-QHJY'
       ? EXPECTED_FIXED_EVIDENCE_STATES
       : EXPECTED_CAPABILITY_STATES
     if (!sameStrings(capability.states, expectedStates)) {

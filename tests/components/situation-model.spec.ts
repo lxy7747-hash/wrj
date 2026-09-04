@@ -31,7 +31,7 @@ describe('态势固定帧模型', () => {
       degradedLinkCount: 1,
       downLinkCount: 0,
       activeJammerCount: 1,
-      switchEventCount: 1,
+      switchEventCount: 2,
     })
   })
 

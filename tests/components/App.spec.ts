@@ -28,6 +28,7 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 import App from '../../src/App.vue'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
+import { useDataExchangeStore } from '../../src/stores/data-exchange'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
@@ -262,8 +263,33 @@ describe('App shell', () => {
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)
+    const dataExchange = useDataExchangeStore(pinia)
     scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
     simulation.applyRun(structuredClone(fixtureSource.run) as SimulationRun)
+    dataExchange.$patch({
+      csvState: 'SUCCESS',
+      csvResult: {
+        valid: true,
+        contractName: 'link_quality.csv',
+        rowCount: 1,
+        encoding: 'UTF-8',
+        headerMatched: true,
+        atomicWrite: 'NOT_EXECUTED_BY_DESIGN',
+        issues: [],
+      },
+      jsonState: 'SUCCESS',
+      jsonResult: structuredClone(fixtureSource.scenario) as ScenarioConfig,
+      processState: 'SUCCESS',
+      processResult: {
+        status: 'EXITED',
+        processId: null,
+        stdout: 'NOT_CAPTURED_BY_DESIGN',
+        exitCode: 0,
+        timeoutMs: 5_000,
+        singleInstance: true,
+        resourcesReleased: true,
+      },
+    })
 
     await adminWrapper.get('[data-testid="logout"]').trigger('click')
     await flushPromises()
@@ -271,6 +297,17 @@ describe('App shell', () => {
     expect(auth.permissions).toEqual([])
     expect(scenario.$state).toMatchObject({ draft: null, panelState: 'EMPTY', dirty: false })
     expect(simulation.$state).toMatchObject({ run: null, capabilityState: 'EMPTY', lastConfirmation: null })
+    expect(dataExchange.$state).toMatchObject({
+      csvState: 'EMPTY', csvResult: null,
+      jsonState: 'EMPTY', jsonResult: null,
+      processState: 'EMPTY', processResult: null,
+    })
+    auth.$patch({
+      principal: { userId: 'USR-OPERATOR-2', username: 'operator-2', role: 'OPERATOR', permissions: ['BUSINESS_READ'] },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ'],
+    })
+    expect(dataExchange.$state).toMatchObject({ csvResult: null, jsonResult: null, processResult: null })
     expect(router.currentRoute.value.path).toBe('/login')
     expect(adminWrapper.find('.app-shell').exists()).toBe(false)
     expect(adminWrapper.find('[data-testid="identity-panel"]').exists()).toBe(false)

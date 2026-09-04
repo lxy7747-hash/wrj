@@ -177,6 +177,24 @@ export interface JammerState extends JammingCommand {
   taskId: TaskId; jammerId: Identifier; executionStatus: 'SUCCESS';
   effectiveFrameId: FrameId; reason: string;
 }
+export interface ClosedLoopContext {
+  frameId: FrameId; detectionEventId: Identifier; targetPlatformId: Identifier; affectedLinkId: Identifier;
+}
+export interface JammingDecision {
+  decisionId: Identifier; runId: RunId; frameId: FrameId; detectionEventId: Identifier;
+  targetPlatformId: Identifier; jammerId: Identifier; affectedLinkId: Identifier;
+  action: 'START'; linkStatus: UiLinkStatus; effectiveFrameId: FrameId; reason: string;
+}
+export interface JammingParameterSet {
+  version: number; effectiveFrameId: FrameId; parameters: JammingCommand;
+}
+export interface SyncResult {
+  taskId: TaskId; jammerId: Identifier; parameterVersion: number;
+  configParameterVersion: number; nodeParameterVersion: number;
+  engineParameterVersion: number; uiParameterVersion: number;
+  effectiveFrameId: FrameId; effectiveSimulationTime: Seconds;
+  status: 'SYNCHRONIZED'; jammerStatus: JammerStatusData;
+}
 export interface CompositeLossEvidence {
   linkId: Identifier; freeSpaceLossDb: Decibels; systemLossDb: Decibels;
   obstructionLossDb: Decibels; interferenceLossDb: Decibels; totalPathLossDb: Decibels;
@@ -185,7 +203,13 @@ export interface CompositeLossEvidence {
 }
 export interface RouteCandidateEvidence {
   linkId: Identifier; direction: LinkDirection; eligible: boolean; jamImpactDb: Decibels;
-  ber: Ratio01; stabilityFrames: number; rank: number;
+  ber: Ratio01; stabilityFrames: number; rank: number; eliminationReason: string | null;
+}
+export interface RouteDecision {
+  taskId: TaskId; runId: RunId; frameId: FrameId; simulationTime: Seconds;
+  direction: LinkDirection; selectedLinkId: Identifier; previousLinkId: Identifier;
+  strategy: 'MIN_JAM_IMPACT' | 'MIN_BER_WITH_HYSTERESIS'; metric: number;
+  minimumStableFrames: number; hysteresisThreshold: number | null; reason: string;
 }
 export interface SynchronizationEvidence {
   configVersion: 'SCN-001-v4'; engineVersion: 'AFSIM-2.9.0-FIXTURE'; uiVersion: 'FRAME-1.0';
@@ -196,7 +220,7 @@ export interface JammerExecutionEvidence {
   bandwidth: Megahertz; startTime: Seconds; duration: Seconds; reason: string;
 }
 export interface FrameEvidence {
-  losses: CompositeLossEvidence[]; routeCandidates: RouteCandidateEvidence[];
+  losses: CompositeLossEvidence[]; routeCandidates: RouteCandidateEvidence[]; routeDecisions: RouteDecision[];
   jammerExecution: JammerExecutionEvidence; synchronization: SynchronizationEvidence;
 }
 /** Mock 传输扩展：补充链路身份与质量计算证据，不修改 SRS LinkQualityData。 */
@@ -210,7 +234,12 @@ export interface TelemetryFrame {
   eventIds: Identifier[]; evidence: FrameEvidence;
 }
 export interface DetectionEvent { eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'DETECTION'; sensorId: Identifier; targetPlatformId: Identifier; detectionProbability: Ratio01; dedupeKey: string; }
-export interface SwitchEvent { eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'LINK_SWITCH'; oldLinkId: Identifier; newLinkId: Identifier; decision: 'ACCEPTED' | 'REJECTED'; reason: string; dedupeKey: string; }
+export interface SwitchEvent {
+  eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'LINK_SWITCH';
+  direction: LinkDirection; oldLinkId: Identifier; newLinkId: Identifier; oldBer: Ratio01; newBer: Ratio01;
+  stabilityFrames: number; minimumStableFrames: number; hysteresisSatisfied: boolean; cooldownRemainingS: Seconds;
+  decision: 'ACCEPTED' | 'REJECTED'; reason: string; dedupeKey: string;
+}
 export interface BatchRunResult {
   runId: RunId; reportId: ReportId; powerW: Watts; distanceKm: Kilometers;
   connectivityDurationS: Seconds; connectivityRate: Percent0To100; switchCount: number;
@@ -268,7 +297,7 @@ export type ApiErrorCode =
   | 'INVALID_REQUEST' | 'VALIDATION_FAILED' | 'NOT_FOUND' | 'CONFLICT'
   | 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED' | 'PERMISSION_DENIED' | 'LAST_ADMIN_GUARD'
   | 'CONFIRMATION_REQUIRED' | 'CONFIRMATION_EXPIRED' | 'CONFIG_LOCKED'
-  | 'INVALID_TRANSITION' | 'NODE_LIMIT_EXCEEDED' | 'DUPLICATE_EVENT'
+  | 'INVALID_TRANSITION' | 'NODE_LIMIT_EXCEEDED' | 'DUPLICATE_EVENT' | 'VERSION_CONFLICT' | 'FRAME_MISMATCH'
   | 'HEADER_INVALID' | 'TYPE_INVALID' | 'ENCODING_INVALID' | 'ATOMIC_REPLACE_FAILED'
   | 'START_FAILED' | 'TIMEOUT' | 'EXIT_NONZERO' | 'CORRUPT_FIXTURE'
   | 'OUT_OF_RANGE' | 'DEVICE_DISABLED'

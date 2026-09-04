@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest'
-import type { DetectionEvent, JammerState, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { DetectionEvent, JammingDecision, JammerState, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, SyncResult, TelemetryFrame } from '../../src/contracts/domain-models'
 
 type ProjectionResult<T> = { ok: true; data: T } | { ok: false; code: string; status: number; fieldPath?: string }
 
@@ -17,6 +17,8 @@ interface SimulationProjectionInstance {
   inspectCommand(runId: string, value: unknown): ProjectionResult<SimulationCommand>
   command(runId: string, value: unknown, stopConfirmed?: boolean): ProjectionResult<SimulationRun>
   controlJammer(taskId: string, jammerId: string, value: unknown): ProjectionResult<JammerState>
+  runClosedLoop(runId: string, value: unknown): ProjectionResult<JammingDecision>
+  syncJammerParameters(taskId: string, jammerId: string, value: unknown): ProjectionResult<SyncResult>
   reset(): void
 }
 
@@ -55,7 +57,7 @@ describe('P3-1 仿真服务端投影', () => {
       ok: true,
       data: { runId: 'RUN-001', frameId: 'F-00042', simulationTime: 42 },
     })
-    expect(simulations.listEvents('RUN-001')).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }] })
+    expect(simulations.listEvents('RUN-001')).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }, { frameId: 'F-00042' }] })
     expect(simulations.getFrame('RUN-001', 'F-MISSING')).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 })
     expect(simulations.listEvents('RUN-MISSING')).toMatchObject({ ok: false, code: 'NOT_FOUND', status: 404 })
   })
@@ -231,5 +233,56 @@ describe('P3-1 仿真服务端投影', () => {
       ok: false,
       code: 'VALIDATION_FAILED',
     })
+  })
+
+  it('同目标同帧只执行一次侦测启扰闭环', () => {
+    const { simulations } = projections()
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }
+    expect(simulations.runClosedLoop('RUN-001', context)).toMatchObject({
+      ok: true,
+      data: { detectionEventId: 'DET-042', jammerId: 'JAM-WB-01-TX', affectedLinkId: 'L-DL-03', linkStatus: 'DEGRADED' },
+    })
+    expect(simulations.runClosedLoop('RUN-001', context)).toMatchObject({ ok: false, code: 'DUPLICATE_EVENT', fieldPath: 'detectionEventId' })
+  })
+
+  it('拒绝闭环中的未知运行、错误帧、目标和链路', () => {
+    const { simulations } = projections()
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }
+    expect(simulations.runClosedLoop('RUN-MISSING', context)).toMatchObject({ ok: false, code: 'NOT_FOUND' })
+    expect(simulations.runClosedLoop('RUN-001', null)).toMatchObject({ ok: false, code: 'VALIDATION_FAILED', fieldPath: 'context' })
+    expect(simulations.runClosedLoop('RUN-001', { ...context, frameId: 'F-00043' })).toMatchObject({ ok: false, code: 'FRAME_MISMATCH' })
+    expect(simulations.runClosedLoop('RUN-001', { ...context, targetPlatformId: 'AIR-01' })).toMatchObject({ ok: false, fieldPath: 'targetPlatformId' })
+    expect(simulations.runClosedLoop('RUN-001', { ...context, affectedLinkId: 'L-MISSING' })).toMatchObject({ ok: false, fieldPath: 'affectedLinkId' })
+    expect(simulations.runClosedLoop('RUN-001', { ...context, affectedLinkId: 'L-MW-01' })).toMatchObject({
+      ok: false,
+      code: 'VALIDATION_FAILED',
+      fieldPath: 'affectedLinkId',
+    })
+  })
+
+  it('只接受递增版本且在明确帧同步四端干扰参数', () => {
+    const { simulations } = projections()
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    expect(simulations.syncJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 5, effectiveFrameId: 'F-00042', parameters,
+    })).toMatchObject({
+      ok: true,
+      data: {
+        parameterVersion: 5, configParameterVersion: 5, nodeParameterVersion: 5,
+        engineParameterVersion: 5, uiParameterVersion: 5, effectiveFrameId: 'F-00042', status: 'SYNCHRONIZED',
+      },
+    })
+    expect(simulations.syncJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 5, effectiveFrameId: 'F-00042', parameters,
+    })).toMatchObject({ ok: false, code: 'VERSION_CONFLICT', fieldPath: 'version' })
+    expect(simulations.syncJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 6, effectiveFrameId: 'F-00043', parameters,
+    })).toMatchObject({ ok: false, code: 'FRAME_MISMATCH', fieldPath: 'effectiveFrameId' })
+    expect(simulations.syncJammerParameters('TASK-001', 'JAM-WB-01-TX', null)).toMatchObject({
+      ok: false, code: 'VALIDATION_FAILED', fieldPath: 'parameters',
+    })
+    expect(simulations.syncJammerParameters('TASK-MISSING', 'JAM-WB-01-TX', {
+      version: 6, effectiveFrameId: 'F-00042', parameters,
+    })).toMatchObject({ ok: false, code: 'NOT_FOUND', fieldPath: 'taskId' })
   })
 })

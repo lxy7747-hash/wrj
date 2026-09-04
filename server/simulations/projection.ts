@@ -1,6 +1,9 @@
 import type {
   ApiErrorCode,
+  ClosedLoopContext,
+  JammingDecision,
   JammingCommand,
+  JammingParameterSet,
   JammerState,
   SimulationCommand,
   SimulationCreateRequest,
@@ -8,6 +11,7 @@ import type {
   TelemetryFrame,
   DetectionEvent,
   SwitchEvent,
+  SyncResult,
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
@@ -32,6 +36,33 @@ function readJammingCommand(value: unknown): JammingCommand | undefined {
     && typeof candidate.enabled === 'boolean'
     && numbers.every((item) => typeof item === 'number' && Number.isFinite(item))
     ? candidate as JammingCommand
+    : undefined
+}
+
+/** 从未受信任值读取闭合的逐帧干扰闭环上下文。 */
+function readClosedLoopContext(value: unknown): ClosedLoopContext | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Partial<ClosedLoopContext>
+  const keys = Object.keys(value)
+  return keys.length === 4
+    && keys.every((key) => ['frameId', 'detectionEventId', 'targetPlatformId', 'affectedLinkId'].includes(key))
+    && [candidate.frameId, candidate.detectionEventId, candidate.targetPlatformId, candidate.affectedLinkId]
+      .every((item) => typeof item === 'string' && item.length > 0)
+    ? candidate as ClosedLoopContext
+    : undefined
+}
+
+/** 从未受信任值读取带版本和生效帧的干扰参数集。 */
+function readJammingParameterSet(value: unknown): JammingParameterSet | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Partial<JammingParameterSet>
+  const keys = Object.keys(value)
+  return keys.length === 3
+    && keys.every((key) => ['version', 'effectiveFrameId', 'parameters'].includes(key))
+    && Number.isSafeInteger(candidate.version) && Number(candidate.version) > 0
+    && typeof candidate.effectiveFrameId === 'string' && candidate.effectiveFrameId.startsWith('F-')
+    && readJammingCommand(candidate.parameters) !== undefined
+    ? candidate as JammingParameterSet
     : undefined
 }
 
@@ -115,6 +146,8 @@ function createIdleRun(request: SimulationCreateRequest, totalDuration: number):
 
 export class SimulationProjection {
   private run = structuredClone(loadFixtureProjection().run)
+  private readonly processedClosedLoops = new Set<string>()
+  private readonly jammerParameterVersions = new Map<string, number>()
 
   constructor(private readonly scenarios: ScenarioProjection) {}
 
@@ -328,8 +361,124 @@ export class SimulationProjection {
     }
   }
 
+  /**
+   * 执行侦测、启扰和链路劣化的同帧闭环。
+   * @param runId 闭环所属仿真运行编号。
+   * @param value 未受信任的闭环上下文。
+   * @returns 首次有效迁移返回干扰决策；同目标同帧重复请求返回幂等冲突。
+   * @sideEffects 成功后登记同目标同帧的迁移键，防止第二次动作。
+   */
+  runClosedLoop(runId: string, value: unknown): SimulationProjectionResult<JammingDecision> {
+    if (runId !== this.run.runId) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'runId', message: '未找到指定仿真运行。' }
+    }
+    const context = readClosedLoopContext(value)
+    if (context === undefined) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'context', message: '闭环上下文结构不正确。' }
+    }
+    const fixture = loadFixtureProjection()
+    const detection = fixture.events.find((event) => event.type === 'DETECTION' && event.eventId === context.detectionEventId)
+    if (context.frameId !== fixture.frame.frameId || detection?.frameId !== context.frameId || detection.type !== 'DETECTION') {
+      return { ok: false, code: 'FRAME_MISMATCH', status: 409, fieldPath: 'frameId', message: '侦测事件与闭环上下文不属于同一帧。' }
+    }
+    if (detection.targetPlatformId !== context.targetPlatformId) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'targetPlatformId', message: '闭环目标与侦测目标不一致。' }
+    }
+    const execution = fixture.frame.evidence.jammerExecution
+    const affectedLink = fixture.frame.uiLinks.find((link) => link.linkId === context.affectedLinkId)
+    const closedLoopLinkIds = new Set(fixture.frame.evidence.routeDecisions.map((decision) => decision.previousLinkId))
+    if (execution.targetPlatformId !== context.targetPlatformId
+      || affectedLink === undefined
+      || !closedLoopLinkIds.has(affectedLink.linkId)
+      || (affectedLink.status !== 'DEGRADED' && affectedLink.status !== 'DOWN')) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'affectedLinkId', message: '闭环执行证据与目标链路或链路状态不一致。' }
+    }
+
+    const transitionKey = `${context.frameId}:${context.targetPlatformId}`
+    if (this.processedClosedLoops.has(transitionKey)) {
+      return { ok: false, code: 'DUPLICATE_EVENT', status: 409, fieldPath: 'detectionEventId', message: '同一目标同一帧已完成闭环处理。' }
+    }
+    this.processedClosedLoops.add(transitionKey)
+    return {
+      ok: true,
+      data: {
+        decisionId: `DEC-${context.detectionEventId}`,
+        runId: this.run.runId,
+        frameId: context.frameId,
+        detectionEventId: context.detectionEventId,
+        targetPlatformId: context.targetPlatformId,
+        jammerId: execution.jammerId,
+        affectedLinkId: context.affectedLinkId,
+        action: 'START',
+        linkStatus: affectedLink.status,
+        effectiveFrameId: execution.startTime === fixture.frame.simulationTime ? context.frameId : fixture.frame.frameId,
+        reason: execution.reason,
+      },
+    }
+  }
+
+  /**
+   * 在明确帧边界同步一版干扰参数。
+   * @param taskId 参数所属任务编号。
+   * @param jammerId 目标干扰设备编号。
+   * @param value 未受信任的版本化参数集。
+   * @returns 四端版本一致的同步结果，或旧版本、乱序帧和设备能力错误。
+   * @sideEffects 成功时更新设备的最新参数版本；失败不修改版本。
+   */
+  syncJammerParameters(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<SyncResult> {
+    const parameterSet = readJammingParameterSet(value)
+    if (parameterSet === undefined) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'parameters', message: '干扰参数同步请求结构不正确。' }
+    }
+    const frame = loadFixtureProjection().frame
+    if (parameterSet.effectiveFrameId !== frame.frameId) {
+      return { ok: false, code: 'FRAME_MISMATCH', status: 409, fieldPath: 'effectiveFrameId', message: '参数只能在当前明确帧边界生效。' }
+    }
+    const currentVersion = this.jammerParameterVersions.get(jammerId) ?? 4
+    if (parameterSet.version <= currentVersion) {
+      return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: `参数版本必须大于当前版本 ${currentVersion}。` }
+    }
+    const controlled = this.controlJammer(taskId, jammerId, parameterSet.parameters)
+    if (!controlled.ok) return controlled
+    const draft = this.scenarios.get(this.run.scenarioId)
+    if (!draft.ok) return draft
+    const jammer = draft.data.config.jammers.find((item) => item.id === jammerId)
+    if (jammer === undefined) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'jammerId', message: '未找到指定干扰设备。' }
+    }
+    const existingStatus = frame.platforms.flatMap((platform) => platform.jammers).find((item) => item.jammerId === jammerId)
+    this.jammerParameterVersions.set(jammerId, parameterSet.version)
+    return {
+      ok: true,
+      data: {
+        taskId: this.run.taskId,
+        jammerId,
+        parameterVersion: parameterSet.version,
+        configParameterVersion: parameterSet.version,
+        nodeParameterVersion: parameterSet.version,
+        engineParameterVersion: parameterSet.version,
+        uiParameterVersion: parameterSet.version,
+        effectiveFrameId: parameterSet.effectiveFrameId,
+        effectiveSimulationTime: frame.simulationTime,
+        status: 'SYNCHRONIZED',
+        jammerStatus: {
+          time: frame.simulationTime,
+          jammerId,
+          platformId: jammer.platformId,
+          ...(existingStatus?.targetPlatform === undefined ? {} : { targetPlatform: existingStatus.targetPlatform }),
+          power: controlled.data.power,
+          frequency: controlled.data.frequency,
+          bandwidth: controlled.data.bandwidth,
+          active: controlled.data.enabled,
+        },
+      },
+    }
+  }
+
   /** 恢复冻结的完成态运行；场景投影由全局 reset 独立恢复。 */
   reset(): void {
     this.run = structuredClone(loadFixtureProjection().run)
+    this.processedClosedLoops.clear()
+    this.jammerParameterVersions.clear()
   }
 }

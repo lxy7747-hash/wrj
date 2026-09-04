@@ -66,6 +66,7 @@ interface WebSocketConstructor {
 
 interface RealtimeControllerInstance {
   activeClientCount(): number
+  publishJammerStatus(status: { time: number; jammerId: string; platformId: string; targetPlatform?: string; power: number; frequency: number; bandwidth: number; active: boolean }, frameId: `F-${string}`): void
   invalidateForReset(): void
   close(): Promise<void>
 }
@@ -344,6 +345,42 @@ describe('P0 deterministic mock server', () => {
       },
     })
     expect(second.body).toEqual(first.body)
+  })
+
+  it('returns the complete P5 contract catalogue without file or process side effects', async () => {
+    const { baseUrl } = await startServer()
+    const get = (path: string) => request(baseUrl)
+      .get(path)
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+
+    const [scenario, frontend, csv, interfaces] = await Promise.all([
+      get('/api/v1/contracts/scenario-config').expect(200),
+      get('/api/v1/contracts/frontend-types').expect(200),
+      get('/api/v1/contracts/csv').expect(200),
+      get('/api/v1/meta/interfaces').expect(200),
+    ])
+
+    expect(scenario.body).toMatchObject({ ok: true, data: { name: 'ScenarioConfig', version: '1.0' } })
+    const frontendData = (frontend.body as { data: unknown[] }).data
+    const csvData = (csv.body as { data: Array<{ name: string }> }).data
+    const interfaceData = (interfaces.body as { data: Array<{ kind: string }> }).data
+    expect(frontendData).toHaveLength(5)
+    expect(csvData).toHaveLength(3)
+    expect(csvData.map((item) => item.name)).toEqual(['link_quality.csv', 'events.csv', 'link_switch.csv'])
+    expect(interfaceData).toHaveLength(7)
+    expect(interfaceData.filter((item) => item.kind === '外部')).toHaveLength(3)
+    expect(interfaceData.filter((item) => item.kind === '内部')).toHaveLength(4)
+
+    for (const path of [
+      '/api/v1/contracts/scenario-config',
+      '/api/v1/contracts/frontend-types',
+      '/api/v1/contracts/csv',
+      '/api/v1/meta/interfaces',
+    ]) {
+      const denied = await request(baseUrl).get(path).set('Origin', ORIGIN).expect(403)
+      expect(denied.body).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } })
+    }
   })
 
   it('returns typed errors for invalid reset requests and unmatched API routes', async () => {
@@ -1133,13 +1170,13 @@ describe('P0 deterministic mock server', () => {
   it('accepts one canonical WebSocket subscription and emits initial topic snapshots', async () => {
     const { wsUrl } = await startServer()
     const client = await openWebSocket(wsUrl, { role: 'ADMIN' })
-    const messagePromise = nextJsonMessages(client, 4)
+    const messagePromise = nextJsonMessages(client, 5)
 
     client.send(JSON.stringify({
       type: 'subscribe',
       schemaVersion: '1.0',
       taskId: 'TASK-001',
-      topics: ['simulation.frame', 'runtime.state', 'jammer.event'],
+      topics: ['simulation.frame', 'runtime.state', 'jammer.event', 'switch.event'],
       lastSequence: 0,
     }))
 
@@ -1148,7 +1185,7 @@ describe('P0 deterministic mock server', () => {
       type: 'subscribed',
       schemaVersion: '1.0',
       taskId: 'TASK-001',
-      topics: ['simulation.frame', 'runtime.state', 'jammer.event'],
+      topics: ['simulation.frame', 'runtime.state', 'jammer.event', 'switch.event'],
       lastSequence: 0,
       nextSequence: 1,
     })
@@ -1161,6 +1198,10 @@ describe('P0 deterministic mock server', () => {
     expect(messages[3]).toMatchObject({
       type: 'event', topic: 'jammer.event', sequence: 1, frameId: 'F-00042',
       simulationTime: 42, payload: { eventId: 'DET-042', type: 'DETECTION', sensorId: 'ESM-01' },
+    })
+    expect(messages[4]).toMatchObject({
+      type: 'event', topic: 'switch.event', sequence: 1, frameId: 'F-00042',
+      simulationTime: 42, payload: { eventId: 'SW-003', type: 'LINK_SWITCH', decision: 'ACCEPTED' },
     })
     const closePromise = nextClose(client)
     client.close()
@@ -1269,14 +1310,21 @@ describe('P0 deterministic mock server', () => {
       expect(controller.activeClientCount()).toBe(0)
       const client = await openWebSocket(`ws://127.0.0.1:${address.port}/ws/v1`, { role: 'ADMIN' })
       expect(controller.activeClientCount()).toBe(1)
-      const initialMessages = nextJsonMessages(client, 2)
+      const initialMessages = nextJsonMessages(client, 3)
       client.send(JSON.stringify({
-        type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0,
+        type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state', 'jammer.event'], lastSequence: 0,
       }))
       await expect(initialMessages).resolves.toEqual([
         expect.objectContaining({ type: 'subscribed' }),
         expect.objectContaining({ topic: 'runtime.state', sequence: 1, payload: expect.objectContaining({ status: 'COMPLETED' }) }),
+        expect.objectContaining({ topic: 'jammer.event', sequence: 1, payload: expect.objectContaining({ eventId: 'DET-042' }) }),
       ])
+      const statusMessage = nextJsonMessage(client)
+      controller.publishJammerStatus({
+        time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01',
+        power: 70, frequency: 2200, bandwidth: 40, active: true,
+      }, 'F-00042')
+      await expect(statusMessage).resolves.toMatchObject({ topic: 'jammer.event', sequence: 2, payload: { power: 70 } })
       const closePromise = nextClose(client)
 
       controller.invalidateForReset()
@@ -1380,6 +1428,7 @@ describe('P0 deterministic mock server', () => {
     })
     await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'OPERATOR', payload: null })
     await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'OPERATOR', payload: [] })
+    await expectRejected(wsUrl, 'INVALID_ENVELOPE', { role: 'OPERATOR', payload: '{' })
     await expectRejected(wsUrl, 'INVALID_ENVELOPE', {
       role: 'OPERATOR',
       payload: {
@@ -1483,7 +1532,7 @@ describe('P0 deterministic mock server', () => {
       .get('/api/v1/simulations/RUN-001/events')
       .set(headers)
       .expect(200)
-    expect(events.body).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }], meta: { total: 2 } })
+    expect(events.body).toMatchObject({ ok: true, data: [{ frameId: 'F-00042' }, { frameId: 'F-00042' }, { frameId: 'F-00042' }], meta: { total: 3 } })
 
     await request(baseUrl).get('/api/v1/simulations/RUN-001/frames/F-MISSING').set(headers).expect(404)
     await request(baseUrl).get('/api/v1/simulations/RUN-MISSING/events').set(headers).expect(404)
@@ -1645,6 +1694,50 @@ describe('P0 deterministic mock server', () => {
     expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'SUCCESS' }),
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'ERROR' }),
+    ]))
+  })
+
+  it('执行 P4 闭环幂等和干扰参数版本同步', async () => {
+    const { server, baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }
+    const closedLoop = await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send(context).expect(200)
+    expect(closedLoop.body).toMatchObject({ data: { jammerId: 'JAM-WB-01-TX', linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042' } })
+    await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send(context).expect(409)
+    await request(baseUrl).post('/api/v1/simulations/RUN-MISSING/events').set(headers).send(context).expect(404)
+    await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send({}).expect(422)
+    await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set('Origin', ORIGIN).send(context).expect(403)
+
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const synchronized = await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+      .set(headers)
+      .send({ version: 5, effectiveFrameId: 'F-00042', parameters })
+      .expect(200)
+    expect(synchronized.body).toMatchObject({ data: { parameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5 } })
+    await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+      .set(headers)
+      .send({ version: 5, effectiveFrameId: 'F-00042', parameters })
+      .expect(409)
+    await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+      .set(headers)
+      .send({ version: 6, effectiveFrameId: 'F-00043', parameters })
+      .expect(409)
+    await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+      .set(headers)
+      .send({})
+      .expect(422)
+    await request(baseUrl)
+      .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+      .set('Origin', ORIGIN)
+      .send({ version: 6, effectiveFrameId: 'F-00042', parameters })
+      .expect(403)
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'SIMULATION_CLOSED_LOOP', result: 'SUCCESS' }),
+      expect.objectContaining({ action: 'SIMULATION_JAMMER_SYNC', result: 'SUCCESS' }),
     ]))
   })
 

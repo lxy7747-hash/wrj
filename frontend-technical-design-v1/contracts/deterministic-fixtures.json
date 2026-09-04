@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-04.1",
+  "fixtureVersion": "2026-09-04.4",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -869,7 +869,8 @@
     ],
     "eventIds": [
       "DET-042",
-      "SW-003"
+      "SW-003",
+      "SW-004"
     ],
     "evidence": {
       "losses": [
@@ -904,7 +905,8 @@
           "jamImpactDb": 1.38,
           "ber": 3.2e-7,
           "stabilityFrames": 5,
-          "rank": 1
+          "rank": 1,
+          "eliminationReason": null
         },
         {
           "linkId": "L-SAT-02",
@@ -913,7 +915,8 @@
           "jamImpactDb": 3.2,
           "ber": 0.0000011,
           "stabilityFrames": 4,
-          "rank": 2
+          "rank": 2,
+          "eliminationReason": null
         },
         {
           "linkId": "L-LASER-04",
@@ -922,7 +925,8 @@
           "jamImpactDb": 0.2,
           "ber": 8e-7,
           "stabilityFrames": 4,
-          "rank": 1
+          "rank": 1,
+          "eliminationReason": null
         },
         {
           "linkId": "L-DL-03",
@@ -931,7 +935,38 @@
           "jamImpactDb": 12.4,
           "ber": 0.00024,
           "stabilityFrames": 3,
-          "rank": 2
+          "rank": 2,
+          "eliminationReason": "LINK_UNAVAILABLE"
+        }
+      ],
+      "routeDecisions": [
+        {
+          "taskId": "TASK-001",
+          "runId": "RUN-001",
+          "frameId": "F-00042",
+          "simulationTime": 42,
+          "direction": "FORWARD",
+          "selectedLinkId": "L-MW-01",
+          "previousLinkId": "L-DL-03",
+          "strategy": "MIN_JAM_IMPACT",
+          "metric": 1.38,
+          "minimumStableFrames": 3,
+          "hysteresisThreshold": null,
+          "reason": "MINIMUM_JAM_IMPACT"
+        },
+        {
+          "taskId": "TASK-001",
+          "runId": "RUN-001",
+          "frameId": "F-00042",
+          "simulationTime": 42,
+          "direction": "REVERSE",
+          "selectedLinkId": "L-LASER-04",
+          "previousLinkId": "L-DL-03",
+          "strategy": "MIN_BER_WITH_HYSTERESIS",
+          "metric": 8e-7,
+          "minimumStableFrames": 3,
+          "hysteresisThreshold": 0.000001,
+          "reason": "MINIMUM_BER_AND_STABLE"
         }
       ],
       "synchronization": {
@@ -1073,11 +1108,37 @@
       "time": 42,
       "sourceRegistryTime": 2518,
       "type": "LINK_SWITCH",
+      "direction": "FORWARD",
       "oldLinkId": "L-DL-03",
       "newLinkId": "L-MW-01",
+      "oldBer": 0.00024,
+      "newBer": 3.2e-7,
+      "stabilityFrames": 5,
+      "minimumStableFrames": 3,
+      "hysteresisSatisfied": true,
+      "cooldownRemainingS": 0,
       "decision": "ACCEPTED",
       "reason": "BER_THRESHOLD_AND_HYSTERESIS",
       "dedupeKey": "SW-003"
+    },
+    {
+      "eventId": "SW-004",
+      "frameId": "F-00042",
+      "time": 42,
+      "sourceRegistryTime": 2520,
+      "type": "LINK_SWITCH",
+      "direction": "FORWARD",
+      "oldLinkId": "L-MW-01",
+      "newLinkId": "L-SAT-02",
+      "oldBer": 3.2e-7,
+      "newBer": 0.0000011,
+      "stabilityFrames": 1,
+      "minimumStableFrames": 3,
+      "hysteresisSatisfied": false,
+      "cooldownRemainingS": 18,
+      "decision": "REJECTED",
+      "reason": "COOLDOWN_ACTIVE",
+      "dedupeKey": "SW-004"
     }
   ],
   "replay": {
@@ -1088,7 +1149,8 @@
     "currentTimeS": 2537,
     "eventIds": [
       "DET-042",
-      "SW-003"
+      "SW-003",
+      "SW-004"
     ]
   },
   "report": {
@@ -1448,6 +1510,7 @@
       "compositeLoss",
       "noise",
       "routeCandidates",
+      "routeDecisions",
       "synchronization",
       "sameFrameEvents",
       "jammerExecution",
@@ -1730,7 +1793,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"
@@ -1745,7 +1807,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"
@@ -1760,7 +1821,6 @@
         "states": [
           "LOADING",
           "VALIDATING",
-          "EXECUTING",
           "SUCCESS",
           "EMPTY",
           "ERROR"
@@ -2068,7 +2128,7 @@
           "scenarioStore",
           "simulationStore",
           "telemetryStore",
-          "traceabilityStore",
+          "dataExchangeStore",
           "uiStore"
         ],
         "guard": "requirePrincipal"

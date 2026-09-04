@@ -1,5 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
-import type { ApiSuccess, ConfirmationContext, ScenarioConfig, ScenarioDraft, ScenarioTemplate, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { ApiSuccess, ConfirmationContext, DetectionEvent, ScenarioConfig, ScenarioDraft, ScenarioTemplate, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const AUTH_SESSION_KEY = 'wrj.auth.principal'
@@ -326,6 +326,47 @@ test('OPERATOR can navigate prototype top menus and is denied direct admin acces
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P5 OPERATOR validates data exchange and seven interface contracts', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'operator')
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
+  await page.waitForURL('**/admin/data-exchange')
+
+  const csvCard = page.getByTestId('csv-contract-card')
+  await expect(csvCard).toBeVisible()
+  await csvCard.getByRole('button', { name: '加载合同示例' }).click()
+  await csvCard.getByRole('button', { name: '校验 CSV' }).click()
+  await expect(csvCard).toContainText('CSV 合同校验通过，共 1 行数据')
+  await expect(csvCard).toContainText('目标文件：未改变')
+
+  const jsonCard = page.getByTestId('scenario-json-panel')
+  const scenarioResponse = page.waitForResponse((response) => new URL(response.url()).pathname === SCENARIO_PATH)
+  await jsonCard.getByRole('button', { name: '加载当前场景' }).click()
+  expect((await scenarioResponse).status()).toBe(200)
+  await jsonCard.getByRole('button', { name: '解析 JSON' }).click()
+  await expect(jsonCard).toContainText('场景 JSON 解析通过')
+  await expect(jsonCard).toContainText('SCN-001')
+
+  const websocketCard = page.getByTestId('websocket-contract-card')
+  await websocketCard.getByRole('button', { name: '连接通道' }).click()
+  await expect(websocketCard).toContainText('已订阅')
+  await expect(websocketCard).toContainText('F-00042')
+  await expect(websocketCard.locator('.el-table__row')).toHaveCount(5)
+
+  const processCard = page.getByTestId('process-contract-card')
+  await processCard.getByRole('button', { name: '检查进程管理合同' }).click()
+  await expect(processCard).toContainText('已退出')
+  await expect(processCard).toContainText('资源释放已释放')
+  await expect(processCard).toContainText('真实进程未启动')
+
+  const interfaceTable = page.getByTestId('interface-contract-table')
+  await expect(interfaceTable.locator('.interface-item')).toHaveCount(7)
+  await expect(interfaceTable).toContainText('3 类外部 + 4 类内部')
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', async ({ page }) => {
   const audit = auditConsole(page)
 
@@ -448,6 +489,53 @@ test('P4-2 OPERATOR executes RF jammer control and sees the effective frame', as
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P4-3～P4-7 OPERATOR completes closed-loop, synchronization, routing and switch review', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'operator')
+  await openInteractions(page)
+
+  const closedLoop = page.getByTestId('closed-loop-panel')
+  const firstLoop = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events')
+  await closedLoop.getByRole('button', { name: '执行闭环' }).click()
+  expect((await firstLoop).status()).toBe(200)
+  await expect(closedLoop.getByTestId('closed-loop-state')).toContainText('闭环完成')
+  await expect(closedLoop).toContainText('DET-042 · F-00042')
+  await expect(closedLoop).toContainText('L-DL-03 · 劣化')
+
+  const duplicateLoop = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events')
+  await closedLoop.getByRole('button', { name: '执行闭环' }).click()
+  expect((await duplicateLoop).status()).toBe(409)
+  await expect(closedLoop).toContainText('同一目标同一帧已完成闭环处理。')
+
+  const synchronization = page.getByTestId('jammer-sync-panel')
+  const syncResponse = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
+  await synchronization.getByRole('button', { name: '同步参数' }).click()
+  expect((await syncResponse).status()).toBe(200)
+  await expect(synchronization.getByTestId('jammer-sync-state')).toContainText('同步完成')
+  await expect(synchronization).toContainText('v5')
+  await expect(synchronization).toContainText('F-00042')
+
+  const forward = page.getByTestId('forward-route-ranking')
+  const reverse = page.getByTestId('reverse-route-ranking')
+  await expect(forward).toContainText('L-MW-01')
+  await expect(forward).toContainText('干扰影响最小')
+  await expect(reverse).toContainText('L-LASER-04')
+  await expect(reverse).toContainText('链路不可用或未连通')
+
+  const switches = page.getByTestId('switch-decision-panel')
+  await expect(switches).toContainText('接受 1')
+  await expect(switches).toContainText('拒绝 1')
+  await expect(switches).toContainText('切换冷却期未结束')
+  expect(audit.errors).toEqual([
+    'Failed to load resource: the server responded with a status of 409 (Conflict)',
+  ])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page }) => {
   const audit = auditConsole(page)
   const frameResponse = page.waitForResponse((response) => (
@@ -481,9 +569,17 @@ test('P3-7 OPERATOR reads the fixed link candidate snapshot and empty state', as
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
+  const eventsResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events'
+  ))
 
   await loginAs(page, 'operator')
   expect((await frameResponse).status()).toBe(200)
+  const eventsPayload = await (await eventsResponse).json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
+  const switchEventIds = new Set(eventsPayload.data
+    .filter((event) => event.type === 'LINK_SWITCH')
+    .map((event) => event.eventId))
   await page.getByTestId('open-link-candidates').click()
 
   const dialog = page.locator('.link-candidate-dialog')
@@ -505,15 +601,30 @@ test('P3-7 OPERATOR reads the fixed link candidate snapshot and empty state', as
     const response = await route.fetch()
     const body = await response.json() as ApiSuccess<TelemetryFrame>
     body.data.evidence.routeCandidates = []
+    body.data.evidence.routeDecisions = []
+    body.data.eventIds = body.data.eventIds.filter((eventId) => !switchEventIds.has(eventId))
+    await route.fulfill({ response, json: body })
+  })
+  await page.route('**/api/v1/simulations/RUN-001/events', async (route) => {
+    const response = await route.fetch()
+    const body = await response.json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
+    body.data = body.data.filter((event) => event.type !== 'LINK_SWITCH')
     await route.fulfill({ response, json: body })
   })
   const emptyFrameResponse = page.waitForResponse((response) => (
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
+  const emptyEventsResponse = page.waitForResponse((response) => (
+    response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events'
+  ))
   await page.reload()
   const emptyPayload = await (await emptyFrameResponse).json() as ApiSuccess<TelemetryFrame>
+  const emptyEventsPayload = await (await emptyEventsResponse).json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
   expect(emptyPayload.data.evidence.routeCandidates).toHaveLength(0)
+  expect(emptyPayload.data.eventIds.some((eventId) => switchEventIds.has(eventId))).toBe(false)
+  expect(emptyEventsPayload.data.some((event) => event.type === 'LINK_SWITCH')).toBe(false)
   await page.getByTestId('open-link-candidates').click()
   await expect(page.locator('.link-candidate-dialog')).toContainText('当前帧没有候选链路')
   await expect(page.locator('.link-candidate-dialog [data-candidate-id]')).toHaveCount(0)

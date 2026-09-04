@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { ClosedLoopContext, DetectionEvent, JammingParameterSet, Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 import { validateCandidateSnapshot } from '../../src/features/situation/situation-model'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -147,6 +147,92 @@ describe('P3-2 遥测 Store', () => {
     expect(store).toMatchObject({ jammerResultCode: 'NETWORK_ERROR', jammerResultMessage: '干扰控制服务暂时不可用。' })
   })
 
+  it('提交逐帧闭环并保留重复事件的字段级拒绝', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' } as const
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      decisionId: 'DEC-DET-042', runId: 'RUN-001', ...context,
+      jammerId: 'JAM-WB-01-TX', action: 'START', linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042', reason: 'AUTO_DETECTION_DET-042',
+    })))
+    await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(true)
+    expect(store).toMatchObject({ closedLoopState: 'SUCCESS', closedLoopDecision: { affectedLinkId: 'L-DL-03' } })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'DUPLICATE_EVENT', message: '同一目标同一帧已完成闭环处理。', fieldPath: 'detectionEventId' } }),
+    } as unknown as Response))
+    await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(false)
+    expect(store).toMatchObject({ closedLoopState: 'ERROR', closedLoopResultCode: 'DUPLICATE_EVENT', closedLoopResultFieldPath: 'detectionEventId', closedLoopDecision: null })
+  })
+
+  it('同步递增版本并校验四端版本一致', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
+      configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'SYNCHRONIZED',
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 72, frequency: 2200, bandwidth: 40, active: true },
+    })))
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 5, effectiveFrameId: 'F-00042', parameters,
+    })).resolves.toBe(true)
+    expect(store).toMatchObject({ syncState: 'SUCCESS', syncResult: { parameterVersion: 5, effectiveFrameId: 'F-00042' } })
+  })
+
+  it('参数同步在请求前拒绝缺失帧、跨任务和跨帧输入', async () => {
+    const store = useTelemetryStore()
+    const fetchSpy = vi.fn()
+    const parameterSet = {
+      version: 5,
+      effectiveFrameId: 'F-00042',
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+    } as const
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', parameterSet)).resolves.toBe(false)
+    expect(store).toMatchObject({ syncResultCode: 'FRAME_MISMATCH', syncResultFieldPath: 'effectiveFrameId' })
+
+    store.frame = structuredClone(frame)
+    await expect(store.synchronizeJammerParameters('TASK-OTHER', 'JAM-WB-01-TX', parameterSet)).resolves.toBe(false)
+    expect(store).toMatchObject({ syncResultCode: 'INVALID_REQUEST', syncResultFieldPath: 'taskId' })
+
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      ...parameterSet,
+      effectiveFrameId: 'F-OTHER',
+    })).resolves.toBe(false)
+    expect(store).toMatchObject({ syncResultCode: 'FRAME_MISMATCH', syncResultFieldPath: 'effectiveFrameId' })
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('在权限、输入或网络错误时进入安全失败态', async () => {
+    const store = useTelemetryStore()
+    const auth = useAuthStore()
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' } as const
+    const parameterSet = {
+      version: 5, effectiveFrameId: 'F-00042',
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+    } as const
+    auth.$patch({ principal: { ...operator, permissions: ['BUSINESS_READ'] }, permissions: ['BUSINESS_READ'] })
+    await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(false)
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', parameterSet)).resolves.toBe(false)
+    expect(store).toMatchObject({ closedLoopResultCode: 'PERMISSION_DENIED', syncResultCode: 'PERMISSION_DENIED' })
+
+    auth.principal = { ...operator, permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'] }
+    auth.permissions = ['BUSINESS_READ', 'SIMULATION_CONTROL']
+    await expect(store.runClosedLoop('RUN-001', null as unknown as ClosedLoopContext)).resolves.toBe(false)
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', null as unknown as JammingParameterSet)).resolves.toBe(false)
+    expect(store).toMatchObject({ closedLoopResultCode: 'INVALID_REQUEST', syncResultCode: 'INVALID_REQUEST' })
+
+    store.frame = structuredClone(frame)
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')))
+    await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(false)
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', parameterSet)).resolves.toBe(false)
+    expect(store).toMatchObject({ closedLoopResultCode: 'NETWORK_ERROR', syncResultCode: 'NETWORK_ERROR' })
+  })
+
   it('原子加载同帧遥测和事件，失败时不保留旧数据', async () => {
     const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
       successResponse(String(input).endsWith('/events') ? fixtureSource.events : frame),
@@ -156,7 +242,7 @@ describe('P3-2 遥测 Store', () => {
 
     await expect(store.loadFrame()).resolves.toBe(true)
     expect(store.frame).toMatchObject({ frameId: 'F-00042', simulationTime: 42 })
-    expect(store.events).toHaveLength(2)
+    expect(store.events).toHaveLength(3)
     expect(fetchSpy).toHaveBeenCalledTimes(2)
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
@@ -502,12 +588,12 @@ describe('P3-2 遥测 Store', () => {
       simulationTime: 42, frameId: 'F-00042', payload: detection,
     } as const
     expect(store.acceptEnvelope(envelope)).toBe(true)
-    expect(store.events).toHaveLength(3)
+    expect(store.events).toHaveLength(4)
     expect(store.events.at(-1)).toEqual(detection)
     expect(store.frame?.eventIds).toContain('DET-NEW')
 
     expect(store.acceptEnvelope({ ...envelope, sequence: 2 })).toBe(true)
-    expect(store.events).toHaveLength(3)
+    expect(store.events).toHaveLength(4)
     expect(store).toMatchObject({ resultCode: 'DUPLICATE_EVENT', resultFieldPath: 'dedupeKey' })
 
     expect(store.acceptEnvelope({
@@ -515,7 +601,7 @@ describe('P3-2 遥测 Store', () => {
       sequence: 3,
       payload: { ...detection, eventId: 'DET-SAME-KEY' },
     })).toBe(true)
-    expect(store.events).toHaveLength(3)
+    expect(store.events).toHaveLength(4)
 
     expect(store.acceptEnvelope({
       ...envelope,
@@ -535,7 +621,182 @@ describe('P3-2 遥测 Store', () => {
       payload: { ...detection, eventId: 'DET-OTHER', dedupeKey: 'DET-OTHER', time: 41 },
     })).toBe(false)
     expect(store.topicSequences['jammer.event']).toBe(3)
-    expect(store.events).toHaveLength(3)
+    expect(store.events).toHaveLength(4)
+  })
+
+  it('实时应用干扰设备状态和链路切换记录', () => {
+    const store = useTelemetryStore()
+    store.$patch({
+      frame: structuredClone(frame),
+      events: structuredClone(fixtureSource.events) as unknown as Array<DetectionEvent | SwitchEvent>,
+      capabilityState: 'SUCCESS',
+    })
+    const jammerStatus = { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 70, frequency: 2200, bandwidth: 40, active: true }
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: jammerStatus,
+    })).toBe(true)
+    expect(store.frame?.platforms.find((platform) => platform.platformId === 'STN-01')?.jammers[0]?.power).toBe(70)
+
+    const switchEvent = { ...structuredClone(fixtureSource.events[1]), eventId: 'SW-NEW', dedupeKey: 'SW-NEW' }
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: switchEvent,
+    })).toBe(true)
+    expect(store.events.at(-1)?.eventId).toBe('SW-NEW')
+  })
+
+  it('接收只存在于摘要身份中的 SW-004 并保持幂等', () => {
+    const store = useTelemetryStore()
+    store.$patch({
+      frame: structuredClone(frame),
+      events: structuredClone(fixtureSource.events) as unknown as Array<DetectionEvent | SwitchEvent>,
+      capabilityState: 'SUCCESS',
+    })
+    const before = store.events.length
+    const switchEvent = structuredClone(fixtureSource.events.find((event) => event.eventId === 'SW-004')) as SwitchEvent
+
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: switchEvent,
+    })).toBe(true)
+    expect(store.events).toHaveLength(before)
+    expect(store.topicSequences['switch.event']).toBe(1)
+  })
+
+  it('拒绝不满足排名、策略、稳定帧或滞回条件的选路证据', () => {
+    const mutations = [
+      (candidate: TelemetryFrame) => {
+        const decision = candidate.evidence.routeDecisions.find((item) => item.direction === 'FORWARD')!
+        decision.selectedLinkId = 'L-SAT-02'
+        decision.metric = 3.2
+      },
+      (candidate: TelemetryFrame) => {
+        candidate.evidence.routeDecisions.find((item) => item.direction === 'FORWARD')!.strategy = 'MIN_BER_WITH_HYSTERESIS'
+      },
+      (candidate: TelemetryFrame) => {
+        candidate.evidence.routeCandidates.find((item) => item.linkId === 'L-LASER-04')!.stabilityFrames = 2
+      },
+      (candidate: TelemetryFrame) => {
+        candidate.evidence.routeDecisions.find((item) => item.direction === 'REVERSE')!.hysteresisThreshold = 2
+      },
+      (candidate: TelemetryFrame) => {
+        candidate.evidence.routeCandidates.find((item) => item.linkId === 'L-MW-01')!.rank = 2
+      },
+    ]
+
+    expect(isTelemetryFrame(frame)).toBe(true)
+    for (const mutate of mutations) {
+      const candidate = structuredClone(frame)
+      mutate(candidate)
+      expect(isTelemetryFrame(candidate)).toBe(false)
+    }
+  })
+
+  it('拒绝与选路结论、冷却、稳定、滞回、BER 或原因码矛盾的实时切换结论', () => {
+    const store = useTelemetryStore()
+    store.$patch({ frame: structuredClone(frame), events: [], capabilityState: 'SUCCESS' })
+    const accepted = structuredClone(fixtureSource.events.find((event) => event.eventId === 'SW-003')) as SwitchEvent
+    const invalidEvents: SwitchEvent[] = [
+      { ...accepted, eventId: 'SW-COOLDOWN', dedupeKey: 'SW-COOLDOWN', cooldownRemainingS: 1 },
+      { ...accepted, eventId: 'SW-STABILITY', dedupeKey: 'SW-STABILITY', stabilityFrames: 2 },
+      { ...accepted, eventId: 'SW-HYSTERESIS', dedupeKey: 'SW-HYSTERESIS', hysteresisSatisfied: false },
+      {
+        ...accepted,
+        eventId: 'SW-OUTSIDE-ROUTE',
+        dedupeKey: 'SW-OUTSIDE-ROUTE',
+        oldLinkId: 'L-DL-03',
+        newLinkId: 'L-SAT-02',
+        oldBer: 2.4e-4,
+        newBer: 1.1e-6,
+      },
+      {
+        ...accepted,
+        eventId: 'SW-WORSE',
+        dedupeKey: 'SW-WORSE',
+        oldLinkId: 'L-MW-01',
+        newLinkId: 'L-SAT-02',
+        oldBer: 3.2e-7,
+        newBer: 1.1e-6,
+      },
+      { ...accepted, eventId: 'SW-REASON', dedupeKey: 'SW-REASON', reason: 'COOLDOWN_ACTIVE' },
+    ]
+
+    for (const payload of invalidEvents) {
+      expect(store.acceptEnvelope({
+        type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-001', sequence: 1,
+        simulationTime: 42, frameId: 'F-00042', payload,
+      })).toBe(false)
+    }
+    expect(store.topicSequences['switch.event']).toBe(0)
+    expect(store.events).toEqual([])
+
+    const valid = { ...accepted, eventId: 'SW-VALID', dedupeKey: 'SW-VALID' }
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-001', sequence: 1,
+      simulationTime: 42, frameId: 'F-00042', payload: valid,
+    })).toBe(true)
+    expect(store.events).toEqual([valid])
+  })
+
+  it('拒绝闭环和参数同步响应中的跨字段不一致', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({
+      principal: { ...operator, permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'] },
+      role: operator.role,
+      permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+    })
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' } as const
+    const decision = {
+      decisionId: 'DEC-DET-042', runId: 'RUN-001', ...context,
+      jammerId: 'JAM-WB-01-TX', action: 'START', linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042', reason: 'AUTO_DETECTION_DET-042',
+    } as const
+    for (const invalid of [
+      { ...decision, effectiveFrameId: 'F-OTHER' },
+      { ...decision, jammerId: 'JAM-SPOT-01-TX' },
+      { ...decision, linkStatus: 'UP' },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(invalid)))
+      setActivePinia(pinia)
+      useAuthStore(pinia).$patch({
+        principal: { ...operator, permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'] },
+        role: operator.role,
+        permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+      })
+      await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(false)
+      expect(store.closedLoopResultCode).toBe('INVALID_RESPONSE')
+    }
+
+    const parameterSet = {
+      version: 5,
+      effectiveFrameId: 'F-00042',
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+    } as const
+    const syncResult = {
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
+      configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'SYNCHRONIZED',
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 72, frequency: 2200, bandwidth: 40, active: true },
+    } as const
+    for (const invalid of [
+      { ...syncResult, effectiveSimulationTime: 41 },
+      { ...syncResult, jammerStatus: { ...syncResult.jammerStatus, time: 41 } },
+      { ...syncResult, jammerStatus: { ...syncResult.jammerStatus, jammerId: 'JAM-SPOT-01-TX' } },
+      { ...syncResult, jammerStatus: { ...syncResult.jammerStatus, power: 71 } },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(invalid)))
+      setActivePinia(pinia)
+      useAuthStore(pinia).$patch({
+        principal: { ...operator, permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'] },
+        role: operator.role,
+        permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+      })
+      await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', parameterSet)).resolves.toBe(false)
+      expect(store.syncResultCode).toBe('INVALID_RESPONSE')
+    }
   })
 
   it('拒绝四类实时主题的跨任务信封且不推进任何投影', async () => {
@@ -611,7 +872,7 @@ describe('P3-2 遥测 Store', () => {
 
     socket?.emit('open')
     expect(JSON.parse(socket?.sent[0] ?? '{}')).toMatchObject({
-      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event'], lastSequence: 0,
+      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'], lastSequence: 0,
     })
     socket?.emit('message', JSON.stringify({ type: 'subscribed' }))
     expect(store.connectionState).toBe('SUBSCRIBED')
@@ -785,7 +1046,7 @@ describe('P3-2 遥测 Store', () => {
       },
     })).toBe(false)
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [null] } })).toBe(false)
-    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [] } })).toBe(true)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, routeCandidates: [], routeDecisions: [] } })).toBe(true)
     expect(isTelemetryFrame({
       ...frame,
       evidence: {

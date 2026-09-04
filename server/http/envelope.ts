@@ -23,6 +23,8 @@ const DEFAULT_MESSAGES: Record<ApiErrorCode, string> = {
   INVALID_TRANSITION: 'The requested state transition is invalid.',
   NODE_LIMIT_EXCEEDED: 'The business node limit was exceeded.',
   DUPLICATE_EVENT: 'The event was already accepted.',
+  VERSION_CONFLICT: '参数版本与当前投影冲突。',
+  FRAME_MISMATCH: '请求数据与当前仿真帧不一致。',
   HEADER_INVALID: 'The header is invalid.',
   TYPE_INVALID: 'The value type is invalid.',
   ENCODING_INVALID: 'The encoding is invalid.',

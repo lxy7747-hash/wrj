@@ -3,11 +3,13 @@ import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
+import { useDataExchangeStore } from './stores/data-exchange'
 import { useScenarioStore } from './stores/scenario'
 import { useSimulationStore } from './stores/simulation'
 import { useTelemetryStore } from './stores/telemetry'
 
 const auth = useAuthStore()
+const dataExchange = useDataExchangeStore()
 const scenario = useScenarioStore()
 const simulation = useSimulationStore()
 const telemetry = useTelemetryStore()
@@ -20,6 +22,7 @@ watch(
       telemetry.disconnectAndReset()
       simulation.resetToSafeEmpty()
       scenario.resetToSafeEmpty()
+      dataExchange.resetToSafeEmpty()
     }
   },
   { immediate: true, flush: 'sync' },

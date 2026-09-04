@@ -12,7 +12,7 @@
 | `/replays` | `ReplaysPage` | `ReplaySelector`, `ReplayTimeline`, `ReplayToolbar`, `ReplayEventDetail` | `replayStore`, `telemetryStore`, `uiStore` | replays | `requirePrincipal` |
 | `/admin` | `AdminPage` | `MasterDataPanel`, `UserRolePanel`, `BackupRestoreWizard`, `AuditPanel`, `FullConfigExportPanel`, `ArchivePanel`, `HealthPanel` | `adminStore`, `authStore`, `uiStore` | admin groups including `/api/v1/admin/config/export` | `requireAdmin`; operator 重定向 `/blueprint` 并显示拒绝原因 |
 | `/blueprint` | `BlueprintPage` | `CapabilityCardGrid`, `InterfaceContractTable`, `DecisionRegister` | `traceabilityStore`, `authStore`, `uiStore` | meta capabilities/interfaces/decisions | `requirePrincipal` |
-| `/admin/data-exchange` | `DataExchangePage` | `CsvContractCard`, `ScenarioJsonPanel`, `WebSocketContractCard`, `ProcessContractCard`, `InterfaceContractTable` | `scenarioStore`, `simulationStore`, `telemetryStore`, `traceabilityStore`, `uiStore` | contracts/csv；scenario JSON；`/ws/v1`；runtime state | `requirePrincipal`; 通过 `/admin` 系统管理壳进入，其他管理子页仍需 `requireAdmin` |
+| `/admin/data-exchange` | `DataExchangePage` | `CsvContractCard`, `ScenarioJsonPanel`, `WebSocketContractCard`, `ProcessContractCard`, `InterfaceContractTable` | `dataExchangeStore`, `scenarioStore`, `simulationStore`, `telemetryStore` | contracts/csv；scenario JSON；`/ws/v1`；runtime state | `requirePrincipal`; 通过 `/admin` 系统管理壳进入，其他管理子页仍需 `requireAdmin` |
 | `/traceability` | `TraceabilityPage` | `TraceFilterBar`, `RequirementTraceTable`, `InterfaceTraceTable` | `traceabilityStore`, `uiStore` | meta capabilities/interfaces/routes | `requirePrincipal` |
 | `/interactions` | `InteractionsPage` | `StateFixtureGallery`, `ErrorCatalogPanel`, `ContractExamples` | `authStore`, `scenarioStore`, `simulationStore`, `telemetryStore`, `batchStore`, `reportStore`, `replayStore`, `adminStore`, `traceabilityStore`, `uiStore` | contracts/meta/reset | `requirePrincipal` |
 
@@ -26,6 +26,7 @@
 | `scenarioStore` | canonical draft、UI 扩展、history、revision、validation、warning confirmation、templates、script preview、lock projection | `load`, `edit`, `validate`, `requestWarningConfirmation`, `importScenarioSnapshot`, `undo`, `resetDraft`, `copyTemplate`, `previewScript`, `resetToSafeEmpty` | 仿真计时器、官方持久化假象 |
 | `simulationStore` | RUN-001 UI/canonical 状态、time/progress/mode/speed、config lock、command feedback | `create`, `command`, `setSpeed`, `step`, `clearTimers`, `resetProjection`, `resetToSafeEmpty` | telemetry 数组、浏览器定时期望值 |
 | `telemetryStore` | 按 frameId 的平台/链路/事件、topic sequence、新鲜度 | `connect`, `subscribe`, `acceptEnvelope`, `markDisconnected`, `disconnectAndReset`, `loadFrame`, `resetToSafeEmpty` | 仿真命令、地图实例 |
+| `dataExchangeStore` | CSV/JSON 校验结果、合同目录、七类接口元数据和进程可见投影 | `loadContracts`, `validateCsv`, `parseScenarioJson`, `inspectProcess`, `resetToSafeEmpty` | 真实文件句柄、操作系统进程、场景草稿副本 |
 | `batchStore` | batch form、BATCH-001、12 行、状态、selected run | `validate`, `create`, `command`, `loadComparison`, `resetToSafeEmpty` | report export 权限/确认 |
 | `reportStore` | 报告列表、source、KPI view-model、tabs、confirmation、export result | `selectSource`, `load`, `requestExport`, `confirmExport`, `cancelConfirmation`, `invalidateConfirmation`, `resetToSafeEmpty` | 文件 Blob/下载 URL |
 | `replayStore` | REPLAY-001、游标、速度、state、事件选择 | `load`, `play`, `pause`, `seek`, `step`, `setSpeed`, `stopPlaybackTimer`, `resetToSafeEmpty` | RUN 原始数据写操作 |
@@ -37,7 +38,7 @@
 
 - `SituationPage` 只通过 selectors 获取同一 F-00042：地图、指标、弹窗必须同 frameId；ageMs 只接受 0～5000 ms，并按当前、最近 1 秒、最近 5 秒呈现，超过 5 秒拒绝。
 - `ScenariosPage` 对 `ScenarioConfig` 使用单一 canonical 编辑副本，并以独立 `ScenarioUiExtensions` 保存干扰器/传感器 UI 扩展；保存/预览前必经 AJV+业务规则。四类业务信息节点合计支持 50 个，支撑实体不计数；新增第 51 个业务信息节点以 `NODE_LIMIT_EXCEEDED` 阻断且草稿不改变。
-- `DataExchangePage` 作为系统管理下的共享子功能，集中承载 CSV、场景 JSON、本机消息和 AFSIM 进程四项数据交换能力；按钮只更新确定性内存合同，真实 Node.js Mock 由对应 adapter 替换，不在页面内读写文件、连接 WebSocket 或启动进程。操作员可进入本子功能，其他管理子页仍拒绝访问。
+- `DataExchangePage` 作为系统管理下的共享子功能，集中承载 CSV、场景 JSON、本机消息和 AFSIM 进程四项数据交换能力；页面通过本机 Mock 加载合同并复用 `telemetryStore` 连接回环 WebSocket，但不读写真实文件、不启动操作系统进程。操作员可进入本子功能，其他管理子页仍拒绝访问。
 - 场景实体类型控件按“业务信息节点”和“支撑实体”分组，`category` 只以“部署域”标签展示。校验存在警告而无错误时，预览脚本前必须完成一次性确认；存在错误时不得发起确认或预览。
 - `ReportsPage` 的普通/批次 source 选择一次性替换 KPI、时序曲线、表格和导出策略；普通报告曲线只消费 `Report.timeSeries` 正式时序点，批次报告没有时序点时显示空态；禁止混合 RUN-001 与 BATCH-001 数据。
 - `ReplaysPage` 使用 RUN-001 快照的只读投影；回放动作不发布 simulation control topic。
@@ -61,4 +62,4 @@
 
 ## 组件验收规则
 
-每个 29 项 capability component 必须提供已声明状态切换测试、fixture evidence、错误/空状态和可达锚点；T-XQ-010、T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-014、T-XQ-018 固定证据能力不声明无来源的 `EXECUTING`。表格在 1366×768 下允许内部横向滚动但操作列可达；1920×1080 下核心态势与控制不得依赖页面纵向滚动。所有图表有文本/表格等价内容，颜色不是唯一状态提示。
+每个 29 项 capability component 必须提供已声明状态切换测试、fixture evidence、错误/空状态和可达锚点；T-XQ-010、T-XQ-011、T-XQ-012、T-XQ-013、T-XQ-014、T-XQ-018～021 固定证据能力不声明无来源的 `EXECUTING`。表格在 1366×768 下允许内部横向滚动但操作列可达；1920×1080 下核心态势与控制不得依赖页面纵向滚动。所有图表有文本/表格等价内容，颜色不是唯一状态提示。

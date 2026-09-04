@@ -1083,13 +1083,13 @@ watch(activeTab, (tab) => {
       <el-tabs v-model="activeTab" class="scenario-tabs">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-labelledby="scenario-basic-title">
-<!--        <div class="section-heading">-->
-<!--          <div>-->
-<!--            <p class="section-kicker">基础信息</p>-->
-<!--            <h3 id="scenario-basic-title">场景标识</h3>-->
-<!--          </div>-->
-<!--        </div>-->
-        <div class="form-grid form-grid--basic">
+       <div class="section-heading">
+         <div>
+           <p class="section-kicker">基础信息</p>
+           <h3 id="scenario-basic-title">场景标识</h3>
+         </div>
+       </div>
+        <div class="form-grid form-grid--basic form-grid--scenario-identity">
           <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
           </el-form-item>
@@ -1815,6 +1815,10 @@ watch(activeTab, (tab) => {
   grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 2fr);
 }
 
+.form-grid--scenario-identity {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .form-grid--timing {
   grid-template-columns: repeat(3, minmax(11rem, 1fr));
 }
@@ -1825,6 +1829,42 @@ watch(activeTab, (tab) => {
 
 .form-grid__wide {
   grid-column: 1 / -1;
+}
+
+.form-grid--scenario-identity :deep(.el-form-item),
+.form-grid--timing :deep(.el-form-item),
+.form-grid--environment :deep(.el-form-item) {
+  display: grid;
+  width: 100%;
+  max-width: 30rem;
+  align-items: start;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+}
+
+.form-grid--scenario-identity :deep(.el-form-item__label),
+.form-grid--timing :deep(.el-form-item__label),
+.form-grid--environment :deep(.el-form-item__label) {
+  display: flex;
+  width: 100%;
+  height: 2rem;
+  align-items: center;
+  justify-content: flex-end;
+  margin: 0;
+  padding-right: 0.5rem;
+  line-height: 2rem;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.form-grid--scenario-identity :deep(.el-form-item__content),
+.form-grid--timing :deep(.el-form-item__content),
+.form-grid--environment :deep(.el-form-item__content) {
+  min-width: 0;
+}
+
+.form-grid--scenario-identity :deep(.form-grid__wide) {
+  grid-column: auto;
+  max-width: 36rem;
 }
 
 .scenario-form :deep(.el-input-number) {
@@ -1999,10 +2039,6 @@ watch(activeTab, (tab) => {
 .multipath-field :deep(.el-form-item__content) {
   min-height: 32px;
   align-items: center;
-  padding: 0 0.75rem;
-  border: 1px solid var(--console-border);
-  border-radius: 4px;
-  background: var(--console-bg-elevated);
 }
 
 @media (max-width: 960px) {

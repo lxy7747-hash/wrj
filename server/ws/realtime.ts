@@ -3,6 +3,7 @@ import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   RealtimeEnvelope,
   FrameId,
+  JammerStatusData,
   ResetResult,
   SimulationRun,
   SimulationState,
@@ -27,6 +28,7 @@ const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
 export interface RealtimeController {
   activeClientCount(): number
   publishRuntimeState(run: SimulationRun): void
+  publishJammerStatus(status: JammerStatusData, frameId: FrameId): void
   invalidateForReset(): void
   reset(): ResetResult
   close(): Promise<void>
@@ -48,9 +50,7 @@ function isDemoRole(value: string | undefined): boolean {
 function parseSubscription(data: RawData, isBinary: boolean):
   | { accepted: true; request: WsSubscribeRequest }
   | { accepted: false; code: WsRejection['code']; message: string } {
-  const byteLength = Array.isArray(data)
-    ? data.reduce((total, chunk) => total + chunk.byteLength, 0)
-    : data.byteLength
+  const byteLength = Buffer.byteLength(data.toString())
   if (byteLength > MAX_SUBSCRIPTION_BYTES) {
     return { accepted: false, code: 'INVALID_ENVELOPE', message: 'The subscription exceeds 16384 bytes.' }
   }
@@ -191,7 +191,7 @@ function createEnvelope<T>(
   projection: MockProjection,
   topic: WsTopic,
   payload: T,
-  simulationTime?: number,
+  simulationTime: number,
   frameId?: FrameId,
 ): RealtimeEnvelope<T> {
   const taskId = projection.snapshot().task.taskId
@@ -201,7 +201,7 @@ function createEnvelope<T>(
     topic,
     taskId,
     sequence: projection.nextSequence(taskId, topic),
-    ...(simulationTime === undefined ? {} : { simulationTime }),
+    simulationTime,
     ...(frameId === undefined ? {} : { frameId }),
     payload,
   }
@@ -233,6 +233,9 @@ export function attachRealtimeServer(
         if (run !== undefined) envelope = createEnvelope(projection, topic, run.canonical, run.canonical.currentTime)
       } else if (topic === 'jammer.event') {
         const event = snapshot.events.find((item) => item.type === 'DETECTION')
+        if (event !== undefined) envelope = createEnvelope(projection, topic, event, event.time, event.frameId)
+      } else if (topic === 'switch.event') {
+        const event = snapshot.events.find((item) => item.type === 'LINK_SWITCH')
         if (event !== undefined) envelope = createEnvelope(projection, topic, event, event.time, event.frameId)
       }
       if (envelope === undefined) return
@@ -295,6 +298,20 @@ export function attachRealtimeServer(
       const message = JSON.stringify(envelope)
       currentEnvelopes.set('runtime.state', message)
       subscribers.forEach(([client]) => client.send(message))
+    },
+    publishJammerStatus: (status, frameId): void => {
+      const envelope: RealtimeEnvelope<JammerStatusData> = createEnvelope(
+        projection,
+        'jammer.event',
+        status,
+        status.time,
+        frameId,
+      )
+      const message = JSON.stringify(envelope)
+      currentEnvelopes.set('jammer.event', message)
+      for (const [client, topics] of clients) {
+        if (topics.has('jammer.event')) client.send(message)
+      }
     },
     invalidateForReset,
     reset: () => {

@@ -730,12 +730,14 @@ describe('P1 authentication and routing', () => {
     const { wrapper } = await mountAt(InteractionsPage, '/interactions')
 
     expect(wrapper.text()).toContain('感知、干扰与选路')
-    expect(wrapper.text()).toContain('感知与侦测')
+    expect(wrapper.text()).toContain('ESM 传感器与侦测结果')
     expect(wrapper.text()).toContain('干扰控制')
-    expect(wrapper.text()).toContain('链路优选与切换')
+    expect(wrapper.text()).toContain('干扰最小通道')
+    expect(wrapper.text()).toContain('误码最低稳定链路')
+    expect(wrapper.text()).toContain('链路切换记录')
     expect(wrapper.get('[data-testid="composite-loss-example"]')).toBeTruthy()
     expect(wrapper.get('[data-testid="snr-ber-example"]')).toBeTruthy()
-    expect(wrapper.text()).not.toMatch(/P0|P1|P4|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
+    expect(wrapper.text()).not.toMatch(/P0|P1|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
       'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
       'http://127.0.0.1:4173/api/v1/simulations/RUN-001/frames/F-00042',

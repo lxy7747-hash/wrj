@@ -52,7 +52,7 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
-  it('accepts the authoritative 62-operation contract', () => {
+  it('accepts the authoritative 63-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(auditOpenApi(openApi)).toEqual([])
@@ -64,9 +64,25 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(62)
-    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(31)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(62)
+    expect(operations).toHaveLength(63)
+    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(32)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(63)
+  })
+
+  it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {
+    const { openApi } = loadContractDocuments()
+    expect(requestSchemaAt(openApi, '/api/v1/simulations/{runId}/events', 'post')).toEqual({
+      $ref: '#/components/schemas/PostapiV1SimulationsRunIdEventsRequest',
+    })
+    expect(schemaAt(openApi, 'PostapiV1SimulationsRunIdEventsRequest')).toEqual({
+      $ref: '#/components/schemas/ClosedLoopContext',
+    })
+    expect(requestSchemaAt(openApi, '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', 'post')).toEqual({
+      $ref: '#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersRequest',
+    })
+    expect(schemaAt(openApi, 'PostapiV1TasksTaskIdJammersJammerIdParametersRequest')).toEqual({
+      $ref: '#/components/schemas/JammingParameterSet',
+    })
   })
 
   it('uses the minimal scenario draft update wrapper without server-owned fields', () => {

@@ -1,6 +1,6 @@
 # 04 本机确定性 Mock API
 
-`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。62 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 31 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
+`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。63 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 32 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
 
 ## 启动与安全不变量
 
@@ -33,7 +33,7 @@
 - metadata：capabilities 固定 29、interfaces 固定 7、decisions 固定 8、routes 固定 11。
 - scenario/template：临时草稿可由两角色编辑；官方库写操作仅 ADMIN；校验含 schema/引用/单位/时序/频段、四类业务信息节点 50 个容量、至少一项信息需求、四类链路和两类干扰设备。WARNING 继续预览需一次性确认，ERROR 直接拒绝；官方模板删除需确认和引用检查。
 - script/contract：只返回预览、预检、五接口与三 CSV 描述。
-- simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实；重复 eventId 返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`，输入 `JammingCommand` 并返回带生效帧的 `JammerState`；Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
+- simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实。`POST /api/v1/simulations/{runId}/events` 输入 `ClosedLoopContext`、返回 `JammingDecision`，同目标同帧重复迁移返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`；参数同步使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/parameters`，输入 `JammingParameterSet`、返回四端版本一致的 `SyncResult`，旧版本或错误生效帧被拒绝。Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
 - batch/report/replay：BATCH-001 固定 12 对；普通与批次 report source 不混用；回放只移动游标；export 始终 `generated:false`。
 - admin：所有 master/user/audit/backup/archive/health 都是内存状态；恢复失败仅展示回滚合同。backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；所有导出结果固定 `generated:false`。
 - reset：清理定时器、连接、确认和可变 projection，重载 fixture，并把 WS sequence 恢复为 1。

@@ -2,13 +2,18 @@ import { defineStore } from 'pinia'
 import type {
   ApiFailure,
   CapabilityState,
+  ClosedLoopContext,
   DetectionEvent,
+  JammingDecision,
   JammingCommand,
+  JammingParameterSet,
+  JammerStatusData,
   JammerState,
   LinkStatusSummary,
   RealtimeEnvelope,
   SimulationState,
   SwitchEvent,
+  SyncResult,
   TelemetryFrame,
   TaskId,
   WsConnectionState,
@@ -20,7 +25,7 @@ import { useSimulationStore } from './simulation'
 
 type SituationEvent = DetectionEvent | SwitchEvent
 
-const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event']
+const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event']
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
 const PLATFORM_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE',
@@ -69,7 +74,7 @@ function hasFiniteNumbers(value: Record<string, unknown>, keys: readonly string[
 }
 
 /** 校验平台内嵌的干扰设备遥测。 */
-function isJammerStatus(value: unknown): boolean {
+function isJammerStatus(value: unknown): value is JammerStatusData {
   if (!isRecord(value)) return false
   const hasTarget = Object.prototype.hasOwnProperty.call(value, 'targetPlatform')
   return Object.keys(value).length === (hasTarget ? 8 : 7)
@@ -156,7 +161,7 @@ function isUiLink(value: unknown): value is TelemetryFrame['uiLinks'][number] {
 /** 校验链路候选面板会读取的完整候选证据。 */
 function isRouteCandidate(value: unknown): value is TelemetryFrame['evidence']['routeCandidates'][number] {
   if (!isRecord(value)) return false
-  return Object.keys(value).length === 7
+  return Object.keys(value).length === 8
     && typeof value.linkId === 'string' && value.linkId.length > 0
     && (value.direction === 'FORWARD' || value.direction === 'REVERSE')
     && typeof value.eligible === 'boolean'
@@ -164,6 +169,61 @@ function isRouteCandidate(value: unknown): value is TelemetryFrame['evidence']['
     && Number(value.ber) >= 0 && Number(value.ber) <= 1
     && Number.isInteger(value.stabilityFrames) && Number(value.stabilityFrames) >= 0
     && Number.isInteger(value.rank) && Number(value.rank) >= 1
+    && (value.eliminationReason === null || (typeof value.eliminationReason === 'string' && value.eliminationReason.length > 0))
+    && (value.eligible ? value.eliminationReason === null : value.eliminationReason !== null)
+}
+
+/** 校验逐帧选路结果所需的完整决策证据。 */
+function isRouteDecision(value: unknown): value is TelemetryFrame['evidence']['routeDecisions'][number] {
+  if (!isRecord(value) || Object.keys(value).length !== 12) return false
+  return hasNonEmptyStrings(value, ['taskId', 'runId', 'frameId', 'selectedLinkId', 'previousLinkId', 'reason'])
+    && (value.direction === 'FORWARD' || value.direction === 'REVERSE')
+    && (value.strategy === 'MIN_JAM_IMPACT' || value.strategy === 'MIN_BER_WITH_HYSTERESIS')
+    && hasFiniteNumbers(value, ['simulationTime', 'metric', 'minimumStableFrames'])
+    && Number(value.simulationTime) >= 0
+    && Number.isInteger(value.minimumStableFrames) && Number(value.minimumStableFrames) >= 1
+    && (value.hysteresisThreshold === null
+      || (typeof value.hysteresisThreshold === 'number' && Number.isFinite(value.hysteresisThreshold)
+        && value.hysteresisThreshold >= 0 && value.hysteresisThreshold <= 1))
+}
+
+/** 校验固定帧中的候选排名和最终选路语义。 */
+function hasValidRouteDecisions(frame: TelemetryFrame): boolean {
+  if (frame.evidence.routeCandidates.length === 0) return frame.evidence.routeDecisions.length === 0
+  if (frame.evidence.routeDecisions.length !== 2) return false
+
+  return (['FORWARD', 'REVERSE'] as const).every((direction) => {
+    const candidates = frame.evidence.routeCandidates
+      .filter((candidate) => candidate.direction === direction)
+      .slice()
+      .sort((left, right) => left.rank - right.rank)
+    const decision = frame.evidence.routeDecisions.find((item) => item.direction === direction)
+    if (decision === undefined || candidates.length === 0
+      || candidates.some((candidate, index) => candidate.rank !== index + 1)
+      || candidates.some((candidate, index) => !candidate.eligible && candidates.slice(index + 1).some((item) => item.eligible))) {
+      return false
+    }
+
+    const eligible = candidates.filter((candidate) => candidate.eligible)
+    const metric = direction === 'FORWARD' ? 'jamImpactDb' : 'ber'
+    if (eligible.length === 0
+      || eligible.some((candidate, index) => index > 0 && candidate[metric] < eligible[index - 1]![metric])) return false
+
+    const selected = eligible[0]
+    if (decision.selectedLinkId !== selected.linkId
+      || decision.metric !== selected[metric]
+      || selected.stabilityFrames < decision.minimumStableFrames
+      || !frame.links.some((link) => link.linkId === decision.previousLinkId)) return false
+
+    return direction === 'FORWARD'
+      ? decision.strategy === 'MIN_JAM_IMPACT'
+        && decision.hysteresisThreshold === null
+        && decision.reason === 'MINIMUM_JAM_IMPACT'
+      : decision.strategy === 'MIN_BER_WITH_HYSTERESIS'
+        && decision.hysteresisThreshold !== null
+        && selected.ber <= decision.hysteresisThreshold
+        && decision.reason === 'MINIMUM_BER_AND_STABLE'
+  })
 }
 
 /** 校验传播损耗页面会读取的完整分量证据。 */
@@ -305,15 +365,27 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.eventIds)
     && value.eventIds.every((eventId) => typeof eventId === 'string' && eventId.length > 0)
     && new Set(value.eventIds).size === value.eventIds.length
-    && isRecord(value.evidence) && Object.keys(value.evidence).length === 4
+    && isRecord(value.evidence) && Object.keys(value.evidence).length === 5
     && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
+    && Array.isArray(value.evidence.routeDecisions)
+    && (value.evidence.routeDecisions.length === 0 || (value.evidence.routeDecisions.length === 2
+      && value.evidence.routeDecisions.every((decision) => isRouteDecision(decision)
+        && decision.taskId === value.taskId
+        && decision.runId === value.runId
+        && decision.frameId === value.frameId
+        && decision.simulationTime === value.simulationTime
+        && (value.evidence as TelemetryFrame['evidence']).routeCandidates.some((candidate) => candidate.direction === decision.direction
+          && candidate.linkId === decision.selectedLinkId && candidate.eligible))
+      && new Set(value.evidence.routeDecisions.map((decision) => decision.direction)).size === 2))
     && isSynchronizationEvidence(value.evidence.synchronization)
     && isJammerExecutionEvidence(value.evidence.jammerExecution)
   if (!structurallyValid) return false
 
+  const frame = value as unknown as TelemetryFrame
   return frameConsistencyIssue(value) === null
     && validateCandidateSnapshot(value as unknown as TelemetryFrame) === null
+    && hasValidRouteDecisions(frame)
 }
 
 /** 校验同帧侦测或链路切换事件的公共身份字段。 */
@@ -336,12 +408,42 @@ function isSituationEvent(value: unknown): value is SituationEvent {
       && value.detectionProbability >= 0
       && value.detectionProbability <= 1
   }
-  return Object.keys(value).length === (hasRegistryTime ? 10 : 9)
+  return Object.keys(value).length === (hasRegistryTime ? 17 : 16)
     && value.type === 'LINK_SWITCH'
+    && (value.direction === 'FORWARD' || value.direction === 'REVERSE')
     && typeof value.oldLinkId === 'string' && value.oldLinkId.length > 0
     && typeof value.newLinkId === 'string' && value.newLinkId.length > 0
+    && hasFiniteNumbers(value, ['oldBer', 'newBer', 'stabilityFrames', 'minimumStableFrames', 'cooldownRemainingS'])
+    && Number(value.oldBer) >= 0 && Number(value.oldBer) <= 1
+    && Number(value.newBer) >= 0 && Number(value.newBer) <= 1
+    && Number.isInteger(value.stabilityFrames) && Number(value.stabilityFrames) >= 0
+    && Number.isInteger(value.minimumStableFrames) && Number(value.minimumStableFrames) >= 1
+    && typeof value.hysteresisSatisfied === 'boolean'
+    && Number(value.cooldownRemainingS) >= 0
     && (value.decision === 'ACCEPTED' || value.decision === 'REJECTED')
-    && typeof value.reason === 'string'
+    && typeof value.reason === 'string' && value.reason.length > 0
+}
+
+/** 校验链路切换结论与当前帧指标、稳定性、滞回和冷却证据一致。 */
+function isSwitchEventConsistent(event: SwitchEvent, frame: TelemetryFrame): boolean {
+  const routeDecision = frame.evidence.routeDecisions.find((decision) => decision.direction === event.direction)
+  const oldSummary = frame.linkSummaries.find((summary) => resolveLinkId(summary, frame) === event.oldLinkId)
+  const newSummary = frame.linkSummaries.find((summary) => resolveLinkId(summary, frame) === event.newLinkId)
+  if (routeDecision === undefined || oldSummary === undefined || newSummary === undefined
+    || event.oldLinkId === event.newLinkId
+    || event.oldBer !== oldSummary.currentBer
+    || event.newBer !== newSummary.currentBer) return false
+
+  if (event.decision === 'ACCEPTED') {
+    return event.oldLinkId === routeDecision.previousLinkId
+      && event.newLinkId === routeDecision.selectedLinkId
+      && event.cooldownRemainingS === 0
+      && event.stabilityFrames >= event.minimumStableFrames
+      && event.hysteresisSatisfied
+      && event.newBer < event.oldBer
+      && event.reason === 'BER_THRESHOLD_AND_HYSTERESIS'
+  }
+  return event.reason === 'COOLDOWN_ACTIVE' && event.cooldownRemainingS > 0
 }
 
 /** 校验实时规范仿真状态。 */
@@ -367,7 +469,7 @@ class TelemetryFieldError extends Error {
   }
 }
 
-class JammerControlError extends Error {
+class CapabilityRequestError extends Error {
   constructor(
     readonly code: string,
     readonly fieldPath: string | null,
@@ -416,18 +518,122 @@ async function readJammerState(response: Response, taskId: TaskId, jammerId: str
   if (!response.ok) {
     if (isRecord(payload) && isRecord(payload.error)
       && typeof payload.error.code === 'string' && typeof payload.error.message === 'string') {
-      throw new JammerControlError(
+      throw new CapabilityRequestError(
         payload.error.code,
         typeof payload.error.fieldPath === 'string' ? payload.error.fieldPath : null,
         payload.error.message,
       )
     }
-    throw new JammerControlError('JAMMER_CONTROL_FAILED', null, '干扰控制请求失败。')
+    throw new CapabilityRequestError('JAMMER_CONTROL_FAILED', null, '干扰控制请求失败。')
   }
   if (!isRecord(payload) || payload.ok !== true || !isJammerState(payload.data, taskId, jammerId)) {
-    throw new JammerControlError('INVALID_RESPONSE', null, '干扰控制响应格式不正确。')
+    throw new CapabilityRequestError('INVALID_RESPONSE', null, '干扰控制响应格式不正确。')
   }
   return payload.data
+}
+
+/** 从统一信封读取类型化能力结果，并保留服务端的字段级错误。 */
+async function readCapabilityResult<T>(
+  response: Response,
+  validate: (value: unknown) => value is T,
+  fallbackCode: string,
+  fallbackMessage: string,
+): Promise<T> {
+  const payload = await response.json() as unknown
+  if (!response.ok) {
+    if (isRecord(payload) && isRecord(payload.error)
+      && typeof payload.error.code === 'string' && typeof payload.error.message === 'string') {
+      throw new CapabilityRequestError(
+        payload.error.code,
+        typeof payload.error.fieldPath === 'string' ? payload.error.fieldPath : null,
+        payload.error.message,
+      )
+    }
+    throw new CapabilityRequestError(fallbackCode, null, fallbackMessage)
+  }
+  if (!isRecord(payload) || payload.ok !== true || !validate(payload.data)) {
+    throw new CapabilityRequestError('INVALID_RESPONSE', null, '服务响应格式不正确。')
+  }
+  return payload.data
+}
+
+/** 校验逐帧闭环输入的闭合结构。 */
+function isClosedLoopContext(value: unknown): value is ClosedLoopContext {
+  return isRecord(value)
+    && Object.keys(value).length === 4
+    && hasNonEmptyStrings(value, ['frameId', 'detectionEventId', 'targetPlatformId', 'affectedLinkId'])
+}
+
+/** 校验服务端返回的闭环干扰决策。 */
+function isJammingDecision(
+  value: unknown,
+  runId: string,
+  context: ClosedLoopContext,
+  frame: TelemetryFrame,
+): value is JammingDecision {
+  return isRecord(value)
+    && Object.keys(value).length === 11
+    && hasNonEmptyStrings(value, [
+      'decisionId', 'runId', 'frameId', 'detectionEventId', 'targetPlatformId',
+      'jammerId', 'affectedLinkId', 'effectiveFrameId', 'reason',
+    ])
+    && value.action === 'START'
+    && (value.linkStatus === 'UP' || value.linkStatus === 'DEGRADED' || value.linkStatus === 'DOWN')
+    && value.runId === runId
+    && value.frameId === context.frameId
+    && value.detectionEventId === context.detectionEventId
+    && value.targetPlatformId === context.targetPlatformId
+    && value.affectedLinkId === context.affectedLinkId
+    && value.effectiveFrameId === frame.frameId
+    && value.jammerId === frame.evidence.jammerExecution.jammerId
+    && value.linkStatus === frame.uiLinks.find((link) => link.linkId === context.affectedLinkId)?.status
+}
+
+/** 校验带版本和生效帧的干扰参数集。 */
+function isJammingParameterSet(value: unknown): value is JammingParameterSet {
+  return isRecord(value)
+    && Object.keys(value).length === 3
+    && Number.isSafeInteger(value.version) && Number(value.version) > 0
+    && typeof value.effectiveFrameId === 'string' && value.effectiveFrameId.startsWith('F-')
+    && isJammingCommand(value.parameters)
+}
+
+/** 校验四端版本一致的干扰参数同步结果。 */
+function isSyncResult(
+  value: unknown,
+  taskId: TaskId,
+  jammerId: string,
+  parameterSet: JammingParameterSet,
+  frame: TelemetryFrame,
+): value is SyncResult {
+  if (!isRecord(value) || Object.keys(value).length !== 11) return false
+  const versions = [
+    value.parameterVersion, value.configParameterVersion, value.nodeParameterVersion,
+    value.engineParameterVersion, value.uiParameterVersion,
+  ]
+  const jammerStatus = value.jammerStatus
+  return hasNonEmptyStrings(value, ['taskId', 'jammerId', 'effectiveFrameId'])
+    && versions.every((version) => Number.isSafeInteger(version) && Number(version) > 0)
+    && new Set(versions).size === 1
+    && typeof value.effectiveSimulationTime === 'number' && Number.isFinite(value.effectiveSimulationTime)
+    && value.effectiveSimulationTime >= 0
+    && value.status === 'SYNCHRONIZED'
+    && isJammerStatus(jammerStatus)
+    && value.taskId === taskId
+    && value.taskId === frame.taskId
+    && value.jammerId === jammerId
+    && value.parameterVersion === parameterSet.version
+    && value.effectiveFrameId === parameterSet.effectiveFrameId
+    && value.effectiveFrameId === frame.frameId
+    && value.effectiveSimulationTime === frame.simulationTime
+    && jammerStatus.time === frame.simulationTime
+    && jammerStatus.jammerId === jammerId
+    && jammerStatus.active === parameterSet.parameters.enabled
+    && jammerStatus.frequency === parameterSet.parameters.frequency
+    && jammerStatus.bandwidth === parameterSet.parameters.bandwidth
+    && jammerStatus.power === parameterSet.parameters.power
+    && frame.platforms.some((platform) => platform.platformId === jammerStatus.platformId
+      && platform.jammers.some((jammer) => jammer.jammerId === jammerId))
 }
 
 /** 返回事件集合相对当前遥测帧的首个可定位错误。 */
@@ -457,6 +663,13 @@ function findEventCollectionError(frame: TelemetryFrame, events: SituationEvent[
   ))
   if (invalidTargetIndex >= 0) {
     return new TelemetryFieldError('TARGET_NOT_FOUND', `events[${invalidTargetIndex}].targetPlatformId`, '侦测目标不存在。')
+  }
+
+  const invalidSwitchIndex = events.findIndex((event) => (
+    event.type === 'LINK_SWITCH' && !isSwitchEventConsistent(event, frame)
+  ))
+  if (invalidSwitchIndex >= 0) {
+    return new TelemetryFieldError('SWITCH_DECISION_INVALID', `events[${invalidSwitchIndex}].decision`, '链路切换结论与当前帧决策证据不一致。')
   }
 
   const eventIdSet = new Set(eventIds)
@@ -551,6 +764,17 @@ export const useTelemetryStore = defineStore('telemetry', {
     jammerResultCode: 'EMPTY',
     jammerResultMessage: '尚未执行干扰控制命令。',
     jammerResultFieldPath: null as string | null,
+    closedLoopDecision: null as JammingDecision | null,
+    closedLoopState: 'EMPTY' as CapabilityState,
+    closedLoopResultCode: 'EMPTY',
+    closedLoopResultMessage: '尚未执行逐帧干扰闭环。',
+    closedLoopResultFieldPath: null as string | null,
+    syncResult: null as SyncResult | null,
+    syncVersions: {} as Record<string, number>,
+    syncState: 'EMPTY' as CapabilityState,
+    syncResultCode: 'EMPTY',
+    syncResultMessage: '尚未同步干扰参数。',
+    syncResultFieldPath: null as string | null,
     requestEpoch: 0,
   }),
 
@@ -599,13 +823,162 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.jammerResultMessage = `${state.reason}，生效帧 ${state.effectiveFrameId}。`
         return true
       } catch (error) {
-        const failure = error instanceof JammerControlError ? error : null
+        const failure = error instanceof CapabilityRequestError ? error : null
         this.jammerControlState = 'ERROR'
         this.jammerResultCode = failure?.code ?? 'NETWORK_ERROR'
         this.jammerResultMessage = failure?.message ?? '干扰控制服务暂时不可用。'
         this.jammerResultFieldPath = failure?.fieldPath ?? null
         return false
       }
+    },
+
+    /**
+     * 执行同目标同帧的侦测、启扰与链路劣化闭环。
+     * @param runId 闭环所属仿真运行编号。
+     * @param context 侦测事件、目标、帧和受影响链路上下文。
+     * @returns 服务端首次接受该状态迁移时返回 `true`。
+     * @sideEffects 更新闭环六态、决策证据和重复事件拒绝原因。
+     */
+    async runClosedLoop(runId: string, context: ClosedLoopContext): Promise<boolean> {
+      const auth = useAuthStore()
+      const frame = this.frame
+      this.closedLoopDecision = null
+      this.closedLoopResultFieldPath = null
+      if (!auth.authorize('SIMULATION_CONTROL').allowed) {
+        this.closedLoopState = 'ERROR'
+        this.closedLoopResultCode = 'PERMISSION_DENIED'
+        this.closedLoopResultMessage = '当前账号没有闭环控制权限。'
+        return false
+      }
+      this.closedLoopState = 'VALIDATING'
+      if (!isClosedLoopContext(context)) {
+        this.closedLoopState = 'ERROR'
+        this.closedLoopResultCode = 'INVALID_REQUEST'
+        this.closedLoopResultMessage = '闭环上下文格式不正确。'
+        return false
+      }
+      this.closedLoopState = 'EXECUTING'
+      try {
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify(context),
+        })
+        const decision = await readCapabilityResult(
+          response,
+          (value): value is JammingDecision => frame !== null
+            && this.frame?.frameId === frame.frameId
+            && isJammingDecision(value, runId, context, frame),
+          'CLOSED_LOOP_FAILED',
+          '闭环控制请求失败。',
+        )
+        this.closedLoopDecision = structuredClone(decision)
+        this.closedLoopState = 'SUCCESS'
+        this.closedLoopResultCode = 'SUCCESS'
+        this.closedLoopResultMessage = `闭环已在 ${decision.effectiveFrameId} 完成一次状态迁移。`
+        return true
+      } catch (error) {
+        const failure = error instanceof CapabilityRequestError ? error : null
+        this.closedLoopState = 'ERROR'
+        this.closedLoopResultCode = failure?.code ?? 'NETWORK_ERROR'
+        this.closedLoopResultMessage = failure?.message ?? '闭环控制服务暂时不可用。'
+        this.closedLoopResultFieldPath = failure?.fieldPath ?? null
+        return false
+      }
+    },
+
+    /**
+     * 将一版干扰参数同步到配置端、Node.js、引擎和界面投影。
+     * @param taskId 参数所属任务编号。
+     * @param jammerId 目标干扰设备编号。
+     * @param parameterSet 单调递增版本、生效帧及控制参数。
+     * @returns 四端版本一致并在指定帧生效时返回 `true`。
+     * @sideEffects 更新同步六态、结果证据；服务端同时发布干扰设备状态。
+     */
+    async synchronizeJammerParameters(
+      taskId: TaskId,
+      jammerId: string,
+      parameterSet: JammingParameterSet,
+    ): Promise<boolean> {
+      const auth = useAuthStore()
+      const frame = this.frame
+      this.syncResult = null
+      this.syncResultFieldPath = null
+      if (!auth.authorize('SIMULATION_CONTROL').allowed) {
+        this.syncState = 'ERROR'
+        this.syncResultCode = 'PERMISSION_DENIED'
+        this.syncResultMessage = '当前账号没有干扰参数同步权限。'
+        return false
+      }
+      this.syncState = 'VALIDATING'
+      if (!isJammingParameterSet(parameterSet)) {
+        this.syncState = 'ERROR'
+        this.syncResultCode = 'INVALID_REQUEST'
+        this.syncResultMessage = '干扰参数同步格式不正确。'
+        return false
+      }
+      if (frame === null) {
+        this.syncState = 'ERROR'
+        this.syncResultCode = 'FRAME_MISMATCH'
+        this.syncResultMessage = '请先加载当前遥测帧。'
+        this.syncResultFieldPath = 'effectiveFrameId'
+        return false
+      }
+      if (taskId !== frame.taskId) {
+        this.syncState = 'ERROR'
+        this.syncResultCode = 'INVALID_REQUEST'
+        this.syncResultMessage = '参数同步任务与当前遥测任务不一致。'
+        this.syncResultFieldPath = 'taskId'
+        return false
+      }
+      if (parameterSet.effectiveFrameId !== frame.frameId) {
+        this.syncState = 'ERROR'
+        this.syncResultCode = 'FRAME_MISMATCH'
+        this.syncResultMessage = '参数只能在当前遥测帧边界生效。'
+        this.syncResultFieldPath = 'effectiveFrameId'
+        return false
+      }
+      this.syncState = 'EXECUTING'
+      try {
+        const response = await fetch(
+          `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/parameters`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+            body: JSON.stringify(parameterSet),
+          },
+        )
+        const result = await readCapabilityResult(
+          response,
+          (value): value is SyncResult => frame !== null
+            && this.frame?.frameId === frame.frameId
+            && isSyncResult(value, taskId, jammerId, parameterSet, frame),
+          'JAMMER_SYNC_FAILED',
+          '干扰参数同步请求失败。',
+        )
+        this.syncResult = structuredClone(result)
+        this.syncVersions[jammerId] = result.parameterVersion
+        this.syncState = 'SUCCESS'
+        this.syncResultCode = 'SUCCESS'
+        this.syncResultMessage = `参数版本 ${result.parameterVersion} 已在 ${result.effectiveFrameId} 同步。`
+        return true
+      } catch (error) {
+        const failure = error instanceof CapabilityRequestError ? error : null
+        this.syncState = 'ERROR'
+        this.syncResultCode = failure?.code ?? 'NETWORK_ERROR'
+        this.syncResultMessage = failure?.message ?? '干扰参数同步服务暂时不可用。'
+        this.syncResultFieldPath = failure?.fieldPath ?? null
+        return false
+      }
+    },
+
+    /** 清除与当前设备或参数不再匹配的同步结果。 */
+    clearSyncResult(): void {
+      this.syncResult = null
+      this.syncState = 'EMPTY'
+      this.syncResultCode = 'EMPTY'
+      this.syncResultMessage = '尚未同步干扰参数。'
+      this.syncResultFieldPath = null
     },
 
     /**
@@ -722,27 +1095,52 @@ export const useTelemetryStore = defineStore('telemetry', {
         void this.applyRuntimeState(envelope.sequence, previous)
       } else if (envelope.topic === 'jammer.event') {
         const payload = envelope.payload
+        if (this.frame === null || envelope.frameId !== this.frame.frameId
+          || envelope.simulationTime !== this.frame.simulationTime) return false
+        if (isJammerStatus(payload)) {
+          if (payload.time !== this.frame.simulationTime) return false
+          const platformIndex = this.frame.platforms.findIndex((platform) => platform.platformId === payload.platformId)
+          if (platformIndex < 0) return false
+          const jammerIndex = this.frame.platforms[platformIndex].jammers.findIndex((jammer) => jammer.jammerId === payload.jammerId)
+          if (jammerIndex < 0) return false
+          const platforms = this.frame.platforms.map((platform, index) => index === platformIndex
+            ? { ...platform, jammers: platform.jammers.map((jammer, nestedIndex) => nestedIndex === jammerIndex ? { ...payload } : jammer) }
+            : platform)
+          this.frame = { ...this.frame, platforms }
+        } else {
+          if (!isSituationEvent(payload)
+            || payload.type !== 'DETECTION'
+            || payload.frameId !== this.frame.frameId
+            || payload.time !== this.frame.simulationTime
+            || !this.frame.platforms.some((platform) => platform.platformId === payload.targetPlatformId)) return false
+          if (this.frame.eventIds.includes(payload.eventId)
+            || this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
+            this.resultCode = 'DUPLICATE_EVENT'
+            this.resultMessage = '重复侦测事件已忽略。'
+            this.resultFieldPath = 'dedupeKey'
+          } else {
+            const event = structuredClone(payload)
+            this.frame = { ...this.frame, eventIds: [...this.frame.eventIds, event.eventId] }
+            this.events = [...this.events, event]
+            this.resultCode = 'SUCCESS'
+            this.resultMessage = '侦测事件已接收。'
+            this.resultFieldPath = null
+          }
+        }
+      } else if (envelope.topic === 'switch.event') {
+        const payload = envelope.payload
         if (this.frame === null
           || !isSituationEvent(payload)
-          || payload.type !== 'DETECTION'
+          || payload.type !== 'LINK_SWITCH'
           || envelope.frameId !== this.frame.frameId
           || envelope.simulationTime !== this.frame.simulationTime
           || payload.frameId !== this.frame.frameId
           || payload.time !== this.frame.simulationTime
-          || !this.frame.platforms.some((platform) => platform.platformId === payload.targetPlatformId)) return false
-
-        if (this.frame.eventIds.includes(payload.eventId)
-          || this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
-          this.resultCode = 'DUPLICATE_EVENT'
-          this.resultMessage = '重复侦测事件已忽略。'
-          this.resultFieldPath = 'dedupeKey'
-        } else {
+          || !isSwitchEventConsistent(payload, this.frame)) return false
+        if (!this.events.some((event) => event.eventId === payload.eventId || event.dedupeKey === payload.dedupeKey)) {
           const event = structuredClone(payload)
           this.frame = { ...this.frame, eventIds: [...this.frame.eventIds, event.eventId] }
           this.events = [...this.events, event]
-          this.resultCode = 'SUCCESS'
-          this.resultMessage = '侦测事件已接收。'
-          this.resultFieldPath = null
         }
       }
 
@@ -898,6 +1296,17 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.jammerResultCode = 'EMPTY'
       this.jammerResultMessage = '尚未执行干扰控制命令。'
       this.jammerResultFieldPath = null
+      this.closedLoopDecision = null
+      this.closedLoopState = 'EMPTY'
+      this.closedLoopResultCode = 'EMPTY'
+      this.closedLoopResultMessage = '尚未执行逐帧干扰闭环。'
+      this.closedLoopResultFieldPath = null
+      this.syncResult = null
+      this.syncVersions = {}
+      this.syncState = 'EMPTY'
+      this.syncResultCode = 'EMPTY'
+      this.syncResultMessage = '尚未同步干扰参数。'
+      this.syncResultFieldPath = null
     },
   },
 })

@@ -510,8 +510,8 @@
               }
             }
           },
-          "409": {
-            "description": "Typed deterministic error",
+          "404": {
+            "description": "Scenario not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -520,8 +520,8 @@
               }
             }
           },
-          "404": {
-            "description": "Scenario not found",
+          "409": {
+            "description": "Typed deterministic error",
             "content": {
               "application/json": {
                 "schema": {
@@ -642,8 +642,8 @@
               }
             }
           },
-          "422": {
-            "description": "Typed deterministic error",
+          "409": {
+            "description": "Scenario locked or import conflict",
             "content": {
               "application/json": {
                 "schema": {
@@ -652,8 +652,8 @@
               }
             }
           },
-          "409": {
-            "description": "Scenario locked or import conflict",
+          "422": {
+            "description": "Typed deterministic error",
             "content": {
               "application/json": {
                 "schema": {
@@ -1056,8 +1056,8 @@
               }
             }
           },
-          "422": {
-            "description": "Typed deterministic error",
+          "409": {
+            "description": "Warning confirmation expired",
             "content": {
               "application/json": {
                 "schema": {
@@ -1066,8 +1066,8 @@
               }
             }
           },
-          "409": {
-            "description": "Warning confirmation expired",
+          "422": {
+            "description": "Typed deterministic error",
             "content": {
               "application/json": {
                 "schema": {
@@ -1571,7 +1571,7 @@
         "tags": [
           "simulations"
         ],
-        "summary": "Accept deterministic event once; duplicate eventId is rejected",
+        "summary": "Run one same-target same-frame detection and jamming transition",
         "x-rbac": "SIMULATION_CONTROL",
         "responses": {
           "200": {
@@ -1584,8 +1584,38 @@
               }
             }
           },
+          "403": {
+            "description": "Typed permission error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Typed run error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "Typed deterministic error",
+            "description": "Typed duplicate or frame error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Typed context validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -1901,8 +1931,8 @@
               }
             }
           },
-          "403": {
-            "description": "Typed deterministic error",
+          "400": {
+            "description": "Confirmation request validation failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1911,8 +1941,8 @@
               }
             }
           },
-          "400": {
-            "description": "Confirmation request validation failed",
+          "403": {
+            "description": "Typed deterministic error",
             "content": {
               "application/json": {
                 "schema": {
@@ -1967,16 +1997,6 @@
               }
             }
           },
-          "409": {
-            "description": "Typed deterministic error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
           "400": {
             "description": "Confirmation decision validation failed",
             "content": {
@@ -1989,6 +2009,16 @@
           },
           "403": {
             "description": "Administrator permission required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed deterministic error",
             "content": {
               "application/json": {
                 "schema": {
@@ -2903,6 +2933,89 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PostapiV1AdminConfigExportRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters": {
+      "post": {
+        "tags": [
+          "simulations"
+        ],
+        "summary": "Synchronize a monotonically increasing jammer parameter version at a frame boundary",
+        "x-rbac": "SIMULATION_CONTROL",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/TaskId"
+          },
+          {
+            "$ref": "#/components/parameters/JammerId"
+          },
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Typed synchronized result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed permission error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Typed task error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed version or frame error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Typed parameter validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postapiV1TasksTaskIdJammersJammerIdParameters",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersRequest"
               }
             }
           }
@@ -4223,7 +4336,8 @@
           "jamImpactDb",
           "ber",
           "stabilityFrames",
-          "rank"
+          "rank",
+          "eliminationReason"
         ],
         "properties": {
           "linkId": {
@@ -4255,6 +4369,17 @@
           "rank": {
             "type": "integer",
             "minimum": 1
+          },
+          "eliminationReason": {
+            "oneOf": [
+              {
+                "type": "string",
+                "minLength": 1
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       },
@@ -4294,6 +4419,7 @@
         "required": [
           "losses",
           "routeCandidates",
+          "routeDecisions",
           "synchronization",
           "jammerExecution"
         ],
@@ -4315,6 +4441,14 @@
           },
           "jammerExecution": {
             "$ref": "#/components/schemas/JammerExecutionEvidence"
+          },
+          "routeDecisions": {
+            "type": "array",
+            "minItems": 0,
+            "maxItems": 2,
+            "items": {
+              "$ref": "#/components/schemas/RouteDecision"
+            }
           }
         }
       },
@@ -4458,6 +4592,37 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1
+          },
+          "direction": {
+            "enum": [
+              "FORWARD",
+              "REVERSE"
+            ]
+          },
+          "oldBer": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "newBer": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "stabilityFrames": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "minimumStableFrames": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "hysteresisSatisfied": {
+            "type": "boolean"
+          },
+          "cooldownRemainingS": {
+            "type": "number",
+            "minimum": 0
           }
         },
         "x-fixture-path": "$.events",
@@ -4488,8 +4653,15 @@
             },
             "then": {
               "required": [
+                "direction",
                 "oldLinkId",
                 "newLinkId",
+                "oldBer",
+                "newBer",
+                "stabilityFrames",
+                "minimumStableFrames",
+                "hysteresisSatisfied",
+                "cooldownRemainingS",
                 "decision",
                 "reason"
               ]
@@ -5424,6 +5596,8 @@
           "INVALID_TRANSITION",
           "NODE_LIMIT_EXCEEDED",
           "DUPLICATE_EVENT",
+          "VERSION_CONFLICT",
+          "FRAME_MISMATCH",
           "HEADER_INVALID",
           "TYPE_INVALID",
           "ENCODING_INVALID",
@@ -5623,7 +5797,10 @@
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER",
                     "DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT",
                     "DSDWRJQTLJS-XQ-GRYGZ-ESMGL",
-                    "DSDWRJQTLJS-XQ-LLQHYYX-LLJC"
+                    "DSDWRJQTLJS-XQ-LLQHYYX-LLJC",
+                    "DSDWRJQTLJS-XQ-LLQHYYX-QXL",
+                    "DSDWRJQTLJS-XQ-LLQHYYX-HXL",
+                    "DSDWRJQTLJS-XQ-LLQHYYX-QHJY"
                   ]
                 }
               },
@@ -7752,7 +7929,7 @@
         }
       },
       "PostapiV1SimulationsRunIdEventsRequest": {
-        "$ref": "#/components/schemas/EventRecord"
+        "$ref": "#/components/schemas/ClosedLoopContext"
       },
       "PostapiV1SimulationsRunIdEventsResponse": {
         "type": "object",
@@ -7767,7 +7944,7 @@
             "const": true
           },
           "data": {
-            "$ref": "#/components/schemas/EventRecord"
+            "$ref": "#/components/schemas/JammingDecision"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"
@@ -8577,6 +8754,283 @@
           },
           "csv": {
             "$ref": "#/components/schemas/CsvContractList"
+          }
+        }
+      },
+      "RouteDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "runId",
+          "frameId",
+          "simulationTime",
+          "direction",
+          "selectedLinkId",
+          "previousLinkId",
+          "strategy",
+          "metric",
+          "minimumStableFrames",
+          "hysteresisThreshold",
+          "reason"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "pattern": "^TASK-"
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "^RUN-"
+          },
+          "frameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "simulationTime": {
+            "type": "number",
+            "minimum": 0
+          },
+          "direction": {
+            "enum": [
+              "FORWARD",
+              "REVERSE"
+            ]
+          },
+          "selectedLinkId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "previousLinkId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "strategy": {
+            "enum": [
+              "MIN_JAM_IMPACT",
+              "MIN_BER_WITH_HYSTERESIS"
+            ]
+          },
+          "metric": {
+            "type": "number"
+          },
+          "minimumStableFrames": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "hysteresisThreshold": {
+            "oneOf": [
+              {
+                "type": "number",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "ClosedLoopContext": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "frameId",
+          "detectionEventId",
+          "targetPlatformId",
+          "affectedLinkId"
+        ],
+        "properties": {
+          "frameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "detectionEventId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetPlatformId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "affectedLinkId": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "JammingDecision": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "decisionId",
+          "runId",
+          "frameId",
+          "detectionEventId",
+          "targetPlatformId",
+          "jammerId",
+          "affectedLinkId",
+          "action",
+          "linkStatus",
+          "effectiveFrameId",
+          "reason"
+        ],
+        "properties": {
+          "decisionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "^RUN-"
+          },
+          "frameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "detectionEventId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "targetPlatformId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "jammerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "affectedLinkId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "action": {
+            "const": "START"
+          },
+          "linkStatus": {
+            "enum": [
+              "UP",
+              "DEGRADED",
+              "DOWN"
+            ]
+          },
+          "effectiveFrameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "JammingParameterSet": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "effectiveFrameId",
+          "parameters"
+        ],
+        "properties": {
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "effectiveFrameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "parameters": {
+            "$ref": "#/components/schemas/JammingCommand"
+          }
+        }
+      },
+      "SyncResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "taskId",
+          "jammerId",
+          "parameterVersion",
+          "configParameterVersion",
+          "nodeParameterVersion",
+          "engineParameterVersion",
+          "uiParameterVersion",
+          "effectiveFrameId",
+          "effectiveSimulationTime",
+          "status",
+          "jammerStatus"
+        ],
+        "properties": {
+          "taskId": {
+            "type": "string",
+            "pattern": "^TASK-"
+          },
+          "jammerId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "parameterVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "configParameterVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "nodeParameterVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "engineParameterVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "uiParameterVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "effectiveFrameId": {
+            "type": "string",
+            "pattern": "^F-"
+          },
+          "effectiveSimulationTime": {
+            "type": "number",
+            "minimum": 0
+          },
+          "status": {
+            "const": "SYNCHRONIZED"
+          },
+          "jammerStatus": {
+            "$ref": "#/components/schemas/JammerStatusData"
+          }
+        }
+      },
+      "PostapiV1TasksTaskIdJammersJammerIdParametersRequest": {
+        "$ref": "#/components/schemas/JammingParameterSet"
+      },
+      "PostapiV1TasksTaskIdJammersJammerIdParametersResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/SyncResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
           }
         }
       }

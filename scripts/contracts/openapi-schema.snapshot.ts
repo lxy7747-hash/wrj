@@ -575,7 +575,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER',
                 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT',
                 'DSDWRJQTLJS-XQ-GRYGZ-ESMGL',
-                'DSDWRJQTLJS-XQ-LLQHYYX-LLJC'
+                'DSDWRJQTLJS-XQ-LLQHYYX-LLJC',
+                'DSDWRJQTLJS-XQ-LLQHYYX-QXL',
+                'DSDWRJQTLJS-XQ-LLQHYYX-HXL',
+                'DSDWRJQTLJS-XQ-LLQHYYX-QHJY'
               ]
             }
           },
@@ -656,6 +659,34 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'format': 'date-time',
       'type': 'string'
     },
+    'type': 'object'
+  },
+  'ClosedLoopContext': {
+    'additionalProperties': false,
+    'properties': {
+      'affectedLinkId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'detectionEventId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'frameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'targetPlatformId': {
+        'minLength': 1,
+        'type': 'string'
+      }
+    },
+    'required': [
+      'frameId',
+      'detectionEventId',
+      'targetPlatformId',
+      'affectedLinkId'
+    ],
     'type': 'object'
   },
   'CompositeLossEvidence': {
@@ -1156,6 +1187,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'INVALID_TRANSITION',
       'NODE_LIMIT_EXCEEDED',
       'DUPLICATE_EVENT',
+      'VERSION_CONFLICT',
+      'FRAME_MISMATCH',
       'HEADER_INVALID',
       'TYPE_INVALID',
       'ENCODING_INVALID',
@@ -1279,8 +1312,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         'then': {
           'required': [
+            'direction',
             'oldLinkId',
             'newLinkId',
+            'oldBer',
+            'newBer',
+            'stabilityFrames',
+            'minimumStableFrames',
+            'hysteresisSatisfied',
+            'cooldownRemainingS',
             'decision',
             'reason'
           ]
@@ -1288,6 +1328,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     ],
     'properties': {
+      'cooldownRemainingS': {
+        'minimum': 0,
+        'type': 'number'
+      },
       'decision': {
         'enum': [
           'ACCEPTED',
@@ -1302,6 +1346,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'minimum': 0,
         'type': 'number'
       },
+      'direction': {
+        'enum': [
+          'FORWARD',
+          'REVERSE'
+        ]
+      },
       'eventId': {
         'minLength': 1,
         'type': 'string'
@@ -1310,9 +1360,26 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'pattern': '^F-',
         'type': 'string'
       },
+      'hysteresisSatisfied': {
+        'type': 'boolean'
+      },
+      'minimumStableFrames': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'newBer': {
+        'maximum': 1,
+        'minimum': 0,
+        'type': 'number'
+      },
       'newLinkId': {
         'minLength': 1,
         'type': 'string'
+      },
+      'oldBer': {
+        'maximum': 1,
+        'minimum': 0,
+        'type': 'number'
       },
       'oldLinkId': {
         'minLength': 1,
@@ -1328,6 +1395,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'sourceRegistryTime': {
         'minimum': 0,
         'type': 'number'
+      },
+      'stabilityFrames': {
+        'minimum': 0,
+        'type': 'integer'
       },
       'targetPlatformId': {
         'minLength': 1,
@@ -1519,6 +1590,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         'type': 'array'
       },
+      'routeDecisions': {
+        'items': {
+          '$ref': '#/components/schemas/RouteDecision'
+        },
+        'maxItems': 2,
+        'minItems': 0,
+        'type': 'array'
+      },
       'synchronization': {
         '$ref': '#/components/schemas/SynchronizationEvidence'
       }
@@ -1526,6 +1605,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'required': [
       'losses',
       'routeCandidates',
+      'routeDecisions',
       'synchronization',
       'jammerExecution'
     ],
@@ -2234,44 +2314,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'minItems': 7,
     'type': 'array'
   },
-  'JammingCommand': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'maximum': 360,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'duration': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'power': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'enabled',
-      'frequency',
-      'bandwidth',
-      'power',
-      'direction',
-      'duration'
-    ],
-    'type': 'object'
-  },
   'Jammer': {
     'additionalProperties': false,
     'properties': {
@@ -2503,6 +2545,131 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'direction',
       'duration',
       'enabled'
+    ],
+    'type': 'object'
+  },
+  'JammingCommand': {
+    'additionalProperties': false,
+    'properties': {
+      'bandwidth': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'direction': {
+        'maximum': 360,
+        'minimum': 0,
+        'type': 'number'
+      },
+      'duration': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'enabled': {
+        'type': 'boolean'
+      },
+      'frequency': {
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
+      'power': {
+        'minimum': 0,
+        'type': 'number'
+      }
+    },
+    'required': [
+      'enabled',
+      'frequency',
+      'bandwidth',
+      'power',
+      'direction',
+      'duration'
+    ],
+    'type': 'object'
+  },
+  'JammingDecision': {
+    'additionalProperties': false,
+    'properties': {
+      'action': {
+        'const': 'START'
+      },
+      'affectedLinkId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'decisionId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'detectionEventId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'effectiveFrameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'frameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'jammerId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'linkStatus': {
+        'enum': [
+          'UP',
+          'DEGRADED',
+          'DOWN'
+        ]
+      },
+      'reason': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'runId': {
+        'pattern': '^RUN-',
+        'type': 'string'
+      },
+      'targetPlatformId': {
+        'minLength': 1,
+        'type': 'string'
+      }
+    },
+    'required': [
+      'decisionId',
+      'runId',
+      'frameId',
+      'detectionEventId',
+      'targetPlatformId',
+      'jammerId',
+      'affectedLinkId',
+      'action',
+      'linkStatus',
+      'effectiveFrameId',
+      'reason'
+    ],
+    'type': 'object'
+  },
+  'JammingParameterSet': {
+    'additionalProperties': false,
+    'properties': {
+      'effectiveFrameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'parameters': {
+        '$ref': '#/components/schemas/JammingCommand'
+      },
+      'version': {
+        'minimum': 1,
+        'type': 'integer'
+      }
+    },
+    'required': [
+      'version',
+      'effectiveFrameId',
+      'parameters'
     ],
     'type': 'object'
   },
@@ -3636,13 +3803,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'PostapiV1SimulationsRunIdEventsRequest': {
-    '$ref': '#/components/schemas/EventRecord'
+    '$ref': '#/components/schemas/ClosedLoopContext'
   },
   'PostapiV1SimulationsRunIdEventsResponse': {
     'additionalProperties': false,
     'properties': {
       'data': {
-        '$ref': '#/components/schemas/EventRecord'
+        '$ref': '#/components/schemas/JammingDecision'
       },
       'meta': {
         '$ref': '#/components/schemas/Meta'
@@ -3666,6 +3833,29 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'properties': {
       'data': {
         '$ref': '#/components/schemas/JammerState'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
+  'PostapiV1TasksTaskIdJammersJammerIdParametersRequest': {
+    '$ref': '#/components/schemas/JammingParameterSet'
+  },
+  'PostapiV1TasksTaskIdJammersJammerIdParametersResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/SyncResult'
       },
       'meta': {
         '$ref': '#/components/schemas/Meta'
@@ -4278,6 +4468,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'eligible': {
         'type': 'boolean'
       },
+      'eliminationReason': {
+        'oneOf': [
+          {
+            'minLength': 1,
+            'type': 'string'
+          },
+          {
+            'type': 'null'
+          }
+        ]
+      },
       'jamImpactDb': {
         'type': 'number'
       },
@@ -4301,7 +4502,86 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'jamImpactDb',
       'ber',
       'stabilityFrames',
-      'rank'
+      'rank',
+      'eliminationReason'
+    ],
+    'type': 'object'
+  },
+  'RouteDecision': {
+    'additionalProperties': false,
+    'properties': {
+      'direction': {
+        'enum': [
+          'FORWARD',
+          'REVERSE'
+        ]
+      },
+      'frameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'hysteresisThreshold': {
+        'oneOf': [
+          {
+            'minimum': 0,
+            'type': 'number'
+          },
+          {
+            'type': 'null'
+          }
+        ]
+      },
+      'metric': {
+        'type': 'number'
+      },
+      'minimumStableFrames': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'previousLinkId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'reason': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'runId': {
+        'pattern': '^RUN-',
+        'type': 'string'
+      },
+      'selectedLinkId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'simulationTime': {
+        'minimum': 0,
+        'type': 'number'
+      },
+      'strategy': {
+        'enum': [
+          'MIN_JAM_IMPACT',
+          'MIN_BER_WITH_HYSTERESIS'
+        ]
+      },
+      'taskId': {
+        'pattern': '^TASK-',
+        'type': 'string'
+      }
+    },
+    'required': [
+      'taskId',
+      'runId',
+      'frameId',
+      'simulationTime',
+      'direction',
+      'selectedLinkId',
+      'previousLinkId',
+      'strategy',
+      'metric',
+      'minimumStableFrames',
+      'hysteresisThreshold',
+      'reason'
     ],
     'type': 'object'
   },
@@ -5011,6 +5291,67 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'SyncResult': {
+    'additionalProperties': false,
+    'properties': {
+      'configParameterVersion': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'effectiveFrameId': {
+        'pattern': '^F-',
+        'type': 'string'
+      },
+      'effectiveSimulationTime': {
+        'minimum': 0,
+        'type': 'number'
+      },
+      'engineParameterVersion': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'jammerId': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'jammerStatus': {
+        '$ref': '#/components/schemas/JammerStatusData'
+      },
+      'nodeParameterVersion': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'parameterVersion': {
+        'minimum': 1,
+        'type': 'integer'
+      },
+      'status': {
+        'const': 'SYNCHRONIZED'
+      },
+      'taskId': {
+        'pattern': '^TASK-',
+        'type': 'string'
+      },
+      'uiParameterVersion': {
+        'minimum': 1,
+        'type': 'integer'
+      }
+    },
+    'required': [
+      'taskId',
+      'jammerId',
+      'parameterVersion',
+      'configParameterVersion',
+      'nodeParameterVersion',
+      'engineParameterVersion',
+      'uiParameterVersion',
+      'effectiveFrameId',
+      'effectiveSimulationTime',
+      'status',
+      'jammerStatus'
+    ],
+    'type': 'object'
+  },
   'SynchronizationEvidence': {
     'additionalProperties': false,
     'properties': {
@@ -5347,15 +5688,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'minLength': 1,
         'type': 'string'
       },
-      'thresholdVersion': {
-        'const': 'LLZT-1.0'
-      },
       'status': {
         'enum': [
           'UP',
           'DEGRADED',
           'DOWN'
         ]
+      },
+      'thresholdVersion': {
+        'const': 'LLZT-1.0'
       }
     },
     'required': [

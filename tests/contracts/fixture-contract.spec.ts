@@ -70,7 +70,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-04.1')
+    expect(fixture.fixtureVersion).toBe('2026-09-04.4')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -329,6 +329,9 @@ describe('deterministic fixture contract', () => {
   it.each([
     ['T-XQ-010', 'DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS'],
     ['T-XQ-014', 'DSDWRJQTLJS-XQ-GRYGZ-ESMGL'],
+    ['T-XQ-019', 'DSDWRJQTLJS-XQ-LLQHYYX-QXL'],
+    ['T-XQ-020', 'DSDWRJQTLJS-XQ-LLQHYYX-HXL'],
+    ['T-XQ-021', 'DSDWRJQTLJS-XQ-LLQHYYX-QHJY'],
   ])('freezes %s as fixed evidence without an EXECUTING state', (_requirementId, capabilityId) => {
     const fixture = fixtures as DeterministicFixtureSet
     const capability = fixture.metadata.capabilities.find(({ id }) => id === capabilityId)
