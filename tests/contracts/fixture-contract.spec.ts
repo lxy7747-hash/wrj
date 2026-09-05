@@ -48,6 +48,17 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
+  it('rejects dot path segments as master data identifiers', () => {
+    for (const dataId of ['.', '..']) {
+      const fixture = structuredClone(fixtures) as DeterministicFixtureSet
+      fixture.masterData[0]!.dataId = dataId
+      expect(validateFixture(fixture)).toBe(false)
+      expect(validateFixture.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({ instancePath: '/masterData/0/dataId', keyword: 'not' }),
+      ]))
+    }
+  })
+
   it('keeps Taiwan-frame telemetry aligned with scenario positions and waypoint deltas', () => {
     const fixture = fixtures as DeterministicFixtureSet
     const expectedCoreCoordinates = {
@@ -70,7 +81,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-04.5')
+    expect(fixture.fixtureVersion).toBe('2026-09-05.1')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)

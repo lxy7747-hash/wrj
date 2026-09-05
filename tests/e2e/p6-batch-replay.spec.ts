@@ -74,7 +74,14 @@ test('P6 批量任务、聚合报告与只读回放主链', async ({ page, reque
   await expect(page.getByTestId('replay-play')).toHaveText('暂停')
   const cursor = page.locator('.replay-controls__slider span').first()
   await expect(cursor).not.toHaveText('00:42:17', { timeout: 3_000 })
+  const paused = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/replays/REPLAY-001/commands'
+    && response.request().postDataJSON().command === 'PAUSE')
   await page.getByTestId('replay-play').click()
+  const pauseResponse = await paused
+  expect(pauseResponse.status()).toBe(200)
+  await pauseResponse.finished()
+  await expect(page.getByTestId('replay-play')).toHaveText('播放')
   const pausedTime = await cursor.textContent()
   await page.waitForTimeout(1_100)
   await expect(cursor).toHaveText(pausedTime ?? '')

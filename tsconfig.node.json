@@ -19,6 +19,7 @@
     "playwright.config.ts",
     "scripts/**/*.ts",
     "server/**/*.ts",
-    "src/features/scenarios/scenario-validation.ts"
+    "src/features/scenarios/scenario-validation.ts",
+    "src/features/admin/admin-contract.ts"
   ]
 }

@@ -1,6 +1,6 @@
 # 04 本机确定性 Mock API
 
-`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。63 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 32 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
+`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。64 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 32 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
 
 ## 启动与安全不变量
 
@@ -35,8 +35,16 @@
 - script/contract：只返回预览、预检、五接口与三 CSV 描述。
 - simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实。`POST /api/v1/simulations/{runId}/events` 输入 `ClosedLoopContext`、返回 `JammingDecision`，同目标同帧重复迁移返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`；参数同步使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/parameters`，输入 `JammingParameterSet`、返回四端版本一致的 `SyncResult`，旧版本或错误生效帧被拒绝。Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
 - batch/report/replay：BATCH-001 固定 12 对；普通与批次 report source 不混用；回放只移动游标；export 始终 `generated:false`。
-- admin：所有 master/user/audit/backup/archive/health 都是内存状态；恢复失败仅展示回滚合同。backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；所有导出结果固定 `generated:false`。
+- admin：所有 master/user/audit/backup/archive/health 都是内存状态；恢复失败仅展示回滚合同。主数据删除、backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；所有导出结果固定 `generated:false`。
 - reset：清理定时器、连接、确认和可变 projection，重载 fixture，并把 WS sequence 恢复为 1。
+
+### P7 系统维护确认与数据规则（2026-09-05）
+
+- `GET /api/v1/admin/backups` 读取 `BackupRecord[]`，是恢复来源列表的唯一接口；新增备份只追加内存记录，禁止覆盖同名记录。
+- 主数据创建要求版本 1、引用数量 0；更新携带当前版本并由服务端递增，旧版本返回 `VERSION_CONFLICT`。引用数量不可由客户端修改，已有引用的数据禁止删除。
+- `MASTER_DATA_DELETE` 确认绑定主数据编号，删除请求通过 `X-Confirmation-Id` 传递；`BACKUP_RESTORE` 分别绑定 `BACKUP:NEW`（指定编号时为 `BACKUP:{backupId}`）或 `RESTORE:{backupId}`，创建和恢复确认不可互用；`FULL_CONFIG_EXPORT` 绑定 `FULL-CONFIG`。确认仅消费一次，过期、错对象或 reset 后一律拒绝。
+- `PREBACKUP-002` 展示成功恢复流程；`BACKUP-CORRUPT-001` 展示完整性校验失败、恢复未开始；`BACKUP-ROLLBACK-001` 展示恢复失败并回滚。三者均为冻结夹具，不执行实际恢复。
+- 归档接口返回任务、场景、运行、回放和报告的闭合关系。健康接口仅将前端标为正常，引擎、数据库和通道明确显示尚未接入。
 
 ## WebSocket `/ws/v1`
 

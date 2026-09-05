@@ -2220,6 +2220,36 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1AdminMasterData",
@@ -2262,6 +2292,46 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "putapiV1AdminMasterDataDataId",
@@ -2298,8 +2368,38 @@
               }
             }
           },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "Typed deterministic error",
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2675,7 +2775,37 @@
             }
           },
           "403": {
-            "description": "Typed deterministic error",
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2685,7 +2815,7 @@
             }
           },
           "428": {
-            "description": "Second confirmation required",
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2731,8 +2861,38 @@
               }
             }
           },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
-            "description": "Typed deterministic error",
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2742,7 +2902,7 @@
             }
           },
           "428": {
-            "description": "Typed deterministic error",
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2787,6 +2947,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1AdminHealth",
@@ -2811,6 +2981,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetapiV1AdminArchivesResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2921,7 +3101,27 @@
             }
           },
           "403": {
-            "description": "permission denied",
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -2931,7 +3131,7 @@
             }
           },
           "428": {
-            "description": "confirmation required",
+            "description": "受控操作失败",
             "content": {
               "application/json": {
                 "schema": {
@@ -3036,6 +3236,43 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/backups": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "读取内存备份目录",
+        "x-rbac": "BACKUP_RESTORE",
+        "operationId": "getapiV1AdminBackups",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "内存备份记录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetapiV1AdminBackupsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -5397,7 +5634,10 @@
         "properties": {
           "dataId": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "not": {
+              "enum": [".", ".."]
+            }
           },
           "kind": {
             "type": "string"
@@ -6616,7 +6856,8 @@
               "BATCH_LEVEL_III_EXPORT",
               "BACKUP_RESTORE",
               "FULL_CONFIG_EXPORT",
-              "AUDIT_EXPORT"
+              "AUDIT_EXPORT",
+              "MASTER_DATA_DELETE"
             ]
           },
           "objectId": {
@@ -9059,6 +9300,32 @@
           },
           "data": {
             "$ref": "#/components/schemas/SyncResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "BackupList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/BackupRecord"
+        }
+      },
+      "GetapiV1AdminBackupsResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/BackupList"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"

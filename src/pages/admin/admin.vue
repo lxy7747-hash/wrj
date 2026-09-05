@@ -7,6 +7,10 @@ import type { ScenarioTemplate } from '../../contracts/domain-models'
 import AccountManagement from '../../components/admin/AccountManagement.vue'
 import AuditLog from '../../components/admin/AuditLog.vue'
 import EquipmentLibrary from '../../components/admin/EquipmentLibrary.vue'
+import MasterDataPanel from '../../components/admin/MasterDataPanel.vue'
+import BackupRestoreWizard from '../../components/admin/BackupRestoreWizard.vue'
+import ArchivePanel from '../../components/admin/ArchivePanel.vue'
+import HealthPanel from '../../components/admin/HealthPanel.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import { useScenarioStore } from '../../stores/scenario'
 
@@ -164,6 +168,11 @@ watch(templateMaintenanceVisible, (visible) => {
     <AuditLog />
   </section>
 
+  <section v-else-if="route.query.section === 'master-data'" class="page admin-page"><MasterDataPanel /></section>
+  <section v-else-if="route.query.section === 'database-backup'" class="page admin-page"><BackupRestoreWizard /></section>
+  <section v-else-if="route.query.section === 'simulation-data'" class="page admin-page"><ArchivePanel /></section>
+  <section v-else-if="route.query.section === 'runtime-status'" class="page admin-page"><HealthPanel /></section>
+
   <section v-else class="page admin-page" aria-label="账号管理">
     <AccountManagement />
   </section>
@@ -175,6 +184,13 @@ watch(templateMaintenanceVisible, (visible) => {
   min-width: 0;
   gap: var(--space-4, 1rem);
 }
+
+.admin-page :deep(.maintenance-card) { display: grid; gap: 16px; min-width: 0; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 8px; align-content: start; }
+.admin-page :deep(.maintenance-toolbar) { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.admin-page :deep(.maintenance-toolbar h3) { margin: 0 auto 0 0; font-size: 18px; }
+.admin-page :deep(.maintenance-toolbar .el-form-item) { margin: 0; }
+.admin-page :deep(.maintenance-result) { display: grid; gap: 14px; }
+.admin-page :deep(.maintenance-note) { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; }
 
 @media (max-width: 560px) {
   .admin-page {

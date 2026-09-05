@@ -281,6 +281,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'BackupList': {
+    'items': {
+      '$ref': '#/components/schemas/BackupRecord'
+    },
+    'type': 'array'
+  },
   'BackupRecord': {
     'additionalProperties': false,
     'properties': {
@@ -815,7 +821,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'BATCH_LEVEL_III_EXPORT',
           'BACKUP_RESTORE',
           'FULL_CONFIG_EXPORT',
-          'AUDIT_EXPORT'
+          'AUDIT_EXPORT',
+          'MASTER_DATA_DELETE'
         ]
       },
       'objectId': {
@@ -1690,6 +1697,26 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'properties': {
       'data': {
         '$ref': '#/components/schemas/AuditList'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
+  'GetapiV1AdminBackupsResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/BackupList'
       },
       'meta': {
         '$ref': '#/components/schemas/Meta'
@@ -2958,6 +2985,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'dataId': {
         'minLength': 1,
+        'not': {
+          'enum': ['.', '..']
+        },
         'type': 'string'
       },
       'kind': {

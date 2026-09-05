@@ -214,11 +214,119 @@ test('ADMIN can navigate every prototype top menu from the main navigation', asy
     await visitWorkspaceRouteFromNavigation(page, route)
   }
 
-  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('底层模型参数')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('主数据管理')
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('数据交换与接口')
   await expect(page.getByTestId('user-role-panel')).toBeVisible()
   await expect(page.getByTestId('role-permission-map')).toContainText('BUSINESS_READ')
 
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'admin')
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
+  await page.getByRole('menuitem', { name: '主数据管理', exact: true }).click()
+  const panel = page.getByTestId('master-data-panel')
+  await expect(panel.getByTestId('master-table')).toContainText('MW-COMM')
+  await panel.getByTestId('master-create').click()
+  const createDialog = page.getByRole('dialog', { name: '新增主数据', exact: true })
+  for (const dataId of ['.', '..']) {
+    await createDialog.getByTestId('master-id').fill(dataId)
+    await createDialog.getByTestId('master-save').click()
+    await expect(createDialog.getByRole('alert')).toContainText('请填写有效编号')
+  }
+  await createDialog.getByTestId('master-id').fill('DEVICE-P7-E2E')
+  const created = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/admin/master-data')
+  await createDialog.getByTestId('master-save').click()
+  expect((await created).status()).toBe(201)
+  await expect(createDialog).not.toBeVisible()
+  const row = panel.getByTestId('master-table').locator('.el-table__row').filter({ hasText: 'DEVICE-P7-E2E' })
+  await expect(row).toContainText('启用')
+  await row.getByRole('button', { name: '编辑', exact: true }).click()
+  const editDialog = page.getByRole('dialog', { name: '编辑主数据', exact: true })
+  await expect(editDialog.getByTestId('master-id')).toBeDisabled()
+  await editDialog.locator('.el-switch').click()
+  await expect(editDialog.getByRole('switch')).not.toBeChecked()
+  const updated = page.waitForResponse((response) => response.request().method() === 'PUT'
+    && new URL(response.url()).pathname === '/api/v1/admin/master-data/DEVICE-P7-E2E')
+  await editDialog.getByTestId('master-save').click()
+  const updateResponse = await updated
+  expect(updateResponse.status()).toBe(200)
+  expect(await updateResponse.json()).toMatchObject({ data: { dataId: 'DEVICE-P7-E2E', version: 2, active: false } })
+  await expect(editDialog).not.toBeVisible()
+  await panel.getByRole('button', { name: '刷新', exact: true }).click()
+  await expect(row).toContainText('停用')
+  await expect(row.locator('td').nth(2)).toHaveText('2')
+  await row.getByRole('button', { name: '删除', exact: true }).click()
+  const deleted = page.waitForResponse((response) => response.request().method() === 'DELETE'
+    && new URL(response.url()).pathname === '/api/v1/admin/master-data/DEVICE-P7-E2E')
+  await page.getByRole('dialog', { name: '删除主数据', exact: true }).getByRole('button', { name: '确认删除', exact: true }).click()
+  expect((await deleted).status()).toBe(200)
+  await expect(row).toHaveCount(0)
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
+test('P7 ADMIN restores backups, exports configuration and opens an archived report', async ({ page }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'admin')
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
+  await page.getByRole('menuitem', { name: '数据库备份 / 恢复', exact: true }).click()
+  const panel = page.getByTestId('backup-panel')
+  await expect(panel.getByTestId('backup-table')).toContainText('PREBACKUP-002')
+  await panel.getByTestId('backup-create').click()
+  const backedUp = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/admin/backup')
+  await page.getByRole('dialog', { name: '创建备份', exact: true }).getByRole('button', { name: '确认执行' }).click()
+  expect((await backedUp).status()).toBe(200)
+  await expect(panel.getByTestId('backup-table')).toContainText('BACKUP-P7-001')
+
+  for (const [backupId, result, integrityValid, rolledBack] of [
+    ['PREBACKUP-002', 'SUCCESS', true, false],
+    ['BACKUP-CORRUPT-001', 'FAILURE', false, false],
+    ['BACKUP-ROLLBACK-001', 'FAILURE', true, true],
+  ] as const) {
+    await panel.getByTestId('backup-table').locator('.el-table__row').filter({ hasText: backupId })
+      .getByRole('button', { name: '选择恢复' }).click()
+    await expect(panel.getByTestId('restore-result')).toHaveCount(0)
+    await expect(panel.getByTestId('backup-feedback')).toContainText('恢复来源已切换')
+    await panel.getByTestId('backup-restore').click()
+    const restored = page.waitForResponse((response) => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/v1/admin/restore')
+    await page.getByRole('dialog', { name: '恢复备份', exact: true }).getByRole('button', { name: '确认执行' }).click()
+    const restoreResponse = await restored
+    expect(restoreResponse.request().postDataJSON()).toMatchObject({ operation: 'RESTORE', backupId })
+    expect(restoreResponse.status()).toBe(200)
+    expect(await restoreResponse.json()).toMatchObject({ data: { result, integrityValid, rolledBack, generated: false } })
+    await expect(panel.getByTestId('restore-result')).toContainText(result === 'SUCCESS' ? '成功' : rolledBack ? '已回滚' : '失败，恢复未开始')
+  }
+
+  await panel.getByTestId('full-config-export').click()
+  const exported = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/admin/config/export')
+  await page.getByRole('dialog', { name: '导出完整配置', exact: true }).getByRole('button', { name: '确认执行' }).click()
+  const exportResponse = await exported
+  expect(exportResponse.status()).toBe(200)
+  const exportBody = await exportResponse.json()
+  expect(exportBody).toMatchObject({ data: { objectId: 'FULL-CONFIG', classification: 'INTERNAL', generated: false } })
+  await expect(panel.getByTestId('full-config-result')).toContainText(exportBody.data.watermark)
+  await expect(panel.getByTestId('full-config-result')).toContainText(exportBody.data.verifiedAt)
+
+  await page.getByRole('menuitem', { name: '仿真数据管理', exact: true }).click()
+  const archive = page.getByTestId('archive-panel')
+  await archive.getByRole('textbox', { name: '归档检索' }).fill('RPT-001')
+  await archive.getByTestId('archive-table').getByRole('button', { name: '详情', exact: true }).click()
+  for (const id of ['TASK-001', 'SCN-001', 'RUN-001', 'REPLAY-001', 'RPT-001']) {
+    await expect(page.getByTestId('archive-detail')).toContainText(id)
+  }
+  await page.getByRole('dialog', { name: '归档关联详情' }).getByRole('button', { name: '查看关联报告' }).click()
+  await page.waitForURL('**/reports?reportId=RPT-001')
+  await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])

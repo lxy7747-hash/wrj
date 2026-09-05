@@ -52,7 +52,7 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
-  it('accepts the authoritative 63-operation contract', () => {
+  it('accepts the authoritative 64-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(auditOpenApi(openApi)).toEqual([])
@@ -64,9 +64,9 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(63)
+    expect(operations).toHaveLength(64)
     expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(32)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(63)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(64)
   })
 
   it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {

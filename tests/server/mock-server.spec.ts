@@ -1,7 +1,128 @@
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
-import type { ApiSuccess, AuditRecord, ConfirmationContext, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
+import type { ApiSuccess, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
+
+describe('P7 系统维护接口', () => {
+  const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+  const master: MasterData = { dataId: 'DEVICE-P7', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }
+
+  it('独立限制每条维护接口的角色，禁止绕过页面权限', async () => {
+    const { baseUrl } = await startServer()
+    for (const role of ['', 'OPERATOR', 'UNKNOWN']) {
+      for (const [method, path] of [
+        ['get', 'master-data'], ['post', 'master-data'], ['put', 'master-data/MW-COMM'], ['delete', 'master-data/MW-COMM'],
+        ['get', 'backups'], ['post', 'backup'], ['post', 'restore'], ['get', 'archives'], ['get', 'health'], ['post', 'config/export'],
+      ] as const) {
+        const call = request(baseUrl)[method](`/api/v1/admin/${path}`).set('Origin', ORIGIN)
+        if (role) call.set('X-Demo-Role', role)
+        await call.expect(403)
+      }
+    }
+  })
+
+  it('主数据创建、版本更新、引用保护和删除均保持服务端约束', async () => {
+    const { baseUrl, server } = await startServer()
+    const collection = '/api/v1/admin/master-data'
+    const initial = await request(baseUrl).get(collection).set(headers).expect(200)
+    await request(baseUrl).post(collection).set(headers).send({ operation: 'CREATE', data: master }).expect(201)
+    await request(baseUrl).post(collection).set(headers).send({ operation: 'CREATE', data: master }).expect(409)
+    const updated = await request(baseUrl).put(`${collection}/${master.dataId}`).set(headers).send({ operation: 'UPDATE', data: { ...master, active: false } }).expect(200)
+    expect(updated.body).toMatchObject({ data: { version: 2, active: false } })
+    await request(baseUrl).put(`${collection}/${master.dataId}`).set(headers).send({ operation: 'UPDATE', data: master }).expect(409)
+    await request(baseUrl).put(`${collection}/MISSING`).set(headers).send({ operation: 'UPDATE', data: { ...master, dataId: 'MISSING' } }).expect(404)
+    await request(baseUrl).put(`${collection}/WRONG`).set(headers).send({ operation: 'UPDATE', data: master }).expect(422)
+    for (const body of [{}, { operation: 'CREATE', data: { ...master, dataId: 3 } }, { operation: 'CREATE', data: { ...master, dataId: 'NEW', version: 2 } }, { operation: 'CREATE', data: { ...master, dataId: 'NEW', referenceCount: 1 } }, { operation: 'CREATE', data: master, confirmationId: '' }]) {
+      await request(baseUrl).post(collection).set(headers).send(body).expect(422)
+    }
+    await request(baseUrl).put(`${collection}/MW-COMM`).set(headers).send({ operation: 'UPDATE', data: { ...master, dataId: 'MW-COMM', version: 4 } }).expect(422)
+    await request(baseUrl).delete(`${collection}/${master.dataId}`).set(headers).expect(428)
+    const protectedId = await confirmMaintenance(baseUrl, 'MASTER_DATA_DELETE', 'MW-COMM')
+    await request(baseUrl).delete(`${collection}/MW-COMM`).set(headers).set('X-Confirmation-Id', protectedId).expect(409)
+    const missingId = await confirmMaintenance(baseUrl, 'MASTER_DATA_DELETE', 'MISSING')
+    await request(baseUrl).delete(`${collection}/MISSING`).set(headers).set('X-Confirmation-Id', missingId).expect(404)
+    const id = await confirmMaintenance(baseUrl, 'MASTER_DATA_DELETE', master.dataId)
+    const deleted = await request(baseUrl).delete(`${collection}/${master.dataId}`).set(headers).set('X-Confirmation-Id', id).expect(200)
+    expect(deleted.body).toMatchObject({ data: { deleted: true, objectId: master.dataId } })
+    await request(baseUrl).delete(`${collection}/${master.dataId}`).set(headers).set('X-Confirmation-Id', id).expect(409)
+    expect((await request(baseUrl).get(collection).set(headers).expect(200)).body).toEqual(initial.body)
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ action: 'MASTER_DATA_UPDATE', result: 'SUCCESS' }),
+      expect.objectContaining({ action: 'MASTER_DATA_DELETE', objectId: 'MW-COMM', result: 'ERROR' }),
+    ]))
+  })
+
+  it('备份、完整性失败、恢复回滚与完整配置导出使用独立确认并可重置', async () => {
+    const { baseUrl, server } = await startServer()
+    const initial = await request(baseUrl).get('/api/v1/admin/backups').set(headers).expect(200)
+    const id = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', 'BACKUP:NEW')
+    await request(baseUrl).post('/api/v1/admin/restore').set(headers).send({ operation: 'RESTORE', backupId: 'PREBACKUP-002', confirmationId: id }).expect(409)
+    const backup = await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', confirmationId: id }).expect(200)
+    expect(backup.body).toMatchObject({ data: { backupId: 'BACKUP-P7-001', status: 'VALID_FIXTURE' } })
+    await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', confirmationId: id }).expect(409)
+    const duplicate = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', 'BACKUP:PREBACKUP-002')
+    await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', backupId: 'PREBACKUP-002', confirmationId: duplicate }).expect(409)
+    for (const [backupId, result, rolledBack, integrityValid] of [
+      ['BACKUP-P7-001', 'SUCCESS', false, true], ['BACKUP-CORRUPT-001', 'FAILURE', false, false], ['BACKUP-ROLLBACK-001', 'FAILURE', true, true],
+    ] as const) {
+      const confirmationId = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', `RESTORE:${backupId}`)
+      const restored = await request(baseUrl).post('/api/v1/admin/restore').set(headers).send({ operation: 'RESTORE', backupId, confirmationId }).expect(200)
+      expect(restored.body).toMatchObject({ data: { prebackupId: 'PREBACKUP-002', result, rolledBack, integrityValid, progress: integrityValid ? 100 : 0, generated: false } })
+    }
+    const missing = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', 'RESTORE:MISSING')
+    await request(baseUrl).post('/api/v1/admin/restore').set(headers).send({ operation: 'RESTORE', backupId: 'MISSING', confirmationId: missing }).expect(404)
+    const exportId = await confirmMaintenance(baseUrl, 'FULL_CONFIG_EXPORT', 'FULL-CONFIG')
+    const exported = await request(baseUrl).post('/api/v1/admin/config/export').set(headers).send({ format: 'JSON', confirmationId: exportId }).expect(200)
+    expect(exported.body).toMatchObject({ data: { objectId: 'FULL-CONFIG', generated: false, classification: 'INTERNAL' } })
+    const resetId = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', 'BACKUP:NEW')
+    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([expect.objectContaining({ action: 'BACKUP_RESTORE', result: 'ERROR' })]))
+    await request(baseUrl).post('/api/v1/reset').set(headers).send({ confirm: true }).expect(200)
+    expect((await request(baseUrl).get('/api/v1/admin/backups').set(headers).expect(200)).body).toEqual(initial.body)
+    await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', confirmationId: resetId }).expect(409)
+  })
+
+  it('拒绝创建点路径编号并保留原主数据目录', async () => {
+    const { baseUrl } = await startServer()
+    const collection = '/api/v1/admin/master-data'
+    const initial = await request(baseUrl).get(collection).set(headers).expect(200)
+    for (const dataId of ['.', '..']) {
+      const rejected = await request(baseUrl).post(collection).set(headers)
+        .send({ operation: 'CREATE', data: { ...master, dataId } }).expect(422)
+      expect(rejected.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED' } })
+    }
+    expect((await request(baseUrl).get(collection).set(headers).expect(200)).body).toEqual(initial.body)
+  })
+
+  it('拒绝维护写入的无效形状、缺失确认和已过期确认', async () => {
+    let now = '2026-08-06T08:00:00Z'
+    const { baseUrl } = await startServer({ confirmationClock: { now: () => now, expiresAt: () => '2026-08-06T08:05:00Z' } })
+    for (const [path, body] of [
+      ['backup', {}], ['backup', { operation: 'RESTORE' }], ['backup', { operation: 'BACKUP', backupId: '' }],
+      ['restore', {}], ['restore', { operation: 'BACKUP', backupId: 'A' }], ['restore', { operation: 'RESTORE', backupId: '' }],
+      ['config/export', {}], ['config/export', { format: 'XML' }],
+    ]) await request(baseUrl).post(`/api/v1/admin/${path}`).set(headers).send(body).expect(422)
+    for (const [path, body] of [
+      ['backup', { operation: 'BACKUP' }], ['restore', { operation: 'RESTORE', backupId: 'PREBACKUP-002' }], ['config/export', { format: 'JSON' }],
+    ]) await request(baseUrl).post(`/api/v1/admin/${path}`).set(headers).send(body).expect(428)
+    const id = await confirmMaintenance(baseUrl, 'BACKUP_RESTORE', 'BACKUP:NEW')
+    now = '2026-08-06T08:06:00Z'
+    await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', confirmationId: id }).expect(409)
+    const archive = await request(baseUrl).get('/api/v1/admin/archives').set(headers).expect(200)
+    expect(archive.body).toMatchObject({ data: [{ taskId: 'TASK-001', scenarioId: 'SCN-001', runId: 'RUN-001', replayId: 'REPLAY-001', reportId: 'RPT-001' }] })
+    const health = await request(baseUrl).get('/api/v1/admin/health').set(headers).expect(200)
+    expect(health.body).toMatchObject({ data: { ui: 'HEALTHY', engine: 'NOT_CONNECTED_BY_DESIGN', database: 'NOT_CONNECTED_BY_DESIGN', channel: 'NOT_CONNECTED_BY_DESIGN' } })
+  })
+})
+
+
+/** 为系统维护操作建立并确认与对象绑定的一次性上下文。 */
+async function confirmMaintenance(baseUrl: string, action: ConfirmationAction, objectId: string): Promise<string> {
+  const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+  const created = await request(baseUrl).post('/api/v1/confirmations').set(headers).send({ action, objectId }).expect(201)
+  const id = (created.body as { data: ConfirmationContext }).data.confirmationId
+  await request(baseUrl).post(`/api/v1/confirmations/${id}`).set(headers).send({ confirm: true }).expect(200)
+  return id
+}
 
 interface MockProjectionInstance {
   snapshot(): unknown

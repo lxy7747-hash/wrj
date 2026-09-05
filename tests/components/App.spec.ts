@@ -241,7 +241,7 @@ describe('App shell', () => {
     expect(adminWrapper.findAll('main')).toHaveLength(1)
     const systemManagementNavigation = adminWrapper.get('[aria-label="系统管理导航"]')
     expect(systemManagementNavigation.findAll('.el-menu-item')).toHaveLength(9)
-    expect(systemManagementNavigation.text()).toContain('底层模型参数')
+    expect(systemManagementNavigation.text()).toContain('主数据管理')
     expect(systemManagementNavigation.text()).toContain('装备参数库')
     expect(systemManagementNavigation.text()).toContain('场景模板维护')
     expect(systemManagementNavigation.text()).toContain('操作审计日志')

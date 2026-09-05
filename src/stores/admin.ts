@@ -1,18 +1,48 @@
 import { defineStore } from 'pinia'
 import type {
   ApiFailure,
+  ArchiveRecord,
+  BackupRecord,
   AuditRecord,
   AuditRequest,
   CapabilityState,
   ConfirmationContext,
+  ConfirmationAction,
   DeleteResult,
   ExportStatus,
   PageMeta,
+  MasterData,
+  RestoreResult,
+  SystemHealth,
   Role,
   User,
   UserRoleCommand,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { isArchiveRecord, isBackupRecord, isMasterData, isRestoreResult, isSystemHealth } from '../features/admin/admin-contract'
+
+type MaintenanceSection = 'master' | 'backup' | 'archive' | 'health' | 'export'
+export type MaintenanceAction = 'DELETE' | 'BACKUP' | 'RESTORE' | 'EXPORT'
+
+/** 为各维护面板创建互不干扰的状态和反馈。 */
+function maintenanceFeedback(): Record<MaintenanceSection, { state: CapabilityState; message: string; fieldPath: string }> {
+  return Object.fromEntries(['master', 'backup', 'archive', 'health', 'export'].map((key) => [key, { state: 'EMPTY', message: '尚未加载数据。', fieldPath: '' }])) as Record<MaintenanceSection, { state: CapabilityState; message: string; fieldPath: string }>
+}
+
+/** 请求管理员接口并验证既有信封，调用者负责校验具体业务数据。 */
+async function requestMaintenance(path: string, init: RequestInit = {}): Promise<unknown> {
+  if (useAuthStore().role !== 'ADMIN') throw new Error('仅管理员可执行此操作。')
+  let response: Response
+  try {
+    response = await fetch(`${resolveMockOrigin()}/api/v1/${path}`, { ...init, headers: {
+      'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role, ...init.headers,
+    } })
+  } catch { throw new Error('系统管理服务暂时不可用，请稍后重试。') }
+  const payload: unknown = await response.json().catch(() => undefined)
+  if (!response.ok) throw readFailure(payload) ?? new Error('系统管理请求失败。')
+  if (readStrictData(payload) === undefined) throw new Error('系统管理响应格式不正确。')
+  return payload
+}
 
 const USER_KEYS = new Set(['userId', 'username', 'role', 'status', 'lastLoginAt'])
 const AUDIT_KEYS = new Set(['auditId', 'actor', 'role', 'module', 'action', 'objectId', 'result', 'occurredAt', 'immutableFixture'])
@@ -287,9 +317,187 @@ export const useAdminStore = defineStore('admin', {
     auditConfirmation: null as ConfirmationContext | null,
     auditExportFilters: {} as AuditFilters,
     auditExportStatus: null as ExportStatus | null,
+    masterData: [] as MasterData[],
+    backups: [] as BackupRecord[],
+    archives: [] as ArchiveRecord[],
+    health: null as SystemHealth | null,
+    restoreResult: null as RestoreResult | null,
+    fullConfigExport: null as ExportStatus | null,
+    maintenance: maintenanceFeedback(),
+    maintenanceEpoch: 0,
+    maintenanceConfirmation: null as ConfirmationContext | null,
   }),
 
   actions: {
+    /** 加载指定维护面板；参数为主数据、备份目录、归档或健康面板名称。 */
+    async loadMaintenance(section: Exclude<MaintenanceSection, 'export'>): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance[section].state)) return false
+      const epoch = this.maintenanceEpoch
+      const path = { master: 'master-data', backup: 'backups', archive: 'archives', health: 'health' }[section]
+      this.maintenance[section] = { state: 'LOADING', message: '正在加载数据。', fieldPath: '' }
+      try {
+        const payload = await requestMaintenance(`admin/${path}`)
+        if (epoch !== this.maintenanceEpoch) return false
+        this.maintenance[section].state = 'VALIDATING'
+        const data = readStrictData(payload)
+        let empty = false
+        if (section === 'health') {
+          if (!isSystemHealth(data)) throw new Error('系统健康状态格式不正确。')
+          this.health = data
+        } else {
+          const validators = { master: isMasterData, backup: isBackupRecord, archive: isArchiveRecord }
+          if (!Array.isArray(data) || !data.every(validators[section])) throw new Error('系统管理列表格式不正确。')
+          const key = { master: 'dataId', backup: 'backupId', archive: 'archiveId' }[section]
+          if (new Set(data.map((item) => item[key])).size !== data.length) throw new Error('列表包含重复编号。')
+          if (section === 'master') this.masterData = data
+          else if (section === 'backup') this.backups = data
+          else this.archives = data
+          empty = data.length === 0
+        }
+        this.maintenance[section] = { state: empty ? 'EMPTY' : 'SUCCESS', message: empty ? '暂无记录。' : '数据已加载。', fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        if (section === 'master') this.masterData = []
+        if (section === 'backup') this.backups = []
+        if (section === 'archive') this.archives = []
+        if (section === 'health') this.health = null
+        this.showMaintenanceError(section, error)
+        return false
+      }
+    },
+
+    /**
+     * 保存主数据编辑副本；成功后用服务端版本替换列表对应行。
+     * @param data 包含当前版本和只读引用数量的完整数据。
+     * @param create 是否新增；为 false 时更新当前编号。
+     */
+    async saveMasterData(data: MasterData, create: boolean): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.master.state)) return false
+      this.maintenance.master = { state: 'VALIDATING', message: '正在校验主数据。', fieldPath: '' }
+      if (!isMasterData(data)) {
+        this.showMaintenanceError('master', new Error('请填写有效编号、类型和版本。'))
+        return false
+      }
+      const epoch = this.maintenanceEpoch
+      this.maintenance.master.state = 'EXECUTING'
+      try {
+        const payload = await requestMaintenance(`admin/master-data${create ? '' : `/${encodeURIComponent(data.dataId)}`}`, {
+          method: create ? 'POST' : 'PUT', body: JSON.stringify({ operation: create ? 'CREATE' : 'UPDATE', data }),
+        })
+        if (epoch !== this.maintenanceEpoch) return false
+        const updated = readStrictData(payload)
+        if (!isMasterData(updated) || updated.dataId !== data.dataId || updated.version !== (create ? 1 : data.version + 1)
+          || updated.referenceCount !== data.referenceCount) throw new Error('保存结果与当前主数据不一致。')
+        this.masterData = create ? [...this.masterData, updated] : this.masterData.map((item) => item.dataId === updated.dataId ? updated : item)
+        this.maintenance.master = { state: 'SUCCESS', message: `主数据已保存，当前版本 ${updated.version}。`, fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        this.showMaintenanceError('master', error)
+        return false
+      }
+    },
+
+    /**
+     * 用户在界面确认后执行敏感操作；每步响应都检查会话是否已失效。
+     * @param operation 删除、备份、恢复或配置导出动作。
+     * @param targetId 删除的主数据编号或恢复的备份编号。
+     */
+    async runMaintenanceAction(operation: MaintenanceAction, targetId = ''): Promise<boolean> {
+      if (this.maintenanceConfirmation !== null || Object.values(this.maintenance).some((item) => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(item.state))) return false
+      const section: MaintenanceSection = operation === 'DELETE' ? 'master' : operation === 'EXPORT' ? 'export' : 'backup'
+      const action: ConfirmationAction = operation === 'DELETE' ? 'MASTER_DATA_DELETE' : operation === 'EXPORT' ? 'FULL_CONFIG_EXPORT' : 'BACKUP_RESTORE'
+      const objectId = operation === 'DELETE' ? targetId : operation === 'RESTORE' ? `RESTORE:${targetId}` : operation === 'BACKUP' ? 'BACKUP:NEW' : 'FULL-CONFIG'
+      const epoch = this.maintenanceEpoch
+      this.maintenance[section] = { state: 'VALIDATING', message: '正在校验操作。', fieldPath: '' }
+      this.restoreResult = null
+      if (operation === 'EXPORT') this.fullConfigExport = null
+      if ((operation === 'DELETE' || operation === 'RESTORE') && targetId.trim() === '') {
+        this.showMaintenanceError(section, new Error('请先选择操作对象。'))
+        return false
+      }
+      this.maintenance[section].state = 'EXECUTING'
+      try {
+        const createdPayload = await requestMaintenance('confirmations', { method: 'POST', body: JSON.stringify({ action, objectId }) })
+        if (epoch !== this.maintenanceEpoch) return false
+        const created = readConfirmation(createdPayload, 'AWAITING_CONFIRMATION')
+        if (!created) throw new Error('二次确认响应不正确。')
+        this.maintenanceConfirmation = created
+        const confirmedPayload = await requestMaintenance(`confirmations/${encodeURIComponent(created.confirmationId)}`, { method: 'POST', body: JSON.stringify({ confirm: true }) })
+        if (epoch !== this.maintenanceEpoch) return false
+        const confirmed = readConfirmation(confirmedPayload, 'CONFIRMED')
+        if (!confirmed || confirmed.confirmationId !== created.confirmationId) throw new Error('二次确认结果不匹配。')
+        this.maintenanceConfirmation = confirmed
+        const confirmationId = confirmed.confirmationId
+        const path = operation === 'DELETE' ? `master-data/${encodeURIComponent(targetId)}` : operation === 'RESTORE' ? 'restore' : operation === 'BACKUP' ? 'backup' : 'config/export'
+        const body = operation === 'RESTORE' ? { operation: 'RESTORE', backupId: targetId, confirmationId }
+          : operation === 'BACKUP' ? { operation: 'BACKUP', confirmationId } : { format: 'JSON', confirmationId }
+        const payload = await requestMaintenance(`admin/${path}`, operation === 'DELETE'
+          ? { method: 'DELETE', headers: { 'X-Confirmation-Id': confirmationId } }
+          : { method: 'POST', body: JSON.stringify(body) })
+        if (epoch !== this.maintenanceEpoch) return false
+        const result = readStrictData(payload)
+        let message = ''
+        if (operation === 'DELETE') {
+          const deleted = readDeleteResult(payload)
+          if (!deleted?.deleted || deleted.objectId !== targetId) throw new Error('删除结果与当前对象不一致。')
+          this.masterData = this.masterData.filter((item) => item.dataId !== targetId)
+          message = '主数据已删除。'
+        } else if (operation === 'BACKUP') {
+          if (!isBackupRecord(result) || this.backups.some((item) => item.backupId === result.backupId)) throw new Error('备份记录格式或编号不正确。')
+          this.backups = [...this.backups, result]
+          message = '备份流程完成，未生成实际备份文件。'
+        } else if (operation === 'RESTORE') {
+          if (!isRestoreResult(result)) throw new Error('恢复流程结果不正确。')
+          this.restoreResult = result
+          if (result.result === 'FAILURE') {
+            this.showMaintenanceError('backup', new Error(result.integrityValid ? '恢复失败，已回滚；恢复前备份已保留。' : '完整性校验失败，恢复未开始；恢复前备份已保留。'))
+            return false
+          }
+          message = '恢复流程验证通过，未操作实际数据库。'
+        } else {
+          const exported = readExportStatus(payload)
+          if (!exported || exported.objectId !== 'FULL-CONFIG' || exported.classification !== 'INTERNAL') throw new Error('配置导出结果不正确。')
+          this.fullConfigExport = exported
+          message = '完整配置导出验证通过，未生成文件。'
+        }
+        this.maintenance[section] = { state: 'SUCCESS', message, fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        this.showMaintenanceError(section, error)
+        return false
+      } finally {
+        if (epoch === this.maintenanceEpoch) this.maintenanceConfirmation = null
+      }
+    },
+
+    /** 恢复来源改变时清除上一来源的结果，保留备份目录。 */
+    clearRestoreResult(): void {
+      this.restoreResult = null
+      this.maintenance.backup = { state: 'EMPTY', message: '恢复来源已切换，请确认后执行恢复。', fieldPath: '' }
+    },
+
+    /** 将维护操作的失败映射为中文反馈，并保留可定位的字段路径。 */
+    showMaintenanceError(section: MaintenanceSection, error: unknown): void {
+      const failure = readFailure(error)
+      this.maintenance[section] = { state: 'ERROR', message: failure?.error.message ?? (error instanceof Error ? error.message : '系统管理操作失败。'), fieldPath: failure?.error.fieldPath ?? '' }
+    },
+
+    /** 退出维护页面或会话时使在途请求失效，清除敏感确认与旧结果。 */
+    resetMaintenance(): void {
+      this.maintenanceEpoch += 1
+      this.maintenanceConfirmation = null
+      this.masterData = []
+      this.backups = []
+      this.archives = []
+      this.health = null
+      this.restoreResult = null
+      this.fullConfigExport = null
+      this.maintenance = maintenanceFeedback()
+    },
+
     /**
      * 将请求或合同校验异常转换为统一的面板错误状态。
      * @param error 捕获到的异常或服务端失败响应。
@@ -559,6 +767,7 @@ export const useAdminStore = defineStore('admin', {
      * @sideEffects 清空用户列表，并将面板状态、结果代码和消息重置为空态。
      */
     resetToSafeEmpty(): void {
+      this.resetMaintenance()
       this.users = []
       this.panelState = 'EMPTY'
       this.resultCode = 'EMPTY'

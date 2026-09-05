@@ -146,6 +146,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'delete', path: '/api/v1/admin/users/{userId}', operationId: 'deleteapiV1AdminUsersUserId' },
   { method: 'get', path: '/api/v1/admin/audit', operationId: 'getapiV1AdminAudit' },
   { method: 'post', path: '/api/v1/admin/audit/export', operationId: 'postapiV1AdminAuditExport' },
+  { method: 'get', path: '/api/v1/admin/backups', operationId: 'getapiV1AdminBackups' },
   { method: 'post', path: '/api/v1/admin/backup', operationId: 'postapiV1AdminBackup' },
   { method: 'post', path: '/api/v1/admin/restore', operationId: 'postapiV1AdminRestore' },
   { method: 'get', path: '/api/v1/admin/health', operationId: 'getapiV1AdminHealth' },
@@ -211,6 +212,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   deleteapiV1AdminUsersUserId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   getapiV1AdminAudit: operationSchemaBinding(null, '200', '#/components/schemas/AuditList'),
   postapiV1AdminAuditExport: operationSchemaBinding('#/components/schemas/AuditExportRequest', '200', '#/components/schemas/ExportStatus'),
+  getapiV1AdminBackups: operationSchemaBinding(null, '200', '#/components/schemas/BackupList'),
   postapiV1AdminBackup: operationSchemaBinding('#/components/schemas/BackupRequest', '200', '#/components/schemas/BackupRecord'),
   postapiV1AdminRestore: operationSchemaBinding('#/components/schemas/RestoreRequest', '200', '#/components/schemas/RestoreResult'),
   getapiV1AdminHealth: operationSchemaBinding(null, '200', '#/components/schemas/SystemHealth'),
@@ -267,22 +269,23 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1ReplaysReplayId: [],
   postapiV1ReplaysReplayIdCommands: ['409'],
   getapiV1AdminMasterData: ['403'],
-  postapiV1AdminMasterData: [],
-  putapiV1AdminMasterDataDataId: [],
-  deleteapiV1AdminMasterDataDataId: ['409'],
+  postapiV1AdminMasterData: ['403', '409', '422'],
+  putapiV1AdminMasterDataDataId: ['403', '404', '409', '422'],
+  deleteapiV1AdminMasterDataDataId: ['403', '404', '409', '428'],
   getapiV1AdminUsers: [],
   postapiV1AdminUsers: [],
   putapiV1AdminUsersUserId: ['409'],
   deleteapiV1AdminUsersUserId: ['409'],
   getapiV1AdminAudit: ['400', '403'],
   postapiV1AdminAuditExport: ['400', '403', '409', '428'],
-  postapiV1AdminBackup: ['403', '428'],
-  postapiV1AdminRestore: ['422', '428'],
-  getapiV1AdminHealth: [],
-  getapiV1AdminArchives: [],
+  getapiV1AdminBackups: ['403'],
+  postapiV1AdminBackup: ['403', '404', '409', '422', '428'],
+  postapiV1AdminRestore: ['403', '404', '409', '422', '428'],
+  getapiV1AdminHealth: ['403'],
+  getapiV1AdminArchives: ['403'],
   postapiV1Reset: [],
   getwsV1: ['400', '403'],
-  postapiV1AdminConfigExport: ['403', '428'],
+  postapiV1AdminConfigExport: ['403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/parameters/DemoRole/schema/enum', ['ADMIN','OPERATOR']],
@@ -375,9 +378,10 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/BatchRequest/properties/deterministicOrder/const', true],
   ['#/components/schemas/BatchCommand/properties/command/enum', ['START','CANCEL']],
   ['#/components/schemas/ReportExportRequest/properties/format/enum', ['HTML','PDF','CSV']],
-  ['#/components/schemas/ConfirmationRequest/properties/action/enum', ['SCENARIO_WARNING_CONTINUE','OFFICIAL_TEMPLATE_DELETE','SIMULATION_STOP','BATCH_LEVEL_III_EXPORT','BACKUP_RESTORE','FULL_CONFIG_EXPORT','AUDIT_EXPORT']],
+  ['#/components/schemas/ConfirmationRequest/properties/action/enum', ['SCENARIO_WARNING_CONTINUE','OFFICIAL_TEMPLATE_DELETE','SIMULATION_STOP','BATCH_LEVEL_III_EXPORT','BACKUP_RESTORE','FULL_CONFIG_EXPORT','AUDIT_EXPORT','MASTER_DATA_DELETE']],
   ['#/components/schemas/ConfirmRequest/properties/confirm/const', true],
   ['#/components/schemas/ReplayCommand/properties/command/enum', ['PLAY','PAUSE','SEEK','STEP_FORWARD','STEP_BACK','SPEED']],
+  ['#/components/schemas/MasterData/properties/dataId/not/enum', ['.','..']],
   ['#/components/schemas/MasterDataRequest/properties/operation/enum', ['CREATE','UPDATE','DELETE']],
   ['#/components/schemas/UserRoleCommand/properties/operation/enum', ['CREATE','UPDATE','DELETE','ENABLE','DISABLE']],
   ['#/components/schemas/AuditRequest/properties/role/enum', ['ADMIN','OPERATOR']],
@@ -462,6 +466,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/DeleteapiV1AdminUsersUserIdResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AdminAuditResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminAuditExportResponse/properties/ok/const', true],
+  ['#/components/schemas/GetapiV1AdminBackupsResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminBackupResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminRestoreResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AdminHealthResponse/properties/ok/const', true],
@@ -1411,12 +1416,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 63) {
+  if (operationCount !== 64) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 63 operations, found ${operationCount}`,
+      `Expected exactly 64 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))

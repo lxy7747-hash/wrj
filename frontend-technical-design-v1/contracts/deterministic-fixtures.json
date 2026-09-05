@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-04.5",
+  "fixtureVersion": "2026-09-05.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -60,6 +60,18 @@
       "backupId": "PREBACKUP-002",
       "status": "VALID_FIXTURE",
       "checksum": "SHA256-DEMO-PREBACKUP-002",
+      "createdAt": "2026-08-06T10:08:00Z"
+    },
+    {
+      "backupId": "BACKUP-CORRUPT-001",
+      "status": "INVALID_FIXTURE",
+      "checksum": "MOCK-CORRUPT",
+      "createdAt": "2026-08-06T10:08:00Z"
+    },
+    {
+      "backupId": "BACKUP-ROLLBACK-001",
+      "status": "VALID_FIXTURE",
+      "checksum": "MOCK-ROLLBACK",
       "createdAt": "2026-08-06T10:08:00Z"
     }
   ],

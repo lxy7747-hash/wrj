@@ -36,6 +36,9 @@
 
 ## 页面交互所有权
 
+- P7 管理面板通过 `/admin?section=master-data`、`database-backup`、`simulation-data`、`runtime-status` 四个查询参数值切换，不增加命名路由。完整配置导出复用备份恢复页面内的区域，不另建重复面板。
+- `adminStore.loadMaintenance` 统一读取主数据、备份、归档和健康投影；`saveMasterData` 保存主数据副本；`runMaintenanceAction` 串联创建确认、确认完成和敏感操作。面板卸载及登出调用 `resetMaintenance`，清空旧结果并使在途响应失效。页面不直接读取 fixture。
+
 - `SituationPage` 只通过 selectors 获取同一 F-00042：地图、指标、弹窗必须同 frameId；ageMs 只接受 0～5000 ms，并按当前、最近 1 秒、最近 5 秒呈现，超过 5 秒拒绝。
 - `ScenariosPage` 对 `ScenarioConfig` 使用单一 canonical 编辑副本，并以独立 `ScenarioUiExtensions` 保存干扰器/传感器 UI 扩展；保存/预览前必经 AJV+业务规则。四类业务信息节点合计支持 50 个，支撑实体不计数；新增第 51 个业务信息节点以 `NODE_LIMIT_EXCEEDED` 阻断且草稿不改变。
 - `DataExchangePage` 作为系统管理下的共享子功能，集中承载 CSV、场景 JSON、本机消息和 AFSIM 进程四项数据交换能力；页面通过本机 Mock 加载合同并复用 `telemetryStore` 连接回环 WebSocket，但不读写真实文件、不启动操作系统进程。操作员可进入本子功能，其他管理子页仍拒绝访问。

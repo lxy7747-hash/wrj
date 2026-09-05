@@ -72,7 +72,7 @@ function readReplayCommand(value: unknown): ReplayCommand | undefined {
 
 /**
  * 管理冻结批次和历史回放的可变内存投影。
- * @remarks 批量启动在一次同步命令内完成 RUNNING→COMPLETED；回放命令只改变回放状态或游标，
+ * @remarks 批量启动在一次同步命令内直接返回 COMPLETED；回放命令只改变回放状态或游标，
  * 不修改 RUN-001、遥测帧或仿真控制状态。
  */
 export class BatchReplayProjection {
@@ -158,7 +158,6 @@ export class BatchReplayProjection {
       this.batch.state = 'CANCELLED'
     } else {
       // 本机确定性数据不启动真实进程，因此在同一命令内完成运行并返回最终结果。
-      this.batch.state = 'RUNNING'
       this.batch.state = 'COMPLETED'
     }
     return { ok: true, data: structuredClone(this.batch) }

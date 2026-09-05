@@ -114,7 +114,7 @@ function isPositiveFiniteNumber(value: unknown): value is number {
  * @returns 文本格式和日历日期均有效时返回 `true`。
  * @remarks 纯算术校验，不读取系统时间。
  */
-function isRfc3339DateTime(value: unknown): value is string {
+export function isRfc3339DateTime(value: unknown): value is string {
   if (typeof value !== 'string') return false
   const match = RFC3339_DATE_TIME.exec(value)
   if (match === null) return false

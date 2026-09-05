@@ -34,6 +34,8 @@ import { TemplateProjection } from './templates/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
+import { AdminProjection, type AdminResult } from './admin/projection.js'
+import { isAdminText } from '../src/features/admin/admin-contract.js'
 
 export interface MockServerOptions {
   port?: number
@@ -179,6 +181,7 @@ const CONFIRMATION_ACTIONS = new Set<ConfirmationAction>([
   'BACKUP_RESTORE',
   'FULL_CONFIG_EXPORT',
   'AUDIT_EXPORT',
+  'MASTER_DATA_DELETE',
 ])
 
 /**
@@ -526,6 +529,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const templates = new TemplateProjection()
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
+  const admin = new AdminProjection()
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -1482,6 +1486,117 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 统一记录系统维护结果并返回既有成功或错误信封。 */
+  function finishAdmin<T>(res: Response, action: string, result: AdminResult<T>, objectId?: string, status = 200): void {
+    const requestId = `REQ-P7-${action}`
+    if (!result.ok) {
+      auth.recordError('admin', 'ADMIN', action, objectId)
+      res.status(result.status).json(failure(result.code, result.status, {
+        requestId, generatedAt: P1_GENERATED_AT, message: result.message,
+        ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
+      }))
+      return
+    }
+    auth.recordSuccess('admin', 'ADMIN', action, objectId)
+    const total = Array.isArray(result.data) ? result.data.length : 1
+    res.status(status).json(success(result.data, pageMeta(requestId, total, Math.max(1, total))))
+  }
+
+  /** 消费与动作、对象及管理员绑定的一次性确认；失败同样写入审计。 */
+  function confirmAdmin(res: Response, confirmationId: unknown, action: ConfirmationAction, objectId: string): boolean {
+    const result = !isAdminText(confirmationId)
+      ? { ok: false as const, code: 'CONFIRMATION_REQUIRED' as const, status: 428, message: '执行此操作前需要二次确认。' }
+      : confirmations.consume(confirmationId, action, objectId, 'ADMIN')
+    if (result.ok) return true
+    finishAdmin(res, action, result, objectId)
+    return false
+  }
+
+  /** 读取主数据；权限由服务端独立校验。 */
+  app.get('/api/v1/admin/master-data', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_LIST')) return
+    finishAdmin(res, 'MASTER_DATA_LIST', { ok: true, data: admin.listMasterData() })
+  })
+
+  /** 创建主数据；版本及引用数量由内存投影校验。 */
+  app.post('/api/v1/admin/master-data', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_CREATE')) return
+    finishAdmin(res, 'MASTER_DATA_CREATE', admin.saveMasterData(req.body), isAdminText(req.body?.data?.dataId) ? req.body.data.dataId : undefined, 201)
+  })
+
+  /** 按路径编号和期望版本更新主数据。 */
+  app.put('/api/v1/admin/master-data/:dataId', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_UPDATE', req.params.dataId)) return
+    finishAdmin(res, 'MASTER_DATA_UPDATE', admin.saveMasterData(req.body, req.params.dataId), req.params.dataId)
+  })
+
+  /** 删除前消费确认，并重新校验服务器持有的引用数量。 */
+  app.delete('/api/v1/admin/master-data/:dataId', (req, res) => {
+    const dataId = req.params.dataId
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_DELETE', dataId)) return
+    if (!confirmAdmin(res, req.get('X-Confirmation-Id'), 'MASTER_DATA_DELETE', dataId)) return
+    finishAdmin(res, 'MASTER_DATA_DELETE', admin.deleteMasterData(dataId), dataId)
+  })
+
+  /** 返回可供恢复选择的备份目录。 */
+  app.get('/api/v1/admin/backups', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'BACKUP_LIST')) return
+    finishAdmin(res, 'BACKUP_LIST', { ok: true, data: admin.listBackups() })
+  })
+
+  /** 校验并执行备份的内存流程；确认不能用于恢复操作。 */
+  app.post('/api/v1/admin/backup', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'BACKUP_CREATE')) return
+    if (!isStrictObject(req.body, ['operation'], ['backupId', 'confirmationId']) || req.body.operation !== 'BACKUP'
+      || (req.body.backupId !== undefined && !isAdminText(req.body.backupId))) {
+      finishAdmin(res, 'BACKUP_CREATE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份请求不正确。', fieldPath: 'request' })
+      return
+    }
+    if (!confirmAdmin(res, req.body.confirmationId, 'BACKUP_RESTORE', `BACKUP:${req.body.backupId ?? 'NEW'}`)) return
+    finishAdmin(res, 'BACKUP_CREATE', admin.backup(req.body.backupId as string | undefined))
+  })
+
+  /** 恢复结果包含预备份和完整性证据；损坏数据不会开始恢复。 */
+  app.post('/api/v1/admin/restore', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'BACKUP_RESTORE')) return
+    if (!isStrictObject(req.body, ['operation', 'backupId'], ['confirmationId']) || req.body.operation !== 'RESTORE' || !isAdminText(req.body.backupId)) {
+      finishAdmin(res, 'BACKUP_RESTORE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '恢复请求不正确。', fieldPath: 'backupId' })
+      return
+    }
+    if (!confirmAdmin(res, req.body.confirmationId, 'BACKUP_RESTORE', `RESTORE:${req.body.backupId}`)) return
+    const result = admin.restore(req.body.backupId)
+    if (result.ok && result.data.result === 'FAILURE') {
+      auth.recordError('admin', 'ADMIN', 'BACKUP_RESTORE', req.body.backupId)
+      res.status(200).json(success(result.data, pageMeta('REQ-P7-BACKUP_RESTORE')))
+      return
+    }
+    finishAdmin(res, 'BACKUP_RESTORE', result, req.body.backupId)
+  })
+
+  /** 读取任务、场景、运行、回放、报告的统一归档关系。 */
+  app.get('/api/v1/admin/archives', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'ARCHIVE_LIST')) return
+    finishAdmin(res, 'ARCHIVE_LIST', { ok: true, data: [projection.snapshot().archive] })
+  })
+
+  /** 读取健康状态合同；未接入的依赖保持明确的未接入状态。 */
+  app.get('/api/v1/admin/health', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'HEALTH_READ')) return
+    finishAdmin(res, 'HEALTH_READ', { ok: true, data: projection.snapshot().diagnostics })
+  })
+
+  /** 验证管理员完整配置导出；不创建文件。 */
+  app.post('/api/v1/admin/config/export', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'FULL_CONFIG_EXPORT')) return
+    if (!isStrictObject(req.body, ['format'], ['confirmationId']) || req.body.format !== 'JSON') {
+      finishAdmin(res, 'FULL_CONFIG_EXPORT', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '完整配置仅支持 JSON 格式。', fieldPath: 'format' })
+      return
+    }
+    if (!confirmAdmin(res, req.body.confirmationId, 'FULL_CONFIG_EXPORT', 'FULL-CONFIG')) return
+    const result: ExportStatus = { objectId: 'FULL-CONFIG', generated: false, classification: 'INTERNAL', watermark: '内部使用 · admin · FULL-CONFIG', verifiedAt: P1_GENERATED_AT }
+    finishAdmin(res, 'FULL_CONFIG_EXPORT', { ok: true, data: result }, 'FULL-CONFIG')
+  })
+
   /** Returns the immutable audit projection after applying validated administrator filters. */
   app.get('/api/v1/admin/audit', (req, res) => {
     const requestId = 'REQ-P7-AUDIT-LIST'
@@ -1661,6 +1776,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     templates.reset()
     scripts.reset()
     batchReplay.reset()
+    admin.reset()
     res.status(200).json(success(result, {
       requestId: result.requestId,
       generatedAt: result.generatedAt,

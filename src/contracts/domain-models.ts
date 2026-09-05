@@ -265,7 +265,7 @@ export interface Replay { replayId: ReplayId; runId: RunId; state: ReplayState; 
 export interface ReplayCommand { command: 'PLAY' | 'PAUSE' | 'SEEK' | 'STEP_FORWARD' | 'STEP_BACK' | 'SPEED'; value?: number; }
 export type ConfirmationAction =
   | 'SCENARIO_WARNING_CONTINUE' | 'OFFICIAL_TEMPLATE_DELETE' | 'SIMULATION_STOP'
-  | 'BATCH_LEVEL_III_EXPORT' | 'BACKUP_RESTORE' | 'FULL_CONFIG_EXPORT' | 'AUDIT_EXPORT';
+  | 'MASTER_DATA_DELETE' | 'BATCH_LEVEL_III_EXPORT' | 'BACKUP_RESTORE' | 'FULL_CONFIG_EXPORT' | 'AUDIT_EXPORT';
 export interface ConfirmationRequest { action: ConfirmationAction; objectId: Identifier; }
 export interface ConfirmationContext { confirmationId: Identifier; state: ConfirmationState; actor: string; role: Role; createdAt: Iso8601Utc; expiresAt: Iso8601Utc; }
 

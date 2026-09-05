@@ -3,6 +3,7 @@ import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
+import { useAdminStore } from './stores/admin'
 import { useBatchStore } from './stores/batch'
 import { useDataExchangeStore } from './stores/data-exchange'
 import { useReplayStore } from './stores/replay'
@@ -11,6 +12,7 @@ import { useSimulationStore } from './stores/simulation'
 import { useTelemetryStore } from './stores/telemetry'
 
 const auth = useAuthStore()
+const admin = useAdminStore()
 const batch = useBatchStore()
 const dataExchange = useDataExchangeStore()
 const replay = useReplayStore()
@@ -23,6 +25,7 @@ watch(
   () => auth.principal,
   (principal) => {
     if (principal === null) {
+      admin.resetToSafeEmpty()
       telemetry.disconnectAndReset()
       simulation.resetToSafeEmpty()
       scenario.resetToSafeEmpty()
@@ -129,7 +132,7 @@ async function logout(): Promise<void> {
           <aside class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="$route.fullPath">
               <el-menu-item-group title="模型与参数">
-                <el-menu-item index="model-parameters" disabled>底层模型参数</el-menu-item>
+                <el-menu-item index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
                 <el-menu-item
                   index="/admin?section=equipment-library"
                   :disabled="auth.principal?.role !== 'ADMIN'"
@@ -146,11 +149,11 @@ async function logout(): Promise<void> {
                   操作审计日志
                 </el-menu-item>
                 <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
-                <el-menu-item index="database-backup" disabled>数据库备份 / 恢复</el-menu-item>
+                <el-menu-item index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group title="数据与运行">
-                <el-menu-item index="simulation-data" disabled>仿真数据管理</el-menu-item>
-                <el-menu-item index="runtime-status" disabled>系统运行状态</el-menu-item>
+                <el-menu-item index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
+                <el-menu-item index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group title="数据交换">
                 <el-menu-item index="/admin/data-exchange">
