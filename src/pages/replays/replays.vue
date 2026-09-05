@@ -89,11 +89,11 @@ onBeforeUnmount(() => {
 <template>
   <section class="replays-page" aria-labelledby="replays-title">
     <header class="replays-page__header">
-      <div>
-        <p class="eyebrow">运行快照与事件复盘</p>
-        <h2 id="replays-title">历史回放</h2>
-        <p>只读回放不会修改仿真运行、场景配置或实时遥测。</p>
-      </div>
+<!--      <div>-->
+<!--        <p class="eyebrow">运行快照与事件复盘</p>-->
+<!--        <h2 id="replays-title">历史回放</h2>-->
+<!--        <p>只读回放不会修改仿真运行、场景配置或实时遥测。</p>-->
+<!--      </div>-->
       <div class="replays-page__source">
         <el-select :model-value="replay?.replayId ?? ''" aria-label="回放来源" :disabled="loading || replays.length === 0">
           <el-option v-for="item in replays" :key="item.replayId" :value="item.replayId" :label="`${item.replayId} · ${item.runId}`" />

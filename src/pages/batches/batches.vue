@@ -67,11 +67,11 @@ onBeforeUnmount(() => batchStore.resetToSafeEmpty())
 <template>
   <section class="batches-page" aria-labelledby="batches-title">
     <header class="batches-page__header">
-      <div>
-        <p class="eyebrow">参数遍历与批次编排</p>
-        <h2 id="batches-title">批量仿真</h2>
-        <p>按固定顺序组合功率和通信距离，生成 12 个运行及其报告。</p>
-      </div>
+<!--      <div>-->
+<!--        <p class="eyebrow">参数遍历与批次编排</p>-->
+<!--        <h2 id="batches-title">批量仿真</h2>-->
+<!--        <p>按固定顺序组合功率和通信距离，生成 12 个运行及其报告。</p>-->
+<!--      </div>-->
       <div class="batches-page__actions">
         <el-tag :type="batchStateType(batch?.state)" effect="plain">{{ batchStateLabel(batch?.state) }}</el-tag>
         <el-button :disabled="!aggregateReport || pending" @click="openAggregateReport">查看聚合报告</el-button>
