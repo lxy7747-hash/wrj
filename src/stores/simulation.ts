@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import type {
-  ApiFailure,
   CapabilityState,
   ConfigurationLockState,
   ConfirmationContext,
@@ -10,6 +9,7 @@ import type {
   UiSimulationStatus,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { useScenarioStore } from './scenario'
 
 const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt'])
@@ -59,22 +59,6 @@ async function fetchSimulation(owner: object, input: string, init?: RequestInit)
   }
 }
 
-/** 从未知载荷读取最小 API 失败信封。 */
-function readFailure(payload: unknown): ApiFailure | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== false) return undefined
-  const error = (payload as { error?: { code?: unknown; message?: unknown } }).error
-  return typeof error?.code === 'string' && typeof error.message === 'string' ? payload as ApiFailure : undefined
-}
-
-/** 安全解析仿真 API JSON 响应。 */
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return undefined
-  }
-}
-
 /** 判断未知值是否为闭合的仿真运行合同。 */
 export function isSimulationRun(value: unknown): value is SimulationRun {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -100,22 +84,19 @@ export function isSimulationRun(value: unknown): value is SimulationRun {
 
 /** 从成功信封读取一个仿真运行。 */
 function readRun(payload: unknown): SimulationRun | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   return isSimulationRun(data) ? data : undefined
 }
 
 /** 从成功信封读取仿真运行列表。 */
 function readRuns(payload: unknown): SimulationRun[] | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   return Array.isArray(data) && data.every(isSimulationRun) ? data : undefined
 }
 
 /** 从成功信封读取指定状态的一次性确认上下文。 */
 function readConfirmation(payload: unknown, state: ConfirmationContext['state']): ConfirmationContext | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const confirmation = data as Partial<ConfirmationContext>
   return typeof confirmation.confirmationId === 'string'
@@ -162,7 +143,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 更新能力状态、结果代码和消息，不覆盖最后一次有效运行。
      */
     showError(error: unknown, fallback: string): void {
-      const failure = readFailure(error)
+      const failure = readApiFailure(error)
       this.capabilityState = 'ERROR'
       this.resultCode = error instanceof InvalidSimulationResponseError
         ? 'INVALID_RESPONSE'
@@ -199,7 +180,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
-        if (!response.ok) throw readFailure(payload) ?? new InvalidSimulationResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const runs = readRuns(payload)
         const run = runs?.find((candidate) => candidate.runId === 'RUN-001')
         if (run === undefined) throw new InvalidSimulationResponseError()
@@ -236,7 +217,7 @@ export const useSimulationStore = defineStore('simulation', {
         this.capabilityState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidSimulationResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const runs = readRuns(payload)
         if (runs === undefined) throw new InvalidSimulationResponseError()
         const run = runs.find((candidate) => candidate.runId === 'RUN-001')
@@ -281,7 +262,7 @@ export const useSimulationStore = defineStore('simulation', {
         this.capabilityState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidSimulationResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const run = readRun(payload)
         if (run === undefined || !run.configLocked || run.uiStatus !== 'IDLE') throw new InvalidSimulationResponseError()
         this.applyRun(run)
@@ -324,7 +305,7 @@ export const useSimulationStore = defineStore('simulation', {
         this.capabilityState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidSimulationResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const run = readRun(payload)
         if (run === undefined) throw new InvalidSimulationResponseError()
         this.applyRun(run)
@@ -434,7 +415,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch) return false
         const createPayload = await readJson(createResponse)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidSimulationResponseError()
+        if (!createResponse.ok) throw readApiFailure(createPayload) ?? new InvalidSimulationResponseError()
         const awaiting = readConfirmation(createPayload, 'AWAITING_CONFIRMATION')
         if (awaiting === undefined) throw new InvalidSimulationResponseError()
         this.lastConfirmation = awaiting
@@ -447,7 +428,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch) return false
         const confirmPayload = await readJson(confirmResponse)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!confirmResponse.ok) throw readFailure(confirmPayload) ?? new InvalidSimulationResponseError()
+        if (!confirmResponse.ok) throw readApiFailure(confirmPayload) ?? new InvalidSimulationResponseError()
         const confirmed = readConfirmation(confirmPayload, 'CONFIRMED')
         if (confirmed === undefined) throw new InvalidSimulationResponseError()
         this.lastConfirmation = confirmed

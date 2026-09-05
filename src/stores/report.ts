@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import type {
-  ApiFailure,
   CapabilityState,
   ConfirmationContext,
   Report,
@@ -8,15 +7,9 @@ import type {
   ReportExportResult,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { readApiFailure, unwrapSuccessData } from './api-envelope'
 
 type ExportFormat = ReportExportRequest['format']
-
-/** 从未知载荷中读取 API 失败信封。 */
-function readFailure(value: unknown): ApiFailure | undefined {
-  if (typeof value !== 'object' || value === null || (value as { ok?: unknown }).ok !== false) return undefined
-  const error = (value as { error?: { code?: unknown; message?: unknown } }).error
-  return typeof error?.code === 'string' && typeof error.message === 'string' ? value as ApiFailure : undefined
-}
 
 /** 校验报表 KPI 的闭合数值字段。 */
 function isReportKpis(value: unknown): boolean {
@@ -99,10 +92,8 @@ function isExportResult(value: unknown): value is ReportExportResult {
 /** 读取统一成功信封并按调用方提供的规则校验业务数据。 */
 async function readSuccess<T>(response: Response, validate: (value: unknown) => value is T): Promise<T> {
   const payload = await response.json() as unknown
-  if (!response.ok) throw readFailure(payload) ?? new Error('报表服务响应错误。')
-  const data = typeof payload === 'object' && payload !== null && (payload as { ok?: unknown }).ok === true
-    ? (payload as { data?: unknown }).data
-    : undefined
+  if (!response.ok) throw readApiFailure(payload) ?? new Error('报表服务响应错误。')
+  const data = unwrapSuccessData(payload)
   if (!validate(data)) throw new Error('报表数据格式不正确。')
   return data
 }
@@ -301,7 +292,7 @@ export const useReportStore = defineStore('report', {
 
     /** 将错误转换为安全中文反馈并清除可能过期的当前报告内容。 */
     showError(error: unknown, fallback: string, code?: string): void {
-      const failure = readFailure(error)
+      const failure = readApiFailure(error)
       this.selectedReport = null
       this.confirmation = null
       this.pendingFormat = null

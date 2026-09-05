@@ -7,17 +7,7 @@ import {
   type RouteLocationNormalized,
   type RouteRecordRaw,
 } from 'vue-router'
-import AdminPage from '../pages/admin/admin.vue'
-import AdminDataExchangePage from '../pages/admin-data-exchange/admin-data-exchange.vue'
-import BatchesPage from '../pages/batches/batches.vue'
-import BlueprintPage from '../pages/blueprint/blueprint.vue'
-import InteractionsPage from '../pages/interactions/interactions.vue'
 import LoginPage from '../pages/login/login.vue'
-import ReplaysPage from '../pages/replays/replays.vue'
-import ReportsPage from '../pages/reports/reports.vue'
-import ScenariosPage from '../pages/scenarios/scenarios.vue'
-import SituationPage from '../pages/situation/situation.vue'
-import TraceabilityPage from '../pages/traceability/traceability.vue'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
 
@@ -78,56 +68,56 @@ export const routeRecords: RouteRecordRaw[] = [
   {
     path: '/situation',
     name: 'situation',
-    component: SituationPage,
+    component: () => import('../pages/situation/situation.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '态势展示', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/scenarios',
     name: 'scenarios',
-    component: ScenariosPage,
+    component: () => import('../pages/scenarios/scenarios.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '场景管理', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/batches',
     name: 'batches',
-    component: BatchesPage,
+    component: () => import('../pages/batches/batches.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '批量仿真', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/reports',
     name: 'reports',
-    component: ReportsPage,
+    component: () => import('../pages/reports/reports.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '报告分析', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/replays',
     name: 'replays',
-    component: ReplaysPage,
+    component: () => import('../pages/replays/replays.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '历史回放', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/admin',
     name: 'admin',
-    component: AdminPage,
+    component: () => import('../pages/admin/admin.vue'),
     beforeEnter: requireAdmin,
     meta: { title: '用户与角色', guard: 'admin', layout: 'workspace' },
   },
   {
     path: '/blueprint',
     name: 'blueprint',
-    component: BlueprintPage,
+    component: () => import('../pages/blueprint/blueprint.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '能力蓝图', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/admin/data-exchange',
     name: 'admin-data-exchange',
-    component: AdminDataExchangePage,
+    component: () => import('../pages/admin-data-exchange/admin-data-exchange.vue'),
     beforeEnter: requirePrincipal,
     // 冻结的路由合同规定，此概念性管理子页也向操作员开放。
     meta: { title: '数据交换与接口', guard: 'principal', layout: 'workspace' },
@@ -135,14 +125,14 @@ export const routeRecords: RouteRecordRaw[] = [
   {
     path: '/traceability',
     name: 'traceability',
-    component: TraceabilityPage,
+    component: () => import('../pages/traceability/traceability.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '需求追踪', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/interactions',
     name: 'interactions',
-    component: InteractionsPage,
+    component: () => import('../pages/interactions/interactions.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '感知、干扰与选路', guard: 'principal', layout: 'workspace' },
   },

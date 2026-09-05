@@ -62,7 +62,8 @@ describe('P6 批量仿真与历史回放页面', () => {
     }))
     const { wrapper, router } = await mountPage(BatchesPage, '/batches')
 
-    expect(wrapper.get('#batches-title').text()).toBe('批量仿真')
+    expect(wrapper.find('#batches-title').exists()).toBe(false)
+    expect(wrapper.get('.batch-form').text()).toContain('批量参数配置')
     for (const testId of ['batch-scenario', 'batch-powers', 'batch-distances']) {
       expect(wrapper.get(`[data-testid="${testId}"]`).attributes('readonly')).toBeDefined()
     }
@@ -75,8 +76,7 @@ describe('P6 批量仿真与历史回放页面', () => {
     await flushPromises()
     expect(wrapper.findAll('[data-testid="batch-run-table"] .el-table__row')).toHaveLength(12)
     await wrapper.findAll('button').find((button) => button.text().includes('查看聚合报告'))!.trigger('click')
-    await flushPromises()
-    expect(router.currentRoute.value).toMatchObject({ path: '/reports', query: { reportId: 'RPT-BATCH-001' } })
+    await vi.waitFor(() => expect(router.currentRoute.value).toMatchObject({ path: '/reports', query: { reportId: 'RPT-BATCH-001' } }))
     wrapper.unmount()
   })
 
@@ -100,7 +100,8 @@ describe('P6 批量仿真与历史回放页面', () => {
     }))
     const { wrapper } = await mountPage(ReplaysPage, '/replays')
 
-    expect(wrapper.get('#replays-title').text()).toBe('历史回放')
+    expect(wrapper.find('#replays-title').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="replay-play"]').text()).toBe('播放')
     expect(wrapper.get('[data-testid="offline-map-stub"]')).toBeTruthy()
     expect(wrapper.findAll('[data-testid="replay-timeline"] .replay-timeline__events button')).toHaveLength(3)
     expect(wrapper.get('[data-testid="replay-event-detail"]').text()).toContain('SW-004')

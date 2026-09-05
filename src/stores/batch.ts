@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import type {
-  ApiFailure,
   Batch,
   BatchCommand,
   BatchRequest,
@@ -9,6 +8,7 @@ import type {
   Report,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isReport } from './report'
 
 export interface BatchDetail {
@@ -26,13 +26,6 @@ const FROZEN_DISTANCES_KM = [80, 100, 120]
 /** 判断输入是否为当前固定证据支持的参数矩阵。 */
 function sameNumbers(actual: number[], expected: number[]): boolean {
   return actual.length === expected.length && actual.every((value, index) => value === expected[index])
-}
-
-/** 从未知载荷中读取 API 失败信封。 */
-function readFailure(value: unknown): ApiFailure | undefined {
-  if (typeof value !== 'object' || value === null || (value as { ok?: unknown }).ok !== false) return undefined
-  const error = (value as { error?: { code?: unknown; message?: unknown } }).error
-  return typeof error?.code === 'string' && typeof error.message === 'string' ? value as ApiFailure : undefined
 }
 
 /** 校验批次基础信息的闭合字段和运行/报告编号。 */
@@ -94,10 +87,8 @@ export function isBatchDetail(value: unknown): value is BatchDetail {
 /** 读取统一成功信封并校验业务数据。 */
 async function readSuccess<T>(response: Response, validate: (value: unknown) => value is T): Promise<T> {
   const payload = await response.json() as unknown
-  if (!response.ok) throw readFailure(payload) ?? new Error('批量仿真服务响应错误。')
-  const data = typeof payload === 'object' && payload !== null && (payload as { ok?: unknown }).ok === true
-    ? (payload as { data?: unknown }).data
-    : undefined
+  if (!response.ok) throw readApiFailure(payload) ?? new Error('批量仿真服务响应错误。')
+  const data = unwrapSuccessData(payload)
   if (!validate(data)) throw new Error('批量仿真数据格式不正确。')
   return data
 }
@@ -266,7 +257,7 @@ export const useBatchStore = defineStore('batch', {
 
     /** 将错误转换为中文反馈并清空不可信结果。 */
     showError(error: unknown, fallback: string): void {
-      const failure = readFailure(error)
+      const failure = readApiFailure(error)
       this.batch = null
       this.runs = []
       this.aggregateReport = null

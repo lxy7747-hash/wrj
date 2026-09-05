@@ -48,7 +48,9 @@ test('P6 批量任务、聚合报告与只读回放主链', async ({ page, reque
   await resetMock(request)
   await login(page)
 
-  await page.getByRole('link', { name: '批量仿真', exact: true }).click()
+  // 菜单隐藏不等于删除功能，仍通过保留路由验证批量业务主链。
+  await expect(page.getByRole('link', { name: '批量仿真', exact: true })).toHaveCount(0)
+  await page.goto('/batches')
   await page.waitForURL('**/batches')
   await expect(page.getByTestId('batch-powers')).toHaveAttribute('readonly', '')
   await expect(page.getByTestId('batch-distances')).toHaveAttribute('readonly', '')
@@ -111,8 +113,9 @@ test('P6 播放中跨页返回续播，重复进入后暂停不再推进', async
   await expect(play).toHaveText('暂停')
   await expect(cursor).not.toHaveText('00:42:17', { timeout: 4_000 })
   for (let visit = 0; visit < 2; visit += 1) {
-    await page.getByRole('link', { name: '批量仿真', exact: true }).click()
-    await page.waitForURL('**/batches')
+    // 使用可见菜单离页，继续验证组件卸载后的计时器清理，不用整页刷新替代。
+    await page.getByRole('link', { name: '报表中心', exact: true }).click()
+    await page.waitForURL('**/reports')
     const commandsAfterLeaving = commands.length
     await page.waitForTimeout(1_100)
     expect(commands).toHaveLength(commandsAfterLeaving)

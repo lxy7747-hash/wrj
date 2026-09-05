@@ -132,35 +132,29 @@ describe('P1 authentication and routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('defines exactly the frozen 11 named routes', () => {
+  it('defines exactly the frozen 11 named routes', async () => {
     expect(routeRecords).toHaveLength(11)
-    expect(routeRecords.map((record) => record.path)).toEqual([
-      '/login',
-      '/situation',
-      '/scenarios',
-      '/batches',
-      '/reports',
-      '/replays',
-      '/admin',
-      '/blueprint',
-      '/admin/data-exchange',
-      '/traceability',
-      '/interactions',
+    expect(routeRecords.map(({ name, path, beforeEnter, meta }) => ({ name, path, beforeEnter, meta }))).toEqual([
+      { name: 'login', path: '/login', beforeEnter: undefined, meta: { title: '登录', guard: 'public', layout: 'standalone' } },
+      { name: 'situation', path: '/situation', beforeEnter: requirePrincipal, meta: { title: '态势展示', guard: 'principal', layout: 'workspace' } },
+      { name: 'scenarios', path: '/scenarios', beforeEnter: requirePrincipal, meta: { title: '场景管理', guard: 'principal', layout: 'workspace' } },
+      { name: 'batches', path: '/batches', beforeEnter: requirePrincipal, meta: { title: '批量仿真', guard: 'principal', layout: 'workspace' } },
+      { name: 'reports', path: '/reports', beforeEnter: requirePrincipal, meta: { title: '报告分析', guard: 'principal', layout: 'workspace' } },
+      { name: 'replays', path: '/replays', beforeEnter: requirePrincipal, meta: { title: '历史回放', guard: 'principal', layout: 'workspace' } },
+      { name: 'admin', path: '/admin', beforeEnter: requireAdmin, meta: { title: '用户与角色', guard: 'admin', layout: 'workspace' } },
+      { name: 'blueprint', path: '/blueprint', beforeEnter: requirePrincipal, meta: { title: '能力蓝图', guard: 'principal', layout: 'workspace' } },
+      { name: 'admin-data-exchange', path: '/admin/data-exchange', beforeEnter: requirePrincipal, meta: { title: '数据交换与接口', guard: 'principal', layout: 'workspace' } },
+      { name: 'traceability', path: '/traceability', beforeEnter: requirePrincipal, meta: { title: '需求追踪', guard: 'principal', layout: 'workspace' } },
+      { name: 'interactions', path: '/interactions', beforeEnter: requirePrincipal, meta: { title: '感知、干扰与选路', guard: 'principal', layout: 'workspace' } },
     ])
-    expect(routeRecords.every((record) => typeof record.name === 'string')).toBe(true)
-    expect(routeRecords.map((record) => [record.name, record.component])).toEqual([
-      ['login', LoginPage],
-      ['situation', SituationPage],
-      ['scenarios', ScenariosPage],
-      ['batches', BatchesPage],
-      ['reports', ReportsPage],
-      ['replays', ReplaysPage],
-      ['admin', AdminPage],
-      ['blueprint', BlueprintPage],
-      ['admin-data-exchange', AdminDataExchangePage],
-      ['traceability', TraceabilityPage],
-      ['interactions', InteractionsPage],
-    ])
+    expect(routeRecords[0]?.component).toBe(LoginPage)
+
+    const lazyComponents = routeRecords.slice(1).map((record) => record.component)
+    const pageComponents = [SituationPage, ScenariosPage, BatchesPage, ReportsPage, ReplaysPage, AdminPage, BlueprintPage, AdminDataExchangePage, TraceabilityPage, InteractionsPage]
+    expect(lazyComponents.every((component) => typeof component === 'function')).toBe(true)
+    await Promise.all(lazyComponents.map(async (component, index) => {
+      expect((await (component as () => Promise<{ default: unknown }>)()).default).toBe(pageComponents[index])
+    }))
   })
 
   it('redirects unknown and protected routes to login without a principal', async () => {

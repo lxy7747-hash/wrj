@@ -1,0 +1,148 @@
+<script setup lang="ts">
+import { ref, toRaw, watch } from 'vue'
+import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
+
+type JammerTypeOption = { value: Jammer['type'], label: string }
+
+const props = defineProps<{
+  modelValue: boolean
+  jammer: Jammer | null
+  uiExtension: JammerUiExtension | null
+  editing: boolean
+  error: string
+  pending: boolean
+  locked: boolean
+  platforms: readonly Platform[]
+  jammerTypeOptions: readonly JammerTypeOption[]
+  minimumStep: number
+}>()
+
+const emit = defineEmits<{
+  'update:modelValue': [visible: boolean]
+  apply: [jammer: Jammer, uiExtension: JammerUiExtension]
+  'frequency-input': [value: number | undefined]
+  'bandwidth-input': [value: number | undefined]
+}>()
+
+const editor = ref<Jammer | null>(null)
+const uiEditor = ref<JammerUiExtension | null>(null)
+
+function apply(): void {
+  if (editor.value !== null && uiEditor.value !== null) emit('apply', editor.value, uiEditor.value)
+}
+
+watch(() => props.modelValue, (visible) => {
+  if (!visible) return
+  editor.value = props.jammer === null ? null : structuredClone(toRaw(props.jammer))
+  uiEditor.value = props.uiExtension === null ? null : structuredClone(toRaw(props.uiExtension))
+}, { immediate: true })
+</script>
+
+<template>
+  <el-dialog
+    :model-value="modelValue"
+    class="link-editor-dialog"
+    :title="editing ? '编辑干扰设备' : '新增干扰设备'"
+    width="min(760px, calc(100vw - 2rem))"
+    destroy-on-close
+    append-to-body
+    data-testid="jammer-dialog"
+    @update:model-value="emit('update:modelValue', $event)"
+  >
+    <el-alert v-if="error" class="platform-feedback" type="error" :closable="false" :title="error" show-icon />
+    <el-form v-if="editor && uiEditor" class="link-editor-form" :model="editor" label-position="top" :disabled="pending || locked">
+      <section class="link-editor-section" aria-labelledby="jammer-basic-title">
+        <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
+        <div class="link-editor-grid">
+          <el-form-item label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
+          <el-form-item label="干扰类型">
+            <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
+              <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="归属平台">
+            <el-select v-model="editor.platformId" filterable style="width: 100%" data-testid="jammer-platform">
+              <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="自动检测">
+            <el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" />
+          </el-form-item>
+        </div>
+      </section>
+
+      <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
+        <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
+        <div class="link-editor-grid">
+          <el-form-item label="默认功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
+          <el-form-item label="检测范围（m）"><el-input-number v-model="editor.detectionRange" :min="0" controls-position="right" data-testid="jammer-range" /></el-form-item>
+          <el-form-item label="频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
+          <el-form-item label="带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
+          <el-form-item label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
+          <el-form-item label="启用"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
+        </div>
+      </section>
+    </el-form>
+    <template #footer>
+      <el-button data-testid="cancel-jammer" @click="emit('update:modelValue', false)">取消</el-button>
+      <el-button type="primary" :disabled="pending || locked" data-testid="apply-jammer" @click="apply">确认</el-button>
+    </template>
+  </el-dialog>
+</template>
+
+<style scoped>
+.platform-feedback {
+  margin-bottom: 1rem;
+}
+
+.link-editor-form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.link-editor-section {
+  min-width: 0;
+}
+
+.link-editor-section__title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0 0 0.375rem;
+  color: var(--console-cyan);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+.link-editor-section__title::after {
+  flex: 1;
+  border-top: 1px solid var(--console-border);
+  content: '';
+}
+
+.link-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 1rem;
+}
+
+.link-editor-grid :deep(.el-form-item) {
+  margin-bottom: 0.375rem;
+}
+
+.link-editor-grid :deep(.el-form-item__label) {
+  margin-bottom: 0.25rem;
+  line-height: 1.25rem;
+}
+
+.link-editor-grid :deep(.el-input-number) {
+  width: 100%;
+}
+
+@media (max-width: 600px) {
+  .link-editor-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

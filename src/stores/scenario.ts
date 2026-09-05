@@ -1,7 +1,6 @@
 import { defineStore } from 'pinia'
 import type {
   ApiErrorCode,
-  ApiFailure,
   CapabilityState,
   ConfirmationContext,
   DeleteResult,
@@ -15,6 +14,7 @@ import type {
   ValidationResult,
 } from '../contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
+import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
 class InvalidScenarioResponseError extends Error {
@@ -29,40 +29,13 @@ class InvalidScenarioResponseError extends Error {
 }
 
 /**
- * 从未知载荷中读取最小 API 失败合同。
- * @param payload 服务端返回的已解析响应体。
- * @returns 载荷满足失败信封时返回失败对象，否则返回 `undefined`。
- * @remarks 纯边界校验，不修改载荷或 Store 状态。
- */
-function readFailure(payload: unknown): ApiFailure | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== false) return undefined
-  const error = (payload as { error?: { code?: unknown; message?: unknown } }).error
-  return typeof error?.code === 'string' && typeof error.message === 'string' ? payload as ApiFailure : undefined
-}
-
-/**
- * 安全解析回环 API 的 JSON 响应。
- * @param response 浏览器 Fetch 响应。
- * @returns 已解析载荷；响应体损坏时返回 `undefined`。
- * @remarks 统一成功与错误路径，避免各动作重复吞掉 JSON 解析异常。
- */
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return undefined
-  }
-}
-
-/**
  * 从成功信封中读取并校验完整场景草稿。
  * @param payload 服务端返回的已解析响应体。
  * @returns 合同有效时返回场景草稿，否则返回 `undefined`。
  * @remarks 校验场景外壳、全部规范字段及界面扩展，不修改响应载荷。
  */
 function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const draft = data as Partial<ScenarioDraft>
   const keys = Object.keys(data)
@@ -83,8 +56,7 @@ function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
 
 /** 从成功信封读取原子场景快照导入结果。 */
 function readScenarioImportResult(payload: unknown): ScenarioImportResult | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const result = data as Partial<ScenarioImportResult>
   if (Object.keys(data).length !== 3 || !Number.isInteger(result.imported) || !Number.isInteger(result.rejected)
@@ -95,8 +67,7 @@ function readScenarioImportResult(payload: unknown): ScenarioImportResult | unde
 
 /** 从成功信封读取脚本预览合同。 */
 function readScriptContract(payload: unknown): ScriptContract | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const script = data as Partial<ScriptContract>
   const keys = ['scriptId', 'taskId', 'scenarioId', 'configVersion', 'target', 'checksum', 'preview', 'generatedTime']
@@ -131,8 +102,7 @@ function isValidationIssue(value: unknown, severity: ValidationIssue['severity']
  * @remarks 同时验证错误级别、字段路径和 `valid` 与错误数量的一致性。
  */
 function readValidationResult(payload: unknown): ValidationResult | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data) || Object.keys(data).length !== 3) return undefined
   const result = data as Partial<ValidationResult>
   if (!Array.isArray(result.errors) || !Array.isArray(result.warnings)) return undefined
@@ -164,14 +134,12 @@ function readScenarioTemplateValue(value: unknown): ScenarioTemplate | undefined
 
 /** 从成功信封读取单个模板。 */
 function readScenarioTemplate(payload: unknown): ScenarioTemplate | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  return readScenarioTemplateValue((payload as { data?: unknown }).data)
+  return readScenarioTemplateValue(unwrapSuccessData(payload))
 }
 
 /** 从成功信封读取模板列表。 */
 function readTemplateList(payload: unknown): ScenarioTemplate[] | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (!Array.isArray(data)) return undefined
   const templates = data.map(readScenarioTemplateValue)
   return templates.every((template) => template !== undefined) ? templates as ScenarioTemplate[] : undefined
@@ -187,8 +155,7 @@ function readConfirmationContext(
   payload: unknown,
   expectedState: ConfirmationContext['state'],
 ): ConfirmationContext | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const context = data as Partial<ConfirmationContext>
   return Object.keys(data).length === 6
@@ -205,8 +172,7 @@ function readConfirmationContext(
 
 /** 从成功信封读取模板删除结果。 */
 function readDeleteResult(payload: unknown): DeleteResult | undefined {
-  if (typeof payload !== 'object' || payload === null || (payload as { ok?: unknown }).ok !== true) return undefined
-  const data = (payload as { data?: unknown }).data
+  const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const result = data as Partial<DeleteResult>
   return Object.keys(data).length === 2
@@ -250,7 +216,7 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 将面板状态设为错误，并更新结果代码、消息和可选字段错误。
      */
     showError(error: unknown, fallback: string, fallbackCode: ApiErrorCode | 'NETWORK_ERROR' = 'NETWORK_ERROR'): void {
-      const apiFailure = readFailure(error)
+      const apiFailure = readApiFailure(error)
       this.panelState = 'ERROR'
       this.resultCode = error instanceof InvalidScenarioResponseError
         ? 'INVALID_RESPONSE'
@@ -278,7 +244,7 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 更新模板六态、结果代码和消息，不修改模板数组。
      */
     showTemplateError(error: unknown, fallback: string): void {
-      const apiFailure = readFailure(error)
+      const apiFailure = readApiFailure(error)
       this.templateState = 'ERROR'
       this.templateResultCode = error instanceof InvalidScenarioResponseError
         ? 'INVALID_RESPONSE'
@@ -304,7 +270,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
         if (draft === undefined) throw new InvalidScenarioResponseError()
 
@@ -411,7 +377,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch || scriptEpoch !== this.scriptEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readValidationResult(payload)
         if (result === undefined) throw new InvalidScenarioResponseError()
 
@@ -501,7 +467,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
         if (draft === undefined) throw new InvalidScenarioResponseError()
 
@@ -537,7 +503,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const templates = readTemplateList(payload)
         if (templates === undefined) throw new InvalidScenarioResponseError()
         this.templates = templates
@@ -570,7 +536,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return undefined
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const template = readScenarioTemplate(payload)
         if (template === undefined) throw new InvalidScenarioResponseError()
         this.selectedTemplate = template
@@ -620,7 +586,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const template = readScenarioTemplate(payload)
         if (template === undefined) throw new InvalidScenarioResponseError()
         this.templates.push(template)
@@ -692,7 +658,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const template = readScenarioTemplate(payload)
         if (template === undefined) throw new InvalidScenarioResponseError()
         const index = this.templates.findIndex((item) => item.templateId === templateId)
@@ -738,7 +704,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templateState = 'VALIDATING'
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
         if (draft === undefined) throw new InvalidScenarioResponseError()
         this.draft = draft
@@ -802,7 +768,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         const createPayload = await readJson(createResponse)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidScenarioResponseError()
+        if (!createResponse.ok) throw readApiFailure(createPayload) ?? new InvalidScenarioResponseError()
         const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
         if (awaiting === undefined) throw new InvalidScenarioResponseError()
         this.lastConfirmation = awaiting
@@ -816,7 +782,7 @@ export const useScenarioStore = defineStore('scenario', {
         if (requestEpoch !== this.requestEpoch) return false
         const confirmed = readConfirmationContext(confirmPayload, 'CONFIRMED')
         if (!confirmResponse.ok || confirmed === undefined) {
-          throw readFailure(confirmPayload) ?? new InvalidScenarioResponseError()
+          throw readApiFailure(confirmPayload) ?? new InvalidScenarioResponseError()
         }
         this.lastConfirmation = confirmed
 
@@ -827,7 +793,7 @@ export const useScenarioStore = defineStore('scenario', {
         const deletePayload = await readJson(deleteResponse)
         if (requestEpoch !== this.requestEpoch) return false
         if (!deleteResponse.ok) {
-          const deleteFailure = readFailure(deletePayload)
+          const deleteFailure = readApiFailure(deletePayload)
           if (deleteFailure?.error.code !== 'CONFIRMATION_EXPIRED') {
             this.lastConfirmation = { ...confirmed, state: 'CLOSED' }
           }
@@ -877,7 +843,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readScenarioImportResult(payload)
         if (result === undefined || result.imported !== 1 || result.rejected !== 0 || result.drafts.length !== 1) throw new InvalidScenarioResponseError()
         this.draft = result.drafts[0]
@@ -928,7 +894,7 @@ export const useScenarioStore = defineStore('scenario', {
         })
         const payload = await readJson(response)
         if (requestEpoch !== this.requestEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
         if (draft === undefined) throw new InvalidScenarioResponseError()
         this.draft = draft
@@ -976,7 +942,7 @@ export const useScenarioStore = defineStore('scenario', {
           if (scriptEpoch !== this.scriptEpoch) return false
           const createPayload = await readJson(createResponse)
           if (scriptEpoch !== this.scriptEpoch) return false
-          if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidScenarioResponseError()
+          if (!createResponse.ok) throw readApiFailure(createPayload) ?? new InvalidScenarioResponseError()
           const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
           if (awaiting === undefined) throw new InvalidScenarioResponseError()
           const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
@@ -988,7 +954,7 @@ export const useScenarioStore = defineStore('scenario', {
           const confirmPayload = await readJson(confirmResponse)
           if (scriptEpoch !== this.scriptEpoch) return false
           const confirmed = readConfirmationContext(confirmPayload, 'CONFIRMED')
-          if (!confirmResponse.ok || confirmed === undefined) throw readFailure(confirmPayload) ?? new InvalidScenarioResponseError()
+          if (!confirmResponse.ok || confirmed === undefined) throw readApiFailure(confirmPayload) ?? new InvalidScenarioResponseError()
           this.lastConfirmation = confirmed
           confirmationId = confirmed.confirmationId
         }
@@ -1000,7 +966,7 @@ export const useScenarioStore = defineStore('scenario', {
         if (scriptEpoch !== this.scriptEpoch) return false
         const payload = await readJson(response)
         if (scriptEpoch !== this.scriptEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const script = readScriptContract(payload)
         if (script === undefined) throw new InvalidScenarioResponseError()
         if (this.lastConfirmation !== null && confirmationId !== undefined) this.lastConfirmation = { ...this.lastConfirmation, state: 'CLOSED' }
@@ -1012,7 +978,7 @@ export const useScenarioStore = defineStore('scenario', {
         return true
       } catch (error) {
         if (scriptEpoch !== this.scriptEpoch) return false
-        const failure = readFailure(error)
+        const failure = readApiFailure(error)
         this.scriptState = 'ERROR'
         this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
         this.scriptResultMessage = failure?.error.message ?? (error instanceof Error ? error.message : '脚本预览生成失败。')
@@ -1035,7 +1001,7 @@ export const useScenarioStore = defineStore('scenario', {
         if (scriptEpoch !== this.scriptEpoch) return false
         const payload = await readJson(response)
         if (scriptEpoch !== this.scriptEpoch) return false
-        if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readValidationResult(payload)
         if (result === undefined) throw new InvalidScenarioResponseError()
         this.preflight = result
@@ -1045,7 +1011,7 @@ export const useScenarioStore = defineStore('scenario', {
         return result.valid
       } catch (error) {
         if (scriptEpoch !== this.scriptEpoch) return false
-        const failure = readFailure(error)
+        const failure = readApiFailure(error)
         this.scriptState = 'ERROR'
         this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
         this.scriptResultMessage = failure?.error.message ?? (error instanceof Error ? error.message : '脚本预检失败。')

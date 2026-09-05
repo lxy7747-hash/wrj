@@ -70,16 +70,16 @@ async function logout(): Promise<void> {
         <nav aria-label="主导航">
           <router-link to="/situation">态势主界面</router-link>
           <router-link to="/scenarios">场景配置</router-link>
-          <router-link to="/batches">批量仿真</router-link>
+          <!-- <router-link to="/batches">批量仿真</router-link> -->
           <router-link to="/reports">报表中心</router-link>
           <router-link to="/replays">历史回放</router-link>
           <router-link :to="systemManagementPath">系统管理</router-link>
-          <router-link
+          <!-- <router-link
             to="/blueprint"
             :class="{ 'router-link-active': ['/traceability', '/interactions'].includes($route.path) }"
           >
             能力与追踪
-          </router-link>
+          </router-link> -->
         </nav>
       </div>
 

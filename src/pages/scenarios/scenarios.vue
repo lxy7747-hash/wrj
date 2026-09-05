@@ -18,7 +18,9 @@ import { useScenarioStore } from '../../stores/scenario'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
-import WaypointMapPicker, { type WaypointMapPoint } from '../../components/scenarios/WaypointMapPicker.vue'
+import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
+import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
+import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
 
 const scenarioStore = useScenarioStore()
 const {
@@ -44,12 +46,9 @@ const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
 const platformFeedback = ref('')
-const waypointPickerVisible = ref(false)
-const waypointPickerIndex = ref<number | null>(null)
-const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
-const linkEditor = ref<Link | null>(null)
+const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
 const linkFeedback = ref('')
 const linkFeedbackStatus = ref<'success' | 'error'>('success')
@@ -57,8 +56,8 @@ const linkFrequencyBelowMinimum = ref(false)
 const linkBandwidthBelowMinimum = ref(false)
 const jammerDialogVisible = ref(false)
 const editingJammerIndex = ref<number | null>(null)
-const jammerEditor = ref<Jammer | null>(null)
-const jammerUiEditor = ref<JammerUiExtension | null>(null)
+const jammerEditorJammer = ref<Jammer | null>(null)
+const jammerEditorUiExtension = ref<JammerUiExtension | null>(null)
 const jammerEditorError = ref('')
 const jammerFeedback = ref('')
 const jammerFeedbackStatus = ref<'success' | 'error'>('success')
@@ -227,90 +226,32 @@ function openNewPlatform(classification: 'business' | 'supporting'): void {
  * @param platform 需要编辑的平台数据。
  * @param index 平台在当前草稿集合中的位置。
  * @returns 无返回值。
- * @sideEffects 创建平台深拷贝，避免取消编辑时污染草稿。
+ * @sideEffects 记录待编辑平台；对话框负责创建独立编辑副本。
  */
 function openPlatformEditor(platform: Platform, index: number): void {
   editingPlatformIndex.value = index
-  platformEditor.value = structuredClone(toRaw(platform))
+  platformEditor.value = platform
   platformEditorError.value = ''
   platformFeedback.value = ''
   platformDialogVisible.value = true
 }
 
 /**
- * 向当前平台编辑副本追加一个零值航点。
- * @returns 无返回值。
- * @sideEffects 仅修改对话框中的平台副本，尚不修改场景草稿。
- */
-function addWaypoint(): void {
-  platformEditor.value?.waypoints.push({ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 })
-}
-
-/**
- * 打开指定航点的离线地图选点弹窗。
- * @param index 航点在平台编辑副本中的位置。
- * @returns 无返回值。
- * @sideEffects 记录当前航点及其经纬度，并打开地图选点弹窗。
- */
-function openWaypointPicker(index: number): void {
-  const waypoint = platformEditor.value?.waypoints[index]
-  if (waypoint === undefined) return
-  waypointPickerIndex.value = index
-  waypointPickerPoint.value = { longitude: waypoint.longitude, latitude: waypoint.latitude }
-  waypointPickerVisible.value = true
-}
-
-/**
- * 将地图选点结果写入当前航点。
- * @param point 地图返回的经度和纬度。
- * @returns 无返回值。
- * @sideEffects 更新航点经纬度，并按二维地图规则把高度设置为 0 米。
- */
-function applyWaypointMapPoint(point: WaypointMapPoint): void {
-  if (waypointPickerIndex.value === null) return
-  const waypoint = platformEditor.value?.waypoints[waypointPickerIndex.value]
-  if (waypoint === undefined) return
-  waypoint.longitude = point.longitude
-  waypoint.latitude = point.latitude
-  waypoint.altitude = 0
-  waypointPickerVisible.value = false
-}
-
-/**
- * 清理航点地图选点上下文。
- * @returns 无返回值。
- * @sideEffects 关闭选点弹窗并清除当前航点索引。
- */
-function resetWaypointPicker(): void {
-  waypointPickerVisible.value = false
-  waypointPickerIndex.value = null
-}
-
-/**
- * 删除当前平台编辑副本中的指定航点。
- * @param index 航点在编辑副本中的位置。
- * @returns 无返回值。
- * @sideEffects 仅修改对话框中的平台副本，尚不修改场景草稿。
- */
-function removeWaypoint(index: number): void {
-  platformEditor.value?.waypoints.splice(index, 1)
-}
-
-/**
  * 将平台编辑副本写入当前场景草稿。
+ * @param editor 由平台编辑弹窗提交的独立编辑副本。
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时新增或替换一个平台、标记草稿未保存并关闭对话框。
  */
-function applyPlatformEditor(): boolean {
-  if (draft.value === null || platformEditor.value === null) return false
-  platformEditor.value.id = platformEditor.value.id.trim()
-  platformEditor.value.name = platformEditor.value.name.trim()
-  if (platformEditor.value.id === '' || platformEditor.value.name === '') {
+function applyPlatformEditor(editor: Platform): boolean {
+  if (draft.value === null) return false
+  editor.id = editor.id.trim()
+  editor.name = editor.name.trim()
+  if (editor.id === '' || editor.name === '') {
     platformEditorError.value = '场景实体 ID 和名称均为必填项。'
     return false
   }
   const candidate = structuredClone(toRaw(draft.value.config))
-  const editedPlatform = structuredClone(toRaw(platformEditor.value))
+  const editedPlatform = structuredClone(toRaw(editor))
   if (editingPlatformIndex.value === null) candidate.platforms.push(editedPlatform)
   else candidate.platforms[editingPlatformIndex.value] = editedPlatform
   const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
@@ -404,7 +345,7 @@ function openNewLink(): void {
     linkFeedbackStatus.value = 'error'
     return
   }
-  linkEditor.value = {
+  linkEditorLink.value = {
     id: nextLinkId(),
     type: 'MICROWAVE',
     sourcePlatformId: draft.value.config.platforms[0]!.id,
@@ -430,10 +371,10 @@ function openNewLink(): void {
  * @param link 需要编辑的链路数据。
  * @param index 链路在当前草稿集合中的位置。
  * @returns 无返回值。
- * @sideEffects 创建链路深拷贝，取消编辑时不会污染草稿。
+ * @sideEffects 记录编辑目标并打开对话框；对话框内部创建副本，取消时不会污染草稿。
  */
 function openLinkEditor(link: Link, index: number): void {
-  linkEditor.value = structuredClone(toRaw(link))
+  linkEditorLink.value = link
   editingLinkIndex.value = index
   linkEditorError.value = ''
   linkFeedback.value = ''
@@ -465,8 +406,8 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时同步端点平台关联、标记未保存并关闭对话框。
  */
-function applyLinkEditor(): boolean {
-  if (draft.value === null || linkEditor.value === null) return false
+function applyLinkEditor(linkEditor: Link): boolean {
+  if (draft.value === null) return false
   if (linkFrequencyBelowMinimum.value) {
     linkEditorError.value = '链路频率必须大于 0 MHz。'
     return false
@@ -475,13 +416,13 @@ function applyLinkEditor(): boolean {
     linkEditorError.value = '链路带宽必须大于 0 MHz。'
     return false
   }
-  linkEditor.value.id = linkEditor.value.id.trim()
-  if (linkEditor.value.id === '') {
+  linkEditor.id = linkEditor.id.trim()
+  if (linkEditor.id === '') {
     linkEditorError.value = '链路 ID 为必填项。'
     return false
   }
   const candidate = structuredClone(toRaw(draft.value.config))
-  const editedLink = structuredClone(toRaw(linkEditor.value))
+  const editedLink = structuredClone(toRaw(linkEditor))
   if (editingLinkIndex.value === null) candidate.links.push(editedLink)
   else candidate.links[editingLinkIndex.value] = editedLink
   synchronizePlatformLinkIds(candidate, editedLink.id)
@@ -581,7 +522,7 @@ function openNewJammer(): void {
     jammerFeedbackStatus.value = 'error'
     return
   }
-  jammerEditor.value = {
+  jammerEditorJammer.value = {
     id: nextJammerId(),
     platformId: platform.id,
     type: 'BARRAGE',
@@ -591,7 +532,7 @@ function openNewJammer(): void {
     autoDetect: false,
     detectionRange: 100000,
   }
-  jammerUiEditor.value = { jammerId: jammerEditor.value.id, direction: 0, duration: 60, enabled: true }
+  jammerEditorUiExtension.value = { jammerId: jammerEditorJammer.value.id, direction: 0, duration: 60, enabled: true }
   editingJammerIndex.value = null
   jammerEditorError.value = ''
   jammerFeedback.value = ''
@@ -604,14 +545,14 @@ function openNewJammer(): void {
  * @param jammer 需要编辑的干扰设备数据。
  * @param index 干扰设备在当前草稿集合中的位置。
  * @returns 无返回值。
- * @sideEffects 创建干扰设备深拷贝，取消编辑时不会污染草稿。
+ * @sideEffects 记录编辑目标并打开对话框；对话框内部创建副本，取消时不会污染草稿。
  */
 function openJammerEditor(jammer: Jammer, index: number): void {
-  jammerEditor.value = structuredClone(toRaw(jammer))
-  jammerUiEditor.value = structuredClone(toRaw(
+  jammerEditorJammer.value = jammer
+  jammerEditorUiExtension.value = (
     draft.value?.uiExtensions.jammers.find((extension) => extension.jammerId === jammer.id)
-      ?? { jammerId: jammer.id, direction: 0, duration: 60, enabled: true },
-  ))
+      ?? { jammerId: jammer.id, direction: 0, duration: 60, enabled: true }
+  )
   editingJammerIndex.value = index
   jammerEditorError.value = ''
   jammerFeedback.value = ''
@@ -640,8 +581,8 @@ function synchronizePlatformJammerIds(config: ScenarioConfig, jammerId: string):
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时同步归属平台关联、标记未保存并关闭对话框。
  */
-function applyJammerEditor(): boolean {
-  if (draft.value === null || jammerEditor.value === null || jammerUiEditor.value === null) return false
+function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtension): boolean {
+  if (draft.value === null) return false
   if (jammerFrequencyBelowMinimum.value) {
     jammerEditorError.value = '干扰频率必须大于 0 MHz。'
     return false
@@ -650,15 +591,15 @@ function applyJammerEditor(): boolean {
     jammerEditorError.value = '干扰带宽必须大于 0 MHz。'
     return false
   }
-  jammerEditor.value.id = jammerEditor.value.id.trim()
-  if (jammerEditor.value.id === '') {
+  jammerEditor.id = jammerEditor.id.trim()
+  if (jammerEditor.id === '') {
     jammerEditorError.value = '干扰设备 ID 为必填项。'
     return false
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const candidateExtensions = structuredClone(toRaw(draft.value.uiExtensions))
-  const editedJammer = structuredClone(toRaw(jammerEditor.value))
-  const editedExtension = { ...structuredClone(toRaw(jammerUiEditor.value)), jammerId: editedJammer.id }
+  const editedJammer = structuredClone(toRaw(jammerEditor))
+  const editedExtension = { ...structuredClone(toRaw(jammerUiEditor)), jammerId: editedJammer.id }
   if (editingJammerIndex.value === null) {
     candidate.jammers.push(editedJammer)
     candidateExtensions.jammers.push(editedExtension)
@@ -1471,230 +1412,50 @@ watch(activeTab, (tab) => {
       </el-tabs>
     </el-form>
 
-    <el-dialog
+    <PlatformEditorDialog
       v-model="platformDialogVisible"
-      class="platform-editor-dialog"
-      :title="editingPlatformIndex === null ? '新增场景实体' : '编辑场景实体'"
-      width="min(880px, calc(100vw - 2rem))"
-      destroy-on-close
-      append-to-body
-      data-testid="platform-dialog"
-      @closed="resetWaypointPicker"
-    >
-      <el-alert v-if="platformEditorError" class="platform-feedback" type="error" :closable="false" :title="platformEditorError" show-icon />
-      <el-form v-if="platformEditor" class="platform-editor-form" :model="platformEditor" label-position="top" :disabled="pending || draft?.locked">
-        <section class="platform-editor-section" aria-labelledby="platform-basic-title">
-          <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
-          <div class="platform-editor-grid">
-            <el-form-item label="场景实体 ID">
-              <el-input v-model="platformEditor.id" :disabled="editingPlatformIndex !== null" data-testid="platform-id" />
-            </el-form-item>
-            <el-form-item label="名称">
-              <el-input v-model="platformEditor.name" data-testid="platform-name" />
-            </el-form-item>
-            <el-form-item label="场景实体类型">
-              <el-select v-model="platformEditor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type">
-                <el-option-group label="业务信息节点">
-                  <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-                </el-option-group>
-                <el-option-group label="支撑实体（不计入50个业务信息节点）">
-                  <el-option v-for="option in supportingTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-                </el-option-group>
-              </el-select>
-            </el-form-item>
-            <el-form-item label="部署域">
-              <el-select v-model="platformEditor.category" placeholder="请选择部署域" style="width: 100%" data-testid="platform-category">
-                <el-option v-for="(label, value) in deploymentDomainLabels" :key="value" :label="label" :value="value" />
-              </el-select>
-            </el-form-item>
-          </div>
-        </section>
-
-        <section class="platform-editor-section" aria-labelledby="platform-position-title">
-          <h4 id="platform-position-title" class="platform-editor-section__title">初始位置</h4>
-          <div class="position-grid">
-            <el-form-item label="经度（°）"><el-input-number v-model="platformEditor.initialPosition.longitude" :min="-180" :max="180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-            <el-form-item label="纬度（°）"><el-input-number v-model="platformEditor.initialPosition.latitude" :min="-90" :max="90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
-            <el-form-item label="高度（m）"><el-input-number v-model="platformEditor.initialPosition.altitude" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
-          </div>
-        </section>
-
-        <section class="platform-editor-section" aria-labelledby="platform-relation-title">
-          <h4 id="platform-relation-title" class="platform-editor-section__title">关联资源</h4>
-          <div class="position-grid">
-            <el-form-item label="链路">
-              <el-input :model-value="platformEditor.linkIds.join(', ')" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
-            </el-form-item>
-            <el-form-item label="传感器">
-              <el-input :model-value="platformEditor.sensorIds.join(', ')" readonly placeholder="由传感器归属自动生成" data-testid="platform-sensor-ids" />
-            </el-form-item>
-            <el-form-item label="干扰器">
-              <el-input :model-value="platformEditor.jammerIds.join(', ')" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
-            </el-form-item>
-          </div>
-        </section>
-
-        <section class="platform-editor-section" aria-labelledby="platform-waypoint-title">
-          <div class="waypoint-heading">
-            <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ platformEditor.waypoints.length }}）</h4>
-            <el-button size="small" :disabled="pending || draft?.locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
-          </div>
-          <el-table :data="platformEditor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
-            <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="-180" :max="180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
-            <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="-90" :max="90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
-            <el-table-column label="高度（m）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
-            <el-table-column label="速度（m/s）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.speed" :min="0" controls-position="right" :data-testid="`waypoint-speed-${$index}`" /></template></el-table-column>
-            <el-table-column label="到达时间（s）" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
-            <el-table-column label="操作" width="140">
-              <template #default="{ $index }">
-                <el-button link type="primary" :disabled="pending || draft?.locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
-                <el-button link type="danger" :disabled="pending || draft?.locked" :data-testid="`delete-waypoint-${$index}`" @click="removeWaypoint($index)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-        </section>
-      </el-form>
-      <template #footer>
-        <el-button data-testid="cancel-platform" @click="platformDialogVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-platform" @click="applyPlatformEditor">确认</el-button>
-      </template>
-    </el-dialog>
-
-    <WaypointMapPicker
-      v-model="waypointPickerVisible"
-      :longitude="waypointPickerPoint.longitude"
-      :latitude="waypointPickerPoint.latitude"
-      @confirm="applyWaypointMapPoint"
+      :platform="platformEditor"
+      :editing="editingPlatformIndex !== null"
+      :error="platformEditorError"
+      :pending="pending"
+      :locked="draft?.locked ?? false"
+      :business-type-options="businessTypeOptions"
+      :supporting-type-options="supportingTypeOptions"
+      :deployment-domain-labels="deploymentDomainLabels"
+      @apply="applyPlatformEditor"
     />
 
-    <el-dialog
+    <LinkEditorDialog
       v-model="linkDialogVisible"
-      class="link-editor-dialog"
-      :title="editingLinkIndex === null ? '新增链路' : '编辑链路'"
-      width="min(760px, calc(100vw - 2rem))"
-      destroy-on-close
-      append-to-body
-      data-testid="link-dialog"
-    >
-      <el-alert v-if="linkEditorError" class="platform-feedback" type="error" :closable="false" :title="linkEditorError" show-icon />
-      <el-form v-if="linkEditor" class="link-editor-form" :model="linkEditor" label-position="top" :disabled="pending || draft?.locked">
-        <section class="link-editor-section" aria-labelledby="link-basic-title">
-          <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="链路 ID"><el-input v-model="linkEditor.id" :disabled="editingLinkIndex !== null" data-testid="link-id" /></el-form-item>
-            <el-form-item label="链路类型">
-              <el-select v-model="linkEditor.type" style="width: 100%" data-testid="link-type">
-                <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-select>
-            </el-form-item>
-          </div>
-        </section>
+      :link="linkEditorLink"
+      :editing="editingLinkIndex !== null"
+      :error="linkEditorError"
+      :pending="pending"
+      :locked="draft?.locked ?? false"
+      :platforms="draft?.config.platforms ?? []"
+      :link-type-options="linkTypeOptions"
+      :link-direction-labels="linkDirectionLabels"
+      :minimum-step="LINK_MHZ_MINIMUM_STEP"
+      @apply="applyLinkEditor"
+      @frequency-input="trackLinkFrequencyInput"
+      @bandwidth-input="trackLinkBandwidthInput"
+    />
 
-        <section class="link-editor-section" aria-labelledby="link-endpoint-title">
-          <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="源平台">
-              <el-select v-model="linkEditor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source">
-                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="目标平台">
-              <el-select v-model="linkEditor.targetPlatformId" filterable style="width: 100%" data-testid="link-target">
-                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
-              </el-select>
-            </el-form-item>
-          </div>
-        </section>
-
-        <section class="link-editor-section" aria-labelledby="link-communication-title">
-          <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="频率（MHz）"><el-input-number v-model="linkEditor.frequency" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-frequency" @input="trackLinkFrequencyInput" /></el-form-item>
-            <el-form-item label="带宽（MHz）"><el-input-number v-model="linkEditor.bandwidth" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="link-bandwidth" @input="trackLinkBandwidthInput" /></el-form-item>
-            <el-form-item label="发射功率（W）"><el-input-number v-model="linkEditor.txPower" :min="0" controls-position="right" data-testid="link-power" /></el-form-item>
-            <el-form-item label="数据速率（Mbps）"><el-input-number v-model="linkEditor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
-            <el-form-item label="发射天线增益（dBi）"><el-input-number v-model="linkEditor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
-            <el-form-item label="接收天线增益（dBi）"><el-input-number v-model="linkEditor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
-          </div>
-        </section>
-
-        <section class="link-editor-section" aria-labelledby="link-quality-title">
-          <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="调制方式">
-              <el-select v-model="linkEditor.modulation" style="width: 100%" data-testid="link-modulation">
-                <el-option label="BPSK" value="BPSK" /><el-option label="QPSK" value="QPSK" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="链路方向">
-              <el-select v-model="linkEditor.direction" style="width: 100%" data-testid="link-direction">
-                <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
-              </el-select>
-            </el-form-item>
-            <el-form-item class="link-editor-field--wide" label="BER 阈值">
-              <div class="link-editor-threshold">
-                <el-input-number v-model="linkEditor.berThreshold" :min="0" :max="1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
-                <span>取值范围 0–1</span>
-              </div>
-            </el-form-item>
-          </div>
-        </section>
-      </el-form>
-      <template #footer>
-        <el-button data-testid="cancel-link" @click="linkDialogVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-link" @click="applyLinkEditor">确认</el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
+    <JammerEditorDialog
       v-model="jammerDialogVisible"
-      class="link-editor-dialog"
-      :title="editingJammerIndex === null ? '新增干扰设备' : '编辑干扰设备'"
-      width="min(760px, calc(100vw - 2rem))"
-      destroy-on-close
-      append-to-body
-      data-testid="jammer-dialog"
-    >
-      <el-alert v-if="jammerEditorError" class="platform-feedback" type="error" :closable="false" :title="jammerEditorError" show-icon />
-      <el-form v-if="jammerEditor && jammerUiEditor" class="link-editor-form" :model="jammerEditor" label-position="top" :disabled="pending || draft?.locked">
-        <section class="link-editor-section" aria-labelledby="jammer-basic-title">
-          <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="干扰设备 ID"><el-input v-model="jammerEditor.id" :disabled="editingJammerIndex !== null" data-testid="jammer-id" /></el-form-item>
-            <el-form-item label="干扰类型">
-              <el-select v-model="jammerEditor.type" style="width: 100%" data-testid="jammer-type">
-                <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="归属平台">
-              <el-select v-model="jammerEditor.platformId" filterable style="width: 100%" data-testid="jammer-platform">
-                <el-option v-for="platform in draft?.config.platforms ?? []" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="自动检测">
-              <el-switch v-model="jammerEditor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" />
-            </el-form-item>
-          </div>
-        </section>
-
-        <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
-          <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
-          <div class="link-editor-grid">
-            <el-form-item label="默认功率（W）"><el-input-number v-model="jammerEditor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
-            <el-form-item label="检测范围（m）"><el-input-number v-model="jammerEditor.detectionRange" :min="0" controls-position="right" data-testid="jammer-range" /></el-form-item>
-            <el-form-item label="频率（MHz）"><el-input-number v-model="jammerEditor.frequency" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="jammer-frequency" @input="trackJammerFrequencyInput" /></el-form-item>
-            <el-form-item label="带宽（MHz）"><el-input-number v-model="jammerEditor.bandwidth" :min="Number.MIN_VALUE" :step="LINK_MHZ_MINIMUM_STEP" controls-position="right" data-testid="jammer-bandwidth" @input="trackJammerBandwidthInput" /></el-form-item>
-            <el-form-item label="方向（°）"><el-input-number v-model="jammerUiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
-            <el-form-item label="持续时间（s）"><el-input-number v-model="jammerUiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
-            <el-form-item label="启用"><el-switch v-model="jammerUiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
-          </div>
-        </section>
-      </el-form>
-      <template #footer>
-        <el-button data-testid="cancel-jammer" @click="jammerDialogVisible = false">取消</el-button>
-        <el-button type="primary" :disabled="pending || draft?.locked" data-testid="apply-jammer" @click="applyJammerEditor">确认</el-button>
-      </template>
-    </el-dialog>
+      :jammer="jammerEditorJammer"
+      :ui-extension="jammerEditorUiExtension"
+      :editing="editingJammerIndex !== null"
+      :error="jammerEditorError"
+      :pending="pending"
+      :locked="draft?.locked ?? false"
+      :platforms="draft?.config.platforms ?? []"
+      :jammer-type-options="jammerTypeOptions"
+      :minimum-step="LINK_MHZ_MINIMUM_STEP"
+      @apply="applyJammerEditor"
+      @frequency-input="trackJammerFrequencyInput"
+      @bandwidth-input="trackJammerBandwidthInput"
+    />
   </section>
 </template>
 
@@ -1877,8 +1638,7 @@ watch(activeTab, (tab) => {
 }
 
 .platform-counts,
-.platform-actions,
-.waypoint-heading {
+.platform-actions {
   display: flex;
   align-items: center;
   gap: 0.75rem;
@@ -1895,122 +1655,6 @@ watch(activeTab, (tab) => {
 
 .platform-feedback {
   margin-bottom: 1rem;
-}
-
-.platform-editor-grid,
-.position-grid {
-  display: grid;
-  gap: 0 1rem;
-}
-
-.platform-editor-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.link-editor-form,
-.platform-editor-form {
-  display: grid;
-  gap: 0.5rem;
-}
-
-.link-editor-section,
-.platform-editor-section {
-  min-width: 0;
-}
-
-.link-editor-section__title,
-.platform-editor-section__title {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  margin: 0 0 0.375rem;
-  color: var(--console-cyan);
-  font-size: 0.75rem;
-  letter-spacing: 0.06em;
-}
-
-.link-editor-section__title::after,
-.platform-editor-section__title::after {
-  flex: 1;
-  border-top: 1px solid var(--console-border);
-  content: '';
-}
-
-.link-editor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 1rem;
-}
-
-.link-editor-grid :deep(.el-form-item) {
-  margin-bottom: 0.375rem;
-}
-
-.link-editor-grid :deep(.el-form-item__label) {
-  margin-bottom: 0.25rem;
-  line-height: 1.25rem;
-}
-
-.link-editor-grid :deep(.el-input-number) {
-  width: 100%;
-}
-
-.platform-editor-form :deep(.el-form-item) {
-  margin-bottom: 0.375rem;
-}
-
-.platform-editor-form :deep(.el-form-item__label) {
-  margin-bottom: 0.25rem;
-  line-height: 1.25rem;
-}
-
-.platform-editor-form :deep(.el-input-number) {
-  width: 100%;
-}
-
-.platform-editor-form :deep(.el-select__wrapper .el-tag) {
-  --el-tag-bg-color: rgb(13 48 65 / 90%);
-  --el-tag-border-color: var(--console-border-strong);
-  --el-tag-text-color: var(--console-text);
-}
-
-.link-editor-field--wide {
-  grid-column: 1 / -1;
-}
-
-.link-editor-threshold {
-  display: grid;
-  align-items: center;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-  width: 100%;
-}
-
-.link-editor-threshold span {
-  color: var(--console-text-muted);
-  font-size: 0.75rem;
-}
-
-.position-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.waypoint-heading {
-  justify-content: space-between;
-  margin-bottom: 0.375rem;
-}
-
-.waypoint-heading .platform-editor-section__title {
-  flex: 1;
-  margin-bottom: 0;
-}
-
-:global(.platform-editor-dialog .el-dialog__close) {
-  color: var(--console-text);
-}
-
-:global(.platform-editor-dialog .el-dialog__headerbtn:hover .el-dialog__close) {
-  color: var(--console-cyan);
 }
 
 .scenario-page :deep(.el-table .el-input-number) {
@@ -2053,9 +1697,7 @@ watch(activeTab, (tab) => {
 
   .form-grid--basic,
   .form-grid--timing,
-  .form-grid--environment,
-  .platform-editor-grid,
-  .position-grid {
+  .form-grid--environment {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2064,16 +1706,11 @@ watch(activeTab, (tab) => {
   .form-grid--basic,
   .form-grid--timing,
   .form-grid--environment,
-  .platform-editor-grid,
-  .link-editor-grid,
-  .link-editor-threshold,
-  .position-grid,
   .validation-issue {
     grid-template-columns: 1fr;
   }
 
-  .form-grid__wide,
-  .link-editor-field--wide {
+  .form-grid__wide {
     grid-column: auto;
   }
 

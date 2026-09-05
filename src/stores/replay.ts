@@ -1,6 +1,5 @@
 import { defineStore } from 'pinia'
 import type {
-  ApiFailure,
   DetectionEvent,
   Replay,
   ReplayCommand,
@@ -8,6 +7,7 @@ import type {
   SwitchEvent,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isSituationEvent, useTelemetryStore } from './telemetry'
 
 type ReplayEvent = DetectionEvent | SwitchEvent
@@ -31,13 +31,6 @@ function runtimeFor(store: object): ReplayRuntime {
   return runtime
 }
 
-/** 从未知载荷中读取 API 失败信封。 */
-function readFailure(value: unknown): ApiFailure | undefined {
-  if (typeof value !== 'object' || value === null || (value as { ok?: unknown }).ok !== false) return undefined
-  const error = (value as { error?: { code?: unknown; message?: unknown } }).error
-  return typeof error?.code === 'string' && typeof error.message === 'string' ? value as ApiFailure : undefined
-}
-
 /** 校验回放编号、状态、时长、游标与事件引用。 */
 export function isReplay(value: unknown): value is Replay {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -57,10 +50,8 @@ export function isReplay(value: unknown): value is Replay {
 /** 读取统一成功信封并校验业务数据。 */
 async function readSuccess<T>(response: Response, validate: (value: unknown) => value is T): Promise<T> {
   const payload = await response.json() as unknown
-  if (!response.ok) throw readFailure(payload) ?? new Error('历史回放服务响应错误。')
-  const data = typeof payload === 'object' && payload !== null && (payload as { ok?: unknown }).ok === true
-    ? (payload as { data?: unknown }).data
-    : undefined
+  if (!response.ok) throw readApiFailure(payload) ?? new Error('历史回放服务响应错误。')
+  const data = unwrapSuccessData(payload)
   if (!validate(data)) throw new TypeError('历史回放数据格式不正确。')
   return data
 }
@@ -256,7 +247,7 @@ export const useReplayStore = defineStore('replay', {
 
     /** 将异常分为损坏数据和服务错误，并清空旧回放内容。 */
     showError(error: unknown): void {
-      const failure = readFailure(error)
+      const failure = readApiFailure(error)
       this.stopPlaybackTimer()
       this.replays = []
       this.replay = null

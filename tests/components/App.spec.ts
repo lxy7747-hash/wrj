@@ -178,15 +178,14 @@ describe('App shell', () => {
     expect(operatorWrapper.findAll('nav a').map((link) => link.text())).toEqual([
       '态势主界面',
       '场景配置',
-      '批量仿真',
       '报表中心',
       '历史回放',
       '系统管理',
-      '能力与追踪',
     ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
     expect(operatorWrapper.get('a[href="/admin/data-exchange"]').text()).toBe('系统管理')
-    expect(operatorWrapper.get('a[href="/blueprint"]').text()).toBe('能力与追踪')
+    expect(operatorWrapper.find('nav a[href="/batches"]').exists()).toBe(false)
+    expect(operatorWrapper.find('nav a[href="/blueprint"]').exists()).toBe(false)
     expect(operatorWrapper.get('nav').text()).not.toMatch(/需求追踪矩阵|弹窗交互|登录页|可追溯性|交互管理/)
     expect(operatorWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：operator')
     expect(operatorWrapper.get('[data-testid="identity-role"]').text()).toBe('角色：操作员')
@@ -206,16 +205,14 @@ describe('App shell', () => {
     await router.push('/traceability')
     await flushPromises()
     expect(capabilityNavigation.get('.el-menu-item.is-active').text()).toBe('需求追踪')
-    expect(operatorWrapper.get('nav[aria-label="主导航"] a[href="/blueprint"]').classes())
-      .toContain('router-link-active')
+    expect(operatorWrapper.find('nav[aria-label="主导航"] a[href="/blueprint"]').exists()).toBe(false)
 
     await router.push('/interactions')
     await flushPromises()
     expect(operatorWrapper.findAll('main')).toHaveLength(1)
     expect(capabilityNavigation.get('.el-menu-item.is-active').text()).toBe('感知、干扰与选路')
     expect(operatorWrapper.get('#interactions-title').text()).toBe('感知、干扰与选路')
-    expect(operatorWrapper.get('nav[aria-label="主导航"] a[href="/blueprint"]').classes())
-      .toContain('router-link-active')
+    expect(operatorWrapper.find('nav[aria-label="主导航"] a[href="/blueprint"]').exists()).toBe(false)
 
     operatorWrapper.unmount()
     auth.$patch({
@@ -230,7 +227,9 @@ describe('App shell', () => {
     })
 
     const adminWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
-    expect(adminWrapper.findAll('nav a')).toHaveLength(7)
+    expect(adminWrapper.findAll('nav a').map((link) => link.text())).toEqual([
+      '态势主界面', '场景配置', '报表中心', '历史回放', '系统管理',
+    ])
     expect(adminWrapper.get('a[href="/admin"]').text()).toBe('系统管理')
     expect(adminWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
     expect(adminWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：admin')

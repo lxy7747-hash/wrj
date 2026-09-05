@@ -18,15 +18,16 @@ interface WorkspaceRoute {
   navLabel: string
   title: string
   titleRole?: 'heading' | 'region'
+  hidden?: boolean
 }
 
-const SHARED_TOP_MENU_ROUTES: readonly WorkspaceRoute[] = [
+const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
   { path: '/scenarios', navLabel: '场景配置', title: '场景配置', titleRole: 'region' },
-  { path: '/batches', navLabel: '批量仿真', title: '批量仿真' },
+  { path: '/batches', navLabel: '批量仿真', title: '批量仿真', hidden: true },
   { path: '/reports', navLabel: '报表中心', title: '报告分析', titleRole: 'region' },
   { path: '/replays', navLabel: '历史回放', title: '历史回放' },
-  { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图' },
+  { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图', hidden: true },
 ]
 
 const ADMIN_WORKSPACE_ROUTE: WorkspaceRoute = {
@@ -43,7 +44,7 @@ const OPERATOR_SYSTEM_ROUTE: WorkspaceRoute = {
 }
 
 const PROTECTED_WORKSPACE_PATHS = [
-  ...SHARED_TOP_MENU_ROUTES.map((route) => route.path),
+  ...SHARED_WORKSPACE_ROUTES.map((route) => route.path),
   ADMIN_WORKSPACE_ROUTE.path,
   OPERATOR_SYSTEM_ROUTE.path,
   '/traceability',
@@ -115,24 +116,44 @@ async function loginAs(page: Page, username: 'admin' | 'operator'): Promise<void
 }
 
 async function openInteractions(page: Page): Promise<void> {
-  await page.getByRole('link', { name: '能力与追踪', exact: true }).click()
+  // 一级菜单已隐藏，直接访问保留的蓝图路由，再验证二级导航。
+  await page.goto('/blueprint')
   await page.getByRole('menuitem', { name: '感知、干扰与选路', exact: true }).click()
   await page.waitForURL('**/interactions')
 }
 
-async function visitWorkspaceRouteFromNavigation(page: Page, route: WorkspaceRoute): Promise<void> {
+/**
+ * 可见页面通过菜单进入，隐藏页面验证入口不存在后直接访问，保留全部路由覆盖。
+ * @param page 已登录的浏览器页面。
+ * @param route 目标路由、菜单名称及页面断言信息。
+ * @returns 导航和页面检查完成后无返回值。
+ */
+async function visitWorkspaceRoute(page: Page, route: WorkspaceRoute): Promise<void> {
   const navigation = page.getByRole('navigation', { name: '主导航' })
   const link = navigation.getByRole('link', { name: route.navLabel, exact: true })
 
-  await link.click()
+  if (route.hidden) {
+    await expect(link).toHaveCount(0)
+    await page.goto(route.path)
+  } else {
+    await link.click()
+  }
   await page.waitForURL((url) => url.pathname === route.path)
 
   expect(new URL(page.url()).pathname).toBe(route.path)
   await expect(page.locator('.app-shell')).toBeVisible()
   await expect(navigation).toBeVisible()
   await expect(page.getByTestId('identity-panel')).toBeVisible()
-  await expect(page.getByRole(route.titleRole ?? 'heading', { name: route.title, exact: true })).toBeVisible()
-  await expect(link).toHaveAttribute('aria-current', 'page')
+  if (route.path === '/batches') {
+    await expect(page.getByTestId('batch-run-table')).toBeVisible()
+    await expect(page.locator('#batches-title')).toHaveCount(0)
+  } else if (route.path === '/replays') {
+    await expect(page.getByTestId('replay-timeline')).toBeVisible()
+    await expect(page.locator('#replays-title')).toHaveCount(0)
+  } else {
+    await expect(page.getByRole(route.titleRole ?? 'heading', { name: route.title, exact: true })).toBeVisible()
+  }
+  if (!route.hidden) await expect(link).toHaveAttribute('aria-current', 'page')
 }
 
 async function resetMock(request: APIRequestContext): Promise<void> {
@@ -206,12 +227,13 @@ for (const credentials of [
   })
 }
 
-test('ADMIN can navigate every prototype top menu from the main navigation', async ({ page }) => {
+test('管理员可使用当前菜单并直接访问隐藏页面', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'admin')
-  for (const route of [...SHARED_TOP_MENU_ROUTES, ADMIN_WORKSPACE_ROUTE]) {
-    await visitWorkspaceRouteFromNavigation(page, route)
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(5)
+  for (const route of [...SHARED_WORKSPACE_ROUTES, ADMIN_WORKSPACE_ROUTE]) {
+    await visitWorkspaceRoute(page, route)
   }
 
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('主数据管理')
@@ -407,16 +429,16 @@ test('session identity survives reload and logout stays anonymous after reload',
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('OPERATOR can navigate prototype top menus and is denied direct admin access', async ({ page }) => {
+test('操作员可使用当前菜单和隐藏页面且禁止越权访问', async ({ page }) => {
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
-  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(7)
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(5)
   await expect(page.getByRole('link', { name: '需求追踪矩阵', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '弹窗交互', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '登录页', exact: true })).toHaveCount(0)
-  for (const route of [...SHARED_TOP_MENU_ROUTES, OPERATOR_SYSTEM_ROUTE]) {
-    await visitWorkspaceRouteFromNavigation(page, route)
+  for (const route of [...SHARED_WORKSPACE_ROUTES, OPERATOR_SYSTEM_ROUTE]) {
+    await visitWorkspaceRoute(page, route)
   }
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('账号管理')
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('系统/操作员')
@@ -483,7 +505,7 @@ test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', asy
     response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
   ))
-  await page.getByRole('link', { name: '能力与追踪', exact: true }).click()
+  await page.goto('/blueprint')
   expect((await frameResponse).status()).toBe(200)
 
   const contract = page.getByTestId('link-calculator-contract')
