@@ -5,7 +5,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import App from '../../src/App.vue'
-import WorkspacePreview from '../../src/components/WorkspacePreview.vue'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import AdminDataExchangePage from '../../src/pages/admin-data-exchange/admin-data-exchange.vue'
 import BatchesPage from '../../src/pages/batches/batches.vue'
@@ -493,7 +492,7 @@ describe('P1 authentication and routing', () => {
     expect(router.currentRoute.value.path).toBe('/login')
   })
 
-  it('renders the shared workspace preview without a local sign-out action', async () => {
+  it('需求追踪沿用共享退出入口，不再展示建设占位', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -510,13 +509,11 @@ describe('P1 authentication and routing', () => {
     const router = createAppRouter(createMemoryHistory(), pinia)
     await router.push('/blueprint')
 
-    const wrapper = mount(WorkspacePreview, { global: { plugins: [pinia, router, ElementPlus] } })
-
-    expect(wrapper.text()).toContain('业务工作区')
-    expect(wrapper.text()).toContain('功能建设中')
-    expect(wrapper.text()).toContain('当前用户：operator')
-    expect(wrapper.find('button').exists()).toBe(false)
-    expect(wrapper.text()).not.toMatch(/夹具|演示|demo|P0|P1|Mock|页面外壳|shell|本机 Mock|UserRolePanel/i)
+    const wrapper = mount(TraceabilityPage, { global: { plugins: [pinia, router, ElementPlus] } })
+    expect(wrapper.text()).toContain('需求追踪')
+    expect(wrapper.text()).not.toContain('功能建设中')
+    expect(wrapper.find('[data-testid="logout"]').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('renders AdminPage with formal Chinese labels and no validation-stage terminology', async () => {

@@ -325,10 +325,37 @@ export const useAdminStore = defineStore('admin', {
     fullConfigExport: null as ExportStatus | null,
     maintenance: maintenanceFeedback(),
     maintenanceEpoch: 0,
+    requestEpoch: 0,
     maintenanceConfirmation: null as ConfirmationContext | null,
   }),
 
   actions: {
+    /** 依次重载管理员目录；操作员仅清空受限数据，不请求管理接口。 */
+    async loadAll(): Promise<boolean> {
+      if (useAuthStore().role !== 'ADMIN') {
+        this.resetToSafeEmpty()
+        return true
+      }
+      const epoch = this.requestEpoch
+      await this.refreshUsers()
+      if (epoch !== this.requestEpoch || this.resultCode !== 'SUCCESS') return false
+      if (!await this.loadAudit()) return false
+      for (const section of ['master', 'backup', 'archive', 'health'] as const) {
+        if (epoch !== this.requestEpoch || !await this.loadMaintenance(section)) return false
+      }
+      return epoch === this.requestEpoch
+    },
+
+    /** 使所有敏感确认及对应在途请求失效，不保留可再次消费的上下文。 */
+    invalidateConfirmation(): void {
+      this.requestEpoch += 1
+      this.maintenanceEpoch += 1
+      this.auditConfirmation = null
+      this.auditExportFilters = {}
+      this.auditExportStatus = null
+      this.maintenanceConfirmation = null
+    },
+
     /** 加载指定维护面板；参数为主数据、备份目录、归档或健康面板名称。 */
     async loadMaintenance(section: Exclude<MaintenanceSection, 'export'>): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance[section].state)) return false
@@ -520,6 +547,7 @@ export const useAdminStore = defineStore('admin', {
      * @sideEffects 依次更新面板状态；成功时替换用户列表，失败时保留原列表并记录错误。
      */
     async refreshUsers(): Promise<void> {
+      const epoch = this.requestEpoch
       this.panelState = 'LOADING'
       try {
         const auth = useAuthStore()
@@ -527,8 +555,10 @@ export const useAdminStore = defineStore('admin', {
         const response = await fetch(`${resolveMockOrigin()}/api/v1/admin/users`, {
           headers: { 'X-Demo-Role': auth.role },
         })
+        if (epoch !== this.requestEpoch) return
         this.panelState = 'VALIDATING'
         const payload: unknown = await response.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return
         if (!response.ok) throw readFailure(payload) ?? new InvalidResponseError()
         const data = readUsers(payload)
         if (data === undefined) throw new InvalidResponseError()
@@ -538,7 +568,7 @@ export const useAdminStore = defineStore('admin', {
         this.resultCode = 'SUCCESS'
         this.resultMessage = '用户列表已刷新。'
       } catch (error) {
-        this.showPanelError(error, '用户刷新失败。')
+        if (epoch === this.requestEpoch) this.showPanelError(error, '用户刷新失败。')
       }
     },
 
@@ -551,13 +581,16 @@ export const useAdminStore = defineStore('admin', {
      * @sideEffects 更新六态面板状态和结果信息；成功时增补、替换或移除用户，失败时保留原列表。
      */
     async mutateUser(user: User, operation: UserRoleCommand['operation'], next: User): Promise<boolean> {
+      const epoch = this.requestEpoch
       this.panelState = 'LOADING'
       await Promise.resolve()
+      if (epoch !== this.requestEpoch) return false
       this.panelState = 'VALIDATING'
       const command: UserRoleCommand = { operation, user: next }
 
       try {
         await Promise.resolve()
+        if (epoch !== this.requestEpoch) return false
         this.panelState = 'EXECUTING'
         const auth = useAuthStore()
         const collectionUrl = `${resolveMockOrigin()}/api/v1/admin/users`
@@ -571,8 +604,10 @@ export const useAdminStore = defineStore('admin', {
           },
           ...(operation === 'DELETE' ? {} : { body: JSON.stringify(command) }),
         })
+        if (epoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'
         const payload: unknown = await response.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidResponseError()
 
         if (operation === 'DELETE') {
@@ -600,7 +635,7 @@ export const useAdminStore = defineStore('admin', {
         this.resultMessage = `用户 ${user.username} 已${operationLabel[operation]}。`
         return true
       } catch (error) {
-        this.showPanelError(error, '用户变更失败。')
+        if (epoch === this.requestEpoch) this.showPanelError(error, '用户变更失败。')
         return false
       }
     },
@@ -634,8 +669,10 @@ export const useAdminStore = defineStore('admin', {
 
     /** Loads immutable audit records using the closed administrator filter contract. */
     async loadAudit(filters: AuditFilters = {}): Promise<boolean> {
+      const epoch = this.requestEpoch
       this.auditState = 'LOADING'
       await Promise.resolve()
+      if (epoch !== this.requestEpoch) return false
       this.auditState = 'VALIDATING'
       const query = new URLSearchParams()
       for (const [key, value] of Object.entries(filters)) {
@@ -643,12 +680,15 @@ export const useAdminStore = defineStore('admin', {
       }
       try {
         await Promise.resolve()
+        if (epoch !== this.requestEpoch) return false
         this.auditState = 'EXECUTING'
         const response = await fetch(`${resolveMockOrigin()}/api/v1/admin/audit${query.size === 0 ? '' : `?${query}`}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
+        if (epoch !== this.requestEpoch) return false
         this.auditState = 'VALIDATING'
         const payload: unknown = await response.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidAuditResponseError()
         const records = readAuditRecords(payload)
         if (records === undefined) throw new InvalidAuditResponseError()
@@ -659,6 +699,7 @@ export const useAdminStore = defineStore('admin', {
         this.auditResultMessage = records.length === 0 ? '没有符合条件的审计记录。' : `已加载 ${records.length} 条审计记录。`
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         this.auditRecords = []
         this.showAuditError(error, '审计日志加载失败。')
         return false
@@ -667,6 +708,7 @@ export const useAdminStore = defineStore('admin', {
 
     /** Creates an AUDIT_EXPORT confirmation for the currently displayed filter values. */
     async exportAudit(filters: AuditFilters = {}): Promise<boolean> {
+      const epoch = this.requestEpoch
       this.auditState = 'EXECUTING'
       this.auditConfirmation = null
       this.auditExportFilters = { ...filters }
@@ -678,8 +720,10 @@ export const useAdminStore = defineStore('admin', {
           headers,
           body: JSON.stringify({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' }),
         })
+        if (epoch !== this.requestEpoch) return false
         this.auditState = 'VALIDATING'
         const createdPayload: unknown = await createdResponse.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
         if (!createdResponse.ok) throw readFailure(createdPayload) ?? new InvalidAuditResponseError()
         const created = readConfirmation(createdPayload, 'AWAITING_CONFIRMATION')
         if (created === undefined) throw new InvalidAuditResponseError()
@@ -689,6 +733,7 @@ export const useAdminStore = defineStore('admin', {
         this.auditResultMessage = '请确认当前筛选条件后导出审计日志。'
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         this.auditConfirmation = null
         this.auditExportFilters = {}
         this.showAuditError(error, '审计日志导出申请失败。')
@@ -698,6 +743,7 @@ export const useAdminStore = defineStore('admin', {
 
     /** Confirms the pending AUDIT_EXPORT request and consumes it exactly once. */
     async confirmAuditExport(): Promise<boolean> {
+      const epoch = this.requestEpoch
       const created = this.auditConfirmation
       if (created === null || created.state !== 'AWAITING_CONFIRMATION') return false
       this.auditState = 'EXECUTING'
@@ -708,8 +754,10 @@ export const useAdminStore = defineStore('admin', {
           headers,
           body: JSON.stringify({ confirm: true }),
         })
+        if (epoch !== this.requestEpoch) return false
         this.auditState = 'VALIDATING'
         const confirmedPayload: unknown = await confirmedResponse.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
         if (!confirmedResponse.ok) throw readFailure(confirmedPayload) ?? new InvalidAuditResponseError()
         const confirmed = readConfirmation(confirmedPayload, 'CONFIRMED')
         if (confirmed === undefined) throw new InvalidAuditResponseError()
@@ -721,8 +769,10 @@ export const useAdminStore = defineStore('admin', {
           headers,
           body: JSON.stringify({ ...this.auditExportFilters, export: true, confirmationId: confirmed.confirmationId }),
         })
+        if (epoch !== this.requestEpoch) return false
         this.auditState = 'VALIDATING'
         const exportPayload: unknown = await exportResponse.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return false
         if (!exportResponse.ok) throw readFailure(exportPayload) ?? new InvalidAuditResponseError()
         const status = readExportStatus(exportPayload)
         if (status === undefined || status.objectId !== 'AUDIT-LOG') throw new InvalidAuditResponseError()
@@ -734,6 +784,7 @@ export const useAdminStore = defineStore('admin', {
         this.auditResultMessage = '审计日志导出验证通过，未生成文件。'
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         this.auditConfirmation = null
         this.auditExportFilters = {}
         this.auditExportStatus = null
@@ -767,12 +818,14 @@ export const useAdminStore = defineStore('admin', {
      * @sideEffects 清空用户列表，并将面板状态、结果代码和消息重置为空态。
      */
     resetToSafeEmpty(): void {
+      this.invalidateConfirmation()
       this.resetMaintenance()
       this.users = []
       this.panelState = 'EMPTY'
       this.resultCode = 'EMPTY'
       this.resultMessage = '用户列表已清空。'
       this.auditRecords = []
+      this.auditFilters = {}
       this.auditState = 'EMPTY'
       this.auditResultCode = 'EMPTY'
       this.auditResultMessage = '暂无审计记录。'

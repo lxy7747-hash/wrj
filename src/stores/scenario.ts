@@ -238,6 +238,7 @@ export const useScenarioStore = defineStore('scenario', {
     scriptResultMessage: '尚未生成脚本预览。',
     preflight: { valid: true, errors: [], warnings: [] } as ValidationResult,
     requestEpoch: 0,
+    scriptEpoch: 0,
   }),
 
   actions: {
@@ -348,8 +349,9 @@ export const useScenarioStore = defineStore('scenario', {
       this.clearScriptPreview()
     },
 
-    /** 清除与当前场景修订绑定的脚本预览和预检结果。 */
+    /** 清除脚本结果并使在途预览/预检失效，不影响其他场景和模板请求。 */
     clearScriptPreview(): void {
+      this.scriptEpoch += 1
       this.script = null
       this.scriptState = 'EMPTY'
       this.scriptResultCode = 'EMPTY'
@@ -364,6 +366,7 @@ export const useScenarioStore = defineStore('scenario', {
      */
     async validateScenario(): Promise<boolean> {
       const requestEpoch = this.requestEpoch
+      const scriptEpoch = this.scriptEpoch
       const auth = useAuthStore()
       if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
         this.panelState = 'ERROR'
@@ -404,10 +407,10 @@ export const useScenarioStore = defineStore('scenario', {
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ config: this.draft.config }),
         })
-        if (requestEpoch !== this.requestEpoch) return false
+        if (requestEpoch !== this.requestEpoch || scriptEpoch !== this.scriptEpoch) return false
         this.panelState = 'VALIDATING'
         const payload = await readJson(response)
-        if (requestEpoch !== this.requestEpoch) return false
+        if (requestEpoch !== this.requestEpoch || scriptEpoch !== this.scriptEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readValidationResult(payload)
         if (result === undefined) throw new InvalidScenarioResponseError()
@@ -426,7 +429,7 @@ export const useScenarioStore = defineStore('scenario', {
           : '整体校验通过，未发现错误或警告。'
         return true
       } catch (error) {
-        if (requestEpoch !== this.requestEpoch) return false
+        if (requestEpoch !== this.requestEpoch || scriptEpoch !== this.scriptEpoch) return false
         this.showError(error, '场景整体校验失败。')
         return false
       }
@@ -952,13 +955,15 @@ export const useScenarioStore = defineStore('scenario', {
         this.scriptResultMessage = this.draft === null ? '请先加载场景草稿。' : this.dirty ? '请先保存当前场景草稿。' : '当前账号没有脚本预览权限。'
         return false
       }
-      if (!await this.validateScenario()) {
+      const scriptEpoch = ++this.scriptEpoch
+      const valid = await this.validateScenario()
+      if (scriptEpoch !== this.scriptEpoch) return false
+      if (!valid) {
         this.scriptState = 'ERROR'
         this.scriptResultCode = this.resultCode
         this.scriptResultMessage = this.resultMessage
         return false
       }
-      const requestEpoch = this.requestEpoch
       let confirmationId: string | undefined
       this.scriptState = 'EXECUTING'
       try {
@@ -968,7 +973,9 @@ export const useScenarioStore = defineStore('scenario', {
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ action: 'SCENARIO_WARNING_CONTINUE', objectId: this.draft.config.scenario.id }),
           })
+          if (scriptEpoch !== this.scriptEpoch) return false
           const createPayload = await readJson(createResponse)
+          if (scriptEpoch !== this.scriptEpoch) return false
           if (!createResponse.ok) throw readFailure(createPayload) ?? new InvalidScenarioResponseError()
           const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
           if (awaiting === undefined) throw new InvalidScenarioResponseError()
@@ -977,7 +984,9 @@ export const useScenarioStore = defineStore('scenario', {
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ confirm: true }),
           })
+          if (scriptEpoch !== this.scriptEpoch) return false
           const confirmPayload = await readJson(confirmResponse)
+          if (scriptEpoch !== this.scriptEpoch) return false
           const confirmed = readConfirmationContext(confirmPayload, 'CONFIRMED')
           if (!confirmResponse.ok || confirmed === undefined) throw readFailure(confirmPayload) ?? new InvalidScenarioResponseError()
           this.lastConfirmation = confirmed
@@ -988,8 +997,9 @@ export const useScenarioStore = defineStore('scenario', {
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ scenarioId: this.draft.config.scenario.id, ...(confirmationId === undefined ? {} : { warningConfirmationId: confirmationId }) }),
         })
+        if (scriptEpoch !== this.scriptEpoch) return false
         const payload = await readJson(response)
-        if (requestEpoch !== this.requestEpoch) return false
+        if (scriptEpoch !== this.scriptEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const script = readScriptContract(payload)
         if (script === undefined) throw new InvalidScenarioResponseError()
@@ -1001,7 +1011,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.scriptResultMessage = '脚本预览已生成。'
         return true
       } catch (error) {
-        if (requestEpoch !== this.requestEpoch) return false
+        if (scriptEpoch !== this.scriptEpoch) return false
         const failure = readFailure(error)
         this.scriptState = 'ERROR'
         this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
@@ -1014,7 +1024,7 @@ export const useScenarioStore = defineStore('scenario', {
     async preflightScript(): Promise<boolean> {
       if (this.script === null) return false
       const auth = useAuthStore()
-      const requestEpoch = this.requestEpoch
+      const scriptEpoch = ++this.scriptEpoch
       this.scriptState = 'VALIDATING'
       try {
         const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
@@ -1022,8 +1032,9 @@ export const useScenarioStore = defineStore('scenario', {
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ checksum: this.script.checksum }),
         })
+        if (scriptEpoch !== this.scriptEpoch) return false
         const payload = await readJson(response)
-        if (requestEpoch !== this.requestEpoch) return false
+        if (scriptEpoch !== this.scriptEpoch) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidScenarioResponseError()
         const result = readValidationResult(payload)
         if (result === undefined) throw new InvalidScenarioResponseError()
@@ -1033,7 +1044,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.scriptResultMessage = result.valid ? '脚本结构、版本、路径和校验和预检通过。' : `脚本预检发现 ${result.errors.length} 个错误。`
         return result.valid
       } catch (error) {
-        if (requestEpoch !== this.requestEpoch) return false
+        if (scriptEpoch !== this.scriptEpoch) return false
         const failure = readFailure(error)
         this.scriptState = 'ERROR'
         this.scriptResultCode = error instanceof InvalidScenarioResponseError ? 'INVALID_RESPONSE' : failure?.error.code ?? 'NETWORK_ERROR'
@@ -1049,6 +1060,7 @@ export const useScenarioStore = defineStore('scenario', {
      */
     resetToSafeEmpty(): void {
       this.requestEpoch += 1
+      this.scriptEpoch += 1
       this.draft = null
       this.panelState = 'EMPTY'
       this.dirty = false

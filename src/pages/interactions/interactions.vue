@@ -1,4 +1,11 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import type { CapabilityState } from '../../contracts/domain-models'
+import { ERROR_GUIDANCE } from '../../features/diagnostics'
+import { CAPABILITY_LABELS } from '../../stores/traceability'
+import { useUiStore } from '../../stores/ui'
+import { useAuthStore } from '../../stores/auth'
 import ClosedLoopStepper from '../../components/interactions/ClosedLoopStepper.vue'
 import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
 import EsmSensorPanel from '../../components/interactions/EsmSensorPanel.vue'
@@ -7,6 +14,18 @@ import RfJammerPanel from '../../components/interactions/RfJammerPanel.vue'
 import RouteRankingPanel from '../../components/interactions/RouteRankingPanel.vue'
 import SnrBerExample from '../../components/interactions/SnrBerExample.vue'
 import SwitchDecisionPanel from '../../components/interactions/SwitchDecisionPanel.vue'
+
+const ui = useUiStore()
+const auth = useAuthStore()
+const exampleState = ref<CapabilityState>('EMPTY')
+
+/** 用户确认丢弃本机模拟改动后，仅调用全局协调 action 一次；取消不产生请求。 */
+async function reset(): Promise<void> {
+  const confirmed = await ElMessageBox.confirm('将丢弃全部未保存场景、模拟运行、回放进度和未完成确认，恢复本机模拟基线。此操作不是场景撤销。', '重置模拟数据', {
+    confirmButtonText: '确认重置', cancelButtonText: '取消', type: 'warning',
+  }).catch(() => false)
+  if (confirmed) await ui.resetAllProjections()
+}
 </script>
 
 <template>
@@ -17,10 +36,26 @@ import SwitchDecisionPanel from '../../components/interactions/SwitchDecisionPan
         <h2 id="interactions-title">感知、干扰与选路</h2>
         <p class="interactions-page__summary">集中展示侦测、干扰控制、参数同步、逐帧闭环、正反向选路及切换决策的完整可追溯证据。</p>
       </div>
-      <span class="console-chip interactions-page__chip">P4 已完成</span>
+      <el-button :disabled="auth.principal === null" :loading="ui.resetState === 'EXECUTING'" data-testid="reset-all" @click="reset">{{ ui.resetState === 'ERROR' ? '重试重置' : '重置模拟数据' }}</el-button>
     </header>
 
-    <div class="interactions-page__evidence">
+    <el-alert v-if="ui.resetMessage" :title="ui.resetMessage" :type="ui.resetState === 'ERROR' ? 'error' : ui.resetState === 'SUCCESS' ? 'success' : 'info'" :closable="false" data-testid="reset-feedback">
+      <p v-if="ui.resetState === 'ERROR'">关联编号：{{ ui.correlationId }}</p>
+      <router-link v-if="auth.principal === null" to="/login">身份已失效，请重新登录</router-link>
+    </el-alert>
+    <el-collapse aria-label="交互诊断">
+      <el-collapse-item title="状态示例与错误目录" name="diagnostics">
+        <p>以下仅演示六种界面反馈，不改变任何业务状态；固定证据能力不提供执行态操作。</p>
+        <el-radio-group v-model="exampleState" aria-label="界面状态示例">
+          <el-radio-button v-for="(label, state) in CAPABILITY_LABELS" :key="state" :value="state">{{ label }}</el-radio-button>
+        </el-radio-group>
+        <el-alert :title="`状态示例：${CAPABILITY_LABELS[exampleState]}`" :type="exampleState === 'ERROR' ? 'error' : exampleState === 'SUCCESS' ? 'success' : 'info'" :closable="false" />
+        <el-table :data="Object.entries(ERROR_GUIDANCE).map(([code, message]) => ({ code, message }))" max-height="300" row-key="code" data-testid="error-catalog">
+          <el-table-column prop="code" label="协议错误码" min-width="260" /><el-table-column prop="message" label="中文说明与处理方式" min-width="400" />
+        </el-table>
+      </el-collapse-item>
+    </el-collapse>
+    <div v-if="ui.resetState !== 'EXECUTING' && ui.resetState !== 'ERROR'" class="interactions-page__evidence">
       <EsmSensorPanel />
       <RfJammerPanel />
       <ClosedLoopStepper />
@@ -39,6 +74,7 @@ import SwitchDecisionPanel from '../../components/interactions/SwitchDecisionPan
   min-width: 0;
   overflow: auto;
 }
+.interactions-page a { color: var(--console-cyan); text-underline-offset: 3px; }
 
 .interactions-page__header,
 :deep(.p4-panel__header),

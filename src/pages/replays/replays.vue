@@ -13,6 +13,7 @@ const telemetryStore = useTelemetryStore()
 const { replay, replays, events, state, speed, selectedEventId, resultMessage } = storeToRefs(replayStore)
 const { frame, capabilityState: telemetryState, resultMessage: telemetryMessage } = storeToRefs(telemetryStore)
 const selectedNodeId = ref('')
+let disposed = false
 
 const links = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
 const selectedEvent = computed(() => events.value.find((event) => event.eventId === selectedEventId.value) ?? null)
@@ -70,7 +71,7 @@ async function changeSpeed(value: number): Promise<void> {
 async function reload(): Promise<void> {
   replayStore.resetToSafeEmpty()
   const telemetryLoaded = await telemetryStore.loadFrame('RUN-001', 'F-00042')
-  if (telemetryLoaded) await replayStore.load()
+  if (!disposed && telemetryLoaded) await replayStore.load()
 }
 
 watch(frame, (value) => {
@@ -79,6 +80,7 @@ watch(frame, (value) => {
 
 onMounted(() => { void reload() })
 onBeforeUnmount(() => {
+  disposed = true
   replayStore.resetToSafeEmpty()
   telemetryStore.resetToSafeEmpty()
 })

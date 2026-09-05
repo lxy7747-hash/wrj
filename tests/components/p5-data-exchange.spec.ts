@@ -2,6 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import ProcessContractCard from '../../src/components/data-exchange/ProcessContractCard.vue'
 import ScenarioJsonPanel from '../../src/components/data-exchange/ScenarioJsonPanel.vue'
@@ -45,8 +46,13 @@ describe('P5 数据交换页面', () => {
   })
 
   it('展示四项能力和七类接口，并完成内存校验', async () => {
-    const wrapper = mount(DataExchangePage, { global: { plugins: [ElementPlus] }, attachTo: document.body })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/data-exchange', component: DataExchangePage }] })
+    await router.push('/admin/data-exchange#de-if-jk-yhcz')
+    Element.prototype.scrollIntoView = vi.fn()
+    const wrapper = mount(DataExchangePage, { global: { plugins: [ElementPlus, router] }, attachTo: document.body })
     await flushPromises()
+    expect(Element.prototype.scrollIntoView).toHaveBeenCalled()
+    await router.push('/admin/data-exchange#de-if-jk-wjxt'); await flushPromises()
 
     expect(wrapper.findAll('[data-testid$="card"], [data-testid="scenario-json-panel"]').length).toBeGreaterThanOrEqual(4)
     expect(wrapper.findAll('.interface-item')).toHaveLength(7)

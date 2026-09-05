@@ -19,6 +19,7 @@ import ScenariosPage from '../pages/scenarios/scenarios.vue'
 import SituationPage from '../pages/situation/situation.vue'
 import TraceabilityPage from '../pages/traceability/traceability.vue'
 import { useAuthStore } from '../stores/auth'
+import { useUiStore } from '../stores/ui'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -166,6 +167,8 @@ export function createAppRouter(history: RouterHistory = createWebHistory(), pin
   })
 
   router.beforeEach((to) => {
+    // 重置期间不切换业务页面，避免新页面加载与全局投影重建交叉；退出登录仍可达。
+    if (useUiStore(pinia).resetState === 'EXECUTING' && to.path !== '/login') return false
     // 显式注入 Pinia，使路由单元测试不依赖应用插件的安装顺序。
     if (pinia !== undefined) {
       const auth = authFor(pinia)

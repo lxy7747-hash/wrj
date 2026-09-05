@@ -3,35 +3,18 @@ import { computed, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
-import { useAdminStore } from './stores/admin'
-import { useBatchStore } from './stores/batch'
-import { useDataExchangeStore } from './stores/data-exchange'
-import { useReplayStore } from './stores/replay'
-import { useScenarioStore } from './stores/scenario'
-import { useSimulationStore } from './stores/simulation'
-import { useTelemetryStore } from './stores/telemetry'
+import { useUiStore } from './stores/ui'
 
 const auth = useAuthStore()
-const admin = useAdminStore()
-const batch = useBatchStore()
-const dataExchange = useDataExchangeStore()
-const replay = useReplayStore()
-const scenario = useScenarioStore()
-const simulation = useSimulationStore()
-const telemetry = useTelemetryStore()
+const ui = useUiStore()
 const router = useRouter()
 
 watch(
   () => auth.principal,
   (principal) => {
-    if (principal === null) {
-      admin.resetToSafeEmpty()
-      telemetry.disconnectAndReset()
-      simulation.resetToSafeEmpty()
-      scenario.resetToSafeEmpty()
-      batch.resetToSafeEmpty()
-      replay.resetToSafeEmpty()
-      dataExchange.resetToSafeEmpty()
+    // 重置自身的权限刷新失败由协调器收口为 ERROR，不能被登出清理覆盖成 EMPTY。
+    if (principal === null && ui.resetState !== 'EXECUTING') {
+      ui.cancelReset()
     }
   },
   { immediate: true, flush: 'sync' },
@@ -62,6 +45,7 @@ const systemManagementPath = computed(() => (
  * 完成导航，避免受保护页面保留为浏览器后退条目。
  */
 async function logout(): Promise<void> {
+  if (ui.resetState === 'EXECUTING') ui.cancelReset()
   auth.resetToSafeEmpty()
   await router.replace('/login')
 }

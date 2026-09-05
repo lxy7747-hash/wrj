@@ -149,6 +149,117 @@ describe('P6 历史回放 Store', () => {
     expect(store.state).toBe('CORRUPT')
   })
 
+  it.each(['success', 'failure', 'network', 'json'] as const)('暂停成功后忽略自动 SEEK 的迟到 %s', async (outcome) => {
+    vi.useFakeTimers()
+    let finishSeek!: (response: Response) => void
+    let failSeek!: (error: Error) => void
+    const seekResponse = new Promise<Response>((resolve, reject) => { finishSeek = resolve; failSeek = reject })
+    let finishJson!: (payload: unknown) => void
+    const jsonResponse = new Promise<unknown>((resolve) => { finishJson = resolve })
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(success([fixtureSource.replay]))
+      .mockResolvedValueOnce(success(fixtureSource.replay))
+      .mockResolvedValueOnce(success(fixtureSource.events))
+      .mockResolvedValueOnce(success({ ...fixtureSource.replay, state: 'PLAYING' }))
+      .mockReturnValueOnce(outcome === 'json' ? Promise.resolve({ ok: true, json: () => jsonResponse }) : seekResponse)
+      .mockResolvedValueOnce(success(fixtureSource.replay))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    await store.load()
+    await store.play()
+    const pending = store.advancePlayback()
+    await Promise.resolve()
+    await store.advancePlayback()
+    expect(fetchSpy).toHaveBeenCalledTimes(5)
+    await expect(store.pause()).resolves.toBe(true)
+    const paused = JSON.parse(JSON.stringify(store.$state))
+    if (outcome === 'network') failSeek(new Error('迟到的网络失败'))
+    else if (outcome === 'json') finishJson({ ok: true, data: { ...fixtureSource.replay, state: 'PLAYING', currentTimeS: 2538 } })
+    else finishSeek(outcome === 'success' ? success({ ...fixtureSource.replay, state: 'PLAYING', currentTimeS: 2538 }) : failure())
+    await pending
+    expect(store.$state).toEqual(paused)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(fetchSpy).toHaveBeenCalledTimes(6)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each(['response', 'json'] as const)('SPEED 取代在途 PLAY 的 %s 后仍按倍速推进且只有一个计时器', async (stage) => {
+    vi.useFakeTimers()
+    let finishPlay!: (response: Response) => void
+    const playResponse = new Promise<Response>((resolve) => { finishPlay = resolve })
+    let finishJson!: (payload: unknown) => void
+    const playJson = new Promise<unknown>((resolve) => { finishJson = resolve })
+    const playing = { ...fixtureSource.replay, state: 'PLAYING' }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(success([fixtureSource.replay]))
+      .mockResolvedValueOnce(success(fixtureSource.replay))
+      .mockResolvedValueOnce(success(fixtureSource.events))
+      .mockReturnValueOnce(stage === 'json' ? Promise.resolve({ ok: true, json: () => playJson }) : playResponse)
+      .mockResolvedValueOnce(success(playing))
+      .mockResolvedValueOnce(success({ ...playing, currentTimeS: 2539 }))
+      .mockResolvedValueOnce(success({ ...fixtureSource.replay, currentTimeS: 2539 }))
+      .mockResolvedValueOnce(success({ ...fixtureSource.replay, currentTimeS: 2539 }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    await store.load()
+    const pendingPlay = store.play()
+    await Promise.resolve()
+    await expect(store.setSpeed(2)).resolves.toBe(true)
+    expect(store).toMatchObject({ state: 'PLAYING', speed: 2 })
+    expect(vi.getTimerCount()).toBe(1)
+    if (stage === 'json') finishJson({ ok: true, data: playing })
+    else finishPlay(success(playing))
+    await expect(pendingPlay).resolves.toBe(false)
+    expect(vi.getTimerCount()).toBe(1)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(JSON.parse(String(fetchSpy.mock.calls[5]![1]?.body))).toEqual({ command: 'SEEK', value: 2539 })
+    expect(store.replay?.currentTimeS).toBe(2539)
+    expect(vi.getTimerCount()).toBe(1)
+    await expect(store.pause()).resolves.toBe(true)
+    await expect(store.setSpeed(1)).resolves.toBe(true)
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(store).toMatchObject({ state: 'PAUSED', replay: { currentTimeS: 2539 } })
+    expect(fetchSpy).toHaveBeenCalledTimes(8)
+  })
+
+  it('离页清空后返回续播，重复加载只有一个计时器且再次暂停停止推进', async () => {
+    vi.useFakeTimers()
+    let serverReplay = structuredClone(fixtureSource.replay) as Replay
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/events')) return success(fixtureSource.events)
+      if (String(input).endsWith('/replays')) return success([serverReplay])
+      if (init?.method === 'POST') {
+        const command = JSON.parse(String(init.body)) as { command: string; value?: number }
+        if (command.command === 'PLAY') serverReplay = { ...serverReplay, state: 'PLAYING' }
+        if (command.command === 'PAUSE') serverReplay = { ...serverReplay, state: 'PAUSED' }
+        if (command.command === 'SEEK') serverReplay = { ...serverReplay, currentTimeS: command.value! }
+      }
+      return success(serverReplay)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    await store.load()
+    await store.play()
+    await vi.advanceTimersByTimeAsync(1_000)
+    store.resetToSafeEmpty()
+    expect(vi.getTimerCount()).toBe(0)
+    const leftAt = serverReplay.currentTimeS
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(serverReplay).toMatchObject({ state: 'PLAYING', currentTimeS: leftAt })
+    for (let visit = 0; visit < 2; visit += 1) {
+      await expect(store.load()).resolves.toBe(true)
+      expect(vi.getTimerCount()).toBe(1)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(store.replay?.currentTimeS).toBe(leftAt + visit + 1)
+    }
+    await expect(store.pause()).resolves.toBe(true)
+    store.startPlaybackTimer()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(2_000)
+    expect(store).toMatchObject({ state: 'PAUSED', replay: { currentTimeS: leftAt + 2 } })
+  })
+
   it('重置会使迟到加载响应失效', async () => {
     const store = useReplayStore()
     let resolveResponse!: (response: Response) => void

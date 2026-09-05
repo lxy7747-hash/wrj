@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import CsvContractCard from '../../components/data-exchange/CsvContractCard.vue'
 import InterfaceContractTable from '../../components/data-exchange/InterfaceContractTable.vue'
 import ProcessContractCard from '../../components/data-exchange/ProcessContractCard.vue'
@@ -10,6 +11,14 @@ import { useTelemetryStore } from '../../stores/telemetry'
 
 const store = useDataExchangeStore()
 const telemetry = useTelemetryStore()
+const route = useRoute()
+
+/** 合同目录渲染完成后定位当前接口锚点，不接受外部页面地址。 */
+async function locateInterface(): Promise<void> {
+  await nextTick()
+  document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'start' })
+}
+watch(() => route.hash, locateInterface)
 
 /**
  * 加载 P5 页面所需的四组规范合同。
@@ -18,6 +27,7 @@ const telemetry = useTelemetryStore()
  */
 async function loadContracts(): Promise<void> {
   await store.loadContracts()
+  await locateInterface()
 }
 
 onMounted(loadContracts)

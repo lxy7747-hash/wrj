@@ -651,6 +651,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(auth.permissionSet(role), pageMeta(requestId)))
   })
 
+  /** 返回既有合同声明的能力、决策和路由目录，不执行业务操作。 */
+  for (const section of ['capabilities', 'decisions', 'routes'] as const) {
+    app.get(`/api/v1/meta/${section}`, (req, res) => {
+      const requestId = `REQ-P8-META-${section}`
+      if (requireDemoRole(req, res, auth, 'METADATA_READ') === undefined) return
+      const items = projection.snapshot().metadata[section]
+      res.status(200).json(success(items, pageMeta(requestId, items.length, items.length)))
+    })
+  }
+
   /** 返回七类接口的确定性元数据。 */
   app.get('/api/v1/meta/interfaces', (req, res) => {
     const requestId = 'REQ-P5-INTERFACES'

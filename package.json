@@ -16,6 +16,7 @@
     "test:contracts": "vitest run --config vitest.config.ts tests/contracts",
     "test:server": "vitest run --config vitest.config.ts tests/server",
     "test:e2e": "playwright test",
+    "release:check": "node scripts/release-check.mjs",
     "test": "npm run test:unit && npm run test:contracts && npm run test:server",
     "test:coverage": "vitest run --config vitest.config.ts --coverage",
     "p0:check": "npm run typecheck && npm run build && npm run validate:contracts && npm run test:unit && npm run test:contracts && npm run test:server && npm run test:coverage"

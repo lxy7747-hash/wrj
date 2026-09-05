@@ -122,6 +122,8 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；32 个 POST/PUT/
 
 保留类型检查、schema/contract、unit coverage、Supertest/WS、Playwright 双视口、网络请求清单、监听地址、fixture closure 和 source hash 的机器输出。任何失败都必须在发布记录中显示具体测试 ID 与 error code，不得以人工浏览替代自动门禁。
 
+P8 使用仓库根目录 `npm run release:check` 生成独立 `output/p8-*` 证据目录，执行上述类型、构建、合同、全量覆盖率和双视口检查；首个失败即阻断，完整日志和工作树源哈希保留在 `manifest.json` 关联的文件中。操作说明见根目录 `P8-集成验收与交付说明.md`。用户审核、远程推送及生产部署不自动执行。
+
 ## 可重复只读合同审计命令
 
 在设计包目录执行以下命令；它们不创建文件。当前合同审查先执行前两条和内嵌 Node schema walker；后续按计划安装 AJV 后执行第三条正式 2020-12 校验。具体 Node.js 版本不由本项目固定，命令须在本机可用且依赖兼容的 Node.js 环境执行。

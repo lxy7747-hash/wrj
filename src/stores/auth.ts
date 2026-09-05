@@ -452,6 +452,7 @@ export const useAuthStore = defineStore('auth', {
         return false
       }
 
+      const principal = this.principal
       this.authState = 'EXECUTING'
       try {
         const response = await fetch(`${resolveMockOrigin()}/api/v1/auth/permissions`, {
@@ -460,6 +461,7 @@ export const useAuthStore = defineStore('auth', {
         })
         const payload: unknown = await response.json().catch(() => undefined)
         const permissionSet = readPermissionSet(payload)
+        if (this.principal !== principal) return false
         if (!response.ok || permissionSet === undefined || permissionSet.role !== this.role) {
           const message = isApiFailure(payload) ? payload.error.message : '权限响应不符合约定。'
           this.resetToSafeEmpty()
@@ -477,6 +479,7 @@ export const useAuthStore = defineStore('auth', {
         storePrincipal(this.principal)
         return true
       } catch {
+        if (this.principal !== principal) return false
         this.resetToSafeEmpty()
         this.authState = 'ERROR'
         this.lastCode = 'NETWORK_ERROR'

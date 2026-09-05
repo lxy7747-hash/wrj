@@ -14,6 +14,7 @@ type ReplayEvent = DetectionEvent | SwitchEvent
 
 interface ReplayRuntime {
   timer: ReturnType<typeof setInterval> | null
+  pendingCommand: number | null
 }
 
 const runtimes = new WeakMap<object, ReplayRuntime>()
@@ -25,7 +26,7 @@ const REPLAY_STATES = new Set<ReplayState>([
 function runtimeFor(store: object): ReplayRuntime {
   const existing = runtimes.get(store)
   if (existing !== undefined) return existing
-  const runtime = { timer: null }
+  const runtime = { timer: null, pendingCommand: null }
   runtimes.set(store, runtime)
   return runtime
 }
@@ -88,8 +89,9 @@ export const useReplayStore = defineStore('replay', {
      * @returns 三份响应及交叉引用有效时返回 `true`；空目录进入 EMPTY。
      */
     async load(): Promise<boolean> {
-      const epoch = this.requestEpoch
+      const epoch = ++this.requestEpoch
       this.stopPlaybackTimer()
+      runtimeFor(this).pendingCommand = null
       this.state = 'LOADING'
       try {
         const listResponse = await fetch(`${resolveMockOrigin()}/api/v1/replays`, {
@@ -106,6 +108,7 @@ export const useReplayStore = defineStore('replay', {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         const replay = await readSuccess(detailResponse, isReplay)
+        if (epoch !== this.requestEpoch) return false
         const telemetry = useTelemetryStore()
         let events = telemetry.frame?.runId === listed.runId
           ? telemetry.events.map((event) => ({ ...event })) as ReplayEvent[]
@@ -132,6 +135,7 @@ export const useReplayStore = defineStore('replay', {
           ?? null
         this.resultCode = 'SUCCESS'
         this.resultMessage = '历史回放已加载。'
+        if (this.state === 'PLAYING') this.startPlaybackTimer()
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
@@ -142,9 +146,7 @@ export const useReplayStore = defineStore('replay', {
 
     /** 播放当前回放并启动服务端游标推进计时器。 */
     async play(): Promise<boolean> {
-      const succeeded = await this.executeCommand({ command: 'PLAY' })
-      if (succeeded) this.startPlaybackTimer()
-      return succeeded
+      return this.executeCommand({ command: 'PLAY' })
     },
 
     /** 暂停当前回放并停止游标计时器。 */
@@ -188,7 +190,10 @@ export const useReplayStore = defineStore('replay', {
      */
     async executeCommand(command: ReplayCommand): Promise<boolean> {
       if (this.replay === null) return false
-      const epoch = this.requestEpoch
+      // 新控制优先于旧响应；自动 SEEK 不抢占正在执行的手动控制。
+      const epoch = ++this.requestEpoch
+      const runtime = runtimeFor(this)
+      runtime.pendingCommand = epoch
       if (command.command === 'SEEK' && this.state !== 'PLAYING') this.state = 'SEEKING'
       try {
         const response = await fetch(`${resolveMockOrigin()}/api/v1/replays/${encodeURIComponent(this.replay.replayId)}/commands`, {
@@ -196,6 +201,7 @@ export const useReplayStore = defineStore('replay', {
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify(command),
         })
+        if (epoch !== this.requestEpoch) return false
         const replay = await readSuccess(response, isReplay)
         if (epoch !== this.requestEpoch) return false
         if (replay.replayId !== this.replay.replayId || replay.runId !== this.replay.runId) {
@@ -206,23 +212,29 @@ export const useReplayStore = defineStore('replay', {
         this.selectEventAtCursor()
         this.resultCode = 'SUCCESS'
         this.resultMessage = '回放状态已更新。'
+        // SPEED 也可能先返回 PLAYING，由最新有效投影统一维护计时器。
+        if (this.state !== 'PLAYING') this.stopPlaybackTimer()
+        else if (runtime.timer === null) this.startPlaybackTimer()
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
         this.showError(error)
         return false
+      } finally {
+        if (runtime.pendingCommand === epoch) runtime.pendingCommand = null
       }
     },
 
     /** 启动每秒向服务端提交一次游标推进。 */
     startPlaybackTimer(): void {
       this.stopPlaybackTimer()
+      if (this.state !== 'PLAYING' || this.replay === null) return
       runtimeFor(this).timer = setInterval(() => { void this.advancePlayback() }, 1_000)
     },
 
     /** 按当前倍速推进游标，到达末尾时进入 COMPLETED。 */
     async advancePlayback(): Promise<void> {
-      if (this.replay === null || this.state !== 'PLAYING') return
+      if (this.replay === null || this.state !== 'PLAYING' || runtimeFor(this).pendingCommand !== null) return
       const nextTime = Math.min(this.replay.durationS, this.replay.currentTimeS + this.speed)
       if (!await this.executeCommand({ command: 'SEEK', value: nextTime })) return
       if (nextTime === this.replay.durationS) this.stopPlaybackTimer()
@@ -259,6 +271,7 @@ export const useReplayStore = defineStore('replay', {
     resetToSafeEmpty(): void {
       this.requestEpoch += 1
       this.stopPlaybackTimer()
+      runtimeFor(this).pendingCommand = null
       this.replays = []
       this.replay = null
       this.events = []

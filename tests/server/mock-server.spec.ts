@@ -3,6 +3,59 @@ import type { ApiSuccess, AuditRecord, ConfirmationAction, ConfirmationContext, 
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
+describe('P8 元数据与确定性重置', () => {
+  const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+
+  it('三个新增目录兑现既有合同，拒绝匿名并允许两种角色读取', async () => {
+    const { baseUrl } = await startServer()
+    for (const [section, count] of [['capabilities', 29], ['decisions', 8], ['routes', 11]] as const) {
+      await request(baseUrl).get(`/api/v1/meta/${section}`).set('Origin', ORIGIN).expect(403)
+      for (const role of ['ADMIN', 'OPERATOR']) {
+        const result = await request(baseUrl).get(`/api/v1/meta/${section}`).set({ ...headers, 'X-Demo-Role': role }).expect(200)
+        expect((result.body as { data: unknown[] }).data).toHaveLength(count)
+      }
+    }
+  })
+
+  it('修改草稿、运行、回放、确认和 WS 序号后，reset 恢复同一条完整响应链', async () => {
+    const { baseUrl, wsUrl, server } = await startServer()
+    const get = async (path: string) => (await request(baseUrl).get(`/api/v1/${path}`).set(headers).expect(200)).body
+    const reset = () => request(baseUrl).post('/api/v1/reset').set(headers).send({ confirm: true }).expect(200)
+    const read = async () => ({
+      scene: await get('scenarios/SCN-001'), run: await get('simulations'), frame: await get('simulations/RUN-001/frames/F-00042'),
+      events: await get('simulations/RUN-001/events'), replay: await get('replays/REPLAY-001'), report: await get('reports/RPT-001'),
+      archive: await get('admin/archives'), batch: await get('batches/BATCH-001'), source: server.projection.snapshot(),
+    })
+    const firstReset = await reset()
+    const first = await read()
+    const frame = (first.frame as { data: { frameId: string; simulationTime: number } }).data
+    expect(frame).toMatchObject({ frameId: 'F-00042', simulationTime: 42 })
+    const client = await openWebSocket(wsUrl, { role: 'ADMIN' })
+    const initial = nextJsonMessages(client, 2)
+    client.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0 }))
+    const initialMessages = await initial
+    const draft = (first.scene as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(draft.config); config.scenario.name = 'P8 临时修改'
+    await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: draft.uiExtensions }).expect(200)
+    const broadcast = nextJsonMessage(client)
+    await request(baseUrl).post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+    expect(await broadcast).toMatchObject({ sequence: 2 })
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'SEEK', value: 20 }).expect(200)
+    const confirmation = await request(baseUrl).post('/api/v1/confirmations').set(headers).send({ action: 'FULL_CONFIG_EXPORT', objectId: 'FULL-CONFIG' }).expect(201)
+    client.close()
+    const secondReset = await reset()
+    expect(secondReset.body).toEqual(firstReset.body)
+    expect(await read()).toEqual(first)
+    const confirmationId = (confirmation.body as ApiSuccess<ConfirmationContext>).data.confirmationId
+    await request(baseUrl).post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(409)
+    const nextClient = await openWebSocket(wsUrl, { role: 'ADMIN' })
+    const nextInitial = nextJsonMessages(nextClient, 2)
+    nextClient.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['runtime.state'], lastSequence: 0 }))
+    expect(await nextInitial).toEqual(initialMessages)
+    nextClient.close()
+  })
+})
+
 describe('P7 系统维护接口', () => {
   const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
   const master: MasterData = { dataId: 'DEVICE-P7', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }

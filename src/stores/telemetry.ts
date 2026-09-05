@@ -755,6 +755,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       'switch.event': 0,
     } as Record<WsTopic, number>,
     connectionState: 'DISCONNECTED' as WsConnectionState,
+    connectionBlocked: false,
     capabilityState: 'EMPTY' as CapabilityState,
     resultCode: 'EMPTY',
     resultMessage: '尚未加载态势遥测。',
@@ -1171,7 +1172,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      * @sideEffects 创建 WebSocket，更新连接状态，并在断线时按固定退避重试。
      */
     connect(): void {
-      if (typeof WebSocket === 'undefined') return
+      if (this.connectionBlocked || typeof WebSocket === 'undefined') return
       const runtime = runtimeFor(this)
       if (runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
       runtime.manuallyClosed = false
@@ -1180,6 +1181,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       runtime.socket = socket
 
       socket.addEventListener('open', () => {
+        if (runtime.socket !== socket) return
         socket.send(JSON.stringify({
           type: 'subscribe',
           schemaVersion: '1.0',
@@ -1189,6 +1191,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         }))
       })
       socket.addEventListener('message', (event) => {
+        if (runtime.socket !== socket) return
         let message: unknown
         try {
           message = JSON.parse(String(event.data)) as unknown
@@ -1207,10 +1210,12 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.acceptEnvelope(message)
       })
       socket.addEventListener('close', () => {
-        if (runtime.socket === socket) runtime.socket = null
+        if (runtime.socket !== socket) return
+        runtime.socket = null
         if (!runtime.manuallyClosed) this.scheduleReconnect()
       })
       socket.addEventListener('error', () => {
+        if (runtime.socket !== socket) return
         this.resultCode = 'REALTIME_CONNECTION_FAILED'
         this.resultMessage = '实时连接暂时不可用。'
         this.resultFieldPath = null

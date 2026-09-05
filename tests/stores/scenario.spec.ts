@@ -18,6 +18,7 @@ import type {
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
+import { useUiStore } from '../../src/stores/ui'
 
 const META: PageMeta = {
   requestId: 'REQ-P2-TEST',
@@ -936,6 +937,108 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(jsonResponse(success(null))))
     await expect(scenario.preflightScript()).resolves.toBe(false)
     expect(scenario.scriptResultCode).toBe('INVALID_RESPONSE')
+  })
+
+  it.each(['logout', 'reset'].flatMap((operation) => ['create', 'confirm'].flatMap((stage) =>
+    ['response', 'json'].map((boundary) => ({ operation, stage, boundary })),
+  )))('确认 $stage/$boundary 在途时 $operation 不得恢复旧确认或继续预览', async ({ operation, stage, boundary }) => {
+    const auth = useAuthStore()
+    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const confirmation = deferred<unknown>()
+    const entered = deferred<void>()
+    const resetResponse = deferred<Response>()
+    const awaiting: ConfirmationContext = {
+      confirmationId: 'CONF-P2-LATE', state: 'AWAITING_CONFIRMATION', actor: 'operator', role: 'OPERATOR',
+      createdAt: META.generatedAt, expiresAt: '2026-08-06T08:05:00Z',
+    }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(scenarioDraft())))
+      .mockResolvedValueOnce(jsonResponse(success(inspectScenarioConfig(scenarioDraft().config).result)))
+    if (stage === 'confirm') fetchSpy.mockResolvedValueOnce(jsonResponse(success(awaiting)))
+    const pendingResponse = { ok: true, json: () => { entered.resolve(); return confirmation.promise } } as Response
+    if (boundary === 'json') fetchSpy.mockResolvedValueOnce(pendingResponse)
+    else fetchSpy.mockImplementationOnce(() => { entered.resolve(); return confirmation.promise })
+    fetchSpy.mockReturnValueOnce(resetResponse.promise)
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+    await scenario.loadScenario()
+    const pending = scenario.generateScriptPreview(true)
+    await entered.promise
+    const callsBeforeReset = fetchSpy.mock.calls.length
+    const ui = useUiStore()
+    let reset: Promise<boolean> | undefined
+    if (operation === 'logout') {
+      auth.resetToSafeEmpty()
+      ui.cancelReset()
+    } else {
+      reset = ui.resetAllProjections()
+      await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeReset + 1))
+    }
+    const payload = success(stage === 'confirm' ? { ...awaiting, state: 'CONFIRMED' } : awaiting)
+    confirmation.resolve(boundary === 'json' ? payload : jsonResponse(payload))
+    await expect(pending).resolves.toBe(false)
+    expect(scenario).toMatchObject({ draft: null, lastConfirmation: null, script: null, scriptState: 'EMPTY' })
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).endsWith('/scripts/preview'))).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeReset + (operation === 'reset' ? 1 : 0))
+    if (reset) {
+      resetResponse.resolve(jsonResponse(apiFailure('受控重置失败。'), false))
+      await expect(reset).resolves.toBe(false)
+    }
+  })
+
+  it.each(['preview-success', 'preview-failure', 'preflight-success', 'preflight-failure'].flatMap((stage) =>
+    ['response', 'json'].map((boundary) => ({ stage, boundary })),
+  ))('编辑草稿后丢弃迟到的 $stage/$boundary', async ({ stage, boundary }) => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const cleanDraft = scenarioDraft()
+    cleanDraft.config.scenario.environment.rainLossDbPerKm = 0.08
+    const script: ScriptContract = {
+      scriptId: 'SCRIPT-P2-LATE', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
+      target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-LATE', preview: 'preview', generatedTime: META.generatedAt,
+    }
+    const response = deferred<unknown>()
+    const entered = deferred<void>()
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(cleanDraft)))
+      .mockResolvedValueOnce(jsonResponse(success({ valid: true, errors: [], warnings: [] })))
+    const preflight = stage.startsWith('preflight')
+    if (preflight) fetchSpy.mockResolvedValueOnce(jsonResponse(success(script)))
+    if (boundary === 'json') fetchSpy.mockResolvedValueOnce({ ok: true, json: () => { entered.resolve(); return response.promise } })
+    else fetchSpy.mockImplementationOnce(() => { entered.resolve(); return response.promise })
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+    await scenario.loadScenario()
+    if (preflight) await expect(scenario.generateScriptPreview()).resolves.toBe(true)
+    const pending = preflight ? scenario.preflightScript() : scenario.generateScriptPreview()
+    await entered.promise
+    scenario.draft!.config.scenario.name = '已编辑的新草稿'
+    scenario.markDirty()
+    const cleared = JSON.parse(JSON.stringify(scenario.$state))
+    if (stage.endsWith('failure')) response.reject(new Error('迟到的网络失败'))
+    else {
+      const payload = success(preflight ? { valid: true, errors: [], warnings: [] } : script)
+      response.resolve(boundary === 'json' ? payload : jsonResponse(payload))
+    }
+    await expect(pending).resolves.toBe(false)
+    expect(scenario.$state).toEqual(cleared)
+    expect(scenario.dirty).toBe(true)
+  })
+
+  it.each(['edit', 'reset'] as const)('脚本生成的整体校验在途时 %s 不得回写或继续确认', async (operation) => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const response = deferred<Response>()
+    const fetchSpy = vi.fn().mockResolvedValueOnce(jsonResponse(success(scenarioDraft()))).mockReturnValueOnce(response.promise)
+    vi.stubGlobal('fetch', fetchSpy)
+    const scenario = useScenarioStore()
+    await scenario.loadScenario()
+    const pending = scenario.generateScriptPreview(true)
+    if (operation === 'edit') scenario.markDirty()
+    else scenario.resetToSafeEmpty()
+    const cleared = JSON.parse(JSON.stringify(scenario.$state))
+    response.resolve(jsonResponse(success(inspectScenarioConfig(scenarioDraft().config).result)))
+    await expect(pending).resolves.toBe(false)
+    expect(scenario.$state).toEqual(cleared)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
   it('全局重置后丢弃在途脚本预检结果', async () => {

@@ -244,10 +244,11 @@ export const useReportStore = defineStore('report', {
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': 'ADMIN' },
           body: JSON.stringify({ confirm: true }),
         })
-        this.confirmation = await readSuccess(response, (value): value is ConfirmationContext => (
+        const confirmation = await readSuccess(response, (value): value is ConfirmationContext => (
           isConfirmation(value, 'CONFIRMED') && value.role === 'ADMIN'
         ))
         if (epoch !== this.requestEpoch) return false
+        this.confirmation = confirmation
         return await this.exportNow(this.pendingFormat, this.confirmation.confirmationId)
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
@@ -308,6 +309,14 @@ export const useReportStore = defineStore('report', {
       this.capabilityState = 'ERROR'
       this.resultCode = code ?? failure?.error.code ?? 'REPORT_ERROR'
       this.resultMessage = failure?.error.message ?? (error instanceof Error ? error.message : fallback)
+    },
+
+    /** 全局重置前取消确认，并阻止旧导出响应回写。 */
+    invalidateConfirmation(): void {
+      this.requestEpoch += 1
+      this.confirmation = null
+      this.pendingFormat = null
+      this.exportResult = null
     },
 
     /** 清除报告、确认和导出结果，恢复安全空态。 */

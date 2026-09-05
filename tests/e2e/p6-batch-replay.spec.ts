@@ -93,6 +93,51 @@ test('P6 批量任务、聚合报告与只读回放主链', async ({ page, reque
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
+test('P6 播放中跨页返回续播，重复进入后暂停不再推进', async ({ page, request }) => {
+  const audit = auditBrowser(page)
+  const commands: string[] = []
+  page.on('request', (outgoing) => {
+    if (outgoing.method() === 'POST' && new URL(outgoing.url()).pathname === '/api/v1/replays/REPLAY-001/commands') {
+      commands.push(outgoing.postDataJSON().command)
+    }
+  })
+  await resetMock(request)
+  await login(page)
+  await page.getByRole('link', { name: '历史回放', exact: true }).click()
+  const play = page.getByTestId('replay-play')
+  const cursor = page.locator('.replay-controls__slider span').first()
+  await expect(play).toHaveText('播放')
+  await play.click()
+  await expect(play).toHaveText('暂停')
+  await expect(cursor).not.toHaveText('00:42:17', { timeout: 4_000 })
+  for (let visit = 0; visit < 2; visit += 1) {
+    await page.getByRole('link', { name: '批量仿真', exact: true }).click()
+    await page.waitForURL('**/batches')
+    const commandsAfterLeaving = commands.length
+    await page.waitForTimeout(1_100)
+    expect(commands).toHaveLength(commandsAfterLeaving)
+    expect(commands).not.toContain('PAUSE')
+    await page.getByRole('link', { name: '历史回放', exact: true }).click()
+    await expect(play).toHaveText('暂停')
+    const resumedAt = await cursor.textContent()
+    await expect(cursor).not.toHaveText(resumedAt!, { timeout: 4_000 })
+  }
+  const paused = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === '/api/v1/replays/REPLAY-001/commands'
+    && response.request().postDataJSON().command === 'PAUSE')
+  await play.click()
+  expect((await paused).status()).toBe(200)
+  await expect(play).toHaveText('播放')
+  const pausedAt = await cursor.textContent()
+  const commandsAfterPausing = commands.length
+  await page.waitForTimeout(1_100)
+  await expect(cursor).toHaveText(pausedAt!)
+  expect(commands).toHaveLength(commandsAfterPausing)
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('P6 历史回放明确呈现空态和损坏态', async ({ page, request }) => {
   const audit = auditBrowser(page)
   await resetMock(request)

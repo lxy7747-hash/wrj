@@ -14,6 +14,8 @@ import BatchesPage from '../../src/pages/batches/batches.vue'
 import ReplaysPage from '../../src/pages/replays/replays.vue'
 import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
+import { useTelemetryStore } from '../../src/stores/telemetry'
+import { useReplayStore } from '../../src/stores/replay'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR',
@@ -109,6 +111,20 @@ describe('P6 批量仿真与历史回放页面', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="replay-event-detail"]').text()).toContain('DET-042')
     wrapper.unmount()
+  })
+
+  it('遥测加载期间离页后不再加载回放或重启计时器', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    let finishLoad!: (loaded: boolean) => void
+    vi.spyOn(useTelemetryStore(), 'loadFrame').mockReturnValue(new Promise<boolean>((resolve) => { finishLoad = resolve }))
+    const load = vi.spyOn(useReplayStore(), 'load')
+    const wrapper = mount(ReplaysPage, { global: { plugins: [pinia, ElementPlus] } })
+    wrapper.unmount()
+    finishLoad(true)
+    await flushPromises()
+    expect(load).not.toHaveBeenCalled()
+    expect(useReplayStore().state).toBe('EMPTY')
   })
 
   it('明确展示回放空态和损坏态', async () => {
