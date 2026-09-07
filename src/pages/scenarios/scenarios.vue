@@ -795,6 +795,11 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.rainRateMmPerHour': 'scenario-rain-rate',
     'scenario.environment.rainLossDbPerKm': 'scenario-rain-loss',
     'scenario.environment.multipathEnabled': 'scenario-multipath',
+
+    'scenario.environment.simTotalTime': 'scenario-sim-total-time',
+    'scenario.environment.simClockSpeed': 'scenario-sim-clock-speed',
+    'scenario.environment.transmissionDistance': 'scenario-trans-distance',
+    'scenario.environment.rainCloudAttenuation': 'scenario-rain-cloud-atten',
     'output.directory': 'output-directory',
     'output.writeInterval': 'output-write-interval',
   }
@@ -1024,12 +1029,6 @@ watch(activeTab, (tab) => {
       <el-tabs v-model="activeTab" class="scenario-tabs">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-labelledby="scenario-basic-title">
-       <div class="section-heading">
-         <div>
-           <p class="section-kicker">基础信息</p>
-           <h3 id="scenario-basic-title">场景标识</h3>
-         </div>
-       </div>
         <div class="form-grid form-grid--basic form-grid--scenario-identity">
           <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
@@ -1053,12 +1052,6 @@ watch(activeTab, (tab) => {
               @update:model-value="markDirty"
             />
           </el-form-item>
-        </div>
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">时序参数</p>
-            <h3 id="scenario-timing-title">仿真时间</h3>
-          </div>
         </div>
         <div class="form-grid form-grid--timing">
           <el-form-item label="开始时间" :error="issueMessage('scenario.startTime')">
@@ -1092,12 +1085,7 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
         </div>
-        <div class="section-heading">
-          <div>
-            <p class="section-kicker">环境参数</p>
-            <h3 id="scenario-environment-title">传播环境</h3>
-          </div>
-        </div>
+
         <div class="form-grid form-grid--environment">
           <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
             <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
@@ -1120,6 +1108,64 @@ watch(activeTab, (tab) => {
                 inline-prompt
                 active-text="启用"
                 inactive-text="关闭"
+                data-testid="scenario-multipath"
+                @update:model-value="markDirty"
+            />
+          </el-form-item>
+          <el-form-item label="仿真总时长(min)" :error="issueMessage('scenario.environment.simTotalTime')">
+            <el-input-number
+                v-model="draft.config.scenario.simTotalTime"
+                controls-position="right"
+                :min="1"
+                :max="999"
+                data-testid="scenario-sim-total-time"
+                @update:model-value="markDirty"
+            />
+          </el-form-item>
+
+          <el-form-item label="仿真时钟倍速(倍)" :error="issueMessage('scenario.environment.simClockSpeed')">
+            <el-input-number
+                v-model="draft.config.scenario.environment.simClockSpeed"
+                controls-position="right"
+                :min="0.1"
+                :max="10"
+                :step="0.1"
+                data-testid="scenario-sim-clock-speed"
+                @update:model-value="markDirty"
+            />
+          </el-form-item>
+
+          <el-form-item label="传输距离(km)" :error="issueMessage('scenario.environment.transmissionDistance')">
+            <el-input-number
+                v-model="draft.config.scenario.environment.transmissionDistance"
+                controls-position="right"
+                :min="150"
+                :max="410"
+                data-testid="scenario-trans-distance"
+                @update:model-value="markDirty"
+            />
+          </el-form-item>
+
+          <el-form-item label="云雨气象衰减" :error="issueMessage('scenario.environment.rainCloudAttenuation')">
+            <el-select
+                v-model="draft.config.scenario.environment.rainCloudAttenuation"
+                data-testid="scenario-rain-cloud-atten"
+                @update:model-value="markDirty"
+            >
+              <el-option label="无" value="none" />
+              <el-option label="小雨" value="lightRain" />
+              <el-option label="中雨" value="moderateRain" />
+              <el-option label="大雨" value="heavyRain" />
+            </el-select>
+          </el-form-item>
+
+          <!-- 海面多径衰落，复用原有多径效应开关 multipathEnabled -->
+          <el-form-item class="multipath-field" label="海面多径衰落">
+            <el-switch
+                v-model="draft.config.scenario.environment.multipathEnabled"
+                inline-prompt
+                active-text="启用"
+                inactive-text="禁用"
                 data-testid="scenario-multipath"
                 @update:model-value="markDirty"
             />
