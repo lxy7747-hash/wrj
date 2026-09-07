@@ -44,6 +44,8 @@ export type BusinessInformationNodeType =
 /** Configurable supporting entities; they never count toward the 50 business nodes. */
 export type SupportingEntityType = 'COMMUNICATION_SATELLITE' | 'GROUND_JAMMER_DETECTION_STATION';
 export type PlatformType = BusinessInformationNodeType | SupportingEntityType;
+/** 通信卫星的业务子类型；不增加信息节点分类数量。 */
+export type SatelliteType = 'TIANTONG' | 'SHENTONG';
 export type DeploymentDomain = 'ground' | 'air' | 'space';
 export type LinkType = 'SAT' | 'MICROWAVE' | 'DATALINK' | 'LASER';
 export type Modulation = 'BPSK' | 'QPSK';
@@ -69,6 +71,8 @@ export interface ScenarioIdentity {
 }
 export interface Platform {
   id: Identifier; name: string; type: PlatformType; category: DeploymentDomain; initialPosition: Position;
+  /** 仅通信卫星使用；旧场景允许缺省，新增或编辑卫星时必须选择。 */
+  satelliteType?: SatelliteType;
   waypoints: Waypoint[]; linkIds: Identifier[]; sensorIds: Identifier[]; jammerIds: Identifier[];
 }
 export interface Link {

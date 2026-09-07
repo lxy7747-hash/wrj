@@ -52,7 +52,7 @@ function inspectMutation(value: unknown): TemplateProjectionResult<TemplateMutat
   if (typeof candidate.name !== 'string' || candidate.name.trim() === '') {
     return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'name', message: '模板名称不能为空。' }
   }
-  const inspection = inspectScenarioConfig(candidate.config)
+  const inspection = inspectScenarioConfig(candidate.config, 'write')
   if (!inspection.result.valid) {
     const issue = inspection.result.errors[0]
     return {

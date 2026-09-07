@@ -1,13 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { ElMessageBox } from 'element-plus'
-import type { CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, PlatformType, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
+  INFORMATION_NODE_LIMIT,
+  INFORMATION_NODE_TYPE_LIMITS,
   JAMMER_TYPES,
   LINK_MHZ_MINIMUM_STEP,
   LINK_TYPES,
+  SATELLITE_TYPES,
   SUPPORTING_ENTITY_TYPES,
   inspectScenarioConfig,
   inspectScenarioUiExtensions,
@@ -47,7 +50,6 @@ const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
-const platformFeedback = ref('')
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
 const linkEditorLink = ref<Link | null>(null)
@@ -88,6 +90,7 @@ const deploymentDomainLabels = {
 } as const
 const businessTypeOptions = BUSINESS_INFORMATION_NODE_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
 const supportingTypeOptions = SUPPORTING_ENTITY_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
+const satelliteTypeOptions = SATELLITE_TYPES.map((value) => ({ value, label: value === 'TIANTONG' ? '天通卫星' : '神通卫星' }))
 const linkTypeOptions = LINK_TYPES.map((value) => ({ value, label: LINK_TYPE_LABELS[value] }))
 const linkDirectionLabels = { FORWARD: '正向', REVERSE: '反向' } as const
 const jammerTypeOptions = JAMMER_TYPES.map((value) => ({ value, label: JAMMER_TYPE_LABELS[value] }))
@@ -108,6 +111,13 @@ const stateLabels: Record<CapabilityState, string> = {
  */
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(panelState.value))
 const businessNodeCount = computed(() => draft.value?.config.platforms.filter((platform) => isBusinessInformationNodeType(platform.type)).length ?? 0)
+const businessNodeTypeCounts = computed<Record<BusinessInformationNodeType, number>>(() => Object.fromEntries(
+  BUSINESS_INFORMATION_NODE_TYPES.map((type) => [
+    type,
+    draft.value?.config.platforms.filter((platform) => platform.type === type).length ?? 0,
+  ]),
+) as Record<BusinessInformationNodeType, number>)
+const businessNodeTypeCount = computed(() => BUSINESS_INFORMATION_NODE_TYPES.filter((type) => businessNodeTypeCounts.value[type] > 0).length)
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
@@ -228,8 +238,8 @@ function markDirty(): void {
  * @returns 首个未被使用的三位序号 ID。
  * @remarks 只读取当前草稿，不修改平台集合。
  */
-function nextPlatformId(prefix: 'PLAT-' | 'SUP-'): string {
-  const ids = new Set(draft.value?.config.platforms.map((platform) => platform.id) ?? [])
+function nextPlatformId(prefix: 'PLAT-' | 'SUP-', reservedIds?: Set<string>): string {
+  const ids = reservedIds ?? new Set(draft.value?.config.platforms.map((platform) => platform.id) ?? [])
   let index = 1
   while (ids.has(`${prefix}${String(index).padStart(3, '0')}`)) index += 1
   return `${prefix}${String(index).padStart(3, '0')}`
@@ -243,18 +253,23 @@ function nextPlatformId(prefix: 'PLAT-' | 'SUP-'): string {
  */
 function openNewPlatform(classification: 'business' | 'supporting'): void {
   if (draft.value === null) return
-  if (classification === 'business' && businessNodeCount.value >= 50) {
-    platformFeedback.value = '业务信息节点已达 50 个，不能继续新增。'
+  if (classification === 'business' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
+    ElMessage.error('信息节点已达 50 个，不能继续新增。')
     return
   }
   const business = classification === 'business'
   const id = nextPlatformId(business ? 'PLAT-' : 'SUP-')
+  const configuredSatelliteTypes = new Set(draft.value.config.platforms
+    .filter((platform) => platform.type === 'COMMUNICATION_SATELLITE')
+    .map((platform) => platform.satelliteType))
+  const satelliteType = configuredSatelliteTypes.has('TIANTONG') ? 'SHENTONG' : 'TIANTONG'
   editingPlatformIndex.value = null
   platformEditor.value = {
     id,
-    name: business ? `新增业务信息节点 ${id}` : `新增支撑实体 ${id}`,
-    type: business ? 'REAR_COMMAND_NODE' : 'COMMUNICATION_SATELLITE',
-    category: business ? 'ground' : 'space',
+    name: business ? '空中无人作业集群' : `${satelliteType === 'TIANTONG' ? '天通' : '神通'}卫星`,
+    type: business ? 'AIRBORNE_MISSION_CLUSTER' : 'COMMUNICATION_SATELLITE',
+    ...(business ? {} : { satelliteType }),
+    category: business ? 'air' : 'space',
     initialPosition: { longitude: 0, latitude: 0, altitude: business ? 0 : 550000 },
     waypoints: [],
     linkIds: [],
@@ -262,7 +277,6 @@ function openNewPlatform(classification: 'business' | 'supporting'): void {
     jammerIds: [],
   }
   platformEditorError.value = ''
-  platformFeedback.value = ''
   platformDialogVisible.value = true
 }
 
@@ -277,17 +291,17 @@ function openPlatformEditor(platform: Platform, index: number): void {
   editingPlatformIndex.value = index
   platformEditor.value = platform
   platformEditorError.value = ''
-  platformFeedback.value = ''
   platformDialogVisible.value = true
 }
 
 /**
  * 将平台编辑副本写入当前场景草稿。
  * @param editor 由平台编辑弹窗提交的独立编辑副本。
+ * @param quantity 新增空中无人作业集群的数量；编辑或其他类型固定为 1。
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时新增或替换一个平台、标记草稿未保存并关闭对话框。
  */
-function applyPlatformEditor(editor: Platform): boolean {
+function applyPlatformEditor(editor: Platform, quantity = 1): boolean {
   if (draft.value === null) return false
   editor.id = editor.id.trim()
   editor.name = editor.name.trim()
@@ -295,10 +309,34 @@ function applyPlatformEditor(editor: Platform): boolean {
     platformEditorError.value = '场景实体 ID 和名称均为必填项。'
     return false
   }
+  if (editor.type === 'COMMUNICATION_SATELLITE') {
+    if (editor.satelliteType !== 'TIANTONG' && editor.satelliteType !== 'SHENTONG') {
+      platformEditorError.value = '请选择天通卫星或神通卫星。'
+      return false
+    }
+  } else {
+    delete editor.satelliteType
+  }
+  const addingAirborneBatch = editingPlatformIndex.value === null && editor.type === 'AIRBORNE_MISSION_CLUSTER'
+  const batchQuantity = addingAirborneBatch ? quantity : 1
+  const available = INFORMATION_NODE_TYPE_LIMITS.AIRBORNE_MISSION_CLUSTER - businessNodeTypeCounts.value.AIRBORNE_MISSION_CLUSTER
+  if (addingAirborneBatch && (!Number.isSafeInteger(batchQuantity) || batchQuantity < 1 || batchQuantity > available)) {
+    platformEditorError.value = `空中无人作业集群当前还可新增 ${Math.max(0, available)} 个。`
+    return false
+  }
   const candidate = structuredClone(toRaw(draft.value.config))
   const editedPlatform = structuredClone(toRaw(editor))
-  if (editingPlatformIndex.value === null) candidate.platforms.push(editedPlatform)
-  else candidate.platforms[editingPlatformIndex.value] = editedPlatform
+  if (editingPlatformIndex.value === null) {
+    const reservedIds = new Set(candidate.platforms.map((platform) => platform.id))
+    const initialAirborneCount = businessNodeTypeCounts.value.AIRBORNE_MISSION_CLUSTER
+    for (let index = 0; index < batchQuantity; index += 1) {
+      const platform = structuredClone(editedPlatform)
+      if (index > 0) platform.id = nextPlatformId('PLAT-', reservedIds)
+      reservedIds.add(platform.id)
+      if (batchQuantity > 1) platform.name = `${editedPlatform.name} U${String(initialAirborneCount + index + 1).padStart(2, '0')}`
+      candidate.platforms.push(platform)
+    }
+  } else candidate.platforms[editingPlatformIndex.value] = editedPlatform
   const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
     item.fieldPath.startsWith('platforms') || item.code === 'PLATFORM_REFERENCE_NOT_FOUND'
   ))
@@ -310,7 +348,10 @@ function applyPlatformEditor(editor: Platform): boolean {
   draft.value.config.platforms = candidate.platforms
   markDirty()
   platformDialogVisible.value = false
-  platformFeedback.value = editingPlatformIndex.value === null ? '场景实体已新增，保存草稿后生效。' : '场景实体已更新，保存草稿后生效。'
+  const message = editingPlatformIndex.value === null
+    ? `${batchQuantity > 1 ? `已批量新增 ${batchQuantity} 个空中无人作业集群` : '场景实体已新增'}，保存草稿后生效。`
+    : '场景实体已更新，保存草稿后生效。'
+  ElMessage.success(message)
   return true
 }
 
@@ -324,7 +365,7 @@ function applyPlatformEditor(editor: Platform): boolean {
 function removePlatform(platform: Platform, index: number): boolean {
   if (draft.value === null) return false
   if (isBusinessInformationNodeType(platform.type) && businessNodeCount.value <= 1) {
-    platformFeedback.value = '场景至少需要保留一个业务信息节点。'
+    ElMessage.error('场景至少需要保留一个信息节点。')
     return false
   }
   const config = draft.value.config
@@ -333,12 +374,12 @@ function removePlatform(platform: Platform, index: number): boolean {
     || config.sensors.some((sensor) => sensor.platformId === platform.id)
     || config.informationDemand.some((demand) => demand.sourcePlatformId === platform.id || demand.destinationPlatformIds.includes(platform.id))
   if (referenced) {
-    platformFeedback.value = '该场景实体仍被链路、设备或信息需求引用，不能删除。'
+    ElMessage.error('该场景实体仍被链路、设备或信息需求引用，不能删除。')
     return false
   }
   config.platforms.splice(index, 1)
   markDirty()
-  platformFeedback.value = '场景实体已删除，保存草稿后生效。'
+  ElMessage.success('场景实体已删除，保存草稿后生效。')
   return true
 }
 
@@ -348,8 +389,11 @@ function removePlatform(platform: Platform, index: number): boolean {
  * @returns 对应的文档中文名称。
  * @remarks 只读取既有类型映射。
  */
-function platformTypeLabel(type: PlatformType): string {
-  return PLATFORM_TYPE_LABELS[type]
+function platformTypeLabel(platform: Platform): string {
+  if (platform.type !== 'COMMUNICATION_SATELLITE') return PLATFORM_TYPE_LABELS[platform.type]
+  if (platform.satelliteType === 'TIANTONG') return '天通卫星'
+  if (platform.satelliteType === 'SHENTONG') return '神通卫星'
+  return PLATFORM_TYPE_LABELS[platform.type]
 }
 
 /**
@@ -929,7 +973,7 @@ async function saveScenario(): Promise<void> {
   draftReviewed.value = false
   if (await scenarioStore.saveScenario()) {
     draftReviewed.value = true
-    platformFeedback.value = '场景草稿已保存。'
+    ElMessage.success('场景草稿已保存。')
     linkFeedback.value = '场景草稿已保存。'
     linkFeedbackStatus.value = 'success'
     jammerFeedback.value = '场景草稿已保存。'
@@ -1216,37 +1260,29 @@ watch(activeTab, (tab) => {
         </el-tab-pane>
 
         <el-tab-pane label="平台与航点" name="platforms">
-          <section class="console-panel scenario-section" aria-labelledby="scenario-platform-title">
+          <section class="console-panel scenario-section" aria-label="平台与航点">
             <div class="section-heading">
 <!--              <div>-->
 <!--                <p class="section-kicker">平台与航点</p>-->
 <!--                <h3 id="scenario-platform-title">场景实体配置</h3>-->
 <!--              </div>-->
               <div class="platform-counts" aria-label="场景实体数量">
-                <el-tag type="primary">业务信息节点 {{ businessNodeCount }} / 50</el-tag>
+                <el-tag type="primary">信息节点 {{ businessNodeCount }} / {{ INFORMATION_NODE_LIMIT }}</el-tag>
+                <el-tag :type="businessNodeTypeCount === 4 ? 'success' : 'warning'">节点类型 {{ businessNodeTypeCount }} / 4</el-tag>
                 <el-tag>支撑实体 {{ supportingEntityCount }}</el-tag>
               </div>
             </div>
-
-            <el-alert
-              v-if="platformFeedback"
-              class="platform-feedback"
-              :type="platformFeedback.includes('不能') || platformFeedback.includes('至少') ? 'error' : 'success'"
-              :closable="false"
-              :title="platformFeedback"
-              show-icon
-            />
 
             <el-table :data="draft.config.platforms" stripe data-testid="platform-table">
               <el-table-column prop="id" label="场景实体 ID" min-width="130" />
               <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
               <el-table-column label="分类" width="120">
                 <template #default="{ row }">
-                  {{ isBusinessInformationNodeType(row.type) ? '业务信息节点' : '支撑实体' }}
+                  {{ isBusinessInformationNodeType(row.type) ? '信息节点' : '支撑实体' }}
                 </template>
               </el-table-column>
               <el-table-column label="场景实体类型" min-width="180">
-                <template #default="{ row }">{{ platformTypeLabel(row.type) }}</template>
+                <template #default="{ row }">{{ platformTypeLabel(row) }}</template>
               </el-table-column>
               <el-table-column label="部署域" width="90">
                 <template #default="{ row }">{{ deploymentDomainLabels[row.category] }}</template>
@@ -1265,7 +1301,7 @@ watch(activeTab, (tab) => {
             </el-table>
 
             <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-business-platform" @click="openNewPlatform('business')">新增业务信息节点</el-button>
+              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-business-platform" @click="openNewPlatform('business')">新增信息节点</el-button>
               <el-button :disabled="pending || draft.locked" data-testid="add-supporting-platform" @click="openNewPlatform('supporting')">新增支撑实体</el-button>
             </div>
           </section>
@@ -1504,6 +1540,9 @@ watch(activeTab, (tab) => {
       :locked="draft?.locked ?? false"
       :business-type-options="businessTypeOptions"
       :supporting-type-options="supportingTypeOptions"
+      :satellite-type-options="satelliteTypeOptions"
+      :business-type-counts="businessNodeTypeCounts"
+      :business-type-limits="INFORMATION_NODE_TYPE_LIMITS"
       :deployment-domain-labels="deploymentDomainLabels"
       @apply="applyPlatformEditor"
     />

@@ -134,6 +134,7 @@ describe('P2-1 场景 Store', () => {
     )
     expect(scenario.draft?.config.scenario.name).toBe('跨海通联演示')
     expect(scenario.draft?.config.scenario.duration).toBe(7200)
+    expect(scenario.draft?.config.platforms).toEqual(scenarioDraft().config.platforms)
     expect(scenario.draft?.config.scenario.environment).toMatchObject({
       simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain',
     })
@@ -1238,11 +1239,10 @@ describe('P2-2 平台与航点字段校验', () => {
         jammerIds: [],
       })
     }
-
     expect(inspectScenarioConfig(config).result.valid).toBe(true)
     config.platforms.push({
       ...structuredClone(source),
-      id: 'CAPACITY-045',
+      id: 'CAPACITY-051',
       name: '第 51 个业务信息节点',
       linkIds: [],
       sensorIds: [],
@@ -1251,6 +1251,23 @@ describe('P2-2 平台与航点字段校验', () => {
     expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
       code: 'NODE_LIMIT_EXCEEDED',
       fieldPath: 'platforms',
+    }))
+  })
+
+  it('校验节点类型数量上限及通信卫星子类型', () => {
+    const duplicateRear = scenarioDraft().config
+    const source = structuredClone(duplicateRear.platforms[0]!)
+    duplicateRear.platforms.push({ ...source, id: 'CMD-02', name: '重复后方指挥节点', linkIds: [], sensorIds: [], jammerIds: [] })
+    expect(inspectScenarioConfig(duplicateRear).result.errors).toContainEqual(expect.objectContaining({
+      code: 'NODE_TYPE_LIMIT_EXCEEDED',
+      fieldPath: 'platforms',
+    }))
+
+    const invalidSatellite = scenarioDraft().config
+    invalidSatellite.platforms.find((platform) => platform.type === 'COMMUNICATION_SATELLITE')!.satelliteType = 'UNKNOWN' as never
+    expect(inspectScenarioConfig(invalidSatellite).result.errors).toContainEqual(expect.objectContaining({
+      code: 'SATELLITE_TYPE_INVALID',
+      fieldPath: 'platforms[6].satelliteType',
     }))
   })
 
@@ -1271,6 +1288,16 @@ describe('P2-2 平台与航点字段校验', () => {
       mutate(config)
       expect(inspectScenarioConfig(config).result.errors.map((issue) => issue.fieldPath)).toContain(fieldPath)
     }
+  })
+
+  it('拒绝与场景实体类型不一致的部署域', () => {
+    const config = scenarioDraft().config
+    config.platforms[0]!.category = 'air'
+
+    expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
+      code: 'PLATFORM_CATEGORY_MISMATCH',
+      fieldPath: 'platforms[0].category',
+    }))
   })
 
   it('至少保留一个业务信息节点且支撑实体不计入容量', () => {

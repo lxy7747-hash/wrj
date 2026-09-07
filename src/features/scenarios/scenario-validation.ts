@@ -1,10 +1,12 @@
 import type {
+  DeploymentDomain,
   InformationDemand,
   Jammer,
   JammerUiExtension,
   Link,
   OutputConfig,
   Platform,
+  PlatformType,
   ScenarioIdentity,
   Sensor,
   SensorUiExtension,
@@ -33,6 +35,7 @@ const ENVIRONMENT_KEYS = [
 ] as const
 const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation'] as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
+const OPTIONAL_PLATFORM_KEYS = ['satelliteType'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange'] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
@@ -53,6 +56,28 @@ export const BUSINESS_INFORMATION_NODE_TYPES = [
 ] as const
 export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'] as const
 const PLATFORM_TYPES = [...BUSINESS_INFORMATION_NODE_TYPES, ...SUPPORTING_ENTITY_TYPES] as const
+export const PLATFORM_TYPE_DOMAINS: Record<PlatformType, DeploymentDomain> = {
+  REAR_COMMAND_NODE: 'ground',
+  FORWARD_RELAY_NODE: 'air',
+  GROUND_CLUSTER_COMMAND_NODE: 'ground',
+  AIRBORNE_MISSION_CLUSTER: 'air',
+  COMMUNICATION_SATELLITE: 'space',
+  GROUND_JAMMER_DETECTION_STATION: 'ground',
+}
+export const SATELLITE_TYPES = ['TIANTONG', 'SHENTONG'] as const
+export const INFORMATION_NODE_LIMIT = 50
+export const INFORMATION_NODE_TYPE_LIMITS = {
+  REAR_COMMAND_NODE: 1,
+  FORWARD_RELAY_NODE: 1,
+  GROUND_CLUSTER_COMMAND_NODE: 1,
+  AIRBORNE_MISSION_CLUSTER: 47,
+} as const
+const INFORMATION_NODE_TYPE_LABELS = {
+  REAR_COMMAND_NODE: '后方指挥节点',
+  FORWARD_RELAY_NODE: '高空前出中继节点',
+  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
+  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
+} as const
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] as const
 export const JAMMER_TYPES = ['BARRAGE', 'SPOT'] as const
@@ -453,10 +478,11 @@ function inspectPlatformReferences(
 /**
  * 校验场景配置 1.0 的全部规范字段，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
+ * @param mode 读取允许旧卫星缺少子类型；写入要求明确选择合法子类型。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
  * @remarks 覆盖平台、链路、干扰器、传感器、输出和信息需求，不修改原始配置。
  */
-export function inspectScenarioConfig(value: unknown): ScenarioInspection {
+export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = 'read'): ScenarioInspection {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
   if (!isClosedObject(value, ROOT_KEYS)) {
@@ -514,19 +540,41 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   }
 
   if (Array.isArray(value.platforms)) {
-    const platformIds = collectIds(value.platforms)
+    const platforms = value.platforms
+    const platformIds = collectIds(platforms)
     const linkIds = collectIds(value.links)
     const sensorIds = collectIds(value.sensors)
     const jammerIds = collectIds(value.jammers)
-    const businessNodeCount = value.platforms.filter((platform) => (
+    const businessNodeCount = platforms.filter((platform) => (
       typeof platform === 'object' && platform !== null && isBusinessInformationNodeType((platform as { type?: unknown }).type)
     )).length
-    const missingBusinessTypes = BUSINESS_INFORMATION_NODE_TYPES.filter((type) => !(value.platforms as unknown[]).some((platform) => (
+    const missingBusinessTypes = BUSINESS_INFORMATION_NODE_TYPES.filter((type) => !platforms.some((platform) => (
       typeof platform === 'object' && platform !== null && (platform as { type?: unknown }).type === type
     )))
+    const businessTypeCounts = Object.fromEntries(BUSINESS_INFORMATION_NODE_TYPES.map((type) => [
+      type,
+      platforms.filter((platform) => typeof platform === 'object' && platform !== null && (platform as { type?: unknown }).type === type).length,
+    ])) as Record<(typeof BUSINESS_INFORMATION_NODE_TYPES)[number], number>
 
     if (businessNodeCount === 0) addError(errors, 'MINIMUM_BUSINESS_NODE', '场景至少需要一个业务信息节点。', 'platforms')
-    if (businessNodeCount > 50) addError(errors, 'NODE_LIMIT_EXCEEDED', '业务信息节点不能超过 50 个。', 'platforms')
+    if (businessNodeCount > INFORMATION_NODE_LIMIT) addError(errors, 'NODE_LIMIT_EXCEEDED', '当前场景的信息节点不能超过 50 个。', 'platforms')
+    for (const type of BUSINESS_INFORMATION_NODE_TYPES) {
+      const limit = INFORMATION_NODE_TYPE_LIMITS[type]
+      if (businessTypeCounts[type] > limit) {
+        addError(errors, 'NODE_TYPE_LIMIT_EXCEEDED', `${INFORMATION_NODE_TYPE_LABELS[type]}当前场景不能超过 ${limit} 个。`, 'platforms')
+      }
+    }
+    for (const satelliteType of SATELLITE_TYPES) {
+      const count = platforms.filter((platform) => (
+        typeof platform === 'object' && platform !== null
+        && (platform as { type?: unknown }).type === 'COMMUNICATION_SATELLITE'
+        && (platform as { satelliteType?: unknown }).satelliteType === satelliteType
+      )).length
+      if (count > 1) {
+        const label = satelliteType === 'TIANTONG' ? '天通卫星' : '神通卫星'
+        addError(errors, 'SATELLITE_TYPE_DUPLICATED', `${label}当前场景只能配置 1 个。`, 'platforms')
+      }
+    }
     if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '场景实体 ID 不允许为空或重复。', 'platforms')
     if (missingBusinessTypes.length > 0) {
       warnings.push({
@@ -537,16 +585,30 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
       })
     }
 
-    value.platforms.forEach((platform, index) => {
+    platforms.forEach((platform, index) => {
       const path = `platforms[${index}]`
-      if (!isClosedObject(platform, PLATFORM_KEYS)) {
+      if (!isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS)) {
         addError(errors, 'PLATFORM_SHAPE_INVALID', '场景实体结构不正确。', path)
         return
       }
       if (typeof platform.id !== 'string' || platform.id.trim() === '') addError(errors, 'PLATFORM_ID_INVALID', '场景实体 ID 为必填项。', `${path}.id`)
       if (typeof platform.name !== 'string' || platform.name.trim() === '') addError(errors, 'PLATFORM_NAME_INVALID', '场景实体名称为必填项。', `${path}.name`)
-      if (typeof platform.type !== 'string' || !(PLATFORM_TYPES as readonly string[]).includes(platform.type)) addError(errors, 'PLATFORM_TYPE_INVALID', '场景实体类型不正确。', `${path}.type`)
-      if (typeof platform.category !== 'string' || !(DEPLOYMENT_DOMAINS as readonly string[]).includes(platform.category)) addError(errors, 'PLATFORM_CATEGORY_INVALID', '部署域不正确。', `${path}.category`)
+      const platformTypeValid = typeof platform.type === 'string' && (PLATFORM_TYPES as readonly string[]).includes(platform.type)
+      if (!platformTypeValid) addError(errors, 'PLATFORM_TYPE_INVALID', '场景实体类型不正确。', `${path}.type`)
+      if (platform.type === 'COMMUNICATION_SATELLITE') {
+        // 旧数据读取兼容缺省；写入必须由用户明确指定卫星子类型。
+        if ((mode === 'write' || Object.hasOwn(platform, 'satelliteType')) && !(SATELLITE_TYPES as readonly unknown[]).includes(platform.satelliteType)) {
+          addError(errors, 'SATELLITE_TYPE_INVALID', '通信卫星必须选择天通卫星或神通卫星。', `${path}.satelliteType`)
+        }
+      } else if (Object.hasOwn(platform, 'satelliteType')) {
+        addError(errors, 'SATELLITE_TYPE_NOT_APPLICABLE', '只有通信卫星可以配置卫星类型。', `${path}.satelliteType`)
+      }
+      const platformCategoryValid = typeof platform.category === 'string' && (DEPLOYMENT_DOMAINS as readonly string[]).includes(platform.category)
+      if (!platformCategoryValid) {
+        addError(errors, 'PLATFORM_CATEGORY_INVALID', '部署域不正确。', `${path}.category`)
+      } else if (platformTypeValid && platform.category !== PLATFORM_TYPE_DOMAINS[platform.type as PlatformType]) {
+        addError(errors, 'PLATFORM_CATEGORY_MISMATCH', '部署域必须与场景实体类型一致。', `${path}.category`)
+      }
       inspectPosition(platform.initialPosition, `${path}.initialPosition`, false, errors)
       if (!Array.isArray(platform.waypoints)) {
         addError(errors, 'WAYPOINTS_INVALID', '航点必须是数组。', `${path}.waypoints`)

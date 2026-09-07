@@ -3614,6 +3614,47 @@
           }
         }
       },
+      "PlatformWrite": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Platform"
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "COMMUNICATION_SATELLITE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "satelliteType"
+              ]
+            }
+          }
+        ]
+      },
+      "ScenarioConfigWrite": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ScenarioConfig"
+          },
+          {
+            "properties": {
+              "platforms": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/PlatformWrite"
+                }
+              }
+            }
+          }
+        ]
+      },
       "Platform": {
         "type": "object",
         "additionalProperties": false,
@@ -3647,6 +3688,14 @@
               "COMMUNICATION_SATELLITE",
               "GROUND_JAMMER_DETECTION_STATION"
             ]
+          },
+          "satelliteType": {
+            "type": "string",
+            "enum": [
+              "TIANTONG",
+              "SHENTONG"
+            ],
+            "description": "仅通信卫星使用；旧场景允许缺省。"
           },
           "category": {
             "type": "string",
@@ -3689,7 +3738,142 @@
             },
             "uniqueItems": true
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "REAR_COMMAND_NODE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "ground"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "FORWARD_RELAY_NODE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "air"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "GROUND_CLUSTER_COMMAND_NODE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "ground"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "AIRBORNE_MISSION_CLUSTER"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "air"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "COMMUNICATION_SATELLITE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "space"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "GROUND_JAMMER_DETECTION_STATION"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "ground"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "COMMUNICATION_SATELLITE"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "satelliteType"
+                ]
+              }
+            }
+          }
+        ]
       },
       "Link": {
         "type": "object",
@@ -4070,6 +4254,12 @@
               "GROUND_CLUSTER_COMMAND_NODE",
               "AIRBORNE_MISSION_CLUSTER"
             ],
+            "x-business-information-node-limits": {
+              "REAR_COMMAND_NODE": 1,
+              "FORWARD_RELAY_NODE": 1,
+              "GROUND_CLUSTER_COMMAND_NODE": 1,
+              "AIRBORNE_MISSION_CLUSTER": 47
+            },
             "x-supporting-entity-types-excluded-from-capacity": [
               "COMMUNICATION_SATELLITE",
               "GROUND_JAMMER_DETECTION_STATION"
@@ -5175,7 +5365,7 @@
         ],
         "properties": {
           "config": {
-            "$ref": "#/components/schemas/ScenarioConfig"
+            "$ref": "#/components/schemas/ScenarioConfigWrite"
           },
           "uiExtensions": {
             "$ref": "#/components/schemas/ScenarioUiExtensions"
@@ -6648,7 +6838,7 @@
             "minItems": 1,
             "maxItems": 1,
             "items": {
-              "$ref": "#/components/schemas/ScenarioConfig"
+              "$ref": "#/components/schemas/ScenarioConfigWrite"
             }
           }
         }
@@ -6666,7 +6856,7 @@
             "minLength": 1
           },
           "config": {
-            "$ref": "#/components/schemas/ScenarioConfig"
+            "$ref": "#/components/schemas/ScenarioConfigWrite"
           }
         }
       },
@@ -7676,7 +7866,7 @@
         }
       },
       "PostapiV1ScenariosRequest": {
-        "$ref": "#/components/schemas/ScenarioConfig"
+        "$ref": "#/components/schemas/ScenarioConfigWrite"
       },
       "PostapiV1ScenariosResponse": {
         "type": "object",

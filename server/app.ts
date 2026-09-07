@@ -1222,7 +1222,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: draft.message, fieldPath: 'scenarioId' }))
       return
     }
-    const validation = inspectScenarioConfig(draft.data.config).result
+    const validation = inspectScenarioConfig(draft.data.config, 'write').result
     if (validation.errors.length > 0) {
       const issue = validation.errors[0]!
       auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)

@@ -3157,8 +3157,184 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'PlatformWrite': {
+    'allOf': [
+      {
+        '$ref': '#/components/schemas/Platform'
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'COMMUNICATION_SATELLITE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'required': [
+            'satelliteType'
+          ]
+        }
+      }
+    ]
+  },
+  'ScenarioConfigWrite': {
+    'allOf': [
+      {
+        '$ref': '#/components/schemas/ScenarioConfig'
+      },
+      {
+        'properties': {
+          'platforms': {
+            'items': {
+              '$ref': '#/components/schemas/PlatformWrite'
+            },
+            'type': 'array'
+          }
+        }
+      }
+    ]
+  },
   'Platform': {
     'additionalProperties': false,
+    'allOf': [
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'REAR_COMMAND_NODE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'ground'
+            }
+          }
+        }
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'FORWARD_RELAY_NODE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'air'
+            }
+          }
+        }
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'GROUND_CLUSTER_COMMAND_NODE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'ground'
+            }
+          }
+        }
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'AIRBORNE_MISSION_CLUSTER'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'air'
+            }
+          }
+        }
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'COMMUNICATION_SATELLITE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'space'
+            }
+          }
+        }
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'GROUND_JAMMER_DETECTION_STATION'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'ground'
+            }
+          }
+        }
+      },
+      {
+        'else': {
+          'not': {
+            'required': [
+              'satelliteType'
+            ]
+          }
+        },
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'COMMUNICATION_SATELLITE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        }
+      }
+    ],
     'properties': {
       'category': {
         'enum': [
@@ -3193,6 +3369,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'name': {
         'minLength': 1,
+        'type': 'string'
+      },
+      'satelliteType': {
+        'description': '仅通信卫星使用；旧场景允许缺省。',
+        'enum': [
+          'TIANTONG',
+          'SHENTONG'
+        ],
         'type': 'string'
       },
       'sensorIds': {
@@ -3677,7 +3861,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'PostapiV1ScenariosRequest': {
-    '$ref': '#/components/schemas/ScenarioConfig'
+    '$ref': '#/components/schemas/ScenarioConfigWrite'
   },
   'PostapiV1ScenariosResponse': {
     'additionalProperties': false,
@@ -4716,6 +4900,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'GROUND_CLUSTER_COMMAND_NODE',
           'AIRBORNE_MISSION_CLUSTER'
         ],
+        'x-business-information-node-limits': {
+          'AIRBORNE_MISSION_CLUSTER': 47,
+          'FORWARD_RELAY_NODE': 1,
+          'GROUND_CLUSTER_COMMAND_NODE': 1,
+          'REAR_COMMAND_NODE': 1
+        },
         'x-max-business-information-nodes': 50,
         'x-min-business-information-nodes': 1,
         'x-supporting-entity-types-excluded-from-capacity': [
@@ -4880,7 +5070,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'config': {
-        '$ref': '#/components/schemas/ScenarioConfig'
+        '$ref': '#/components/schemas/ScenarioConfigWrite'
       },
       'uiExtensions': {
         '$ref': '#/components/schemas/ScenarioUiExtensions'
@@ -4940,7 +5130,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'properties': {
       'items': {
         'items': {
-          '$ref': '#/components/schemas/ScenarioConfig'
+          '$ref': '#/components/schemas/ScenarioConfigWrite'
         },
         'maxItems': 1,
         'minItems': 1,
@@ -5703,7 +5893,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'config': {
-        '$ref': '#/components/schemas/ScenarioConfig'
+        '$ref': '#/components/schemas/ScenarioConfigWrite'
       },
       'name': {
         'minLength': 1,

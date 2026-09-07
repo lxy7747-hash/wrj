@@ -19,8 +19,8 @@
       <el-table-column prop="readOnly" label="只读" />
       <el-table-column label="操作" width="120">
         <template #default="{ row }">
-          <el-button type="text" @click="openView(row)">查看</el-button>
-          <el-button type="text" @click="openEdit(row)">编辑</el-button>
+          <el-button link @click="openView(row)">查看</el-button>
+          <el-button link @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
     </el-table>

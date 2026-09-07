@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-05.1",
+  "fixtureVersion": "2026-09-07.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -279,6 +279,7 @@
         "id": "SAT-01",
         "name": "通信卫星",
         "type": "COMMUNICATION_SATELLITE",
+        "satelliteType": "TIANTONG",
         "category": "space",
         "initialPosition": {
           "longitude": 121.25,

@@ -1,7 +1,61 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ApiSuccess, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 
 const ORIGIN = 'http://127.0.0.1:5173'
+
+describe('卫星子类型写入边界', () => {
+  it('旧卫星可读取，但即使完成警告确认也不能绕过子类型校验生成脚本', async () => {
+    const { baseUrl, server } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const original = await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)
+    const legacy = structuredClone((original.body as ApiSuccess<ScenarioDraft>).data)
+    const index = legacy.config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
+    delete legacy.config.platforms[index]!.satelliteType
+    // 模拟历史存储读取，不能通过已经收紧的 PUT 人为写入非法新数据。
+    const modulePath = '../../server/scenarios/' + 'projection.js'
+    const { ScenarioProjection } = await import(modulePath) as {
+      ScenarioProjection: { prototype: { get(scenarioId: string): unknown } }
+    }
+    const read = vi.spyOn(ScenarioProjection.prototype, 'get').mockReturnValue({ ok: true, data: legacy })
+    try {
+      const loaded = await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)
+      expect((loaded.body as ApiSuccess<ScenarioDraft>).data).toEqual(legacy)
+      const confirmation = await request(baseUrl).post('/api/v1/confirmations').set(headers)
+        .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' }).expect(201)
+      const { confirmationId } = (confirmation.body as ApiSuccess<ConfirmationContext>).data
+      await request(baseUrl).post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+      const preview = await request(baseUrl).post('/api/v1/scripts/preview').set(headers)
+        .send({ scenarioId: 'SCN-001', warningConfirmationId: confirmationId }).expect(422)
+      expect(preview.body).toMatchObject({ ok: false, error: {
+        code: 'VALIDATION_FAILED', fieldPath: `platforms[${index}].satelliteType`,
+        message: '通信卫星必须选择天通卫星或神通卫星。',
+      } })
+      expect(preview.body).not.toHaveProperty('data')
+      expect(legacy.config.platforms[index]).not.toHaveProperty('satelliteType')
+      expect(server.auditSnapshot()).toContainEqual(expect.objectContaining({ action: 'SCRIPT_PREVIEW', result: 'ERROR' }))
+    } finally {
+      read.mockRestore()
+    }
+  })
+
+  it.each([undefined, 'UNKNOWN'])('PUT、导入和模板维护拒绝子类型 %s 且不改变服务端草稿', async (satelliteType) => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const read = async () => (await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>
+    const original = (await read()).data
+    const config = structuredClone(original.config)
+    const index = config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
+    delete config.platforms[index]!.satelliteType
+    if (satelliteType !== undefined) config.platforms[index]!.satelliteType = satelliteType as never
+    const put = await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    expect(put.body).toMatchObject({ error: { fieldPath: `platforms[${index}].satelliteType` } })
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
+    expect(imported.body).toMatchObject({ error: { fieldPath: `items[0].platforms[${index}].satelliteType` } })
+    await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '非法卫星模板', config }).expect(422)
+    await request(baseUrl).put('/api/v1/templates/TPL-SCN-001').set(headers).send({ name: '非法卫星模板', config }).expect(422)
+    expect((await read()).data).toEqual(original)
+  })
+})
 
 describe('P8 元数据与确定性重置', () => {
   const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
@@ -630,6 +684,7 @@ describe('P0 deterministic mock server', () => {
     })
     const reloaded = await load().expect(200)
     expect((reloaded.body as { data: ScenarioDraft }).data.config).toEqual(changed)
+    expect((reloaded.body as { data: ScenarioDraft }).data.config.platforms).toEqual(original.config.platforms)
 
     const invalid = structuredClone(changed)
     invalid.scenario.environment.humidityPercent = 101

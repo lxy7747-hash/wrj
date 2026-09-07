@@ -136,6 +136,26 @@ describe('fixture projection', () => {
     expect(projection.reset()).toEqual(expected)
   })
 
+  it.each([undefined, 'UNKNOWN', '', 'TIANTONG', 'SHENTONG'])('场景和模板写入验证卫星子类型 %s 且拒绝时不修改草稿', (satelliteType) => {
+    const scenario = new ScenarioProjection()
+    const original = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
+    const config = structuredClone(original.data.config)
+    const index = config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
+    delete config.platforms[index]!.satelliteType
+    if (satelliteType !== undefined) config.platforms[index]!.satelliteType = satelliteType as never
+    const valid = satelliteType === 'TIANTONG' || satelliteType === 'SHENTONG'
+    const templates = new TemplateProjection()
+    for (const [result, fieldPath] of [
+      [scenario.save('SCN-001', { config, uiExtensions: original.data.uiExtensions }), `platforms[${index}].satelliteType`],
+      [scenario.importSnapshots({ items: [config] }), `items[0].platforms[${index}].satelliteType`],
+      [scenario.copyTemplate(config, '卫星模板应用'), `platforms[${index}].satelliteType`],
+      [templates.create({ name: '卫星模板新增', config }), `platforms[${index}].satelliteType`],
+    ] as const) {
+      expect(result).toMatchObject(valid ? { ok: true } : { ok: false, status: 422, fieldPath })
+    }
+    if (!valid) expect(scenario.get('SCN-001')).toEqual(original)
+  })
+
   it('模板复制在共享场景投影层拒绝空名称、非法配置和运行锁', () => {
     const config = loadFixtureProjection().scenario
     const scenario = new ScenarioProjection()

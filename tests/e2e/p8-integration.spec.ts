@@ -38,7 +38,9 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
     } else if (path === '/traceability') {
       await expect(page.getByTestId('traceability-table').locator('.el-table__row')).toHaveCount(36)
     } else if (path === '/admin/data-exchange') {
+      await page.getByTestId('open-exchange-tools').click()
       await expect(page.getByTestId('interface-contract-table').locator('.interface-item')).toHaveCount(7)
+      await page.getByRole('dialog', { name: '接口工具' }).getByRole('button', { name: '关闭此对话框' }).click()
     } else if (path === '/batches') {
       await expect(page.getByTestId('batch-run-table').locator('.el-table__row')).toHaveCount(12)
     } else if (path === '/situation') {

@@ -48,6 +48,44 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
+  it('约束实体类型与部署域及卫星字段，同时兼容旧卫星读取', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile({ ...schema, $ref: '#/$defs/Platform' })
+    const source = (fixtures as DeterministicFixtureSet).scenario.platforms[0]!
+    const domains = { REAR_COMMAND_NODE: 'ground', FORWARD_RELAY_NODE: 'air', GROUND_CLUSTER_COMMAND_NODE: 'ground', AIRBORNE_MISSION_CLUSTER: 'air', COMMUNICATION_SATELLITE: 'space', GROUND_JAMMER_DETECTION_STATION: 'ground' }
+    for (const [type, category] of Object.entries(domains)) {
+      const platform = { ...source, type, category }
+      expect(validate(platform)).toBe(true)
+      expect(validate({ ...platform, category: category === 'ground' ? 'air' : 'ground' })).toBe(false)
+      if (type !== 'COMMUNICATION_SATELLITE') expect(validate({ ...platform, satelliteType: 'TIANTONG' })).toBe(false)
+    }
+    for (const satelliteType of ['TIANTONG', 'SHENTONG', '', 'UNKNOWN']) {
+      expect(validate({ ...source, type: 'COMMUNICATION_SATELLITE', category: 'space', satelliteType })).toBe(['TIANTONG', 'SHENTONG'].includes(satelliteType))
+    }
+  })
+
+  it('新建、PUT、导入和模板写入合同要求显式卫星子类型', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    for (const name of ['PostapiV1ScenariosRequest', 'ScenarioDraftUpdate', 'ScenarioImportRequest', 'TemplateMutationRequest']) {
+      const validate = ajv.compile({ ...schema, $ref: `#/$defs/${name}` })
+      for (const satelliteType of [undefined, '', 'UNKNOWN', 'TIANTONG', 'SHENTONG']) {
+        const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
+        const satellite = config.platforms.find(({ type }) => type === 'COMMUNICATION_SATELLITE')!
+        delete satellite.satelliteType
+        if (satelliteType !== undefined) satellite.satelliteType = satelliteType as never
+        const request = name === 'PostapiV1ScenariosRequest' ? config
+          : name === 'ScenarioImportRequest' ? { items: [config] }
+            : name === 'TemplateMutationRequest' ? { config, name: '卫星合同测试' }
+              : { config, uiExtensions: { jammers: [], sensors: [] } }
+        expect(validate(request), `${name}: ${satelliteType}`).toBe(satelliteType === 'TIANTONG' || satelliteType === 'SHENTONG')
+      }
+    }
+  })
+
   it('rejects dot path segments as master data identifiers', () => {
     for (const dataId of ['.', '..']) {
       const fixture = structuredClone(fixtures) as DeterministicFixtureSet
@@ -81,7 +119,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-05.1')
+    expect(fixture.fixtureVersion).toBe('2026-09-07.1')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)

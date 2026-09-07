@@ -365,7 +365,7 @@ export const useScenarioStore = defineStore('scenario', {
       }
 
       this.panelState = 'VALIDATING'
-      this.validation = inspectScenarioConfig(this.draft.config).result
+      this.validation = inspectScenarioConfig(this.draft.config, 'write').result
       try {
         this.panelState = 'EXECUTING'
         const scenarioId = this.draft.config.scenario.id
@@ -430,7 +430,7 @@ export const useScenarioStore = defineStore('scenario', {
       }
 
       this.panelState = 'VALIDATING'
-      const inspection = inspectScenarioConfig(this.draft.config)
+      const inspection = inspectScenarioConfig(this.draft.config, 'write')
       this.validation = inspection.result
       if (!inspection.result.valid || inspection.jammers === undefined) {
         const issue = inspection.result.errors[0]

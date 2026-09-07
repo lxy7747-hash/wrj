@@ -170,7 +170,7 @@ export class ScenarioProjection {
     const candidate = structuredClone(config)
     candidate.scenario.id = this.draft.config.scenario.id
     candidate.scenario.name = name.trim()
-    const inspection = inspectScenarioConfig(candidate)
+    const inspection = inspectScenarioConfig(candidate, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
       return {
@@ -211,7 +211,7 @@ export class ScenarioProjection {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '场景校验请求结构不正确。' }
     }
 
-    const inspection = inspectScenarioConfig((value as unknown as ScenarioValidationRequest).config)
+    const inspection = inspectScenarioConfig((value as unknown as ScenarioValidationRequest).config, 'write')
     if (inspection.result.valid && inspection.identity?.id !== scenarioId) {
       return {
         ok: true,
@@ -251,7 +251,7 @@ export class ScenarioProjection {
     }
     const update = value as unknown as ScenarioDraftUpdate
     const candidate = withDerivedPlatformAssociations(update.config)
-    const inspection = inspectScenarioConfig(candidate)
+    const inspection = inspectScenarioConfig(candidate, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
       return {
@@ -307,7 +307,7 @@ export class ScenarioProjection {
     }
 
     const item = (value as { items: unknown[] }).items[0]
-    const inspection = inspectScenarioConfig(item)
+    const inspection = inspectScenarioConfig(item, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }

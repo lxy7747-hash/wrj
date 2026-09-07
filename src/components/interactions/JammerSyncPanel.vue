@@ -12,7 +12,7 @@ const selectedJammerId = ref('')
 const parameterSet = reactive<JammingParameterSet>({
   version: 5,
   effectiveFrameId: 'F-00042',
-  parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 0, duration: 1470 },
+  parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 0, duration: 1 },
 })
 const jammers = computed(() => scenarioStore.draft?.config.jammers ?? [])
 const selectedJammer = computed(() => jammers.value.find((item) => item.id === selectedJammerId.value) ?? null)
@@ -56,7 +56,8 @@ function applyDefaults(jammerId: string): void {
     bandwidth: evidence?.jammerId === jammerId ? evidence.bandwidth : jammer.bandwidth,
     power: evidence?.jammerId === jammerId ? evidence.power : jammer.defaultPower,
     direction: extension.direction,
-    duration: evidence?.jammerId === jammerId ? evidence.duration : extension.duration,
+    // 历史固定帧的持续时间不属于当前场景命令，使用当前设备配置。
+    duration: extension.duration,
   })
 }
 

@@ -144,7 +144,7 @@ describe('P4-2 RF 干扰机控制', () => {
       bandwidth: 40,
       power: 72,
       direction: 360,
-      duration: 1470,
+      duration: 120,
       executionStatus: 'SUCCESS',
       effectiveFrameId: 'F-00042',
       reason: '任务手动启扰',
@@ -160,7 +160,8 @@ describe('P4-2 RF 干扰机控制', () => {
 
     expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
     expect(wrapper.text()).toContain('任务手动启扰，生效帧 F-00042。')
-    expect(wrapper.text()).toContain('72 W / 2200 MHz / 1470 s')
+    expect(wrapper.text()).toContain('72 W / 2200 MHz / 120 s')
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ duration: 120 })
   })
 
   it('覆盖六态并优先显示加载错误且不展示其他设备的旧结果', async () => {

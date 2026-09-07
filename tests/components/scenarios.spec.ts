@@ -6,7 +6,7 @@ import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
-import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
+import { inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
@@ -795,13 +795,14 @@ describe('P2-1 场景管理页面', () => {
     const originalCount = scenario.draft!.config.platforms.length
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
-    expect(wrapper.text()).toContain('业务信息节点 6 / 50')
+    expect(wrapper.text()).toContain('信息节点 6 / 50')
+    expect(wrapper.text()).toContain('节点类型 4 / 4')
     expect(wrapper.text()).toContain('支撑实体 2')
     await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
     await nextTick()
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
     const nameInput = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
-    nameInput.value = '新增空中无人作业节点'
+    nameInput.value = '新增空中无人作业集群'
     nameInput.dispatchEvent(new Event('input', { bubbles: true }))
     document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
     await flushPromises()
@@ -809,10 +810,12 @@ describe('P2-1 场景管理页面', () => {
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await nextTick()
 
+    expect(document.body.textContent).toContain('场景实体已新增，保存草稿后生效。')
+    expect(wrapper.find('[aria-label="平台与航点"] .platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount + 1)
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
-      name: '新增空中无人作业节点',
-      type: 'REAR_COMMAND_NODE',
+      name: '新增空中无人作业集群',
+      type: 'AIRBORNE_MISSION_CLUSTER',
       waypoints: [{ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 }],
     })
     expect(scenario.dirty).toBe(true)
@@ -902,7 +905,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-platforms').trigger('click')
     await nextTick()
-    await wrapper.get('[data-testid="delete-platform-8"]').trigger('click')
+    await wrapper.get(`[data-testid="delete-platform-${currentDraft.config.platforms.length - 1}"]`).trigger('click')
     await nextTick()
     expect(scenario.draft?.config.platforms.some((platform) => platform.id === 'SUP-UNUSED')).toBe(false)
 
@@ -919,7 +922,99 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
 
     expect(scenario.draft?.config.platforms).toHaveLength(50)
-    expect(wrapper.text()).toContain('业务信息节点已达 50 个，不能继续新增。')
+    expect(document.body.textContent).toContain('信息节点已达 50 个，不能继续新增。')
+  })
+
+  it('按剩余数量批量新增空中无人作业集群并阻止类型超额', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+
+    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await flushPromises()
+    const quantity = wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find((component) => component.attributes('data-testid') === 'platform-quantity')!
+    expect(quantity.props('max')).toBe(44)
+    quantity.vm.$emit('update:modelValue', 44)
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+
+    const businessNodes = scenario.draft!.config.platforms.filter((platform) => isBusinessInformationNodeType(platform.type))
+    expect(businessNodes).toHaveLength(50)
+    expect(businessNodes.filter((platform) => platform.type === 'AIRBORNE_MISSION_CLUSTER')).toHaveLength(47)
+    expect(new Set(scenario.draft!.config.platforms.map((platform) => platform.id)).size).toBe(scenario.draft!.config.platforms.length)
+    expect(wrapper.text()).toContain('信息节点 50 / 50')
+
+    await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
+    await flushPromises()
+    const typeSelect = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-type')!
+    typeSelect.vm.$emit('update:modelValue', 'REAR_COMMAND_NODE')
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('后方指挥节点当前场景不能超过 1 个')
+    wrapper.unmount()
+  })
+
+  it('兼容读取旧卫星但编辑时必须主动选择子类型才能确认', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const legacy = draft()
+    const index = legacy.config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
+    delete legacy.config.platforms[index]!.satelliteType
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(legacy)))
+    const scenario = useScenarioStore()
+    await expect(scenario.loadScenario()).resolves.toBe(true)
+    expect(inspectScenarioConfig(legacy.config).result.valid).toBe(true)
+    expect(inspectScenarioConfig(legacy.config, 'write').result.errors).toContainEqual(expect.objectContaining({ fieldPath: `platforms[${index}].satelliteType` }))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('[data-testid="workflow-config"]').trigger('click')
+    await wrapper.get('#tab-platforms').trigger('click')
+    await wrapper.get(`[data-testid="edit-platform-${index}"]`).trigger('click')
+    await flushPromises()
+    const satellite = wrapper.findAllComponents({ name: 'ElSelect' }).find((component) => component.attributes('data-testid') === 'platform-satellite-type')!
+    expect(satellite.props('modelValue')).toBeUndefined()
+    expect(scenario.draft!.config.platforms[index]!.satelliteType).toBeUndefined()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('请选择天通卫星或神通卫星。')
+    expect(scenario.draft!.config.platforms[index]!.satelliteType).toBeUndefined()
+    satellite.vm.$emit('update:modelValue', 'SHENTONG')
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config.platforms[index]).toMatchObject({ satelliteType: 'SHENTONG', category: 'space' })
+  })
+
+  it('在支撑实体弹框选择天通或神通卫星并阻止同类重复', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+
+    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await flushPromises()
+    const satelliteSelect = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-satellite-type')!
+    expect(satelliteSelect.props('modelValue')).toBe('SHENTONG')
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
+      type: 'COMMUNICATION_SATELLITE',
+      satelliteType: 'SHENTONG',
+    })
+    expect(wrapper.text()).toContain('神通卫星')
+
+    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('神通卫星当前场景只能配置 1 个')
+    wrapper.unmount()
   })
 
   it('编辑平台、删除航点并覆盖全部对话框字段绑定', async () => {
@@ -948,10 +1043,14 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
     await flushPromises()
-    const selects = wrapper.findAllComponents({ name: 'ElSelect' }).filter((select) => String(select.attributes('data-testid') ?? '').startsWith('platform-'))
-    expect(selects).toHaveLength(2)
-    selects[0]!.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
-    selects[1]!.vm.$emit('update:modelValue', 'ground')
+    const typeSelect = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-type')!
+    typeSelect.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
+    typeSelect.vm.$emit('change', 'GROUND_JAMMER_DETECTION_STATION')
+    await nextTick()
+    const categoryInput = document.querySelector<HTMLInputElement>('[data-testid="platform-category"]')!
+    expect(categoryInput.value).toBe('地面')
+    expect(categoryInput.readOnly).toBe(true)
     const dialogNumbers = wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(-3)
     dialogNumbers[0]!.vm.$emit('update:modelValue', 119)
     dialogNumbers[1]!.vm.$emit('update:modelValue', 24)

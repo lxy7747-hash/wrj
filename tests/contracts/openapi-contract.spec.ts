@@ -98,7 +98,7 @@ describe('OpenAPI contract audit', () => {
       additionalProperties: false,
       required: ['config', 'uiExtensions'],
       properties: {
-        config: { $ref: '#/components/schemas/ScenarioConfig' },
+        config: { $ref: '#/components/schemas/ScenarioConfigWrite' },
         uiExtensions: { $ref: '#/components/schemas/ScenarioUiExtensions' },
       },
     })
