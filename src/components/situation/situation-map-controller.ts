@@ -4,7 +4,8 @@ import 'leaflet.vectorgrid'
 
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { PlatformStatus, TelemetryFrame } from '../../contracts/domain-models'
+import type { TelemetryFrame } from '../../contracts/domain-models'
+import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
 import {
   LINK_TYPE_LABELS,
@@ -21,7 +22,9 @@ export interface SituationMapFocusTarget {
 
 export interface SituationMapControllerOptions {
   container: HTMLElement
-  frame: TelemetryFrame
+  frame: TelemetryFrame | null
+  /** 真实文件节点，无完整遥测帧时使用；后续位置通过 setNodes 更新。 */
+  initialNodes?: SituationMapNode[]
   links: SituationLinkView[]
   selectedNodeId: string
   onSelectNode: (platformId: string) => void
@@ -44,7 +47,13 @@ export interface SituationMapController {
    * @returns 无返回值。
    * @sideeffect 重建全部业务图层并保留仍有效的选中目标。
    */
-  setFrame: (frame: TelemetryFrame) => void
+  setFrame: (frame: TelemetryFrame | null) => void
+
+  /**
+   * 同步真实文件的节点位置；不改变地图中心、缩放、图层开关及有效选中项。
+   * @param nodes 初始化节点与本轮追加位置合并后的完整集合。
+   */
+  setNodes: (nodes: SituationMapNode[]) => void
 
   /**
    * 更新当前选中节点。
@@ -116,7 +125,7 @@ export interface SituationMapController {
   destroy: () => void
 }
 
-type SituationPlatform = PlatformStatus
+type SituationPlatform = SituationMapNode
 
 interface VectorTilePathOptions extends L.PathOptions {
   radius?: number
@@ -355,6 +364,8 @@ export function createSituationMapController(options: SituationMapControllerOpti
   })
   let currentLinks = [...options.links]
   let currentFrame = options.frame
+  let fileNodes = options.initialNodes ?? []
+  let currentNodes = currentFrame?.platforms ?? fileNodes
   let selectedNodeId = options.selectedNodeId
   let focusedTarget: SituationMapFocusTarget | null = null
   let currentTheme: MapTheme = MAP_CONFIG.defaults.theme
@@ -370,7 +381,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     nodes: true,
     links: true,
     interference: true,
-    grid: true,
+    grid: MAP_CONFIG.defaults.gridVisible,
   }
 
   /**
@@ -404,24 +415,29 @@ export function createSituationMapController(options: SituationMapControllerOpti
     if (focusedTarget?.kind === 'link') highlightedNodeId = ''
     if (focusedTarget?.kind === 'node') highlightedNodeId = focusedTarget.targetId
     if (focusedTarget?.kind === 'interference') {
-      highlightedNodeId = currentFrame.platforms.find((platform) => (
+      highlightedNodeId = currentFrame?.platforms.find((platform) => (
         platform.jammers.some((jammer) => jammer.jammerId === focusedTarget?.targetId)
       ))?.platformId ?? selectedNodeId
     }
 
-    renderInterference(
-      layerGroups.interference,
-      currentFrame,
-      focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '',
-    )
-    renderLinks(
-      layerGroups.links,
-      currentFrame,
-      currentLinks,
-      focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
-      handleMapLinkSelect,
-    )
-    renderNodes(layerGroups.nodes, currentFrame, highlightedNodeId, handleMapNodeSelect)
+    if (currentFrame) {
+      renderInterference(
+        layerGroups.interference,
+        currentFrame,
+        focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '',
+      )
+      renderLinks(
+        layerGroups.links,
+        currentFrame,
+        currentLinks,
+        focusedTarget?.kind === 'link' ? focusedTarget.targetId : '',
+        handleMapLinkSelect,
+      )
+    } else {
+      layerGroups.links.clearLayers()
+      layerGroups.interference.clearLayers()
+    }
+    renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
   }
 
   const leaflet = L as LeafletWithVectorGrid
@@ -430,6 +446,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   offlineLabelPane.style.pointerEvents = 'none'
 
   const vectorGrid = leaflet.vectorGrid.protobuf(MAP_CONFIG.resources.vector.tileUrl, {
+    bounds: L.latLngBounds([...MAP_CONFIG.resources.vector.bounds[0]], [...MAP_CONFIG.resources.vector.bounds[1]]),
     rendererFactory: leaflet.canvas.tile,
     vectorTileLayerStyles: createVectorTileStyles(currentTheme),
     maxNativeZoom: MAP_CONFIG.resources.vector.maxNativeZoom,
@@ -442,6 +459,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   const offlineLabelLayer = createOfflineVectorLabelLayer(currentTheme)
   offlineLabelLayer.addTo(map)
   const satelliteLayer = L.tileLayer(MAP_CONFIG.resources.satellite.tileUrl, {
+    bounds: L.latLngBounds([...MAP_CONFIG.resources.satellite.bounds[0]], [...MAP_CONFIG.resources.satellite.bounds[1]]),
     minZoom: MAP_CONFIG.zoom.min,
     maxNativeZoom: MAP_CONFIG.resources.satellite.maxNativeZoom,
     maxZoom: MAP_CONFIG.zoom.max,
@@ -453,7 +471,9 @@ export function createSituationMapController(options: SituationMapControllerOpti
   renderBusinessLayers()
 
   const layerOrder: MapLayer[] = ['grid', 'interference', 'links', 'nodes']
-  layerOrder.forEach((layer) => layerGroups[layer].addTo(map as L.Map))
+  layerOrder.forEach((layer) => {
+    if (layerVisibility[layer]) layerGroups[layer].addTo(map as L.Map)
+  })
 
   const handleZoomEnd = (): void => {
     if (map) options.onZoomChange(map.getZoom())
@@ -479,6 +499,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setLinks(links): void {
       if (!map) return
       currentLinks = [...links]
+      if (!currentFrame) return
       renderLinks(
         layerGroups.links,
         currentFrame,
@@ -491,8 +512,21 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setFrame(frame): void {
       if (!map) return
       currentFrame = frame
-      if (!currentFrame.platforms.some((platform) => platform.platformId === selectedNodeId)) {
-        selectedNodeId = currentFrame.platforms[0]?.platformId ?? ''
+      currentNodes = frame?.platforms ?? fileNodes
+      if (!currentNodes.some((platform) => platform.platformId === selectedNodeId)) {
+        selectedNodeId = currentNodes[0]?.platformId ?? ''
+      }
+      renderBusinessLayers()
+    },
+
+    setNodes(nodes): void {
+      if (!map) return
+      fileNodes = nodes
+      if (currentFrame) return
+      currentNodes = nodes
+      if (!nodes.some((node) => node.platformId === selectedNodeId)) {
+        selectedNodeId = nodes[0]?.platformId ?? ''
+        focusedTarget = null
       }
       renderBusinessLayers()
     },
@@ -510,7 +544,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       const animation = { animate: true, duration: 0.45 }
 
       if (target.kind === 'node') {
-        const platform = currentFrame.platforms.find(
+        const platform = currentNodes.find(
           (candidate) => candidate.platformId === target.targetId,
         )
         if (platform) {
@@ -522,6 +556,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         return
       }
 
+      if (!currentFrame) return
       if (target.kind === 'link') {
         const link = currentLinks.find((candidate) => candidate.linkId === target.targetId)
         const points = link ? sampleLinkCurve(currentFrame, link) : []
@@ -711,6 +746,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   const id = document.createElement('span')
   id.className = 'situation-map-node__id'
   id.textContent = compact ? platform.platformId.replace('AIR-', 'U') : platform.platformId
+  if (!compact && platform.name === platform.platformId) id.style.display = 'none'
   id.style.color = '#7f9aad'
   id.style.fontFamily = 'Consolas, monospace'
   id.style.fontSize = '12px'
@@ -724,6 +760,7 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 /**
  * 重建固定帧节点图层。
  * @param group 节点专用图层组。
+ * @param nodes 当前数据源提供的位置节点，不要求完整遥测指标。
  * @param selectedNodeId 当前选中的平台标识。
  * @param onSelectNode 节点点击或键盘确认时的回调。
  * @returns 无返回值。
@@ -731,19 +768,19 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
  */
 function renderNodes(
   group: L.LayerGroup,
-  frame: TelemetryFrame,
+  nodes: SituationMapNode[],
   selectedNodeId: string,
   onSelectNode: (platformId: string) => void,
 ): void {
   group.clearLayers()
 
-  frame.platforms.forEach((platform) => {
+  nodes.forEach((platform) => {
     const selected = platform.platformId === selectedNodeId
     const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
     const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
     const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
     const tooltip = document.createElement('span')
-    tooltip.textContent = `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type]}`
+    tooltip.textContent = `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type}`
 
     const marker = L.marker(pointForPlatform(platform), {
       icon: L.divIcon({

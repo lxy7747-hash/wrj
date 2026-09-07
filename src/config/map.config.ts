@@ -12,6 +12,8 @@ export const MAP_CONFIG = {
   /** 矢量/卫星底图共用 Leaflet 瓦片模板，{z}/{x}/{y} 分别由 Leaflet 替换为缩放级别和瓦片横、纵坐标。 */
   resources: {
     vector: {
+      /** 资源 TileJSON 中的西南、东北边界，每点为 [纬度, 经度]；范围外不请求不存在的瓦片。 */
+      bounds: [[7.197594, 71.61502], [54.011569, 135.677601]],
       tileUrl: 'http://127.0.0.1:4174/tiles/china-taiwan-260823/{z}/{x}/{y}',
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -19,6 +21,8 @@ export const MAP_CONFIG = {
       maxNativeZoom: 14,
     },
     satellite: {
+      /** 卫星包 TileJSON 覆盖范围；坐标顺序为 [纬度, 经度]，与矢量范围独立。 */
+      bounds: [[-66.530768, -0.043945], [66.530768, 157.543945]],
       tileUrl: 'http://127.0.0.1:4174/tiles/taiwan-strait-satellite/{z}/{x}/{y}',
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: 'VersaTiles - Satellite + Orthophotos',
@@ -31,10 +35,12 @@ export const MAP_CONFIG = {
     theme: 'light',
     basemap: 'vector',
     zoom: 10,
+    /** 是否默认显示经纬网，关闭后仍可通过图层按钮手动开启。 */
+    gridVisible: false,
   },
   /** Leaflet 允许的最小/最大缩放级别，以及滚轮等交互吸附到的缩放步长。 */
   zoom: {
-    min: 4,
+    min: 1,
     max: 14,
     snap: 0.25,
   },

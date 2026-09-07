@@ -19,6 +19,11 @@
     "playwright.config.ts",
     "scripts/**/*.ts",
     "server/**/*.ts",
+    "src/features/data-exchange/afsim-event-log.ts",
+    "src/features/situation/initial-nodes.ts",
+    "src/features/situation/position-updates.ts",
+    "src/features/replays/local-replay.ts",
+    "src/features/data-exchange/csv-contract.ts",
     "src/features/scenarios/scenario-validation.ts",
     "src/features/admin/admin-contract.ts"
   ]

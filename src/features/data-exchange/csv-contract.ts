@@ -35,7 +35,7 @@ const OPTIONAL_EVENT_FIELDS = new Set(['TargetPlatform', 'Power', 'Frequency', '
  * @returns 单元格列表；双引号未闭合时返回 `undefined`。
  * @remarks ponytail: 当前合同不允许字段内换行；出现多行字段时再替换为流式 RFC 4180 解析器。
  */
-function parseCsvLine(line: string): string[] | undefined {
+export function parseCsvLine(line: string): string[] | undefined {
   const cells: string[] = []
   let cell = ''
   let quoted = false

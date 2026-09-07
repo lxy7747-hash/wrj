@@ -441,7 +441,7 @@ test('操作员可使用当前菜单和隐藏页面且禁止越权访问', async
     await visitWorkspaceRoute(page, route)
   }
   await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('账号管理')
-  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('系统/操作员')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem', { name: '数据交换与接口', exact: true })).toBeVisible()
 
   await page.evaluate(() => {
     window.history.pushState({}, '', '/admin')
@@ -461,6 +461,10 @@ test('P5 OPERATOR validates data exchange and seven interface contracts', async 
   await loginAs(page, 'operator')
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
   await page.waitForURL('**/admin/data-exchange')
+
+  await expect(page.getByTestId('exchange-monitor')).toBeVisible()
+  await expect(page.locator('.monitor-status')).toHaveCount(6)
+  await page.getByTestId('open-exchange-tools').click()
 
   const csvCard = page.getByTestId('csv-contract-card')
   await expect(csvCard).toBeVisible()
@@ -849,6 +853,8 @@ test.describe('P2-1 scenario business loop', () => {
 
     await name.fill('')
     await page.getByTestId('save-scenario').click()
+    await expect(page.getByTestId('validation-panel')).toBeVisible()
+    await page.getByTestId('locate-validation-issue-0').click()
     await expect(nameError).toBeVisible()
     expect(putBodies).toEqual([])
 
@@ -1223,7 +1229,7 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   const validationPanel = page.getByTestId('validation-panel')
   await expect(validationPanel).toContainText('当前雨衰值未匹配设备默认值，生成脚本前需要确认。')
 
-  await page.getByRole('tab', { name: '场景基础' }).click()
+  await page.getByTestId('workflow-config').click()
   const timeStep = page.getByTestId('scenario-time-step').locator('input')
   await timeStep.fill('-1')
   const errorResponse = page.waitForResponse((response) => response.request().method() === 'POST'
@@ -1342,7 +1348,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   expect((await operatorScenarioLoaded).status()).toBe(200)
   const operatorTemplatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates')
-  await page.getByRole('tab', { name: '场景模板' }).click()
+  await page.getByTestId('open-scenario-templates').click()
   expect((await operatorTemplatesLoaded).status()).toBe(200)
 
   await expect(page.getByTestId('create-template')).toHaveCount(0)
@@ -1434,7 +1440,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
     informationType: 'E2E_COMMAND', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
   })
 
-  await page.getByRole('tab', { name: '场景操作' }).click()
+  await page.getByTestId('open-scenario-operations').click()
   const importedConfig = structuredClone(persisted.config)
   importedConfig.output.directory = './tasks/TASK-001/e2e-import'
   await page.getByTestId('import-scenario-snapshot').click()
@@ -1475,16 +1481,29 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
 
   await page.getByTestId('scenario-time-step').locator('input').fill('6')
   await page.getByTestId('save-scenario').click()
-  await page.getByRole('tab', { name: '传感器与输出' }).click()
+  await expect(page.getByTestId('validation-panel')).toBeVisible()
+  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'output.writeInterval' }).click()
   await expect(page.getByLabel('输出参数').getByText('输出写入间隔不能小于场景时间步长。', { exact: true })).toBeVisible()
-  await page.getByRole('tab', { name: '脚本预览' }).click()
-  await expect(page.getByTestId('generate-script')).toBeDisabled()
+  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await expect(page.getByTestId('script-preview-panel')).toHaveCount(0)
 
   const restored = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.reload()
   expect((await restored).status()).toBe(200)
-  await page.getByRole('tab', { name: '脚本预览' }).click()
+  await expect(page.getByRole('tab')).toHaveCount(5)
+  await expect(page.getByTestId('scenario-next-step')).toContainText('当前草稿已保存')
+  await expect(page.getByTestId('next-script')).toHaveCount(0)
+  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await page.getByTestId('next-validation').click()
+  await expect(page.getByTestId('next-script')).toBeDisabled()
+  await expect(page.getByTestId('save-scenario')).toBeDisabled()
+  const validationFinished = page.waitForResponse((response) => response.request().method() === 'POST'
+    && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
+  await page.getByTestId('validate-scenario').click()
+  expect((await validationFinished).status()).toBe(200)
+  await expect(page.getByTestId('next-script')).toBeEnabled()
+  await page.getByTestId('next-script').click()
 
   const confirmationRequired = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/scripts/preview'
@@ -1500,6 +1519,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await messageBox.getByRole('button', { name: '本次继续', exact: true }).click()
   expect((await previewReady).status()).toBe(200)
   await expect(page.getByTestId('script-preview')).toContainText('# AFSIM 2.9.0 场景脚本预览；仅内存生成')
+  await expect(page.getByTestId('script-next-step')).toContainText('点击“执行预检”')
 
   let upstreamPreflightPassed = false
   await page.route('**/api/v1/scripts/*/preflight', async (route) => {
@@ -1523,6 +1543,19 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await expect(page.getByTestId('preflight-issues')).toContainText('2:1')
   expect(upstreamPreflightPassed).toBe(true)
 
+  await page.unroute('**/api/v1/scripts/*/preflight')
+  await page.getByTestId('preflight-script').click()
+  await expect(page.getByTestId('scenario-next-step')).toContainText('本页流程已完成')
+  await expect(page.getByTestId('script-next-step')).toContainText('不会写入本地文件或启动真实 AFSIM')
+  await page.screenshot({ path: test.info().outputPath('scenario-workflow-preflight.png') })
+  await page.getByTestId('workflow-config').click()
+  await page.getByTestId('scenario-name').fill('流程回归：修改后重新生成')
+  await expect(page.getByTestId('scenario-next-step')).toContainText('未保存修改')
+  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await expect(page.getByTestId('script-preview')).toHaveCount(0)
+  await page.getByTestId('next-validation').click()
+  await expect(page.getByTestId('next-script')).toBeDisabled()
+
   expect(audit.errors).toEqual([
     'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
   ])
@@ -1545,17 +1578,21 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程资源已释放')
   const footer = page.locator('.situation-footer')
   await expect(footer).toContainText('实时已订阅')
-  await expect(footer).toContainText('固定帧 F-00042')
-  await expect(footer).toContainText('数据时刻 42 s')
+  await expect(footer).not.toContainText('固定帧')
+  await expect(footer).not.toContainText('数据时刻')
+  await expect(footer).toHaveAttribute('data-frame-id', 'F-00042')
   const telemetryPanel = page.getByLabel('链路、干扰与事件', { exact: true })
   await expect(telemetryPanel).toContainText('DET-042 · F-00042')
   await expect(telemetryPanel).toContainText('SW-003 · F-00042')
   const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
   await expect(degradedLink).toContainText('7.10')
   await expect(degradedLink).toContainText('2.4e-4')
-  await page.getByLabel('按链路筛选').selectOption('L-DL-03')
-  await expect(telemetryPanel.locator('tr[data-link-id]')).toHaveCount(1)
-  await expect(page.getByLabel('当前帧指标')).toContainText('平均 SNR7.10 dB')
+  await expect(page.getByLabel('当前帧指标').locator('select')).toHaveCount(0)
+  await expect(telemetryPanel.locator('tr[data-link-id]')).toHaveCount(10)
+  await expect(page.getByLabel('当前帧指标').locator('.metric-panel__item span')).toHaveText([
+    '在线业务信息节点', '正常链路', '劣化链路', '中断链路',
+  ])
+  await expect(page.getByLabel('当前帧指标')).toContainText('劣化链路1')
   await degradedLink.click()
   const linkDialog = page.locator('.link-quality-dialog')
   await expect(linkDialog.locator('[data-frame-id="F-00042"]')).toBeVisible()

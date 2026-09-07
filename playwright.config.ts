@@ -1,8 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
-// Two fixed viewports per the baseline acceptance rule: 1920×1080 primary, 1366×768 secondary.
-// The webServer array boots the deterministic loopback mock and the Vite UI on their canonical
-// ports. Local runs may reuse an already-running project service; CI always starts fresh services.
+// 两种验收视口。测试始终使用纯 Mock 入口，避免读取 .env.local 中的真实日志。
+// 不复用 4173 上可能启用了真实数据的服务；测试前须关闭该端口的开发服务。
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
@@ -27,11 +26,11 @@ export default defineConfig({
   ],
   webServer: [
     {
-      command: 'npm run dev:mock',
+      command: 'npm run validate:contracts && node --import tsx server/index.ts',
       // GET /api/v1/auth/permissions without a role answers 403, which proves the server is up.
       url: 'http://127.0.0.1:4173/api/v1/auth/permissions',
       timeout: 120_000,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
     },
     {
       command: 'npm run dev:ui',

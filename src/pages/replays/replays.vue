@@ -7,17 +7,26 @@ import type { ReplayState } from '../../contracts/domain-models'
 import { selectSituationLinks } from '../../features/situation/situation-model'
 import { replayEventTime, useReplayStore } from '../../stores/replay'
 import { useTelemetryStore } from '../../stores/telemetry'
+import { selectReplayNodes } from '../../features/replays/local-replay'
+import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 
 const replayStore = useReplayStore()
 const telemetryStore = useTelemetryStore()
-const { replay, replays, events, state, speed, selectedEventId, resultMessage } = storeToRefs(replayStore)
-const { frame, capabilityState: telemetryState, resultMessage: telemetryMessage } = storeToRefs(telemetryStore)
+const { replay, replays, events, state, speed, selectedEventId, resultMessage, localSnapshot } = storeToRefs(replayStore)
+const { frame: mockFrame, capabilityState: telemetryState, resultMessage: telemetryMessage } = storeToRefs(telemetryStore)
+const sourceKind = ref<'LOADING' | 'FILE' | 'MOCK'>('LOADING')
+const frame = computed(() => sourceKind.value === 'MOCK' ? mockFrame.value : null)
+const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
+const focusTarget = ref<SituationMapFocusTarget | null>(null)
 const selectedNodeId = ref('')
+const sliderTime = ref(0)
+const sliderDragging = ref(false)
 let disposed = false
 
 const links = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
 const selectedEvent = computed(() => events.value.find((event) => event.eventId === selectedEventId.value) ?? null)
-const loading = computed(() => state.value === 'LOADING' || telemetryState.value === 'LOADING')
+const loading = computed(() => sourceKind.value === 'LOADING' || state.value === 'LOADING'
+  || (sourceKind.value === 'MOCK' && telemetryState.value === 'LOADING'))
 
 /** 将回放状态转换为中文。 */
 function replayStateLabel(value: ReplayState): string {
@@ -57,7 +66,14 @@ async function togglePlayback(): Promise<void> {
 async function seek(value: number | number[]): Promise<void> {
   if (Array.isArray(value)) return
   await replayStore.seek(value)
+  sliderDragging.value = false
+  sliderTime.value = replay.value?.currentTimeS ?? 0
 }
+
+/** 同步播放游标；用户正在拖动时保留输入草稿，松开后由 change 一次性提交定位。 */
+watch(() => replay.value?.currentTimeS, (value) => {
+  if (!sliderDragging.value) sliderTime.value = value ?? 0
+}, { immediate: true })
 
 /**
  * 设置回放倍速。
@@ -69,14 +85,32 @@ async function changeSpeed(value: number): Promise<void> {
 
 /** 重新加载只读遥测帧和回放记录。 */
 async function reload(): Promise<void> {
-  replayStore.resetToSafeEmpty()
+  sourceKind.value = 'LOADING'
+  sliderDragging.value = false
+  focusTarget.value = null
+  const localLoaded = await replayStore.loadLocalFile()
+  if (disposed) return
+  if (localLoaded !== null) {
+    sourceKind.value = 'FILE'
+    telemetryStore.disconnectAndReset()
+    return
+  }
+  sourceKind.value = 'MOCK'
   const telemetryLoaded = await telemetryStore.loadFrame('RUN-001', 'F-00042')
   if (!disposed && telemetryLoaded) await replayStore.load()
 }
 
-watch(frame, (value) => {
-  selectedNodeId.value = value?.platforms[0]?.platformId ?? ''
+/** 选中节点仍存在时保留高亮；时间变化不自动重置视图或选择。 */
+watch([frame, fileNodes], ([value, nodes]) => {
+  const displayed = value?.platforms ?? nodes
+  if (!displayed.some((node) => node.platformId === selectedNodeId.value)) selectedNodeId.value = displayed[0]?.platformId ?? ''
 }, { immediate: true })
+
+/** 将地图定位到真实节点，platformId 为节点原始名称，不改动西经或其他真实坐标。 */
+function locateFileNode(platformId: string): void {
+  selectedNodeId.value = platformId
+  focusTarget.value = { kind: 'node', targetId: platformId }
+}
 
 onMounted(() => { void reload() })
 onBeforeUnmount(() => {
@@ -87,7 +121,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="replays-page" aria-labelledby="replays-title">
+  <section class="replays-page" aria-label="历史回放">
     <header class="replays-page__header">
 <!--      <div>-->
 <!--        <p class="eyebrow">运行快照与事件复盘</p>-->
@@ -95,19 +129,21 @@ onBeforeUnmount(() => {
 <!--        <p>只读回放不会修改仿真运行、场景配置或实时遥测。</p>-->
 <!--      </div>-->
       <div class="replays-page__source">
-        <el-select :model-value="replay?.replayId ?? ''" aria-label="回放来源" :disabled="loading || replays.length === 0">
+        <span v-if="localSnapshot">{{ localSnapshot.fileName }}</span>
+        <el-select v-else :model-value="replay?.replayId ?? ''" aria-label="回放来源" :disabled="loading || replays.length === 0">
           <el-option v-for="item in replays" :key="item.replayId" :value="item.replayId" :label="`${item.replayId} · ${item.runId}`" />
         </el-select>
         <el-tag :type="replayStateType(state)" effect="plain">{{ replayStateLabel(state) }}</el-tag>
       </div>
+      <el-button :loading="loading" :disabled="loading" @click="reload">重新加载</el-button>
     </header>
 
     <el-skeleton v-if="loading" class="replays-page__loading" :rows="10" animated />
     <el-result
-      v-else-if="state === 'CORRUPT' || state === 'ERROR' || telemetryState === 'ERROR'"
+      v-else-if="state === 'CORRUPT' || state === 'ERROR' || (sourceKind === 'MOCK' && telemetryState === 'ERROR')"
       :icon="state === 'CORRUPT' ? 'warning' : 'error'"
       :title="state === 'CORRUPT' ? '回放数据损坏' : '历史回放不可用'"
-      :sub-title="telemetryState === 'ERROR' ? telemetryMessage : resultMessage"
+      :sub-title="sourceKind === 'MOCK' && telemetryState === 'ERROR' ? telemetryMessage : resultMessage"
     >
       <template #extra><el-button type="primary" @click="reload">重新加载</el-button></template>
     </el-result>
@@ -116,20 +152,44 @@ onBeforeUnmount(() => {
     <main v-else class="replays-page__body">
       <section class="replay-view" aria-label="回放视窗">
         <OfflineSituationMap
-          v-if="frame"
+          v-if="frame || localSnapshot"
+          :key="localSnapshot ? `${localSnapshot.initial.sha256}:${localSnapshot.sha256}` : 'mock'"
           :frame="frame"
+          :initial-nodes="localSnapshot ? fileNodes : undefined"
           :links="links"
           :selected-node-id="selectedNodeId"
-          :focus-target="null"
+          :focus-target="focusTarget"
           @select-node="selectedNodeId = $event"
         />
         <el-empty v-else description="回放态势快照不可用" />
-        <div class="replay-view__badge">只读快照 · {{ replay.runId }} · F-00042</div>
+        <div class="replay-view__badge">{{ localSnapshot ? `文件回放 · ${formatTime(replay.currentTimeS)}` : `只读快照 · ${replay.runId} · F-00042` }}</div>
       </section>
 
-      <aside class="replay-event-detail" aria-label="回放事件详情" data-testid="replay-event-detail">
-        <div class="panel-title"><strong>事件详情</strong><span>{{ events.length }} 条事件</span></div>
-        <template v-if="selectedEvent">
+      <aside class="replay-event-detail" :aria-label="localSnapshot ? '回放数据' : '回放事件详情'" data-testid="replay-event-detail">
+        <template v-if="localSnapshot">
+          <div class="panel-title"><strong>回放数据</strong><span>{{ fileNodes.length }} 个节点</span></div>
+          <dl>
+            <div><dt>初始化来源</dt><dd>{{ localSnapshot.initial.fileName }}</dd></div>
+            <div><dt>位置记录</dt><dd>{{ localSnapshot.recordCount }} 条</dd></div>
+            <div><dt>位置更新节点</dt><dd>{{ localSnapshot.tracks.length }} 个</dd></div>
+          </dl>
+          <div class="replay-node-field">
+            <label for="replay-node-select">节点定位</label>
+            <div class="replay-node-location">
+              <el-select id="replay-node-select" :model-value="selectedNodeId" aria-label="回放节点定位" @update:model-value="locateFileNode">
+                <el-option v-for="node in fileNodes" :key="node.platformId" :value="node.platformId" :label="node.name" />
+              </el-select>
+              <el-button :disabled="!selectedNodeId" @click="locateFileNode(selectedNodeId)">定位</el-button>
+            </div>
+          </div>
+          <p>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
+          <p>当前仅接入位置回放，不展示模拟链路或模拟事件。</p>
+          <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
+          <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
+            :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />
+        </template>
+        <div v-else class="panel-title"><strong>事件详情</strong><span>{{ events.length }} 条事件</span></div>
+        <template v-if="!localSnapshot && selectedEvent">
           <dl>
             <div><dt>事件编号</dt><dd>{{ selectedEvent.eventId }}</dd></div>
             <div><dt>类型</dt><dd>{{ selectedEvent.type === 'DETECTION' ? '目标侦测' : '链路切换' }}</dd></div>
@@ -140,7 +200,7 @@ onBeforeUnmount(() => {
             <div v-if="selectedEvent.type === 'LINK_SWITCH'"><dt>决策</dt><dd>{{ selectedEvent.decision === 'ACCEPTED' ? '接受' : '拒绝' }}</dd></div>
           </dl>
         </template>
-        <el-empty v-else description="暂无事件" />
+        <el-empty v-else-if="!localSnapshot" description="暂无事件" />
       </aside>
 
       <section class="replay-controls" aria-label="回放控制">
@@ -154,19 +214,21 @@ onBeforeUnmount(() => {
         <div class="replay-controls__slider">
           <span>{{ formatTime(replay.currentTimeS) }}</span>
           <el-slider
-            :model-value="replay.currentTimeS"
+            v-model="sliderTime"
             :min="0"
             :max="replay.durationS"
+            :disabled="replay.durationS === 0"
             :step="1"
             :show-tooltip="false"
             aria-label="回放进度"
+            @input="sliderDragging = true"
             @change="seek"
           />
           <span>{{ formatTime(replay.durationS) }}</span>
         </div>
         <div class="replay-controls__toolbar">
           <el-button :disabled="replay.currentTimeS <= 0" @click="replayStore.step('back')">后退 1 秒</el-button>
-          <el-button type="primary" data-testid="replay-play" @click="togglePlayback">{{ state === 'PLAYING' ? '暂停' : '播放' }}</el-button>
+          <el-button type="primary" data-testid="replay-play" :disabled="replay.durationS === 0" @click="togglePlayback">{{ state === 'PLAYING' ? '暂停' : '播放' }}</el-button>
           <el-button :disabled="replay.currentTimeS >= replay.durationS" @click="replayStore.step('forward')">前进 1 秒</el-button>
           <el-select :model-value="speed" aria-label="回放倍速" @update:model-value="changeSpeed">
             <el-option v-for="value in [0.5, 1, 2, 4]" :key="value" :value="value" :label="`${value}×`" />
@@ -291,21 +353,56 @@ onBeforeUnmount(() => {
   margin: 0.5rem 0 0;
 }
 
-.replay-event-detail dl div {
+.replay-event-detail dl > div {
   display: grid;
-  grid-template-columns: 5.5rem minmax(0, 1fr);
-  gap: 0.4rem;
+  grid-template-columns: 6.5rem minmax(0, 1fr);
+  gap: 0.75rem;
   padding: 0.55rem 0;
   border-bottom: 1px solid var(--console-border);
 }
 
 .replay-event-detail dt {
   color: var(--console-text-muted);
+  white-space: nowrap;
 }
 
 .replay-event-detail dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.replay-node-field {
+  display: grid;
+  gap: 0.5rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--console-border);
+}
+
+.replay-node-field label {
+  color: var(--console-text-muted);
+}
+
+.replay-node-location {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.replay-node-location :deep(.el-select) {
+  min-width: 0;
+  flex: 1;
+}
+
+.replay-node-location :deep(.el-button) {
+  flex: none;
+  padding-inline: 0.75rem;
+}
+
+.replay-event-detail > p {
+  margin: 0.75rem 0;
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
+  line-height: 1.7;
 }
 
 .replay-controls {

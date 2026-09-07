@@ -37,10 +37,12 @@ const {
   lastConfirmation,
   script,
   scriptState,
+  scriptResultCode,
   scriptResultMessage,
   preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
+const draftReviewed = ref(false)
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
@@ -95,8 +97,37 @@ const businessNodeCount = computed(() => draft.value?.config.platforms.filter((p
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
-const validationCompleted = computed(() => resultCode.value.startsWith('VALIDATION_'))
+const validationCompleted = computed(() => draftReviewed.value || resultCode.value.startsWith('VALIDATION_'))
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
+const configurationTab = computed(() => ['scenario', 'platforms', 'links', 'jammers', 'data'].includes(activeTab.value))
+const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
+const preflightPassed = computed(() => script.value !== null && scriptResultCode.value === 'PREFLIGHT_SUCCESS')
+const canPreviewScript = computed(() => draftReviewed.value && draft.value !== null && !draft.value.locked
+  && !dirty.value && panelState.value === 'SUCCESS' && validation.value.errors.length === 0)
+
+// 校验资格只属于当前草稿；编辑、重载或替换草稿后失效，不把“已保存”等同于“已校验”。
+watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
+
+/** 根据当前草稿和脚本结果提示下一步，不把已加载或已生成误报为预检通过。 */
+const workflowMessage = computed(() => {
+  if (draft.value === null) return '加载场景后，配置参数，再校验并保存，最后生成脚本并执行预检。'
+  if (draft.value.locked) return '场景运行中，配置已锁定。请先停止仿真，再修改配置或生成脚本。'
+  if (pending.value || scriptPending.value) return '正在处理当前操作，请稍候。'
+  if (validation.value.errors.length > 0) return '请在校验结果中点击问题定位；修正参数后重新校验并保存。'
+  if (panelState.value === 'ERROR') return `${resultMessage.value} 请处理后重试。`
+  if (configurationTab.value) return `${dirty.value ? '参数有未保存修改。' : '当前草稿已保存。'} 下一步：进入“校验与保存”检查当前配置。`
+  if (activeTab.value === 'validation') {
+    if (dirty.value) return '参数有未保存修改，请点击“校验并保存”，无需先单独执行整体校验。'
+    if (canPreviewScript.value) return '当前配置校验通过且已保存。下一步：脚本预览。'
+    return '当前草稿已保存，请点击“整体校验”；通过后进入脚本预览，无需重复保存。'
+  }
+  if (dirty.value) return '参数有未保存修改，请返回“校验与保存”处理后再生成脚本。'
+  if (scriptState.value === 'ERROR') return '脚本处理未通过，请查看脚本区域的问题提示；修改配置后需重新保存、生成和预检。'
+  if (preflightPassed.value) return '脚本预检已通过，本页流程已完成。当前仅为内存预览，未写入文件或启动真实 AFSIM。'
+  if (script.value !== null) return '脚本预览已生成，尚未完成预检。下一步：进入脚本区域，点击“执行预检”。'
+  if (activeTab.value === 'script') return '当前草稿已保存。下一步：点击下方“生成脚本预览”，生成后再执行预检。'
+  return '完成场景操作后，请返回“配置参数”，再进入“校验与保存”。'
+})
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -858,11 +889,12 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
 /**
  * 执行当前草稿的整体校验并展示结果页签。
  * @returns 校验请求结束后无返回值。
- * @sideEffects 切换到整体校验页签并调用场景 Store；不修改草稿内容。
+ * @sideEffects 进入校验阶段并记录当前草稿的校验结果；不修改或重复保存草稿。
  */
 async function validateScenario(): Promise<void> {
   activeTab.value = 'validation'
-  await scenarioStore.validateScenario()
+  draftReviewed.value = false
+  draftReviewed.value = await scenarioStore.validateScenario()
 }
 
 /**
@@ -877,15 +909,20 @@ async function loadScenario(): Promise<void> {
 /**
  * 保存当前场景草稿并同步平台区域反馈。
  * @returns 保存流程结束后兑现且不返回值的 Promise。
- * @sideEffects 调用场景 Store；成功时把平台区域提示更新为已保存状态。
+ * @sideEffects 进入校验阶段；保存成功后开放脚本入口，失败时展示问题以便定位。
  */
 async function saveScenario(): Promise<void> {
+  activeTab.value = 'validation'
+  draftReviewed.value = false
   if (await scenarioStore.saveScenario()) {
+    draftReviewed.value = true
     platformFeedback.value = '场景草稿已保存。'
     linkFeedback.value = '场景草稿已保存。'
     linkFeedbackStatus.value = 'success'
     jammerFeedback.value = '场景草稿已保存。'
     jammerFeedbackStatus.value = 'success'
+  } else {
+    activeTab.value = 'validation'
   }
 }
 
@@ -977,6 +1014,21 @@ watch(activeTab, (tab) => {
 <template>
   <section class="page scenario-page" aria-label="场景配置">
     <header class="scenario-header" aria-label="场景操作">
+      <nav class="scenario-workflow" aria-label="场景工作流程">
+        <el-button :type="configurationTab ? 'primary' : 'default'" :aria-current="configurationTab ? 'step' : undefined" data-testid="workflow-config" @click="activeTab = 'scenario'">1 配置参数</el-button>
+        <span aria-hidden="true">→</span>
+        <el-button :type="activeTab === 'validation' ? 'primary' : 'default'" :aria-current="activeTab === 'validation' ? 'step' : undefined" data-testid="workflow-validation" @click="activeTab = 'validation'">2 校验与保存</el-button>
+        <span aria-hidden="true">→</span>
+        <el-button :type="activeTab === 'script' ? 'primary' : 'default'" :aria-current="activeTab === 'script' ? 'step' : undefined" :disabled="!canPreviewScript || scriptPending" title="当前配置校验通过且已保存后可进入" data-testid="workflow-script" @click="activeTab = 'script'">3 脚本预览与预检</el-button>
+      </nav>
+      <div class="scenario-header__actions" aria-label="场景辅助工具">
+        <el-button :type="activeTab === 'templates' ? 'primary' : 'default'" :aria-pressed="activeTab === 'templates'" data-testid="open-scenario-templates" @click="activeTab = 'templates'">场景模板</el-button>
+        <el-button :type="activeTab === 'operations' ? 'primary' : 'default'" :aria-pressed="activeTab === 'operations'" data-testid="open-scenario-operations" @click="activeTab = 'operations'">场景操作</el-button>
+      </div>
+    </header>
+
+    <div class="scenario-workflow-bar">
+      <p class="scenario-workflow-hint" role="status" data-testid="scenario-next-step">{{ workflowMessage }}</p>
       <div class="scenario-header__actions">
         <el-tag :type="panelState === 'ERROR' ? 'danger' : dirty ? 'warning' : 'success'">
           {{ dirty ? '未保存' : stateLabels[panelState] }}
@@ -986,7 +1038,8 @@ watch(activeTab, (tab) => {
           重新加载
         </el-button>
         <el-button
-          :disabled="draft === null"
+          :type="activeTab === 'validation' && !dirty ? 'primary' : 'default'"
+          :disabled="draft === null || draft.locked || pending || scriptPending"
           :loading="pending && activeTab === 'validation'"
           data-testid="validate-scenario"
           @click="validateScenario"
@@ -994,16 +1047,18 @@ watch(activeTab, (tab) => {
           整体校验
         </el-button>
         <el-button
-          type="primary"
-          :disabled="draft === null || draft?.locked || !dirty"
+          :type="activeTab === 'validation' && dirty ? 'primary' : 'default'"
+          :disabled="draft === null || draft?.locked || !dirty || scriptPending"
           :loading="pending"
           data-testid="save-scenario"
           @click="saveScenario"
         >
-          保存草稿
+          校验并保存
         </el-button>
+        <el-button v-if="configurationTab" type="primary" :disabled="draft === null || pending || scriptPending" data-testid="next-validation" @click="activeTab = 'validation'">下一步：校验与保存</el-button>
+        <el-button v-else-if="activeTab === 'validation'" type="primary" :disabled="!canPreviewScript || scriptPending" data-testid="next-script" @click="activeTab = 'script'">下一步：脚本预览</el-button>
       </div>
-    </header>
+    </div>
 
     <el-alert
       v-if="panelState === 'ERROR' && activeTab !== 'validation'"
@@ -1026,7 +1081,8 @@ watch(activeTab, (tab) => {
       :disabled="pending || draft.locked"
       data-testid="scenario-editor"
     >
-      <el-tabs v-model="activeTab" class="scenario-tabs">
+      <!-- 保留参数组件实例，避免切换阶段时数字输入重新挂载并按最小值改写待修正参数。 -->
+      <el-tabs v-show="configurationTab" v-model="activeTab" class="scenario-tabs" aria-label="参数分类">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-labelledby="scenario-basic-title">
         <div class="form-grid form-grid--basic form-grid--scenario-identity">
@@ -1395,8 +1451,10 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="场景操作" name="operations">
-          <section class="console-panel scenario-section" aria-labelledby="scenario-operation-title">
+      </el-tabs>
+
+      <div v-if="!configurationTab" class="scenario-stage-content">
+          <section v-if="activeTab === 'operations'" class="console-panel scenario-section" aria-label="场景快照操作">
 <!--            <div class="section-heading">-->
 <!--              <div>-->
 <!--                <p class="section-kicker">完整快照</p>-->
@@ -1412,10 +1470,8 @@ watch(activeTab, (tab) => {
             </div>
             <pre class="scenario-json-preview" data-testid="scenario-json-preview">{{ JSON.stringify(draft.config, null, 2) }}</pre>
           </section>
-        </el-tab-pane>
-
-        <el-tab-pane label="脚本预览" name="script">
           <ScriptPreview
+            v-else-if="activeTab === 'script'"
             :state="scriptState"
             :result-message="scriptResultMessage"
             :script="script"
@@ -1423,13 +1479,12 @@ watch(activeTab, (tab) => {
             :output-directory="draft.config.output.directory"
             :locked="draft.locked"
             :dirty="dirty"
+            :preflight-passed="preflightPassed"
             @generate="generateScriptPreview"
             @preflight="scenarioStore.preflightScript"
           />
-        </el-tab-pane>
-
-        <el-tab-pane label="整体校验" name="validation">
           <ValidationPanel
+            v-else-if="activeTab === 'validation'"
             :pending="pending"
             :panel-state="panelState"
             :result-message="resultMessage"
@@ -1437,10 +1492,8 @@ watch(activeTab, (tab) => {
             :completed="validationCompleted"
             @locate="locateValidationIssue"
           />
-        </el-tab-pane>
-
-        <el-tab-pane label="场景模板" name="templates">
           <TemplateLibrary
+            v-else-if="activeTab === 'templates'"
             :can-maintain="false"
             :allow-apply="true"
             :pending="templatePending"
@@ -1454,8 +1507,7 @@ watch(activeTab, (tab) => {
             @load="scenarioStore.loadTemplate"
             @copy="applyTemplate"
           />
-        </el-tab-pane>
-      </el-tabs>
+      </div>
     </el-form>
 
     <PlatformEditorDialog
@@ -1519,6 +1571,8 @@ watch(activeTab, (tab) => {
 
 .scenario-header,
 .scenario-header__actions,
+.scenario-workflow,
+.scenario-workflow-bar,
 .section-heading {
   display: flex;
   align-items: center;
@@ -1527,9 +1581,39 @@ watch(activeTab, (tab) => {
 }
 
 .scenario-header {
-  justify-content: flex-end
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--console-border);
 }
 
+.scenario-workflow {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.scenario-workflow .el-button + .el-button,
+.scenario-header__actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.scenario-workflow-bar {
+  flex-wrap: wrap;
+  padding: 0.75rem;
+}
+
+.scenario-workflow-hint {
+  flex: 1 1 22rem;
+  margin: 0;
+  color: var(--console-text-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.scenario-stage-content {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 0.75rem 0.75rem;
+}
 
 .scenario-header__actions {
   flex-wrap: wrap;

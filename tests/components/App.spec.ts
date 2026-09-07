@@ -76,7 +76,7 @@ describe('App shell', () => {
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
     const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
-      const data = url.includes('/admin/audit')
+        const data = url.endsWith('/situation/initial-nodes') || url.endsWith('/replays/local-file') ? null : url.includes('/admin/audit')
         ? fixtureSource.audit
         : url.includes('/frames/')
         ? fixtureSource.frame
@@ -238,6 +238,9 @@ describe('App shell', () => {
     await router.push('/admin')
     await flushPromises()
     expect(adminWrapper.findAll('main')).toHaveLength(1)
+    expect(adminWrapper.find('.system-management__header').exists()).toBe(false)
+    expect(adminWrapper.get('.system-management-page').attributes('aria-label')).toBe('系统管理')
+    expect(adminWrapper.get('.system-management-page').attributes('aria-labelledby')).toBeUndefined()
     const systemManagementNavigation = adminWrapper.get('[aria-label="系统管理导航"]')
     expect(systemManagementNavigation.findAll('.el-menu-item')).toHaveLength(9)
     expect(systemManagementNavigation.text()).toContain('主数据管理')
@@ -249,6 +252,7 @@ describe('App shell', () => {
     expect(systemManagementNavigation.text()).toContain('仿真数据管理')
     expect(systemManagementNavigation.text()).toContain('系统运行状态')
     expect(systemManagementNavigation.text()).toContain('数据交换与接口')
+    expect(systemManagementNavigation.find('small').exists()).toBe(false)
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 
     await router.push('/admin?section=equipment-library')

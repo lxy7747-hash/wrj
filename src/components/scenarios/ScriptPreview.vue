@@ -10,6 +10,7 @@ const props = defineProps<{
   outputDirectory: string
   locked: boolean
   dirty: boolean
+  preflightPassed: boolean
 }>()
 
 const emit = defineEmits<{
@@ -28,21 +29,24 @@ function scriptLocation(fieldPath: string): string {
 </script>
 
 <template>
-  <section class="console-panel scenario-section" aria-labelledby="scenario-script-title" data-testid="script-preview-panel">
+  <section class="console-panel scenario-section" aria-label="脚本预览及预检" data-testid="script-preview-panel">
 <!--    <div class="section-heading">-->
 <!--      <div>-->
 <!--        <p class="section-kicker">T-XQ-008</p>-->
 <!--        <h3 id="scenario-script-title">脚本预览及预检</h3>-->
 <!--      </div>-->
 <!--    </div>-->
-    <el-alert v-if="resultMessage" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
+    <el-alert v-if="resultMessage && state !== 'EMPTY'" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
+    <p class="script-guidance" data-testid="script-next-step">
+      {{ preflightPassed ? '预检已通过。当前仅为内存预览，不会写入本地文件或启动真实 AFSIM。' : script ? '下一步：点击“执行预检”。如重新生成预览，需要重新预检。' : dirty ? '请先点击上方“校验并保存”，再生成脚本预览，最后执行预检。' : '场景已保存：先生成脚本预览，最后执行预检。生成预览不会启动仿真。' }}
+    </p>
     <div class="platform-actions">
       <el-tooltip content="请先保存草稿" placement="top" :disabled="!dirty">
         <span class="script-action-tooltip">
-          <el-button type="primary" :loading="pending" :disabled="locked || dirty" data-testid="generate-script" @click="emit('generate')">生成脚本预览</el-button>
+          <el-button :type="script === null ? 'primary' : 'default'" :loading="pending" :disabled="locked || dirty" data-testid="generate-script" @click="emit('generate')">生成脚本预览</el-button>
         </span>
       </el-tooltip>
-      <el-button :loading="pending" :disabled="script === null" data-testid="preflight-script" @click="emit('preflight')">执行预检</el-button>
+      <el-button :type="script !== null && !preflightPassed ? 'primary' : 'default'" :loading="pending" :disabled="script === null" data-testid="preflight-script" @click="emit('preflight')">执行预检</el-button>
     </div>
     <template v-if="script">
       <el-descriptions :column="2" border>
@@ -67,6 +71,11 @@ function scriptLocation(fieldPath: string): string {
 <style scoped>
 .scenario-section {
   padding: 1.1rem;
+}
+
+.script-guidance {
+  color: var(--console-text-muted);
+  line-height: 1.6;
 }
 
 .section-heading,

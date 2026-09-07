@@ -4,7 +4,6 @@ import {
   SITUATION_FRAME_F00042,
   SITUATION_LINKS_F00042,
   SITUATION_METRICS_F00042,
-  filterSituationLinks,
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
@@ -92,33 +91,20 @@ describe('态势固定帧模型', () => {
     expect(formatBer(0.00024)).toBe('2.4e-4')
   })
 
-  it('按节点、链路和时间窗口同步筛选链路指标', () => {
-    const nodeLinks = filterSituationLinks(SITUATION_LINKS_F00042, {
-      nodeId: 'UAV-01', linkId: '', windowMs: null,
-    })
-    expect(nodeLinks.every((link) => link.sourceName === '高空前出中继节点' || link.destinationName === '高空前出中继节点')).toBe(true)
-
-    const oneLink = filterSituationLinks(SITUATION_LINKS_F00042, {
-      nodeId: '', linkId: 'L-DL-03', windowMs: 0,
-    })
-    const metrics = selectSituationMetrics(SITUATION_FRAME_F00042, SITUATION_EVENTS_F00042, oneLink)
+  it('按当前帧全部链路汇总状态并处理空集合', () => {
+    const metrics = selectSituationMetrics(SITUATION_FRAME_F00042, SITUATION_EVENTS_F00042)
     expect(metrics).toMatchObject({
-      filteredLinkCount: 1,
-      avgSnrDb: 7.1,
-      avgBer: 0.00024,
-      avgReceivedPowerDbm: -91.6,
-      latencyMs: null,
-      latestUpdatedAt: 42,
+      filteredLinkCount: 10,
+      upLinkCount: 9,
+      degradedLinkCount: 1,
+      downLinkCount: 0,
     })
 
-    const staleLinks = SITUATION_LINKS_F00042.map((link) => ({ ...link, ageMs: 2_000 }))
-    const empty = filterSituationLinks(staleLinks, { nodeId: '', linkId: '', windowMs: 1_000 })
-    expect(selectSituationMetrics(SITUATION_FRAME_F00042, [], empty)).toMatchObject({
+    expect(selectSituationMetrics(SITUATION_FRAME_F00042, [], [])).toMatchObject({
       filteredLinkCount: 0,
-      avgSnrDb: null,
-      avgBer: null,
-      avgReceivedPowerDbm: null,
-      latestUpdatedAt: null,
+      upLinkCount: 0,
+      degradedLinkCount: 0,
+      downLinkCount: 0,
     })
   })
 })

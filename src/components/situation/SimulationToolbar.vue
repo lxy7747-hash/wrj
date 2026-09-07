@@ -14,6 +14,8 @@ const props = defineProps<{
   progress: number
   pending: boolean
   feedback: string
+  /** 只读初始位置尚未接入运行引擎，禁止调用 Mock 控制命令。 */
+  readOnly?: boolean
 }>()
 
 defineEmits<{
@@ -56,7 +58,7 @@ const lockLabel = computed(() => ({
         size="small"
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
-        :disabled="pending || status === 'RUNNING'"
+        :disabled="readOnly || pending || status === 'RUNNING'"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
@@ -66,13 +68,13 @@ const lockLabel = computed(() => ({
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="pending || status !== 'RUNNING'"
+        :disabled="readOnly || pending || status !== 'RUNNING'"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
         size="small"
         data-testid="simulation-step"
-        :disabled="pending || status !== 'PAUSED'"
+        :disabled="readOnly || pending || status !== 'PAUSED'"
         @click="$emit('step')"
       ><span aria-hidden="true">⏭</span> 单步</el-button>
       <el-button
@@ -80,7 +82,7 @@ const lockLabel = computed(() => ({
         plain
         size="small"
         data-testid="simulation-stop"
-        :disabled="pending || (status !== 'RUNNING' && status !== 'PAUSED')"
+        :disabled="readOnly || pending || (status !== 'RUNNING' && status !== 'PAUSED')"
         @click="$emit('stop')"
       ><span aria-hidden="true">■</span> 停止</el-button>
 
@@ -88,7 +90,7 @@ const lockLabel = computed(() => ({
         <select
           :value="speed"
           aria-label="仿真倍速"
-          :disabled="pending"
+          :disabled="readOnly || pending"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
@@ -101,7 +103,7 @@ const lockLabel = computed(() => ({
         <select
           :value="mode"
           aria-label="运行模式"
-          :disabled="pending || status === 'RUNNING' || status === 'PAUSED'"
+          :disabled="readOnly || pending || status === 'RUNNING' || status === 'PAUSED'"
           @change="$emit('update:mode', ($event.target as HTMLSelectElement).value as SimulationMode)"
         >
           <option value="INTERACTIVE_SINGLE">单次仿真</option>
@@ -112,7 +114,10 @@ const lockLabel = computed(() => ({
       </label>
     </div>
 
-    <div class="simulation-toolbar__runtime" aria-live="polite">
+    <div v-if="readOnly" class="simulation-toolbar__runtime" aria-live="polite">
+      <small>{{ feedback }}</small>
+    </div>
+    <div v-else class="simulation-toolbar__runtime" aria-live="polite">
       <strong data-testid="simulation-clock">{{ formatSimulationTime(currentTime) }}</strong>
       <span :class="['runtime-state', `runtime-state--${status.toLowerCase()}`]">
         <i aria-hidden="true"></i>{{ statusLabel }}

@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { markRaw, toRaw } from 'vue'
 import type {
   DetectionEvent,
   Replay,
@@ -9,12 +10,14 @@ import type {
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isSituationEvent, useTelemetryStore } from './telemetry'
+import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../features/replays/local-replay'
 
 type ReplayEvent = DetectionEvent | SwitchEvent
 
 interface ReplayRuntime {
   timer: ReturnType<typeof setInterval> | null
   pendingCommand: number | null
+  fileRequest: AbortController | null
 }
 
 const runtimes = new WeakMap<object, ReplayRuntime>()
@@ -24,10 +27,12 @@ const REPLAY_STATES = new Set<ReplayState>([
 
 /** 返回 Store 实例独享的非响应式播放计时器。 */
 function runtimeFor(store: object): ReplayRuntime {
-  const existing = runtimes.get(store)
+  // 开发工具会为不同 action 创建不同代理；用原始 Store 保证计时器和请求可被正确取消。
+  const owner = toRaw(store)
+  const existing = runtimes.get(owner)
   if (existing !== undefined) return existing
-  const runtime = { timer: null, pendingCommand: null }
-  runtimes.set(store, runtime)
+  const runtime = { timer: null, pendingCommand: null, fileRequest: null }
+  runtimes.set(owner, runtime)
   return runtime
 }
 
@@ -72,14 +77,55 @@ export const useReplayStore = defineStore('replay', {
     resultCode: 'EMPTY',
     resultMessage: '尚未加载历史回放。',
     requestEpoch: 0,
+    localSnapshot: null as LocalReplaySnapshot | null,
   }),
 
   actions: {
+    /**
+     * 读取本机文件回放快照；true 为已加载，null 为未配置，false 为读取失败。
+     * 不配置时才允许页面继续原有 Mock 流程，失败不回退假数据。
+     */
+    async loadLocalFile(): Promise<boolean | null> {
+      this.resetToSafeEmpty()
+      const epoch = this.requestEpoch
+      const request = new AbortController()
+      runtimeFor(this).fileRequest = request
+      const timeout = setTimeout(() => request.abort(), 10_000)
+      this.state = 'LOADING'
+      try {
+        const response = await fetch(`${resolveMockOrigin()}/api/v1/replays/local-file`, {
+          headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
+        })
+        const snapshot = await readSuccess(response, isLocalReplaySnapshot)
+        if (epoch !== this.requestEpoch) return false
+        if (snapshot === null) {
+          this.state = 'EMPTY'
+          return null
+        }
+        this.localSnapshot = markRaw(snapshot)
+        // 只供既有时间轴使用的本地游标，不代表 mission 引擎运行，不发送到 Mock 命令接口。
+        this.replay = { replayId: 'REPLAY-LOCAL-FILE', runId: 'RUN-LOCAL-FILE', state: 'PAUSED',
+          durationS: snapshot.durationS, currentTimeS: 0, eventIds: [] }
+        this.state = 'PAUSED'
+        this.resultCode = 'SUCCESS'
+        this.resultMessage = '真实文件回放已加载；重新加载可读取新增记录。'
+        return true
+      } catch (error) {
+        if (epoch !== this.requestEpoch) return false
+        this.showError(error)
+        return false
+      } finally {
+        clearTimeout(timeout)
+        if (runtimeFor(this).fileRequest === request) runtimeFor(this).fileRequest = null
+      }
+    },
+
     /**
      * 加载回放目录、REPLAY-001 详情和 RUN-001 事件。
      * @returns 三份响应及交叉引用有效时返回 `true`；空目录进入 EMPTY。
      */
     async load(): Promise<boolean> {
+      this.localSnapshot = null
       const epoch = ++this.requestEpoch
       this.stopPlaybackTimer()
       runtimeFor(this).pendingCommand = null
@@ -181,6 +227,7 @@ export const useReplayStore = defineStore('replay', {
      */
     async executeCommand(command: ReplayCommand): Promise<boolean> {
       if (this.replay === null) return false
+      if (this.localSnapshot !== null) return this.executeLocalCommand(command)
       // 新控制优先于旧响应；自动 SEEK 不抢占正在执行的手动控制。
       const epoch = ++this.requestEpoch
       const runtime = runtimeFor(this)
@@ -216,7 +263,40 @@ export const useReplayStore = defineStore('replay', {
       }
     },
 
-    /** 启动每秒向服务端提交一次游标推进。 */
+    /**
+     * 操作文件回放的本地游标，不调用真实引擎或 Mock 命令接口。
+     * @param command 复用页面已有的播放、暂停、定位、单步及倍速操作。
+     */
+    executeLocalCommand(command: ReplayCommand): boolean {
+      const replay = this.replay
+      if (!replay || !this.localSnapshot) return false
+      if ((command.command === 'SEEK' && (!Number.isFinite(command.value) || command.value! < 0 || command.value! > replay.durationS))
+        || (command.command === 'SPEED' && (!Number.isFinite(command.value) || command.value! <= 0))) {
+        this.resultMessage = '回放时间或倍速超出有效范围。'
+        return false
+      }
+      if (command.command === 'PLAY') {
+        if (replay.durationS === 0) return false
+        if (replay.currentTimeS === replay.durationS) replay.currentTimeS = 0
+        replay.state = 'PLAYING'
+      } else if (command.command === 'PAUSE') replay.state = 'PAUSED'
+      else if (command.command === 'SPEED') this.speed = command.value!
+      else if (command.command === 'SEEK') {
+        replay.currentTimeS = command.value!
+        replay.state = replay.currentTimeS === replay.durationS ? 'COMPLETED'
+          : this.state === 'PLAYING' ? 'PLAYING' : 'PAUSED'
+      } else if (command.command === 'STEP_FORWARD' || command.command === 'STEP_BACK') {
+        replay.currentTimeS = Math.min(replay.durationS, Math.max(0,
+          replay.currentTimeS + (command.command === 'STEP_FORWARD' ? 1 : -1)))
+        replay.state = replay.currentTimeS === replay.durationS ? 'COMPLETED' : 'PAUSED'
+      } else return false
+      this.state = replay.state
+      if (this.state === 'PLAYING') this.startPlaybackTimer()
+      else this.stopPlaybackTimer()
+      return true
+    },
+
+    /** 每秒按倍速推进游标；真实文件只操作本地状态，Mock 继续使用服务端命令。 */
     startPlaybackTimer(): void {
       this.stopPlaybackTimer()
       if (this.state !== 'PLAYING' || this.replay === null) return
@@ -251,6 +331,7 @@ export const useReplayStore = defineStore('replay', {
       this.stopPlaybackTimer()
       this.replays = []
       this.replay = null
+      this.localSnapshot = null
       this.events = []
       this.selectedEventId = null
       this.state = error instanceof TypeError ? 'CORRUPT' : 'ERROR'
@@ -263,8 +344,11 @@ export const useReplayStore = defineStore('replay', {
       this.requestEpoch += 1
       this.stopPlaybackTimer()
       runtimeFor(this).pendingCommand = null
+      runtimeFor(this).fileRequest?.abort()
+      runtimeFor(this).fileRequest = null
       this.replays = []
       this.replay = null
+      this.localSnapshot = null
       this.events = []
       this.state = 'EMPTY'
       this.speed = 1

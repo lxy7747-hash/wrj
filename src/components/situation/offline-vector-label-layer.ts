@@ -139,6 +139,7 @@ export function createOfflineVectorLabelLayer(
   const controllers = new Map<HTMLCanvasElement, AbortController>()
   let currentTheme = theme
   const layer = new L.GridLayer({
+    bounds: L.latLngBounds([...MAP_CONFIG.resources.vector.bounds[0]], [...MAP_CONFIG.resources.vector.bounds[1]]),
     tileSize: TILE_SIZE,
     minZoom: MAP_CONFIG.zoom.min,
     maxZoom: MAP_CONFIG.zoom.max,

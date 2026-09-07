@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG } from '../../src/config/map.config'
 import type { ConfirmationContext, Principal, SimulationRun } from '../../src/contracts/domain-models'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
+import type { InitialNodeSnapshot, SituationMapNode } from '../../src/features/situation/initial-nodes'
+import type { PositionSnapshot } from '../../src/features/situation/position-updates'
 import {
   SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
@@ -16,6 +18,8 @@ import { useAuthStore } from '../../src/stores/auth'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
 type SituationMapControllerOptions = {
+  frame: unknown
+  initialNodes?: SituationMapNode[]
   onSelectNode: (platformId: string) => void
   onSelectLink: (link: SituationLinkView) => void
 }
@@ -23,6 +27,7 @@ type SituationMapControllerOptions = {
 const mapControllerMock = vi.hoisted(() => {
   const controller = {
     setFrame: vi.fn(),
+    setNodes: vi.fn(),
     setLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
@@ -73,6 +78,16 @@ const OPERATOR: Principal = {
   permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
 }
 
+const INITIAL_NODES: InitialNodeSnapshot = {
+  fileName: 'sample.csv', sha256: 'a'.repeat(64),
+  nodes: [
+    { platformId: 'A', name: 'A', type: 'HIGH_ALT_COMMS_PLATFORM', longitude: -77.9617,
+      latitude: 30.0024, altitude: 0, speed: 223.52, time: 0, sourceEventId: 'LOG-L7' },
+    { platformId: 'B', name: 'B', type: 'Drone_MISSION_AIRCRAFT', longitude: 118.7321,
+      latitude: 25.1026, altitude: 4000, speed: 0, time: 0, sourceEventId: 'LOG-L10' },
+  ],
+}
+
 /** 创建组件测试使用的仿真运行投影。 */
 function simulationRun(uiStatus: SimulationRun['uiStatus'], configLocked: boolean): SimulationRun {
   return {
@@ -101,6 +116,7 @@ function successResponse(data: unknown): Response {
 function situationFetch(fallbacks: unknown[] = [[]]) {
   return vi.fn().mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
+    if (url.endsWith('/situation/initial-nodes')) return Promise.resolve(successResponse(null))
     if (url.includes('/frames/')) return Promise.resolve(successResponse(SITUATION_FRAME_F00042))
     if (url.endsWith('/events')) return Promise.resolve(successResponse(SITUATION_EVENTS_F00042))
     return Promise.resolve(successResponse(fallbacks.shift() ?? []))
@@ -124,7 +140,7 @@ describe('态势主界面', () => {
    * @returns 已挂载的态势页面包装器。
    * @sideeffect 向 document.body 添加页面及 Element Plus 的关联 DOM。
    */
-  function mountSituationPage() {
+  async function mountSituationPage() {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -141,6 +157,7 @@ describe('态势主界面', () => {
         stubs: { RouterLink: { template: '<a><slot /></a>' } },
       },
     })
+    await flushPromises()
     return mountedWrapper
   }
 
@@ -156,6 +173,7 @@ describe('态势主界面', () => {
     mountedWrapper = null
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 
   it('呈现原型要求的关键区域并只读取运行快照', async () => {
@@ -165,7 +183,7 @@ describe('态势主界面', () => {
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
 
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await flushPromises()
 
     expect(wrapper.get('#situation-title').text()).toBe('态势主界面')
@@ -173,6 +191,8 @@ describe('态势主界面', () => {
     expect(wrapper.get('[aria-label="场景配置"]')).toBeTruthy()
     expect(wrapper.get('[aria-label="Leaflet 离线态势图"]')).toBeTruthy()
     expect(wrapper.get('[data-testid="leaflet-situation-map"]')).toBeTruthy()
+    expect(wrapper.find('.offline-map__frame').exists()).toBe(false)
+    expect(wrapper.get('.offline-map').text()).not.toContain('数据时刻')
     expect(wrapper.get('[aria-label="链路、干扰与事件"]')).toBeTruthy()
     expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(10)
     expect(wrapper.get('.link-table thead').text()).toBe('链路体制SNRBER状态')
@@ -180,6 +200,11 @@ describe('态势主界面', () => {
     expect(wrapper.findAll('.link-table tbody tr.is-exception')).toHaveLength(1)
     expect(wrapper.findAll('[data-frame-id="F-00042"]').length).toBeGreaterThanOrEqual(3)
     expect(wrapper.get('[data-testid="frame-freshness"]').text()).toBe('最大数据年龄 0 ms · 新鲜')
+    const footer = wrapper.get('.situation-footer')
+    expect(footer.text()).not.toContain('固定帧')
+    expect(footer.text()).not.toContain('数据时刻')
+    expect(footer.get('.situation-footer__sequence').text()).toBe('帧序号 42')
+    expect(footer.attributes('data-frame-id')).toBe('F-00042')
     expect(wrapper.get('.node-jammer-count').text()).toBe('6 / 50')
     expect(wrapper.findAll('[data-testid^="focus-node-"]')).toHaveLength(8)
     expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
@@ -193,12 +218,95 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('空中无人作业节点 U03')
     expect(wrapper.text()).toContain('机载瞄准式干扰设备')
     expect(wrapper.text()).toContain('地面宽带压制干扰设备')
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
-    expect(fetchSpy).toHaveBeenNthCalledWith(1,
+    expect(fetchSpy).toHaveBeenCalledTimes(4)
+    expect(fetchSpy).toHaveBeenNthCalledWith(2,
       'http://127.0.0.1:4173/api/v1/simulations',
       expect.objectContaining({ headers: { 'X-Demo-Role': 'OPERATOR' } }),
     )
     expect(webSocketSpy).toHaveBeenCalledOnce()
+  })
+
+  it('真实初始节点共享列表与地图数据，不请求 Mock 帧或启动模拟引擎', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(INITIAL_NODES))
+      .mockResolvedValue(successResponse(null))
+    const webSocketSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    vi.stubGlobal('WebSocket', webSocketSpy)
+    const wrapper = await mountSituationPage()
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(webSocketSpy).not.toHaveBeenCalled()
+    expect(useTelemetryStore().frame).toBeNull()
+    expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
+    expect(wrapper.get('.node-jammer-count').text()).toBe('2 个')
+    expect(wrapper.find('.telemetry-panel').exists()).toBe(false)
+    expect(wrapper.find('.metric-panel').exists()).toBe(false)
+    expect(wrapper.find('.offline-map__legend').exists()).toBe(false)
+    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: INITIAL_NODES.nodes })
+    await wrapper.get('[data-testid="focus-node-A"]').trigger('click')
+    expect(mapControllerMock.controller.focusTarget).toHaveBeenCalledWith({ kind: 'node', targetId: 'A' })
+    mapControllerMock.latestOptions?.onSelectNode('A')
+    await flushPromises()
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('HIGH_ALT_COMMS_PLATFORM')
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('离线底图覆盖范围之外')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('真实日志读取失败不回显预置 Mock 数据，允许重新加载', async () => {
+    const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('读取失败'))
+      .mockResolvedValueOnce(successResponse(INITIAL_NODES))
+      .mockResolvedValue(successResponse(null))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    expect(wrapper.text()).toContain('初始节点读取失败')
+    expect(wrapper.find('.offline-map').exists()).toBe(false)
+    expect(wrapper.find('.telemetry-panel').exists()).toBe(false)
+    await wrapper.get('.telemetry-empty button').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
+  it('追加位置持续同步地图与详情，失败保留位置，换代复位，卸载后停止轮询', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const snapshot: PositionSnapshot = {
+      fileName: 'positions.csv', generation: 1, recordCount: 1, issueCount: 0, issues: [],
+      waitingForLine: false, hasMore: false,
+      nodes: [{ platformId: 'A', time: 1, longitude: -78, latitude: 31, altitude: 10, speed: 220, heading: -1 }],
+    }
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(INITIAL_NODES))
+      .mockResolvedValueOnce(successResponse(snapshot))
+      .mockRejectedValueOnce(new Error('临时读取失败'))
+      .mockResolvedValueOnce(successResponse({ ...snapshot, generation: 2, recordCount: 0, nodes: [] }))
+      .mockResolvedValue(successResponse(null))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    expect(wrapper.text()).toContain('位置已同步，等待追加')
+    expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
+    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith([
+      expect.objectContaining({ platformId: 'A', longitude: -78, latitude: 31 }), INITIAL_NODES.nodes[1],
+    ])
+    mapControllerMock.latestOptions?.onSelectNode('A')
+    await flushPromises()
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('78°W / 31°N')
+    const updates = mapControllerMock.controller.setNodes.mock.calls.length
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(wrapper.text()).toContain('保留最后位置')
+    expect(mapControllerMock.controller.setNodes).toHaveBeenCalledTimes(updates)
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('78°W / 31°N')
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith(INITIAL_NODES.nodes)
+    expect(wrapper.get('[data-testid="focus-node-A"]').attributes('aria-pressed')).toBe('true')
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
+    wrapper.unmount()
+    mountedWrapper = null
+    const requests = fetchSpy.mock.calls.length
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(fetchSpy).toHaveBeenCalledTimes(requests)
   })
 
   it('支持开始、暂停并在确认后停止', async () => {
@@ -220,7 +328,7 @@ describe('态势主界面', () => {
       simulationRun('STOPPED', false),
     ])
     vi.stubGlobal('fetch', fetchSpy)
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('配置可查看')
@@ -244,26 +352,29 @@ describe('态势主界面', () => {
     expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
     expect(wrapper.text()).toContain('场景配置未锁定')
     expect(wrapper.get('[data-testid="engine-resource"]').text()).toContain('模拟进程资源已释放')
-    expect(fetchSpy).toHaveBeenCalledTimes(9)
+    expect(fetchSpy).toHaveBeenCalledTimes(10)
   })
 
-  it('按链路条件同步筛选地图、表格和 KPI', async () => {
-    const wrapper = mountSituationPage()
+  it('移除指标筛选框后地图、表格和计数均使用全部链路', async () => {
+    const wrapper = await mountSituationPage()
     await flushPromises()
 
-    await wrapper.get('select[aria-label="按链路筛选"]').setValue('L-DL-03')
-    await flushPromises()
-
-    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(1)
+    expect(wrapper.find('.metric-panel select').exists()).toBe(false)
+    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(10)
     expect(wrapper.get('tr[data-link-id="L-DL-03"]')).toBeTruthy()
-    expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('平均 SNR7.10 dB')
-    expect(mapControllerMock.controller.setLinks).toHaveBeenLastCalledWith([
-      expect.objectContaining({ linkId: 'L-DL-03' }),
+    expect(wrapper.findAll('.metric-panel__item span').map((label) => label.text())).toEqual([
+      '在线业务信息节点', '正常链路', '劣化链路', '中断链路',
     ])
+    expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('劣化链路1')
+    expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('正常链路9')
+    expect(wrapper.get('tr[data-link-id="L-DL-03"]').text()).toContain('7.10')
+    const mapLinks = mapControllerMock.controller.setLinks.mock.lastCall?.[0]
+    expect(mapLinks).toHaveLength(10)
+    expect(mapLinks).toEqual(expect.arrayContaining([expect.objectContaining({ linkId: 'L-DL-03' })]))
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     const layerButtons = wrapper.findAll('[aria-label="态势图层"] button')
 
     await layerButtons[0]?.trigger('click')
@@ -313,7 +424,7 @@ describe('态势主界面', () => {
   })
 
   it('左右悬浮面板可独立折叠并重新展开', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     const workspace = wrapper.get('.situation-page__workspace')
     const scenePanel = wrapper.get('[aria-label="场景配置"]')
     const telemetryPanel = wrapper.get('[aria-label="链路、干扰与事件"]')
@@ -343,7 +454,7 @@ describe('态势主界面', () => {
   })
 
   it('展示 L-DL-03 的劣化详情并区分只有摘要的链路', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
 
     const degradedBadge = wrapper.get('tr[data-link-id="L-DL-03"] .link-status')
     expect(degradedBadge.text()).toBe('劣化')
@@ -384,7 +495,7 @@ describe('态势主界面', () => {
   })
 
   it('展示同帧候选快照并识别空集合和过期结果', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await flushPromises()
     const telemetry = useTelemetryStore()
 
@@ -442,7 +553,7 @@ describe('态势主界面', () => {
   })
 
   it('链路状态徽标同步展示正常、劣化和中断三态', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await flushPromises()
     const telemetry = useTelemetryStore()
     const nextFrame = structuredClone(SITUATION_FRAME_F00042)
@@ -459,7 +570,7 @@ describe('态势主界面', () => {
   })
 
   it('link.metric 将 L-MW-01 规范状态实时更新为中断', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await flushPromises()
     const telemetry = useTelemetryStore()
     const updatedSummaries = structuredClone(SITUATION_FRAME_F00042.linkSummaries)
@@ -482,7 +593,7 @@ describe('态势主界面', () => {
   })
 
   it('所选链路从当前帧消失时显示缺失态且不回显历史数据', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
     await flushPromises()
     expect(document.querySelector('.link-quality-dialog')).not.toBeNull()
@@ -499,7 +610,7 @@ describe('态势主界面', () => {
   })
 
   it('所选链路过期时阻止显示历史质量值', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     await wrapper.get('tr[data-link-id="L-DL-03"]').trigger('click')
     await flushPromises()
 
@@ -517,7 +628,7 @@ describe('态势主界面', () => {
   })
 
   it('通过 Leaflet 控制器同步图层、视图、选择和销毁', async () => {
-    const wrapper = mountSituationPage()
+    const wrapper = await mountSituationPage()
     const options = mapControllerMock.latestOptions
 
     expect(options).not.toBeNull()
@@ -525,6 +636,15 @@ describe('态势主界面', () => {
     const layerButtons = layerbar.findAll('button')
     expect(layerButtons).toHaveLength(4)
     expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '干扰范围', '经纬网'])
+    const gridButton = layerButtons[3]
+    expect(gridButton.attributes('aria-pressed')).toBe('false')
+    expect(gridButton.classes()).not.toContain('active')
+    await gridButton.trigger('click')
+    expect(gridButton.attributes('aria-pressed')).toBe('true')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('grid', true)
+    await gridButton.trigger('click')
+    expect(gridButton.attributes('aria-pressed')).toBe('false')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('grid', false)
     expect(layerbar.get('span').text()).toBe('离线矢量 · Z10')
     await layerButtons[0].trigger('click')
     expect(mapControllerMock.controller.setLayerVisible).toHaveBeenCalledWith('nodes', false)
@@ -647,6 +767,7 @@ describe('Leaflet 控制器回归', () => {
   const activeControllers = new Set<{ destroy: () => void }>()
 
   async function createController(options: {
+    initialNodes?: SituationMapNode[]
     onSelectNode?: (platformId: string) => void
     onSelectLink?: (link: SituationLinkView) => void
     onZoomChange?: (zoom: number) => void
@@ -662,8 +783,9 @@ describe('Leaflet 控制器回归', () => {
 
     const controller = createSituationMapController({
       container,
-      frame: reactive(structuredClone(SITUATION_FRAME_F00042)),
-      links: SITUATION_LINKS_F00042,
+      frame: options.initialNodes ? null : reactive(structuredClone(SITUATION_FRAME_F00042)),
+      initialNodes: options.initialNodes,
+      links: options.initialNodes ? [] : SITUATION_LINKS_F00042,
       selectedNodeId: 'CMD-01',
       onSelectNode: options.onSelectNode ?? vi.fn(),
       onSelectLink: options.onSelectLink ?? vi.fn(),
@@ -707,6 +829,45 @@ describe('Leaflet 控制器回归', () => {
     vectorGridLayer = null
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('无遥测帧时按真实坐标创建节点，保留西经并支持定位高亮', async () => {
+    const markerSpy = vi.spyOn(L, 'marker')
+    const circleSpy = vi.spyOn(L, 'circle')
+    const setViewSpy = vi.spyOn(L.Map.prototype, 'setView')
+    const onSelectNode = vi.fn()
+    const controller = await createController({ initialNodes: INITIAL_NODES.nodes, onSelectNode })
+    const nodeMarkers = markerSpy.mock.calls.filter(([, options]) => options?.title?.startsWith('选择节点'))
+    expect(nodeMarkers.map(([point]) => point)).toEqual([[30.0024, -77.9617], [25.1026, 118.7321]])
+    expect(circleSpy).not.toHaveBeenCalled()
+    const tileBounds = leaflet.vectorGrid.protobuf.mock.calls.at(-1)?.[1].bounds as L.LatLngBounds
+    expect(tileBounds.contains([30.0024, -77.9617])).toBe(false)
+    expect(tileBounds.contains([25.1026, 118.7321])).toBe(true)
+    controller.focusTarget({ kind: 'node', targetId: 'A' })
+    expect(setViewSpy).toHaveBeenLastCalledWith([30.0024, -77.9617], MAP_CONFIG.defaults.zoom, expect.objectContaining({ animate: true, duration: 0.45 }))
+    expect(container?.querySelectorAll('.situation-map-node-marker--selected')).toHaveLength(1)
+    markerSpy.mock.results.at(-1)?.value.fire('click')
+    expect(onSelectNode).toHaveBeenCalledWith('B')
+    expect(container?.querySelectorAll('.situation-map-node-marker--selected')).toHaveLength(1)
+  })
+
+  it('更新文件节点时保留地图实例、视图和选中项，后续定位使用最新坐标', async () => {
+    const markerSpy = vi.spyOn(L, 'marker')
+    const setViewSpy = vi.spyOn(L.Map.prototype, 'setView')
+    const removeSpy = vi.spyOn(L.Map.prototype, 'remove')
+    const controller = await createController({ initialNodes: INITIAL_NODES.nodes })
+    controller.focusTarget({ kind: 'node', targetId: 'A' })
+    setViewSpy.mockClear()
+    markerSpy.mockClear()
+    controller.setNodes(INITIAL_NODES.nodes.map((node) => node.platformId === 'A'
+      ? { ...node, longitude: -78, latitude: 31 } : node))
+    expect(setViewSpy).not.toHaveBeenCalled()
+    expect(removeSpy).not.toHaveBeenCalled()
+    expect(markerSpy.mock.calls.filter(([, options]) => options?.title?.startsWith('选择节点'))
+      .map(([point]) => point)).toEqual([[31, -78], [25.1026, 118.7321]])
+    expect(container?.querySelectorAll('.situation-map-node-marker--selected')).toHaveLength(1)
+    controller.focusTarget({ kind: 'node', targetId: 'A' })
+    expect(setViewSpy).toHaveBeenLastCalledWith([31, -78], MAP_CONFIG.defaults.zoom, expect.objectContaining({ animate: true }))
   })
 
   it('链路 props 筛选和重排后保持几何与交互绑定', async () => {
@@ -803,7 +964,7 @@ describe('Leaflet 控制器回归', () => {
         zoomSnap: MAP_CONFIG.zoom.snap,
       }),
     )
-    expect(MAP_CONFIG.defaults).toEqual({ theme: 'light', basemap: 'vector', zoom: 10 })
+    expect(MAP_CONFIG.defaults).toEqual({ theme: 'light', basemap: 'vector', zoom: 10, gridVisible: false })
     expect(MAP_CONFIG.taskBounds).toEqual([[21.8, 117], [26.4, 123]])
     expect(MAP_CONFIG.fitPadding).toEqual([24, 24])
     expect(MAP_CONFIG.gridIntervalDegrees).toBe(0.5)
@@ -908,6 +1069,11 @@ describe('Leaflet 控制器回归', () => {
     const controller = await createController()
     const map = mapSpy.mock.results[0]?.value as L.Map
     const gridGroup = layerGroupSpy.mock.results[3]?.value as L.LayerGroup
+    expect(map.hasLayer(gridGroup)).toBe(false)
+    controller.setLayerVisible('grid', true)
+    expect(map.hasLayer(gridGroup)).toBe(true)
+    controller.setLayerVisible('grid', false)
+    expect(map.hasLayer(gridGroup)).toBe(false)
     const vectorLayer = vectorGridLayer as MockVectorGridLayer
     const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer
     const vectorRemoveSpy = vi.spyOn(vectorLayer, 'removeFrom')
@@ -1079,6 +1245,7 @@ describe('Leaflet 控制器回归', () => {
     expect(tileLayerSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4174/tiles/taiwan-strait-satellite/{z}/{x}/{y}',
       {
+        bounds: L.latLngBounds([...MAP_CONFIG.resources.satellite.bounds[0]], [...MAP_CONFIG.resources.satellite.bounds[1]]),
         minZoom: MAP_CONFIG.zoom.min,
         maxNativeZoom: MAP_CONFIG.resources.satellite.maxNativeZoom,
         maxZoom: MAP_CONFIG.zoom.max,

@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import CsvContractCard from '../../components/data-exchange/CsvContractCard.vue'
+import ExchangeMonitor from '../../components/data-exchange/ExchangeMonitor.vue'
 import InterfaceContractTable from '../../components/data-exchange/InterfaceContractTable.vue'
 import ProcessContractCard from '../../components/data-exchange/ProcessContractCard.vue'
 import ScenarioJsonPanel from '../../components/data-exchange/ScenarioJsonPanel.vue'
@@ -12,11 +13,18 @@ import { useTelemetryStore } from '../../stores/telemetry'
 const store = useDataExchangeStore()
 const telemetry = useTelemetryStore()
 const route = useRoute()
+const toolsVisible = ref(false)
+
+/** 打开既有接口工具；target 为卡片或接口的本页锚点，留空时展示工具顶部。 */
+async function openTools(target = ''): Promise<void> {
+  toolsVisible.value = true
+  await nextTick()
+  if (target) document.getElementById(target)?.scrollIntoView({ block: 'start' })
+}
 
 /** 合同目录渲染完成后定位当前接口锚点，不接受外部页面地址。 */
 async function locateInterface(): Promise<void> {
-  await nextTick()
-  document.getElementById(route.hash.slice(1))?.scrollIntoView({ block: 'start' })
+  if (route.hash.startsWith('#de-')) await openTools(route.hash.slice(1))
 }
 watch(() => route.hash, locateInterface)
 
@@ -32,7 +40,8 @@ async function loadContracts(): Promise<void> {
 
 onMounted(loadContracts)
 onUnmounted(() => {
-  if (telemetry.connectionState !== 'DISCONNECTED') telemetry.disconnectAndReset()
+  // 尚在加载快照时也使请求失效，避免离页后建立连接。
+  telemetry.disconnectAndReset()
 })
 </script>
 
@@ -40,13 +49,11 @@ onUnmounted(() => {
   <section class="page data-exchange-page" aria-labelledby="data-exchange-title">
     <header class="data-exchange-page__header">
       <div>
-        <p class="eyebrow">P5 · 数据交换与接口</p>
         <h2 id="data-exchange-title">数据交换与接口</h2>
-        <p>以确定性 Mock 验证 CSV、场景 JSON、本机消息、进程管理及七类接口合同。</p>
       </div>
       <div class="data-exchange-page__status">
-        <el-tag type="warning" effect="plain">零真实文件 / 零真实进程</el-tag>
-        <el-button :loading="store.loadState === 'LOADING'" @click="loadContracts">重新加载合同</el-button>
+        <el-tag type="warning" effect="plain">Mock 监控</el-tag>
+        <el-button data-testid="open-exchange-tools" @click="openTools()">接口工具</el-button>
       </div>
     </header>
 
@@ -59,20 +66,33 @@ onUnmounted(() => {
       data-testid="contract-load-error"
     />
 
-    <div class="data-exchange-page__capabilities">
-      <CsvContractCard />
-      <ScenarioJsonPanel />
-      <WebSocketContractCard />
-      <ProcessContractCard />
-    </div>
+    <ExchangeMonitor @tools="openTools" @refresh="loadContracts" />
 
-    <InterfaceContractTable />
+    <el-drawer v-model="toolsVisible" title="接口工具" size="min(1120px, 94vw)" :close-on-click-modal="false">
+      <div class="data-exchange-page__status">
+        <el-tag type="warning" effect="plain">零真实文件 / 零真实进程</el-tag>
+        <el-button :loading="store.loadState === 'LOADING'" @click="loadContracts">重新加载合同</el-button>
+      </div>
+      <div class="data-exchange-page__capabilities">
+        <CsvContractCard />
+        <ScenarioJsonPanel />
+        <WebSocketContractCard />
+        <ProcessContractCard />
+      </div>
+      <InterfaceContractTable />
+    </el-drawer>
   </section>
 </template>
 
 <style scoped>
 .data-exchange-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
   min-width: 0;
+  padding: 16px;
   overflow: auto;
 }
 
@@ -87,9 +107,10 @@ onUnmounted(() => {
 }
 
 .data-exchange-page__header {
-  align-items: flex-start;
-  margin-bottom: var(--space-4);
+  flex: 0 0 auto;
 }
+
+.data-exchange-page__header h2 { font-size: 18px; }
 
 .data-exchange-page__header h2,
 :deep(.exchange-card h3),
@@ -98,16 +119,11 @@ onUnmounted(() => {
   color: var(--console-text);
 }
 
-.data-exchange-page__header > div:first-child > p:last-child,
 :deep(.exchange-card__description),
 :deep(.exchange-card__note),
 :deep(.interface-item p) {
   color: var(--console-text-muted);
   line-height: 1.65;
-}
-
-.data-exchange-page__header > div:first-child > p:last-child {
-  margin: var(--space-2) 0 0;
 }
 
 .data-exchange-page__capabilities {
@@ -190,6 +206,10 @@ onUnmounted(() => {
   :deep(.interface-groups) {
     grid-template-columns: 1fr;
   }
+}
+
+@media (max-width: 1100px) {
+  .data-exchange-page { height: auto; min-height: 100%; }
 }
 
 @media (max-width: 620px) {

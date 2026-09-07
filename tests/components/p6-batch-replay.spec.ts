@@ -7,7 +7,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { Batch, Principal, Replay } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
-  default: { name: 'OfflineSituationMap', template: '<div data-testid="offline-map-stub" />' },
+  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
 }))
 
 import BatchesPage from '../../src/pages/batches/batches.vue'
@@ -16,6 +16,7 @@ import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 import { useReplayStore } from '../../src/stores/replay'
+import { LOCAL_REPLAY } from '../fixtures/local-replay'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR',
@@ -41,9 +42,59 @@ async function mountPage(component: typeof BatchesPage | typeof ReplaysPage, pat
 
 describe('P6 批量仿真与历史回放页面', () => {
   afterEach(() => {
+    vi.useRealTimers()
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
+  })
+
+  it('真实文件回放保持现有控制，按播放和拖动时刻更新地图，不加载模拟帧或事件', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const fetchSpy = vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    const map = wrapper.findComponent({ name: 'OfflineSituationMap' })
+    expect(wrapper.text()).toContain('positions.csv')
+    expect(wrapper.text()).not.toContain('F-00042')
+    expect(wrapper.text()).not.toContain('SW-004')
+    expect(map.props('frame')).toBeNull()
+    expect(map.props('links')).toEqual([])
+    expect(map.props('initialNodes')).toHaveLength(2)
+    expect(map.props('initialNodes')[0].longitude).toBe(-77)
+    await wrapper.get('.replay-node-location button').trigger('click')
+    expect(map.props('focusTarget')).toEqual({ kind: 'node', targetId: 'A' })
+    await wrapper.get('[data-testid="replay-play"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(map.props('initialNodes')[0].longitude).toBe(-78)
+    const nodeSelect = wrapper.get('.replay-event-detail').getComponent({ name: 'ElSelect' })
+    nodeSelect.vm.$emit('update:modelValue', 'B')
+    await flushPromises()
+    expect(map.props('focusTarget')).toEqual({ kind: 'node', targetId: 'B' })
+    await wrapper.get('[role="slider"]').trigger('keydown', { key: 'End', code: 'End' })
+    await flushPromises()
+    expect(map.props('initialNodes')[0].longitude).toBe(-79)
+    expect(map.props('selectedNodeId')).toBe('B')
+    await wrapper.get('[role="slider"]').trigger('keydown', { key: 'Home', code: 'Home' })
+    await flushPromises()
+    expect(map.props('initialNodes')[0].longitude).toBe(-77)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    await wrapper.get('.replays-page__header button').trigger('click')
+    await flushPromises()
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(useReplayStore().replay?.currentTimeS).toBe(0)
+    wrapper.unmount()
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('真实文件读取失败展示中文错误，不回退旧地图', async () => {
+    const fetchSpy = vi.fn().mockRejectedValue(new Error('文件暂不可读'))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    expect(wrapper.text()).toContain('历史回放不可用')
+    expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    wrapper.unmount()
   })
 
   it('展示 12 行批量对比并完成创建、启动和聚合报告跳转', async () => {
@@ -83,6 +134,7 @@ describe('P6 批量仿真与历史回放页面', () => {
   it('展示只读回放地图、事件时间轴并执行播放与事件定位', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
+      if (url.endsWith('/replays/local-file')) return Promise.resolve(success(null))
       if (url.includes('/frames/')) return Promise.resolve(success(fixtureSource.frame))
       if (url.endsWith('/simulations/RUN-001/events')) return Promise.resolve(success(fixtureSource.events))
       if (url.endsWith('/api/v1/replays')) return Promise.resolve(success([fixtureSource.replay]))
@@ -120,7 +172,9 @@ describe('P6 批量仿真与历史回放页面', () => {
     let finishLoad!: (loaded: boolean) => void
     vi.spyOn(useTelemetryStore(), 'loadFrame').mockReturnValue(new Promise<boolean>((resolve) => { finishLoad = resolve }))
     const load = vi.spyOn(useReplayStore(), 'load')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(null)))
     const wrapper = mount(ReplaysPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
     wrapper.unmount()
     finishLoad(true)
     await flushPromises()
@@ -131,6 +185,7 @@ describe('P6 批量仿真与历史回放页面', () => {
   it('明确展示回放空态和损坏态', async () => {
     const baseFetch = (replays: unknown, replayDetail?: unknown) => vi.fn((input: RequestInfo | URL) => {
       const url = String(input)
+      if (url.endsWith('/replays/local-file')) return Promise.resolve(success(null))
       if (url.includes('/frames/')) return Promise.resolve(success(fixtureSource.frame))
       if (url.endsWith('/simulations/RUN-001/events')) return Promise.resolve(success(fixtureSource.events))
       if (url.endsWith('/api/v1/replays')) return Promise.resolve(success(replays))

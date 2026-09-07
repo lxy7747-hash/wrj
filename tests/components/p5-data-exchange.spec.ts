@@ -1,10 +1,11 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import ProcessContractCard from '../../src/components/data-exchange/ProcessContractCard.vue'
+import ExchangeMonitor from '../../src/components/data-exchange/ExchangeMonitor.vue'
 import ScenarioJsonPanel from '../../src/components/data-exchange/ScenarioJsonPanel.vue'
 import WebSocketContractCard from '../../src/components/data-exchange/WebSocketContractCard.vue'
 import type { Principal, ScenarioDraft, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
@@ -43,6 +44,88 @@ describe('P5 数据交换页面', () => {
       if (path.endsWith('/csv')) return Promise.resolve(successResponse(fixtureSource.contracts.csv))
       return Promise.resolve(successResponse(fixtureSource.metadata.interfaces))
     }))
+  })
+
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  it('监控仅统计本页消息，区分重复与拒绝，限制缓存并清理订阅和计时器', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval')
+    const clearSpy = vi.spyOn(globalThis, 'clearInterval')
+    const telemetry = useTelemetryStore()
+    const wrapper = mount(ExchangeMonitor, { global: { plugins: [ElementPlus] } })
+    const monitorTimer = intervalSpy.mock.results[intervalSpy.mock.calls.findIndex((call) => call[1] === 1000)].value
+    expect(wrapper.findAll('.monitor-status')).toHaveLength(6)
+    expect(wrapper.text()).toContain('AFSIM 引擎未接入')
+    expect(wrapper.text()).toContain('SQLite未接入')
+    expect(wrapper.findAll('.monitor-curve')).toHaveLength(0)
+    const envelope = { type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId: 'TASK-001', sequence: 43,
+      frameId: fixtureSource.frame.frameId, simulationTime: fixtureSource.frame.simulationTime, payload: fixtureSource.frame }
+    expect(telemetry.acceptEnvelope(envelope)).toBe(true)
+    expect(telemetry.acceptEnvelope(envelope)).toBe(true)
+    expect(telemetry.acceptEnvelope({ ...envelope, schemaVersion: '99' })).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    const table = wrapper.get('[data-testid="exchange-records"]')
+    expect(table.text()).toContain('通过')
+    expect(table.text()).toContain('忽略')
+    expect(table.text()).toContain('拒绝')
+    expect(wrapper.get('[aria-label="消息处理耗时"]').text()).toContain('66.7%')
+    for (let index = 0; index < 55; index += 1) telemetry.acceptEnvelope(envelope)
+    await vi.advanceTimersByTimeAsync(61000)
+    expect(table.findAll('.el-table__row')).toHaveLength(50)
+    expect(wrapper.get('.monitor-curve').attributes('points')!.split(' ')).toHaveLength(60)
+    telemetry.resetToSafeEmpty()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(table.findAll('.el-table__row')).toHaveLength(0)
+    expect(wrapper.findAll('.monitor-curve')).toHaveLength(0)
+    wrapper.unmount()
+    // 只检查监控持有的采样定时器，不将 jsdom 的动画帧定时器误判为页面泄漏。
+    expect(clearSpy).toHaveBeenCalledWith(monitorTimer)
+    expect(telemetry.acceptEnvelope({ ...envelope, sequence: 1 })).toBe(true)
+    expect(intervalSpy.mock.calls.filter((call) => call[1] === 1000)).toHaveLength(1)
+  })
+
+  it('默认展示监控，打开工具后关闭重开不丢失输入', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/data-exchange', component: DataExchangePage }] })
+    await router.push('/admin/data-exchange')
+    const wrapper = mount(DataExchangePage, { global: { plugins: [ElementPlus, router] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="exchange-monitor"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="csv-contract-card"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="open-exchange-tools"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="csv-text"]').setValue('尚未提交的文本')
+    await wrapper.get('.el-drawer__close-btn').trigger('click')
+    await wrapper.get('[data-testid="open-exchange-tools"]').trigger('click')
+    expect((wrapper.get('[data-testid="csv-text"]').element as HTMLTextAreaElement).value).toBe('尚未提交的文本')
+    wrapper.unmount()
+  })
+
+  it('连接前的快照请求在离页后返回时不得建立通道', async () => {
+    const telemetry = useTelemetryStore()
+    telemetry.resetToSafeEmpty()
+    const connect = vi.spyOn(telemetry, 'connect')
+    const originalFetch = fetch
+    let resolveFrame!: (response: Response) => void
+    const pendingFrame = new Promise<Response>((resolve) => { resolveFrame = resolve })
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname
+      if (path.endsWith('/frames/F-00042')) return pendingFrame
+      if (path.endsWith('/events')) return Promise.resolve(successResponse(fixtureSource.events))
+      return originalFetch(input)
+    }))
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/admin/data-exchange', component: DataExchangePage }] })
+    await router.push('/admin/data-exchange')
+    const wrapper = mount(DataExchangePage, { global: { plugins: [ElementPlus, router] } })
+    await flushPromises()
+    await wrapper.get('.connection-actions button').trigger('click')
+    expect(telemetry.capabilityState).toBe('LOADING')
+    wrapper.unmount()
+    resolveFrame(successResponse(fixtureSource.frame))
+    await flushPromises()
+    expect(connect).not.toHaveBeenCalled()
+    expect(telemetry.frame).toBeNull()
+    expect(telemetry.connectionState).toBe('DISCONNECTED')
   })
 
   it('展示四项能力和七类接口，并完成内存校验', async () => {

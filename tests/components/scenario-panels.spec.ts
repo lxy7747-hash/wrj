@@ -37,7 +37,8 @@ describe('场景拆分面板', () => {
     failed.unmount()
 
     const empty = mountValidationPanel()
-    expect(empty.text()).toContain('尚未执行整体校验')
+    expect(empty.text()).toContain('可单独执行整体校验')
+    expect(empty.text()).toContain('校验并保存')
     empty.unmount()
 
     const success = mountValidationPanel({ completed: true })

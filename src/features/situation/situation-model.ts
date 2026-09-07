@@ -48,17 +48,6 @@ export interface SituationMetrics {
   downLinkCount: number
   activeJammerCount: number
   switchEventCount: number
-  avgSnrDb: number | null
-  avgBer: number | null
-  avgReceivedPowerDbm: number | null
-  latencyMs: number | null
-  latestUpdatedAt: number | null
-}
-
-export interface SituationMetricFilters {
-  nodeId: string
-  linkId: string
-  windowMs: number | null
 }
 
 export const SITUATION_FRAME_F00042 = deterministicData.frame as unknown as TelemetryFrame
@@ -272,27 +261,6 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
 }
 
 /**
- * 按节点、链路和数据年龄筛选同一帧链路。
- * @param links 当前帧链路视图。
- * @param filters 用户选择的三个筛选条件，空字符串和 `null` 表示不限。
- * @param frame 节点编号解析所用的当前遥测帧。
- * @returns 同时满足全部条件的链路，不修改输入集合。
- * @sideeffect 无副作用。
- */
-export function filterSituationLinks(
-  links: SituationLinkView[],
-  filters: SituationMetricFilters,
-  frame = SITUATION_FRAME_F00042,
-): SituationLinkView[] {
-  const nodeName = filters.nodeId === '' ? '' : getPlatformName(filters.nodeId, frame)
-  return links.filter((link) => (
-    (nodeName === '' || link.sourceName === nodeName || link.destinationName === nodeName)
-    && (filters.linkId === '' || link.linkId === filters.linkId)
-    && (filters.windowMs === null || link.ageMs <= filters.windowMs)
-  ))
-}
-
-/**
  * 汇总固定帧态势指标。
  * @returns 带帧标识的节点、链路、干扰和切换指标。
  * @sideeffect 无副作用，只读取固定帧和同帧事件。
@@ -307,7 +275,6 @@ export function selectSituationMetrics(
   const activeJammerCount = frame.platforms
     .flatMap((platform) => platform.jammers)
     .filter((jammer) => jammer.active).length
-  const detailedLinks = links.flatMap((link) => link.detailed === null ? [] : [link.detailed])
 
   return {
     frameId: frame.frameId,
@@ -319,14 +286,6 @@ export function selectSituationMetrics(
     downLinkCount: links.filter((link) => link.status === 'DOWN').length,
     activeJammerCount,
     switchEventCount: events.filter((event) => event.type === 'LINK_SWITCH').length,
-    avgSnrDb: links.length === 0 ? null : links.reduce((sum, link) => sum + link.snrDb, 0) / links.length,
-    avgBer: links.length === 0 ? null : links.reduce((sum, link) => sum + link.ber, 0) / links.length,
-    avgReceivedPowerDbm: detailedLinks.length === 0
-      ? null
-      : detailedLinks.reduce((sum, link) => sum + link.receivedPower, 0) / detailedLinks.length,
-    // 冻结遥测合同没有实测时延字段，明确展示“未提供”，不从带宽或需求上限猜测。
-    latencyMs: null,
-    latestUpdatedAt: links.length === 0 ? null : Math.max(...links.map((link) => link.updatedAt)),
   }
 }
 

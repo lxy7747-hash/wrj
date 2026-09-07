@@ -5,6 +5,8 @@ import type { ApiFailure, DetectionEvent, Principal, Replay, TelemetryFrame } fr
 import { useAuthStore } from '../../src/stores/auth'
 import { isReplay, replayEventTime, useReplayStore } from '../../src/stores/replay'
 import { useTelemetryStore } from '../../src/stores/telemetry'
+import { LOCAL_REPLAY } from '../fixtures/local-replay'
+import { selectReplayNodes } from '../../src/features/replays/local-replay'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ'],
@@ -26,6 +28,101 @@ function failure(): Response {
 }
 
 describe('P6 历史回放 Store', () => {
+  it('Pinia 开发工具为每次操作创建代理时仍只有一个计时器，暂停和离页可清理', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY))))
+    const store = useReplayStore()
+    // 模拟 Pinia 开发工具的 action 分组代理，不依赖浏览器插件是否启用。
+    const actions = ['loadLocalFile', 'play', 'pause', 'executeCommand', 'executeLocalCommand',
+      'startPlaybackTimer', 'stopPlaybackTimer', 'advancePlayback', 'resetToSafeEmpty'] as const
+    for (const name of actions) {
+      const action = store[name]
+      Object.defineProperty(store, name, { configurable: true, writable: true,
+        value: (...args: unknown[]) => Reflect.apply(action, new Proxy(store, {}), args) })
+    }
+    await store.loadLocalFile()
+    await store.play()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.replay?.currentTimeS).toBe(1)
+    expect(vi.getTimerCount()).toBe(1)
+    await store.pause()
+    expect(vi.getTimerCount()).toBe(0)
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(store.replay?.currentTimeS).toBe(1)
+    store.resetToSafeEmpty()
+  })
+
+  it('真实回放本地播放、倍速、暂停、定位和末尾重播，不发 Mock 控制请求', async () => {
+    vi.useFakeTimers()
+    const fetchSpy = vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    expect(await store.loadLocalFile()).toBe(true)
+    expect(store).toMatchObject({ state: 'PAUSED', replay: { currentTimeS: 0, durationS: 3 }, events: [] })
+    await store.play()
+    await store.setSpeed(2)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.replay?.currentTimeS).toBe(2)
+    expect(selectReplayNodes(store.localSnapshot!, 2)[0]?.longitude).toBe(-78)
+    await store.pause()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(store.replay?.currentTimeS).toBe(2)
+    await store.seek(0)
+    expect(selectReplayNodes(store.localSnapshot!, store.replay!.currentTimeS)[0]?.longitude).toBe(-77)
+    await store.step('forward')
+    expect(store.replay?.currentTimeS).toBe(1)
+    await store.step('back')
+    expect(store.replay?.currentTimeS).toBe(0)
+    expect(await store.seek(4)).toBe(false)
+    expect(await store.setSpeed(0)).toBe(false)
+    await store.seek(2)
+    await store.play()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store).toMatchObject({ state: 'COMPLETED', replay: { currentTimeS: 3 } })
+    expect(vi.getTimerCount()).toBe(0)
+    await store.play()
+    expect(store.replay?.currentTimeS).toBe(0)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    store.resetToSafeEmpty()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(store.localSnapshot).toBeNull()
+  })
+
+  it('文件回放重新加载采用新快照并归零，损坏或失败不回退模拟数据', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY)))
+      .mockResolvedValueOnce(success({ ...LOCAL_REPLAY, sha256: 'c'.repeat(64) }))
+      .mockResolvedValueOnce(success({ ...LOCAL_REPLAY, durationS: 99 }))
+      .mockRejectedValueOnce(new Error('读取失败'))
+      .mockResolvedValueOnce(success(null))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    await store.loadLocalFile()
+    await store.seek(2)
+    expect(await store.loadLocalFile()).toBe(true)
+    expect(store.localSnapshot?.sha256).toBe('c'.repeat(64))
+    expect(store.replay?.currentTimeS).toBe(0)
+    expect(await store.loadLocalFile()).toBe(false)
+    expect(store).toMatchObject({ state: 'CORRUPT', localSnapshot: null, replay: null })
+    expect(await store.loadLocalFile()).toBe(false)
+    expect(store.state).toBe('ERROR')
+    expect(await store.loadLocalFile()).toBeNull()
+    expect(fetchSpy.mock.calls.every(([url]) => String(url).endsWith('/replays/local-file'))).toBe(true)
+  })
+
+  it('离页取消真实文件请求，迟到响应不恢复地图或计时器', async () => {
+    let finish!: (response: Response) => void
+    const fetchSpy = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => new Promise<Response>((resolve) => { finish = resolve }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useReplayStore()
+    const loading = store.loadLocalFile()
+    const signal = fetchSpy.mock.calls[0]?.[1]?.signal
+    store.resetToSafeEmpty()
+    expect(signal?.aborted).toBe(true)
+    finish(success(LOCAL_REPLAY))
+    expect(await loading).toBe(false)
+    expect(store).toMatchObject({ state: 'EMPTY', localSnapshot: null, replay: null })
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })

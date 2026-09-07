@@ -11,18 +11,19 @@ import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
-  filterSituationLinks,
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
   getPlatformName,
   selectSituationLinks,
   selectSituationMetrics,
-  type SituationMetricFilters,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
 import { useTelemetryStore } from '../../stores/telemetry'
+import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
+import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
+import { isPositionSnapshot, mergePositionNodes, type PositionSnapshot } from '../../features/situation/position-updates'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -52,7 +53,7 @@ const {
   pending: simulationPending,
 } = storeToRefs(simulationStore)
 const {
-  frame,
+  frame: mockFrame,
   events,
   capabilityState: telemetryCapabilityState,
   connectionState,
@@ -66,22 +67,110 @@ const candidatePanelVisible = ref(false)
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
-const metricFilters = ref<SituationMetricFilters>({ nodeId: '', linkId: '', windowMs: null })
 let unmounted = false
+const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'ERROR'>('LOADING')
+const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
+const positionSnapshot = ref<PositionSnapshot | null>(null)
+const fileNodes = computed(() => initialSnapshot.value
+  ? mergePositionNodes(initialSnapshot.value, positionSnapshot.value) : [])
+let positionTimer: ReturnType<typeof setTimeout> | undefined
+let positionRequest: AbortController | null = null
+const sourceMessage = ref('正在读取初始节点位置。')
+// 同一时刻只使用一种数据源，不把文件坐标与 Mock 链路、事件混合。
+const frame = computed(() => sourceState.value === 'MOCK' ? mockFrame.value : null)
 
-onMounted(async () => {
+/** 离开页面或重载来源时终止位置请求及后续轮询，不影响其他数据源。 */
+function stopPositionPolling(): void {
+  clearTimeout(positionTimer)
+  positionRequest?.abort()
+  positionRequest = null
+}
+
+/** 轮询本机追加位置快照；等待本次请求结束再安排下一次，失败保留最后位置并重试。 */
+async function pollPositions(): Promise<void> {
+  const request = new AbortController()
+  positionRequest = request
+  const timeout = setTimeout(() => request.abort(), 10_000)
+  let configured = true
+  try {
+    const response = await fetch(`${resolveMockOrigin()}/api/v1/situation/positions`, {
+      headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
+    })
+    const body = await response.json()
+    if (unmounted || positionRequest !== request) return
+    if (!response.ok || body.ok !== true || !isPositionSnapshot(body.data)) throw new Error('追加位置响应不可用')
+    const snapshot: PositionSnapshot | null = body.data
+    if (snapshot === null) {
+      configured = false
+      sourceMessage.value = `${initialSnapshot.value?.fileName} · 初始位置，未配置追加位置文件`
+      return
+    }
+    if (positionSnapshot.value?.generation !== snapshot.generation
+      || JSON.stringify(positionSnapshot.value?.nodes) !== JSON.stringify(snapshot.nodes)) positionSnapshot.value = snapshot
+    const knownIds = new Set(initialSnapshot.value?.nodes.map((node) => node.platformId))
+    const unknownCount = snapshot.nodes.filter((node) => !knownIds.has(node.platformId)).length
+    const lastIssue = snapshot.issues.at(-1)
+    sourceMessage.value = `${snapshot.fileName} · ${snapshot.hasMore ? '正在读取已有记录' : '位置已同步，等待追加'}`
+      + (snapshot.waitingForLine ? '；等待行末换行' : '')
+      + (lastIssue ? `；已跳过 ${snapshot.issueCount} 条异常记录，最近第 ${lastIssue.line} 行：${lastIssue.message}` : '')
+      + (unknownCount ? `；${unknownCount} 个未初始化节点未显示` : '')
+  } catch {
+    if (unmounted || positionRequest !== request) return
+    sourceMessage.value = '追加位置读取失败，保留最后位置，正在重试；请检查本机位置文件、表头及编码。'
+  } finally {
+    clearTimeout(timeout)
+    if (!unmounted && positionRequest === request && configured) {
+      positionTimer = setTimeout(() => { void pollPositions() }, 1000)
+    }
+  }
+}
+
+/** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
+async function initializeSituation(): Promise<void> {
+  stopPositionPolling()
+  positionSnapshot.value = null
+  sourceState.value = 'LOADING'
+  sourceMessage.value = '正在读取初始节点位置。'
+  try {
+    const response = await fetch(`${resolveMockOrigin()}/api/v1/situation/initial-nodes`, {
+      headers: { 'X-Demo-Role': useAuthStore().role },
+    })
+    const body = await response.json()
+    if (unmounted) return
+    if (!response.ok || body.ok !== true || !isInitialNodeSnapshot(body.data)) throw new Error('初始位置响应不可用')
+    if (body.data !== null) {
+      telemetryStore.disconnectAndReset()
+      initialSnapshot.value = body.data
+      sourceState.value = 'FILE'
+      selectedNodeId.value = body.data.nodes[0]?.platformId ?? ''
+      sourceMessage.value = `${body.data.fileName} · 初始位置，正在读取追加位置文件`
+      void pollPositions()
+      return
+    }
+    initialSnapshot.value = null
+    sourceState.value = 'MOCK'
+  } catch {
+    if (unmounted) return
+    sourceState.value = 'ERROR'
+    sourceMessage.value = '初始节点读取失败，请检查本机日志路径、文件完整性及初始坐标后重试。'
+    return
+  }
   const simulationLoaded = await simulationStore.resetProjection()
   if (unmounted || !simulationLoaded) return
   const loaded = await telemetryStore.loadFrame()
   if (!unmounted && loaded) telemetryStore.connect()
-})
+}
+
+onMounted(initializeSituation)
 
 onBeforeUnmount(() => {
   unmounted = true
+  stopPositionPolling()
   telemetryStore.disconnectAndReset()
 })
 
 watch(frame, (nextFrame) => {
+  if (sourceState.value === 'FILE') return
   if (nextFrame === null) {
     selectedNodeId.value = ''
     return
@@ -92,14 +181,11 @@ watch(frame, (nextFrame) => {
 }, { immediate: true })
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
-const monitoredLinks = computed(() => frame.value === null
-  ? []
-  : filterSituationLinks(situationLinks.value, metricFilters.value, frame.value))
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
 const situationMetrics = computed(() => frame.value === null
   ? null
-  : selectSituationMetrics(frame.value, events.value, monitoredLinks.value))
-const displayedBusinessPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
+  : selectSituationMetrics(frame.value, events.value, situationLinks.value))
+const displayedBusinessPlatforms = computed(() => initialSnapshot.value ? fileNodes.value : (frame.value?.platforms ?? []).filter(
   (platform) => BUSINESS_NODE_TYPES.has(platform.type),
 ))
 const supportingPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
@@ -109,9 +195,9 @@ const jammers = computed(() => (frame.value?.platforms ?? []).flatMap((platform)
 const detectionEvent = computed(() => events.value.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
-const maximumLinkAgeMs = computed(() => Math.max(0, ...monitoredLinks.value.map((link) => link.ageMs)))
-const frameFreshnessLabel = computed(() => monitoredLinks.value.length === 0
-  ? '筛选无结果'
+const maximumLinkAgeMs = computed(() => Math.max(0, ...situationLinks.value.map((link) => link.ageMs)))
+const frameFreshnessLabel = computed(() => situationLinks.value.length === 0
+  ? '暂无链路数据'
   : maximumLinkAgeMs.value === 0 ? '新鲜' : '存在延迟')
 const connectionLabel = computed(() => ({
   DISCONNECTED: '未连接',
@@ -123,6 +209,10 @@ const connectionLabel = computed(() => ({
 
 /** 重新加载完整帧，并在成功后恢复实时订阅。 */
 async function retryTelemetry(): Promise<void> {
+  if (sourceState.value !== 'MOCK') {
+    await initializeSituation()
+    return
+  }
   const loaded = await telemetryStore.loadFrame()
   if (!unmounted && loaded) telemetryStore.connect()
 }
@@ -208,15 +298,6 @@ async function updateSpeed(speed: number): Promise<void> {
  */
 function updateMode(mode: SimulationMode): void {
   simulationStore.setMode(mode)
-}
-
-/**
- * 原子替换链路指标筛选条件。
- * @param filters 节点、链路和时间窗口的完整筛选对象。
- * @sideeffect 同步更新地图链路、右侧表格和顶部 KPI 投影。
- */
-function updateMetricFilters(filters: SituationMetricFilters): void {
-  metricFilters.value = filters
 }
 
 /**
@@ -317,6 +398,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     <h2 id="situation-title" class="situation-page__semantic-title">态势主界面</h2>
 
     <SimulationToolbar
+      :read-only="sourceState !== 'MOCK'"
       :status="simulationStatus"
       :current-time="simulationTime"
       :speed="simulationSpeed"
@@ -326,7 +408,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :process-id="simulationRun?.canonical.processId ?? null"
       :progress="simulationRun?.canonical.progress ?? 0"
       :pending="simulationPending"
-      :feedback="simulationFeedback"
+      :feedback="sourceState === 'MOCK' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @step="stepSimulation"
@@ -336,11 +418,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     />
 
     <div
-      v-if="frame && situationMetrics"
+      v-if="(frame && situationMetrics) || (sourceState === 'FILE' && initialSnapshot)"
       class="situation-page__workspace"
       :class="{
         'situation-page__workspace--scene-collapsed': sceneSummaryCollapsed,
-        'situation-page__workspace--telemetry-collapsed': telemetryPanelCollapsed,
+        'situation-page__workspace--telemetry-collapsed': telemetryPanelCollapsed || sourceState === 'FILE',
       }"
     >
       <aside
@@ -349,7 +431,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         aria-label="场景配置"
         :data-collapsed="sceneSummaryCollapsed"
       >
-      <strong class="node-jammer-count">{{ situationMetrics.businessNodeCount }} / {{ BUSINESS_NODE_CAPACITY }}</strong>
+      <strong class="node-jammer-count">{{ initialSnapshot ? `${initialSnapshot.nodes.length} 个` : `${situationMetrics?.businessNodeCount} / ${BUSINESS_NODE_CAPACITY}` }}</strong>
         <button
           type="button"
           class="floating-panel__toggle floating-panel__toggle--left"
@@ -371,6 +453,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             role="tab"
             :aria-selected="activeTab === tab.key"
             :class="{ active: activeTab === tab.key }"
+            :disabled="sourceState === 'FILE' && tab.key !== 'nodes'"
             @click="activeTab = tab.key"
           >{{ tab.label }}</button>
         </div>
@@ -378,7 +461,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <div class="scene-summary__content" :aria-label="`${summaryTabs.find((tab) => tab.key === activeTab)?.label}摘要`">
           <template v-if="activeTab === 'nodes'">
             <div class="summary-group">
-              <h3>信息节点 · {{ situationMetrics.businessNodeCount }} 个</h3>
+              <h3>信息节点 · {{ initialSnapshot?.nodes.length ?? situationMetrics?.businessNodeCount }} 个</h3>
               <ul>
                 <li v-for="platform in displayedBusinessPlatforms" :key="platform.platformId">
                   <button
@@ -386,14 +469,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                     class="summary-focus-button"
                     :data-testid="`focus-node-${platform.platformId}`"
                     :aria-label="`在地图中定位${platform.name}`"
+                    :aria-pressed="selectedNodeId === platform.platformId"
                     @click="focusNodeOnMap(platform.platformId)"
                   >
-                    <span>{{ platform.platformId }}</span><small>{{ platform.name }}</small>
+                    <span>{{ platform.platformId }}</span><small>{{ initialSnapshot ? platform.type : platform.name }}</small>
                   </button>
                 </li>
               </ul>
             </div>
-            <div class="summary-group">
+            <div v-if="!initialSnapshot" class="summary-group">
               <h3>支撑实体</h3>
               <ul>
                 <li v-for="platform in supportingPlatforms" :key="platform.platformId">
@@ -444,7 +528,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             </ul>
           </div>
 
-          <div v-else class="summary-group">
+          <div v-else-if="frame" class="summary-group">
             <h3>固定帧时序</h3>
             <dl class="timing-list">
               <div><dt>帧标识</dt><dd>{{ frame.frameId }}</dd></div>
@@ -459,26 +543,23 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
       <main class="situation-center" data-testid="situation-center">
         <OfflineSituationMap
+          :key="initialSnapshot?.sha256 ?? 'mock'"
           :frame="frame"
-          :links="monitoredLinks"
+          :initial-nodes="initialSnapshot ? fileNodes : undefined"
+          :links="situationLinks"
           :selected-node-id="selectedNodeId"
           :focus-target="mapFocusTarget"
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
         >
           <template #topbar>
-            <MetricPanel
-              :metrics="situationMetrics"
-              :filters="metricFilters"
-              :nodes="frame.platforms.map((platform) => ({ id: platform.platformId, label: platform.name }))"
-              :links="situationLinks.map((link) => ({ id: link.linkId, label: `${link.linkId} · ${LINK_TYPE_LABELS[link.type]}` }))"
-              @update:filters="updateMetricFilters"
-            />
+            <MetricPanel v-if="situationMetrics" :metrics="situationMetrics" />
           </template>
         </OfflineSituationMap>
       </main>
 
       <aside
+        v-if="frame && situationMetrics"
         class="telemetry-panel"
         :class="{ 'is-collapsed': telemetryPanelCollapsed }"
         aria-label="链路、干扰与事件"
@@ -507,7 +588,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
-                  v-for="link in monitoredLinks"
+                  v-for="link in situationLinks"
                   :key="link.linkId"
                   tabindex="0"
                   role="button"
@@ -524,7 +605,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                 </tr>
               </tbody>
             </table>
-            <el-empty v-if="monitoredLinks.length === 0" description="当前筛选条件下没有链路" :image-size="48" />
+            <el-empty v-if="situationLinks.length === 0" description="暂无链路数据" :image-size="48" />
           </div>
         </section>
 
@@ -560,18 +641,20 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </div>
 
     <section v-else class="telemetry-empty" aria-live="polite">
-      <strong>{{ telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
-      <p>{{ telemetryFeedback }}</p>
-      <el-button v-if="telemetryCapabilityState === 'ERROR'" type="primary" @click="retryTelemetry">重新加载</el-button>
+      <strong>{{ sourceState === 'LOADING' || telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
+      <p>{{ sourceState === 'MOCK' ? telemetryFeedback : sourceMessage }}</p>
+      <el-button v-if="sourceState === 'ERROR' || telemetryCapabilityState === 'ERROR'" type="primary" @click="retryTelemetry">重新加载</el-button>
     </section>
 
     <footer v-if="frame" class="situation-footer" :data-frame-id="frame.frameId">
       <span><i class="footer-dot"></i>{{ connectionLabel }}</span>
-      <span>固定帧 {{ frame.frameId }}</span>
-      <span>数据时刻 {{ frame.simulationTime }} s</span>
-      <span>帧序号 {{ frame.sequence }}</span>
+      <span class="situation-footer__sequence">帧序号 {{ frame.sequence }}</span>
       <span data-testid="frame-freshness">最大数据年龄 {{ maximumLinkAgeMs }} ms · {{ frameFreshnessLabel }}</span>
       <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
+    </footer>
+    <footer v-else-if="sourceState === 'FILE' && initialSnapshot" class="situation-footer">
+      <span>来源：{{ initialSnapshot.fileName }}</span>
+      <span>初始节点 {{ initialSnapshot.nodes.length }} 个 · 点击左侧节点可定位</span>
     </footer>
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
@@ -649,6 +732,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .summary-group li { border-left: 2px solid var(--console-border-strong); background: rgba(16,40,58,.48); }
 .summary-focus-button { display: grid; width: 100%; gap: .12rem; padding: .38rem .45rem; border: 0; color: var(--console-text); background: transparent; font: inherit; font-size: var(--console-font-size-min); text-align: left; cursor: pointer; }
 .summary-focus-button:hover { background: rgba(66,216,255,.08); }
+.summary-focus-button[aria-pressed="true"] { box-shadow: inset 2px 0 #f5b942; background: rgba(245,185,66,.1); }
+.scene-summary__tabs button:disabled { opacity: .45; cursor: not-allowed; }
 .summary-focus-button:focus-visible { outline: 1px solid var(--console-cyan); outline-offset: -1px; background: rgba(66,216,255,.1); }
 .summary-group li small { color: var(--console-text-muted); font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
 .timing-list { display: grid; gap: .3rem; margin: 0; }
@@ -713,7 +798,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   .situation-page__workspace { --scene-panel-clearance: 13.5rem; --telemetry-panel-clearance: 19.5rem; }
   .scene-summary { width: 12rem; }
   .telemetry-panel { width: 18rem; }
-  .situation-footer span:nth-child(3), .situation-footer span:nth-child(4) { display: none; }
+  .situation-footer__sequence { display: none; }
 }
 .situation-page__workspace--scene-collapsed { --scene-panel-clearance: 3.25rem; --legend-clearance: .75rem; }
 .situation-page__workspace--telemetry-collapsed { --telemetry-panel-clearance: 3.25rem; --view-controls-clearance: .75rem; }

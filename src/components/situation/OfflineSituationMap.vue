@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { TelemetryFrame } from '../../contracts/domain-models'
+import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import {
   PLATFORM_TYPE_LABELS,
   type SituationLinkView,
@@ -15,7 +16,8 @@ import {
 } from './situation-map-controller'
 
 const props = defineProps<{
-  frame: TelemetryFrame
+  frame: TelemetryFrame | null
+  initialNodes?: SituationMapNode[]
   links: SituationLinkView[]
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
@@ -40,15 +42,29 @@ const basemapToggleLabel = computed(() => (
 ))
 const layers = reactive<Record<MapLayer, boolean>>({
   nodes: true,
-  links: true,
-  interference: true,
-  grid: true,
+  links: props.frame !== null,
+  interference: props.frame !== null,
+  grid: MAP_CONFIG.defaults.gridVisible,
 })
 
+const nodes = computed(() => props.frame?.platforms ?? props.initialNodes ?? [])
 const selectedNode = computed(() => (
-  props.frame.platforms.find((platform) => platform.platformId === props.selectedNodeId)
-  ?? props.frame.platforms[0]
+  nodes.value.find((platform) => platform.platformId === props.selectedNodeId)
+  ?? nodes.value[0]
 ))
+
+/** 返回节点原始类型或已知中文类型，不猜测日志类型与合同枚举的对应关系。 */
+const selectedNodeType = computed(() => selectedNode.value
+  ? PLATFORM_TYPE_LABELS[selectedNode.value.type as keyof typeof PLATFORM_TYPE_LABELS] ?? selectedNode.value.type
+  : '')
+
+/** 使用当前底图包的覆盖范围提示真实坐标越界，不改写或裁剪节点位置。 */
+const nodeOutsideBasemap = computed(() => {
+  if (!selectedNode.value) return false
+  const [[south, west], [north, east]] = MAP_CONFIG.resources[basemap.value].bounds
+  const { longitude, latitude } = selectedNode.value
+  return longitude < west || longitude > east || latitude < south || latitude > north
+})
 
 /**
  * 向父组件转发节点选择事件。
@@ -174,6 +190,7 @@ onMounted(() => {
   mapController.value = createSituationMapController({
     container: mapContainer.value,
     frame: props.frame,
+    initialNodes: props.initialNodes,
     links: props.links,
     selectedNodeId: props.selectedNodeId,
     onSelectNode: handleSelectNode,
@@ -196,6 +213,11 @@ watch(() => props.links, (links) => {
 /** 在完整帧变化时同步地图节点、链路端点和干扰范围。 */
 watch(() => props.frame, (frame) => {
   mapController.value?.setFrame(frame)
+})
+
+/** 将追加文件合并后的节点位置传入现有地图，保留视图、图层开关和选中状态。 */
+watch(() => props.initialNodes, (nodes) => {
+  if (!props.frame) mapController.value?.setNodes(nodes ?? [])
 })
 
 /**
@@ -230,7 +252,7 @@ onBeforeUnmount(() => {
   <section
     class="offline-map"
     aria-label="Leaflet 离线态势图"
-    :data-frame-id="frame.frameId"
+    :data-frame-id="frame?.frameId"
     :data-map-theme="theme"
     :data-map-basemap="basemap"
   >
@@ -239,7 +261,7 @@ onBeforeUnmount(() => {
       class="offline-map__canvas"
       data-testid="leaflet-situation-map"
       role="application"
-      :aria-label="`固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图`"
+      :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : '真实日志初始节点位置图'"
     ></div>
 
     <div class="offline-map__topbar">
@@ -257,6 +279,7 @@ onBeforeUnmount(() => {
           type="button"
           :class="{ active: layers[layer[0]] }"
           :aria-pressed="layers[layer[0]]"
+          :disabled="!frame && (layer[0] === 'links' || layer[0] === 'interference')"
           @click="toggleLayer(layer[0])"
         >{{ layer[1] }}</button>
         <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
@@ -374,11 +397,14 @@ onBeforeUnmount(() => {
         data-testid="selected-node-dialog"
       >
         <dl class="selected-node-dialog__grid">
-          <div><dt>类型</dt><dd>{{ PLATFORM_TYPE_LABELS[selectedNode.type] }}</dd></div>
-          <div><dt>遥测位置</dt><dd>{{ selectedNode.longitude }}°E / {{ selectedNode.latitude }}°N</dd></div>
+          <div><dt>类型</dt><dd>{{ selectedNodeType }}</dd></div>
+          <div><dt>{{ frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ selectedNode.speed }} m/s</dd></div>
         </dl>
+        <p v-if="nodeOutsideBasemap" class="selected-node-dialog__notice">
+          该节点位于当前离线底图覆盖范围之外，坐标按原值显示。
+        </p>
         <p
           v-if="selectedNode.type === 'COMMUNICATION_SATELLITE'"
           class="selected-node-dialog__notice"
@@ -388,7 +414,7 @@ onBeforeUnmount(() => {
       </div>
     </el-dialog>
 
-    <div class="offline-map__legend" aria-label="链路类型图例">
+    <div v-if="frame" class="offline-map__legend" aria-label="链路类型图例">
       <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
       <div><i class="legend-line legend-line--microwave"></i>微波链路</div>
       <div><i class="legend-line legend-line--datalink"></i>新一代数传链路</div>
@@ -396,7 +422,6 @@ onBeforeUnmount(() => {
       <div><i class="legend-line legend-line--unavailable"></i>受干扰 / 失效链路</div>
     </div>
 
-    <span class="offline-map__frame">固定帧 {{ frame.frameId }} · 数据时刻 {{ frame.simulationTime }} s</span>
   </section>
 </template>
 
@@ -601,17 +626,6 @@ onBeforeUnmount(() => {
 
 .legend-line--unavailable {
   border-color: #f56c6c;
-}
-
-.offline-map__frame {
-  position: absolute;
-  z-index: 1001;
-  top: 3rem;
-  right: var(--telemetry-panel-clearance, 0.55rem);
-  color: var(--console-text-muted);
-  font-family: Consolas, monospace;
-  font-size: var(--console-font-size-min);
-  transition: right 0.18s ease;
 }
 
 :deep(.leaflet-container) {

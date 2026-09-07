@@ -36,10 +36,19 @@ import { inspectScenarioConfig } from '../src/features/scenarios/scenario-valida
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
 import { AdminProjection, type AdminResult } from './admin/projection.js'
 import { isAdminText } from '../src/features/admin/admin-contract.js'
+import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
+import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
+import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
 
 export interface MockServerOptions {
   port?: number
   confirmationClock?: ConfirmationClock
+  /** 仅由本机启动入口注入；纯 Mock 默认不访问文件系统。 */
+  loadInitialNodes?: () => Promise<InitialNodeSnapshot>
+  /** 本机追加位置读取器；纯 Mock 不配置、不访问真实文件。 */
+  loadPositions?: () => Promise<PositionSnapshot>
+  /** 读取本机真实文件回放快照，与 Mock 回放及实时位置游标隔离。 */
+  loadLocalReplay?: () => Promise<LocalReplaySnapshot>
 }
 
 export interface MockServer {
@@ -690,6 +699,58 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (requireDemoRole(req, res, auth, 'CSV_CONTRACT_LIST') === undefined) return
     const contracts = projection.snapshot().contracts.csv
     res.status(200).json(success(contracts, pageMeta(requestId, contracts.length, contracts.length)))
+  })
+
+  /** 只读返回本机配置的初始节点，不接受客户端文件路径或改动当前 Mock 投影。 */
+  app.get('/api/v1/situation/initial-nodes', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'INITIAL_NODES_READ') === undefined) return
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '此接口不接受文件路径或查询参数。' }))
+      return
+    }
+    try {
+      const snapshot = options.loadInitialNodes ? await options.loadInitialNodes() : null
+      res.status(200).json(success(snapshot, pageMeta('REQ-INITIAL-NODES', 1, 1)))
+    } catch {
+      // 文件错误可能含有本机绝对路径，不直接透传给浏览器。
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: '初始节点读取失败，请检查本机日志路径、文件完整性及初始坐标后重试。', retryable: true,
+      }))
+    }
+  })
+
+  /** 只读获取追加位置的最新快照；游标由本机读取器维护，不接受客户端文件路径。 */
+  app.get('/api/v1/situation/positions', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'POSITIONS_READ') === undefined) return
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '此接口不接受文件路径或查询参数。' }))
+      return
+    }
+    try {
+      const snapshot = options.loadPositions ? await options.loadPositions() : null
+      res.status(200).json(success(snapshot, pageMeta('REQ-POSITIONS', 1, 1)))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: '追加位置读取失败，请检查本机位置文件、表头及编码。', retryable: true,
+      }))
+    }
+  })
+
+  /** 只读获取当前文件历史；固定路由放在带 replayId 的路由之前。 */
+  app.get('/api/v1/replays/local-file', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'LOCAL_REPLAY_READ') === undefined) return
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '此接口不接受文件路径或查询参数。' }))
+      return
+    }
+    try {
+      const snapshot = options.loadLocalReplay ? await options.loadLocalReplay() : null
+      res.status(200).json(success(snapshot, pageMeta('REQ-LOCAL-REPLAY', 1, 1)))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: '文件回放读取失败，请检查两个文件的路径、表头、编码及写入状态后重新加载。', retryable: true,
+      }))
+    }
   })
 
   /** 返回当前确定性仿真运行列表。 */

@@ -100,18 +100,8 @@ async function logout(): Promise<void> {
       <section
         v-if="$route.path.startsWith('/admin')"
         class="page system-management-page"
-        aria-labelledby="system-management-title"
+        aria-label="系统管理"
       >
-        <header class="system-management__header">
-          <div>
-            <div class="system-management__title-line">
-              <h2 id="system-management-title">系统管理</h2>
-              <el-tag type="warning" effect="plain">管理员功能 / 数据交换可用</el-tag>
-            </div>
-            <p>管理员管理页面与系统/操作员数据交换子功能</p>
-          </div>
-        </header>
-
         <div class="system-management__body">
           <aside class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="$route.fullPath">
@@ -142,7 +132,6 @@ async function logout(): Promise<void> {
               <el-menu-item-group title="数据交换">
                 <el-menu-item index="/admin/data-exchange">
                   <span>数据交换与接口</span>
-                  <small>系统/操作员</small>
                 </el-menu-item>
               </el-menu-item-group>
             </el-menu>
@@ -358,32 +347,6 @@ nav a.router-link-exact-active {
   overflow: hidden;
 }
 
-.system-management__header {
-  flex: 0 0 auto;
-  padding: var(--space-3, 0.75rem) var(--space-5, 1.5rem);
-  border-bottom: 1px solid var(--console-border);
-  background: var(--console-surface-raised);
-}
-
-.system-management__title-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2, 0.5rem);
-}
-
-.system-management__title-line h2 {
-  margin: 0;
-  color: var(--console-text);
-  font-size: 1.1rem;
-}
-
-.system-management__header p {
-  margin: var(--space-1, 0.25rem) 0 0;
-  color: var(--console-text-muted);
-  font-size: var(--console-font-size-min);
-}
-
 .system-management__body {
   display: flex;
   min-width: 0;
@@ -431,12 +394,6 @@ nav a.router-link-exact-active {
   color: var(--console-text-muted);
   cursor: default;
   opacity: 1;
-}
-
-.system-management__sidebar :deep(.el-menu-item small) {
-  margin-left: auto;
-  color: var(--console-amber);
-  font-size: var(--console-font-size-min);
 }
 
 .system-management__content {
