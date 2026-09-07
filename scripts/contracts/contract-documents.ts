@@ -289,6 +289,7 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/parameters/DemoRole/schema/enum', ['ADMIN','OPERATOR']],
+  ['#/components/schemas/Environment/properties/rainCloudAttenuation/enum', ['none','lightRain','moderateRain','heavyRain']],
   ['#/components/schemas/Platform/properties/type/enum', ['REAR_COMMAND_NODE','FORWARD_RELAY_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER','COMMUNICATION_SATELLITE','GROUND_JAMMER_DETECTION_STATION']],
   ['#/components/schemas/Platform/properties/category/enum', ['ground','air','space']],
   ['#/components/schemas/Link/properties/type/enum', ['SAT','MICROWAVE','DATALINK','LASER']],

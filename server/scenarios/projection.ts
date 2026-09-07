@@ -10,6 +10,7 @@ import type {
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type ScenarioProjectionResult<T> =
@@ -22,7 +23,9 @@ export type ScenarioProjectionResult<T> =
  * @remarks 每次调用都会创建新的可变配置，不共享基线引用。
  */
 function createDraft(): ScenarioDraft {
-  const config = loadFixtureProjection().scenario
+  const config = withScenarioBasicDefaults(loadFixtureProjection().scenario)
+  // 只设置新工作草稿和显式重置的默认时长；加载旧场景、导入和撤销不改已有时长。
+  config.scenario.duration = SCENARIO_BASIC_DEFAULTS.duration
   return {
     config,
     uiExtensions: createUiExtensions(config),

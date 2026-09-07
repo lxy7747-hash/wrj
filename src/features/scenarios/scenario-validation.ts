@@ -31,6 +31,7 @@ const ENVIRONMENT_KEYS = [
   'rainLossDbPerKm',
   'multipathEnabled',
 ] as const
+const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation'] as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange'] as const
@@ -80,15 +81,16 @@ export interface ScenarioUiExtensionsInspection {
 /**
  * 判断未知值是否是仅包含指定键的普通对象。
  * @param value 待校验的未知值。
- * @param keys 对象必须且只能包含的键。
+ * @param keys 对象必须包含的键。
+ * @param optionalKeys 兼容旧配置时允许省略的新增键，其他未知键仍拒绝。
  * @returns 值满足闭合对象形状时返回 `true`。
  * @remarks 纯校验函数，不修改输入值。
  */
-function isClosedObject(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+function isClosedObject(value: unknown, keys: readonly string[], optionalKeys: readonly string[] = []): value is Record<string, unknown> {
   return typeof value === 'object'
     && value !== null
     && !Array.isArray(value)
-    && Object.keys(value).length === keys.length
+    && Object.keys(value).every((key) => keys.includes(key) || optionalKeys.includes(key))
     && keys.every((key) => Object.hasOwn(value, key))
 }
 
@@ -481,11 +483,21 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
   if (!isFiniteNumber(scenario.duration, Number.MIN_VALUE)) addError(errors, 'DURATION_INVALID', '仿真时长必须大于 0 秒。', 'scenario.duration')
   if (!isFiniteNumber(scenario.timeStep, Number.MIN_VALUE)) addError(errors, 'TIME_STEP_INVALID', '时间步长必须大于 0 秒。', 'scenario.timeStep')
 
-  if (!isClosedObject(scenario.environment, ENVIRONMENT_KEYS)) {
+  if (!isClosedObject(scenario.environment, ENVIRONMENT_KEYS, OPTIONAL_ENVIRONMENT_KEYS)) {
     addError(errors, 'ENVIRONMENT_INVALID', '环境参数结构不正确。', 'scenario.environment')
     return { result: { valid: false, errors, warnings } }
   }
   const environment = scenario.environment
+  if (Object.hasOwn(environment, 'simClockSpeed') && !isPositiveFiniteNumber(environment.simClockSpeed)) {
+    addError(errors, 'CLOCK_SPEED_INVALID', '仿真时钟倍速必须大于 0。', 'scenario.environment.simClockSpeed')
+  }
+  if (Object.hasOwn(environment, 'transmissionDistance') && !isFiniteNumber(environment.transmissionDistance, 150, 410)) {
+    addError(errors, 'STRAIT_WIDTH_INVALID', '海峡宽度必须在 150～410 km 之间。', 'scenario.environment.transmissionDistance')
+  }
+  if (Object.hasOwn(environment, 'rainCloudAttenuation')
+    && !['none', 'lightRain', 'moderateRain', 'heavyRain'].includes(environment.rainCloudAttenuation as string)) {
+    addError(errors, 'WEATHER_INVALID', '云雨气象衰减请选择无、小雨、中雨或大雨。', 'scenario.environment.rainCloudAttenuation')
+  }
   if (!isFiniteNumber(environment.seaState, 0)) addError(errors, 'SEA_STATE_INVALID', '海况等级不能小于 0。', 'scenario.environment.seaState')
   if (!isFiniteNumber(environment.temperatureC)) addError(errors, 'TEMPERATURE_INVALID', '温度必须是有效数值。', 'scenario.environment.temperatureC')
   if (!isFiniteNumber(environment.humidityPercent, 0, 100)) addError(errors, 'HUMIDITY_INVALID', '相对湿度必须在 0 至 100 之间。', 'scenario.environment.humidityPercent')
@@ -615,6 +627,7 @@ export function inspectScenarioConfig(value: unknown): ScenarioInspection {
       duration: scenario.duration as number,
       timeStep: scenario.timeStep as number,
       environment: {
+        ...environment,
         seaState: environment.seaState as number,
         temperatureC: environment.temperatureC as number,
         humidityPercent: environment.humidityPercent as number,

@@ -165,7 +165,7 @@ describe('P3-1 仿真服务端投影', () => {
         uiStatus: 'COMPLETED',
         configLocked: false,
         completedAt: '2026-08-06T10:05:00Z',
-        canonical: { status: 'COMPLETED', currentTime: 7200, progress: 100, processId: null },
+        canonical: { status: 'COMPLETED', currentTime: draft.data.config.scenario.duration, progress: 100, processId: null },
       },
     })
     expect(scenarios.get('SCN-001')).toMatchObject({ ok: true, data: { locked: false } })
@@ -190,7 +190,7 @@ describe('P3-1 仿真服务端投影', () => {
       bandwidth: 40,
       power: 72,
       direction: 360,
-      duration: 1470,
+      duration: 1200,
     })).toEqual({
       ok: true,
       data: {
@@ -201,7 +201,7 @@ describe('P3-1 仿真服务端投影', () => {
         bandwidth: 40,
         power: 72,
         direction: 360,
-        duration: 1470,
+        duration: 1200,
         executionStatus: 'SUCCESS',
         effectiveFrameId: 'F-00042',
         reason: '任务手动启扰',
@@ -210,7 +210,7 @@ describe('P3-1 仿真服务端投影', () => {
   })
 
   it('分别拒绝越界参数、不可用设备和未知任务', () => {
-    const valid = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const valid = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
     const { simulations } = projections()
     for (const [field, value] of [['frequency', 2100], ['power', 73], ['duration', 7201]] as const) {
       expect(simulations.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...valid, [field]: value })).toMatchObject({
@@ -262,7 +262,7 @@ describe('P3-1 仿真服务端投影', () => {
 
   it('只接受递增版本且在明确帧同步四端干扰参数', () => {
     const { simulations } = projections()
-    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
     expect(simulations.syncJammerParameters('TASK-001', 'JAM-WB-01-TX', {
       version: 5, effectiveFrameId: 'F-00042', parameters,
     })).toMatchObject({

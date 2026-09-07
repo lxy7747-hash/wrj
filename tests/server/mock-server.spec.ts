@@ -601,7 +601,9 @@ describe('P0 deterministic mock server', () => {
     const original = (loaded.body as { data: ScenarioDraft }).data
     expect(original).toMatchObject({
       revision: 4,
-      config: { scenario: { name: '跨海通联演示' } },
+      config: { scenario: { name: '跨海通联演示', duration: 1200, environment: {
+        simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain', multipathEnabled: true,
+      } } },
       uiExtensions: {
         jammers: [{ jammerId: 'JAM-WB-01-TX' }, { jammerId: 'JAM-SPOT-01-TX' }],
         sensors: [{ sensorId: 'ESM-01', type: 'ESM' }],
@@ -611,6 +613,9 @@ describe('P0 deterministic mock server', () => {
     const changed = structuredClone(original.config)
     changed.scenario.name = '台海通联验证场景'
     changed.scenario.environment.humidityPercent = 75
+    changed.scenario.environment.simClockSpeed = 3
+    changed.scenario.environment.transmissionDistance = 350
+    changed.scenario.environment.rainCloudAttenuation = 'heavyRain'
     const saved = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
@@ -619,8 +624,12 @@ describe('P0 deterministic mock server', () => {
       .expect(200)
     expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 5,
-      config: { scenario: { name: '台海通联验证场景', environment: { humidityPercent: 75 } } },
+      config: { scenario: { name: '台海通联验证场景', environment: {
+        humidityPercent: 75, simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain',
+      } } },
     })
+    const reloaded = await load().expect(200)
+    expect((reloaded.body as { data: ScenarioDraft }).data.config).toEqual(changed)
 
     const invalid = structuredClone(changed)
     invalid.scenario.environment.humidityPercent = 101
@@ -1837,7 +1846,7 @@ describe('P0 deterministic mock server', () => {
   it('执行 P4 RF 干扰控制并返回参数拒绝原因', async () => {
     const { server, baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
-    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
     const successResponse = await request(baseUrl)
       .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands')
       .set(headers)
@@ -1882,7 +1891,7 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send({}).expect(422)
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set('Origin', ORIGIN).send(context).expect(403)
 
-    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
     const synchronized = await request(baseUrl)
       .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
       .set(headers)

@@ -56,6 +56,12 @@ export interface FrequencyRange { min: Megahertz; max: Megahertz; }
 export interface Environment {
   seaState: number; temperatureC: number; humidityPercent: Percent0To100;
   rainRateMmPerHour: number; rainLossDbPerKm: number; multipathEnabled: boolean;
+  /** 仿真时钟倍速；旧场景缺省时使用文档默认值 2。 */
+  simClockSpeed?: number;
+  /** 海峡宽度，单位 km；不是各条链路的实际通信距离。 */
+  transmissionDistance?: number;
+  /** 气象档位仅作为配置保存，不自动换算成物理雨衰值。 */
+  rainCloudAttenuation?: 'none' | 'lightRain' | 'moderateRain' | 'heavyRain';
 }
 export interface ScenarioIdentity {
   id: ScenarioId; name: string; description: string; startTime: Iso8601Utc;

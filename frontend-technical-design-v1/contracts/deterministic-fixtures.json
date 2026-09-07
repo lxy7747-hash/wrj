@@ -129,7 +129,7 @@
     "scenario": {
       "id": "SCN-001",
       "name": "跨海通联演示",
-      "description": "确定性离线夹具",
+      "description": "",
       "startTime": "2026-08-06T08:00:00Z",
       "duration": 7200,
       "timeStep": 1,

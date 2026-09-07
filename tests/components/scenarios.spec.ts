@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
+import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { createAppRouter } from '../../src/router'
@@ -111,8 +112,8 @@ describe('P2-1 场景管理页面', () => {
 
     expect(wrapper.get('.scenario-page').attributes('aria-label')).toBe('场景配置')
     expect(wrapper.text()).toContain('场景基础')
-    expect(wrapper.get('[data-testid="scenario-duration"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="scenario-sea-state"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="scenario-duration"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
       '场景基础', '平台与航点', '链路配置', '干扰设备', '传感器与输出',
@@ -140,6 +141,65 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('点击下方“生成脚本预览”')
     expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('最后执行预检')
     expect(wrapper.get('[data-testid="preflight-script"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('按文档展示五项环境配置，分钟换算后保存且不提交重复时长字段', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    const initial = draft()
+    initial.config = withScenarioBasicDefaults(initial.config)
+    initial.config.scenario.duration = SCENARIO_BASIC_DEFAULTS.duration
+    scenario.$patch({ draft: initial, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    const fields = wrapper.get('.form-grid--scenario')
+    expect(fields.findAll('.el-form-item__label').map((item) => item.text())).toEqual([
+      '场景编号', '场景名称', '开始时间', '时间步长（秒）',
+      '仿真总时长（min）', '仿真时钟倍速（倍）', '海峡宽度（km）', '云雨气象衰减', '海面多径衰落',
+      '海况等级', '温度（℃）', '相对湿度（%）', '降雨率（mm/h）', '雨衰（dB/km）', '场景描述',
+    ])
+    expect(wrapper.findAll('[data-testid="scenario-duration"]')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="scenario-sim-total-time"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="scenario-multipath"]')).toHaveLength(1)
+    const duration = fields.get('[data-testid="scenario-duration"] input')
+    expect((duration.element as HTMLInputElement).value).toBe('20')
+    expect(fields.get('[data-testid="scenario-sim-clock-speed"] input').attributes('aria-valuenow')).toBe('2')
+    expect(fields.get('[data-testid="scenario-trans-distance"] input').attributes('aria-valuenow')).toBe('300')
+    expect(fields.findComponent({ name: 'ElSelect' }).props('modelValue')).toBe('lightRain')
+    expect(fields.findComponent({ name: 'ElSwitch' }).props('modelValue')).toBe(true)
+
+    await duration.setValue('20.5')
+    await duration.trigger('change')
+    await fields.get('[data-testid="scenario-sim-clock-speed"] input').setValue('3')
+    await fields.get('[data-testid="scenario-sim-clock-speed"] input').trigger('change')
+    await fields.get('[data-testid="scenario-trans-distance"] input').setValue('350')
+    await fields.get('[data-testid="scenario-trans-distance"] input').trigger('change')
+    fields.findComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'heavyRain')
+    fields.findComponent({ name: 'ElSwitch' }).vm.$emit('update:modelValue', false)
+    await nextTick()
+
+    const saved = structuredClone(initial)
+    saved.revision = 5
+    saved.config.scenario.duration = 1230
+    Object.assign(saved.config.scenario.environment, {
+      simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain', multipathEnabled: false,
+    })
+    const fetchSpy = vi.fn().mockResolvedValue(response(saved))
+    vi.stubGlobal('fetch', fetchSpy)
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    const submitted = JSON.parse((fetchSpy.mock.calls[0]?.[1] as RequestInit).body as string) as { config: ScenarioConfig }
+    expect(submitted.config.scenario).toEqual(saved.config.scenario)
+    expect(submitted.config.scenario.environment).not.toHaveProperty('simTotalTime')
+    expect((duration.element as HTMLInputElement).value).toBe('20.5')
+    expect(scenario.dirty).toBe(false)
+
+    await duration.setValue('')
+    await duration.trigger('change')
+    expect(inspectScenarioConfig(scenario.draft?.config).result.errors).toContainEqual(expect.objectContaining({
+      fieldPath: 'scenario.duration',
+    }))
   })
 
   it('已保存草稿先进入校验阶段，校验通过才开放脚本且不重复保存', async () => {
@@ -474,7 +534,7 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     // 按字段定位既有 P2-1 参数，避免新增表单项改变输入框顺序或总数。
     const numericFields = [
-      ['scenario-duration', '7201'], ['scenario-time-step', '2'], ['scenario-sea-state', '4'],
+      ['scenario-duration', '120.5'], ['scenario-time-step', '2'], ['scenario-sea-state', '4'],
       ['scenario-temperature', '27'], ['scenario-humidity', '75'],
       ['scenario-rain-rate', '10'], ['scenario-rain-loss', '0.08'],
     ]
@@ -486,7 +546,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.scenario).toMatchObject({
       description: '更新后的场景描述',
       startTime: '2026-08-07T01:30:00Z',
-      duration: 7201,
+      duration: 7230,
       timeStep: 2,
       environment: {
         seaState: 4,

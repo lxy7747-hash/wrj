@@ -16,6 +16,7 @@ import type {
   ValidationResult,
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
+import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useUiStore } from '../../src/stores/ui'
@@ -132,6 +133,10 @@ describe('P2-1 场景 Store', () => {
       { headers: { 'X-Demo-Role': 'OPERATOR' } },
     )
     expect(scenario.draft?.config.scenario.name).toBe('跨海通联演示')
+    expect(scenario.draft?.config.scenario.duration).toBe(7200)
+    expect(scenario.draft?.config.scenario.environment).toMatchObject({
+      simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain',
+    })
     expect(scenario.panelState).toBe('SUCCESS')
     expect(scenario.dirty).toBe(false)
   })
@@ -1061,6 +1066,43 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
 })
 
 describe('P2-1 场景基础字段校验', () => {
+  it('兼容旧环境字段并保留已配置值，不修改源对象', () => {
+    const original = scenarioDraft().config
+    const normalized = withScenarioBasicDefaults(original)
+    expect(original.scenario.environment).not.toHaveProperty('simClockSpeed')
+    expect(normalized.scenario.duration).toBe(original.scenario.duration)
+    expect(normalized.scenario.environment.rainLossDbPerKm).toBe(original.scenario.environment.rainLossDbPerKm)
+    normalized.scenario.environment.simClockSpeed = 15
+    normalized.scenario.environment.transmissionDistance = 410
+    normalized.scenario.environment.rainCloudAttenuation = 'none'
+    normalized.scenario.environment.multipathEnabled = false
+    expect(withScenarioBasicDefaults(normalized)).toEqual(normalized)
+    expect(inspectScenarioConfig(normalized).result.valid).toBe(true)
+    expect(inspectScenarioConfig(normalized).identity?.environment).toEqual(normalized.scenario.environment)
+    normalized.scenario.environment.transmissionDistance = 150
+    expect(inspectScenarioConfig(normalized).result.valid).toBe(true)
+  })
+
+  it('按文档检查海峡宽度、倍速和气象档位，拒绝未知字段', () => {
+    const cases: Array<[string, unknown[]]> = [
+      ['simClockSpeed', [0, -1, Number.NaN, Number.POSITIVE_INFINITY, null]],
+      ['transmissionDistance', [149, 411, Number.NaN, null]],
+      ['rainCloudAttenuation', ['snow', '', null]],
+    ]
+    for (const [key, values] of cases) {
+      for (const value of values) {
+        const config = withScenarioBasicDefaults(scenarioDraft().config)
+        Object.assign(config.scenario.environment, { [key]: value })
+        expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
+          fieldPath: `scenario.environment.${key}`,
+        }))
+      }
+    }
+    const extra = withScenarioBasicDefaults(scenarioDraft().config)
+    Object.assign(extra.scenario.environment, { simTotalTime: 20 })
+    expect(inspectScenarioConfig(extra).result.valid).toBe(false)
+  })
+
   it('按原型规则返回可定位警告且不影响有效性', () => {
     const defaultResult = inspectScenarioConfig(scenarioDraft().config).result
     expect(defaultResult.valid).toBe(true)

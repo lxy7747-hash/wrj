@@ -67,6 +67,20 @@ const jammerFrequencyBelowMinimum = ref(false)
 const jammerBandwidthBelowMinimum = ref(false)
 const sceneOperationFeedback = ref('')
 
+/** 分钟只用于表单显示；保持接口中的 duration 为秒，避免两套时长失去同步。 */
+const simulationDurationMinutes = computed<number | undefined>({
+  get: () => {
+    const seconds = draft.value?.config.scenario.duration
+    return typeof seconds === 'number' && Number.isFinite(seconds) ? seconds / 60 : undefined
+  },
+  /** 接收用户输入的分钟数；清空时保留无效值供整体校验提示，不静默恢复默认值。 */
+  set: (minutes) => {
+    if (!draft.value) return
+    draft.value.config.scenario.duration = typeof minutes === 'number' ? minutes * 60 : Number.NaN
+    markDirty()
+  },
+})
+
 const deploymentDomainLabels = {
   ground: '地面',
   air: '空中',
@@ -827,7 +841,6 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.rainLossDbPerKm': 'scenario-rain-loss',
     'scenario.environment.multipathEnabled': 'scenario-multipath',
 
-    'scenario.environment.simTotalTime': 'scenario-sim-total-time',
     'scenario.environment.simClockSpeed': 'scenario-sim-clock-speed',
     'scenario.environment.transmissionDistance': 'scenario-trans-distance',
     'scenario.environment.rainCloudAttenuation': 'scenario-rain-cloud-atten',
@@ -1084,8 +1097,8 @@ watch(activeTab, (tab) => {
       <!-- 保留参数组件实例，避免切换阶段时数字输入重新挂载并按最小值改写待修正参数。 -->
       <el-tabs v-show="configurationTab" v-model="activeTab" class="scenario-tabs" aria-label="参数分类">
         <el-tab-pane label="场景基础" name="scenario">
-      <section class="console-panel scenario-section" aria-labelledby="scenario-basic-title">
-        <div class="form-grid form-grid--basic form-grid--scenario-identity">
+      <section class="console-panel scenario-section" aria-label="场景基础">
+        <div class="form-grid form-grid--scenario">
           <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
           </el-form-item>
@@ -1097,19 +1110,6 @@ watch(activeTab, (tab) => {
               @update:model-value="markDirty"
             />
           </el-form-item>
-          <el-form-item class="form-grid__wide" label="场景描述" :error="issueMessage('scenario.description')">
-            <el-input
-              v-model="draft.config.scenario.description"
-              type="textarea"
-              :rows="3"
-              maxlength="512"
-              show-word-limit
-              data-testid="scenario-description"
-              @update:model-value="markDirty"
-            />
-          </el-form-item>
-        </div>
-        <div class="form-grid form-grid--timing">
           <el-form-item label="开始时间" :error="issueMessage('scenario.startTime')">
             <div class="scenario-start-time" data-testid="scenario-start-time">
               <el-date-picker
@@ -1124,14 +1124,6 @@ watch(activeTab, (tab) => {
               <el-input v-else v-model="startTimeBeijing" />
             </div>
           </el-form-item>
-          <el-form-item label="仿真时长（秒）" :error="issueMessage('scenario.duration')">
-            <el-input-number
-                v-model="draft.config.scenario.duration"
-                controls-position="right"
-                data-testid="scenario-duration"
-                @update:model-value="markDirty"
-            />
-          </el-form-item>
           <el-form-item label="时间步长（秒）" :error="issueMessage('scenario.timeStep')">
             <el-input-number
                 v-model="draft.config.scenario.timeStep"
@@ -1140,58 +1132,25 @@ watch(activeTab, (tab) => {
                 @update:model-value="markDirty"
             />
           </el-form-item>
-        </div>
-
-        <div class="form-grid form-grid--environment">
-          <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
-            <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
-            <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" data-testid="scenario-temperature" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
-            <el-input-number v-model="draft.config.scenario.environment.humidityPercent" controls-position="right" data-testid="scenario-humidity" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
-            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
-            <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" data-testid="scenario-rain-loss" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item class="multipath-field" label="多径效应">
-            <el-switch
-                v-model="draft.config.scenario.environment.multipathEnabled"
-                inline-prompt
-                active-text="启用"
-                inactive-text="关闭"
-                data-testid="scenario-multipath"
-                @update:model-value="markDirty"
-            />
-          </el-form-item>
-          <el-form-item label="仿真总时长(min)" :error="issueMessage('scenario.environment.simTotalTime')">
+          <el-form-item label="仿真总时长（min）" :error="issueMessage('scenario.duration')">
             <el-input-number
-                v-model="draft.config.scenario.simTotalTime"
+                v-model="simulationDurationMinutes"
                 controls-position="right"
-                :min="1"
-                :max="999"
-                data-testid="scenario-sim-total-time"
-                @update:model-value="markDirty"
+                data-testid="scenario-duration"
             />
           </el-form-item>
 
-          <el-form-item label="仿真时钟倍速(倍)" :error="issueMessage('scenario.environment.simClockSpeed')">
+          <el-form-item label="仿真时钟倍速（倍）" :error="issueMessage('scenario.environment.simClockSpeed')">
             <el-input-number
                 v-model="draft.config.scenario.environment.simClockSpeed"
                 controls-position="right"
-                :min="0.1"
-                :max="10"
                 :step="0.1"
                 data-testid="scenario-sim-clock-speed"
                 @update:model-value="markDirty"
             />
           </el-form-item>
 
-          <el-form-item label="传输距离(km)" :error="issueMessage('scenario.environment.transmissionDistance')">
+          <el-form-item label="海峡宽度（km）" :error="issueMessage('scenario.environment.transmissionDistance')">
             <el-input-number
                 v-model="draft.config.scenario.environment.transmissionDistance"
                 controls-position="right"
@@ -1215,8 +1174,7 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
 
-          <!-- 海面多径衰落，复用原有多径效应开关 multipathEnabled -->
-          <el-form-item class="multipath-field" label="海面多径衰落">
+          <el-form-item class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
             <el-switch
                 v-model="draft.config.scenario.environment.multipathEnabled"
                 inline-prompt
@@ -1224,6 +1182,33 @@ watch(activeTab, (tab) => {
                 inactive-text="禁用"
                 data-testid="scenario-multipath"
                 @update:model-value="markDirty"
+            />
+          </el-form-item>
+          <!-- 保留原有环境参数；不从气象档位推算这些数值。 -->
+          <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
+            <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
+            <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" data-testid="scenario-temperature" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
+            <el-input-number v-model="draft.config.scenario.environment.humidityPercent" controls-position="right" data-testid="scenario-humidity" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
+            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
+            <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" data-testid="scenario-rain-loss" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item label="场景描述" :error="issueMessage('scenario.description')">
+            <el-input
+              v-model="draft.config.scenario.description"
+              type="textarea"
+              :rows="3"
+              maxlength="512"
+              show-word-limit
+              data-testid="scenario-description"
+              @update:model-value="markDirty"
             />
           </el-form-item>
         </div>
@@ -1706,25 +1691,15 @@ watch(activeTab, (tab) => {
   grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 2fr);
 }
 
-.form-grid--scenario-identity {
+.form-grid--scenario {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.form-grid--timing {
-  grid-template-columns: repeat(3, minmax(11rem, 1fr));
-}
-
-.form-grid--environment {
-  grid-template-columns: repeat(3, minmax(11rem, 1fr));
 }
 
 .form-grid__wide {
   grid-column: 1 / -1;
 }
 
-.form-grid--scenario-identity :deep(.el-form-item),
-.form-grid--timing :deep(.el-form-item),
-.form-grid--environment :deep(.el-form-item) {
+.form-grid--scenario :deep(.el-form-item) {
   display: grid;
   width: 100%;
   max-width: 30rem;
@@ -1732,9 +1707,7 @@ watch(activeTab, (tab) => {
   grid-template-columns: 7.5rem minmax(0, 1fr);
 }
 
-.form-grid--scenario-identity :deep(.el-form-item__label),
-.form-grid--timing :deep(.el-form-item__label),
-.form-grid--environment :deep(.el-form-item__label) {
+.form-grid--scenario :deep(.el-form-item__label) {
   display: flex;
   width: 100%;
   height: 2rem;
@@ -1747,15 +1720,8 @@ watch(activeTab, (tab) => {
   white-space: nowrap;
 }
 
-.form-grid--scenario-identity :deep(.el-form-item__content),
-.form-grid--timing :deep(.el-form-item__content),
-.form-grid--environment :deep(.el-form-item__content) {
+.form-grid--scenario :deep(.el-form-item__content) {
   min-width: 0;
-}
-
-.form-grid--scenario-identity :deep(.form-grid__wide) {
-  grid-column: auto;
-  max-width: 36rem;
 }
 
 .scenario-form :deep(.el-input-number) {
@@ -1826,16 +1792,14 @@ watch(activeTab, (tab) => {
   }
 
   .form-grid--basic,
-  .form-grid--timing,
-  .form-grid--environment {
+  .form-grid--scenario {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 600px) {
   .form-grid--basic,
-  .form-grid--timing,
-  .form-grid--environment,
+  .form-grid--scenario,
   .validation-issue {
     grid-template-columns: 1fr;
   }

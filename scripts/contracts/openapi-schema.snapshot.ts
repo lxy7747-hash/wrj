@@ -1155,6 +1155,23 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'Environment': {
     'additionalProperties': false,
     'properties': {
+      'simClockSpeed': {
+        'type': 'number',
+        'exclusiveMinimum': 0,
+        'default': 2
+      },
+      'transmissionDistance': {
+        'type': 'number',
+        'minimum': 150,
+        'maximum': 410,
+        'default': 300,
+        'description': '海峡宽度，单位 km；不是各条链路的实际通信距离。'
+      },
+      'rainCloudAttenuation': {
+        'type': 'string',
+        'enum': ['none', 'lightRain', 'moderateRain', 'heavyRain'],
+        'default': 'lightRain'
+      },
       'humidityPercent': {
         'maximum': 100,
         'minimum': 0,

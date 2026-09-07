@@ -14,6 +14,7 @@ import type {
   ValidationResult,
 } from '../contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
+import { withScenarioBasicDefaults } from '../features/scenarios/scenario-basic'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
@@ -50,7 +51,7 @@ function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
     inspection.jammers.map((jammer) => jammer.id),
     inspection.sensors?.map((sensor) => sensor.id) ?? [],
   ).result.valid
-    ? draft as ScenarioDraft
+    ? { ...draft, config: withScenarioBasicDefaults(draft.config!) } as ScenarioDraft
     : undefined
 }
 
