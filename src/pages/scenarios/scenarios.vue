@@ -5,7 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
-import { JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
+import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -101,6 +101,7 @@ const satelliteTypeOptions = SATELLITE_TYPES.map((value) => ({ value, label: val
 const linkTypeOptions = LINK_TYPES.map((value) => ({ value, label: LINK_TYPE_LABELS[value] }))
 const linkDirectionLabels = { FORWARD: '正向', REVERSE: '反向' } as const
 const jammerTypeOptions = JAMMER_TYPES.map((value) => ({ value, label: JAMMER_TYPE_LABELS[value] }))
+const hasJammerPlatform = computed(() => draft.value?.config.platforms.some(platform => isJammerPlatformType(platform.type)) ?? false)
 
 const stateLabels: Record<CapabilityState, string> = {
   LOADING: '加载中',
@@ -627,18 +628,17 @@ function setJammingEnabled(enabled: boolean | string | number): void {
 /**
  * 打开新增干扰设备对话框并填入可校验的默认参数。
  * @returns 无返回值。
- * @sideEffects 没有场景实体时显示中文提示；否则创建独立编辑副本并打开对话框。
+ * @sideEffects 没有干扰节点时显示中文提示；否则创建未选择所属节点的独立编辑副本。
  */
 function openNewJammer(): void {
   if (pending.value || draft.value?.locked) return
-  const platform = draft.value?.config.platforms[0]
-  if (platform === undefined) {
-    ElMessage.error('至少需要一个场景实体才能新增干扰设备。')
+  if (!hasJammerPlatform.value) {
+    ElMessage.error('请先在平台与航点中新增干扰节点。')
     return
   }
   jammerEditorJammer.value = {
     id: nextJammerId(),
-    platformId: platform.id,
+    platformId: '',
     type: 'BARRAGE',
     ...JAMMER_DEFAULTS,
     frequency: draft.value?.config.links.find(link => link.type === 'DATALINK')?.frequency ?? 2200,
@@ -727,8 +727,8 @@ function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtensi
     ...inspectScenarioConfig(candidate, 'write').result.errors,
     ...inspectScenarioUiExtensions(candidateExtensions, candidate.jammers.map((jammer) => jammer.id)).result.errors,
   ].find(item => {
-    // 距离或时长变化后的超界设备可逐台修正；全部设备仍由整体校验和 PUT 阻断。
-    if (['JAMMER_RANGE_INVALID', 'JAMMER_TRIGGER_TIME_INVALID'].includes(item.code) && !item.fieldPath.startsWith(editedJammerPath)) return false
+    // 旧归属或超界参数可逐台修正；全部设备仍由整体校验和 PUT 阻断。
+    if (['JAMMER_RANGE_INVALID', 'JAMMER_TRIGGER_TIME_INVALID', 'JAMMER_PLATFORM_TYPE_INVALID'].includes(item.code) && !item.fieldPath.startsWith(editedJammerPath)) return false
     return item.fieldPath.startsWith('jammers') || item.fieldPath.endsWith('.jammerIds') || item.fieldPath.startsWith('uiExtensions.jammers')
   })
   if (issue !== undefined) {
@@ -1469,7 +1469,7 @@ watch(activeTab, (tab) => {
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
               <el-table-column prop="id" label="设备 ID" min-width="130" />
               <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
-              <el-table-column prop="platformId" label="归属平台"/>
+              <el-table-column prop="platformId" label="所属干扰节点"/>
               <el-table-column prop="frequency" label="频率（MHz）" />
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
               <el-table-column prop="defaultPower" label="发射功率（W）"  />
@@ -1494,7 +1494,8 @@ watch(activeTab, (tab) => {
             </el-table>
 
             <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
+              <el-button type="primary" :disabled="pending || draft.locked || !hasJammerPlatform" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
+              <small v-if="!hasJammerPlatform" data-testid="jammer-node-required">请先在平台与航点中新增干扰节点。</small>
             </div>
           </section>
         </el-tab-pane>

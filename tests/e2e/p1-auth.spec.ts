@@ -1172,6 +1172,11 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
 
 test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and independent switches', async ({ page, request }) => {
   const audit = auditConsole(page)
+  const baseline = await loadScenarioDraft(request)
+  baseline.config.platforms.push({ ...structuredClone(baseline.config.platforms.find(platform => platform.id === 'STN-01')!),
+    id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
+  expect((await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, { headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
+    data: { config: baseline.config, uiExtensions: baseline.uiExtensions } })).status()).toBe(200)
 
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1181,12 +1186,11 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('tab', { name: '干扰设备' }).click()
 
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
-  await expect(page.getByTestId('toggle-jammer-JAM-SPOT-01-TX')).not.toHaveClass(/is-checked/)
-  await page.getByTestId('toggle-jammer-JAM-SPOT-01-TX').click()
-  await expect(page.getByTestId('toggle-jammer-JAM-SPOT-01-TX')).toHaveClass(/is-checked/)
+  await expect(page.getByTestId('toggle-jammer-JAM-SPOT-01-TX')).toHaveCount(0)
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
 
   await page.getByTestId('add-jammer').click()
+  await expect(page.getByTestId('jammer-platform')).not.toContainText('后方指挥节点')
   const frequency = page.getByTestId('jammer-frequency').locator('input')
   const bandwidth = page.getByTestId('jammer-bandwidth').locator('input')
   await frequency.fill('0')
@@ -1200,7 +1204,8 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByTestId('jammer-type').click()
   await page.getByRole('option', { name: '瞄准式', exact: true }).click()
   await page.getByTestId('jammer-platform').click()
-  await page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true }).click()
+  await expect(page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true })).toHaveCount(0)
+  await page.getByRole('option', { name: '地面固定式干扰侦测站（STN-01）', exact: true }).click()
   await page.getByTestId('jammer-power').locator('input').fill('0')
   await page.getByTestId('jammer-range').locator('input').fill('1')
   await page.getByTestId('jammer-direction').locator('input').fill('270')
@@ -1210,9 +1215,13 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   const addedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(addedRow).toContainText('瞄准式')
   await expect(addedRow).toContainText('270')
+  await page.getByTestId('toggle-jammer-JAM-CFG-001').click()
+  await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).not.toHaveClass(/is-checked/)
+  await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
+  await page.getByTestId('toggle-jammer-JAM-CFG-001').click()
   await addedRow.getByRole('button', { name: '编辑' }).click()
   await page.getByTestId('jammer-platform').click()
-  await page.getByRole('option', { name: '空中无人作业节点 U02（AIR-02）', exact: true }).click()
+  await page.getByRole('option', { name: '机载干扰平台（AJ-001）', exact: true }).click()
   await page.getByTestId('jammer-direction').locator('input').fill('360')
   await page.getByTestId('jammer-duration').locator('input').fill('120')
   await page.getByTestId('apply-jammer').click()
@@ -1223,7 +1232,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
 
   await page.getByRole('tab', { name: '平台与航点' }).click()
   const platformTable = page.getByTestId('platform-table')
-  await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
+  await platformTable.getByRole('row').filter({ hasText: '机载干扰平台' }).getByRole('button', { name: '编辑' }).click()
   await expect(page.getByTestId('platform-jammer-ids')).toHaveValue(/JAM-CFG-001/)
   await page.getByTestId('cancel-platform').click()
   await platformTable.getByRole('row').filter({ hasText: '后方指挥节点' }).getByRole('button', { name: '编辑' }).click()
@@ -1238,7 +1247,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
   expect(savedDraft.config.jammers.find((jammer) => jammer.id === 'JAM-CFG-001')).toEqual({
     id: 'JAM-CFG-001',
-    platformId: 'AIR-02',
+    platformId: 'AJ-001',
     type: 'SPOT',
     defaultPower: 0,
     frequency: 0.0001,
@@ -1266,7 +1275,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   expect(await loadScenarioDraft(request)).toEqual(savedDraft)
   await page.getByRole('tab', { name: '干扰设备' }).click()
   const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
-  await expect(reloadedRow).toContainText('AIR-02')
+  await expect(reloadedRow).toContainText('AJ-001')
   await expect(reloadedRow).toContainText('360')
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
 

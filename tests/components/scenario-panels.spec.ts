@@ -6,6 +6,7 @@ import ValidationPanel from '../../src/components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorDialog.vue'
 import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.vue'
 import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
+import JammerEditorDialog from '../../src/components/scenarios/JammerEditorDialog.vue'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import type { Link, ScenarioConfig, ScenarioLinkSettings } from '../../src/contracts/domain-models'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
@@ -34,6 +35,32 @@ function mountValidationPanel(overrides: Partial<{
 }
 
 describe('场景拆分面板', () => {
+  it('干扰设备区分节点和方式，旧归属只提示不改绑，检测配置独立分组', async () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    config.platforms.push({ ...structuredClone(config.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
+    const jammer = { ...config.jammers[0]!, platformId: 'CMD-01' }
+    const wrapper = mount(JammerEditorDialog, {
+      props: { modelValue: true, jammer, uiExtension: { jammerId: jammer.id, direction: 0, duration: 60, enabled: true },
+        editing: true, error: '', pending: false, locked: false, platforms: config.platforms,
+        jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' } } },
+    })
+    expect(wrapper.text()).toContain('所属干扰节点')
+    expect(wrapper.text()).toContain('干扰方式')
+    expect(wrapper.get('[data-testid="jammer-legacy-owner"]').text()).toContain('旧归属不是干扰节点')
+    const owner = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'jammer-platform')!
+    expect(owner.props('modelValue')).toBe('CMD-01')
+    expect(owner.findAllComponents({ name: 'ElOption' }).filter(c => !c.props('disabled')).map(c => c.props('value'))).toEqual(['STN-01', 'AJ-001'])
+    expect(owner.findAllComponents({ name: 'ElOption' }).find(c => c.props('value') === 'CMD-01')!.props('disabled')).toBe(true)
+    const detection = wrapper.get('[aria-labelledby="jammer-detection-title"]')
+    expect(detection.find('[data-testid="jammer-auto-detect"]').exists()).toBe(true)
+    expect(detection.find('[data-testid="jammer-range"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="cancel-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    expect(jammer.platformId).toBe('CMD-01')
+    wrapper.unmount()
+  })
+
   it('优先级支持竖向拖拽与键盘排序，取消和运行锁不修改配置', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     config.platforms.push({ ...structuredClone(config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG' })

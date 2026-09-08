@@ -3243,6 +3243,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ]
   },
   'ScenarioConfigWrite': {
+    'description': '写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。',
     'allOf': [
       {
         '$ref': '#/components/schemas/ScenarioConfig'

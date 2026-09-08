@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
-import { METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
+import { isJammerPlatformType, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
 
@@ -28,6 +28,10 @@ const emit = defineEmits<{
 
 const editor = ref<Jammer | null>(null)
 const uiEditor = ref<JammerUiExtension | null>(null)
+const jammerPlatforms = computed(() => props.platforms.filter(platform => isJammerPlatformType(platform.type)))
+const legacyPlatformId = computed(() => editor.value?.platformId
+  && !jammerPlatforms.value.some(platform => platform.id === editor.value?.platformId) ? editor.value.platformId : '')
+const legacyPlatformName = computed(() => props.platforms.find(platform => platform.id === legacyPlatformId.value)?.name ?? '未找到节点')
 const detectionRangeNm = computed<number | undefined>({
   get: () => editor.value ? editor.value.detectionRange / METERS_PER_NAUTICAL_MILE : undefined,
   /** 将用户输入的海里换算为合同米；清空留给确认校验，不自动覆盖旧超界距离。 */
@@ -69,18 +73,19 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
           <el-form-item label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
-          <el-form-item label="干扰类型">
+          <el-form-item label="干扰方式">
             <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
               <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="归属平台">
-            <el-select v-model="editor.platformId" filterable style="width: 100%" data-testid="jammer-platform">
-              <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+          <el-form-item label="所属干扰节点">
+            <el-select v-model="editor.platformId" filterable placeholder="请选择所属干扰节点" style="width: 100%" data-testid="jammer-platform">
+              <el-option v-if="legacyPlatformId" :label="`${legacyPlatformName}（${legacyPlatformId}，旧归属待修正）`" :value="legacyPlatformId" disabled />
+              <el-option v-for="platform in jammerPlatforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
             </el-select>
-          </el-form-item>
-          <el-form-item label="自动检测">
-            <el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" />
+            <small class="field-hint">选择设备的搭载节点，位置沿用该节点，不是选择干扰目标。</small>
+            <small v-if="legacyPlatformId" class="field-hint" data-testid="jammer-legacy-owner">旧归属不是干扰节点，请重新选择；取消不会修改原数据。</small>
+            <small v-if="jammerPlatforms.length === 0" class="field-hint">请先在平台与航点中新增干扰节点。</small>
           </el-form-item>
         </div>
       </section>
@@ -89,13 +94,19 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
           <el-form-item label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
-          <el-form-item label="干扰探测距离（海里，1～24）"><el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" /></el-form-item>
           <el-form-item label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
           <el-form-item label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
           <el-form-item label="干扰触发时间（仿真秒）"><el-input-number :model-value="editor.triggerTimeS" :min="0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
           <el-form-item label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
           <el-form-item label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
           <el-form-item label="启用"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
+        </div>
+      </section>
+      <section class="link-editor-section" aria-labelledby="jammer-detection-title">
+        <h4 id="jammer-detection-title" class="link-editor-section__title">检测设置</h4>
+        <div class="link-editor-grid">
+          <el-form-item label="自动检测"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
+          <el-form-item label="探测距离（海里，1～24）"><el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" /></el-form-item>
         </div>
       </section>
     </el-form>
@@ -110,6 +121,8 @@ watch(() => props.modelValue, (visible) => {
 .platform-feedback {
   margin-bottom: 1rem;
 }
+
+.field-hint { color: var(--console-text-muted); line-height: 1.5; }
 
 .link-editor-form {
   display: grid;

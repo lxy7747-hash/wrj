@@ -39,8 +39,12 @@ const META: PageMeta = {
 
 /** 创建组件测试使用的独立场景草稿。 */
 function draft(revision = 4): ScenarioDraft {
+  // 多设备交互用例自行创建合规的第二台设备，不恢复已删除的默认旧归属。
+  const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', type: 'SPOT', autoDetect: false })
+  config.platforms.find(platform => platform.id === 'STN-01')!.jammerIds.push('JAM-SPOT-01-TX')
   return {
-    config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
+    config,
     uiExtensions: {
       jammers: [
         { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
@@ -90,7 +94,7 @@ function confirmation(): ConfirmationContext {
 }
 
 describe('P2-1 场景管理页面', () => {
-  it('机载干扰设备作为空中支撑实体新增、保存回读且可作为干扰归属平台', async () => {
+  it('机载干扰平台作为空中支撑实体新增、保存回读且可作为干扰归属平台', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -111,7 +115,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
     expect(type.findAllComponents({ name: 'ElOptionGroup' }).find(c => c.props('label').startsWith('支撑实体'))!
-      .findAllComponents({ name: 'ElOption' }).map(c => c.props('label'))).toContain('机载干扰设备')
+      .findAllComponents({ name: 'ElOption' }).map(c => c.props('label'))).toContain('机载干扰平台')
     type.vm.$emit('update:modelValue', 'AIRBORNE_JAMMER_PLATFORM')
     type.vm.$emit('change', 'AIRBORNE_JAMMER_PLATFORM')
     await flushPromises()
@@ -134,12 +138,17 @@ describe('P2-1 场景管理页面', () => {
     expect(persisted.revision).toBe(5)
     expect(await scenario.loadScenario()).toBe(true)
     await flushPromises()
-    expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰设备')
+    expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰平台')
     expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ type: 'AIRBORNE_JAMMER_PLATFORM', initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 } })
     await wrapper.get('#tab-jammers').trigger('click')
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     await flushPromises()
     const owner = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'jammer-platform')!
+    expect(owner.props('modelValue')).toBe('')
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('干扰设备必须归属于当前场景实体。')
+    expect(scenario.draft!.config.jammers).toHaveLength(2)
     expect(owner.findAllComponents({ name: 'ElOption' }).some(c => c.props('label').startsWith('机载干扰测试'))).toBe(true)
   })
 
@@ -1570,7 +1579,8 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('#tab-jammers').trigger('click')
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     await nextTick()
-    expect(messageSpy).toHaveBeenLastCalledWith('至少需要一个场景实体才能新增干扰设备。')
+    expect(wrapper.get('[data-testid="add-jammer"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="jammer-node-required"]').text()).toBe('请先在平台与航点中新增干扰节点。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(document.querySelector('[data-testid="jammer-dialog"]')).toBeNull()
   })
@@ -1612,7 +1622,7 @@ describe('P2-1 场景管理页面', () => {
     expect(document.body.textContent).toContain('干扰频率必须大于 0 MHz。')
 
     select('jammer-type').vm.$emit('update:modelValue', 'SPOT')
-    select('jammer-platform').vm.$emit('update:modelValue', 'CMD-01')
+    select('jammer-platform').vm.$emit('update:modelValue', 'STN-01')
     autoDetect.vm.$emit('update:modelValue', true)
     inputNumber('jammer-power').vm.$emit('update:modelValue', 60)
     inputNumber('jammer-range').vm.$emit('update:modelValue', 24)
@@ -1641,7 +1651,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
       id: 'JAM-CFG-001',
-      platformId: 'CMD-01',
+      platformId: 'STN-01',
       type: 'SPOT',
       defaultPower: 60,
       frequency: 3200,
@@ -1650,7 +1660,7 @@ describe('P2-1 场景管理页面', () => {
       detectionRange: 44448,
       triggerTimeS: 300,
     })
-    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'CMD-01')?.jammerIds).toContain('JAM-CFG-001')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).toContain('JAM-CFG-001')
     expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
       jammerId: 'JAM-CFG-001',
       direction: 270,
@@ -1667,13 +1677,15 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
     await flushPromises()
-    select('jammer-platform').vm.$emit('update:modelValue', 'AIR-01')
+    scenario.draft!.config.platforms.push({ ...structuredClone(toRaw(scenario.draft!.config.platforms.find(p => p.id === 'STN-01')!)),
+      id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
+    select('jammer-platform').vm.$emit('update:modelValue', 'AJ-001')
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
-    expect(scenario.draft?.config.jammers[0]?.platformId).toBe('AIR-01')
+    expect(scenario.draft?.config.jammers[0]?.platformId).toBe('AJ-001')
     expect(messageSpy).toHaveBeenLastCalledWith('干扰设备已更新，保存草稿后生效。')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).not.toContain('JAM-WB-01-TX')
-    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-01')?.jammerIds).toContain('JAM-WB-01-TX')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AJ-001')?.jammerIds).toContain('JAM-WB-01-TX')
 
     await wrapper.get('[data-testid="delete-jammer-0"]').trigger('click')
     await nextTick()

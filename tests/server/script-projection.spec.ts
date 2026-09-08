@@ -27,6 +27,8 @@ describe('T-XQ-008 脚本结构预检', () => {
     if (!result.ok) throw new Error('缺少场景夹具')
     const draft = result.data
     const generator = new ScriptProjection()
+    draft.config.jammers.push({ ...draft.config.jammers[0]!, id: 'JAM-TEST-SECOND', type: 'SPOT' })
+    draft.uiExtensions.jammers.push({ jammerId: 'JAM-TEST-SECOND', direction: 45, duration: 60, enabled: false })
     const jammer = draft.config.jammers[0]!
     jammer.type = 'SWEEP'
     jammer.triggerTimeS = 300

@@ -5,6 +5,24 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 const ORIGIN = 'http://127.0.0.1:5173'
 
 describe('机载干扰支撑实体', () => {
+  it('干扰设备仅可写入干扰节点，PUT/导入/模板拒绝普通节点且不覆盖草稿', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(original.config.jammers.some(jammer => jammer.id === 'JAM-SPOT-01-TX')).toBe(false)
+    const config = structuredClone(original.config)
+    config.jammers[0]!.platformId = 'CMD-01'
+    config.platforms.forEach(platform => { platform.jammerIds = platform.id === 'CMD-01' ? [config.jammers[0]!.id] : [] })
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    const error = (rejected.body as { error: { fieldPath: string; message: string } }).error
+    expect(error).toMatchObject({ fieldPath: 'jammers[0].platformId' })
+    expect(error.message).toContain('干扰节点')
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
+    await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '非法归属', config }).expect(422)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(original)
+  })
+
   it('允许挂载干扰设备并保存、回读、导入和生成模板，拒绝错误部署域', async () => {
     const { baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
@@ -789,7 +807,7 @@ describe('P0 deterministic mock server', () => {
         simClockSpeed: 2, transmissionDistance: 300, rainCloudAttenuation: 'lightRain', multipathEnabled: true,
       } } },
       uiExtensions: {
-        jammers: [{ jammerId: 'JAM-WB-01-TX' }, { jammerId: 'JAM-SPOT-01-TX' }],
+        jammers: [{ jammerId: 'JAM-WB-01-TX' }],
         sensors: [{ sensorId: 'ESM-01', type: 'ESM' }],
       },
     })
@@ -1330,7 +1348,9 @@ describe('P0 deterministic mock server', () => {
     const original = (await load().expect(200)).body as { data: ScenarioDraft }
     const inconsistent = structuredClone(original.data.config)
     inconsistent.links[0]!.targetPlatformId = 'AIR-02'
-    inconsistent.jammers[0]!.platformId = 'AIR-01'
+    inconsistent.platforms.push({ ...structuredClone(inconsistent.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001',
+      name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', sensorIds: [] })
+    inconsistent.jammers[0]!.platformId = 'AJ-001'
     inconsistent.platforms.forEach((platform) => {
       platform.linkIds = ['CLIENT-OWNED']
       platform.jammerIds = ['CLIENT-OWNED']
@@ -1404,7 +1424,7 @@ describe('P0 deterministic mock server', () => {
 
     const changedExtensions = structuredClone(original.uiExtensions)
     changedExtensions.jammers.reverse()
-    changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-SPOT-01-TX')!.direction = 360
+    changedExtensions.jammers[0]!.direction = 270
     changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-WB-01-TX')!.enabled = false
     changedExtensions.sensors[0]!.probability = 0.8
 
@@ -1421,13 +1441,13 @@ describe('P0 deterministic mock server', () => {
     const invalidCases = [
       {
         fieldPath: 'uiExtensions.jammers',
-        uiExtensions: { ...changedExtensions, jammers: [changedExtensions.jammers[0]] },
+        uiExtensions: { ...changedExtensions, jammers: [] },
       },
       {
         fieldPath: 'uiExtensions.jammers[0].duration',
         uiExtensions: {
           ...changedExtensions,
-          jammers: [{ ...changedExtensions.jammers[0]!, duration: -1 }, changedExtensions.jammers[1]],
+          jammers: [{ ...changedExtensions.jammers[0]!, duration: -1 }],
         },
       },
       {

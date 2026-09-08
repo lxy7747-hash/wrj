@@ -116,8 +116,11 @@ const ADMIN: Principal = {
 
 /** 创建与服务端基线一致、可独立修改的场景草稿。 */
 function scenarioDraft(revision = 4): ScenarioDraft {
+  const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', type: 'SPOT', autoDetect: false })
+  config.platforms.find(platform => platform.id === 'STN-01')!.jammerIds.push('JAM-SPOT-01-TX')
   return {
-    config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
+    config,
     uiExtensions: {
       jammers: [
         { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
@@ -140,6 +143,16 @@ function success<T>(data: T): ApiSuccess<T> {
 function jsonResponse(body: unknown, ok = true): Response {
   return { ok, json: vi.fn().mockResolvedValue(body) } as unknown as Response
 }
+
+it('旧干扰归属可读取但写入必须选择专用节点，检查不改绑原数据', () => {
+  const config = scenarioDraft().config
+  const jammer = config.jammers[0]!
+  jammer.platformId = 'CMD-01'
+  config.platforms.forEach(platform => { platform.jammerIds = config.jammers.filter(item => item.platformId === platform.id).map(item => item.id) })
+  expect(inspectScenarioConfig(config).result.valid).toBe(true)
+  expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'JAMMER_PLATFORM_TYPE_INVALID', fieldPath: 'jammers[0].platformId' }))
+  expect(jammer.platformId).toBe('CMD-01')
+})
 
 /** 创建带可选字段路径的失败 API 信封。 */
 function apiFailure(message: string, fieldPath?: string, code: ApiErrorCode = 'VALIDATION_FAILED'): ApiFailure {

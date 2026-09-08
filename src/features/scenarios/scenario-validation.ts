@@ -14,7 +14,7 @@ import type {
   ValidationResult,
 } from '../../contracts/domain-models'
 
-import { JAMMER_RANGE_METERS } from './jammer-settings'
+import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
 
 const ROOT_KEYS = [
   'schemaVersion',
@@ -354,7 +354,7 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
  * @returns 无返回值。
  * @remarks 只追加校验错误，不修改干扰设备或平台关联数组。
  */
-function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write', duration: number): void {
+function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write', duration: number, jammerPlatformIds: ReadonlySet<string>): void {
   const path = `jammers[${index}]`
   if (!isClosedObject(value, JAMMER_KEYS, ['triggerTimeS'])) {
     addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
@@ -362,6 +362,7 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'JAMMER_ID_INVALID', '干扰设备 ID 为必填项。', `${path}.id`)
   if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前场景实体。', `${path}.platformId`)
+  else if (mode === 'write' && !jammerPlatformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_TYPE_INVALID', '请选择地面干扰站或机载干扰平台作为所属干扰节点。', `${path}.platformId`)
   if (typeof value.type !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(value.type)) addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${path}.type`)
   if (!isFiniteNumber(value.defaultPower, 0)) addError(errors, 'JAMMER_POWER_INVALID', '默认功率不能小于 0 W。', `${path}.defaultPower`)
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
@@ -721,7 +722,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const jammerIds = collectIds(value.jammers)
     const platformIds = collectIds(value.platforms)
     if (jammerIds.size !== value.jammers.length) addError(errors, 'JAMMER_ID_DUPLICATED', '干扰设备 ID 不允许为空或重复。', 'jammers')
-    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, mode, scenario.duration as number))
+    const jammerPlatformIds = collectIds(Array.isArray(value.platforms)
+      ? value.platforms.filter(platform => isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS) && isJammerPlatformType(platform.type)) : [])
+    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, mode, scenario.duration as number, jammerPlatformIds))
   }
 
   if (Array.isArray(value.sensors)) {

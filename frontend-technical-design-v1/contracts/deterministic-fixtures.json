@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-07.1",
+  "fixtureVersion": "2026-09-08.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -271,9 +271,7 @@
           "L-MW-06"
         ],
         "sensorIds": [],
-        "jammerIds": [
-          "JAM-SPOT-01-TX"
-        ]
+        "jammerIds": []
       },
       {
         "id": "SAT-01",
@@ -496,16 +494,6 @@
         "bandwidth": 40,
         "autoDetect": true,
         "detectionRange": 44448
-      },
-      {
-        "id": "JAM-SPOT-01-TX",
-        "platformId": "AIR-03",
-        "type": "SPOT",
-        "defaultPower": 50,
-        "frequency": 4500,
-        "bandwidth": 5,
-        "autoDetect": false,
-        "detectionRange": 44448
       }
     ],
     "sensors": [
@@ -675,18 +663,7 @@
         "linkIds": [
           "L-MW-06"
         ],
-        "jammers": [
-          {
-            "time": 42,
-            "jammerId": "JAM-SPOT-01-TX",
-            "platformId": "AIR-03",
-            "targetPlatform": "CMD-01",
-            "power": 50,
-            "frequency": 4500,
-            "bandwidth": 5,
-            "active": false
-          }
-        ],
+        "jammers": [],
         "updatedAt": 42
       },
       {

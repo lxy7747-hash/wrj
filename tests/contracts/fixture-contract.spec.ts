@@ -148,7 +148,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-07.1')
+    expect(fixture.fixtureVersion).toBe('2026-09-08.1')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)
@@ -163,10 +163,11 @@ describe('deterministic fixture contract', () => {
     expect(airbornePlatforms.map(({ id }) => id)).toEqual(['AIR-01', 'AIR-02', 'AIR-03'])
     expect(fixture.scenario.jammers).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'JAM-WB-01-TX', platformId: 'STN-01' }),
-      expect.objectContaining({ id: 'JAM-SPOT-01-TX', platformId: 'AIR-03' }),
     ]))
 
     const uav = fixture.scenario.platforms.find(({ id }) => id === 'UAV-01')
+    expect(fixture.scenario.jammers.some(jammer => jammer.id === 'JAM-SPOT-01-TX')).toBe(false)
+    expect(fixture.frame.platforms.flatMap(platform => platform.jammers).some(jammer => jammer.jammerId === 'JAM-SPOT-01-TX')).toBe(false)
     const air = fixture.scenario.platforms.find(({ id }) => id === 'AIR-01')
     if (!uav?.waypoints[0] || !air?.waypoints[0]) {
       throw new Error('Expected UAV-01 and AIR-01 deterministic waypoints')

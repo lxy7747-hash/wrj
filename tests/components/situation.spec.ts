@@ -216,7 +216,7 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('空中无人作业节点 U01')
     expect(wrapper.text()).toContain('空中无人作业节点 U02')
     expect(wrapper.text()).toContain('空中无人作业节点 U03')
-    expect(wrapper.text()).toContain('机载瞄准式干扰设备')
+    expect(wrapper.text()).not.toContain('机载瞄准式干扰设备')
     expect(wrapper.text()).toContain('地面宽带压制干扰设备')
     expect(fetchSpy).toHaveBeenCalledTimes(4)
     expect(fetchSpy).toHaveBeenNthCalledWith(2,
@@ -1037,12 +1037,17 @@ describe('Leaflet 控制器回归', () => {
     expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('STN-01')
 
     circleSpy.mockClear()
-    controller.focusTarget({ kind: 'interference', targetId: 'JAM-SPOT-01-TX' })
+    const standbyFrame = structuredClone(SITUATION_FRAME_F00042)
+    const station = standbyFrame.platforms.find(platform => platform.platformId === 'STN-01')!
+    station.jammers.push({ ...station.jammers[0]!, jammerId: 'JAM-TEST-STANDBY', active: false })
+    controller.setFrame(standbyFrame)
+    circleSpy.mockClear()
+    controller.focusTarget({ kind: 'interference', targetId: 'JAM-TEST-STANDBY' })
     expect(setViewSpy).toHaveBeenNthCalledWith(2, expect.objectContaining({
-      lat: 24.43,
-      lng: 119.99,
+      lat: 25.25,
+      lng: 119.55,
     }), 10, { animate: true, duration: 0.45 })
-    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('U03')
+    expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('STN-01')
     expect(circleSpy.mock.calls.some((call) => (
       (call[1] as unknown as L.CircleMarkerOptions).className === 'situation-map-interference--selected'
     ))).toBe(false)

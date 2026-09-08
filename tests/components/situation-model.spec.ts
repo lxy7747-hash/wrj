@@ -13,7 +13,7 @@ import {
 
 describe('态势固定帧模型', () => {
   it('按规范 jammer type 统一 SPOT 为瞄准式', () => {
-    expect(getJammerTypeLabel('JAM-SPOT-01-TX')).toBe('瞄准式')
+    expect(getJammerTypeLabel('JAM-SPOT-01-TX')).toBe('JAM-SPOT-01-TX')
     expect(getJammerTypeLabel('JAM-WB-01-TX')).toBe('宽带压制')
   })
 

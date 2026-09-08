@@ -18,7 +18,7 @@
 
 `scenario` 是 canonical 名；输入适配器可以识别旧称 `scene`，但输出、store 和 API 永不发出旧称。`InformationDemand[]` 已由冻结需求基线纳入本阶段 canonical ScenarioConfig，不能省略。干扰器和传感器的 UI 扩展单独存放在 `ScenarioUiExtensions`，不得进入正式 ScenarioConfig JSON。若实现希望使用带单位后缀的 view-model，只能定义独立 DTO 与 adapter，不能修改上述 canonical 类型。
 
-场景实体类型为七项（含本轮用户新增机载干扰设备）：四类业务信息节点 `REAR_COMMAND_NODE | FORWARD_RELAY_NODE | GROUND_CLUSTER_COMMAND_NODE | AIRBORNE_MISSION_CLUSTER`，三类支撑实体 `COMMUNICATION_SATELLITE | GROUND_JAMMER_DETECTION_STATION | AIRBORNE_JAMMER_PLATFORM`。只有四类业务信息节点计入 50 个容量；`category` 仅表示 `ground | air | space` 部署域。链路允许 `SAT | MICROWAVE | DATALINK | LASER`。坐标为 degrees，高度/距离为 m，速度 m/s，频率/带宽 MHz，发射/干扰设备功率 W，接收/干扰计算功率 dBm，增益 dBi，损耗/SNR dB，速率 Mbps，时延 ms，时间/持续期 s，BER/概率为 0..1，无百分号字段除显式 Percent0To100。
+场景实体类型为七项（含本轮用户新增机载干扰平台）：四类业务信息节点 `REAR_COMMAND_NODE | FORWARD_RELAY_NODE | GROUND_CLUSTER_COMMAND_NODE | AIRBORNE_MISSION_CLUSTER`，三类支撑实体 `COMMUNICATION_SATELLITE | GROUND_JAMMER_DETECTION_STATION | AIRBORNE_JAMMER_PLATFORM`。只有四类业务信息节点计入 50 个容量；`category` 仅表示 `ground | air | space` 部署域。链路允许 `SAT | MICROWAVE | DATALINK | LASER`。坐标为 degrees，高度/距离为 m，速度 m/s，频率/带宽 MHz，发射/干扰设备功率 W，接收/干扰计算功率 dBm，增益 dBi，损耗/SNR dB，速率 Mbps，时延 ms，时间/持续期 s，BER/概率为 0..1，无百分号字段除显式 Percent0To100。
 
 ## 五个 SRS 前端接口
 

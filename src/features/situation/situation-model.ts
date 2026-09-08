@@ -62,7 +62,7 @@ export const PLATFORM_TYPE_LABELS: Record<PlatformStatus['type'], string> = {
   AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
   COMMUNICATION_SATELLITE: '通信卫星',
   GROUND_JAMMER_DETECTION_STATION: '地面固定式干扰侦测站',
-  AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',
+  AIRBORNE_JAMMER_PLATFORM: '机载干扰平台',
 }
 
 export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {
