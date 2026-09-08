@@ -52,9 +52,23 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it.each([
+    undefined,
+    [],
+    [null],
+    [{ url: 'http://127.0.0.1:4179' }],
+    [{ url: 'https://example.com:4173' }],
+    [{ url: 'http://127.0.0.1:4173' }, { url: 'http://127.0.0.1:4179' }],
+  ].map(servers => [servers]))('拒绝未冻结的 servers 配置：%j', (servers) => {
+    const document = asObject(structuredClone(loadContractDocuments().openApi))
+    document.servers = servers
+    expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SERVERS', path: '$.servers' }))
+  })
+
   it('accepts the authoritative 64-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
+    expect(asObject(openApi).servers).toEqual([expect.objectContaining({ url: 'http://127.0.0.1:4173' })])
     expect(auditOpenApi(openApi)).toEqual([])
 
     const paths = asObject(asObject(openApi).paths)

@@ -1,9 +1,13 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { describe, expect, it } from 'vitest'
 import type { CapabilityState, ValidationResult } from '../../src/contracts/domain-models'
 import ValidationPanel from '../../src/components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorDialog.vue'
+import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.vue'
+import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
+import type { Link, ScenarioConfig, ScenarioLinkSettings } from '../../src/contracts/domain-models'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Platform } from '../../src/contracts/domain-models'
 
@@ -30,6 +34,144 @@ function mountValidationPanel(overrides: Partial<{
 }
 
 describe('场景拆分面板', () => {
+  it('优先级支持竖向拖拽与键盘排序，取消和运行锁不修改配置', async () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    config.platforms.push({ ...structuredClone(config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG' })
+    const baseline = readLinkSettings(config)
+    const wrapper = mount(LinkSettingsPanel, {
+      props: { modelValue: baseline, platforms: config.platforms, disabled: false, typeOptions: [
+        { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
+        { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' },
+      ] }, global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
+    })
+    // 项目的通用 .vue 声明不携带 Props 类型，此处只声明本用例更新的 Props。
+    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings; disabled: boolean; dialogVisible?: boolean } }>
+    expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="link-type-enabled-MICROWAVE"]').exists()).toBe(false)
+    expect(wrapper.findAllComponents({ name: 'ElSelect' })).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
+    await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
+    expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([true])
+    await typedWrapper.setProps({ dialogVisible: true })
+    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(4)
+    expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
+    expect(wrapper.find('[aria-label="中继卫星选择"]').exists()).toBe(true)
+    expect(baseline.enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
+    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
+    expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
+    await wrapper.get('[data-testid="link-satellite-enabled-TIANTONG"]').trigger('click')
+    let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.enabledSatellites.TIANTONG).toBe(false)
+    expect(baseline.enabledSatellites.TIANTONG).toBe(true)
+    await typedWrapper.setProps({ modelValue: changed })
+    await wrapper.get('[data-testid="link-satellite-enabled-SHENTONG"]').trigger('click')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.enabledSatellites).toEqual({ TIANTONG: false, SHENTONG: true })
+    await typedWrapper.setProps({ modelValue: changed })
+    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-satellite-enabled-"]')).toHaveLength(2)
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.props('modelValue')).toBe(5)
+    await wrapper.get('[data-testid="close-link-settings"]').trigger('click')
+    expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([false])
+    await typedWrapper.setProps({ dialogVisible: false })
+    expect(wrapper.find('[data-testid="link-switch-cooldown"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="link-priority-0"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
+    await typedWrapper.setProps({ dialogVisible: true })
+    const originalPriority = [...baseline.priority]
+    const priorityItem = (index: number) => wrapper.get(`[data-testid="link-priority-${index}"]`)
+    const priorityRow = (index: number) => wrapper.get('.link-settings__priority').findAll('li')[index]!
+    const beforeDrag = wrapper.emitted('update:modelValue')!.length
+    await priorityItem(2).trigger('dragstart')
+    await priorityRow(0).trigger('dragover')
+    expect(priorityRow(0).classes()).toContain('is-drop-target')
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeDrag)
+    await priorityRow(0).trigger('drop')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER'])
+    expect(changed.enabledSatellites.TIANTONG).toBe(false)
+    expect(baseline.priority).toEqual(originalPriority)
+    await typedWrapper.setProps({ modelValue: changed })
+    expect(priorityItem(0).text()).toContain('卫星')
+    await priorityItem(0).trigger('dragstart')
+    await priorityRow(3).trigger('drop')
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'LASER', 'SAT'])
+    await typedWrapper.setProps({ modelValue: changed })
+    await priorityItem(3).trigger('keydown', { key: 'ArrowUp' })
+    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER'])
+    await typedWrapper.setProps({ modelValue: changed })
+    const beforeCancel = wrapper.emitted('update:modelValue')!.length
+    await priorityItem(0).trigger('keydown', { key: 'ArrowUp' })
+    await priorityItem(3).trigger('keydown', { key: 'ArrowDown' })
+    await priorityItem(0).trigger('dragstart')
+    await priorityItem(0).trigger('dragend')
+    await priorityRow(3).trigger('drop')
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeCancel)
+    expect(wrapper.find('.is-dragging').exists()).toBe(false)
+    await priorityItem(0).trigger('dragstart')
+    await typedWrapper.setProps({ disabled: true, dialogVisible: true })
+    const count = wrapper.emitted('update:modelValue')!.length
+    await priorityRow(3).trigger('drop')
+    expect(priorityItem(0).attributes('draggable')).toBe('false')
+    expect(priorityItem(0).attributes('disabled')).toBeDefined()
+    wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 20)
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
+    expect(config.linkSettings).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it.each([false, true])('新增/编辑链路弹框仅包含当前链路开关并仅确认时提交（编辑=%s）', async (editing) => {
+    const link = structuredClone(fixtureSource.scenario.links.find(l => l.type === 'SAT')) as Link
+    if (editing) link.relayPlatformId = 'SAT-01'
+    const wrapper = mount(LinkEditorDialog, {
+      props: { modelValue: true, link, editing, error: '', pending: false, locked: false,
+        platforms: fixtureSource.scenario.platforms as Platform[], linkTypeOptions: [
+          { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
+          { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' },
+        ],
+        linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    expect(wrapper.findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
+    expect(wrapper.findAllComponents({ name: 'ElSwitch' })).toHaveLength(1)
+    expect(wrapper.findComponent({ name: 'ElSwitch' }).props('modelValue')).toBe(true)
+    await wrapper.get('[data-testid="link-enabled"]').trigger('click')
+    expect(link.enabled).toBeUndefined()
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    for (const [id, value] of [['link-gain-correction', -2], ['link-anti-jamming-gain', 10], ['link-spatial-isolation', 3]] as const) {
+      wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === id)!.vm.$emit('update:modelValue', value)
+    }
+    wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.vm.$emit('update:modelValue', 'UNCODED')
+    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(false)
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ antennaGainCorrectionDb: -2, antiJammingGainDb: 10, spatialIsolationDb: 3, coding: 'UNCODED' })
+    if (editing) expect(wrapper.emitted('apply')![0]![0]).toHaveProperty('relayPlatformId', 'SAT-01')
+    else expect(wrapper.emitted('apply')![0]![0]).not.toHaveProperty('relayPlatformId')
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ enabled: false })
+    expect(link).not.toHaveProperty('coding')
+    const coding = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!
+    for (const empty of [undefined, null]) {
+      coding.vm.$emit('update:modelValue', 'UNCODED')
+      coding.vm.$emit('update:modelValue', empty)
+      await flushPromises()
+      await wrapper.get('[data-testid="apply-link"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('coding', null)
+    }
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-type')!
+    type.vm.$emit('update:modelValue', 'MICROWAVE')
+    type.vm.$emit('change', 'MICROWAVE')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    if (editing) {
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('relayPlatformId', null)
+      expect(link.relayPlatformId).toBe('SAT-01')
+    } else expect(wrapper.emitted('apply')!.at(-1)![0]).not.toHaveProperty('relayPlatformId')
+    wrapper.unmount()
+  })
+
   it.each([[false, 47], [false, 46], [true, 47]] as const)('数量额度：编辑=%s，已有=%s', async (editing, count) => {
     const wrapper = mount(PlatformEditorDialog, {
       props: {

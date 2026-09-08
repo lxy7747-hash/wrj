@@ -2729,8 +2729,58 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'Link': {
+    'allOf': [
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'SAT'
+            }
+          }
+        },
+        'else': {
+          'properties': {
+            'relayPlatformId': {
+              'type': 'null'
+            }
+          }
+        }
+      }
+    ],
     'additionalProperties': false,
     'properties': {
+      'enabled': {
+        'type': 'boolean',
+        'default': true
+      },
+      'antennaGainCorrectionDb': {
+        'type': 'number',
+        'default': 0
+      },
+      'coding': {
+        'type': [
+          'string',
+          'null'
+        ],
+        'pattern': '^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$'
+      },
+      'antiJammingGainDb': {
+        'type': 'number',
+        'minimum': 0,
+        'default': 0
+      },
+      'spatialIsolationDb': {
+        'type': 'number',
+        'minimum': 0,
+        'default': 0
+      },
+      'relayPlatformId': {
+        'type': [
+          'string',
+          'null'
+        ],
+        'minLength': 1
+      },
       'antennaGain': {
         '$ref': '#/components/schemas/AntennaGain'
       },
@@ -4863,9 +4913,83 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'minItems': 11,
     'type': 'array'
   },
+  'ScenarioLinkSettings': {
+    'type': 'object',
+    'additionalProperties': false,
+    'required': [
+      'enabledSatellites',
+      'switchCooldownS',
+      'priority'
+    ],
+    'properties': {
+      'enabledTypes': {
+        'deprecated': true,
+        'description': '仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。',
+        'type': 'object',
+        'additionalProperties': false,
+        'required': [
+          'SAT',
+          'MICROWAVE',
+          'DATALINK',
+          'LASER'
+        ],
+        'properties': {
+          'SAT': {
+            'type': 'boolean'
+          },
+          'MICROWAVE': {
+            'type': 'boolean'
+          },
+          'DATALINK': {
+            'type': 'boolean'
+          },
+          'LASER': {
+            'type': 'boolean'
+          }
+        }
+      },
+      'enabledSatellites': {
+        'type': 'object',
+        'additionalProperties': false,
+        'required': [
+          'TIANTONG',
+          'SHENTONG'
+        ],
+        'properties': {
+          'TIANTONG': {
+            'type': 'boolean'
+          },
+          'SHENTONG': {
+            'type': 'boolean'
+          }
+        }
+      },
+      'switchCooldownS': {
+        'type': 'number',
+        'minimum': 0,
+        'default': 5
+      },
+      'priority': {
+        'type': 'array',
+        'minItems': 4,
+        'maxItems': 4,
+        'uniqueItems': true,
+        'items': {
+          'type': 'string',
+          'enum': [
+            'SAT',
+            'MICROWAVE',
+            'DATALINK',
+            'LASER'
+          ]
+        }
+      }
+    }
+  },
   'ScenarioConfig': {
     'additionalProperties': false,
     'properties': {
+      'linkSettings': { '$ref': '#/components/schemas/ScenarioLinkSettings' },
       'informationDemand': {
         'items': {
           '$ref': '#/components/schemas/InformationDemand'

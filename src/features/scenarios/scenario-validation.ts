@@ -37,6 +37,7 @@ const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rai
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const OPTIONAL_PLATFORM_KEYS = ['satelliteType'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
+const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange'] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
@@ -264,11 +265,12 @@ function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, e
  */
 function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
   const path = `links[${index}]`
-  if (!isClosedObject(value, LINK_KEYS)) {
+  if (!isClosedObject(value, LINK_KEYS, OPTIONAL_LINK_KEYS)) {
     addError(errors, 'LINK_SHAPE_INVALID', '链路结构不正确。', path)
     return
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'LINK_ID_INVALID', '链路 ID 为必填项。', `${path}.id`)
+  if (Object.hasOwn(value, 'enabled') && typeof value.enabled !== 'boolean') addError(errors, 'LINK_ENABLED_INVALID', '链路启用状态必须为布尔值。', `${path}.enabled`)
   if (typeof value.type !== 'string' || !(LINK_TYPES as readonly string[]).includes(value.type)) addError(errors, 'LINK_TYPE_INVALID', '链路类型不正确。', `${path}.type`)
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
   if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前场景实体。', `${path}.targetPlatformId`)
@@ -286,6 +288,58 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', 'BER 阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
   if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbps。', `${path}.dataRate`)
   if (typeof value.direction !== 'string' || !(LINK_DIRECTIONS as readonly string[]).includes(value.direction)) addError(errors, 'LINK_DIRECTION_INVALID', '链路方向不正确。', `${path}.direction`)
+  for (const [key, label, minimum] of [
+    ['antennaGainCorrectionDb', '天线增益修正值', -Infinity],
+    ['antiJammingGainDb', '波形抗干扰增益', 0],
+    ['spatialIsolationDb', '空域隔离量', 0],
+  ] as const) {
+    if (Object.hasOwn(value, key) && !isFiniteNumber(value[key], minimum)) {
+      addError(errors, 'LINK_GAIN_INVALID', `${label}必须为${minimum === 0 ? '非负' : ''}有限数值。`, `${path}.${key}`)
+    }
+  }
+  if (Object.hasOwn(value, 'coding') && value.coding !== null
+    && (typeof value.coding !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$/.test(value.coding))) {
+    addError(errors, 'LINK_CODING_INVALID', '编码标识须为 1～64 位字母、数字或 _ . ( ) + / = -，未指定请清空。', `${path}.coding`)
+  }
+  if (Object.hasOwn(value, 'relayPlatformId') && value.relayPlatformId !== null
+    && (value.type !== 'SAT' || typeof value.relayPlatformId !== 'string' || !platformIds.has(value.relayPlatformId))) {
+    addError(errors, 'LINK_RELAY_INVALID', '仅卫星链路可以引用当前场景的中继卫星。', `${path}.relayPlatformId`)
+  }
+}
+
+/**
+ * 校验卫星开关和切换策略，同时兼容历史类型开关的结构校验。
+ * @param value 未受信任的链路设置。
+ * @param platforms 未受信任的场景实体集合，用于核对卫星类型。
+ * @param errors 接收错误的数组；错误路径用于页面定位。
+ */
+function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes'])) {
+    addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
+    return
+  }
+  if (Object.hasOwn(value, 'enabledTypes')) {
+    if (!isClosedObject(value.enabledTypes, LINK_TYPES)) {
+      addError(errors, 'LINK_SWITCHES_INVALID', '历史链路类型开关格式不正确，请修正导入配置。', 'linkSettings.enabledTypes')
+    } else for (const type of LINK_TYPES) {
+      if (typeof value.enabledTypes[type] !== 'boolean') addError(errors, 'LINK_SWITCH_INVALID', '历史链路类型开关必须为布尔值，请修正导入配置。', `linkSettings.enabledTypes.${type}`)
+    }
+  }
+  if (!isClosedObject(value.enabledSatellites, SATELLITE_TYPES)) {
+    addError(errors, 'SATELLITE_SWITCHES_INVALID', '必须配置天通和神通卫星启用开关。', 'linkSettings.enabledSatellites')
+  } else for (const type of SATELLITE_TYPES) {
+    const path = `linkSettings.enabledSatellites.${type}`
+    if (typeof value.enabledSatellites[type] !== 'boolean') addError(errors, 'SATELLITE_SWITCH_INVALID', '卫星启用开关必须为布尔值。', path)
+    else if (value.enabledSatellites[type] && Array.isArray(platforms) && !platforms.some((p) => (
+      typeof p === 'object' && p !== null && p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === type
+    ))) addError(errors, 'SATELLITE_NOT_CONFIGURED', `请先在平台与航点中配置${type === 'TIANTONG' ? '天通' : '神通'}卫星。`, path)
+  }
+  if (!isFiniteNumber(value.switchCooldownS, 0)) addError(errors, 'LINK_COOLDOWN_INVALID', '防乒乓滞回时间必须为非负有限秒数。', 'linkSettings.switchCooldownS')
+  if (!Array.isArray(value.priority) || value.priority.length !== LINK_TYPES.length
+    || new Set(value.priority).size !== LINK_TYPES.length
+    || value.priority.some((type) => !(LINK_TYPES as readonly unknown[]).includes(type))) {
+    addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含四类链路且不能重复。', 'linkSettings.priority')
+  }
 }
 
 /**
@@ -485,7 +539,7 @@ function inspectPlatformReferences(
 export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = 'read'): ScenarioInspection {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
-  if (!isClosedObject(value, ROOT_KEYS)) {
+  if (!isClosedObject(value, ROOT_KEYS, ['linkSettings'])) {
     addError(errors, 'SCENARIO_SHAPE_INVALID', '场景配置结构不正确。', 'config')
     return { result: { valid: false, errors, warnings } }
   }
@@ -496,6 +550,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (!Array.isArray(value.sensors)) addError(errors, 'SENSORS_INVALID', '传感器配置格式不正确。', 'sensors')
   if (typeof value.output !== 'object' || value.output === null || Array.isArray(value.output)) addError(errors, 'OUTPUT_INVALID', '输出配置格式不正确。', 'output')
   if (!Array.isArray(value.informationDemand) || value.informationDemand.length === 0) addError(errors, 'INFORMATION_DEMAND_INVALID', '场景至少需要一项信息需求。', 'informationDemand')
+  if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors)
 
   if (!isClosedObject(value.scenario, SCENARIO_KEYS)) {
     addError(errors, 'SCENARIO_IDENTITY_INVALID', '场景基础信息结构不正确。', 'scenario')
@@ -630,7 +685,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         })
       }
       const platformId = typeof platform.id === 'string' ? platform.id : ''
-      inspectReferenceIds(platform.linkIds, linkIds, collectOwnedIds(value.links, platformId, ['sourcePlatformId', 'targetPlatformId']), `${path}.linkIds`, errors)
+      inspectReferenceIds(platform.linkIds, linkIds, collectOwnedIds(value.links, platformId, ['sourcePlatformId', 'targetPlatformId', 'relayPlatformId']), `${path}.linkIds`, errors)
       inspectReferenceIds(platform.sensorIds, sensorIds, collectOwnedIds(value.sensors, platformId, ['platformId']), `${path}.sensorIds`, errors)
       inspectReferenceIds(platform.jammerIds, jammerIds, collectOwnedIds(value.jammers, platformId, ['platformId']), `${path}.jammerIds`, errors)
     })
@@ -644,7 +699,13 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const linkIds = collectIds(value.links)
     const platformIds = collectIds(value.platforms)
     if (linkIds.size !== value.links.length) addError(errors, 'LINK_ID_DUPLICATED', '链路 ID 不允许为空或重复。', 'links')
-    value.links.forEach((link, index) => inspectLink(link, index, platformIds, errors))
+    value.links.forEach((link, index) => {
+      inspectLink(link, index, platformIds, errors)
+      if (typeof link === 'object' && link !== null && typeof link.relayPlatformId === 'string'
+        && Array.isArray(value.platforms) && !value.platforms.some((p) => (
+          typeof p === 'object' && p !== null && p.id === link.relayPlatformId && p.type === 'COMMUNICATION_SATELLITE'
+        ))) addError(errors, 'LINK_RELAY_NOT_SATELLITE', '中继卫星必须引用通信卫星实体。', `links[${index}].relayPlatformId`)
+    })
   }
 
   if (Array.isArray(value.jammers)) {

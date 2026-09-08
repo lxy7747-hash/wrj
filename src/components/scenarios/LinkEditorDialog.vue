@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, toRaw, watch } from 'vue'
 import type { Link, LinkType, Platform } from '../../contracts/domain-models'
+import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
 
 type LinkTypeOption = { value: LinkType, label: string }
 
@@ -26,12 +27,24 @@ const emit = defineEmits<{
 
 const editor = ref<Link | null>(null)
 
+/** 改为非卫星链路时清除旧版中继引用；type 为新类型，新链路不生成此历史字段。 */
+function changeType(type: LinkType): void {
+  if (editor.value?.relayPlatformId && type !== 'SAT') editor.value.relayPlatformId = null
+}
+
+/** 保存编码选择；空字符串转为“未指定”，value 为选项或用户录入的后端编码标识。 */
+function changeCoding(value: string | null | undefined): void {
+  if (editor.value) editor.value.coding = (value ?? '').trim() || null
+}
+
+/** 确认当前链路及其启停副本；取消或校验失败时不写入原场景。 */
 function apply(): void {
-  if (editor.value !== null) emit('apply', editor.value)
+  if (editor.value !== null && !props.pending && !props.locked) emit('apply', editor.value)
 }
 
 watch(() => props.modelValue, (visible) => {
-  if (visible) editor.value = props.link === null ? null : structuredClone(toRaw(props.link))
+  if (!visible) return
+  editor.value = props.link === null ? null : { ...LINK_PARAMETER_DEFAULTS, ...structuredClone(toRaw(props.link)) }
 }, { immediate: true })
 </script>
 
@@ -41,6 +54,7 @@ watch(() => props.modelValue, (visible) => {
     class="link-editor-dialog"
     :title="editing ? '编辑链路' : '新增链路'"
     width="min(760px, calc(100vw - 2rem))"
+    top="5vh"
     destroy-on-close
     append-to-body
     data-testid="link-dialog"
@@ -52,8 +66,11 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
           <el-form-item label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
+          <el-form-item label="当前链路">
+            <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
+          </el-form-item>
           <el-form-item label="链路类型">
-            <el-select v-model="editor.type" style="width: 100%" data-testid="link-type">
+            <el-select v-model="editor.type" style="width: 100%" data-testid="link-type" @change="changeType">
               <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
@@ -85,6 +102,9 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="数据速率（Mbps）"><el-input-number v-model="editor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
           <el-form-item label="发射天线增益（dBi）"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
           <el-form-item label="接收天线增益（dBi）"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
+          <el-form-item label="天线增益修正值（dB）"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
+          <el-form-item label="波形抗干扰增益（dB）"><el-input-number v-model="editor.antiJammingGainDb" :min="0" controls-position="right" data-testid="link-anti-jamming-gain" /></el-form-item>
+          <el-form-item label="空域隔离量（dB）"><el-input-number v-model="editor.spatialIsolationDb" :min="0" controls-position="right" data-testid="link-spatial-isolation" /></el-form-item>
         </div>
       </section>
 
@@ -99,6 +119,13 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="链路方向">
             <el-select v-model="editor.direction" style="width: 100%" data-testid="link-direction">
               <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item class="link-editor-field--wide" label="信道编码类型">
+            <el-select :model-value="editor.coding ?? ''" filterable allow-create clearable default-first-option
+              placeholder="选择无编码，或输入后端约定编码标识" data-testid="link-coding" @update:model-value="changeCoding">
+              <el-option label="无编码" value="UNCODED" />
+              <el-option v-if="editor.coding && editor.coding !== 'UNCODED'" :label="editor.coding" :value="editor.coding" />
             </el-select>
           </el-form-item>
           <el-form-item class="link-editor-field--wide" label="BER 阈值">
@@ -118,6 +145,17 @@ watch(() => props.modelValue, (visible) => {
 </template>
 
 <style scoped>
+:global(.link-editor-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+}
+
+:global(.link-editor-dialog .el-dialog__body) {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .platform-feedback {
   margin-bottom: 1rem;
 }

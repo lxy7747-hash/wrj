@@ -5,6 +5,7 @@ import type {
   ValidationIssue,
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
+import { isConfiguredLinkEnabled, LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
 
 export type ScriptProjectionResult<T> =
   | { ok: true; data: T }
@@ -25,6 +26,7 @@ function fnv1aMockChecksum(value: string): string {
 /** 从当前完整草稿生成不访问文件或进程的 AFSIM 文本预览。 */
 function buildPreview(draft: ScenarioDraft): string {
   const config = draft.config
+  const linkSettings = readLinkSettings(config)
   const lines = [
     '# AFSIM 2.9.0 场景脚本预览；仅内存生成',
     `config_version ${config.schemaVersion}`,
@@ -41,7 +43,12 @@ function buildPreview(draft: ScenarioDraft): string {
       lines.push(`    waypoint ${waypoint.longitude},${waypoint.latitude},${waypoint.altitude} speed=${waypoint.speed} arrival=${waypoint.arrivalTime}`)
     })
   })
+  // 真实 AFSIM 映射待后端规则确认；注释保留全部输入，不伪造引擎指令。
+  lines.push(`  # 链路设置（参数记录） ${JSON.stringify(linkSettings)}`)
   config.links.forEach((link) => {
+    const enabled = isConfiguredLinkEnabled(link, linkSettings, config.platforms)
+    lines.push(`  # 链路参数（参数记录） ${JSON.stringify({ ...LINK_PARAMETER_DEFAULTS, ...link, enabled: readLinkEnabled(link, linkSettings), participates: enabled })}`)
+    if (!enabled) return
     lines.push(`  comm ${JSON.stringify(link.id)} type=${link.type} source=${JSON.stringify(link.sourcePlatformId)} target=${JSON.stringify(link.targetPlatformId)} frequency=${link.frequency}MHz bandwidth=${link.bandwidth}MHz power=${link.txPower}W rate=${link.dataRate}Mbps`)
   })
   config.jammers.forEach((jammer) => {

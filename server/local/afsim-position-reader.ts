@@ -48,7 +48,9 @@ export function createPositionReader(inputPath: string): () => Promise<PositionS
         readBytes += bytesRead
       }
       const after = await stat(filePath)
-      if (after.dev !== before.dev || after.ino !== before.ino || after.size < before.size
+      // Windows 的路径 stat 可能返回 dev=0，只有两侧均提供设备号时才能比较。
+      if ((after.dev !== 0 && before.dev !== 0 && after.dev !== before.dev)
+        || after.ino !== before.ino || after.size < before.size
         || after.birthtimeMs !== before.birthtimeMs) throw new Error('位置文件正在替换，请重试。')
 
       const combined = Buffer.concat([reset ? Buffer.alloc(0) : pending, chunk])

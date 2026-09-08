@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { ScenarioDraft, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 let inspectScriptPreview: (preview: string) => ValidationResult
 let ScriptProjection: new () => {
@@ -63,5 +64,32 @@ describe('T-XQ-008 脚本结构预检', () => {
     projection.reset()
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: false, fieldPath: 'scriptId' })
     expect(projection.preview(scenario.data).scriptId).toBe('SCRIPT-P2-001')
+  })
+
+  it('新参数影响预览校验和，停用链路和卫星保留配置但不生成通信段', () => {
+    const scenario = new ScenarioProjection().get('SCN-001')
+    if (!scenario.ok) throw new Error('缺少测试场景')
+    const draft = scenario.data
+    const projection = new ScriptProjection()
+    const before = projection.preview(draft)
+    draft.config.linkSettings = readLinkSettings(draft.config)
+    const [disabledLink, enabledLink] = draft.config.links.filter(link => link.type === 'MICROWAVE')
+    disabledLink!.enabled = false
+    enabledLink!.enabled = true
+    draft.config.linkSettings.enabledSatellites.TIANTONG = false
+    draft.config.linkSettings.switchCooldownS = 8
+    draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE']
+    draft.config.links[0]!.coding = 'CUSTOM-1/2'
+    draft.config.links[0]!.antennaGainCorrectionDb = -2
+    const after = projection.preview(draft)
+    expect(after.checksum).not.toBe(before.checksum)
+    expect(after.preview).toContain('"switchCooldownS":8')
+    expect(after.preview).toContain('"coding":"CUSTOM-1/2"')
+    const communication = after.preview.split('\n').filter(line => line.startsWith('  comm '))
+    expect(communication.some(line => line.includes(JSON.stringify(disabledLink!.id)))).toBe(false)
+    expect(communication.some(line => line.includes(JSON.stringify(enabledLink!.id)))).toBe(true)
+    const satelliteId = draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!.id
+    expect(communication.some(line => line.includes(JSON.stringify(satelliteId)))).toBe(false)
+    expect(projection.preflight(after.scriptId, after.checksum)).toMatchObject({ ok: true, data: { valid: true } })
   })
 })

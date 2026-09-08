@@ -308,6 +308,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/Platform/properties/satelliteType/enum', ['TIANTONG','SHENTONG']],
   ['#/components/schemas/Platform/properties/category/enum', ['ground','air','space']],
   ['#/components/schemas/Link/properties/type/enum', ['SAT','MICROWAVE','DATALINK','LASER']],
+  ['#/components/schemas/Link/allOf/0/if/properties/type/const', 'SAT'],
+  ['#/components/schemas/ScenarioLinkSettings/properties/priority/items/enum', ['SAT','MICROWAVE','DATALINK','LASER']],
   ['#/components/schemas/Link/properties/modulation/enum', ['BPSK','QPSK']],
   ['#/components/schemas/Link/properties/direction/enum', ['FORWARD','REVERSE']],
   ['#/components/schemas/Jammer/properties/type/enum', ['BARRAGE','SPOT']],
@@ -1137,6 +1139,11 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
 
   if (openApi.openapi !== '3.1.0') {
     addFinding(findings, 'OPENAPI_VERSION', '$.openapi', 'Expected OpenAPI 3.1.0')
+  }
+
+  if (!Array.isArray(openApi.servers) || openApi.servers.length !== 1
+    || !isObject(openApi.servers[0]) || openApi.servers[0].url !== 'http://127.0.0.1:4173') {
+    addFinding(findings, 'OPENAPI_SERVERS', '$.servers', 'Expected only http://127.0.0.1:4173')
   }
 
   const paths = objectAt(openApi, 'paths')

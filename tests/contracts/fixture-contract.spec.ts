@@ -4,6 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import type { ValidateFunction } from 'ajv'
 
 import type { CapabilityState, DeterministicFixtureSet } from '../../src/contracts/domain-models.js'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 type JsonObject = Record<string, unknown>
 type ValidationFinding = { code: string; path: string; message: string }
@@ -46,6 +47,34 @@ describe('deterministic fixture contract', () => {
   it('validates the entire authoritative fixture and its semantic closure', () => {
     expect(validateFixture(fixtures), JSON.stringify(validateFixture.errors)).toBe(true)
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
+  })
+
+  it('链路新字段的合同允许旧数据并拒绝错误类型和重复排序', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile({ ...schema, $ref: '#/$defs/ScenarioConfig' })
+    const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
+    expect(validate(config)).toBe(true)
+    config.linkSettings = readLinkSettings(config)
+    Object.assign(config.links[0]!, { enabled: false, antennaGainCorrectionDb: -2, coding: null, antiJammingGainDb: 1, spatialIsolationDb: 2, relayPlatformId: null })
+    expect(validate(config), JSON.stringify(validate.errors)).toBe(true)
+    for (const enabled of ['false', null, 0]) {
+      config.links[0]!.enabled = enabled as never
+      expect(validate(config)).toBe(false)
+    }
+    config.links[0]!.enabled = true
+    expect(validate(config)).toBe(true)
+    config.linkSettings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true }
+    expect(validate(config)).toBe(true)
+    config.linkSettings.priority[0] = config.linkSettings.priority[1]!
+    expect(validate(config)).toBe(false)
+    config.linkSettings.priority = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER']
+    config.links[0]!.coding = 'bad\ncode'
+    expect(validate(config)).toBe(false)
+    config.links[0]!.coding = 'UNCODED'
+    config.links[0]!.spatialIsolationDb = -1
+    expect(validate(config)).toBe(false)
   })
 
   it('约束实体类型与部署域及卫星字段，同时兼容旧卫星读取', () => {

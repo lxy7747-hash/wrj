@@ -77,8 +77,27 @@ export interface Platform {
 }
 export interface Link {
   id: Identifier; type: LinkType; sourcePlatformId: Identifier; targetPlatformId: Identifier;
+  /** 本条链路独立启停；旧配置缺省时沿用历史类型开关，否则默认启用。 */
+  enabled?: boolean;
   frequency: Megahertz; bandwidth: Megahertz; txPower: Watts; antennaGain: AntennaGain;
   modulation: Modulation; berThreshold: Ratio01; dataRate: MegabitsPerSecond; direction: LinkDirection;
+  /** 链路增益修正，单位 dB；独立于收发天线绝对增益，缺省为 0。 */
+  antennaGainCorrectionDb?: Decibels;
+  /** 后端约定的编码标识；null 表示尚未指定，UNCODED 表示明确不编码。 */
+  coding?: string | null;
+  /** 波形抗干扰增益和空域隔离衰减，单位 dB，缺省均为 0。 */
+  antiJammingGainDb?: Decibels;
+  spatialIsolationDb?: Decibels;
+  /** 卫星链路引用的中继卫星实体；缺省或 null 沿用端点卫星。 */
+  relayPlatformId?: Identifier | null;
+}
+/** 场景级卫星启用与链路切换策略；单条链路开关保存在 Link.enabled。 */
+export interface ScenarioLinkSettings {
+  /** @deprecated 仅兼容历史配置的默认状态；新配置不再生成或编辑全局类型开关。 */
+  enabledTypes?: Record<LinkType, boolean>;
+  enabledSatellites: Record<SatelliteType, boolean>;
+  switchCooldownS: Seconds;
+  priority: LinkType[];
 }
 export interface Jammer {
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT'; defaultPower: Watts;
@@ -101,6 +120,8 @@ export interface ScenarioConfig {
   schemaVersion: '1.0'; scenario: ScenarioIdentity; platforms: Platform[]; links: Link[];
   jammers: Jammer[]; sensors: Sensor[]; output: OutputConfig;
   informationDemand: InformationDemand[];
+  /** 兼容旧场景缺省；四类链路默认启用，卫星按已配置实体启用，冷却 5 秒。 */
+  linkSettings?: ScenarioLinkSettings;
 }
 
 /** Five complete SRS §3.5.4 frontend interfaces (canonical superset). */

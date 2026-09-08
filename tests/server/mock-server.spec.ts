@@ -1,7 +1,54 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ApiSuccess, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 const ORIGIN = 'http://127.0.0.1:5173'
+
+describe('链路补项保存与快照', () => {
+  it('新字段经 PUT、回读、模板和导入保留，重置后可撤销恢复', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    config.linkSettings = readLinkSettings(config)
+    const [disabledLink, enabledLink] = config.links.filter(link => link.type === 'MICROWAVE')
+    disabledLink!.enabled = false
+    enabledLink!.enabled = true
+    config.linkSettings.switchCooldownS = 12
+    config.linkSettings.priority = ['SAT', 'DATALINK', 'MICROWAVE', 'LASER']
+    const satellite = config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
+    const link = config.links.find(l => l.type === 'SAT')!
+    Object.assign(link, { antennaGainCorrectionDb: -2, coding: 'UNCODED', antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(saved.config.linkSettings).toEqual(config.linkSettings)
+    expect(saved.config.links).toEqual(config.links)
+    expect(saved.config.links.find(link => link.id === disabledLink!.id)?.enabled).toBe(false)
+    expect(saved.config.links.find(link => link.id === enabledLink!.id)?.enabled).toBe(true)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
+    const template = await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '链路配置模板', config: saved.config }).expect(201)
+    expect((template.body as ApiSuccess<ScenarioTemplate>).data.config).toEqual(saved.config)
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [saved.config] }).expect(200)
+    const importedDraft = (imported.body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
+    expect(importedDraft.config).toEqual(saved.config)
+    const reset = await request(baseUrl).post(`${path}/reset`).set(headers).send({ expectedRevision: importedDraft.revision }).expect(200)
+    const resetDraft = (reset.body as ApiSuccess<ScenarioDraft>).data
+    expect(resetDraft.config.linkSettings).toBeUndefined()
+    const undone = await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: resetDraft.revision }).expect(200)
+    expect((undone.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
+    const invalid = structuredClone(saved.config)
+    invalid.links.find(l => l.id === link.id)!.relayPlatformId = config.platforms[0]!.id
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+    expect((rejected.body as { error: { fieldPath: string } }).error.fieldPath).toMatch(/relayPlatformId$/)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
+    const cleared = structuredClone(saved.config)
+    cleared.links.find(l => l.id === link.id)!.coding = null
+    const clearedResult = await request(baseUrl).put(path).set(headers).send({ config: cleared, uiExtensions: original.uiExtensions }).expect(200)
+    expect((clearedResult.body as ApiSuccess<ScenarioDraft>).data.config.links.find(l => l.id === link.id)?.coding).toBeNull()
+    const reloaded = await request(baseUrl).get(path).set(headers).expect(200)
+    expect((reloaded.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(cleared)
+  })
+})
 
 describe('卫星子类型写入边界', () => {
   it('旧卫星可读取，但即使完成警告确认也不能绕过子类型校验生成脚本', async () => {

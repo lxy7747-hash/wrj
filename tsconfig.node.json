@@ -26,6 +26,7 @@
     "src/features/data-exchange/csv-contract.ts",
     "src/features/scenarios/scenario-validation.ts",
     "src/features/scenarios/scenario-basic.ts",
+    "src/features/scenarios/link-settings.ts",
     "src/features/admin/admin-contract.ts"
   ]
 }

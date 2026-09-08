@@ -96,7 +96,7 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
   })
   if (Array.isArray(candidate.links)) candidate.links.forEach((link) => {
     if (typeof link !== 'object' || link === null || Array.isArray(link) || typeof link.id !== 'string') return
-    for (const platformId of [link.sourcePlatformId, link.targetPlatformId]) {
+    for (const platformId of [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId]) {
       if (typeof platformId === 'string') linkIdsByPlatform.get(platformId)?.add(link.id)
     }
   })

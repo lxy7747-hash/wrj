@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isPositionSnapshot, mergePositionNodes } from '../../src/features/situation/position-updates'
 import type { InitialNodeSnapshot } from '../../src/features/situation/initial-nodes'
 import { isLocalReplaySnapshot, selectReplayNodes } from '../../src/features/replays/local-replay'
@@ -14,6 +14,9 @@ const readerModule = '../../server/local/' + 'afsim-position-reader.js'
 const appModule = '../../server/' + 'app.js'
 const requestModule = 'super' + 'test'
 const { mkdtemp, writeFile, appendFile, readFile, rename, rm } = await import(fsModule)
+const fs = (await import(fsModule)).default
+const moduleModule = 'node:' + 'module'
+const { syncBuiltinESMExports } = await import(moduleModule)
 const { tmpdir } = await import(osModule)
 const { join } = await import(pathModule)
 const { once } = await import(eventsModule)
@@ -32,11 +35,39 @@ async function fixture(text: string) {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
+  syncBuiltinESMExports()
   if (directory) await rm(directory, { recursive: true })
   directory = ''
 })
 
 describe('AFSIM 追加位置读取', () => {
+  it.each([[42, 0], [0, 42], [0, 0], [42, 42]])('设备号 %s/%s 可读取同一文件', async (handleDev, pathDev) => {
+    const { path, read } = await fixture(POSITION_CSV)
+    const handle = await fs.open(path, 'r')
+    const stats = await handle.stat()
+    vi.spyOn(handle, 'stat').mockResolvedValue({ ...stats, dev: handleDev, isFile: () => true })
+    vi.spyOn(fs, 'open').mockResolvedValueOnce(handle)
+    vi.spyOn(fs, 'stat').mockResolvedValueOnce({ ...stats, dev: pathDev })
+    syncBuiltinESMExports()
+    expect(isPositionSnapshot(await read())).toBe(true)
+  })
+
+  it.each(['dev', 'ino', 'size', 'birthtimeMs'] as const)('仍拒绝文件替换或截断：%s', async (field) => {
+    const { path, read } = await fixture(POSITION_CSV)
+    const handle = await fs.open(path, 'r')
+    const stats = await handle.stat()
+    // Windows 文件编号可能超出安全整数范围，使用可精确递增的测试编号。
+    const before = { ...stats, dev: 42, ino: 100, isFile: () => true }
+    const after = { ...before, dev: 0, [field]: field === 'size' ? stats.size - 1 : before[field] + 1 }
+    expect(after[field]).not.toBe(before[field])
+    vi.spyOn(handle, 'stat').mockResolvedValue(before)
+    vi.spyOn(fs, 'open').mockResolvedValueOnce(handle)
+    vi.spyOn(fs, 'stat').mockResolvedValueOnce(after)
+    syncBuiltinESMExports()
+    await expect(read()).rejects.toThrow('位置文件正在替换')
+  })
+
   it('文件回放读取完整历史，与实时游标隔离，重新加载后可见追加记录', async () => {
     const { path, read } = await fixture(POSITION_CSV)
     const initialPath = join(directory, 'initial.csv')

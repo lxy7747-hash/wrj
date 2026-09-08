@@ -7,7 +7,7 @@
   },
   "servers": [
     {
-      "url": "http://127.0.0.1:4179",
+      "url": "http://127.0.0.1:4173",
       "description": "only permitted bind/host"
     }
   ],
@@ -3876,6 +3876,24 @@
         ]
       },
       "Link": {
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "SAT"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "relayPlatformId": {
+                  "type": "null"
+                }
+              }
+            }
+          }
+        ],
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -3893,6 +3911,38 @@
           "direction"
         ],
         "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "antennaGainCorrectionDb": {
+            "type": "number",
+            "default": 0
+          },
+          "coding": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$"
+          },
+          "antiJammingGainDb": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "spatialIsolationDb": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "relayPlatformId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
           "id": {
             "type": "string",
             "minLength": 1
@@ -4220,6 +4270,79 @@
           }
         }
       },
+      "ScenarioLinkSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "enabledSatellites",
+          "switchCooldownS",
+          "priority"
+        ],
+        "properties": {
+          "enabledTypes": {
+            "deprecated": true,
+            "description": "仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "SAT",
+              "MICROWAVE",
+              "DATALINK",
+              "LASER"
+            ],
+            "properties": {
+              "SAT": {
+                "type": "boolean"
+              },
+              "MICROWAVE": {
+                "type": "boolean"
+              },
+              "DATALINK": {
+                "type": "boolean"
+              },
+              "LASER": {
+                "type": "boolean"
+              }
+            }
+          },
+          "enabledSatellites": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "TIANTONG",
+              "SHENTONG"
+            ],
+            "properties": {
+              "TIANTONG": {
+                "type": "boolean"
+              },
+              "SHENTONG": {
+                "type": "boolean"
+              }
+            }
+          },
+          "switchCooldownS": {
+            "type": "number",
+            "minimum": 0,
+            "default": 5
+          },
+          "priority": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "SAT",
+                "MICROWAVE",
+                "DATALINK",
+                "LASER"
+              ]
+            }
+          }
+        }
+      },
       "ScenarioConfig": {
         "type": "object",
         "additionalProperties": false,
@@ -4234,6 +4357,7 @@
           "informationDemand"
         ],
         "properties": {
+          "linkSettings": { "$ref": "#/components/schemas/ScenarioLinkSettings" },
           "schemaVersion": {
             "const": "1.0"
           },

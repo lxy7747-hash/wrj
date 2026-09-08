@@ -17,6 +17,7 @@ import type {
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
+import { isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useUiStore } from '../../src/stores/ui'
@@ -28,6 +29,56 @@ const META: PageMeta = {
   pageSize: 1,
   total: 1,
 }
+
+describe('链路新增参数边界', () => {
+  it('中继卫星默认选择天通，显式开关原样保留，无实体时不启用', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    config.platforms.push({ ...structuredClone(config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG' })
+    expect(readLinkSettings(config).enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
+    expect(readLinkSettings({ platforms: [] }).enabledSatellites).toEqual({ TIANTONG: false, SHENTONG: false })
+    config.linkSettings = readLinkSettings(config)
+    config.linkSettings.enabledSatellites = { TIANTONG: false, SHENTONG: true }
+    const settings = readLinkSettings(config)
+    expect(settings.enabledSatellites).toEqual({ TIANTONG: false, SHENTONG: true })
+    settings.enabledSatellites.SHENTONG = false
+    expect(config.linkSettings.enabledSatellites.SHENTONG).toBe(true)
+  })
+
+  it('兼容旧场景，拒绝非法数值、编码、卫星开关及重复优先级', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    expect(inspectScenarioConfig(config).result.valid).toBe(true)
+    config.linkSettings = readLinkSettings(config)
+    config.linkSettings.enabledSatellites.SHENTONG = true
+    config.linkSettings.enabledTypes = { SAT: 'true' as never, MICROWAVE: true, DATALINK: true, LASER: true }
+    config.linkSettings.switchCooldownS = -1
+    config.linkSettings.priority = ['SAT', 'SAT', 'LASER', 'MICROWAVE']
+    Object.assign(config.links[0]!, { enabled: 'true', antennaGainCorrectionDb: NaN, antiJammingGainDb: -1, spatialIsolationDb: Infinity, coding: 'bad\nscript' })
+    const paths = inspectScenarioConfig(config).result.errors.map(e => e.fieldPath)
+    expect(paths).toEqual(expect.arrayContaining([
+      'linkSettings.enabledSatellites.SHENTONG', 'linkSettings.enabledTypes.SAT', 'linkSettings.switchCooldownS', 'linkSettings.priority',
+      'links[0].enabled', 'links[0].antennaGainCorrectionDb', 'links[0].antiJammingGainDb', 'links[0].spatialIsolationDb', 'links[0].coding',
+    ]))
+  })
+})
+it('单条启停优先于历史类型开关，同类型链路独立且不改写原快照', () => {
+  const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+  const settings = readLinkSettings(config)
+  expect(settings.enabledTypes).toBeUndefined()
+  const [first, second] = config.links.filter(link => link.type === 'MICROWAVE')
+  expect(readLinkEnabled(first!)).toBe(true)
+  settings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true }
+  expect(isConfiguredLinkEnabled(first!, settings, config.platforms)).toBe(false)
+  first!.enabled = true
+  expect(isConfiguredLinkEnabled(first!, settings, config.platforms)).toBe(true)
+  expect(isConfiguredLinkEnabled(second!, settings, config.platforms)).toBe(false)
+  first!.enabled = false
+  second!.enabled = true
+  expect(isConfiguredLinkEnabled(first!, settings, config.platforms)).toBe(false)
+  expect(isConfiguredLinkEnabled(second!, settings, config.platforms)).toBe(true)
+  expect(settings.enabledTypes.MICROWAVE).toBe(false)
+  expect(config.linkSettings).toBeUndefined()
+})
+
 const OPERATOR: Principal = {
   userId: 'USR-OPERATOR',
   username: 'operator',

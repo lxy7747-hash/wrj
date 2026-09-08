@@ -1,5 +1,5 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
-import ElementPlus, { ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { createMemoryHistory } from 'vue-router'
@@ -8,6 +8,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { createAppRouter } from '../../src/router'
@@ -90,6 +91,7 @@ function confirmation(): ConfirmationContext {
 
 describe('P2-1 场景管理页面', () => {
   afterEach(() => {
+    ElMessage.closeAll()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
@@ -97,6 +99,7 @@ describe('P2-1 场景管理页面', () => {
   })
 
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
+    const messageSpy = vi.spyOn(ElMessage, 'success')
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -132,6 +135,8 @@ describe('P2-1 场景管理页面', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(scenario.draft?.revision).toBe(5)
+    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('场景草稿已保存。')
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')
     expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT' })
@@ -304,11 +309,21 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
 
     scenario.dirty = false
+    const messageSpy = vi.spyOn(ElMessage, 'success')
     const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(scenario.draft!.config) } as never)
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(true as never)
-    const importSpy = vi.spyOn(scenario, 'importScenarioSnapshot').mockResolvedValue(true)
-    const undoSpy = vi.spyOn(scenario, 'undoScenario').mockResolvedValue(true)
-    const resetSpy = vi.spyOn(scenario, 'resetScenario').mockResolvedValue(true)
+    const importSpy = vi.spyOn(scenario, 'importScenarioSnapshot').mockImplementation(async () => {
+      scenario.resultMessage = '已导入 1 个完整场景快照。'
+      return true
+    })
+    const undoSpy = vi.spyOn(scenario, 'undoScenario').mockImplementation(async () => {
+      scenario.resultMessage = '场景操作已撤销。'
+      return true
+    })
+    const resetSpy = vi.spyOn(scenario, 'resetScenario').mockImplementation(async () => {
+      scenario.resultMessage = '当前场景已重置。'
+      return true
+    })
     await wrapper.get('[data-testid="open-scenario-operations"]').trigger('click')
     await wrapper.get('[data-testid="import-scenario-snapshot"]').trigger('click')
     await wrapper.get('[data-testid="undo-scenario"]').trigger('click')
@@ -318,6 +333,10 @@ describe('P2-1 场景管理页面', () => {
     expect(importSpy).toHaveBeenCalledOnce()
     expect(undoSpy).toHaveBeenCalledOnce()
     expect(resetSpy).toHaveBeenCalledOnce()
+    expect(messageSpy.mock.calls).toEqual([
+      ['已导入 1 个完整场景快照。'], ['场景操作已撤销。'], ['当前场景已重置。'],
+    ])
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
 
     vi.spyOn(scenario, 'validateScenario').mockResolvedValue(true)
     await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
@@ -684,6 +703,35 @@ describe('P2-1 场景管理页面', () => {
     expect(document.body.textContent).toContain('链路发射功率不能小于 0 W。')
     expect(document.querySelector('[data-testid="link-power"] input')).not.toBeNull()
     wrapper.unmount()
+  })
+
+  it.each(['enabled', 'cooldown', 'priority'])('链路校验问题定位到对应弹框（字段=%s）', async (field) => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS', dirty: true })
+    scenario.draft!.config.linkSettings = readLinkSettings(scenario.draft!.config)
+    if (field === 'enabled') scenario.draft!.config.links[0]!.enabled = '非法值' as never
+    else if (field === 'priority') scenario.draft!.config.linkSettings.priority.pop()
+    else scenario.draft!.config.linkSettings.switchCooldownS = -1
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(validationResponse(inspectScenarioConfig(scenario.draft!.config).result)))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    await flushPromises()
+    const fieldPath = field === 'enabled' ? 'links[0].enabled' : field === 'priority' ? 'linkSettings.priority' : 'linkSettings.switchCooldownS'
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain(fieldPath)
+    await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
+    await flushPromises()
+    const dialog = document.querySelector(`[data-testid="${field === 'enabled' ? 'link-dialog' : 'link-settings-dialog'}"]`)
+    expect(dialog).not.toBeNull()
+    const target = field === 'enabled' ? '[data-testid="link-enabled"] input'
+      : field === 'priority' ? '[data-testid="link-priority-0"]' : '[data-testid="link-switch-cooldown"] input'
+    expect(dialog!.querySelector(target)).not.toBeNull()
+    expect(wrapper.get('#tab-links').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('section[aria-label="链路配置"] > .section-heading [data-testid="open-link-settings"]').exists()).toBe(true)
+    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/validate')
   })
 
   it('在没有本地问题时展示整体校验请求级失败', async () => {
@@ -1065,7 +1113,52 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
+  it('选择信道编码后点击清空，确认、保存和重新加载均保持 null', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    let persisted = draft()
+    const fetchSpy = vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
+      return response(structuredClone(persisted))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    await flushPromises()
+    const coding = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!
+    await coding.get('.el-select__wrapper').trigger('click')
+    await flushPromises()
+    Array.from(document.querySelectorAll<HTMLElement>('.el-select-dropdown__item')).find(option => option.textContent === '无编码')!.click()
+    await flushPromises()
+    expect(coding.props('modelValue')).toBe('UNCODED')
+    await coding.trigger('mouseenter')
+    await coding.get('.el-select__clear').trigger('click')
+    await flushPromises()
+    expect(coding.props('modelValue')).toBe('')
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.links[0]?.coding).toBeNull()
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    expect(fetchSpy.mock.calls.some(([, options]) => options?.method === 'PUT')).toBe(true)
+    expect(persisted.config.links[0]?.coding).toBeNull()
+    expect(scenario.dirty).toBe(false)
+    expect(await scenario.loadScenario()).toBe(true)
+    expect(scenario.draft?.config.links[0]?.coding).toBeNull()
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.props('modelValue')).toBe('')
+  })
+
   it('新增、编辑和删除链路时同步端点平台关联', async () => {
+    const messageSpy = vi.spyOn(ElMessage, 'success')
     const pinia = createPinia()
     setActivePinia(pinia)
     const scenario = useScenarioStore(pinia)
@@ -1090,6 +1183,8 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === testId)!
     expect(inputNumber('link-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
     expect(inputNumber('link-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    document.querySelector<HTMLElement>('[data-testid="link-enabled"]')!.click()
+    await nextTick()
     inputNumber('link-frequency').vm.$emit('input', 0)
     inputNumber('link-frequency').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
@@ -1097,6 +1192,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.links).toHaveLength(originalCount)
     expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
     expect(document.body.textContent).toContain('链路频率必须大于 0 MHz。')
+    expect(scenario.draft?.config.linkSettings).toBeUndefined()
     inputNumber('link-frequency').vm.$emit('input', 193500000)
     inputNumber('link-frequency').vm.$emit('update:modelValue', 193500000)
     inputNumber('link-bandwidth').vm.$emit('input', 0)
@@ -1122,6 +1218,8 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
 
     expect(scenario.draft?.config.links).toHaveLength(originalCount + 1)
+    expect(scenario.draft?.config.links.at(-1)?.enabled).toBe(false)
+    expect(scenario.draft?.config.links.find(link => link.type === 'LASER')?.enabled).toBeUndefined()
     expect(scenario.draft?.config.links.at(-1)).toMatchObject({
       id: 'L-CFG-001',
       type: 'LASER',
@@ -1133,26 +1231,39 @@ describe('P2-1 场景管理页面', () => {
     })
     expect(scenario.draft?.config.platforms[0]?.linkIds).toContain('L-CFG-001')
     expect(scenario.draft?.config.platforms[1]?.linkIds).toContain('L-CFG-001')
-    const successAlert = wrapper.findAllComponents({ name: 'ElAlert' }).find((component) => component.props('title') === '链路已新增，保存草稿后生效。')
-    expect(successAlert?.props('type')).toBe('success')
+    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('链路已新增，保存草稿后生效。')
+    expect(document.querySelector('.el-message--success')?.textContent).toContain('链路已新增，保存草稿后生效。')
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
 
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="link-enabled"]')!.click()
+    document.querySelector<HTMLElement>('[data-testid="cancel-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft?.config.links[0]?.enabled).toBeUndefined()
     await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
     await flushPromises()
     select('link-target').vm.$emit('update:modelValue', 'AIR-03')
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
     expect(scenario.draft?.config.links[0]?.targetPlatformId).toBe('AIR-03')
+    expect(messageSpy).toHaveBeenLastCalledWith('链路已更新，保存草稿后生效。')
+    expect(scenario.draft?.config.links[0]?.enabled).toBe(true)
+    expect(scenario.draft?.config.links.at(-1)?.enabled).toBe(false)
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'GCC-01')?.linkIds).not.toContain('L-MW-01')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-03')?.linkIds).toContain('L-MW-01')
 
     await wrapper.get('[data-testid="delete-link-0"]').trigger('click')
     await nextTick()
     expect(scenario.draft?.config.links.some((link) => link.id === 'L-MW-01')).toBe(false)
+    expect(messageSpy).toHaveBeenLastCalledWith('链路已删除，保存草稿后生效。')
+    expect(messageSpy).toHaveBeenCalledTimes(3)
     expect(scenario.draft?.config.platforms.every((platform) => !platform.linkIds.includes('L-MW-01'))).toBe(true)
     wrapper.unmount()
   })
 
-  it('链路数量不足时使用显式错误状态', async () => {
+  it('场景实体不足时以浮层消息提示，且不打开链路或干扰弹框', async () => {
+    const messageSpy = vi.spyOn(ElMessage, 'error')
     const pinia = createPinia()
     setActivePinia(pinia)
     const scenario = useScenarioStore(pinia)
@@ -1167,11 +1278,21 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-link"]').trigger('click')
     await nextTick()
 
-    const errorAlert = wrapper.findAllComponents({ name: 'ElAlert' }).find((component) => component.props('title') === '至少需要两个场景实体才能新增链路。')
-    expect(errorAlert?.props('type')).toBe('error')
+    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('至少需要两个场景实体才能新增链路。')
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
+    expect(document.querySelector('[data-testid="link-dialog"]')).toBeNull()
+
+    scenario.draft!.config.platforms = []
+    await wrapper.get('#tab-jammers').trigger('click')
+    await wrapper.get('[data-testid="add-jammer"]').trigger('click')
+    await nextTick()
+    expect(messageSpy).toHaveBeenLastCalledWith('至少需要一个场景实体才能新增干扰设备。')
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
+    expect(document.querySelector('[data-testid="jammer-dialog"]')).toBeNull()
   })
 
   it('新增、编辑和删除干扰设备时同步归属平台关联', async () => {
+    const messageSpy = vi.spyOn(ElMessage, 'success')
     const pinia = createPinia()
     setActivePinia(pinia)
     const scenario = useScenarioStore(pinia)
@@ -1232,6 +1353,8 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
 
     expect(scenario.draft?.config.jammers).toHaveLength(originalCount + 1)
+    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('干扰设备已新增，保存草稿后生效。')
+    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
       id: 'JAM-CFG-001',
       platformId: 'CMD-01',
@@ -1263,12 +1386,15 @@ describe('P2-1 场景管理页面', () => {
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
     expect(scenario.draft?.config.jammers[0]?.platformId).toBe('AIR-01')
+    expect(messageSpy).toHaveBeenLastCalledWith('干扰设备已更新，保存草稿后生效。')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).not.toContain('JAM-WB-01-TX')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-01')?.jammerIds).toContain('JAM-WB-01-TX')
 
     await wrapper.get('[data-testid="delete-jammer-0"]').trigger('click')
     await nextTick()
     expect(scenario.draft?.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
+    expect(messageSpy).toHaveBeenLastCalledWith('干扰设备已删除，保存草稿后生效。')
+    expect(messageSpy).toHaveBeenCalledTimes(3)
     expect(scenario.draft?.config.platforms.every((platform) => !platform.jammerIds.includes('JAM-WB-01-TX'))).toBe(true)
     expect(scenario.draft?.uiExtensions.jammers.some((extension) => extension.jammerId === 'JAM-WB-01-TX')).toBe(false)
     wrapper.unmount()

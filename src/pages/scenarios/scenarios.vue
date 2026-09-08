@@ -2,7 +2,8 @@
 import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
+import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
+import { isConfiguredLinkEnabled, LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -23,6 +24,7 @@ import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
+import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
 
 const scenarioStore = useScenarioStore()
@@ -52,10 +54,9 @@ const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
+const linkSettingsVisible = ref(false)
 const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
-const linkFeedback = ref('')
-const linkFeedbackStatus = ref<'success' | 'error'>('success')
 const linkFrequencyBelowMinimum = ref(false)
 const linkBandwidthBelowMinimum = ref(false)
 const jammerDialogVisible = ref(false)
@@ -63,11 +64,8 @@ const editingJammerIndex = ref<number | null>(null)
 const jammerEditorJammer = ref<Jammer | null>(null)
 const jammerEditorUiExtension = ref<JammerUiExtension | null>(null)
 const jammerEditorError = ref('')
-const jammerFeedback = ref('')
-const jammerFeedbackStatus = ref<'success' | 'error'>('success')
 const jammerFrequencyBelowMinimum = ref(false)
 const jammerBandwidthBelowMinimum = ref(false)
-const sceneOperationFeedback = ref('')
 
 /** 分钟只用于表单显示；保持接口中的 duration 为秒，避免两套时长失去同步。 */
 const simulationDurationMinutes = computed<number | undefined>({
@@ -120,6 +118,14 @@ const businessNodeTypeCounts = computed<Record<BusinessInformationNodeType, numb
 const businessNodeTypeCount = computed(() => BUSINESS_INFORMATION_NODE_TYPES.filter((type) => businessNodeTypeCounts.value[type] > 0).length)
 const supportingEntityCount = computed(() => (draft.value?.config.platforms.length ?? 0) - businessNodeCount.value)
 const linkTypeCount = computed(() => new Set(draft.value?.config.links.map((link) => link.type) ?? []).size)
+const linkSettings = computed(() => readLinkSettings(draft.value?.config ?? { platforms: [] }))
+
+/** 写入链路全局设置；settings 为面板提交的配置副本，更新后标记草稿待保存。 */
+function updateLinkSettings(settings: ScenarioLinkSettings): void {
+  if (!draft.value || pending.value || draft.value.locked) return
+  draft.value.config.linkSettings = settings
+  markDirty()
+}
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
 const validationCompleted = computed(() => draftReviewed.value || resultCode.value.startsWith('VALIDATION_'))
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
@@ -339,6 +345,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1): boolean {
   } else candidate.platforms[editingPlatformIndex.value] = editedPlatform
   const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
     item.fieldPath.startsWith('platforms') || item.code === 'PLATFORM_REFERENCE_NOT_FOUND'
+    || item.fieldPath.endsWith('.relayPlatformId') || item.fieldPath.startsWith('linkSettings.enabledSatellites')
   ))
   if (issue !== undefined) {
     platformEditorError.value = issue.message
@@ -369,12 +376,16 @@ function removePlatform(platform: Platform, index: number): boolean {
     return false
   }
   const config = draft.value.config
-  const referenced = config.links.some((link) => link.sourcePlatformId === platform.id || link.targetPlatformId === platform.id)
+  const referenced = config.links.some((link) => [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(platform.id))
     || config.jammers.some((jammer) => jammer.platformId === platform.id)
     || config.sensors.some((sensor) => sensor.platformId === platform.id)
     || config.informationDemand.some((demand) => demand.sourcePlatformId === platform.id || demand.destinationPlatformIds.includes(platform.id))
   if (referenced) {
     ElMessage.error('该场景实体仍被链路、设备或信息需求引用，不能删除。')
+    return false
+  }
+  if (platform.satelliteType && config.linkSettings?.enabledSatellites[platform.satelliteType]) {
+    ElMessage.error('请先在链路配置中停用该卫星，再删除实体。')
     return false
   }
   config.platforms.splice(index, 1)
@@ -430,11 +441,11 @@ function trackLinkBandwidthInput(value: number | undefined): void {
 function openNewLink(): void {
   if (draft.value === null) return
   if (draft.value.config.platforms.length < 2) {
-    linkFeedback.value = '至少需要两个场景实体才能新增链路。'
-    linkFeedbackStatus.value = 'error'
+    ElMessage.error('至少需要两个场景实体才能新增链路。')
     return
   }
   linkEditorLink.value = {
+    ...LINK_PARAMETER_DEFAULTS,
     id: nextLinkId(),
     type: 'MICROWAVE',
     sourcePlatformId: draft.value.config.platforms[0]!.id,
@@ -443,14 +454,13 @@ function openNewLink(): void {
     bandwidth: 20,
     txPower: 50,
     antennaGain: { tx: 10, rx: 10 },
-    modulation: 'QPSK',
+    modulation: 'BPSK',
     berThreshold: 0.00001,
     dataRate: 10,
     direction: 'FORWARD',
   }
   editingLinkIndex.value = null
   linkEditorError.value = ''
-  linkFeedback.value = ''
   resetLinkMinimumAttempts()
   linkDialogVisible.value = true
 }
@@ -463,10 +473,10 @@ function openNewLink(): void {
  * @sideEffects 记录编辑目标并打开对话框；对话框内部创建副本，取消时不会污染草稿。
  */
 function openLinkEditor(link: Link, index: number): void {
-  linkEditorLink.value = link
+  // 补默认值前先取原始对象，避免嵌套响应式代理导致弹框的深拷贝失败。
+  linkEditorLink.value = { ...toRaw(link), enabled: readLinkEnabled(link, draft.value?.config.linkSettings) }
   editingLinkIndex.value = index
   linkEditorError.value = ''
-  linkFeedback.value = ''
   resetLinkMinimumAttempts()
   linkDialogVisible.value = true
 }
@@ -484,7 +494,7 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
   })
   const link = config.links.find((item) => item.id === linkId)
   if (link === undefined) return
-  new Set([link.sourcePlatformId, link.targetPlatformId]).forEach((platformId) => {
+  new Set([link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId]).forEach((platformId) => {
     const platform = config.platforms.find((item) => item.id === platformId)
     if (platform !== undefined) platform.linkIds.push(linkId)
   })
@@ -492,11 +502,12 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
 
 /**
  * 将链路编辑副本写入当前场景草稿。
+ * @param linkEditor 新增或编辑的链路副本。
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时同步端点平台关联、标记未保存并关闭对话框。
  */
 function applyLinkEditor(linkEditor: Link): boolean {
-  if (draft.value === null) return false
+  if (draft.value === null || pending.value || draft.value.locked) return false
   if (linkFrequencyBelowMinimum.value) {
     linkEditorError.value = '链路频率必须大于 0 MHz。'
     return false
@@ -527,8 +538,7 @@ function applyLinkEditor(linkEditor: Link): boolean {
   draft.value.config.platforms = candidate.platforms
   markDirty()
   linkDialogVisible.value = false
-  linkFeedback.value = editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。'
-  linkFeedbackStatus.value = 'success'
+  ElMessage.success(editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。')
   return true
 }
 
@@ -547,8 +557,7 @@ function removeLink(link: Link, index: number): boolean {
   draft.value.config.links = candidate.links
   draft.value.config.platforms = candidate.platforms
   markDirty()
-  linkFeedback.value = '链路已删除，保存草稿后生效。'
-  linkFeedbackStatus.value = 'success'
+  ElMessage.success('链路已删除，保存草稿后生效。')
   return true
 }
 
@@ -607,8 +616,7 @@ function trackJammerBandwidthInput(value: number | undefined): void {
 function openNewJammer(): void {
   const platform = draft.value?.config.platforms[0]
   if (platform === undefined) {
-    jammerFeedback.value = '至少需要一个场景实体才能新增干扰设备。'
-    jammerFeedbackStatus.value = 'error'
+    ElMessage.error('至少需要一个场景实体才能新增干扰设备。')
     return
   }
   jammerEditorJammer.value = {
@@ -624,7 +632,6 @@ function openNewJammer(): void {
   jammerEditorUiExtension.value = { jammerId: jammerEditorJammer.value.id, direction: 0, duration: 60, enabled: true }
   editingJammerIndex.value = null
   jammerEditorError.value = ''
-  jammerFeedback.value = ''
   resetJammerMinimumAttempts()
   jammerDialogVisible.value = true
 }
@@ -644,7 +651,6 @@ function openJammerEditor(jammer: Jammer, index: number): void {
   )
   editingJammerIndex.value = index
   jammerEditorError.value = ''
-  jammerFeedback.value = ''
   resetJammerMinimumAttempts()
   jammerDialogVisible.value = true
 }
@@ -716,8 +722,7 @@ function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtensi
   draft.value.uiExtensions.jammers = candidateExtensions.jammers
   markDirty()
   jammerDialogVisible.value = false
-  jammerFeedback.value = editingJammerIndex.value === null ? '干扰设备已新增，保存草稿后生效。' : '干扰设备已更新，保存草稿后生效。'
-  jammerFeedbackStatus.value = 'success'
+  ElMessage.success(editingJammerIndex.value === null ? '干扰设备已新增，保存草稿后生效。' : '干扰设备已更新，保存草稿后生效。')
   return true
 }
 
@@ -739,8 +744,7 @@ function removeJammer(jammer: Jammer, index: number): boolean {
   draft.value.config.platforms = candidate.platforms
   draft.value.uiExtensions.jammers = candidateExtensions.jammers
   markDirty()
-  jammerFeedback.value = '干扰设备已删除，保存草稿后生效。'
-  jammerFeedbackStatus.value = 'success'
+  ElMessage.success('干扰设备已删除，保存草稿后生效。')
   return true
 }
 
@@ -871,7 +875,17 @@ function removeInformationDemand(index: number): void {
  * @remarks 只完成当前已开放编辑字段的直接映射。
  */
 function validationTargetId(fieldPath: string): string | undefined {
+  const linkField = /^links\[\d+\]\.(.+)$/.exec(fieldPath)?.[1]
+  if (linkField) return ({
+    enabled: 'link-enabled',
+    antennaGainCorrectionDb: 'link-gain-correction', coding: 'link-coding',
+    antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
+    berThreshold: 'link-ber-threshold',
+  } as Record<string, string>)[linkField]
+  if (fieldPath.startsWith('linkSettings.enabledSatellites.')) return `link-satellite-enabled-${fieldPath.split('.').at(-1)}`
   const directTargets: Record<string, string> = {
+    'linkSettings.switchCooldownS': 'link-switch-cooldown',
+    'linkSettings.priority': 'link-priority-0',
     'scenario.id': 'scenario-id',
     'scenario.name': 'scenario-name',
     'scenario.description': 'scenario-description',
@@ -922,13 +936,16 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(issue.fieldPath)?.[1])
 
   if (issue.fieldPath.startsWith('platforms')) activeTab.value = 'platforms'
-  else if (issue.fieldPath.startsWith('links')) activeTab.value = 'links'
+  else if (issue.fieldPath.startsWith('links') || issue.fieldPath.startsWith('linkSettings')) activeTab.value = 'links'
   else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers')) activeTab.value = 'jammers'
   else if (issue.fieldPath.startsWith('sensors') || issue.fieldPath.startsWith('uiExtensions.sensors')
     || issue.fieldPath.startsWith('output') || issue.fieldPath.startsWith('informationDemand')) activeTab.value = 'data'
   else activeTab.value = 'scenario'
   await nextTick()
 
+  if (issue.fieldPath.startsWith('linkSettings')) {
+    linkSettingsVisible.value = true
+  }
   if (Number.isInteger(platformIndex) && draft.value?.config.platforms[platformIndex] !== undefined) {
     openPlatformEditor(draft.value.config.platforms[platformIndex], platformIndex)
     platformEditorError.value = issue.message
@@ -964,7 +981,7 @@ async function loadScenario(): Promise<void> {
 }
 
 /**
- * 保存当前场景草稿并同步平台区域反馈。
+ * 保存当前场景草稿并通过浮层消息反馈结果。
  * @returns 保存流程结束后兑现且不返回值的 Promise。
  * @sideEffects 进入校验阶段；保存成功后开放脚本入口，失败时展示问题以便定位。
  */
@@ -974,10 +991,6 @@ async function saveScenario(): Promise<void> {
   if (await scenarioStore.saveScenario()) {
     draftReviewed.value = true
     ElMessage.success('场景草稿已保存。')
-    linkFeedback.value = '场景草稿已保存。'
-    linkFeedbackStatus.value = 'success'
-    jammerFeedback.value = '场景草稿已保存。'
-    jammerFeedbackStatus.value = 'success'
   } else {
     activeTab.value = 'validation'
   }
@@ -993,7 +1006,7 @@ async function importScenarioSnapshot(): Promise<void> {
       inputPlaceholder: '{ "schemaVersion": "1.0", ... }',
       inputValidator: (text) => text.trim() !== '' || '请输入场景快照 JSON。',
     })
-    if (await scenarioStore.importScenarioSnapshot(value)) sceneOperationFeedback.value = scenarioStore.resultMessage
+    if (await scenarioStore.importScenarioSnapshot(value)) ElMessage.success(scenarioStore.resultMessage)
   } catch {
     // 用户取消时保持当前场景不变。
   }
@@ -1005,7 +1018,7 @@ async function undoScenario(): Promise<void> {
     await ElMessageBox.confirm('撤销最近一次场景保存、导入或重置操作？', '撤销场景操作', {
       confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning',
     })
-    if (await scenarioStore.undoScenario()) sceneOperationFeedback.value = scenarioStore.resultMessage
+    if (await scenarioStore.undoScenario()) ElMessage.success(scenarioStore.resultMessage)
   } catch {
     // 用户取消时保持当前场景不变。
   }
@@ -1017,7 +1030,7 @@ async function resetScenario(): Promise<void> {
     await ElMessageBox.confirm('重置当前场景的全部参数？该操作完成后仍可撤销。', '重置场景', {
       confirmButtonText: '重置场景', cancelButtonText: '取消', type: 'warning',
     })
-    if (await scenarioStore.resetScenario()) sceneOperationFeedback.value = scenarioStore.resultMessage
+    if (await scenarioStore.resetScenario()) ElMessage.success(scenarioStore.resultMessage)
   } catch {
     // 用户取消时保持当前场景不变。
   }
@@ -1308,7 +1321,7 @@ watch(activeTab, (tab) => {
         </el-tab-pane>
 
         <el-tab-pane label="链路配置" name="links">
-          <section class="console-panel scenario-section" aria-labelledby="scenario-link-title">
+          <section class="console-panel scenario-section" aria-label="链路配置">
             <div class="section-heading">
 <!--              <div>-->
 <!--                <p class="section-kicker">信息链路</p>-->
@@ -1318,20 +1331,18 @@ watch(activeTab, (tab) => {
                 <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
                 <el-tag :type="linkTypeCount === 4 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 4 类</el-tag>
               </div>
+              <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
+                :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
             </div>
-
-            <el-alert
-              v-if="linkFeedback"
-              class="platform-feedback"
-              :type="linkFeedbackStatus"
-              :closable="false"
-              :title="linkFeedback"
-              show-icon
-            />
 
             <el-table :data="draft.config.links" stripe data-testid="link-table">
               <el-table-column prop="id" label="链路 ID" min-width="120" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
+              <el-table-column label="参与场景" width="100"><template #default="{ row }">
+                <el-tag :type="isConfiguredLinkEnabled(row, linkSettings, draft.config.platforms) ? 'success' : 'info'">
+                  {{ isConfiguredLinkEnabled(row, linkSettings, draft.config.platforms) ? '启用' : '停用' }}
+                </el-tag>
+              </template></el-table-column>
               <el-table-column prop="sourcePlatformId" label="源平台" min-width="120" />
               <el-table-column prop="targetPlatformId" label="目标平台" min-width="120" />
               <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
@@ -1365,15 +1376,6 @@ watch(activeTab, (tab) => {
                 <el-tag :type="jammerTypeCount === 2 ? 'success' : 'warning'">已配置 {{ jammerTypeCount }} / 2 类</el-tag>
               </div>
             </div>
-
-            <el-alert
-              v-if="jammerFeedback"
-              class="platform-feedback"
-              :type="jammerFeedbackStatus"
-              :closable="false"
-              :title="jammerFeedback"
-              show-icon
-            />
 
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
               <el-table-column prop="id" label="设备 ID" min-width="130" />
@@ -1483,7 +1485,6 @@ watch(activeTab, (tab) => {
 <!--              </div>-->
 <!--            </div>-->
             <el-alert title="导入 ScenarioConfig 规范快照，UI 扩展按规则重建。以下操作不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
-            <el-alert v-if="sceneOperationFeedback" class="platform-feedback" :title="sceneOperationFeedback" type="success" :closable="false" show-icon />
             <div class="platform-actions">
               <el-button type="primary" :disabled="pending || draft.locked" data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
               <el-button :disabled="pending || draft.locked || dirty" data-testid="undo-scenario" @click="undoScenario">撤销场景操作</el-button>
@@ -1786,10 +1787,6 @@ watch(activeTab, (tab) => {
 
 .platform-actions {
   margin-top: 1rem;
-}
-
-.platform-feedback {
-  margin-bottom: 1rem;
 }
 
 .scenario-page :deep(.el-table .el-input-number) {
