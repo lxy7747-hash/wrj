@@ -14,21 +14,29 @@ export const LINK_PARAMETER_DEFAULTS = {
  * @returns 卫星启用和切换策略的配置副本；保留旧配置的兼容字段。
  */
 export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'linkSettings'>): ScenarioLinkSettings {
-  if (config.linkSettings !== undefined) return {
+  const settings: ScenarioLinkSettings = config.linkSettings !== undefined ? {
     ...config.linkSettings,
     ...(config.linkSettings.enabledTypes === undefined ? {} : { enabledTypes: { ...config.linkSettings.enabledTypes } }),
     enabledSatellites: { ...config.linkSettings.enabledSatellites },
     priority: [...config.linkSettings.priority],
-  }
-  return {
+  } : {
     enabledSatellites: {
       TIANTONG: config.platforms.some((p) => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === 'TIANTONG'),
-      // 文档默认选择天通；神通由用户独立启用，已保存的开关在上方原样读取。
+      // 单选默认天通；没有对应实体时不自动创建或启用卫星。
       SHENTONG: false,
     },
     switchCooldownS: 5,
     priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER'],
   }
+  // 旧双选/均未选收敛为默认天通；仅转换合法布尔值的副本，非法输入仍交给校验阻断。
+  const { TIANTONG, SHENTONG } = settings.enabledSatellites
+  if (typeof TIANTONG === 'boolean' && TIANTONG === SHENTONG) {
+    settings.enabledSatellites = {
+      TIANTONG: config.platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === 'TIANTONG'),
+      SHENTONG: false,
+    }
+  }
+  return settings
 }
 
 /**
@@ -49,8 +57,21 @@ export function readLinkEnabled(link: Link, settings?: ScenarioLinkSettings): bo
  * @returns 本条链路及涉及的卫星均未停用时返回 true。
  */
 export function isConfiguredLinkEnabled(link: Link, settings: ScenarioLinkSettings, platforms: readonly Platform[]): boolean {
-  if (!readLinkEnabled(link, settings)) return false
-  return platforms.filter((p) => p.type === 'COMMUNICATION_SATELLITE'
-    && [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(p.id))
-    .every((p) => p.satelliteType === undefined || settings.enabledSatellites[p.satelliteType])
+  return getLinkExclusionReason(link, settings, platforms) === null
+}
+
+/**
+ * 读取不参与场景的原因，供列表展示和脚本过滤共同使用，链路自身停用优先。
+ * @param link 当前链路。
+ * @param settings 已读取的场景设置。
+ * @param platforms 场景实体，用于查找端点或历史中继关联的卫星。
+ * @returns null 表示参与，否则返回链路停用或未选中的卫星名称。
+ */
+export function getLinkExclusionReason(link: Link, settings: ScenarioLinkSettings, platforms: readonly Platform[]): '链路停用' | '天通卫星' | '神通卫星' | null {
+  if (!readLinkEnabled(link, settings)) return '链路停用'
+  const satellite = platforms.find(p => p.type === 'COMMUNICATION_SATELLITE'
+    && [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(p.id)
+    && p.satelliteType !== undefined && !settings.enabledSatellites[p.satelliteType])
+  if (satellite) return satellite.satelliteType === 'TIANTONG' ? '天通卫星' : '神通卫星'
+  return null
 }

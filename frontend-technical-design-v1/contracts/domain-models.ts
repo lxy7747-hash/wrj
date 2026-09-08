@@ -42,7 +42,7 @@ export type BusinessInformationNodeType =
   | 'REAR_COMMAND_NODE' | 'FORWARD_RELAY_NODE'
   | 'GROUND_CLUSTER_COMMAND_NODE' | 'AIRBORNE_MISSION_CLUSTER';
 /** Configurable supporting entities; they never count toward the 50 business nodes. */
-export type SupportingEntityType = 'COMMUNICATION_SATELLITE' | 'GROUND_JAMMER_DETECTION_STATION';
+export type SupportingEntityType = 'COMMUNICATION_SATELLITE' | 'GROUND_JAMMER_DETECTION_STATION' | 'AIRBORNE_JAMMER_PLATFORM';
 export type PlatformType = BusinessInformationNodeType | SupportingEntityType;
 /** 通信卫星的业务子类型；不增加信息节点分类数量。 */
 export type SatelliteType = 'TIANTONG' | 'SHENTONG';
@@ -100,8 +100,10 @@ export interface ScenarioLinkSettings {
   priority: LinkType[];
 }
 export interface Jammer {
-  id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT'; defaultPower: Watts;
+  id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
   frequency: Megahertz; bandwidth: Megahertz; autoDetect: boolean; detectionRange: Meters;
+  /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
+  triggerTimeS?: Seconds;
 }
 export interface Sensor {
   id: Identifier; platformId: Identifier; frequencyRange: FrequencyRange; detectionRange: Meters;
@@ -113,6 +115,10 @@ export interface OutputConfig {
 /** Required by the approved frontend baseline as part of canonical ScenarioConfig 1.0. */
 export interface InformationDemand {
   id: Identifier; sourcePlatformId: Identifier; destinationPlatformIds: Identifier[];
+  /** 旧场景缺省时保留未设置方向；新业务明确区分前向和返向。 */
+  direction?: 'FORWARD' | 'REVERSE';
+  /** 单项业务独立启停；旧场景缺省视为启用，停用保留参数。 */
+  enabled?: boolean;
   informationType: string; volumeMb: number; frequencyHz: number; priority: 'HIGH' | 'NORMAL';
   maxLatencyMs: Milliseconds; minDataRateMbps: MegabitsPerSecond;
 }
@@ -120,8 +126,10 @@ export interface ScenarioConfig {
   schemaVersion: '1.0'; scenario: ScenarioIdentity; platforms: Platform[]; links: Link[];
   jammers: Jammer[]; sensors: Sensor[]; output: OutputConfig;
   informationDemand: InformationDemand[];
-  /** 兼容旧场景缺省；四类链路默认启用，卫星按已配置实体启用，冷却 5 秒。 */
+  /** 兼容旧场景缺省；链路默认启用，中继卫星单选默认天通（需实体），冷却 5 秒。 */
   linkSettings?: ScenarioLinkSettings;
+  /** 场景干扰总开关，缺省为禁用；不覆盖单设备启停设置。 */
+  jammingEnabled?: boolean;
 }
 
 /** Five complete SRS §3.5.4 frontend interfaces (canonical superset). */

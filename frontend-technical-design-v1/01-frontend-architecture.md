@@ -68,4 +68,4 @@ UI：`UP ↔ DEGRADED ↔ DOWN`；状态改变必须满足连续帧和滞回规�
 
 ## 八项来源决策摘要
 
-完整登记见追踪矩阵：canonical 使用 `scenario`、三 CSV、SRS 五态/SRS 两态；UI 使用六态/三态；通信只回环；场景实体类型区分四类业务信息节点 `REAR_COMMAND_NODE/FORWARD_RELAY_NODE/GROUND_CLUSTER_COMMAND_NODE/AIRBORNE_MISSION_CLUSTER` 与两类支撑实体 `COMMUNICATION_SATELLITE/GROUND_JAMMER_DETECTION_STATION`；普通报告 Level II，批次比较 Level III；五个 SRS 接口是 canonical superset，详细设计稀疏接口仅兼容投影。
+完整登记见追踪矩阵：canonical 使用 `scenario`、三 CSV、SRS 五态/SRS 两态；UI 使用六态/三态；通信只回环；场景实体类型区分四类业务信息节点 `REAR_COMMAND_NODE/FORWARD_RELAY_NODE/GROUND_CLUSTER_COMMAND_NODE/AIRBORNE_MISSION_CLUSTER` 与三类支撑实体 `COMMUNICATION_SATELLITE/GROUND_JAMMER_DETECTION_STATION/AIRBORNE_JAMMER_PLATFORM`；普通报告 Level II，批次比较 Level III；五个 SRS 接口是 canonical superset，详细设计稀疏接口仅兼容投影。

@@ -22,6 +22,47 @@ beforeAll(async () => {
 })
 
 describe('T-XQ-008 脚本结构预检', () => {
+  it('干扰默认禁用，总开关与单设备开关共同过滤且保留扫频触发参数', () => {
+    const result = new ScenarioProjection().get('SCN-001')
+    if (!result.ok) throw new Error('缺少场景夹具')
+    const draft = result.data
+    const generator = new ScriptProjection()
+    const jammer = draft.config.jammers[0]!
+    jammer.type = 'SWEEP'
+    jammer.triggerTimeS = 300
+    draft.uiExtensions.jammers.forEach(item => { item.enabled = false })
+    draft.uiExtensions.jammers[0]!.enabled = true
+    const before = generator.preview(draft)
+    expect(before.preview).not.toContain('  jammer ')
+    expect(before.preview).toContain('"triggerTimeS":300')
+    draft.config.jammingEnabled = true
+    const enabled = generator.preview(draft)
+    expect(enabled.preview).toContain(`  jammer ${JSON.stringify(jammer.id)} `)
+    expect(enabled.preview).toContain('type=SWEEP')
+    expect(enabled.preview).not.toContain(`  jammer ${JSON.stringify(draft.config.jammers[1]!.id)} `)
+    expect(enabled.checksum).not.toBe(before.checksum)
+    draft.config.jammingEnabled = false
+    expect(generator.preview(draft).preview).not.toContain('  jammer ')
+    expect(draft.uiExtensions.jammers[0]!.enabled).toBe(true)
+  })
+  it('业务独立停用只过滤对应任务，方向与参数保留在预览中', () => {
+    const result = new ScenarioProjection().get('SCN-001')
+    if (!result.ok) throw new Error('缺少场景夹具')
+    const draft = result.data
+    const generator = new ScriptProjection()
+    const before = generator.preview(draft)
+    const business = draft.config.informationDemand[0]!
+    business.direction = 'REVERSE'
+    business.enabled = false
+    const stopped = generator.preview(draft)
+    expect(stopped.preview).toContain('"direction":"REVERSE"')
+    expect(stopped.preview).not.toContain(`  information_demand ${JSON.stringify(business.id)} `)
+    expect(stopped.checksum).not.toBe(before.checksum)
+    business.enabled = true
+    const enabled = generator.preview(draft)
+    expect(enabled.preview).toContain(`  information_demand ${JSON.stringify(business.id)} `)
+    expect(inspectScriptPreview(enabled.preview).valid).toBe(true)
+  })
   it('展示版本、路径、结构及一基行列错误', () => {
     const result = inspectScriptPreview('# 错误头\nconfig_version 2.0\nscenario invalid {\n}')
 
@@ -77,6 +118,8 @@ describe('T-XQ-008 脚本结构预检', () => {
     disabledLink!.enabled = false
     enabledLink!.enabled = true
     draft.config.linkSettings.enabledSatellites.TIANTONG = false
+    draft.config.linkSettings.enabledSatellites.SHENTONG = true
+    draft.config.platforms.push({ ...structuredClone(draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG', linkIds: [] })
     draft.config.linkSettings.switchCooldownS = 8
     draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE']
     draft.config.links[0]!.coding = 'CUSTOM-1/2'

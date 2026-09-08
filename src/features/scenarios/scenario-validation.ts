@@ -14,6 +14,8 @@ import type {
   ValidationResult,
 } from '../../contracts/domain-models'
 
+import { JAMMER_RANGE_METERS } from './jammer-settings'
+
 const ROOT_KEYS = [
   'schemaVersion',
   'scenario',
@@ -55,7 +57,7 @@ export const BUSINESS_INFORMATION_NODE_TYPES = [
   'GROUND_CLUSTER_COMMAND_NODE',
   'AIRBORNE_MISSION_CLUSTER',
 ] as const
-export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'] as const
+export const SUPPORTING_ENTITY_TYPES = ['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION', 'AIRBORNE_JAMMER_PLATFORM'] as const
 const PLATFORM_TYPES = [...BUSINESS_INFORMATION_NODE_TYPES, ...SUPPORTING_ENTITY_TYPES] as const
 export const PLATFORM_TYPE_DOMAINS: Record<PlatformType, DeploymentDomain> = {
   REAR_COMMAND_NODE: 'ground',
@@ -64,6 +66,7 @@ export const PLATFORM_TYPE_DOMAINS: Record<PlatformType, DeploymentDomain> = {
   AIRBORNE_MISSION_CLUSTER: 'air',
   COMMUNICATION_SATELLITE: 'space',
   GROUND_JAMMER_DETECTION_STATION: 'ground',
+  AIRBORNE_JAMMER_PLATFORM: 'air',
 }
 export const SATELLITE_TYPES = ['TIANTONG', 'SHENTONG'] as const
 export const INFORMATION_NODE_LIMIT = 50
@@ -81,7 +84,7 @@ const INFORMATION_NODE_TYPE_LABELS = {
 } as const
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'] as const
-export const JAMMER_TYPES = ['BARRAGE', 'SPOT'] as const
+export const JAMMER_TYPES = ['BARRAGE', 'SPOT', 'SWEEP'] as const
 export const LINK_MHZ_MINIMUM_STEP = 0.001
 const MODULATIONS = ['BPSK', 'QPSK'] as const
 const LINK_DIRECTIONS = ['FORWARD', 'REVERSE'] as const
@@ -351,9 +354,9 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
  * @returns 无返回值。
  * @remarks 只追加校验错误，不修改干扰设备或平台关联数组。
  */
-function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write', duration: number): void {
   const path = `jammers[${index}]`
-  if (!isClosedObject(value, JAMMER_KEYS)) {
+  if (!isClosedObject(value, JAMMER_KEYS, ['triggerTimeS'])) {
     addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
     return
   }
@@ -365,6 +368,9 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (typeof value.autoDetect !== 'boolean') addError(errors, 'JAMMER_AUTO_DETECT_INVALID', '自动检测开关格式不正确。', `${path}.autoDetect`)
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '检测范围不能小于 0 m。', `${path}.detectionRange`)
+  else if (mode === 'write' && !isFiniteNumber(value.detectionRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RANGE_INVALID', '干扰探测距离必须在 1～24 海里之间。', `${path}.detectionRange`)
+  // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
+  if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
 }
 
 /** 校验一台传感器的规范参数和归属平台。 */
@@ -412,7 +418,7 @@ function inspectOutput(value: unknown, timeStep: unknown, errors: ValidationIssu
 /** 校验一项信息需求的引用、数量、优先级和性能约束。 */
 function inspectInformationDemand(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
   const path = `informationDemand[${index}]`
-  if (!isClosedObject(value, INFORMATION_DEMAND_KEYS)) {
+  if (!isClosedObject(value, INFORMATION_DEMAND_KEYS, ['direction', 'enabled'])) {
     addError(errors, 'INFORMATION_DEMAND_SHAPE_INVALID', '信息需求结构不正确。', path)
     return
   }
@@ -425,6 +431,8 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
     addError(errors, 'INFORMATION_DEMAND_DESTINATION_DUPLICATED', '信息需求目标平台不允许重复。', `${path}.destinationPlatformIds`)
   }
   if (typeof value.informationType !== 'string') addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', '信息类型格式不正确。', `${path}.informationType`)
+  if (Object.hasOwn(value, 'direction') && value.direction !== 'FORWARD' && value.direction !== 'REVERSE') addError(errors, 'INFORMATION_DEMAND_DIRECTION_INVALID', '业务方向必须为前向或返向。', `${path}.direction`)
+  if (Object.hasOwn(value, 'enabled') && typeof value.enabled !== 'boolean') addError(errors, 'INFORMATION_DEMAND_ENABLED_INVALID', '业务启用状态必须为布尔值。', `${path}.enabled`)
   if (!isFiniteNumber(value.volumeMb, 0)) addError(errors, 'INFORMATION_DEMAND_VOLUME_INVALID', '数据量不能小于 0 MB。', `${path}.volumeMb`)
   if (!isFiniteNumber(value.frequencyHz, 0)) addError(errors, 'INFORMATION_DEMAND_FREQUENCY_INVALID', '发送频率不能小于 0 Hz。', `${path}.frequencyHz`)
   if (value.priority !== 'HIGH' && value.priority !== 'NORMAL') addError(errors, 'INFORMATION_DEMAND_PRIORITY_INVALID', '信息需求优先级不正确。', `${path}.priority`)
@@ -532,14 +540,14 @@ function inspectPlatformReferences(
 /**
  * 校验场景配置 1.0 的全部规范字段，并读取安全配置对象。
  * @param value 待校验的完整场景配置。
- * @param mode 读取允许旧卫星缺少子类型；写入要求明确选择合法子类型。
+ * @param mode 读取兼容旧卫星与旧干扰距离；写入要求明确子类型及 1～24 海里距离。
  * @returns 校验结果；通过时额外返回重建后的场景身份对象。
  * @remarks 覆盖平台、链路、干扰器、传感器、输出和信息需求，不修改原始配置。
  */
 export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = 'read'): ScenarioInspection {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
-  if (!isClosedObject(value, ROOT_KEYS, ['linkSettings'])) {
+  if (!isClosedObject(value, ROOT_KEYS, ['linkSettings', 'jammingEnabled'])) {
     addError(errors, 'SCENARIO_SHAPE_INVALID', '场景配置结构不正确。', 'config')
     return { result: { valid: false, errors, warnings } }
   }
@@ -551,6 +559,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (typeof value.output !== 'object' || value.output === null || Array.isArray(value.output)) addError(errors, 'OUTPUT_INVALID', '输出配置格式不正确。', 'output')
   if (!Array.isArray(value.informationDemand) || value.informationDemand.length === 0) addError(errors, 'INFORMATION_DEMAND_INVALID', '场景至少需要一项信息需求。', 'informationDemand')
   if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors)
+  if (Object.hasOwn(value, 'jammingEnabled') && typeof value.jammingEnabled !== 'boolean') addError(errors, 'JAMMING_ENABLED_INVALID', '干扰总开关必须为布尔值。', 'jammingEnabled')
 
   if (!isClosedObject(value.scenario, SCENARIO_KEYS)) {
     addError(errors, 'SCENARIO_IDENTITY_INVALID', '场景基础信息结构不正确。', 'scenario')
@@ -712,7 +721,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const jammerIds = collectIds(value.jammers)
     const platformIds = collectIds(value.platforms)
     if (jammerIds.size !== value.jammers.length) addError(errors, 'JAMMER_ID_DUPLICATED', '干扰设备 ID 不允许为空或重复。', 'jammers')
-    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors))
+    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, mode, scenario.duration as number))
   }
 
   if (Array.isArray(value.sensors)) {

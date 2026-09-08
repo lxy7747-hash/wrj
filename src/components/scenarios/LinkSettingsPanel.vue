@@ -19,10 +19,10 @@ const satellites = [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHEN
 const draggedType = ref<LinkType | null>(null)
 const dropTarget = ref<LinkType | null>(null)
 
-/** 更新卫星启用状态；type 为卫星子类型，enabled 为开关值，实体仍保留在场景中。 */
-function setSatelliteEnabled(type: SatelliteType, enabled: boolean | string | number): void {
-  if (props.disabled) return
-  emit('update:modelValue', { ...settings.value, enabledSatellites: { ...settings.value.enabledSatellites, [type]: enabled === true } })
+/** 单选中继卫星；type 为天通或神通，同步两个底层开关且不删除卫星实体。 */
+function selectSatellite(type: SatelliteType): void {
+  if (props.disabled || !props.platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === type)) return
+  emit('update:modelValue', { ...settings.value, enabledSatellites: { TIANTONG: type === 'TIANTONG', SHENTONG: type === 'SHENTONG' } })
 }
 
 /** 保存冷却秒数；清空值保留为非法数值供整体校验阻断，避免静默改回默认值。 */
@@ -96,15 +96,13 @@ function resetDrag(): void {
           </li>
         </ol>
       </div>
-      <div class="link-settings__heading">中继卫星选择</div>
-      <div class="link-settings__switches" role="group" aria-label="中继卫星选择">
-        <el-form-item v-for="satellite in satellites" :key="satellite.value" :label="satellite.label">
-          <el-switch :model-value="settings.enabledSatellites[satellite.value]" active-text="启用" inactive-text="停用"
-            :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)"
-            :data-testid="`link-satellite-enabled-${satellite.value}`" @change="setSatelliteEnabled(satellite.value, $event)" />
-          <small v-if="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)">请先在平台与航点中配置</small>
-        </el-form-item>
-      </div>
+      <el-form-item label="中继卫星选择">
+        <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
+          placeholder="请先在平台与航点中配置卫星" aria-label="中继卫星选择" data-testid="link-relay-satellite" @change="selectSatellite">
+          <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
+            :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
+        </el-select>
+      </el-form-item>
       <el-form-item label="防乒乓滞回时间（秒）">
         <el-input-number :model-value="settings.switchCooldownS" :min="0" :step="1" controls-position="right"
           data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
@@ -130,7 +128,5 @@ function resetDrag(): void {
 .is-dragging { opacity: 0.5; }
 .link-settings__drag-handle { width: 16px; height: 20px; flex-shrink: 0; color: var(--console-text-muted); }
 .link-settings__rank { min-width: 1.25rem; color: var(--console-cyan); font-variant-numeric: tabular-nums; }
-.link-settings__switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 0 1rem; }
-.link-settings__switches small { display: block; width: 100%; color: var(--console-text-muted); font-size: 12px; }
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
 </style>

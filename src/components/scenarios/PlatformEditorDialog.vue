@@ -47,18 +47,28 @@ const availableQuantity = computed(() => {
 })
 const showBatchQuantity = computed(() => !props.editing && editor.value?.type === 'AIRBORNE_MISSION_CLUSTER')
 const cannotAdd = computed(() => !props.editing && availableQuantity.value === 0)
+const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE')
+const isJammerStation = computed(() => editor.value?.type === 'GROUND_JAMMER_DETECTION_STATION')
+const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value)
 
 /**
  * 同步实体类型对应的卫星子类型和批量数量字段。
  * @param type 当前选择的场景实体类型。
  * @returns 无返回值。
- * @sideEffects 同步部署域、移除非卫星的子类型；不补卫星默认值，非空中无人作业集群恢复单条新增。
+ * @sideEffects 同步部署域和高空中继初始位置、移除非卫星的子类型；不补卫星默认值，非空中无人作业集群恢复单条新增。
  */
 function synchronizeTypeFields(type: PlatformType): void {
   if (editor.value === null) return
   editor.value.category = PLATFORM_TYPE_DOMAINS[type]
   if (type !== 'COMMUNICATION_SATELLITE') delete editor.value.satelliteType
   if (type !== 'AIRBORNE_MISSION_CLUSTER') quantity.value = 1
+  if (type === 'FORWARD_RELAY_NODE') {
+    // 中继初始位置不开放编辑；保留范围内纬度，旧值越界时收敛到最近边界。
+    const position = editor.value.initialPosition
+    position.longitude = 120.8
+    position.latitude = Number.isFinite(position.latitude) ? Math.min(25.7, Math.max(25.3, position.latitude)) : 25.3
+    position.altitude = 8000
+  }
 }
 
 function addWaypoint(): void {
@@ -93,7 +103,9 @@ function removeWaypoint(index: number): void {
 }
 
 function apply(): void {
-  if (editor.value !== null && !cannotAdd.value) emit('apply', editor.value, quantity.value)
+  if (editor.value === null || cannotAdd.value) return
+  if (!supportsWaypoints.value) editor.value.waypoints = []
+  emit('apply', editor.value, quantity.value)
 }
 
 watch(() => props.modelValue, (visible) => {
@@ -157,11 +169,12 @@ watch(() => props.modelValue, (visible) => {
       </section>
 
       <section class="platform-editor-section" aria-labelledby="platform-position-title">
-        <h4 id="platform-position-title" class="platform-editor-section__title">初始位置</h4>
+        <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
+        <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <div class="position-grid">
-          <el-form-item label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :min="-180" :max="180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-          <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :min="-90" :max="90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
-          <el-form-item label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
+          <el-form-item label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="isJammerStation ? 121.2 : editor.type === 'REAR_COMMAND_NODE' ? 118.5 : -180" :max="isJammerStation ? 121.8 : editor.type === 'REAR_COMMAND_NODE' ? 120 : 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
+          <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="isJammerStation ? 24.8 : isForwardRelay ? 25.3 : editor.type === 'REAR_COMMAND_NODE' ? 24 : -90" :max="isJammerStation ? 25.4 : isForwardRelay ? 25.7 : editor.type === 'REAR_COMMAND_NODE' ? 25 : 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
+          <el-form-item label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
         </div>
       </section>
 
@@ -180,7 +193,7 @@ watch(() => props.modelValue, (visible) => {
         </div>
       </section>
 
-      <section class="platform-editor-section" aria-labelledby="platform-waypoint-title">
+      <section v-if="supportsWaypoints" class="platform-editor-section" aria-labelledby="platform-waypoint-title">
         <div class="waypoint-heading">
           <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ editor.waypoints.length }}）</h4>
           <el-button size="small" :disabled="pending || locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
@@ -207,6 +220,7 @@ watch(() => props.modelValue, (visible) => {
   </el-dialog>
 
   <WaypointMapPicker
+    v-if="supportsWaypoints"
     v-model="waypointPickerVisible"
     :longitude="waypointPickerPoint.longitude"
     :latitude="waypointPickerPoint.latitude"

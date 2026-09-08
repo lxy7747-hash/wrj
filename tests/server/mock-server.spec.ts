@@ -4,6 +4,34 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
+describe('机载干扰支撑实体', () => {
+  it('允许挂载干扰设备并保存、回读、导入和生成模板，拒绝错误部署域', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    const jammer = config.jammers[0]!
+    const previousOwner = config.platforms.find(p => p.id === jammer.platformId)!
+    previousOwner.jammerIds = previousOwner.jammerIds.filter(id => id !== jammer.id)
+    jammer.platformId = 'AJ-001'
+    config.platforms.push({ id: 'AJ-001', name: '机载干扰测试', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air',
+      initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 }, waypoints: [], linkIds: [], sensorIds: [], jammerIds: [jammer.id] })
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(saved.config).toEqual(config)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
+    const invalid = structuredClone(config)
+    invalid.platforms.at(-1)!.category = 'ground'
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+    expect(rejected.body).toMatchObject({ error: { code: 'VALIDATION_FAILED', fieldPath: `platforms[${config.platforms.length - 1}].category` } })
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)
+    expect((imported.body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!.config).toEqual(config)
+    const template = await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '机载干扰模板', config }).expect(201)
+    expect((template.body as ApiSuccess<ScenarioTemplate>).data.config).toEqual(config)
+  })
+})
+
 describe('链路补项保存与快照', () => {
   it('新字段经 PUT、回读、模板和导入保留，重置后可撤销恢复', async () => {
     const { baseUrl } = await startServer()
@@ -47,6 +75,61 @@ describe('链路补项保存与快照', () => {
     expect((clearedResult.body as ApiSuccess<ScenarioDraft>).data.config.links.find(l => l.id === link.id)?.coding).toBeNull()
     const reloaded = await request(baseUrl).get(path).set(headers).expect(200)
     expect((reloaded.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(cleared)
+  })
+})
+
+describe('业务方向与独立启停保存', () => {
+  it('新旧业务 PUT、回读、导入、撤销保持完整，非法字段拒绝且不覆写', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    Object.assign(config.informationDemand[0]!, { direction: 'FORWARD', enabled: false, volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
+    config.informationDemand.push({ ...config.informationDemand[0]!, id: 'INFO-VIDEO', direction: 'REVERSE', enabled: true, informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(saved.config).toEqual(config)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
+    const imported = ((await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)).body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
+    expect(imported.config).toEqual(config)
+    const reset = ((await request(baseUrl).post(`${path}/reset`).set(headers).send({ expectedRevision: imported.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(reset.config.informationDemand).toEqual(original.config.informationDemand)
+    const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(undone.config).toEqual(config)
+    for (const invalid of [{ enabled: 'false' }, { direction: 'INVALID' }]) {
+      const candidate = structuredClone(config)
+      Object.assign(candidate.informationDemand[0]!, invalid)
+      await request(baseUrl).put(path).set(headers).send({ config: candidate, uiExtensions: original.uiExtensions }).expect(422)
+      expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
+    }
+  })
+})
+
+describe('敌方干扰配置保存', () => {
+  it('扫频、总开关、触发时间和米制距离可保存回读及导入撤销，超界写入不覆盖', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    config.jammingEnabled = true
+    Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, defaultPower: 200, bandwidth: 20 })
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(saved.config).toEqual(config)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
+    const imported = ((await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)).body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
+    expect(imported.config).toEqual(config)
+    const reset = ((await request(baseUrl).post(`${path}/reset`).set(headers).send({ expectedRevision: imported.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(reset.config.jammingEnabled).toBeUndefined()
+    const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(undone.config).toEqual(config)
+    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 25 * 1852 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
+      const invalid = structuredClone(config)
+      Object.assign(invalid.jammers[0]!, mutation)
+      await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+    }
+    await request(baseUrl).put(path).set(headers).send({ config: { ...config, jammingEnabled: 'true' }, uiExtensions: original.uiExtensions }).expect(422)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
   })
 })
 
@@ -772,7 +855,7 @@ describe('P0 deterministic mock server', () => {
 
     const jammerMutation = structuredClone(linkSavedDraft.config)
     jammerMutation.jammers[0]!.defaultPower = 0
-    jammerMutation.jammers[0]!.detectionRange = 0
+    jammerMutation.jammers[0]!.detectionRange = 1852
     jammerMutation.jammers[0]!.frequency = 0.0001
     jammerMutation.jammers[0]!.bandwidth = Number.MIN_VALUE
     const jammerSaved = await request(baseUrl)
@@ -785,7 +868,7 @@ describe('P0 deterministic mock server', () => {
     expect(jammerSavedDraft.revision).toBe(8)
     expect(jammerSavedDraft.config.jammers[0]).toMatchObject({
       defaultPower: 0,
-      detectionRange: 0,
+      detectionRange: 1852,
       frequency: 0.0001,
       bandwidth: Number.MIN_VALUE,
     })

@@ -62,6 +62,7 @@ export const PLATFORM_TYPE_LABELS: Record<PlatformStatus['type'], string> = {
   AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
   COMMUNICATION_SATELLITE: '通信卫星',
   GROUND_JAMMER_DETECTION_STATION: '地面固定式干扰侦测站',
+  AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',
 }
 
 export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {
@@ -74,6 +75,7 @@ export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {
 export const JAMMER_TYPE_LABELS: Record<ScenarioConfig['jammers'][number]['type'], string> = {
   BARRAGE: '宽带压制',
   SPOT: '瞄准式',
+  SWEEP: '扫频',
 }
 
 /** 按规范场景中的正式类型读取干扰设备中文名称。 */

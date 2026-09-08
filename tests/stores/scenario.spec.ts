@@ -17,7 +17,7 @@ import type {
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
-import { isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
+import { getLinkExclusionReason, isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useUiStore } from '../../src/stores/ui'
@@ -31,6 +31,28 @@ const META: PageMeta = {
 }
 
 describe('链路新增参数边界', () => {
+  it('旧双选或均未选使用天通默认值，参与原因优先显示链路停用', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const tiantong = config.platforms.find(p => p.satelliteType === 'TIANTONG')!
+    const shentong = { ...structuredClone(tiantong), id: 'SAT-ST', satelliteType: 'SHENTONG' as const }
+    config.platforms.push(shentong)
+    config.linkSettings = readLinkSettings(config)
+    for (const enabled of [true, false]) {
+      config.linkSettings.enabledSatellites = { TIANTONG: enabled, SHENTONG: enabled }
+      expect(readLinkSettings(config).enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
+      expect(config.linkSettings.enabledSatellites).toEqual({ TIANTONG: enabled, SHENTONG: enabled })
+    }
+    const link = { ...config.links.find(l => l.type === 'SAT')!, sourcePlatformId: tiantong.id, targetPlatformId: 'UAV-01', enabled: true }
+    const settings = readLinkSettings(config)
+    expect(getLinkExclusionReason(link, settings, config.platforms)).toBeNull()
+    expect(getLinkExclusionReason({ ...link, sourcePlatformId: shentong.id }, settings, config.platforms)).toBe('神通卫星')
+    settings.enabledSatellites = { TIANTONG: false, SHENTONG: true }
+    expect(getLinkExclusionReason(link, settings, config.platforms)).toBe('天通卫星')
+    expect(isConfiguredLinkEnabled(link, settings, config.platforms)).toBe(false)
+    expect(getLinkExclusionReason({ ...link, enabled: false }, settings, config.platforms)).toBe('链路停用')
+    expect(getLinkExclusionReason({ ...link, type: 'MICROWAVE', sourcePlatformId: 'CMD-01' }, settings, config.platforms)).toBeNull()
+  })
+
   it('中继卫星默认选择天通，显式开关原样保留，无实体时不启用', () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     config.platforms.push({ ...structuredClone(config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG' })
@@ -1465,6 +1487,49 @@ describe('P2-3 链路字段校验', () => {
 })
 
 describe('P2-4 干扰设备字段校验', () => {
+  it('时长非法只跳过触发时间上限，仍拒绝非法触发值', () => {
+    const config = scenarioDraft().config
+    for (const duration of [Number.NaN, 0, -1]) {
+      config.scenario.duration = duration
+      config.jammers[0]!.triggerTimeS = 50
+      const errors = inspectScenarioConfig(config, 'write').result.errors
+      expect(errors).toContainEqual(expect.objectContaining({ fieldPath: 'scenario.duration' }))
+      expect(errors.some(issue => issue.fieldPath === 'jammers[0].triggerTimeS')).toBe(false)
+    }
+    for (const triggerTimeS of [-1, Number.NaN, Infinity]) {
+      config.jammers[0]!.triggerTimeS = triggerTimeS
+      expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ fieldPath: 'jammers[0].triggerTimeS' }))
+    }
+  })
+
+  it('敌方干扰支持扫频与总开关，写入限制海里范围和触发时刻且旧读取不改值', () => {
+    const config = scenarioDraft().config
+    config.jammingEnabled = false
+    config.jammers[0]!.type = 'SWEEP'
+    config.jammers[0]!.triggerTimeS = 300
+    for (const range of [1852, 44448]) {
+      config.jammers[0]!.detectionRange = range
+      expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    }
+    for (const range of [0, 1851, 44449, Number.NaN]) {
+      config.jammers[0]!.detectionRange = range
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].detectionRange')
+    }
+    config.jammers[0]!.detectionRange = 150000
+    expect(inspectScenarioConfig(config, 'read').result.valid).toBe(true)
+    expect(config.jammers[0]!.detectionRange).toBe(150000)
+    config.jammers[0]!.detectionRange = 44448
+    for (const trigger of [-1, config.scenario.duration + 1, Number.NaN]) {
+      config.jammers[0]!.triggerTimeS = trigger
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].triggerTimeS')
+    }
+    for (const trigger of [0, config.scenario.duration]) {
+      config.jammers[0]!.triggerTimeS = trigger
+      expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    }
+    config.jammingEnabled = 'false' as never
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammingEnabled')
+  })
   it('覆盖两类干扰设备并允许没有干扰设备的场景', () => {
     const config = scenarioDraft().config
     expect(new Set(config.jammers.map((jammer) => jammer.type))).toEqual(new Set(['BARRAGE', 'SPOT']))

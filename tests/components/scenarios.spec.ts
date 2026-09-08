@@ -1,7 +1,7 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
-import { nextTick } from 'vue'
+import { nextTick, toRaw } from 'vue'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
@@ -90,12 +90,295 @@ function confirmation(): ConfirmationContext {
 }
 
 describe('P2-1 场景管理页面', () => {
+  it('机载干扰设备作为空中支撑实体新增、保存回读且可作为干扰归属平台', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore(pinia)
+    let persisted = draft()
+    const businessCount = persisted.config.platforms.filter(p => isBusinessInformationNodeType(p.type)).length
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
+      return response(structuredClone(persisted))
+    }))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.get('#tab-platforms').trigger('click')
+    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await flushPromises()
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
+    expect(type.findAllComponents({ name: 'ElOptionGroup' }).find(c => c.props('label').startsWith('支撑实体'))!
+      .findAllComponents({ name: 'ElOption' }).map(c => c.props('label'))).toContain('机载干扰设备')
+    type.vm.$emit('update:modelValue', 'AIRBORNE_JAMMER_PLATFORM')
+    type.vm.$emit('change', 'AIRBORNE_JAMMER_PLATFORM')
+    await flushPromises()
+    const input = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
+    input.value = '机载干扰测试'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    expect(document.querySelector<HTMLInputElement>('[data-testid="platform-category"]')!.value).toBe('空中')
+    const numbers = wrapper.findAllComponents({ name: 'ElInputNumber' })
+    for (const [field, value] of [['longitude', 120.5], ['latitude', 26], ['altitude', 5000]] as const) {
+      const number = numbers.find(c => c.attributes('data-testid') === `platform-${field}`)!
+      expect(number.props('disabled')).toBe(false)
+      number.vm.$emit('update:modelValue', value)
+    }
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ name: '机载干扰测试', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air' })
+    expect(scenario.draft!.config.platforms.filter(p => isBusinessInformationNodeType(p.type))).toHaveLength(businessCount)
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    expect(persisted.revision).toBe(5)
+    expect(await scenario.loadScenario()).toBe(true)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰设备')
+    expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ type: 'AIRBORNE_JAMMER_PLATFORM', initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 } })
+    await wrapper.get('#tab-jammers').trigger('click')
+    await wrapper.get('[data-testid="add-jammer"]').trigger('click')
+    await flushPromises()
+    const owner = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'jammer-platform')!
+    expect(owner.findAllComponents({ name: 'ElOption' }).some(c => c.props('label').startsWith('机载干扰测试'))).toBe(true)
+  })
+
   afterEach(() => {
     ElMessage.closeAll()
     vi.unstubAllGlobals()
     vi.unstubAllEnvs()
     vi.restoreAllMocks()
     document.body.innerHTML = ''
+  })
+
+  it('链路状态与中继卫星分列展示，卫星选择不改变链路独立状态', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    const current = draft()
+    const tiantong = current.config.platforms.find(p => p.satelliteType === 'TIANTONG')!
+    current.config.platforms.push({ ...structuredClone(tiantong), id: 'SAT-ST', satelliteType: 'SHENTONG' })
+    const satelliteLink = current.config.links.find(link => link.type === 'SAT')!
+    current.config.links = [
+      { ...satelliteLink, id: 'L-TT', sourcePlatformId: tiantong.id, targetPlatformId: 'UAV-01', enabled: true },
+      { ...satelliteLink, id: 'L-ST', sourcePlatformId: 'SAT-ST', targetPlatformId: 'UAV-01', enabled: true },
+      { ...satelliteLink, id: 'L-OFF', sourcePlatformId: tiantong.id, targetPlatformId: 'UAV-01', enabled: false },
+      { ...satelliteLink, id: 'L-NONE', type: 'MICROWAVE', sourcePlatformId: 'CMD-01', targetPlatformId: 'UAV-01', relayPlatformId: undefined, enabled: true },
+      { ...satelliteLink, id: 'L-RELAY', sourcePlatformId: 'CMD-01', targetPlatformId: 'UAV-01', relayPlatformId: 'SAT-ST', enabled: true },
+    ]
+    scenario.$patch({ draft: current, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-links').trigger('click')
+    const labels = () => wrapper.get('[data-testid="link-table"]').findAll('.el-tag').map(tag => tag.text())
+    expect(labels()).toEqual(['启用', '启用', '停用', '启用', '启用'])
+    const table = wrapper.get('[data-testid="link-table"]')
+    expect(table.text()).not.toContain('参与场景')
+    expect(table.text()).toContain('链路状态')
+    expect(table.text()).toContain('中继卫星')
+    const satellites = () => table.findAll('.el-table__body tbody tr').map(row => row.findAll('td')[3]!.text())
+    expect(satellites()).toEqual(Array(5).fill('天通卫星'))
+    const settings = readLinkSettings(current.config)
+    settings.enabledSatellites = { TIANTONG: false, SHENTONG: true }
+    wrapper.findComponent({ name: 'LinkSettingsPanel' }).vm.$emit('update:modelValue', settings)
+    await nextTick()
+    expect(labels()).toEqual(['启用', '启用', '停用', '启用', '启用'])
+    expect(satellites()).toEqual(Array(5).fill('神通卫星'))
+    expect(scenario.dirty).toBe(true)
+    expect(scenario.draft!.config.links.map(link => link.enabled)).toEqual([true, true, false, true, true])
+  })
+
+  it('业务与链路保持五个页签，业务默认值、取消、非法输入和定位生效', async () => {
+    const message = vi.spyOn(ElMessage, 'success')
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const original = structuredClone(fixtureSource.scenario.informationDemand)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(5)
+    await wrapper.get('#tab-links').trigger('click')
+    expect(wrapper.get('#pane-links').find('[data-testid="information-demand-table"]').exists()).toBe(true)
+    expect(wrapper.get('#pane-data').find('[data-testid="information-demand-table"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
+    const dialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
+    expect(dialog.props('demand')).toMatchObject({ direction: 'FORWARD', enabled: true, informationType: '目标指令', volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
+    dialog.vm.$emit('update:modelValue', false)
+    await nextTick()
+    expect(scenario.draft!.config.informationDemand).toEqual(original)
+    expect(scenario.dirty).toBe(false)
+    expect(wrapper.get('[data-testid="add-information-demand"]').text()).toBe('新增业务')
+    expect(wrapper.find('[data-testid="add-reverse-business"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
+    const reverse = { ...structuredClone(toRaw(dialog.props('demand')!)), direction: 'REVERSE', informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 }
+    expect(reverse).toMatchObject({ direction: 'REVERSE', informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
+    dialog.vm.$emit('apply', { ...reverse, destinationPlatformIds: [] })
+    await nextTick()
+    expect(dialog.props('error')).toContain('目标平台')
+    expect(scenario.draft!.config.informationDemand).toEqual(original)
+    dialog.vm.$emit('apply', { ...reverse, enabled: false })
+    await nextTick()
+    expect(scenario.draft!.config.informationDemand.at(-1)).toMatchObject({ direction: 'REVERSE', enabled: false })
+    expect(message).toHaveBeenLastCalledWith('业务已新增，保存草稿后生效。')
+    expect(scenario.draft!.config.informationDemand[0]).toEqual(original[0])
+    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
+    dialog.vm.$emit('apply', { ...structuredClone(toRaw(dialog.props('demand')!)), frequencyHz: 2 })
+    await nextTick()
+    expect(message).toHaveBeenLastCalledWith('业务已更新，保存草稿后生效。')
+    await wrapper.get('[data-testid="next-validation"]').trigger('click')
+    wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', { severity: 'ERROR', code: 'TEST', message: '请检查业务信息量', fieldPath: 'informationDemand[0].volumeMb' })
+    await flushPromises()
+    expect(wrapper.get('#tab-links').attributes('aria-selected')).toBe('true')
+    expect(dialog.props('modelValue')).toBe(true)
+    expect(dialog.props('error')).toBe('请检查业务信息量')
+    dialog.vm.$emit('opened')
+    expect(document.activeElement?.closest('[data-testid="demand-volume"]')).not.toBeNull()
+    scenario.draft!.locked = true
+    const count = scenario.draft!.config.informationDemand.length
+    dialog.vm.$emit('apply', reverse)
+    await nextTick()
+    expect(scenario.draft!.config.informationDemand).toHaveLength(count)
+    expect(dialog.props('disabled')).toBe(true)
+  })
+
+  it('缩短场景时长后可逐台修正触发时间，全部修正前禁止保存', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    let persisted = draft()
+    persisted.config.jammers.forEach(jammer => { jammer.triggerTimeS = 300 })
+    // 本例仅验证触发时间；避免既有航点超过缩短后的总时长。
+    persisted.config.platforms.forEach(platform => { platform.waypoints = [] })
+    const fetchSpy = vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      return response(structuredClone(persisted))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    const duration = wrapper.get('[data-testid="scenario-duration"] input')
+    await duration.setValue(String(100 / 60))
+    await duration.trigger('change')
+    expect(scenario.draft!.config.scenario.duration).toBeCloseTo(100)
+    await wrapper.get('#tab-jammers').trigger('click')
+    for (const index of [0, 1]) {
+      await wrapper.get(`[data-testid="edit-jammer-${index}"]`).trigger('click')
+      await flushPromises()
+      const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
+      dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'jammer-trigger-time')!.vm.$emit('update:modelValue', 50)
+      await nextTick()
+      document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+      await flushPromises()
+      expect(dialog.props('modelValue')).toBe(false)
+      expect(scenario.draft!.config.jammers[index]!.triggerTimeS).toBe(50)
+      if (index === 0) {
+        expect(scenario.draft!.config.jammers[1]!.triggerTimeS).toBe(300)
+        expect(await scenario.saveScenario()).toBe(false)
+        expect(scenario.validation.errors).toContainEqual(expect.objectContaining({ fieldPath: 'jammers[1].triggerTimeS' }))
+        expect(fetchSpy.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0)
+      }
+    }
+    expect(await scenario.saveScenario()).toBe(true)
+    expect(await scenario.loadScenario()).toBe(true)
+    expect(scenario.draft!.config.jammers.map(jammer => jammer.triggerTimeS)).toEqual([50, 50])
+  })
+
+  it('删除最后一颗已选卫星清理选择并可保存回读，仍保护业务引用', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    let persisted = draft()
+    const satellite = persisted.config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
+    satellite.satelliteType = 'TIANTONG'
+    persisted.config.linkSettings = readLinkSettings(persisted.config)
+    persisted.config.links = persisted.config.links.filter(link => ![link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(satellite.id))
+    persisted.config.platforms.forEach(platform => { platform.linkIds = persisted.config.links.filter(link => [link.sourcePlatformId, link.targetPlatformId].includes(platform.id)).map(link => link.id) })
+    persisted.config.informationDemand[0]!.destinationPlatformIds.push(satellite.id)
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      return response(structuredClone(persisted))
+    }))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus],
+      stubs: { ElPopconfirm: { emits: ['confirm'], template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>' } },
+    } })
+    await flushPromises()
+    await wrapper.get('#tab-platforms').trigger('click')
+    const index = scenario.draft!.config.platforms.findIndex(p => p.id === satellite.id)
+    const original = structuredClone(toRaw(scenario.draft!.config))
+    await wrapper.get(`[data-testid="delete-platform-${index}"]`).trigger('click')
+    expect(scenario.draft!.config).toEqual(original)
+    expect(document.body.textContent).toContain('仍被链路、设备或信息需求引用')
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
+    const businessDialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
+    const demand = structuredClone(toRaw(businessDialog.props('demand')!))
+    demand.destinationPlatformIds = demand.destinationPlatformIds.filter((id: string) => id !== satellite.id)
+    businessDialog.vm.$emit('apply', demand)
+    await nextTick()
+    await wrapper.get('#tab-platforms').trigger('click')
+    await wrapper.get(`[data-testid="delete-platform-${index}"]`).trigger('click')
+    expect(scenario.draft!.config.platforms.some(p => p.id === satellite.id)).toBe(false)
+    expect(scenario.draft!.config.linkSettings!.enabledSatellites).toEqual({ TIANTONG: false, SHENTONG: false })
+    expect(await scenario.saveScenario()).toBe(true)
+    expect(await scenario.loadScenario()).toBe(true)
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'link-relay-satellite')!.props('modelValue')).toBeUndefined()
+    expect(wrapper.get('[data-testid="link-table"]').text()).not.toMatch(/天通卫星|神通卫星/)
+  })
+
+  it('敌方干扰总开关与弹框默认值生效，旧超界距离可逐台修正', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    const current = draft()
+    current.config.jammers.forEach(jammer => { jammer.detectionRange = 150000 })
+    scenario.$patch({ draft: current, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-jammers').trigger('click')
+    const totalSwitch = wrapper.findAllComponents({ name: 'ElSwitch' }).find(item => item.attributes('data-testid') === 'jamming-enabled')!
+    expect(totalSwitch.props('modelValue')).toBe(false)
+    const switches = scenario.draft!.uiExtensions.jammers.map(item => item.enabled)
+    totalSwitch.vm.$emit('update:modelValue', true)
+    await nextTick()
+    expect(scenario.draft!.config.jammingEnabled).toBe(true)
+    expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
+    await wrapper.get('[data-testid="add-jammer"]').trigger('click')
+    const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 100, bandwidth: 20, triggerTimeS: 300, detectionRange: 44448 })
+    expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
+    dialog.vm.$emit('update:modelValue', false)
+    await nextTick()
+    expect(scenario.draft!.config.jammers).toHaveLength(2)
+    await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
+    const range = dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'jammer-range')!
+    expect(range.props('modelValue')).toBe(150000 / 1852)
+    range.vm.$emit('update:modelValue', 25)
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(dialog.props('error')).toContain('1～24 海里')
+    expect(scenario.draft!.config.jammers[0]!.detectionRange).toBe(150000)
+    range.vm.$emit('update:modelValue', 24)
+    dialog.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'jammer-type')!.vm.$emit('update:modelValue', 'SWEEP')
+    dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'jammer-trigger-time')!.vm.$emit('update:modelValue', 300)
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config.jammers[0]).toMatchObject({ type: 'SWEEP', detectionRange: 44448, triggerTimeS: 300 })
+    expect(scenario.draft!.config.jammers[1]!.detectionRange).toBe(150000)
+    expect(inspectScenarioConfig(scenario.draft!.config, 'write').result.valid).toBe(false)
+    await wrapper.get('[data-testid="next-validation"]').trigger('click')
+    wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', { severity: 'ERROR', code: 'TEST', message: '请检查触发时间', fieldPath: 'jammers[0].triggerTimeS' })
+    await flushPromises()
+    dialog.vm.$emit('opened')
+    expect(document.activeElement?.closest('[data-testid="jammer-trigger-time"]')).not.toBeNull()
+    scenario.draft!.locked = true
+    totalSwitch.vm.$emit('update:modelValue', false)
+    await nextTick()
+    expect(scenario.draft!.config.jammingEnabled).toBe(true)
   })
 
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
@@ -119,7 +402,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      '场景基础', '平台与航点', '链路配置', '干扰设备', '传感器与输出',
+      '场景基础', '平台与航点', '业务与链路', '干扰设备', '传感器与输出',
     ])
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('当前草稿已保存')
 
@@ -290,17 +573,18 @@ describe('P2-1 场景管理页面', () => {
     for (const testId of ['output-link-quality', 'output-events', 'output-link-switch']) {
       component('ElSwitch', testId).vm.$emit('change', false)
     }
-    const demandTable = wrapper.get('[data-testid="information-demand-table"]')
-    for (const [index, select] of demandTable.findAllComponents({ name: 'ElSelect' }).entries()) {
-      select.vm.$emit('change', index === 1 ? ['UAV-01'] : index === 2 ? 'HIGH' : 'CMD-01')
-    }
-    for (const [index, input] of demandTable.findAllComponents({ name: 'ElInputNumber' }).entries()) {
-      input.vm.$emit('update:modelValue', index + 1)
-    }
-    demandTable.findAllComponents({ name: 'ElInput' })[0]?.vm.$emit('update:modelValue', '指挥信息')
+    expect(wrapper.get('#pane-data').find('[data-testid="information-demand-table"]').exists()).toBe(false)
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
+    const businessDialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
+    businessDialog.vm.$emit('apply', { ...structuredClone(fixtureSource.scenario.informationDemand[0]), informationType: '目标指令', direction: 'FORWARD', enabled: true })
+    await nextTick()
     await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
     await nextTick()
-    await wrapper.get('[data-testid="delete-information-demand-1"]').trigger('click')
+    businessDialog.vm.$emit('apply', businessDialog.props('demand'))
+    await nextTick()
+    const lastDelete = wrapper.findAllComponents({ name: 'ElPopconfirm' }).find(item => item.find('[data-testid="delete-information-demand-1"]').exists())!
+    lastDelete.vm.$emit('confirm', new MouseEvent('click'))
     expect(scenario.dirty).toBe(true)
 
     await wrapper.get('[data-testid="workflow-script"]').trigger('click')
@@ -910,7 +1194,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-platforms').trigger('click')
     await nextTick()
-    await wrapper.get('[data-testid="edit-platform-1"]').trigger('click')
+    await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
     await flushPromises()
     expect(document.querySelector('[data-testid="pick-waypoint-0"]')).not.toBeNull()
     document.querySelector<HTMLElement>('[data-testid="pick-waypoint-0"]')!.click()
@@ -919,7 +1203,7 @@ describe('P2-1 场景管理页面', () => {
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
 
-    expect(scenario.draft?.config.platforms[1]?.waypoints[0]).toMatchObject({
+    expect(scenario.draft?.config.platforms[3]?.waypoints[0]).toMatchObject({
       longitude: 120.654321,
       latitude: 24.456789,
       altitude: 0,
@@ -1074,20 +1358,20 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-platforms').trigger('click')
     await nextTick()
-    await wrapper.get('[data-testid="edit-platform-1"]').trigger('click')
+    await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
     await flushPromises()
     const linkIds = document.querySelector<HTMLInputElement>('[data-testid="platform-link-ids"]')!
     expect(linkIds.readOnly).toBe(true)
-    expect(linkIds.value).toContain('L-MW-01')
+    expect(linkIds.value).toContain('L-MW-05')
     const jammerIds = document.querySelector<HTMLInputElement>('[data-testid="platform-jammer-ids"]')!
     expect(jammerIds.readOnly).toBe(true)
     document.querySelector<HTMLElement>('[data-testid="delete-waypoint-0"]')!.click()
     const editName = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
-    editName.value = '高空前出中继节点（编辑）'
+    editName.value = '空中无人作业集群（编辑）'
     editName.dispatchEvent(new Event('input', { bubbles: true }))
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
-    expect(scenario.draft?.config.platforms[1]).toMatchObject({ name: '高空前出中继节点（编辑）', waypoints: [] })
+    expect(scenario.draft?.config.platforms[3]).toMatchObject({ name: '空中无人作业集群（编辑）', waypoints: [] })
 
     await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
     await flushPromises()
@@ -1307,7 +1591,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-jammers').trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('已配置 2 / 2 类')
+    expect(wrapper.text()).toContain('已配置 2 / 3 种手段')
     const originalCount = scenario.draft!.config.jammers.length
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     await flushPromises()
@@ -1331,7 +1615,7 @@ describe('P2-1 场景管理页面', () => {
     select('jammer-platform').vm.$emit('update:modelValue', 'CMD-01')
     autoDetect.vm.$emit('update:modelValue', true)
     inputNumber('jammer-power').vm.$emit('update:modelValue', 60)
-    inputNumber('jammer-range').vm.$emit('update:modelValue', 120000)
+    inputNumber('jammer-range').vm.$emit('update:modelValue', 24)
     inputNumber('jammer-frequency').vm.$emit('input', 3200)
     inputNumber('jammer-frequency').vm.$emit('update:modelValue', 3200)
     inputNumber('jammer-bandwidth').vm.$emit('input', 0)
@@ -1363,7 +1647,8 @@ describe('P2-1 场景管理页面', () => {
       frequency: 3200,
       bandwidth: 15,
       autoDetect: true,
-      detectionRange: 120000,
+      detectionRange: 44448,
+      triggerTimeS: 300,
     })
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'CMD-01')?.jammerIds).toContain('JAM-CFG-001')
     expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({

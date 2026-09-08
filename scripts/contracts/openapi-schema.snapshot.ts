@@ -2277,6 +2277,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'InformationDemand': {
     'additionalProperties': false,
     'properties': {
+      'direction': {
+        'enum': ['FORWARD', 'REVERSE']
+      },
+      'enabled': {
+        'type': 'boolean'
+      },
       'destinationPlatformIds': {
         'items': {
           'minLength': 1,
@@ -2372,6 +2378,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'Jammer': {
     'additionalProperties': false,
     'properties': {
+      'triggerTimeS': {
+        'minimum': 0,
+        'type': 'number'
+      },
       'autoDetect': {
         'type': 'boolean'
       },
@@ -2402,7 +2412,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'type': {
         'enum': [
           'BARRAGE',
-          'SPOT'
+          'SPOT',
+          'SWEEP'
         ],
         'type': 'string'
       }
@@ -3383,6 +3394,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             'type'
           ]
         }
+      },
+      {
+        'if': {
+          'properties': { 'type': { 'const': 'AIRBORNE_JAMMER_PLATFORM' } },
+          'required': ['type']
+        },
+        'then': { 'properties': { 'category': { 'const': 'air' } } }
       }
     ],
     'properties': {
@@ -3444,7 +3462,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'GROUND_CLUSTER_COMMAND_NODE',
           'AIRBORNE_MISSION_CLUSTER',
           'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION'
+          'GROUND_JAMMER_DETECTION_STATION',
+          'AIRBORNE_JAMMER_PLATFORM'
         ],
         'type': 'string'
       },
@@ -3517,7 +3536,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'GROUND_CLUSTER_COMMAND_NODE',
           'AIRBORNE_MISSION_CLUSTER',
           'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION'
+          'GROUND_JAMMER_DETECTION_STATION',
+          'AIRBORNE_JAMMER_PLATFORM'
         ],
         'type': 'string'
       },
@@ -4989,6 +5009,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'ScenarioConfig': {
     'additionalProperties': false,
     'properties': {
+      'jammingEnabled': {
+        'type': 'boolean'
+      },
       'linkSettings': { '$ref': '#/components/schemas/ScenarioLinkSettings' },
       'informationDemand': {
         'items': {
@@ -5034,7 +5057,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'x-min-business-information-nodes': 1,
         'x-supporting-entity-types-excluded-from-capacity': [
           'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION'
+          'GROUND_JAMMER_DETECTION_STATION',
+          'AIRBORNE_JAMMER_PLATFORM'
         ]
       },
       'scenario': {
@@ -5088,7 +5112,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'items': {
           'enum': [
             'BARRAGE',
-            'SPOT'
+            'SPOT',
+            'SWEEP'
           ]
         },
         'maxItems': 2,
@@ -5140,7 +5165,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'items': {
           'enum': [
             'COMMUNICATION_SATELLITE',
-            'GROUND_JAMMER_DETECTION_STATION'
+            'GROUND_JAMMER_DETECTION_STATION',
+            'AIRBORNE_JAMMER_PLATFORM'
           ]
         },
         'maxItems': 2,

@@ -624,6 +624,21 @@ describe('P3-2 遥测 Store', () => {
     expect(store.events).toHaveLength(4)
   })
 
+  it('正式加载入口接受机载干扰支撑实体，仍拒绝未知平台类型', async () => {
+    const candidate = structuredClone(frame)
+    const node = candidate.platforms.find(p => p.type === 'GROUND_JAMMER_DETECTION_STATION')!
+    node.type = 'AIRBORNE_JAMMER_PLATFORM'
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : candidate),
+    )))
+    const store = useTelemetryStore()
+    expect(await store.loadFrame()).toBe(true)
+    expect(store.frame!.platforms.find(p => p.platformId === node.platformId)?.type).toBe('AIRBORNE_JAMMER_PLATFORM')
+    node.type = 'UNKNOWN_PLATFORM' as never
+    expect(await store.loadFrame()).toBe(false)
+    expect(store).toMatchObject({ frame: null, capabilityState: 'ERROR' })
+  })
+
   it('实时应用干扰设备状态和链路切换记录', () => {
     const store = useTelemetryStore()
     store.$patch({

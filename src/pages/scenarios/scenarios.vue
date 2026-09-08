@@ -3,7 +3,9 @@ import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
-import { isConfiguredLinkEnabled, LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
+import { JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -25,6 +27,7 @@ import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
+import BusinessEditorDialog from '../../components/scenarios/BusinessEditorDialog.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
 
 const scenarioStore = useScenarioStore()
@@ -59,11 +62,17 @@ const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
 const linkFrequencyBelowMinimum = ref(false)
 const linkBandwidthBelowMinimum = ref(false)
+const businessDialogVisible = ref(false)
+const editingBusinessIndex = ref<number | null>(null)
+const businessEditor = ref<InformationDemand | null>(null)
+const businessEditorError = ref('')
+const businessFocusPath = ref('')
 const jammerDialogVisible = ref(false)
 const editingJammerIndex = ref<number | null>(null)
 const jammerEditorJammer = ref<Jammer | null>(null)
 const jammerEditorUiExtension = ref<JammerUiExtension | null>(null)
 const jammerEditorError = ref('')
+const jammerFocusPath = ref('')
 const jammerFrequencyBelowMinimum = ref(false)
 const jammerBandwidthBelowMinimum = ref(false)
 
@@ -384,11 +393,11 @@ function removePlatform(platform: Platform, index: number): boolean {
     ElMessage.error('该场景实体仍被链路、设备或信息需求引用，不能删除。')
     return false
   }
-  if (platform.satelliteType && config.linkSettings?.enabledSatellites[platform.satelliteType]) {
-    ElMessage.error('请先在链路配置中停用该卫星，再删除实体。')
-    return false
-  }
   config.platforms.splice(index, 1)
+  if (platform.satelliteType && config.linkSettings
+    && !config.platforms.some(item => item.type === 'COMMUNICATION_SATELLITE' && item.satelliteType === platform.satelliteType)) {
+    config.linkSettings.enabledSatellites[platform.satelliteType] = false
+  }
   markDirty()
   ElMessage.success('场景实体已删除，保存草稿后生效。')
   return true
@@ -608,12 +617,20 @@ function trackJammerBandwidthInput(value: number | undefined): void {
   if (typeof value === 'number') jammerBandwidthBelowMinimum.value = value <= 0
 }
 
+/** 修改场景干扰总开关；enabled 为开关值，保留每台设备的独立参数与启停。 */
+function setJammingEnabled(enabled: boolean | string | number): void {
+  if (!draft.value || pending.value || draft.value.locked || typeof enabled !== 'boolean') return
+  draft.value.config.jammingEnabled = enabled
+  markDirty()
+}
+
 /**
  * 打开新增干扰设备对话框并填入可校验的默认参数。
  * @returns 无返回值。
  * @sideEffects 没有场景实体时显示中文提示；否则创建独立编辑副本并打开对话框。
  */
 function openNewJammer(): void {
+  if (pending.value || draft.value?.locked) return
   const platform = draft.value?.config.platforms[0]
   if (platform === undefined) {
     ElMessage.error('至少需要一个场景实体才能新增干扰设备。')
@@ -623,15 +640,14 @@ function openNewJammer(): void {
     id: nextJammerId(),
     platformId: platform.id,
     type: 'BARRAGE',
-    defaultPower: 50,
-    frequency: 2200,
-    bandwidth: 20,
+    ...JAMMER_DEFAULTS,
+    frequency: draft.value?.config.links.find(link => link.type === 'DATALINK')?.frequency ?? 2200,
     autoDetect: false,
-    detectionRange: 100000,
   }
   jammerEditorUiExtension.value = { jammerId: jammerEditorJammer.value.id, direction: 0, duration: 60, enabled: true }
   editingJammerIndex.value = null
   jammerEditorError.value = ''
+  jammerFocusPath.value = ''
   resetJammerMinimumAttempts()
   jammerDialogVisible.value = true
 }
@@ -651,6 +667,7 @@ function openJammerEditor(jammer: Jammer, index: number): void {
   )
   editingJammerIndex.value = index
   jammerEditorError.value = ''
+  jammerFocusPath.value = ''
   resetJammerMinimumAttempts()
   jammerDialogVisible.value = true
 }
@@ -705,13 +722,15 @@ function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtensi
     else candidateExtensions.jammers[extensionIndex] = editedExtension
   }
   synchronizePlatformJammerIds(candidate, editedJammer.id)
+  const editedJammerPath = `jammers[${editingJammerIndex.value ?? candidate.jammers.length - 1}].`
   const issue = [
-    ...inspectScenarioConfig(candidate).result.errors,
+    ...inspectScenarioConfig(candidate, 'write').result.errors,
     ...inspectScenarioUiExtensions(candidateExtensions, candidate.jammers.map((jammer) => jammer.id)).result.errors,
-  ].find((item) => (
-    item.fieldPath.startsWith('jammers') || item.fieldPath.endsWith('.jammerIds')
-      || item.fieldPath.startsWith('uiExtensions.jammers')
-  ))
+  ].find(item => {
+    // 距离或时长变化后的超界设备可逐台修正；全部设备仍由整体校验和 PUT 阻断。
+    if (['JAMMER_RANGE_INVALID', 'JAMMER_TRIGGER_TIME_INVALID'].includes(item.code) && !item.fieldPath.startsWith(editedJammerPath)) return false
+    return item.fieldPath.startsWith('jammers') || item.fieldPath.endsWith('.jammerIds') || item.fieldPath.startsWith('uiExtensions.jammers')
+  })
   if (issue !== undefined) {
     jammerEditorError.value = issue.message
     return false
@@ -843,29 +862,58 @@ function nextInformationDemandId(): string {
   return `INFO-${String(index).padStart(3, '0')}`
 }
 
-/** 新增一条完整的信息需求默认记录。 */
+/** 打开统一新增业务弹框，默认前向；方向在弹框选择，不推断或交换平台端点。 */
 function addInformationDemand(): void {
-  if (draft.value === null || draft.value.config.platforms.length < 2) return
+  if (draft.value === null || draft.value.config.platforms.length < 2 || pending.value || draft.value.locked) return
   const platforms = draft.value.config.platforms
-  const demand: InformationDemand = {
+  businessEditor.value = {
     id: nextInformationDemandId(),
     sourcePlatformId: platforms[0]!.id,
     destinationPlatformIds: [platforms[1]!.id],
-    informationType: '态势信息',
-    volumeMb: 1,
-    frequencyHz: 1,
+    direction: 'FORWARD',
+    enabled: true,
+    ...BUSINESS_DEFAULTS.FORWARD,
     priority: 'NORMAL',
     maxLatencyMs: 1000,
-    minDataRateMbps: 1,
   }
-  draft.value.config.informationDemand.push(demand)
+  editingBusinessIndex.value = null
+  businessEditorError.value = ''
+  businessFocusPath.value = ''
+  businessDialogVisible.value = true
+}
+
+/** 打开指定业务的独立编辑副本；demand 为当前业务，index 为其在草稿中的位置。 */
+function openBusinessEditor(demand: InformationDemand, index: number): void {
+  businessEditor.value = structuredClone(toRaw(demand))
+  editingBusinessIndex.value = index
+  businessEditorError.value = ''
+  businessFocusPath.value = ''
+  businessDialogVisible.value = true
+}
+
+/** 校验并提交业务副本；demand 为弹框内容，失败不修改原始草稿。 */
+function applyBusinessEditor(demand: InformationDemand): void {
+  if (!draft.value || pending.value || draft.value.locked) return
+  const candidate = structuredClone(toRaw(draft.value.config))
+  const edited = structuredClone(toRaw(demand))
+  edited.id = edited.id.trim()
+  const index = editingBusinessIndex.value
+  if (index === null) candidate.informationDemand.push(edited)
+  else candidate.informationDemand[index] = edited
+  const issue = inspectScenarioConfig(candidate).result.errors.find(item => item.fieldPath.startsWith('informationDemand'))
+  if (issue) { businessEditorError.value = issue.message; return }
+  draft.value.config.informationDemand = candidate.informationDemand
+  businessDialogVisible.value = false
   markDirty()
+  ElMessage.success(index === null ? '业务已新增，保存草稿后生效。' : '业务已更新，保存草稿后生效。')
 }
 
 /** 删除指定信息需求。 */
 function removeInformationDemand(index: number): void {
-  draft.value?.config.informationDemand.splice(index, 1)
+  if (!draft.value || pending.value || draft.value.locked || draft.value.config.informationDemand.length <= 1) return
+  draft.value.config.informationDemand.splice(index, 1)
   markDirty()
+  ElMessage.success('业务已删除，保存草稿后生效。')
 }
 
 /**
@@ -875,6 +923,14 @@ function removeInformationDemand(index: number): void {
  * @remarks 只完成当前已开放编辑字段的直接映射。
  */
 function validationTargetId(fieldPath: string): string | undefined {
+  if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
+  const jammerField = /^jammers\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
+  if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
+    frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
+  const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
+  if (demandField) return ({ id: 'demand-id', direction: 'demand-direction', enabled: 'demand-enabled', informationType: 'demand-type',
+    sourcePlatformId: 'demand-source', destinationPlatformIds: 'demand-destinations', volumeMb: 'demand-volume', frequencyHz: 'demand-frequency',
+    priority: 'demand-priority', maxLatencyMs: 'demand-latency', minDataRateMbps: 'demand-rate' } as Record<string, string>)[demandField]
   const linkField = /^links\[\d+\]\.(.+)$/.exec(fieldPath)?.[1]
   if (linkField) return ({
     enabled: 'link-enabled',
@@ -882,7 +938,7 @@ function validationTargetId(fieldPath: string): string | undefined {
     antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
     berThreshold: 'link-ber-threshold',
   } as Record<string, string>)[linkField]
-  if (fieldPath.startsWith('linkSettings.enabledSatellites.')) return `link-satellite-enabled-${fieldPath.split('.').at(-1)}`
+  if (fieldPath.startsWith('linkSettings.enabledSatellites')) return 'link-relay-satellite'
   const directTargets: Record<string, string> = {
     'linkSettings.switchCooldownS': 'link-switch-cooldown',
     'linkSettings.priority': 'link-priority-0',
@@ -936,15 +992,21 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(issue.fieldPath)?.[1])
 
   if (issue.fieldPath.startsWith('platforms')) activeTab.value = 'platforms'
-  else if (issue.fieldPath.startsWith('links') || issue.fieldPath.startsWith('linkSettings')) activeTab.value = 'links'
-  else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers')) activeTab.value = 'jammers'
+  else if (issue.fieldPath.startsWith('links') || issue.fieldPath.startsWith('linkSettings') || issue.fieldPath.startsWith('informationDemand')) activeTab.value = 'links'
+  else if (issue.fieldPath.startsWith('jammers') || issue.fieldPath.startsWith('uiExtensions.jammers') || issue.fieldPath === 'jammingEnabled') activeTab.value = 'jammers'
   else if (issue.fieldPath.startsWith('sensors') || issue.fieldPath.startsWith('uiExtensions.sensors')
-    || issue.fieldPath.startsWith('output') || issue.fieldPath.startsWith('informationDemand')) activeTab.value = 'data'
+    || issue.fieldPath.startsWith('output')) activeTab.value = 'data'
   else activeTab.value = 'scenario'
   await nextTick()
 
   if (issue.fieldPath.startsWith('linkSettings')) {
     linkSettingsVisible.value = true
+  }
+  const demandIndex = Number(/^informationDemand\[(\d+)\]/.exec(issue.fieldPath)?.[1])
+  if (Number.isInteger(demandIndex) && draft.value?.config.informationDemand[demandIndex]) {
+    openBusinessEditor(draft.value.config.informationDemand[demandIndex], demandIndex)
+    businessEditorError.value = issue.message
+    businessFocusPath.value = issue.fieldPath
   }
   if (Number.isInteger(platformIndex) && draft.value?.config.platforms[platformIndex] !== undefined) {
     openPlatformEditor(draft.value.config.platforms[platformIndex], platformIndex)
@@ -955,6 +1017,7 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   } else if (Number.isInteger(jammerIndex) && draft.value?.config.jammers[jammerIndex] !== undefined) {
     openJammerEditor(draft.value.config.jammers[jammerIndex], jammerIndex)
     jammerEditorError.value = issue.message
+    jammerFocusPath.value = issue.fieldPath
   }
   await nextTick()
   focusValidationField(issue.fieldPath)
@@ -1320,7 +1383,30 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="链路配置" name="links">
+        <el-tab-pane label="业务与链路" name="links">
+          <section class="console-panel scenario-section" aria-labelledby="scenario-demand-title">
+            <div class="section-heading"><h3 id="scenario-demand-title">业务配置</h3><el-tag>{{ draft.config.informationDemand.length }} 条</el-tag></div>
+            <el-table :data="draft.config.informationDemand" stripe data-testid="information-demand-table">
+              <el-table-column prop="id" label="业务 ID" min-width="110" />
+              <el-table-column label="方向" width="90"><template #default="{ row }">{{ row.direction === 'FORWARD' ? '前向' : row.direction === 'REVERSE' ? '返向' : '未设置' }}</template></el-table-column>
+              <el-table-column prop="informationType" label="信息类型" min-width="110" />
+              <el-table-column label="业务状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled === false ? 'info' : 'success'">{{ row.enabled === false ? '停用' : '启用' }}</el-tag></template></el-table-column>
+              <el-table-column prop="sourcePlatformId" label="源平台" min-width="110" />
+              <el-table-column label="目标平台" min-width="150"><template #default="{ row }">{{ row.destinationPlatformIds.join('、') }}</template></el-table-column>
+              <el-table-column prop="volumeMb" label="单报文/帧（MB）" min-width="135" />
+              <el-table-column prop="frequencyHz" label="频次（次/帧每秒）" min-width="145" />
+              <el-table-column prop="minDataRateMbps" label="最低业务速率（Mbps）" min-width="175" />
+              <el-table-column label="操作" fixed="right" width="135"><template #default="{ row, $index }">
+                <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-business-${$index}`" @click="openBusinessEditor(row, $index)">编辑</el-button>
+                <el-popconfirm title="确认删除该业务？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeInformationDemand($index)">
+                  <template #reference><el-button link type="danger" :disabled="pending || draft.locked || draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`">删除</el-button></template>
+                </el-popconfirm>
+              </template></el-table-column>
+            </el-table>
+            <div class="platform-actions">
+              <el-button type="primary" :disabled="pending || draft.locked || draft.config.platforms.length < 2" data-testid="add-information-demand" @click="addInformationDemand">新增业务</el-button>
+            </div>
+          </section>
           <section class="console-panel scenario-section" aria-label="链路配置">
             <div class="section-heading">
 <!--              <div>-->
@@ -1338,11 +1424,12 @@ watch(activeTab, (tab) => {
             <el-table :data="draft.config.links" stripe data-testid="link-table">
               <el-table-column prop="id" label="链路 ID" min-width="120" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
-              <el-table-column label="参与场景" width="100"><template #default="{ row }">
-                <el-tag :type="isConfiguredLinkEnabled(row, linkSettings, draft.config.platforms) ? 'success' : 'info'">
-                  {{ isConfiguredLinkEnabled(row, linkSettings, draft.config.platforms) ? '启用' : '停用' }}
+              <el-table-column label="链路状态" width="100"><template #default="{ row }">
+                <el-tag :type="readLinkEnabled(row, linkSettings) ? 'success' : 'info'">
+                  {{ readLinkEnabled(row, linkSettings) ? '启用' : '停用' }}
                 </el-tag>
               </template></el-table-column>
+              <el-table-column label="中继卫星" min-width="140"><template #default>{{ linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : '—' }}</template></el-table-column>
               <el-table-column prop="sourcePlatformId" label="源平台" min-width="120" />
               <el-table-column prop="targetPlatformId" label="目标平台" min-width="120" />
               <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
@@ -1373,8 +1460,10 @@ watch(activeTab, (tab) => {
 <!--              </div>-->
               <div class="platform-counts" aria-label="干扰设备类型覆盖">
                 <el-tag type="primary">设备 {{ draft.config.jammers.length }}</el-tag>
-                <el-tag :type="jammerTypeCount === 2 ? 'success' : 'warning'">已配置 {{ jammerTypeCount }} / 2 类</el-tag>
+                <el-tag :type="jammerTypeCount === 3 ? 'success' : 'info'">已配置 {{ jammerTypeCount }} / 3 种手段</el-tag>
               </div>
+              <el-switch :model-value="draft.config.jammingEnabled ?? false" :disabled="pending || draft.locked" active-text="干扰总开关"
+                aria-label="干扰总开关" data-testid="jamming-enabled" @update:model-value="setJammingEnabled" />
             </div>
 
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
@@ -1383,9 +1472,10 @@ watch(activeTab, (tab) => {
               <el-table-column prop="platformId" label="归属平台"/>
               <el-table-column prop="frequency" label="频率（MHz）" />
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
-              <el-table-column prop="defaultPower" label="默认功率（W）"  />
+              <el-table-column prop="defaultPower" label="发射功率（W）"  />
               <el-table-column label="自动检测"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
-              <el-table-column prop="detectionRange" label="检测范围（m）"/>
+              <el-table-column label="探测距离（海里）" min-width="145"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="触发时间（秒）" min-width="130"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
               <el-table-column label="方向（°）" ><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
               <el-table-column label="持续时间（s）" ><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
               <el-table-column label="启用">
@@ -1456,22 +1546,6 @@ watch(activeTab, (tab) => {
             </div>
           </section>
 
-          <section class="console-panel scenario-section" aria-labelledby="scenario-demand-title">
-            <div class="section-heading"><div><p class="section-kicker">任务流量</p><h3 id="scenario-demand-title">信息需求</h3></div><el-tag>{{ draft.config.informationDemand.length }} 条</el-tag></div>
-            <el-table :data="draft.config.informationDemand" stripe data-testid="information-demand-table">
-              <el-table-column prop="id" label="需求 ID" />
-              <el-table-column label="源平台"  min-width="160"><template #default="{ row, $index }"><el-select v-model="row.sourcePlatformId" :data-testid="`demand-source-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
-              <el-table-column label="目标平台"  min-width="160"><template #default="{ row, $index }"><el-select v-model="row.destinationPlatformIds" multiple collapse-tags :data-testid="`demand-destinations-${$index}`" @change="markDirty"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template></el-table-column>
-              <el-table-column label="信息类型" min-width="100"><template #default="{ row, $index }"><el-input v-model="row.informationType" :data-testid="`demand-type-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="数据量（MB）"><template #default="{ row, $index }"><el-input-number v-model="row.volumeMb" :min="0" controls-position="right" :data-testid="`demand-volume-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="频率（Hz）" ><template #default="{ row, $index }"><el-input-number v-model="row.frequencyHz" :min="0" controls-position="right" :data-testid="`demand-frequency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="优先级" ><template #default="{ row, $index }"><el-select v-model="row.priority" :data-testid="`demand-priority-${$index}`" @change="markDirty"><el-option label="高" value="HIGH" /><el-option label="普通" value="NORMAL" /></el-select></template></el-table-column>
-              <el-table-column label="最大时延（ms）"  min-width="100"><template #default="{ row, $index }"><el-input-number v-model="row.maxLatencyMs" :min="0" controls-position="right" :data-testid="`demand-latency-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="最低速率（Mbps）"><template #default="{ row, $index }"><el-input-number v-model="row.minDataRateMbps" :min="0" controls-position="right" :data-testid="`demand-rate-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :disabled="draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`" @click="removeInformationDemand($index)">删除</el-button></template></el-table-column>
-            </el-table>
-            <div class="platform-actions"><el-button type="primary" :disabled="draft.config.platforms.length < 2" data-testid="add-information-demand" @click="addInformationDemand">新增信息需求</el-button></div>
-          </section>
         </el-tab-pane>
 
       </el-tabs>
@@ -1548,6 +1622,9 @@ watch(activeTab, (tab) => {
       @apply="applyPlatformEditor"
     />
 
+    <BusinessEditorDialog v-model="businessDialogVisible" :demand="businessEditor" :editing="editingBusinessIndex !== null"
+      :error="businessEditorError" :disabled="pending || (draft?.locked ?? true)" :platforms="draft?.config.platforms ?? []"
+      @opened="focusValidationField(businessFocusPath)" @apply="applyBusinessEditor" />
     <LinkEditorDialog
       v-model="linkDialogVisible"
       :link="linkEditorLink"
@@ -1576,6 +1653,7 @@ watch(activeTab, (tab) => {
       :jammer-type-options="jammerTypeOptions"
       :minimum-step="LINK_MHZ_MINIMUM_STEP"
       @apply="applyJammerEditor"
+      @opened="focusValidationField(jammerFocusPath)"
       @frequency-input="trackJammerFrequencyInput"
       @bandwidth-input="trackJammerBandwidthInput"
     />

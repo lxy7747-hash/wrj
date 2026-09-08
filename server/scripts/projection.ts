@@ -51,13 +51,22 @@ function buildPreview(draft: ScenarioDraft): string {
     if (!enabled) return
     lines.push(`  comm ${JSON.stringify(link.id)} type=${link.type} source=${JSON.stringify(link.sourcePlatformId)} target=${JSON.stringify(link.targetPlatformId)} frequency=${link.frequency}MHz bandwidth=${link.bandwidth}MHz power=${link.txPower}W rate=${link.dataRate}Mbps`)
   })
+  lines.push(`  # 干扰总开关（参数记录） ${config.jammingEnabled ?? false}`)
   config.jammers.forEach((jammer) => {
+    const extension = draft.uiExtensions.jammers.find(item => item.jammerId === jammer.id)
+    const enabled = (config.jammingEnabled ?? false) && (extension?.enabled ?? true)
+    // 扫频和触发时刻只记录配置，不伪造真实 AFSIM 时序或扫频指令。
+    lines.push(`  # 干扰参数（参数记录） ${JSON.stringify({ ...jammer, direction: extension?.direction, duration: extension?.duration, enabled })}`)
+    if (!enabled) return
     lines.push(`  jammer ${JSON.stringify(jammer.id)} platform=${JSON.stringify(jammer.platformId)} type=${jammer.type} frequency=${jammer.frequency}MHz bandwidth=${jammer.bandwidth}MHz power=${jammer.defaultPower}W range=${jammer.detectionRange}m`)
   })
   config.sensors.forEach((sensor) => {
     lines.push(`  sensor ${JSON.stringify(sensor.id)} platform=${JSON.stringify(sensor.platformId)} frequency=${sensor.frequencyRange.min}..${sensor.frequencyRange.max}MHz range=${sensor.detectionRange}m`)
   })
   config.informationDemand.forEach((demand) => {
+    // 仅记录配置供 Mock 审查；停用业务不生成任务行，真实 AFSIM 业务映射仍待对接。
+    lines.push(`  # 业务参数（参数记录） ${JSON.stringify(demand)}`)
+    if (demand.enabled === false) return
     lines.push(`  information_demand ${JSON.stringify(demand.id)} source=${JSON.stringify(demand.sourcePlatformId)} destinations=${demand.destinationPlatformIds.map((id) => JSON.stringify(id)).join(',')} type=${JSON.stringify(demand.informationType)} volume=${demand.volumeMb}MB frequency=${demand.frequencyHz}Hz priority=${demand.priority} latency=${demand.maxLatencyMs}ms rate=${demand.minDataRateMbps}Mbps`)
   })
   lines.push(`  output path=${JSON.stringify(config.output.directory)} interval=${config.output.writeInterval}s link_quality=${config.output.linkQualityEnabled} events=${config.output.eventsEnabled} link_switch=${config.output.linkSwitchEnabled}`)

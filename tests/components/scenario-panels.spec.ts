@@ -59,16 +59,16 @@ describe('场景拆分面板', () => {
     expect(baseline.enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
     expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
-    await wrapper.get('[data-testid="link-satellite-enabled-TIANTONG"]').trigger('click')
+    const satelliteSelect = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!
+    expect(satelliteSelect.props('modelValue')).toBe('TIANTONG')
+    expect(wrapper.findAllComponents({ name: 'ElSwitch' })).toHaveLength(0)
+    satelliteSelect.vm.$emit('change', 'SHENTONG')
     let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
     expect(changed.enabledSatellites.TIANTONG).toBe(false)
     expect(baseline.enabledSatellites.TIANTONG).toBe(true)
     await typedWrapper.setProps({ modelValue: changed })
-    await wrapper.get('[data-testid="link-satellite-enabled-SHENTONG"]').trigger('click')
-    changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
     expect(changed.enabledSatellites).toEqual({ TIANTONG: false, SHENTONG: true })
-    await typedWrapper.setProps({ modelValue: changed })
-    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-satellite-enabled-"]')).toHaveLength(2)
+    expect(satelliteSelect.props('modelValue')).toBe('SHENTONG')
     expect(wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.props('modelValue')).toBe(5)
     await wrapper.get('[data-testid="close-link-settings"]').trigger('click')
     expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([false])
@@ -112,6 +112,7 @@ describe('场景拆分面板', () => {
     await priorityItem(0).trigger('dragstart')
     await typedWrapper.setProps({ disabled: true, dialogVisible: true })
     const count = wrapper.emitted('update:modelValue')!.length
+    wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!.vm.$emit('change', 'TIANTONG')
     await priorityRow(3).trigger('drop')
     expect(priorityItem(0).attributes('draggable')).toBe('false')
     expect(priorityItem(0).attributes('disabled')).toBeDefined()
@@ -188,6 +189,11 @@ describe('场景拆分面板', () => {
     })
     await flushPromises()
     const number = wrapper.findAllComponents({ name: 'ElInputNumber' }).find((item) => item.attributes('data-testid') === 'platform-quantity')
+    expect(wrapper.get('#platform-position-title').text()).toBe('编队原点')
+    expect(wrapper.get('[data-testid="formation-origin-hint"]').text()).toBe('此处仅设置整个集群的编队原点，不单独配置各成员位置。')
+    for (const field of ['longitude', 'latitude', 'altitude']) {
+      expect(wrapper.find(`[data-testid="platform-${field}"]`).exists()).toBe(true)
+    }
     const disabled = !editing && count === 47
     if (editing) expect(number).toBeUndefined()
     else {
@@ -198,6 +204,135 @@ describe('场景拆分面板', () => {
     expect(wrapper.findAllComponents({ name: 'ElOptionGroup' }).map((group) => group.props('label'))).toEqual(['信息节点', '支撑实体（不计入50个信息节点）'])
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')?.length ?? 0).toBe(disabled ? 0 : 1)
+    wrapper.unmount()
+  })
+
+  it('后方指挥与干扰节点初始位置按类型限制范围，边界可确认', async () => {
+    const platform = structuredClone(fixtureSource.scenario.platforms[0]) as Platform
+    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 1 }]
+    const originalPosition = { ...platform.initialPosition }
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'REAR_COMMAND_NODE', label: '后方指挥节点' }, { value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [], satelliteTypeOptions: [],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '天基' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    const longitude = wrapper.get('[data-testid="platform-longitude"] input')
+    const latitude = wrapper.get('[data-testid="platform-latitude"] input')
+    expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
+    expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
+    expect(longitude.attributes()).toMatchObject({ min: '118.5', max: '120' })
+    expect(latitude.attributes()).toMatchObject({ min: '24', max: '25' })
+    for (const [lng, lat, expectedLng, expectedLat] of [
+      [118, 23.9, 118.5, 24], [120.1, 25.1, 120, 25],
+      [118.5, 24, 118.5, 24], [120, 25, 120, 25], [119.25, 24.5, 119.25, 24.5],
+    ]) {
+      await longitude.setValue(String(lng))
+      await latitude.setValue(String(lat))
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: expectedLng, latitude: expectedLat } })
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
+    }
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
+    type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
+    type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
+    await flushPromises()
+    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
+    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    expect(wrapper.get('#platform-position-title').text()).toBe('编队原点')
+    expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(true)
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
+    expect(platform.initialPosition).toEqual(originalPosition)
+    expect(platform.waypoints).toHaveLength(1)
+    type.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
+    type.vm.$emit('change', 'GROUND_JAMMER_DETECTION_STATION')
+    await flushPromises()
+    expect(longitude.attributes()).toMatchObject({ min: '121.2', max: '121.8' })
+    expect(latitude.attributes()).toMatchObject({ min: '24.8', max: '25.4' })
+    expect(longitude.attributes('disabled')).toBeUndefined()
+    expect(latitude.attributes('disabled')).toBeUndefined()
+    for (const [lng, lat, expectedLng, expectedLat] of [
+      [121.1, 24.7, 121.2, 24.8], [121.9, 25.5, 121.8, 25.4],
+      [121.2, 24.8, 121.2, 24.8], [121.8, 25.4, 121.8, 25.4], [121.5, 25.1, 121.5, 25.1],
+    ]) {
+      await longitude.setValue(String(lng))
+      await latitude.setValue(String(lat))
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({
+        type: 'GROUND_JAMMER_DETECTION_STATION',
+        initialPosition: { longitude: expectedLng, latitude: expectedLat, altitude: originalPosition.altitude },
+      })
+    }
+    expect(platform.initialPosition).toEqual(originalPosition)
+    type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
+    type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
+    await flushPromises()
+    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
+    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    wrapper.unmount()
+  })
+
+  it.each([[24.7, 25.3], [25.3, 25.3], [25.5, 25.5], [25.7, 25.7], [26, 25.7], [NaN, 25.3]])('高空中继初始位置只读，纬度 %s 收敛为 %s', async (latitude, expectedLatitude) => {
+    const platform = structuredClone(fixtureSource.scenario.platforms[1]) as Platform
+    platform.initialPosition.latitude = latitude
+    const originalPosition = { ...platform.initialPosition }
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'FORWARD_RELAY_NODE', label: '高空前出中继节点' }, { value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [], satelliteTypeOptions: [],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '天基' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    await flushPromises()
+    for (const [field, expected] of [['longitude', 120.8], ['latitude', expectedLatitude], ['altitude', 8000]] as const) {
+      const input = wrapper.get(`[data-testid="platform-${field}"] input`)
+      expect(input.attributes('disabled')).toBeDefined()
+      expect(Number((input.element as HTMLInputElement).value)).toBe(expected)
+    }
+    expect(wrapper.get('[data-testid="platform-latitude"] input').attributes()).toMatchObject({ min: '25.3', max: '25.7' })
+    expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
+    expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
+    expect(platform.initialPosition).toEqual(originalPosition)
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: 120.8, latitude: expectedLatitude, altitude: 8000 } })
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
+    expect(platform.waypoints).toEqual(fixtureSource.scenario.platforms[1]!.waypoints)
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
+    type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
+    type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
+    await flushPromises()
+    for (const field of ['longitude', 'latitude', 'altitude']) {
+      expect(wrapper.get(`[data-testid="platform-${field}"] input`).attributes('disabled')).toBeUndefined()
+    }
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    expect(wrapper.find('[data-testid="waypoint-longitude-0"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="platform-altitude"] input').setValue('1000')
+    type.vm.$emit('update:modelValue', 'FORWARD_RELAY_NODE')
+    type.vm.$emit('change', 'FORWARD_RELAY_NODE')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="platform-altitude"] input').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
+    expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: 120.8, latitude: expectedLatitude, altitude: 8000 } })
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
     wrapper.unmount()
   })
 

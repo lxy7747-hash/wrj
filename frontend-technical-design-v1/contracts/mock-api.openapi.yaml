@@ -3686,7 +3686,8 @@
               "GROUND_CLUSTER_COMMAND_NODE",
               "AIRBORNE_MISSION_CLUSTER",
               "COMMUNICATION_SATELLITE",
-              "GROUND_JAMMER_DETECTION_STATION"
+              "GROUND_JAMMER_DETECTION_STATION",
+              "AIRBORNE_JAMMER_PLATFORM"
             ]
           },
           "satelliteType": {
@@ -3872,6 +3873,13 @@
                 ]
               }
             }
+          },
+          {
+            "if": {
+              "properties": { "type": { "const": "AIRBORNE_JAMMER_PLATFORM" } },
+              "required": ["type"]
+            },
+            "then": { "properties": { "category": { "const": "air" } } }
           }
         ]
       },
@@ -4030,7 +4038,8 @@
             "type": "string",
             "enum": [
               "BARRAGE",
-              "SPOT"
+              "SPOT",
+              "SWEEP"
             ]
           },
           "defaultPower": {
@@ -4047,6 +4056,10 @@
           },
           "autoDetect": {
             "type": "boolean"
+          },
+          "triggerTimeS": {
+            "type": "number",
+            "minimum": 0
           },
           "detectionRange": {
             "type": "number",
@@ -4246,6 +4259,12 @@
           "informationType": {
             "type": "string"
           },
+          "direction": {
+            "enum": ["FORWARD", "REVERSE"]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
           "volumeMb": {
             "type": "number",
             "minimum": 0
@@ -4386,7 +4405,8 @@
             },
             "x-supporting-entity-types-excluded-from-capacity": [
               "COMMUNICATION_SATELLITE",
-              "GROUND_JAMMER_DETECTION_STATION"
+              "GROUND_JAMMER_DETECTION_STATION",
+              "AIRBORNE_JAMMER_PLATFORM"
             ]
           },
           "links": {
@@ -4416,6 +4436,9 @@
             "items": {
               "$ref": "#/components/schemas/InformationDemand"
             }
+          },
+          "jammingEnabled": {
+            "type": "boolean"
           }
         },
         "x-fixture-path": "$.scenario",
@@ -4730,7 +4753,8 @@
               "GROUND_CLUSTER_COMMAND_NODE",
               "AIRBORNE_MISSION_CLUSTER",
               "COMMUNICATION_SATELLITE",
-              "GROUND_JAMMER_DETECTION_STATION"
+              "GROUND_JAMMER_DETECTION_STATION",
+              "AIRBORNE_JAMMER_PLATFORM"
             ]
           },
           "longitude": {
@@ -7627,7 +7651,8 @@
             "items": {
               "enum": [
                 "COMMUNICATION_SATELLITE",
-                "GROUND_JAMMER_DETECTION_STATION"
+                "GROUND_JAMMER_DETECTION_STATION",
+                "AIRBORNE_JAMMER_PLATFORM"
               ]
             }
           },
@@ -7679,7 +7704,8 @@
             "items": {
               "enum": [
                 "BARRAGE",
-                "SPOT"
+                "SPOT",
+                "SWEEP"
               ]
             }
           },

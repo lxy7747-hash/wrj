@@ -1084,7 +1084,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByRole('tab', { name: '业务与链路' }).click()
   await page.getByTestId('add-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
 
@@ -1156,7 +1156,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const reloaded = await reloadedResponse
   expect(reloaded.status()).toBe(200)
   expect(((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data).toEqual(savedDraft)
-  await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByRole('tab', { name: '业务与链路' }).click()
   const reloadedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
   await expect(reloadedRow).toContainText('AIR-02')
   await expect(reloadedRow).toContainText('915.125')
@@ -1202,7 +1202,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByTestId('jammer-platform').click()
   await page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true }).click()
   await page.getByTestId('jammer-power').locator('input').fill('0')
-  await page.getByTestId('jammer-range').locator('input').fill('0')
+  await page.getByTestId('jammer-range').locator('input').fill('1')
   await page.getByTestId('jammer-direction').locator('input').fill('270')
   await page.getByTestId('jammer-duration').locator('input').fill('90')
   await page.getByTestId('apply-jammer').click()
@@ -1244,7 +1244,8 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
     frequency: 0.0001,
     bandwidth: 0.0002,
     autoDetect: false,
-    detectionRange: 0,
+    detectionRange: 1852,
+    triggerTimeS: 300,
   })
   expect(savedDraft.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
   expect(savedDraft.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
@@ -1462,13 +1463,23 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   await page.getByTestId('output-directory').fill('./tasks/TASK-001/e2e-full')
   await page.getByTestId('output-write-interval').locator('input').fill('2')
   await page.getByTestId('output-events').click()
-  await page.getByTestId('demand-type-0').fill('E2E_COMMAND')
-  await page.getByTestId('demand-volume-0').locator('input').fill('3')
-  await page.getByTestId('demand-frequency-0').locator('input').fill('2')
-  await page.getByTestId('demand-priority-0').click()
+  await page.getByRole('tab', { name: '业务与链路' }).click()
+  await page.getByTestId('edit-business-0').click()
+  await expect(page.getByTestId('business-dialog')).toBeVisible()
+  await page.getByTestId('demand-direction').click()
+  await page.getByRole('option', { name: '前向', exact: true }).click()
+  await page.getByTestId('demand-type').click()
+  await page.getByRole('option', { name: '目标指令', exact: true }).click()
+  await page.getByTestId('demand-volume-unit').click()
+  await page.getByRole('option', { name: 'MB', exact: true }).click()
+  await page.getByTestId('demand-volume').locator('input').fill('3')
+  await page.getByTestId('demand-frequency').locator('input').fill('2')
+  await page.getByTestId('demand-priority').click()
   await page.getByRole('option', { name: '普通', exact: true }).click()
-  await page.getByTestId('demand-latency-0').locator('input').fill('250')
-  await page.getByTestId('demand-rate-0').locator('input').fill('6')
+  await page.getByTestId('demand-latency').locator('input').fill('250')
+  await page.getByTestId('demand-rate').locator('input').fill('6')
+  await page.getByTestId('apply-business').click()
+  await expect(page.getByTestId('business-dialog')).toHaveCount(0)
 
   const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === SCENARIO_PATH)
@@ -1485,8 +1496,13 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   await expect(page.getByTestId('sensor-direction-0').locator('input')).toHaveValue('90')
   await expect(page.getByTestId('output-directory')).toHaveValue('./tasks/TASK-001/e2e-full')
   await expect(page.getByTestId('output-write-interval').locator('input')).toHaveValue('2')
-  await expect(page.getByTestId('demand-type-0')).toHaveValue('E2E_COMMAND')
-  await expect(page.getByTestId('demand-priority-0')).toContainText('普通')
+  await page.getByRole('tab', { name: '业务与链路' }).click()
+  await page.getByTestId('edit-business-0').click()
+  await expect(page.getByTestId('demand-type')).toContainText('目标指令')
+  await expect(page.getByTestId('demand-priority')).toContainText('普通')
+  await expect(page.getByTestId('demand-volume').locator('input')).toHaveValue('3')
+  await expect(page.getByTestId('demand-volume-unit')).toContainText('MB')
+  await page.getByTestId('business-dialog').getByRole('button', { name: '取消', exact: true }).click()
 
   const persisted = await loadScenarioDraft(request)
   expect(persisted.config.sensors[0]).toMatchObject({ frequencyRange: { min: 2100, max: 5200 }, detectionRange: 160000 })
@@ -1499,7 +1515,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
     linkSwitchEnabled: true,
   })
   expect(persisted.config.informationDemand[0]).toMatchObject({
-    informationType: 'E2E_COMMAND', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
+    informationType: '目标指令', direction: 'FORWARD', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
   })
 
   await page.getByTestId('open-scenario-operations').click()

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, toRaw, watch } from 'vue'
+import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
+import { METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
 
@@ -22,13 +23,25 @@ const emit = defineEmits<{
   apply: [jammer: Jammer, uiExtension: JammerUiExtension]
   'frequency-input': [value: number | undefined]
   'bandwidth-input': [value: number | undefined]
+  opened: []
 }>()
 
 const editor = ref<Jammer | null>(null)
 const uiEditor = ref<JammerUiExtension | null>(null)
+const detectionRangeNm = computed<number | undefined>({
+  get: () => editor.value ? editor.value.detectionRange / METERS_PER_NAUTICAL_MILE : undefined,
+  /** 将用户输入的海里换算为合同米；清空留给确认校验，不自动覆盖旧超界距离。 */
+  set: value => { if (editor.value) editor.value.detectionRange = typeof value === 'number' ? value * METERS_PER_NAUTICAL_MILE : Number.NaN },
+})
 
+/** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
 function apply(): void {
-  if (editor.value !== null && uiEditor.value !== null) emit('apply', editor.value, uiEditor.value)
+  if (!props.pending && !props.locked && editor.value !== null && uiEditor.value !== null) emit('apply', editor.value, uiEditor.value)
+}
+
+/** 写入触发秒数；清空视为非法输入，已有未设置字段在未编辑时继续保留缺省。 */
+function setTriggerTime(value: number | undefined): void {
+  if (editor.value) editor.value.triggerTimeS = value ?? Number.NaN
 }
 
 watch(() => props.modelValue, (visible) => {
@@ -47,6 +60,7 @@ watch(() => props.modelValue, (visible) => {
     destroy-on-close
     append-to-body
     data-testid="jammer-dialog"
+    @opened="emit('opened')"
     @update:model-value="emit('update:modelValue', $event)"
   >
     <el-alert v-if="error" class="platform-feedback" type="error" :closable="false" :title="error" show-icon />
@@ -74,10 +88,11 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
-          <el-form-item label="默认功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
-          <el-form-item label="检测范围（m）"><el-input-number v-model="editor.detectionRange" :min="0" controls-position="right" data-testid="jammer-range" /></el-form-item>
-          <el-form-item label="频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
-          <el-form-item label="带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
+          <el-form-item label="干扰探测距离（海里，1～24）"><el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" /></el-form-item>
+          <el-form-item label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
+          <el-form-item label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item label="干扰触发时间（仿真秒）"><el-input-number :model-value="editor.triggerTimeS" :min="0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
           <el-form-item label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
           <el-form-item label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
           <el-form-item label="启用"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>

@@ -495,7 +495,7 @@
         "frequency": 2200,
         "bandwidth": 40,
         "autoDetect": true,
-        "detectionRange": 150000
+        "detectionRange": 44448
       },
       {
         "id": "JAM-SPOT-01-TX",
@@ -505,7 +505,7 @@
         "frequency": 4500,
         "bandwidth": 5,
         "autoDetect": false,
-        "detectionRange": 150000
+        "detectionRange": 44448
       }
     ],
     "sensors": [

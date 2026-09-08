@@ -83,7 +83,7 @@ describe('deterministic fixture contract', () => {
     addFormats(ajv)
     const validate = ajv.compile({ ...schema, $ref: '#/$defs/Platform' })
     const source = (fixtures as DeterministicFixtureSet).scenario.platforms[0]!
-    const domains = { REAR_COMMAND_NODE: 'ground', FORWARD_RELAY_NODE: 'air', GROUND_CLUSTER_COMMAND_NODE: 'ground', AIRBORNE_MISSION_CLUSTER: 'air', COMMUNICATION_SATELLITE: 'space', GROUND_JAMMER_DETECTION_STATION: 'ground' }
+    const domains = { REAR_COMMAND_NODE: 'ground', FORWARD_RELAY_NODE: 'air', GROUND_CLUSTER_COMMAND_NODE: 'ground', AIRBORNE_MISSION_CLUSTER: 'air', COMMUNICATION_SATELLITE: 'space', GROUND_JAMMER_DETECTION_STATION: 'ground', AIRBORNE_JAMMER_PLATFORM: 'air' }
     for (const [type, category] of Object.entries(domains)) {
       const platform = { ...source, type, category }
       expect(validate(platform)).toBe(true)
