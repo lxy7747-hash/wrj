@@ -4228,6 +4228,11 @@
       "InformationDemand": {
         "type": "object",
         "additionalProperties": false,
+        "if": { "required": ["linkId"] },
+        "then": {
+          "required": ["direction"],
+          "properties": { "destinationPlatformIds": { "maxItems": 1 } }
+        },
         "required": [
           "id",
           "sourcePlatformId",
@@ -4240,6 +4245,10 @@
           "minDataRateMbps"
         ],
         "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 1
+          },
           "id": {
             "type": "string",
             "minLength": 1

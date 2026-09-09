@@ -901,7 +901,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     const audit = auditConsole(page)
     await loginAs(page, 'operator')
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
-    await page.getByRole('tab', { name: '平台与航点' }).click()
+    await page.getByRole('tab', { name: '节点配置' }).click()
     await page.getByTestId('add-business-platform').click()
     await page.getByTestId('platform-type').click()
     await page.getByRole('option', { name: '后方指挥节点', exact: true }).click()
@@ -947,7 +947,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === SCENARIO_PATH)
     await page.reload()
     expect(((await (await reloadedResponse).json()) as ApiSuccess<ScenarioDraft>).data).toEqual(snapshot)
-    await page.getByRole('tab', { name: '平台与航点' }).click()
+    await page.getByRole('tab', { name: '节点配置' }).click()
     await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
     await expect(table.getByRole('row').filter({ hasText: 'E2E 神通配置' })).toContainText('神通卫星')
     expect(audit.errors).toEqual([])
@@ -963,7 +963,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
       && new URL(response.url()).pathname === SCENARIO_PATH)
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
     expect((await loaded).status()).toBe(200)
-    await page.getByRole('tab', { name: '平台与航点' }).click()
+    await page.getByRole('tab', { name: '节点配置' }).click()
 
     await page.getByTestId('add-business-platform').click()
     await page.getByTestId('platform-name').fill('E2E 新增业务节点')
@@ -1010,7 +1010,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     expect(reloaded.status()).toBe(200)
     const reloadedDraft = ((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data
     expect(reloadedDraft).toEqual(savedDraft)
-    await page.getByRole('tab', { name: '平台与航点' }).click()
+    await page.getByRole('tab', { name: '节点配置' }).click()
     const reloadedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 已编辑业务节点' })
     await expect(reloadedRow).toContainText('PLAT-001')
     await expect(reloadedRow).toContainText('1')
@@ -1084,9 +1084,14 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('tab', { name: '业务与链路' }).click()
+  await page.getByRole('tab', { name: '链路配置' }).click()
   await page.getByTestId('add-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
+  await expect(page.getByTestId('link-business-fields')).toBeVisible()
+  await expect(page.getByTestId('demand-direction')).toHaveCount(0)
+  await page.getByTestId('demand-volume-unit').click()
+  await page.getByRole('option', { name: 'MB', exact: true }).click()
+  await page.getByTestId('demand-volume').locator('input').fill('3')
 
   const frequency = page.getByTestId('link-frequency').locator('input')
   const bandwidth = page.getByTestId('link-bandwidth').locator('input')
@@ -1116,7 +1121,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toHaveCount(0)
 
-  await page.getByRole('tab', { name: '平台与航点' }).click()
+  await page.getByRole('tab', { name: '节点配置' }).click()
   const platformTable = page.getByTestId('platform-table')
   const sourceRow = platformTable.getByRole('row').filter({ hasText: '后方指挥节点' })
   await sourceRow.getByRole('button', { name: '编辑' }).click()
@@ -1147,6 +1152,9 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
     dataRate: 64,
   })
   expect(savedDraft.config.platforms.find((platform) => platform.id === 'CMD-01')?.linkIds).toContain('L-CFG-001')
+  expect(savedDraft.config.informationDemand.find(item => item.linkId === 'L-CFG-001')).toMatchObject({
+    sourcePlatformId: 'CMD-01', destinationPlatformIds: ['AIR-02'], direction: 'FORWARD', volumeMb: 3,
+  })
   expect(savedDraft.config.platforms.find((platform) => platform.id === 'AIR-02')?.linkIds).toContain('L-CFG-001')
   expect(savedDraft.config.platforms.find((platform) => platform.id === 'UAV-01')?.linkIds).not.toContain('L-CFG-001')
 
@@ -1156,12 +1164,12 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const reloaded = await reloadedResponse
   expect(reloaded.status()).toBe(200)
   expect(((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data).toEqual(savedDraft)
-  await page.getByRole('tab', { name: '业务与链路' }).click()
+  await page.getByRole('tab', { name: '链路配置' }).click()
   const reloadedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
   await expect(reloadedRow).toContainText('AIR-02')
   await expect(reloadedRow).toContainText('915.125')
   await expect(reloadedRow).toContainText('5.125')
-  await page.getByRole('tab', { name: '平台与航点' }).click()
+  await page.getByRole('tab', { name: '节点配置' }).click()
   await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
   await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
 
@@ -1230,7 +1238,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('button', { name: '删除', exact: true }).last().click()
   await expect(page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-WB-01-TX' })).toHaveCount(0)
 
-  await page.getByRole('tab', { name: '平台与航点' }).click()
+  await page.getByRole('tab', { name: '节点配置' }).click()
   const platformTable = page.getByTestId('platform-table')
   await platformTable.getByRole('row').filter({ hasText: '机载干扰平台' }).getByRole('button', { name: '编辑' }).click()
   await expect(page.getByTestId('platform-jammer-ids')).toHaveValue(/JAM-CFG-001/)
@@ -1472,10 +1480,12 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   await page.getByTestId('output-directory').fill('./tasks/TASK-001/e2e-full')
   await page.getByTestId('output-write-interval').locator('input').fill('2')
   await page.getByTestId('output-events').click()
-  await page.getByRole('tab', { name: '业务与链路' }).click()
-  await page.getByTestId('edit-business-0').click()
-  await expect(page.getByTestId('business-dialog')).toBeVisible()
-  await page.getByTestId('demand-direction').click()
+  await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByTestId('edit-link-0').click()
+  await expect(page.getByTestId('link-dialog')).toBeVisible()
+  await expect(page.getByTestId('information-demand-table')).toHaveCount(0)
+  await expect(page.getByTestId('link-legacy-demand')).toHaveCount(0)
+  await page.getByTestId('link-direction').click()
   await page.getByRole('option', { name: '前向', exact: true }).click()
   await page.getByTestId('demand-type').click()
   await page.getByRole('option', { name: '目标指令', exact: true }).click()
@@ -1483,12 +1493,13 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   await page.getByRole('option', { name: 'MB', exact: true }).click()
   await page.getByTestId('demand-volume').locator('input').fill('3')
   await page.getByTestId('demand-frequency').locator('input').fill('2')
-  await page.getByTestId('demand-priority').click()
-  await page.getByRole('option', { name: '普通', exact: true }).click()
+  await expect(page.getByTestId('demand-id')).toHaveCount(0)
+  await expect(page.getByTestId('demand-enabled')).toHaveCount(0)
+  await expect(page.getByTestId('demand-priority')).toHaveCount(0)
   await page.getByTestId('demand-latency').locator('input').fill('250')
   await page.getByTestId('demand-rate').locator('input').fill('6')
-  await page.getByTestId('apply-business').click()
-  await expect(page.getByTestId('business-dialog')).toHaveCount(0)
+  await page.getByTestId('apply-link').click()
+  await expect(page.getByTestId('link-dialog')).toHaveCount(0)
 
   const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === SCENARIO_PATH)
@@ -1505,13 +1516,12 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   await expect(page.getByTestId('sensor-direction-0').locator('input')).toHaveValue('90')
   await expect(page.getByTestId('output-directory')).toHaveValue('./tasks/TASK-001/e2e-full')
   await expect(page.getByTestId('output-write-interval').locator('input')).toHaveValue('2')
-  await page.getByRole('tab', { name: '业务与链路' }).click()
-  await page.getByTestId('edit-business-0').click()
+  await page.getByRole('tab', { name: '链路配置' }).click()
+  await page.getByTestId('edit-link-0').click()
   await expect(page.getByTestId('demand-type')).toContainText('目标指令')
-  await expect(page.getByTestId('demand-priority')).toContainText('普通')
   await expect(page.getByTestId('demand-volume').locator('input')).toHaveValue('3')
   await expect(page.getByTestId('demand-volume-unit')).toContainText('MB')
-  await page.getByTestId('business-dialog').getByRole('button', { name: '取消', exact: true }).click()
+  await page.getByTestId('cancel-link').click()
 
   const persisted = await loadScenarioDraft(request)
   expect(persisted.config.sensors[0]).toMatchObject({ frequencyRange: { min: 2100, max: 5200 }, detectionRange: 160000 })
@@ -1523,7 +1533,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
     eventsEnabled: false,
     linkSwitchEnabled: true,
   })
-  expect(persisted.config.informationDemand[0]).toMatchObject({
+  expect(persisted.config.informationDemand.find(item => item.linkId === baseline.config.links[0]!.id)).toMatchObject({
     informationType: '目标指令', direction: 'FORWARD', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
   })
 

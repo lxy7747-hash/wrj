@@ -51,7 +51,7 @@ describe('业务编辑弹框', () => {
   })
   it('复用旧业务、换算字节和 MB、取消不落盘且禁用阻止确认', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const demand: InformationDemand = { ...config.informationDemand[0]!, volumeMb: 0.000256, informationType: '历史类型' }
+    const demand: InformationDemand = { ...config.informationDemand[0]!, volumeMb: 0.000256, informationType: '历史类型', enabled: false }
     const original = structuredClone(demand)
     const wrapper: VueWrapper = mount(BusinessEditorDialog, { props: { modelValue: true, editing: true, demand, platforms: config.platforms, disabled: false, error: '' },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } } })
@@ -59,8 +59,10 @@ describe('业务编辑弹框', () => {
     const component = (name: string, id: string) => wrapper.findAllComponents({ name }).find(item => item.attributes('data-testid') === id)!
     expect(component('ElInputNumber', 'demand-volume').props('modelValue')).toBe(256)
     expect(component('ElSelect', 'demand-type').props('modelValue')).toBe('历史类型')
+    expect(wrapper.find('[data-testid="demand-id"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="demand-enabled"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="demand-priority"]').exists()).toBe(false)
     component('ElInputNumber', 'demand-volume').vm.$emit('update:modelValue', 512)
-    component('ElSwitch', 'demand-enabled').vm.$emit('update:modelValue', false)
     component('ElSelect', 'demand-volume-unit').vm.$emit('update:modelValue', 'MB')
     await wrapper.vm.$nextTick()
     expect(component('ElInputNumber', 'demand-volume').props('modelValue')).toBe(0.000512)
@@ -71,11 +73,10 @@ describe('业务编辑弹框', () => {
     await wrapper.setProps({ modelValue: true })
     component('ElSelect', 'demand-direction').vm.$emit('change', 'REVERSE')
     component('ElSelect', 'demand-type').vm.$emit('update:modelValue', '视频')
-    component('ElSwitch', 'demand-enabled').vm.$emit('update:modelValue', false)
     await wrapper.vm.$nextTick()
     expect(wrapper.text()).toContain('传输频次（帧/秒）')
     await wrapper.get('[data-testid="apply-business"]').trigger('click')
-    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ volumeMb: 0.000256, direction: 'REVERSE', informationType: '视频', enabled: false })
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ id: original.id, priority: original.priority, volumeMb: 0.000256, direction: 'REVERSE', informationType: '视频', enabled: false })
     expect(demand).toEqual(original)
     await wrapper.setProps({ disabled: true })
     await wrapper.get('[data-testid="apply-business"]').trigger('click')

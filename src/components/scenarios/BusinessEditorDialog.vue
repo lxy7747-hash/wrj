@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
+import { ElDialog, ElForm } from 'element-plus'
 import type { InformationDemand, Platform } from '../../contracts/domain-models'
-import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
+import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
 
 const props = defineProps<{
   modelValue: boolean
@@ -10,13 +11,16 @@ const props = defineProps<{
   error: string
   disabled: boolean
   platforms: readonly Platform[]
+  embedded?: boolean
 }>()
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
   apply: [demand: InformationDemand]
   opened: []
 }>()
-const editor = ref<InformationDemand | null>(null)
+const localEditor = ref<InformationDemand | null>(null)
+// 嵌入链路时编辑的仍是父弹框临时副本，统一确认前不写入场景。
+const editor = computed(() => props.embedded ? props.demand : localEditor.value)
 const volumeUnit = ref<'B' | 'KB' | 'MB'>('MB')
 const unitFactors = { B: 1_000_000, KB: 1000, MB: 1 }
 // 文档的视频默认值单列为视频，不推断其与侦察信息的等价关系；旧自定义类型继续可选。
@@ -35,17 +39,8 @@ const volume = computed<number | undefined>({
 /** 切换业务方向；新增时仅替换仍等于原默认值的参数，编辑模式不重置参数。 */
 function changeDirection(direction: 'FORWARD' | 'REVERSE'): void {
   if (!editor.value || props.disabled) return
-  const previous = editor.value.direction
-  if (!props.editing && previous) {
-    const before = BUSINESS_DEFAULTS[previous]
-    const after = BUSINESS_DEFAULTS[direction]
-    if (editor.value.informationType === before.informationType) editor.value.informationType = after.informationType
-    for (const key of ['volumeMb', 'frequencyHz', 'minDataRateMbps'] as const) {
-      if (editor.value[key] === before[key]) editor.value[key] = after[key]
-    }
-    volumeUnit.value = editor.value.volumeMb < 0.001 ? 'B' : editor.value.volumeMb < 1 ? 'KB' : 'MB'
-  }
-  editor.value.direction = direction
+  changeBusinessDirection(editor.value, direction, props.editing)
+  volumeUnit.value = editor.value.volumeMb < 0.001 ? 'B' : editor.value.volumeMb < 1 ? 'KB' : 'MB'
 }
 
 /** 确认临时业务副本；禁用期间不提交，取消不会改变场景原始数据。 */
@@ -53,31 +48,29 @@ function apply(): void {
   if (editor.value && !props.disabled) emit('apply', structuredClone(toRaw(editor.value)))
 }
 
-watch(() => props.modelValue, visible => {
+watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : undefined], ([visible]) => {
   if (!visible) return
-  editor.value = props.demand ? { enabled: true, ...structuredClone(toRaw(props.demand)) } : null
+  localEditor.value = props.demand ? { enabled: true, ...structuredClone(toRaw(props.demand)) } : null
   volumeUnit.value = editor.value && editor.value.volumeMb < 0.001 ? 'B' : editor.value && editor.value.volumeMb < 1 ? 'KB' : 'MB'
 }, { immediate: true })
 </script>
 
 <template>
-  <el-dialog :model-value="modelValue" :title="editing ? '编辑业务' : '新增业务'"
+  <component :is="embedded ? 'section' : ElDialog" :model-value="modelValue" :title="embedded ? undefined : editing ? '编辑业务' : '新增业务'"
     width="min(760px, calc(100vw - 2rem))" top="5vh" append-to-body destroy-on-close
-    data-testid="business-dialog" @opened="emit('opened')" @update:model-value="emit('update:modelValue', $event)">
+    :data-testid="embedded ? 'link-business-fields' : 'business-dialog'" @opened="emit('opened')" @update:model-value="emit('update:modelValue', $event)">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
-    <el-form v-if="editor" label-position="top" :disabled="disabled" class="business-editor">
-      <el-form-item label="业务 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="demand-id" /></el-form-item>
-      <el-form-item label="业务方向"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
+    <component :is="embedded ? 'div' : ElForm" v-if="editor" label-position="top" :disabled="disabled" class="business-editor">
+      <el-form-item v-if="!embedded" label="业务方向"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
         <el-option label="前向" value="FORWARD" /><el-option label="返向" value="REVERSE" />
       </el-select></el-form-item>
       <el-form-item label="信息类型"><el-select v-model="editor.informationType" data-testid="demand-type">
         <el-option v-for="type in typeOptions" :key="type" :label="type" :value="type" />
       </el-select></el-form-item>
-      <el-form-item label="业务状态"><el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="demand-enabled" /></el-form-item>
-      <el-form-item label="源平台"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
+      <el-form-item v-if="!embedded" label="源平台"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item label="目标平台"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
+      <el-form-item v-if="!embedded" label="目标平台"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
       <el-form-item :label="editor.informationType === '视频' ? '单帧信息量' : '单报文信息量'">
@@ -90,11 +83,10 @@ watch(() => props.modelValue, visible => {
         <el-input-number v-model="editor.frequencyHz" :min="0" controls-position="right" data-testid="demand-frequency" />
       </el-form-item>
       <el-form-item label="最低业务速率（Mbps）"><el-input-number v-model="editor.minDataRateMbps" :min="0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
-      <el-form-item label="优先级"><el-select v-model="editor.priority" data-testid="demand-priority"><el-option label="高" value="HIGH" /><el-option label="普通" value="NORMAL" /></el-select></el-form-item>
       <el-form-item label="最大时延（ms）"><el-input-number v-model="editor.maxLatencyMs" :min="0" controls-position="right" data-testid="demand-latency" /></el-form-item>
-    </el-form>
-    <template #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
-  </el-dialog>
+    </component>
+    <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
+  </component>
 </template>
 
 <style scoped>

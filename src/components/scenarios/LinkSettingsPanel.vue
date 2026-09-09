@@ -98,7 +98,7 @@ function resetDrag(): void {
       </div>
       <el-form-item label="中继卫星选择">
         <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
-          placeholder="请先在平台与航点中配置卫星" aria-label="中继卫星选择" data-testid="link-relay-satellite" @change="selectSatellite">
+          placeholder="请先在节点配置中配置卫星" aria-label="中继卫星选择" data-testid="link-relay-satellite" @change="selectSatellite">
           <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
             :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
         </el-select>

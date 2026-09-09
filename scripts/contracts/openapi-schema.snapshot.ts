@@ -2276,7 +2276,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'InformationDemand': {
     'additionalProperties': false,
+    'if': { 'required': ['linkId'] },
+    'then': {
+      'required': ['direction'],
+      'properties': { 'destinationPlatformIds': { 'maxItems': 1 } }
+    },
     'properties': {
+      'linkId': {
+        'type': 'string',
+        'minLength': 1
+      },
       'direction': {
         'enum': ['FORWARD', 'REVERSE']
       },

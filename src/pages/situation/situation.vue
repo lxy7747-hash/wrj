@@ -24,6 +24,7 @@ import { useTelemetryStore } from '../../stores/telemetry'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { isPositionSnapshot, mergePositionNodes, type PositionSnapshot } from '../../features/situation/position-updates'
+import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -73,6 +74,9 @@ const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
 const positionSnapshot = ref<PositionSnapshot | null>(null)
 const fileNodes = computed(() => initialSnapshot.value
   ? mergePositionNodes(initialSnapshot.value, positionSnapshot.value) : [])
+const fileLinks = computed(() => selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [],
+  Math.max(0, ...(initialSnapshot.value?.nodes.map(node => node.time) ?? []),
+    ...(positionSnapshot.value?.nodes.map(node => node.time) ?? []))))
 let positionTimer: ReturnType<typeof setTimeout> | undefined
 let positionRequest: AbortController | null = null
 const sourceMessage = ref('正在读取初始节点位置。')
@@ -546,6 +550,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :key="initialSnapshot?.sha256 ?? 'mock'"
           :frame="frame"
           :initial-nodes="initialSnapshot ? fileNodes : undefined"
+          :file-links="fileLinks"
           :links="situationLinks"
           :selected-node-id="selectedNodeId"
           :focus-target="mapFocusTarget"

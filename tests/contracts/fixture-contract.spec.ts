@@ -49,6 +49,22 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
+  it('单链路业务允许旧记录，关联后强制非空链路、明确方向和单目标', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile({ ...schema, $ref: '#/$defs/InformationDemand' })
+    const legacy = structuredClone((fixtures as DeterministicFixtureSet).scenario.informationDemand[0]!)
+    expect(validate(legacy)).toBe(true)
+    const bound = { ...legacy, linkId: 'L-LASER-04', direction: 'FORWARD' }
+    expect(validate(bound)).toBe(true)
+    for (const invalid of [
+      { ...bound, linkId: '' }, { ...bound, linkId: null }, { ...bound, linkId: 1 },
+      { ...bound, direction: undefined }, { ...bound, direction: 'BOTH' },
+      { ...bound, destinationPlatformIds: ['UAV-01', 'GCC-01'] },
+    ]) expect(validate(invalid)).toBe(false)
+  })
+
   it('链路新字段的合同允许旧数据并拒绝错误类型和重复排序', () => {
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
     const ajv = new Ajv2020({ allErrors: true, strict: false })

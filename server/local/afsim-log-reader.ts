@@ -3,6 +3,7 @@ import { open, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
+import { fileCommunicationType, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
 
 /**
  * 有界只读加载指定日志；拒绝读取过程中变化的文件，不启动监听或写回源文件。
@@ -68,7 +69,17 @@ export async function readInitialNodes(inputPath: string): Promise<InitialNodeSn
       altitude: state.altitudeMeters, speed: state.speedMetersPerSecond,
       time: state.time, sourceEventId: state.sourceEventId }
   })
-  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes }
+  const systems = new Map(parsed.communicationSystems.map(system => [JSON.stringify([system.platformName, system.name]), system.type]))
+  const connections: FileCommunicationConnection[] = []
+  for (const record of parsed.connections) {
+    if (record.scope !== 'INTER_PLATFORM') continue
+    const sourceType = systems.get(JSON.stringify([record.source.platformName, record.source.communicationName]))
+    const targetType = systems.get(JSON.stringify([record.target.platformName, record.target.communicationName]))
+    if (sourceType && targetType && (fileCommunicationType(sourceType) || fileCommunicationType(targetType))) {
+      connections.push({ ...record, sourceType, targetType })
+    }
+  }
+  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections }
   if (!isInitialNodeSnapshot(snapshot)) throw new Error('日志初始位置为空或格式不正确。')
   return snapshot
 }

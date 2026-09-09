@@ -55,9 +55,9 @@ async function submitLogin(): Promise<void> {
 
       <div class="product-intro__copy">
         <p class="product-intro__label">MISSION COMMUNICATION CONSOLE</p>
-        <p class="product-intro__title">面向任务规划与通联仿真的统一工作入口</p>
+        <p class="product-intro__title">无人集群通联仿真平台</p>
         <p class="product-intro__description">
-          在受控工作区内开展场景配置、链路协同与仿真态势作业。
+          配置仿真场景，查看链路态势，分析通联结果。
         </p>
       </div>
 

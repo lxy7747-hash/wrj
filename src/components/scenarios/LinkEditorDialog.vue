@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, toRaw, watch } from 'vue'
-import type { Link, LinkType, Platform } from '../../contracts/domain-models'
+import type { InformationDemand, Link, LinkType, Platform } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
+import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
+import BusinessEditorDialog from './BusinessEditorDialog.vue'
 
 type LinkTypeOption = { value: LinkType, label: string }
 
@@ -16,16 +18,19 @@ const props = defineProps<{
   linkTypeOptions: readonly LinkTypeOption[]
   linkDirectionLabels: Record<Link['direction'], string>
   minimumStep: number
+  demand?: InformationDemand | null
 }>()
 
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
-  apply: [link: Link]
+  apply: [link: Link, demand?: InformationDemand]
+  opened: []
   'frequency-input': [value: number | undefined]
   'bandwidth-input': [value: number | undefined]
 }>()
 
 const editor = ref<Link | null>(null)
+const business = ref<InformationDemand | null>(null)
 
 /** 改为非卫星链路时清除旧版中继引用；type 为新类型，新链路不生成此历史字段。 */
 function changeType(type: LinkType): void {
@@ -39,13 +44,26 @@ function changeCoding(value: string | null | undefined): void {
 
 /** 确认当前链路及其启停副本；取消或校验失败时不写入原场景。 */
 function apply(): void {
-  if (editor.value !== null && !props.pending && !props.locked) emit('apply', editor.value)
+  if (editor.value === null || props.pending || props.locked) return
+  const demand = business.value ? {
+    ...structuredClone(toRaw(business.value)),
+    linkId: editor.value.id.trim(),
+    sourcePlatformId: editor.value.sourcePlatformId,
+    destinationPlatformIds: [editor.value.targetPlatformId],
+    direction: editor.value.direction,
+  } : undefined
+  emit('apply', editor.value, demand)
 }
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.link === null ? null : { ...LINK_PARAMETER_DEFAULTS, ...structuredClone(toRaw(props.link)) }
+  business.value = props.demand ? { enabled: true, ...structuredClone(toRaw(props.demand)) } : null
 }, { immediate: true })
+
+watch(() => editor.value?.direction, direction => {
+  if (direction && business.value) changeBusinessDirection(business.value, direction, Boolean(props.demand?.linkId))
+})
 </script>
 
 <template>
@@ -59,21 +77,22 @@ watch(() => props.modelValue, (visible) => {
     append-to-body
     data-testid="link-dialog"
     @update:model-value="emit('update:modelValue', $event)"
+    @opened="emit('opened')"
   >
     <el-alert v-if="error" class="platform-feedback" type="error" :closable="false" :title="error" show-icon />
     <el-form v-if="editor" class="link-editor-form" :model="editor" label-position="top" :disabled="pending || locked">
       <section class="link-editor-section" aria-labelledby="link-basic-title">
         <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
-          <el-form-item label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
-          <el-form-item label="当前链路">
-            <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
-          </el-form-item>
           <el-form-item label="链路类型">
             <el-select v-model="editor.type" style="width: 100%" data-testid="link-type" @change="changeType">
               <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
+          <el-form-item label="当前链路">
+            <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
+          </el-form-item>
+          <el-form-item label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
         </div>
       </section>
 
@@ -116,7 +135,7 @@ watch(() => props.modelValue, (visible) => {
               <el-option label="BPSK" value="BPSK" /><el-option label="QPSK" value="QPSK" />
             </el-select>
           </el-form-item>
-          <el-form-item label="链路方向">
+          <el-form-item label="通信方向">
             <el-select v-model="editor.direction" style="width: 100%" data-testid="link-direction">
               <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
             </el-select>
@@ -135,6 +154,11 @@ watch(() => props.modelValue, (visible) => {
             </div>
           </el-form-item>
         </div>
+      </section>
+      <section v-if="business" class="link-editor-section" aria-labelledby="link-business-title">
+        <h4 id="link-business-title" class="link-editor-section__title">业务参数</h4>
+        <BusinessEditorDialog :key="business.id" embedded :model-value="true" :demand="business"
+          :editing="Boolean(demand?.linkId)" :disabled="pending || locked" :platforms="platforms" error="" />
       </section>
     </el-form>
     <template #footer>

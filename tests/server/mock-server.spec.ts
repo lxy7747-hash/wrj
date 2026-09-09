@@ -4,6 +4,47 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
+describe('单链路业务配置', () => {
+  it('旧业务兼容读取，明确关联后 PUT/GET、导入和模板保留关联及参数', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(original.config.informationDemand[0]!.linkId).toBeUndefined()
+    const config = structuredClone(original.config)
+    const link = config.links.find(item => item.id === 'L-LASER-04')!
+    Object.assign(config.informationDemand[0]!, { linkId: link.id, direction: link.direction, volumeMb: 3 })
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    expect(saved.config).toEqual(config)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)
+    expect((imported.body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!.config).toEqual(config)
+    const template = await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '单链路业务', config }).expect(201)
+    expect((template.body as ApiSuccess<ScenarioTemplate>).data.config).toEqual(config)
+  })
+
+  it.each(['empty', 'missing', 'duplicate', 'source', 'destination', 'direction'] as const)('拒绝错误关联 %s，失败不改草稿或修订号', async mutation => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    const demand = config.informationDemand[0]!
+    Object.assign(demand, { linkId: 'L-LASER-04', direction: 'FORWARD' })
+    if (mutation === 'empty') demand.linkId = ''
+    if (mutation === 'missing') demand.linkId = 'L-NOT-FOUND'
+    if (mutation === 'duplicate') config.informationDemand.push({ ...demand, id: 'INFO-DUPLICATE' })
+    if (mutation === 'source') demand.sourcePlatformId = 'GCC-01'
+    if (mutation === 'destination') demand.destinationPlatformIds = ['GCC-01']
+    if (mutation === 'direction') demand.direction = 'REVERSE'
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    expect(rejected.body).toMatchObject({ error: { code: 'VALIDATION_FAILED', fieldPath: expect.stringMatching(/^informationDemand\[/) } })
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
+    await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '非法关联', config }).expect(422)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(original)
+  })
+})
+
 describe('机载干扰支撑实体', () => {
   it('干扰设备仅可写入干扰节点，PUT/导入/模板拒绝普通节点且不覆盖草稿', async () => {
     const { baseUrl } = await startServer()

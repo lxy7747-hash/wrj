@@ -335,7 +335,7 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     if (typeof value.enabledSatellites[type] !== 'boolean') addError(errors, 'SATELLITE_SWITCH_INVALID', '卫星启用开关必须为布尔值。', path)
     else if (value.enabledSatellites[type] && Array.isArray(platforms) && !platforms.some((p) => (
       typeof p === 'object' && p !== null && p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === type
-    ))) addError(errors, 'SATELLITE_NOT_CONFIGURED', `请先在平台与航点中配置${type === 'TIANTONG' ? '天通' : '神通'}卫星。`, path)
+    ))) addError(errors, 'SATELLITE_NOT_CONFIGURED', `请先在节点配置中配置${type === 'TIANTONG' ? '天通' : '神通'}卫星。`, path)
   }
   if (!isFiniteNumber(value.switchCooldownS, 0)) addError(errors, 'LINK_COOLDOWN_INVALID', '防乒乓滞回时间必须为非负有限秒数。', 'linkSettings.switchCooldownS')
   if (!Array.isArray(value.priority) || value.priority.length !== LINK_TYPES.length
@@ -417,13 +417,27 @@ function inspectOutput(value: unknown, timeStep: unknown, errors: ValidationIssu
 }
 
 /** 校验一项信息需求的引用、数量、优先级和性能约束。 */
-function inspectInformationDemand(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+function inspectInformationDemand(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], links: readonly Link[], assignedLinks: Set<string>): void {
   const path = `informationDemand[${index}]`
-  if (!isClosedObject(value, INFORMATION_DEMAND_KEYS, ['direction', 'enabled'])) {
+  if (!isClosedObject(value, INFORMATION_DEMAND_KEYS, ['direction', 'enabled', 'linkId'])) {
     addError(errors, 'INFORMATION_DEMAND_SHAPE_INVALID', '信息需求结构不正确。', path)
     return
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'INFORMATION_DEMAND_ID_INVALID', '信息需求 ID 为必填项。', `${path}.id`)
+  if (Object.hasOwn(value, 'linkId')) {
+    const link = links.find(item => item?.id === value.linkId)
+    if (typeof value.linkId !== 'string' || !value.linkId.trim() || !link) {
+      addError(errors, 'INFORMATION_DEMAND_LINK_INVALID', '业务必须关联当前场景中的有效链路。', `${path}.linkId`)
+    } else {
+      if (assignedLinks.has(value.linkId)) addError(errors, 'INFORMATION_DEMAND_LINK_DUPLICATED', '一条链路只能配置一项业务。', `${path}.linkId`)
+      assignedLinks.add(value.linkId)
+      if (value.sourcePlatformId !== link.sourcePlatformId || !Array.isArray(value.destinationPlatformIds)
+        || value.destinationPlatformIds.length !== 1 || value.destinationPlatformIds[0] !== link.targetPlatformId) {
+        addError(errors, 'INFORMATION_DEMAND_LINK_ENDPOINT_MISMATCH', '业务端点必须与所属链路一致。', `${path}.destinationPlatformIds`)
+      }
+      if (value.direction !== link.direction) addError(errors, 'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', '业务方向必须与所属链路一致。', `${path}.direction`)
+    }
+  }
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
   if (!Array.isArray(value.destinationPlatformIds) || value.destinationPlatformIds.length === 0
     || value.destinationPlatformIds.some((id) => typeof id !== 'string' || !platformIds.has(id))) {
@@ -740,7 +754,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const demandIds = collectIds(value.informationDemand)
     const platformIds = collectIds(value.platforms)
     if (demandIds.size !== value.informationDemand.length) addError(errors, 'INFORMATION_DEMAND_ID_DUPLICATED', '信息需求 ID 不允许为空或重复。', 'informationDemand')
-    value.informationDemand.forEach((demand, index) => inspectInformationDemand(demand, index, platformIds, errors))
+    const assignedLinks = new Set<string>()
+    value.informationDemand.forEach((demand, index) => inspectInformationDemand(demand, index, platformIds, errors,
+      Array.isArray(value.links) ? value.links as Link[] : [], assignedLinks))
   }
 
   const result: ValidationResult = { valid: errors.length === 0, errors, warnings }

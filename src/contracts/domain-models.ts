@@ -115,6 +115,8 @@ export interface OutputConfig {
 /** Required by the approved frontend baseline as part of canonical ScenarioConfig 1.0. */
 export interface InformationDemand {
   id: Identifier; sourcePlatformId: Identifier; destinationPlatformIds: Identifier[];
+  /** 单条链路的业务配置；旧数据缺省时保留为未关联业务。 */
+  linkId?: Identifier;
   /** 旧场景缺省时保留未设置方向；新业务明确区分前向和返向。 */
   direction?: 'FORWARD' | 'REVERSE';
   /** 单项业务独立启停；旧场景缺省视为启用，停用保留参数。 */

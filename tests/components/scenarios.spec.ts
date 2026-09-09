@@ -184,6 +184,7 @@ describe('P2-1 场景管理页面', () => {
     expect(table.text()).not.toContain('参与场景')
     expect(table.text()).toContain('链路状态')
     expect(table.text()).toContain('中继卫星')
+    expect(table.findAll('th').map(cell => cell.text())).not.toContain('业务')
     const satellites = () => table.findAll('.el-table__body tbody tr').map(row => row.findAll('td')[3]!.text())
     expect(satellites()).toEqual(Array(5).fill('天通卫星'))
     const settings = readLinkSettings(current.config)
@@ -196,59 +197,97 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.links.map(link => link.enabled)).toEqual([true, true, false, true, true])
   })
 
-  it('业务与链路保持五个页签，业务默认值、取消、非法输入和定位生效', async () => {
-    const message = vi.spyOn(ElMessage, 'success')
+  it('不展示旧业务入口，链路参数可新增、保存重载和删除且不改历史数据', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
-    const scenario = useScenarioStore(pinia)
-    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
-    const original = structuredClone(fixtureSource.scenario.informationDemand)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    let persisted = draft()
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      return response(structuredClone(persisted))
+    }))
+    const scenario = useScenarioStore()
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
-    expect(wrapper.findAll('[role="tab"]')).toHaveLength(5)
+    await flushPromises()
+    const original = structuredClone(toRaw(scenario.draft!.config))
     await wrapper.get('#tab-links').trigger('click')
-    expect(wrapper.get('#pane-links').find('[data-testid="information-demand-table"]').exists()).toBe(true)
-    expect(wrapper.get('#pane-data').find('[data-testid="information-demand-table"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
-    const dialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
-    expect(dialog.props('demand')).toMatchObject({ direction: 'FORWARD', enabled: true, informationType: '目标指令', volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(5)
+    expect(wrapper.find('[data-testid="add-information-demand"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('未关联的旧业务')
+    await wrapper.get('[data-testid="add-link"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent({ name: 'LinkEditorDialog' })
+    expect(document.querySelector('[data-testid="link-legacy-demand"]')).toBeNull()
+    expect(document.querySelector('[data-testid="business-dialog"]')).toBeNull()
+    expect(dialog.props('demand')).toMatchObject({ direction: 'FORWARD', informationType: '目标指令', volumeMb: 0.000256 })
+    expect(document.querySelector('[data-testid="demand-direction"]')).toBeNull()
+    expect(document.querySelector('[data-testid="demand-source"]')).toBeNull()
+    const direction = dialog.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'link-direction')!
+    direction.vm.$emit('update:modelValue', 'REVERSE')
+    await flushPromises()
+    expect(dialog.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'demand-volume-unit')!.props('modelValue')).toBe('MB')
+    expect(dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'demand-volume')!.props('modelValue')).toBe(2)
+    document.querySelector<HTMLElement>('[data-testid="cancel-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config).toEqual(original)
+    expect(scenario.dirty).toBe(false)
+
+    await wrapper.get('[data-testid="add-link"]').trigger('click')
+    await flushPromises()
+    const selector = (id: string) => dialog.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === id)!
+    const initialDemand = structuredClone(toRaw(dialog.props('demand')!))
+    selector('demand-volume-unit').vm.$emit('update:modelValue', 'MB')
+    await flushPromises()
+    const volume = dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'demand-volume')!
+    volume.vm.$emit('update:modelValue', -1)
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(dialog.props('error')).toContain('数据量不能小于')
+    expect(scenario.draft!.config).toEqual(original)
+    volume.vm.$emit('update:modelValue', 3)
+    selector('link-direction').vm.$emit('update:modelValue', 'REVERSE')
+    selector('link-target').vm.$emit('update:modelValue', 'GCC-01')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    const savedDemand = { ...initialDemand, linkId: 'L-CFG-001', direction: 'REVERSE', informationType: '视频', frequencyHz: 30, minDataRateMbps: 2, volumeMb: 3, destinationPlatformIds: ['GCC-01'] }
+    expect(scenario.draft!.config.informationDemand).toEqual([...original.informationDemand, savedDemand])
+    expect(scenario.draft!.config.links.at(-1)).toMatchObject({ id: 'L-CFG-001', direction: 'REVERSE', targetPlatformId: 'GCC-01' })
+    expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
+    expect(await scenario.saveScenario()).toBe(true)
+    expect(await scenario.loadScenario()).toBe(true)
+    expect(scenario.draft!.config.informationDemand).toEqual([...original.informationDemand, savedDemand])
+    await flushPromises()
+    await wrapper.get(`[data-testid="edit-link-${original.links.length}"]`).trigger('click')
+    await flushPromises()
+    expect(dialog.props('demand')).toEqual(savedDemand)
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
-    expect(scenario.draft!.config.informationDemand).toEqual(original)
-    expect(scenario.dirty).toBe(false)
-    expect(wrapper.get('[data-testid="add-information-demand"]').text()).toBe('新增业务')
-    expect(wrapper.find('[data-testid="add-reverse-business"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
-    const reverse = { ...structuredClone(toRaw(dialog.props('demand')!)), direction: 'REVERSE', informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 }
-    expect(reverse).toMatchObject({ direction: 'REVERSE', informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
-    dialog.vm.$emit('apply', { ...reverse, destinationPlatformIds: [] })
-    await nextTick()
-    expect(dialog.props('error')).toContain('目标平台')
-    expect(scenario.draft!.config.informationDemand).toEqual(original)
-    dialog.vm.$emit('apply', { ...reverse, enabled: false })
-    await nextTick()
-    expect(scenario.draft!.config.informationDemand.at(-1)).toMatchObject({ direction: 'REVERSE', enabled: false })
-    expect(message).toHaveBeenLastCalledWith('业务已新增，保存草稿后生效。')
-    expect(scenario.draft!.config.informationDemand[0]).toEqual(original[0])
-    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
-    dialog.vm.$emit('apply', { ...structuredClone(toRaw(dialog.props('demand')!)), frequencyHz: 2 })
-    await nextTick()
-    expect(message).toHaveBeenLastCalledWith('业务已更新，保存草稿后生效。')
     await wrapper.get('[data-testid="next-validation"]').trigger('click')
-    wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', { severity: 'ERROR', code: 'TEST', message: '请检查业务信息量', fieldPath: 'informationDemand[0].volumeMb' })
+    wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', {
+      severity: 'ERROR', code: 'TEST', message: '请检查通信方向', fieldPath: `informationDemand[${original.informationDemand.length}].direction`,
+    })
     await flushPromises()
-    expect(wrapper.get('#tab-links').attributes('aria-selected')).toBe('true')
     expect(dialog.props('modelValue')).toBe(true)
-    expect(dialog.props('error')).toBe('请检查业务信息量')
+    expect(dialog.props('error')).toBe('请检查通信方向')
     dialog.vm.$emit('opened')
-    expect(document.activeElement?.closest('[data-testid="demand-volume"]')).not.toBeNull()
+    await flushPromises()
+    expect(document.activeElement?.closest('[data-testid="link-direction"]')).not.toBeNull()
+    const snapshot = structuredClone(toRaw(scenario.draft!.config))
     scenario.draft!.locked = true
-    const count = scenario.draft!.config.informationDemand.length
-    dialog.vm.$emit('apply', reverse)
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config).toEqual(snapshot)
+    scenario.draft!.locked = false
+    dialog.vm.$emit('update:modelValue', false)
     await nextTick()
-    expect(scenario.draft!.config.informationDemand).toHaveLength(count)
-    expect(dialog.props('disabled')).toBe(true)
+    const deletion = wrapper.findAllComponents({ name: 'ElPopconfirm' }).find(item => item.find(`[data-testid="delete-link-${original.links.length}"]`).exists())!
+    deletion.vm.$emit('confirm', new MouseEvent('click'))
+    await nextTick()
+    expect(scenario.draft!.config.informationDemand).toEqual(original.informationDemand)
+    expect(scenario.draft!.config.links).toEqual(original.links)
   })
-
   it('缩短场景时长后可逐台修正触发时间，全部修正前禁止保存', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -292,7 +331,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.jammers.map(jammer => jammer.triggerTimeS)).toEqual([50, 50])
   })
 
-  it('删除最后一颗已选卫星清理选择并可保存回读，仍保护业务引用', async () => {
+  it('仍保护存量配置引用，服务端解除引用后可删除最后一颗已选卫星并保存回读', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -318,13 +357,9 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get(`[data-testid="delete-platform-${index}"]`).trigger('click')
     expect(scenario.draft!.config).toEqual(original)
     expect(document.body.textContent).toContain('仍被链路、设备或信息需求引用')
-    await wrapper.get('#tab-links').trigger('click')
-    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
-    const businessDialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
-    const demand = structuredClone(toRaw(businessDialog.props('demand')!))
-    demand.destinationPlatformIds = demand.destinationPlatformIds.filter((id: string) => id !== satellite.id)
-    businessDialog.vm.$emit('apply', demand)
-    await nextTick()
+    persisted.config.informationDemand[0]!.destinationPlatformIds = persisted.config.informationDemand[0]!.destinationPlatformIds.filter(id => id !== satellite.id)
+    expect(await scenario.loadScenario()).toBe(true)
+    await flushPromises()
     await wrapper.get('#tab-platforms').trigger('click')
     await wrapper.get(`[data-testid="delete-platform-${index}"]`).trigger('click')
     expect(scenario.draft!.config.platforms.some(p => p.id === satellite.id)).toBe(false)
@@ -390,6 +425,38 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.jammingEnabled).toBe(true)
   })
 
+  it('四个参数页签的新增按钮位于表格顶部标签栏内，新增数据后顺序不变', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(draft())))
+    const scenario = useScenarioStore()
+    expect(await scenario.loadScenario()).toBe(true)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    const pairs = [
+      ['add-business-platform', 'platform-table'], ['add-supporting-platform', 'platform-table'],
+      ['add-link', 'link-table'],
+      ['add-jammer', 'jammer-table'], ['add-sensor', 'sensor-table'],
+    ] as const
+    const checkPosition = () => {
+      for (const [buttonId, tableId] of pairs) {
+        const buttons = wrapper.findAll(`[data-testid="${buttonId}"]`)
+        expect(buttons).toHaveLength(1)
+        const heading = buttons[0]!.element.closest('.platform-actions')?.parentElement
+        expect(heading?.classList.contains('section-heading')).toBe(true)
+        expect(heading?.querySelector('.el-tag')).not.toBeNull()
+        expect(heading?.nextElementSibling)
+          .toBe(wrapper.get(`[data-testid="${tableId}"]`).element)
+      }
+    }
+    checkPosition()
+    await wrapper.get('#tab-data').trigger('click')
+    const previousCount = scenario.draft!.config.sensors.length
+    await wrapper.get('[data-testid="add-sensor"]').trigger('click')
+    expect(scenario.draft!.config.sensors).toHaveLength(previousCount + 1)
+    checkPosition()
+  })
+
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
     const messageSpy = vi.spyOn(ElMessage, 'success')
     const pinia = createPinia()
@@ -411,7 +478,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      '场景基础', '平台与航点', '业务与链路', '干扰设备', '传感器与输出',
+      '场景基础', '节点配置', '链路配置', '干扰设备', '传感器与输出',
     ])
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('当前草稿已保存')
 
@@ -584,15 +651,16 @@ describe('P2-1 场景管理页面', () => {
     }
     expect(wrapper.get('#pane-data').find('[data-testid="information-demand-table"]').exists()).toBe(false)
     await wrapper.get('#tab-links').trigger('click')
-    await wrapper.get('[data-testid="edit-business-0"]').trigger('click')
-    const businessDialog = wrapper.findComponent({ name: 'BusinessEditorDialog' })
-    businessDialog.vm.$emit('apply', { ...structuredClone(fixtureSource.scenario.informationDemand[0]), informationType: '目标指令', direction: 'FORWARD', enabled: true })
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    const editorDialog = wrapper.findComponent({ name: 'LinkEditorDialog' })
+    editorDialog.vm.$emit('apply', editorDialog.props('link'), { ...structuredClone(toRaw(editorDialog.props('demand')!)), informationType: '目标指令' })
     await nextTick()
-    await wrapper.get('[data-testid="add-information-demand"]').trigger('click')
+    await wrapper.get('[data-testid="add-link"]').trigger('click')
     await nextTick()
-    businessDialog.vm.$emit('apply', businessDialog.props('demand'))
+    const linkDialog = wrapper.findComponent({ name: 'LinkEditorDialog' })
+    linkDialog.vm.$emit('apply', linkDialog.props('link'), linkDialog.props('demand'))
     await nextTick()
-    const lastDelete = wrapper.findAllComponents({ name: 'ElPopconfirm' }).find(item => item.find('[data-testid="delete-information-demand-1"]').exists())!
+    const lastDelete = wrapper.findAllComponents({ name: 'ElPopconfirm' }).find(item => item.find(`[data-testid="delete-link-${scenario.draft!.config.links.length - 1}"]`).exists())!
     lastDelete.vm.$emit('confirm', new MouseEvent('click'))
     expect(scenario.dirty).toBe(true)
 
@@ -1152,7 +1220,7 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
 
     expect(document.body.textContent).toContain('场景实体已新增，保存草稿后生效。')
-    expect(wrapper.find('[aria-label="平台与航点"] .platform-feedback').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="节点配置"] .platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount + 1)
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
       name: '新增空中无人作业集群',
@@ -1264,6 +1332,59 @@ describe('P2-1 场景管理页面', () => {
 
     expect(scenario.draft?.config.platforms).toHaveLength(50)
     expect(document.body.textContent).toContain('信息节点已达 50 个，不能继续新增。')
+  })
+
+  it.each([1, 2])('仅输入编队原点时按 %s km 平铺新增，并保存重载保持坐标', async spacingKm => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    let persisted = draft()
+    const originalCount = persisted.config.platforms.length
+    vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
+      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      return response(structuredClone(persisted))
+    }))
+    expect(await scenario.loadScenario()).toBe(true)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent({ name: 'PlatformEditorDialog' })
+    const input = (id: string) => dialog.findAllComponents({ name: 'ElInputNumber' }).find(component => component.attributes('data-testid') === id)!
+    expect(input('platform-spacing')).toBeUndefined()
+    input('platform-quantity').vm.$emit('update:modelValue', 4)
+    input('platform-longitude').vm.$emit('update:modelValue', 119.5)
+    input('platform-latitude').vm.$emit('update:modelValue', 25)
+    input('platform-altitude').vm.$emit('update:modelValue', 1500)
+    await nextTick()
+    expect(input('platform-spacing').props('modelValue')).toBe(1)
+    input('platform-spacing').vm.$emit('update:modelValue', 0)
+    await nextTick()
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(true)
+    expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
+    input('platform-spacing').vm.$emit('update:modelValue', spacingKm)
+    input('platform-longitude').vm.$emit('update:modelValue', 180)
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.body.textContent).toContain('平铺范围超出经纬度边界')
+    expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
+    input('platform-longitude').vm.$emit('update:modelValue', 119.5)
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    const positions = scenario.draft!.config.platforms.slice(originalCount).map(p => ({ ...p.initialPosition }))
+    expect(positions).toHaveLength(4)
+    expect(new Set(positions.map(p => p.longitude)).size).toBe(2)
+    expect(new Set(positions.map(p => p.latitude)).size).toBe(2)
+    expect(positions.every(p => p.altitude === 1500)).toBe(true)
+    expect((positions[0]!.longitude + positions[1]!.longitude) / 2).toBeCloseTo(119.5, 10)
+    expect((positions[0]!.latitude + positions[2]!.latitude) / 2).toBeCloseTo(25, 10)
+    expect((positions[0]!.latitude - positions[2]!.latitude) * Math.PI / 180 * 6371).toBeCloseTo(spacingKm, 8)
+    expect(scenario.dirty).toBe(true)
+    expect(await scenario.saveScenario()).toBe(true)
+    expect(await scenario.loadScenario()).toBe(true)
+    expect(scenario.draft!.config.platforms.slice(originalCount).map(p => p.initialPosition)).toEqual(positions)
   })
 
   it('按剩余数量批量新增空中无人作业集群并阻止类型超额', async () => {
@@ -1580,7 +1701,7 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     await nextTick()
     expect(wrapper.get('[data-testid="add-jammer"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="jammer-node-required"]').text()).toBe('请先在平台与航点中新增干扰节点。')
+    expect(wrapper.get('[data-testid="jammer-node-required"]').text()).toBe('请先在节点配置中新增干扰节点。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(document.querySelector('[data-testid="jammer-dialog"]')).toBeNull()
   })

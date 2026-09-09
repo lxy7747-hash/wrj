@@ -22,6 +22,48 @@ beforeAll(async () => {
 })
 
 describe('T-XQ-008 脚本结构预检', () => {
+  it('停用链路仅过滤关联业务指令，重新启用恢复且不改变业务配置', () => {
+    const result = new ScenarioProjection().get('SCN-001')
+    if (!result.ok) throw new Error('缺少场景夹具')
+    const draft = result.data
+    const generator = new ScriptProjection()
+    const [link, otherLink] = draft.config.links.filter(item => item.type === 'MICROWAVE')
+    if (!link || !otherLink) throw new Error('缺少微波链路夹具')
+    link.enabled = true
+    otherLink.enabled = true
+    const legacy = structuredClone(draft.config.informationDemand[0]!)
+    delete legacy.linkId
+    legacy.enabled = true
+    const business = { ...structuredClone(legacy), id: 'INFO-LINK', linkId: link.id,
+      sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId], direction: link.direction }
+    const otherBusiness = { ...structuredClone(legacy), id: 'INFO-OTHER', linkId: otherLink.id,
+      sourcePlatformId: otherLink.sourcePlatformId, destinationPlatformIds: [otherLink.targetPlatformId], direction: otherLink.direction }
+    draft.config.informationDemand = [business, otherBusiness, legacy]
+    const originalBusiness = structuredClone(draft.config.informationDemand)
+    const initial = generator.preview(draft)
+    expect(initial.preview).toContain(`  information_demand "${business.id}" `)
+
+    link.enabled = false
+    const stoppedDraft = structuredClone(draft)
+    const stopped = generator.preview(draft)
+    expect(stopped.preview).not.toContain(`  comm "${link.id}" `)
+    expect(stopped.preview).not.toContain(`  information_demand "${business.id}" `)
+    expect(stopped.preview).toContain(`  # 业务参数（参数记录） ${JSON.stringify(business)}`)
+    expect(stopped.preview).toContain(`  comm "${otherLink.id}" `)
+    expect(stopped.preview).toContain(`  information_demand "${otherBusiness.id}" `)
+    expect(stopped.preview).toContain(`  information_demand "${legacy.id}" `)
+    expect(stopped.checksum).not.toBe(initial.checksum)
+    expect(draft).toEqual(stoppedDraft)
+
+    link.enabled = true
+    const resumed = generator.preview(draft)
+    expect(resumed.preview).toBe(initial.preview)
+    expect(resumed.checksum).toBe(initial.checksum)
+    expect(draft.config.informationDemand).toEqual(originalBusiness)
+    business.enabled = false
+    expect(generator.preview(draft).preview).not.toContain(`  information_demand "${business.id}" `)
+  })
+
   it('干扰默认禁用，总开关与单设备开关共同过滤且保留扫频触发参数', () => {
     const result = new ScenarioProjection().get('SCN-001')
     if (!result.ok) throw new Error('缺少场景夹具')
@@ -126,6 +168,13 @@ describe('T-XQ-008 脚本结构预检', () => {
     draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE']
     draft.config.links[0]!.coding = 'CUSTOM-1/2'
     draft.config.links[0]!.antennaGainCorrectionDb = -2
+    const satelliteLink = draft.config.links.find(link => link.type === 'SAT')!
+    const satelliteBusiness = draft.config.informationDemand[0]!
+    satelliteBusiness.linkId = satelliteLink.id
+    satelliteBusiness.sourcePlatformId = satelliteLink.sourcePlatformId
+    satelliteBusiness.destinationPlatformIds = [satelliteLink.targetPlatformId]
+    satelliteBusiness.direction = satelliteLink.direction
+    satelliteBusiness.enabled = true
     const after = projection.preview(draft)
     expect(after.checksum).not.toBe(before.checksum)
     expect(after.preview).toContain('"switchCooldownS":8')
@@ -135,6 +184,8 @@ describe('T-XQ-008 脚本结构预检', () => {
     expect(communication.some(line => line.includes(JSON.stringify(enabledLink!.id)))).toBe(true)
     const satelliteId = draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!.id
     expect(communication.some(line => line.includes(JSON.stringify(satelliteId)))).toBe(false)
+    expect(after.preview).not.toContain(`  information_demand ${JSON.stringify(satelliteBusiness.id)} `)
+    expect(satelliteBusiness.enabled).toBe(true)
     expect(projection.preflight(after.scriptId, after.checksum)).toMatchObject({ ok: true, data: { valid: true } })
   })
 })

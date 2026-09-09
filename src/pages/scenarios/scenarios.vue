@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
+import { createPlatformGrid } from '../../features/scenarios/platform-layout'
 import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
@@ -27,7 +28,6 @@ import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
-import BusinessEditorDialog from '../../components/scenarios/BusinessEditorDialog.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
 
 const scenarioStore = useScenarioStore()
@@ -62,11 +62,8 @@ const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
 const linkFrequencyBelowMinimum = ref(false)
 const linkBandwidthBelowMinimum = ref(false)
-const businessDialogVisible = ref(false)
-const editingBusinessIndex = ref<number | null>(null)
-const businessEditor = ref<InformationDemand | null>(null)
-const businessEditorError = ref('')
-const businessFocusPath = ref('')
+const linkBusiness = ref<InformationDemand | null>(null)
+const linkFocusPath = ref('')
 const jammerDialogVisible = ref(false)
 const editingJammerIndex = ref<number | null>(null)
 const jammerEditorJammer = ref<Jammer | null>(null)
@@ -99,7 +96,7 @@ const businessTypeOptions = BUSINESS_INFORMATION_NODE_TYPES.map((value) => ({ va
 const supportingTypeOptions = SUPPORTING_ENTITY_TYPES.map((value) => ({ value, label: PLATFORM_TYPE_LABELS[value] }))
 const satelliteTypeOptions = SATELLITE_TYPES.map((value) => ({ value, label: value === 'TIANTONG' ? '天通卫星' : '神通卫星' }))
 const linkTypeOptions = LINK_TYPES.map((value) => ({ value, label: LINK_TYPE_LABELS[value] }))
-const linkDirectionLabels = { FORWARD: '正向', REVERSE: '反向' } as const
+const linkDirectionLabels = { FORWARD: '前向', REVERSE: '返向' } as const
 const jammerTypeOptions = JAMMER_TYPES.map((value) => ({ value, label: JAMMER_TYPE_LABELS[value] }))
 const hasJammerPlatform = computed(() => draft.value?.config.platforms.some(platform => isJammerPlatformType(platform.type)) ?? false)
 
@@ -314,10 +311,11 @@ function openPlatformEditor(platform: Platform, index: number): void {
  * 将平台编辑副本写入当前场景草稿。
  * @param editor 由平台编辑弹窗提交的独立编辑副本。
  * @param quantity 新增空中无人作业集群的数量；编辑或其他类型固定为 1。
+ * @param spacingKm 仅有编队原点时的批量平铺间隔，单位为千米。
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时新增或替换一个平台、标记草稿未保存并关闭对话框。
  */
-function applyPlatformEditor(editor: Platform, quantity = 1): boolean {
+function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boolean {
   if (draft.value === null) return false
   editor.id = editor.id.trim()
   editor.name = editor.name.trim()
@@ -342,11 +340,21 @@ function applyPlatformEditor(editor: Platform, quantity = 1): boolean {
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const editedPlatform = structuredClone(toRaw(editor))
+  let gridPositions: Platform['initialPosition'][] | undefined
+  if (addingAirborneBatch && batchQuantity > 1 && editedPlatform.waypoints.length === 0) {
+    try {
+      gridPositions = createPlatformGrid(editedPlatform.initialPosition, batchQuantity, spacingKm)
+    } catch (error) {
+      platformEditorError.value = (error as Error).message
+      return false
+    }
+  }
   if (editingPlatformIndex.value === null) {
     const reservedIds = new Set(candidate.platforms.map((platform) => platform.id))
     const initialAirborneCount = businessNodeTypeCounts.value.AIRBORNE_MISSION_CLUSTER
     for (let index = 0; index < batchQuantity; index += 1) {
       const platform = structuredClone(editedPlatform)
+      if (gridPositions) platform.initialPosition = gridPositions[index]!
       if (index > 0) platform.id = nextPlatformId('PLAT-', reservedIds)
       reservedIds.add(platform.id)
       if (batchQuantity > 1) platform.name = `${editedPlatform.name} U${String(initialAirborneCount + index + 1).padStart(2, '0')}`
@@ -470,6 +478,8 @@ function openNewLink(): void {
     direction: 'FORWARD',
   }
   editingLinkIndex.value = null
+  linkBusiness.value = createLinkBusiness(linkEditorLink.value)
+  linkFocusPath.value = ''
   linkEditorError.value = ''
   resetLinkMinimumAttempts()
   linkDialogVisible.value = true
@@ -486,6 +496,8 @@ function openLinkEditor(link: Link, index: number): void {
   // 补默认值前先取原始对象，避免嵌套响应式代理导致弹框的深拷贝失败。
   linkEditorLink.value = { ...toRaw(link), enabled: readLinkEnabled(link, draft.value?.config.linkSettings) }
   editingLinkIndex.value = index
+  linkBusiness.value = draft.value?.config.informationDemand.find(item => item.linkId === link.id) ?? createLinkBusiness(link)
+  linkFocusPath.value = ''
   linkEditorError.value = ''
   resetLinkMinimumAttempts()
   linkDialogVisible.value = true
@@ -516,7 +528,7 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
  * @sideEffects 成功时同步端点平台关联、标记未保存并关闭对话框。
  */
-function applyLinkEditor(linkEditor: Link): boolean {
+function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): boolean {
   if (draft.value === null || pending.value || draft.value.locked) return false
   if (linkFrequencyBelowMinimum.value) {
     linkEditorError.value = '链路频率必须大于 0 MHz。'
@@ -535,9 +547,23 @@ function applyLinkEditor(linkEditor: Link): boolean {
   const editedLink = structuredClone(toRaw(linkEditor))
   if (editingLinkIndex.value === null) candidate.links.push(editedLink)
   else candidate.links[editingLinkIndex.value] = editedLink
+  if (!demand) {
+    linkEditorError.value = '请填写该链路的业务参数。'
+    return false
+  }
+  const demandIndex = candidate.informationDemand.findIndex(item => item.id === demand.id)
+  const previous = candidate.informationDemand[demandIndex]
+  if (previous?.linkId && previous.linkId !== editedLink.id) {
+    linkEditorError.value = '该业务已关联其他链路。'
+    return false
+  }
+  const editedDemand = { ...structuredClone(toRaw(demand)), linkId: editedLink.id,
+    sourcePlatformId: editedLink.sourcePlatformId, destinationPlatformIds: [editedLink.targetPlatformId], direction: editedLink.direction }
+  if (demandIndex < 0) candidate.informationDemand.push(editedDemand)
+  else candidate.informationDemand[demandIndex] = editedDemand
   synchronizePlatformLinkIds(candidate, editedLink.id)
   const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
-    item.fieldPath.startsWith('links') || item.fieldPath.endsWith('.linkIds')
+    item.fieldPath.startsWith('links') || item.fieldPath.endsWith('.linkIds') || item.fieldPath.startsWith('informationDemand')
   ))
   if (issue !== undefined) {
     linkEditorError.value = issue.message
@@ -545,6 +571,7 @@ function applyLinkEditor(linkEditor: Link): boolean {
   }
 
   draft.value.config.links = candidate.links
+  draft.value.config.informationDemand = candidate.informationDemand
   draft.value.config.platforms = candidate.platforms
   markDirty()
   linkDialogVisible.value = false
@@ -560,11 +587,17 @@ function applyLinkEditor(linkEditor: Link): boolean {
  * @sideEffects 从草稿移除链路及所有对应平台关联，并设置未保存标记。
  */
 function removeLink(link: Link, index: number): boolean {
-  if (draft.value === null) return false
+  if (draft.value === null || pending.value || draft.value.locked) return false
   const candidate = structuredClone(toRaw(draft.value.config))
+  candidate.informationDemand = candidate.informationDemand.filter(item => item.linkId !== link.id)
+  if (candidate.informationDemand.length === 0) {
+    ElMessage.error('场景至少需要一项业务，不能删除最后一条带业务的链路。')
+    return false
+  }
   candidate.links.splice(index, 1)
   synchronizePlatformLinkIds(candidate, link.id)
   draft.value.config.links = candidate.links
+  draft.value.config.informationDemand = candidate.informationDemand
   draft.value.config.platforms = candidate.platforms
   markDirty()
   ElMessage.success('链路已删除，保存草稿后生效。')
@@ -633,7 +666,7 @@ function setJammingEnabled(enabled: boolean | string | number): void {
 function openNewJammer(): void {
   if (pending.value || draft.value?.locked) return
   if (!hasJammerPlatform.value) {
-    ElMessage.error('请先在平台与航点中新增干扰节点。')
+    ElMessage.error('请先在节点配置中新增干扰节点。')
     return
   }
   jammerEditorJammer.value = {
@@ -862,59 +895,20 @@ function nextInformationDemandId(): string {
   return `INFO-${String(index).padStart(3, '0')}`
 }
 
-/** 打开统一新增业务弹框，默认前向；方向在弹框选择，不推断或交换平台端点。 */
-function addInformationDemand(): void {
-  if (draft.value === null || draft.value.config.platforms.length < 2 || pending.value || draft.value.locked) return
-  const platforms = draft.value.config.platforms
-  businessEditor.value = {
+/** 新业务属于当前链路，复用其方向和单一端点，不猜配历史业务。 */
+function createLinkBusiness(link: Link): InformationDemand {
+  return {
     id: nextInformationDemandId(),
-    sourcePlatformId: platforms[0]!.id,
-    destinationPlatformIds: [platforms[1]!.id],
-    direction: 'FORWARD',
+    sourcePlatformId: link.sourcePlatformId,
+    destinationPlatformIds: [link.targetPlatformId],
+    direction: link.direction,
     enabled: true,
-    ...BUSINESS_DEFAULTS.FORWARD,
+    ...BUSINESS_DEFAULTS[link.direction],
     priority: 'NORMAL',
     maxLatencyMs: 1000,
   }
-  editingBusinessIndex.value = null
-  businessEditorError.value = ''
-  businessFocusPath.value = ''
-  businessDialogVisible.value = true
 }
 
-/** 打开指定业务的独立编辑副本；demand 为当前业务，index 为其在草稿中的位置。 */
-function openBusinessEditor(demand: InformationDemand, index: number): void {
-  businessEditor.value = structuredClone(toRaw(demand))
-  editingBusinessIndex.value = index
-  businessEditorError.value = ''
-  businessFocusPath.value = ''
-  businessDialogVisible.value = true
-}
-
-/** 校验并提交业务副本；demand 为弹框内容，失败不修改原始草稿。 */
-function applyBusinessEditor(demand: InformationDemand): void {
-  if (!draft.value || pending.value || draft.value.locked) return
-  const candidate = structuredClone(toRaw(draft.value.config))
-  const edited = structuredClone(toRaw(demand))
-  edited.id = edited.id.trim()
-  const index = editingBusinessIndex.value
-  if (index === null) candidate.informationDemand.push(edited)
-  else candidate.informationDemand[index] = edited
-  const issue = inspectScenarioConfig(candidate).result.errors.find(item => item.fieldPath.startsWith('informationDemand'))
-  if (issue) { businessEditorError.value = issue.message; return }
-  draft.value.config.informationDemand = candidate.informationDemand
-  businessDialogVisible.value = false
-  markDirty()
-  ElMessage.success(index === null ? '业务已新增，保存草稿后生效。' : '业务已更新，保存草稿后生效。')
-}
-
-/** 删除指定信息需求。 */
-function removeInformationDemand(index: number): void {
-  if (!draft.value || pending.value || draft.value.locked || draft.value.config.informationDemand.length <= 1) return
-  draft.value.config.informationDemand.splice(index, 1)
-  markDirty()
-  ElMessage.success('业务已删除，保存草稿后生效。')
-}
 
 /**
  * 读取规范字段路径对应的页面输入标识。
@@ -928,9 +922,13 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
     frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
   const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
-  if (demandField) return ({ id: 'demand-id', direction: 'demand-direction', enabled: 'demand-enabled', informationType: 'demand-type',
+  if (demandField && linkDialogVisible.value) {
+    const sharedTarget = ({ direction: 'link-direction', sourcePlatformId: 'link-source', destinationPlatformIds: 'link-target', linkId: 'link-id' } as Record<string, string>)[demandField]
+    if (sharedTarget) return sharedTarget
+  }
+  if (demandField) return ({ direction: 'demand-direction', informationType: 'demand-type',
     sourcePlatformId: 'demand-source', destinationPlatformIds: 'demand-destinations', volumeMb: 'demand-volume', frequencyHz: 'demand-frequency',
-    priority: 'demand-priority', maxLatencyMs: 'demand-latency', minDataRateMbps: 'demand-rate' } as Record<string, string>)[demandField]
+    maxLatencyMs: 'demand-latency', minDataRateMbps: 'demand-rate' } as Record<string, string>)[demandField]
   const linkField = /^links\[\d+\]\.(.+)$/.exec(fieldPath)?.[1]
   if (linkField) return ({
     enabled: 'link-enabled',
@@ -1004,9 +1002,14 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
   }
   const demandIndex = Number(/^informationDemand\[(\d+)\]/.exec(issue.fieldPath)?.[1])
   if (Number.isInteger(demandIndex) && draft.value?.config.informationDemand[demandIndex]) {
-    openBusinessEditor(draft.value.config.informationDemand[demandIndex], demandIndex)
-    businessEditorError.value = issue.message
-    businessFocusPath.value = issue.fieldPath
+    const demand = draft.value.config.informationDemand[demandIndex]!
+    const associatedIndex = draft.value.config.links.findIndex(link => link.id === demand.linkId)
+    if (associatedIndex >= 0) {
+      openLinkEditor(draft.value.config.links[associatedIndex]!, associatedIndex)
+      linkEditorError.value = issue.message
+      linkFocusPath.value = issue.fieldPath
+      return
+    }
   }
   if (Number.isInteger(platformIndex) && draft.value?.config.platforms[platformIndex] !== undefined) {
     openPlatformEditor(draft.value.config.platforms[platformIndex], platformIndex)
@@ -1335,11 +1338,11 @@ watch(activeTab, (tab) => {
       </section>
         </el-tab-pane>
 
-        <el-tab-pane label="平台与航点" name="platforms">
-          <section class="console-panel scenario-section" aria-label="平台与航点">
+        <el-tab-pane label="节点配置" name="platforms">
+          <section class="console-panel scenario-section" aria-label="节点配置">
             <div class="section-heading">
 <!--              <div>-->
-<!--                <p class="section-kicker">平台与航点</p>-->
+<!--                <p class="section-kicker">节点配置</p>-->
 <!--                <h3 id="scenario-platform-title">场景实体配置</h3>-->
 <!--              </div>-->
               <div class="platform-counts" aria-label="场景实体数量">
@@ -1347,8 +1350,11 @@ watch(activeTab, (tab) => {
                 <el-tag :type="businessNodeTypeCount === 4 ? 'success' : 'warning'">节点类型 {{ businessNodeTypeCount }} / 4</el-tag>
                 <el-tag>支撑实体 {{ supportingEntityCount }}</el-tag>
               </div>
+              <div class="platform-actions">
+                <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-business-platform" @click="openNewPlatform('business')">新增信息节点</el-button>
+                <el-button :disabled="pending || draft.locked" data-testid="add-supporting-platform" @click="openNewPlatform('supporting')">新增支撑实体</el-button>
+              </div>
             </div>
-
             <el-table :data="draft.config.platforms" stripe data-testid="platform-table">
               <el-table-column prop="id" label="场景实体 ID" min-width="130" />
               <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
@@ -1376,37 +1382,10 @@ watch(activeTab, (tab) => {
               </el-table-column>
             </el-table>
 
-            <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-business-platform" @click="openNewPlatform('business')">新增信息节点</el-button>
-              <el-button :disabled="pending || draft.locked" data-testid="add-supporting-platform" @click="openNewPlatform('supporting')">新增支撑实体</el-button>
-            </div>
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="业务与链路" name="links">
-          <section class="console-panel scenario-section" aria-labelledby="scenario-demand-title">
-            <div class="section-heading"><h3 id="scenario-demand-title">业务配置</h3><el-tag>{{ draft.config.informationDemand.length }} 条</el-tag></div>
-            <el-table :data="draft.config.informationDemand" stripe data-testid="information-demand-table">
-              <el-table-column prop="id" label="业务 ID" min-width="110" />
-              <el-table-column label="方向" width="90"><template #default="{ row }">{{ row.direction === 'FORWARD' ? '前向' : row.direction === 'REVERSE' ? '返向' : '未设置' }}</template></el-table-column>
-              <el-table-column prop="informationType" label="信息类型" min-width="110" />
-              <el-table-column label="业务状态" width="100"><template #default="{ row }"><el-tag :type="row.enabled === false ? 'info' : 'success'">{{ row.enabled === false ? '停用' : '启用' }}</el-tag></template></el-table-column>
-              <el-table-column prop="sourcePlatformId" label="源平台" min-width="110" />
-              <el-table-column label="目标平台" min-width="150"><template #default="{ row }">{{ row.destinationPlatformIds.join('、') }}</template></el-table-column>
-              <el-table-column prop="volumeMb" label="单报文/帧（MB）" min-width="135" />
-              <el-table-column prop="frequencyHz" label="频次（次/帧每秒）" min-width="145" />
-              <el-table-column prop="minDataRateMbps" label="最低业务速率（Mbps）" min-width="175" />
-              <el-table-column label="操作" fixed="right" width="135"><template #default="{ row, $index }">
-                <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-business-${$index}`" @click="openBusinessEditor(row, $index)">编辑</el-button>
-                <el-popconfirm title="确认删除该业务？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeInformationDemand($index)">
-                  <template #reference><el-button link type="danger" :disabled="pending || draft.locked || draft.config.informationDemand.length <= 1" :data-testid="`delete-information-demand-${$index}`">删除</el-button></template>
-                </el-popconfirm>
-              </template></el-table-column>
-            </el-table>
-            <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked || draft.config.platforms.length < 2" data-testid="add-information-demand" @click="addInformationDemand">新增业务</el-button>
-            </div>
-          </section>
+        <el-tab-pane label="链路配置" name="links">
           <section class="console-panel scenario-section" aria-label="链路配置">
             <div class="section-heading">
 <!--              <div>-->
@@ -1417,10 +1396,12 @@ watch(activeTab, (tab) => {
                 <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
                 <el-tag :type="linkTypeCount === 4 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 4 类</el-tag>
               </div>
-              <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
-                :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
+              <div class="platform-actions">
+                <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
+                  :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
+                <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
+              </div>
             </div>
-
             <el-table :data="draft.config.links" stripe data-testid="link-table">
               <el-table-column prop="id" label="链路 ID" min-width="120" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
@@ -1438,16 +1419,13 @@ watch(activeTab, (tab) => {
               <el-table-column label="操作" fixed="right" width="140">
                 <template #default="{ row, $index }">
                   <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-link-${$index}`" @click="openLinkEditor(row, $index)">编辑</el-button>
-                  <el-popconfirm title="确认删除该链路？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeLink(row, $index)">
+                  <el-popconfirm title="确认删除该链路及其业务配置？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeLink(row, $index)">
                     <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-link-${$index}`">删除</el-button></template>
                   </el-popconfirm>
                 </template>
               </el-table-column>
             </el-table>
 
-            <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
-            </div>
           </section>
         </el-tab-pane>
 
@@ -1462,10 +1440,13 @@ watch(activeTab, (tab) => {
                 <el-tag type="primary">设备 {{ draft.config.jammers.length }}</el-tag>
                 <el-tag :type="jammerTypeCount === 3 ? 'success' : 'info'">已配置 {{ jammerTypeCount }} / 3 种手段</el-tag>
               </div>
-              <el-switch :model-value="draft.config.jammingEnabled ?? false" :disabled="pending || draft.locked" active-text="干扰总开关"
-                aria-label="干扰总开关" data-testid="jamming-enabled" @update:model-value="setJammingEnabled" />
+              <div class="platform-actions">
+                <el-switch :model-value="draft.config.jammingEnabled ?? false" :disabled="pending || draft.locked" active-text="干扰总开关"
+                  aria-label="干扰总开关" data-testid="jamming-enabled" @update:model-value="setJammingEnabled" />
+                <el-button type="primary" :disabled="pending || draft.locked || !hasJammerPlatform" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
+                <small v-if="!hasJammerPlatform" data-testid="jammer-node-required">请先在节点配置中新增干扰节点。</small>
+              </div>
             </div>
-
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
               <el-table-column prop="id" label="设备 ID" min-width="130" />
               <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
@@ -1493,10 +1474,6 @@ watch(activeTab, (tab) => {
               </el-table-column>
             </el-table>
 
-            <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked || !hasJammerPlatform" data-testid="add-jammer" @click="openNewJammer">新增干扰设备</el-button>
-              <small v-if="!hasJammerPlatform" data-testid="jammer-node-required">请先在平台与航点中新增干扰节点。</small>
-            </div>
           </section>
         </el-tab-pane>
 
@@ -1508,6 +1485,7 @@ watch(activeTab, (tab) => {
 <!--                <h3 id="scenario-sensor-title">传感器</h3>-->
 <!--              </div>-->
               <el-tag type="primary">{{ draft.config.sensors.length }} 个</el-tag>
+              <div class="platform-actions"><el-button type="primary" data-testid="add-sensor" @click="addSensor">新增传感器</el-button></div>
             </div>
             <el-table :data="draft.config.sensors" stripe data-testid="sensor-table">
               <el-table-column prop="id" label="传感器 ID"/>
@@ -1533,13 +1511,12 @@ watch(activeTab, (tab) => {
               <el-table-column label="启用"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
               <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
             </el-table>
-            <div class="platform-actions"><el-button type="primary" data-testid="add-sensor" @click="addSensor">新增传感器</el-button></div>
           </section>
 
           <section class="console-panel scenario-section" aria-labelledby="scenario-output-title">
             <div class="section-heading"><div><p class="section-kicker">结果配置</p><h3 id="scenario-output-title">输出参数</h3></div></div>
             <div class="form-grid form-grid--basic">
-              <el-form-item class="form-grid__wide" label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
+              <el-form-item label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
               <el-form-item label="写入间隔（秒）" :error="issueMessage('output.writeInterval')"><el-input-number v-model="draft.config.output.writeInterval" :min="draft.config.scenario.timeStep" :step="0.001" controls-position="right" data-testid="output-write-interval" @update:model-value="markDirty" /></el-form-item>
               <el-form-item label="链路质量"><el-switch v-model="draft.config.output.linkQualityEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-quality" @change="markDirty" /></el-form-item>
               <el-form-item label="事件"><el-switch v-model="draft.config.output.eventsEnabled" active-text="输出" inactive-text="关闭" data-testid="output-events" @change="markDirty" /></el-form-item>
@@ -1623,9 +1600,6 @@ watch(activeTab, (tab) => {
       @apply="applyPlatformEditor"
     />
 
-    <BusinessEditorDialog v-model="businessDialogVisible" :demand="businessEditor" :editing="editingBusinessIndex !== null"
-      :error="businessEditorError" :disabled="pending || (draft?.locked ?? true)" :platforms="draft?.config.platforms ?? []"
-      @opened="focusValidationField(businessFocusPath)" @apply="applyBusinessEditor" />
     <LinkEditorDialog
       v-model="linkDialogVisible"
       :link="linkEditorLink"
@@ -1637,6 +1611,8 @@ watch(activeTab, (tab) => {
       :link-type-options="linkTypeOptions"
       :link-direction-labels="linkDirectionLabels"
       :minimum-step="LINK_MHZ_MINIMUM_STEP"
+      :demand="linkBusiness"
+      @opened="focusValidationField(linkFocusPath)"
       @apply="applyLinkEditor"
       @frequency-input="trackLinkFrequencyInput"
       @bandwidth-input="trackLinkBandwidthInput"
@@ -1807,15 +1783,11 @@ watch(activeTab, (tab) => {
 }
 
 .form-grid--basic {
-  grid-template-columns: minmax(12rem, 1fr) minmax(18rem, 2fr);
+  grid-template-columns: minmax(0, 2fr) repeat(4, minmax(0, 1fr));
 }
 
 .form-grid--scenario {
   grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.form-grid__wide {
-  grid-column: 1 / -1;
 }
 
 .form-grid--scenario :deep(.el-form-item) {
@@ -1868,6 +1840,10 @@ watch(activeTab, (tab) => {
   margin-top: 1rem;
 }
 
+.section-heading .platform-actions {
+  margin-top: 0;
+}
+
 .scenario-page :deep(.el-table .el-input-number) {
   width: 100%;
 }
@@ -1917,10 +1893,6 @@ watch(activeTab, (tab) => {
   .form-grid--scenario,
   .validation-issue {
     grid-template-columns: 1fr;
-  }
-
-  .form-grid__wide {
-    grid-column: auto;
   }
 
   .section-heading {

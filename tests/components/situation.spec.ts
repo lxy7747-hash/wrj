@@ -9,6 +9,7 @@ import type { ConfirmationContext, Principal, SimulationRun } from '../../src/co
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import type { InitialNodeSnapshot, SituationMapNode } from '../../src/features/situation/initial-nodes'
 import type { PositionSnapshot } from '../../src/features/situation/position-updates'
+import { selectFileCommunicationLinks, type FileCommunicationConnection, type FileCommunicationLink } from '../../src/features/situation/file-communication-links'
 import {
   SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
@@ -20,6 +21,8 @@ import { useTelemetryStore } from '../../src/stores/telemetry'
 type SituationMapControllerOptions = {
   frame: unknown
   initialNodes?: SituationMapNode[]
+  fileLinks?: FileCommunicationLink[]
+  onSelectFileLink?: (link: FileCommunicationLink) => void
   onSelectNode: (platformId: string) => void
   onSelectLink: (link: SituationLinkView) => void
 }
@@ -29,6 +32,7 @@ const mapControllerMock = vi.hoisted(() => {
     setFrame: vi.fn(),
     setNodes: vi.fn(),
     setLinks: vi.fn(),
+    setFileLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
     setLayerVisible: vi.fn(),
@@ -87,6 +91,15 @@ const INITIAL_NODES: InitialNodeSnapshot = {
       latitude: 25.1026, altitude: 4000, speed: 0, time: 0, sourceEventId: 'LOG-L10' },
   ],
 }
+
+const FILE_CONNECTIONS: FileCommunicationConnection[] = [
+  { sourceEventId: 'LOG-L20', time: 0, scope: 'INTER_PLATFORM', sourceType: 'satcom_1', targetType: 'satcom_2',
+    source: { platformName: 'A', communicationName: 'sat-a', address: '0.1.0.1' },
+    target: { platformName: 'B', communicationName: 'sat-b', address: '0.1.0.2' } },
+  { sourceEventId: 'LOG-L21', time: 5, scope: 'INTER_PLATFORM', sourceType: 'microwave', targetType: 'c_band_relay_down',
+    source: { platformName: 'B', communicationName: 'mw-b', address: '0.1.0.3' },
+    target: { platformName: 'A', communicationName: 'c-a', address: '0.1.0.4' } },
+]
 
 /** 创建组件测试使用的仿真运行投影。 */
 function simulationRun(uiStatus: SimulationRun['uiStatus'], configLocked: boolean): SimulationRun {
@@ -252,6 +265,41 @@ describe('态势主界面', () => {
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('真实通信关联按登记时间展示，随位置更新后显示微波，详情不伪造链路状态', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const snapshot: PositionSnapshot = { fileName: 'positions.csv', generation: 1, recordCount: 1, issueCount: 0,
+      issues: [], waitingForLine: false, hasMore: false,
+      nodes: [{ platformId: 'A', time: 5, longitude: 118, latitude: 25, altitude: 0, speed: 1, heading: 0 }] }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse({ ...INITIAL_NODES, connections: FILE_CONNECTIONS }))
+      .mockResolvedValueOnce(successResponse({ ...snapshot, nodes: [] }))
+      .mockResolvedValueOnce(successResponse(snapshot))
+      .mockResolvedValue(successResponse({ ...snapshot, generation: 2, nodes: [] })))
+    const wrapper = await mountSituationPage()
+    expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
+      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路',
+    )
+    expect(wrapper.find('[aria-label="通信关联图例"]').exists()).toBe(false)
+    expect(mapControllerMock.latestOptions?.fileLinks?.map(link => link.type)).toEqual(['SAT'])
+    expect(wrapper.get('[aria-label="态势图层"] button:nth-child(2)').attributes('disabled')).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
+    expect(mapControllerMock.controller.setFileLinks).toHaveBeenLastCalledWith(links)
+    expect(wrapper.get('[aria-label="链路类型图例"]').findAll('i')).toHaveLength(5)
+    mapControllerMock.latestOptions?.onSelectFileLink?.(links[1]!)
+    await flushPromises()
+    const details = document.querySelector('[data-testid="file-link-details"]')
+    expect(details?.textContent).toContain('微波通信')
+    expect(details?.textContent).toContain('状态未知')
+    expect(details?.textContent).toContain('c_band_relay_down')
+    expect(details?.textContent).toContain('LOG-L21')
+    expect(details?.textContent).not.toMatch(/正常|劣化|中断/)
+    expect(wrapper.find('.metric-panel').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(document.querySelector('[data-testid="file-link-details"]')).toBeNull()
   })
 
   it('真实日志读取失败不回显预置 Mock 数据，允许重新加载', async () => {
@@ -768,6 +816,8 @@ describe('Leaflet 控制器回归', () => {
 
   async function createController(options: {
     initialNodes?: SituationMapNode[]
+    fileLinks?: FileCommunicationLink[]
+    onSelectFileLink?: (link: FileCommunicationLink) => void
     onSelectNode?: (platformId: string) => void
     onSelectLink?: (link: SituationLinkView) => void
     onZoomChange?: (zoom: number) => void
@@ -785,6 +835,8 @@ describe('Leaflet 控制器回归', () => {
       container,
       frame: options.initialNodes ? null : reactive(structuredClone(SITUATION_FRAME_F00042)),
       initialNodes: options.initialNodes,
+      fileLinks: options.fileLinks,
+      onSelectFileLink: options.onSelectFileLink,
       links: options.initialNodes ? [] : SITUATION_LINKS_F00042,
       selectedNodeId: 'CMD-01',
       onSelectNode: options.onSelectNode ?? vi.fn(),
@@ -868,6 +920,43 @@ describe('Leaflet 控制器回归', () => {
     expect(container?.querySelectorAll('.situation-map-node-marker--selected')).toHaveLength(1)
     controller.focusTarget({ kind: 'node', targetId: 'A' })
     expect(setViewSpy).toHaveBeenLastCalledWith([31, -78], MAP_CONFIG.defaults.zoom, expect.objectContaining({ animate: true }))
+  })
+
+  it('文件关联连线取最新端点，支持点击与键盘查看，图层关闭后位置更新不会重新开启', async () => {
+    const lineSpy = vi.spyOn(L, 'polyline')
+    const markerSpy = vi.spyOn(L, 'marker')
+    const onSelectFileLink = vi.fn()
+    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
+    const controller = await createController({ initialNodes: INITIAL_NODES.nodes, fileLinks: links, onSelectFileLink })
+    const calls = () => lineSpy.mock.calls.filter(([, options]) => options?.className === 'situation-map-file-link')
+    expect(calls()).toHaveLength(2)
+    const points = calls()[0]?.[0] as L.LatLngTuple[]
+    expect([points[0], points.at(-1)]).toEqual([[30.0024, -77.9617], [25.1026, 118.7321]])
+    expect(calls()[0]?.[0]).not.toEqual(calls()[1]?.[0])
+    expect(calls().map(([, options]) => options?.color)).toEqual(['#67c23a', '#409eff'])
+    expect(calls().map(([, options]) => options?.dashArray)).toEqual([undefined, '8 5'])
+    const index = lineSpy.mock.calls.findIndex(([, options]) => options?.className === 'situation-map-file-link')
+    const line = lineSpy.mock.results[index]?.value as L.Polyline
+    expect((line.getTooltip()?.getContent() as HTMLElement).textContent).toContain('状态未知')
+    line.fire('click')
+    expect(onSelectFileLink).toHaveBeenLastCalledWith(links[0])
+    const hit = container?.querySelector<HTMLElement>('.situation-map-file-link-hit')
+    hit?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSelectFileLink).toHaveBeenCalledTimes(2)
+    controller.setLayerVisible('links', false)
+    lineSpy.mockClear()
+    controller.setNodes(INITIAL_NODES.nodes.map(node => node.platformId === 'A' ? { ...node, latitude: 26, longitude: 119 } : node))
+    const updated = calls()[0]?.[0] as L.LatLngTuple[]
+    expect([updated[0], updated.at(-1)]).toEqual([[26, 119], [25.1026, 118.7321]])
+    expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
+    controller.setLayerVisible('links', true)
+    expect(container?.querySelectorAll('.situation-map-file-link-hit')).toHaveLength(2)
+    controller.setNodes(INITIAL_NODES.nodes.slice(0, 1))
+    expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
+    controller.setFileLinks([])
+    controller.destroy()
+    expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
+    expect(markerSpy).toHaveBeenCalled()
   })
 
   it('链路 props 筛选和重排后保持几何与交互绑定', async () => {

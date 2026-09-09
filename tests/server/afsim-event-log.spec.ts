@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
 import { isInitialNodeSnapshot } from '../../src/features/situation/initial-nodes'
+import { fileCommunicationType, selectFileCommunicationLinks } from '../../src/features/situation/file-communication-links'
 
 // 与已有服务端测试一致：Node 专用模块只在测试运行时加载，不纳入浏览器类型工程。
 const fsModule = 'node:fs/' + 'promises'
@@ -50,11 +51,53 @@ describe('真实 AFSIM 事件日志解析', () => {
       expect(snapshot.nodes[0]).toMatchObject({ name: 'A', type: 'AIR_PLATFORM', altitude: 0, speed: 223.52, time: 0 })
       expect(snapshot.nodes[0].longitude).toBeCloseTo(-77.9617055556, 9)
       expect(snapshot.nodes[1].altitude).toBe(8000)
+      expect(snapshot.connections).toHaveLength(2)
+      expect(snapshot.connections?.[0]).toMatchObject({ sourceType: 'satcom_1', targetType: 'satcom_2', time: 0 })
       expect(JSON.stringify(snapshot)).not.toMatch(/"(?:path|snr|ber|status|links)":/)
       expect(await readFile(source, 'utf8')).toBe(SAMPLE)
       await writeFile(source, '0 PLATFORM_ADDED A Type: AIR Side: blue')
       await expect(readInitialNodes(source)).rejects.toThrow('初始位置')
       await expect(readInitialNodes(join(directory, 'missing.csv'))).rejects.toThrow()
+    } finally {
+      await rm(directory, { recursive: true })
+    }
+  })
+
+  it('只展示含明确卫星或微波设备的跨平台登记，合并反向关联但保留证据与时间', async () => {
+    const readerModule = '../../server/local/' + 'afsim-log-reader.js'
+    const { readInitialNodes } = await import(readerModule)
+    const directory = await mkdtemp(join(tmpdir(), 'wrj-file-connections-'))
+    const source = join(directory, 'sample.csv')
+    try {
+      await writeFile(source, `${SAMPLE}\n5 COMM_TURNED_ON B Comm: c Type: c_band_relay_down\n5 LINK_ADDED_TO_MANAGER A rx 3 linked to: B c 4\n5 COMM_TURNED_ON A Comm: jids-a Type: jids\n5 COMM_TURNED_ON B Comm: jids-b Type: jids\n5 LINK_ADDED_TO_MANAGER A jids-a 5 linked to: B jids-b 6\n5 LINK_ADDED_TO_MANAGER A absent 7 linked to: B rx 2`)
+      const snapshot = await readInitialNodes(source)
+      expect(snapshot.connections).toHaveLength(3)
+      const early = selectFileCommunicationLinks(snapshot.connections!, 0)
+      expect(early).toHaveLength(1)
+      expect(early[0]).toMatchObject({ type: 'SAT', sourcePlatformId: 'A', targetPlatformId: 'B' })
+      expect(early[0]?.records.map(record => record.source.platformName)).toEqual(['A', 'B'])
+      const later = selectFileCommunicationLinks(snapshot.connections!, 5)
+      expect(later.map(link => link.type)).toEqual(['SAT', 'MICROWAVE'])
+      expect(later[1]?.records[0]?.targetType).toBe('c_band_relay_down')
+      expect(fileCommunicationType('satcom_2')).toBe('SAT')
+      expect(fileCommunicationType('satcom_unknown')).toBeNull()
+      expect(selectFileCommunicationLinks([], 5)).toEqual([])
+      const connection = snapshot.connections![0]!
+      for (const record of [
+        null,
+        { ...connection, time: -1 },
+        { ...connection, scope: 'INTERNAL' },
+        { ...connection, source: { ...connection.source, platformName: 'missing' } },
+        { ...connection, source: { ...connection.source, communicationName: '' } },
+        { ...connection, source: { ...connection.source, platformName: 'B' } },
+        { ...connection, target: null },
+        { ...connection, sourceType: 'jids', targetType: 'jids' },
+      ]) expect(isInitialNodeSnapshot({ ...snapshot, connections: [record] })).toBe(false)
+      expect(isInitialNodeSnapshot({ ...snapshot, connections: [connection, connection] })).toBe(false)
+      expect(isInitialNodeSnapshot({ ...snapshot, connections: {} })).toBe(false)
+      expect(selectFileCommunicationLinks([{ ...connection, scope: 'INTERNAL' }], 5)).toEqual([])
+      const mixed = selectFileCommunicationLinks([{ ...connection, targetType: 'microwave' }], 5)
+      expect(mixed.map(link => link.type)).toEqual(['SAT', 'MICROWAVE'])
     } finally {
       await rm(directory, { recursive: true })
     }

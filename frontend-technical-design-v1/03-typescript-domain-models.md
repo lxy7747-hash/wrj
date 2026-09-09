@@ -16,7 +16,7 @@
 | `output` | `directory`, `writeInterval`, `linkQualityEnabled`, `eventsEnabled`, `linkSwitchEnabled` | 平铺三个 SRS 输出开关，不重塑成内部 `csv` 对象 |
 | `informationDemand[]` | `id`, `sourcePlatformId`, `destinationPlatformIds`, `informationType`, `volumeMb`, `frequencyHz`, `priority`, `maxLatencyMs`, `minDataRateMbps` | 至少一项；源/目标引用闭合，目标非空且不重复 |
 
-`scenario` 是 canonical 名；输入适配器可以识别旧称 `scene`，但输出、store 和 API 永不发出旧称。`InformationDemand[]` 已由冻结需求基线纳入本阶段 canonical ScenarioConfig，不能省略。干扰器和传感器的 UI 扩展单独存放在 `ScenarioUiExtensions`，不得进入正式 ScenarioConfig JSON。若实现希望使用带单位后缀的 view-model，只能定义独立 DTO 与 adapter，不能修改上述 canonical 类型。
+`scenario` 是 canonical 名；输入适配器可以识别旧称 `scene`，但输出、store 和 API 永不发出旧称。`InformationDemand[]` 已由冻结需求基线纳入本阶段 canonical ScenarioConfig，不能省略。2026-09-09 单链路配置增加可选 `InformationDemand.linkId`：旧记录缺省保持未关联；关联后必须引用当前链路，每条链路最多一项业务，业务源平台、单目标及方向必须与链路一致。界面同弹框录入，保存仍保持独立 canonical 集合，并由共享校验保证跨集合一致性；不改变候选链路和选路算法。干扰器和传感器的 UI 扩展单独存放在 `ScenarioUiExtensions`，不得进入正式 ScenarioConfig JSON。若实现希望使用带单位后缀的 view-model，只能定义独立 DTO 与 adapter，不能修改上述 canonical 类型。
 
 场景实体类型为七项（含本轮用户新增机载干扰平台）：四类业务信息节点 `REAR_COMMAND_NODE | FORWARD_RELAY_NODE | GROUND_CLUSTER_COMMAND_NODE | AIRBORNE_MISSION_CLUSTER`，三类支撑实体 `COMMUNICATION_SATELLITE | GROUND_JAMMER_DETECTION_STATION | AIRBORNE_JAMMER_PLATFORM`。只有四类业务信息节点计入 50 个容量；`category` 仅表示 `ground | air | space` 部署域。链路允许 `SAT | MICROWAVE | DATALINK | LASER`。坐标为 degrees，高度/距离为 m，速度 m/s，频率/带宽 MHz，发射/干扰设备功率 W，接收/干扰计算功率 dBm，增益 dBi，损耗/SNR dB，速率 Mbps，时延 ms，时间/持续期 s，BER/概率为 0..1，无百分号字段除显式 Percent0To100。
 

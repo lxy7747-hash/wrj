@@ -85,7 +85,7 @@ watch(() => props.modelValue, (visible) => {
             </el-select>
             <small class="field-hint">选择设备的搭载节点，位置沿用该节点，不是选择干扰目标。</small>
             <small v-if="legacyPlatformId" class="field-hint" data-testid="jammer-legacy-owner">旧归属不是干扰节点，请重新选择；取消不会修改原数据。</small>
-            <small v-if="jammerPlatforms.length === 0" class="field-hint">请先在平台与航点中新增干扰节点。</small>
+            <small v-if="jammerPlatforms.length === 0" class="field-hint">请先在节点配置中新增干扰节点。</small>
           </el-form-item>
         </div>
       </section>

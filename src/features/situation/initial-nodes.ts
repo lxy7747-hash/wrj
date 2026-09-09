@@ -1,3 +1,5 @@
+import { isFileCommunicationConnection, type FileCommunicationConnection } from './file-communication-links'
+
 /** 地图只需要位置与标识，不要求日志提供链路质量或干扰状态。 */
 export interface SituationMapNode {
   platformId: string
@@ -13,6 +15,7 @@ export interface InitialNodeSnapshot {
   fileName: string
   sha256: string
   nodes: Array<SituationMapNode & { time: number; sourceEventId: string }>
+  connections?: FileCommunicationConnection[]
 }
 
 /**
@@ -27,7 +30,7 @@ export function isInitialNodeSnapshot(value: unknown): value is InitialNodeSnaps
     || typeof snapshot.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.sha256)
     || !Array.isArray(snapshot.nodes) || snapshot.nodes.length === 0) return false
   const ids = new Set<string>()
-  return snapshot.nodes.every((node) => {
+  const validNodes = snapshot.nodes.every((node) => {
     if (!node || typeof node !== 'object') return false
     if (![node.platformId, node.name, node.type, node.sourceEventId].every(
       (text) => typeof text === 'string' && text.trim().length > 0,
@@ -37,4 +40,7 @@ export function isInitialNodeSnapshot(value: unknown): value is InitialNodeSnaps
       && Math.abs(node.longitude) <= 180 && Math.abs(node.latitude) <= 90
       && node.speed >= 0 && node.time >= 0
   })
+  return validNodes && (snapshot.connections === undefined || (Array.isArray(snapshot.connections)
+    && snapshot.connections.every(record => isFileCommunicationConnection(record, ids))
+    && new Set(snapshot.connections.map(record => record.sourceEventId)).size === snapshot.connections.length))
 }

@@ -24,7 +24,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
-  apply: [platform: Platform, quantity: number]
+  apply: [platform: Platform, quantity: number, spacingKm: number]
 }>()
 
 const editor = ref<Platform | null>(null)
@@ -32,6 +32,7 @@ const waypointPickerVisible = ref(false)
 const waypointPickerIndex = ref<number | null>(null)
 const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
 const quantity = ref(1)
+const spacingKm = ref(1)
 
 const selectedBusinessType = computed(() => {
   const type = editor.value?.type
@@ -46,6 +47,8 @@ const availableQuantity = computed(() => {
   return Math.max(0, props.businessTypeLimits[type] - props.businessTypeCounts[type] + editingCurrentType)
 })
 const showBatchQuantity = computed(() => !props.editing && editor.value?.type === 'AIRBORNE_MISSION_CLUSTER')
+const showGridSpacing = computed(() => showBatchQuantity.value && quantity.value > 1 && editor.value?.waypoints.length === 0)
+const invalidSpacing = computed(() => showGridSpacing.value && (!Number.isFinite(spacingKm.value) || spacingKm.value <= 0))
 const cannotAdd = computed(() => !props.editing && availableQuantity.value === 0)
 const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE')
 const isJammerStation = computed(() => editor.value?.type === 'GROUND_JAMMER_DETECTION_STATION')
@@ -103,15 +106,16 @@ function removeWaypoint(index: number): void {
 }
 
 function apply(): void {
-  if (editor.value === null || cannotAdd.value) return
+  if (editor.value === null || cannotAdd.value || invalidSpacing.value) return
   if (!supportsWaypoints.value) editor.value.waypoints = []
-  emit('apply', editor.value, quantity.value)
+  emit('apply', editor.value, quantity.value, spacingKm.value)
 }
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.platform === null ? null : structuredClone(toRaw(props.platform))
   quantity.value = 1
+  spacingKm.value = 1
   if (editor.value !== null) synchronizeTypeFields(editor.value.type)
   resetWaypointPicker()
 }, { immediate: true })
@@ -176,6 +180,12 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="isJammerStation ? 24.8 : isForwardRelay ? 25.3 : editor.type === 'REAR_COMMAND_NODE' ? 24 : -90" :max="isJammerStation ? 25.4 : isForwardRelay ? 25.7 : editor.type === 'REAR_COMMAND_NODE' ? 25 : 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
           <el-form-item label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
         </div>
+        <div v-if="showGridSpacing" class="position-grid">
+          <el-form-item label="节点间隔（km）" :error="invalidSpacing ? '节点间隔必须大于 0 km。' : ''">
+            <el-input-number v-model="spacingKm" :min="0" :step="0.1" :disabled="cannotAdd" controls-position="right" data-testid="platform-spacing" />
+          </el-form-item>
+        </div>
+        <span v-if="showGridSpacing" class="platform-editor-field__hint">以编队原点为中心方形平铺，默认相邻节点间隔 1 km；不足一行时居中排列，高度保持一致。</span>
       </section>
 
       <section class="platform-editor-section" aria-labelledby="platform-relation-title">
@@ -215,7 +225,7 @@ watch(() => props.modelValue, (visible) => {
     </el-form>
     <template #footer>
       <el-button data-testid="cancel-platform" @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :disabled="pending || locked || cannotAdd" data-testid="apply-platform" @click="apply">确认</el-button>
+      <el-button type="primary" :disabled="pending || locked || cannotAdd || invalidSpacing" data-testid="apply-platform" @click="apply">确认</el-button>
     </template>
   </el-dialog>
 

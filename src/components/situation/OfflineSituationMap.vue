@@ -4,6 +4,7 @@ import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
+import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import {
   PLATFORM_TYPE_LABELS,
   type SituationLinkView,
@@ -18,6 +19,7 @@ import {
 const props = defineProps<{
   frame: TelemetryFrame | null
   initialNodes?: SituationMapNode[]
+  fileLinks?: FileCommunicationLink[]
   links: SituationLinkView[]
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
@@ -34,6 +36,10 @@ const zoom = ref(MAP_CONFIG.defaults.zoom)
 const theme = ref<MapTheme>(MAP_CONFIG.defaults.theme)
 const basemap = ref<MapBasemap>(MAP_CONFIG.defaults.basemap)
 const selectedNodeDialogVisible = ref(false)
+const selectedFileLinkId = ref('')
+const fileLinkDialogVisible = ref(false)
+const selectedFileLink = computed(() => props.fileLinks?.find(link => link.id === selectedFileLinkId.value))
+const hasFileLinks = computed(() => !props.frame && (props.fileLinks?.length ?? 0) > 0)
 const themeToggleLabel = computed(() => (
   theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
 ))
@@ -42,7 +48,7 @@ const basemapToggleLabel = computed(() => (
 ))
 const layers = reactive<Record<MapLayer, boolean>>({
   nodes: true,
-  links: props.frame !== null,
+  links: true,
   interference: props.frame !== null,
   grid: MAP_CONFIG.defaults.gridVisible,
 })
@@ -191,6 +197,11 @@ onMounted(() => {
     container: mapContainer.value,
     frame: props.frame,
     initialNodes: props.initialNodes,
+    fileLinks: props.fileLinks,
+    onSelectFileLink: link => {
+      selectedFileLinkId.value = link.id
+      fileLinkDialogVisible.value = true
+    },
     links: props.links,
     selectedNodeId: props.selectedNodeId,
     onSelectNode: handleSelectNode,
@@ -218,6 +229,14 @@ watch(() => props.frame, (frame) => {
 /** 将追加文件合并后的节点位置传入现有地图，保留视图、图层开关和选中状态。 */
 watch(() => props.initialNodes, (nodes) => {
   if (!props.frame) mapController.value?.setNodes(nodes ?? [])
+})
+
+watch(() => props.fileLinks, links => {
+  mapController.value?.setFileLinks(links ?? [])
+})
+
+watch(selectedFileLink, link => {
+  if (!link) fileLinkDialogVisible.value = false
 })
 
 /**
@@ -261,7 +280,7 @@ onBeforeUnmount(() => {
       class="offline-map__canvas"
       data-testid="leaflet-situation-map"
       role="application"
-      :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : '真实日志初始节点位置图'"
+      :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : '真实日志节点位置与通信关联图'"
     ></div>
 
     <div class="offline-map__topbar">
@@ -279,7 +298,7 @@ onBeforeUnmount(() => {
           type="button"
           :class="{ active: layers[layer[0]] }"
           :aria-pressed="layers[layer[0]]"
-          :disabled="!frame && (layer[0] === 'links' || layer[0] === 'interference')"
+          :disabled="!frame && (layer[0] === 'interference' || (layer[0] === 'links' && !hasFileLinks))"
           @click="toggleLayer(layer[0])"
         >{{ layer[1] }}</button>
         <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
@@ -414,7 +433,24 @@ onBeforeUnmount(() => {
       </div>
     </el-dialog>
 
-    <div v-if="frame" class="offline-map__legend" aria-label="链路类型图例">
+    <el-dialog v-model="fileLinkDialogVisible" title="通信关联明细" width="min(52rem, calc(100vw - 2rem))" :close-on-click-modal="false">
+      <div v-if="selectedFileLink" data-testid="file-link-details">
+        <p>{{ FILE_COMMUNICATION_LABELS[selectedFileLink.type] }} · {{ selectedFileLink.sourcePlatformId }} — {{ selectedFileLink.targetPlatformId }}</p>
+        <p class="selected-node-dialog__notice">状态未知：按端点设备类型筛选登记关联，曲线仅为关联示意，不代表物理链路已接通；不提供 SNR、BER。</p>
+        <el-table :data="selectedFileLink.records" max-height="340">
+          <el-table-column label="登记时间（秒）" prop="time" width="125" />
+          <el-table-column label="发送端" min-width="230">
+            <template #default="{ row }">{{ row.source.platformName }} / {{ row.source.communicationName }}<br>{{ row.sourceType }} · {{ row.source.address }}</template>
+          </el-table-column>
+          <el-table-column label="接收端" min-width="230">
+            <template #default="{ row }">{{ row.target.platformName }} / {{ row.target.communicationName }}<br>{{ row.targetType }} · {{ row.target.address }}</template>
+          </el-table-column>
+          <el-table-column label="源记录" prop="sourceEventId" width="120" />
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <div v-if="frame || hasFileLinks" class="offline-map__legend" aria-label="链路类型图例">
       <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
       <div><i class="legend-line legend-line--microwave"></i>微波链路</div>
       <div><i class="legend-line legend-line--datalink"></i>新一代数传链路</div>

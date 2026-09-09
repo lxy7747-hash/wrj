@@ -45,10 +45,14 @@ function buildPreview(draft: ScenarioDraft): string {
   })
   // 真实 AFSIM 映射待后端规则确认；注释保留全部输入，不伪造引擎指令。
   lines.push(`  # 链路设置（参数记录） ${JSON.stringify(linkSettings)}`)
+  const excludedLinkIds = new Set<string>()
   config.links.forEach((link) => {
     const enabled = isConfiguredLinkEnabled(link, linkSettings, config.platforms)
     lines.push(`  # 链路参数（参数记录） ${JSON.stringify({ ...LINK_PARAMETER_DEFAULTS, ...link, enabled: readLinkEnabled(link, linkSettings), participates: enabled })}`)
-    if (!enabled) return
+    if (!enabled) {
+      excludedLinkIds.add(link.id)
+      return
+    }
     lines.push(`  comm ${JSON.stringify(link.id)} type=${link.type} source=${JSON.stringify(link.sourcePlatformId)} target=${JSON.stringify(link.targetPlatformId)} frequency=${link.frequency}MHz bandwidth=${link.bandwidth}MHz power=${link.txPower}W rate=${link.dataRate}Mbps`)
   })
   lines.push(`  # 干扰总开关（参数记录） ${config.jammingEnabled ?? false}`)
@@ -64,9 +68,10 @@ function buildPreview(draft: ScenarioDraft): string {
     lines.push(`  sensor ${JSON.stringify(sensor.id)} platform=${JSON.stringify(sensor.platformId)} frequency=${sensor.frequencyRange.min}..${sensor.frequencyRange.max}MHz range=${sensor.detectionRange}m`)
   })
   config.informationDemand.forEach((demand) => {
-    // 仅记录配置供 Mock 审查；停用业务不生成任务行，真实 AFSIM 业务映射仍待对接。
+    // 仅在生成阶段联动过滤，不修改业务配置；旧版未关联业务仍按自身开关处理。
     lines.push(`  # 业务参数（参数记录） ${JSON.stringify(demand)}`)
     if (demand.enabled === false) return
+    if (demand.linkId !== undefined && excludedLinkIds.has(demand.linkId)) return
     lines.push(`  information_demand ${JSON.stringify(demand.id)} source=${JSON.stringify(demand.sourcePlatformId)} destinations=${demand.destinationPlatformIds.map((id) => JSON.stringify(id)).join(',')} type=${JSON.stringify(demand.informationType)} volume=${demand.volumeMb}MB frequency=${demand.frequencyHz}Hz priority=${demand.priority} latency=${demand.maxLatencyMs}ms rate=${demand.minDataRateMbps}Mbps`)
   })
   lines.push(`  output path=${JSON.stringify(config.output.directory)} interval=${config.output.writeInterval}s link_quality=${config.output.linkQualityEnabled} events=${config.output.eventsEnabled} link_switch=${config.output.linkSwitchEnabled}`)

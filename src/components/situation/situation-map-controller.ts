@@ -6,6 +6,7 @@ import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
+import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
 import {
   LINK_TYPE_LABELS,
@@ -25,6 +26,8 @@ export interface SituationMapControllerOptions {
   frame: TelemetryFrame | null
   /** 真实文件节点，无完整遥测帧时使用；后续位置通过 setNodes 更新。 */
   initialNodes?: SituationMapNode[]
+  fileLinks?: FileCommunicationLink[]
+  onSelectFileLink?: (link: FileCommunicationLink) => void
   links: SituationLinkView[]
   selectedNodeId: string
   onSelectNode: (platformId: string) => void
@@ -54,6 +57,9 @@ export interface SituationMapController {
    * @param nodes 初始化节点与本轮追加位置合并后的完整集合。
    */
   setNodes: (nodes: SituationMapNode[]) => void
+
+  /** 更新文件关联；与完整遥测链路分开，不补造质量或状态字段。 */
+  setFileLinks: (links: FileCommunicationLink[]) => void
 
   /**
    * 更新当前选中节点。
@@ -365,6 +371,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   let currentLinks = [...options.links]
   let currentFrame = options.frame
   let fileNodes = options.initialNodes ?? []
+  let fileLinks = options.fileLinks ?? []
   let currentNodes = currentFrame?.platforms ?? fileNodes
   let selectedNodeId = options.selectedNodeId
   let focusedTarget: SituationMapFocusTarget | null = null
@@ -434,7 +441,10 @@ export function createSituationMapController(options: SituationMapControllerOpti
         handleMapLinkSelect,
       )
     } else {
-      layerGroups.links.clearLayers()
+      renderFileLinks(layerGroups.links, currentNodes, fileLinks, link => {
+        focusedTarget = { kind: 'link', targetId: link.id }
+        options.onSelectFileLink?.(link)
+      })
       layerGroups.interference.clearLayers()
     }
     renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
@@ -529,6 +539,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
         focusedTarget = null
       }
       renderBusinessLayers()
+    },
+
+    setFileLinks(links): void {
+      if (!map) return
+      fileLinks = links
+      if (!currentFrame) renderBusinessLayers()
     },
 
     setSelectedNodeId(platformId): void {
@@ -869,9 +885,13 @@ function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView): L.LatL
   )
   if (!source || !destination) return []
 
+  return sampleConnectionCurve(source, destination, MAP_CONFIG.linkCurveOffsets[summaryIndex] ?? 0)
+}
+
+/** 共用示意曲线采样，偏移只用于区分重叠连线，不改变端点位置。 */
+function sampleConnectionCurve(source: SituationMapNode, destination: SituationMapNode, offset: number): L.LatLngTuple[] {
   const [sourceLatitude, sourceLongitude] = pointForPlatform(source)
   const [destinationLatitude, destinationLongitude] = pointForPlatform(destination)
-  const offset = MAP_CONFIG.linkCurveOffsets[summaryIndex] ?? 0
   const controlLatitude = (sourceLatitude + destinationLatitude) / 2 + offset
   const controlLongitude = (sourceLongitude + destinationLongitude) / 2 + offset
   const samples: L.LatLngTuple[] = []
@@ -957,6 +977,41 @@ function renderLinks(
     bindMarkerKeyboardSelection(keyboardMarker, () => onSelectLink(link))
     keyboardMarker.addTo(group)
   })
+}
+
+/** 文件连线只表达登记关联；端点始终取本轮最新节点坐标，明细保留原始方向。 */
+function renderFileLinks(
+  group: L.LayerGroup,
+  nodes: SituationMapNode[],
+  links: FileCommunicationLink[],
+  onSelect: (link: FileCommunicationLink) => void,
+): void {
+  group.clearLayers()
+  const platforms = new Map(nodes.map(node => [node.platformId, node]))
+  for (const [index, link] of links.entries()) {
+    const source = platforms.get(link.sourcePlatformId)
+    const target = platforms.get(link.targetPlatformId)
+    if (!source || !target) continue
+    const points = sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0)
+    const name = `${FILE_COMMUNICATION_LABELS[link.type]}关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知`
+    const tooltip = document.createElement('span')
+    tooltip.textContent = name
+    const line = L.polyline(points, {
+      ...LINK_TYPE_STYLES[link.type], className: 'situation-map-file-link',
+      bubblingMouseEvents: false,
+    })
+    line.bindTooltip(tooltip, { sticky: true }).on('click', () => onSelect(link)).addTo(group)
+    const hit = document.createElement('span')
+    hit.textContent = name
+    hit.style.cssText = 'display:block;width:28px;height:28px;opacity:0'
+    const marker = L.marker(points[Math.floor(points.length / 2)]!, {
+      icon: L.divIcon({ html: hit, className: 'situation-map-file-link-hit', iconSize: [28, 28], iconAnchor: [14, 14] }),
+      keyboard: true, title: name, bubblingMouseEvents: false, zIndexOffset: 750,
+    })
+    marker.on('click', () => onSelect(link))
+    bindMarkerKeyboardSelection(marker, () => onSelect(link))
+    marker.addTo(group)
+  }
 }
 
 /**
