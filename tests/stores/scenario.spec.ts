@@ -475,6 +475,7 @@ describe('P2-6 场景模板 Store', () => {
     await expect(scenario.loadTemplates()).resolves.toBe(true)
     expect(scenario.templates).toEqual([fixtureTemplate])
     expect(scenario.templateResultCode).toBe('TEMPLATES_LOADED')
+    expect(scenario.templateResultMessage).toBe('')
     await expect(scenario.loadTemplate(fixtureTemplate.templateId)).resolves.toEqual(fixtureTemplate)
     expect(scenario.selectedTemplate).toEqual(fixtureTemplate)
     expect(scenario.templateResultMessage).toContain('版本 4')

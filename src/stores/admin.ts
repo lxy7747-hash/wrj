@@ -381,7 +381,7 @@ export const useAdminStore = defineStore('admin', {
           else this.archives = data
           empty = data.length === 0
         }
-        this.maintenance[section] = { state: empty ? 'EMPTY' : 'SUCCESS', message: empty ? '暂无记录。' : '数据已加载。', fieldPath: '' }
+        this.maintenance[section] = { state: empty ? 'EMPTY' : 'SUCCESS', message: empty ? '暂无记录。' : '', fieldPath: '' }
         return true
       } catch (error) {
         if (epoch !== this.maintenanceEpoch) return false
@@ -487,7 +487,7 @@ export const useAdminStore = defineStore('admin', {
           const exported = readExportStatus(payload)
           if (!exported || exported.objectId !== 'FULL-CONFIG' || exported.classification !== 'INTERNAL') throw new Error('配置导出结果不正确。')
           this.fullConfigExport = exported
-          message = '完整配置导出验证通过，未生成文件。'
+          message = '完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。'
         }
         this.maintenance[section] = { state: 'SUCCESS', message, fieldPath: '' }
         return true

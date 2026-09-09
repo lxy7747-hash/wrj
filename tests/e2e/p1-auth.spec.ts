@@ -328,17 +328,24 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
     await expect(panel.getByTestId('restore-result')).toContainText(result === 'SUCCESS' ? '成功' : rolledBack ? '已回滚' : '失败，恢复未开始')
   }
 
-  await panel.getByTestId('full-config-export').click()
+  await expect(panel.getByTestId('full-config-export')).toHaveCount(0)
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('open-scenario-operations').click()
+  const exportPanel = page.getByTestId('scenario-config-export')
+  await expect(exportPanel).toContainText('不校验或导出当前场景内容')
+  await exportPanel.getByTestId('full-config-export').click()
   const exported = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/admin/config/export')
-  await page.getByRole('dialog', { name: '导出完整配置', exact: true }).getByRole('button', { name: '确认执行' }).click()
+  await page.getByRole('dialog', { name: '完整配置导出流程演示', exact: true }).getByRole('button', { name: '确认执行' }).click()
   const exportResponse = await exported
   expect(exportResponse.status()).toBe(200)
   const exportBody = await exportResponse.json()
   expect(exportBody).toMatchObject({ data: { objectId: 'FULL-CONFIG', classification: 'INTERNAL', generated: false } })
-  await expect(panel.getByTestId('full-config-result')).toContainText(exportBody.data.watermark)
-  await expect(panel.getByTestId('full-config-result')).toContainText(exportBody.data.verifiedAt)
+  await expect(exportPanel).toContainText('完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。')
+  await expect(exportPanel.getByTestId('full-config-result')).toContainText(exportBody.data.watermark)
+  await expect(exportPanel.getByTestId('full-config-result')).toContainText(exportBody.data.verifiedAt)
 
+  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
   await page.getByRole('menuitem', { name: '仿真数据管理', exact: true }).click()
   const archive = page.getByTestId('archive-panel')
   await archive.getByRole('textbox', { name: '归档检索' }).fill('RPT-001')

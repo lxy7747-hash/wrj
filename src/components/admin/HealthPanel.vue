@@ -22,7 +22,7 @@ onBeforeUnmount(() => store.resetMaintenance())
     <header class="maintenance-toolbar"><h3>系统运行状态</h3><DataExchangeStateTag :state="feedback.state" /><el-button :disabled="pending" @click="store.loadMaintenance('health')">刷新状态</el-button></header>
     <p class="maintenance-note">引擎、数据库与通信通道的实际运行状态将在接入后提供。</p>
     <el-form inline><el-form-item label="状态"><el-select v-model="status" style="width: 180px" aria-label="运行状态筛选"><el-option label="全部状态" value="" /><el-option label="正常" value="HEALTHY" /><el-option label="尚未接入" value="NOT_CONNECTED_BY_DESIGN" /></el-select></el-form-item></el-form>
-    <el-alert :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" />
+    <el-alert v-if="feedback.message" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="health-feedback" />
     <el-table v-loading="pending" :data="rows" stripe empty-text="暂无匹配组件" data-testid="health-table"><el-table-column prop="name" label="组件" /><el-table-column label="状态"><template #default="{ row }"><el-tag :type="row.state === 'HEALTHY' ? 'success' : 'info'">{{ row.label }}</el-tag></template></el-table-column></el-table>
   </section>
 </template>

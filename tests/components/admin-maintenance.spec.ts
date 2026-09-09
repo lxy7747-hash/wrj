@@ -1,5 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import ElementPlus, { ElMessageBox } from 'element-plus'
+import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import MasterDataPanel from '../../src/components/admin/MasterDataPanel.vue'
 import BackupRestoreWizard from '../../src/components/admin/BackupRestoreWizard.vue'
 import ArchivePanel from '../../src/components/admin/ArchivePanel.vue'
 import HealthPanel from '../../src/components/admin/HealthPanel.vue'
+import ScenarioConfigExport from '../../src/components/scenarios/ScenarioConfigExport.vue'
 import { useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
 
@@ -26,7 +27,96 @@ describe('P7 系统管理面板', () => {
     setActivePinia(createPinia())
     vi.spyOn(useAdminStore(), 'loadMaintenance').mockResolvedValue(true)
   })
-  afterEach(() => { wrapper?.unmount(); wrapper = undefined; vi.restoreAllMocks(); vi.unstubAllGlobals() })
+  afterEach(() => { wrapper?.unmount(); wrapper = undefined; ElMessage.closeAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
+
+  it.each([true, false])('主数据保存与删除通过真实 Store 反馈，成功=%s', async success => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    const master = { dataId: 'DEVICE-FEEDBACK', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-FEEDBACK', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: 1 },
+    }) }) as Response
+    const context = { confirmationId: 'CONF-MASTER', actor: 'admin', role: 'ADMIN', createdAt: fixtures.epoch, expiresAt: '2026-08-06T08:05:00Z' }
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([master]))
+      .mockResolvedValueOnce(response(success ? { ...master, version: 2 } : {}))
+      .mockResolvedValueOnce(response({ ...context, state: 'AWAITING_CONFIRMATION' }))
+      .mockResolvedValueOnce(response({ ...context, state: 'CONFIRMED' }))
+      .mockResolvedValueOnce(response({ deleted: success, objectId: master.dataId }))
+      .mockResolvedValueOnce(response([]))
+    vi.stubGlobal('fetch', fetchMock)
+    const message = vi.spyOn(ElMessage, 'success')
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+    expect(message).not.toHaveBeenCalled()
+    await click('编辑')
+    await click('保存')
+    if (success) {
+      expect(message).toHaveBeenCalledTimes(1)
+      expect(message).toHaveBeenLastCalledWith('主数据已保存，当前版本 2。')
+      expect(store.maintenance.master).toMatchObject({ state: 'SUCCESS', message: '' })
+      expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+    } else {
+      expect(wrapper.get('[data-testid="master-feedback"]').text()).toContain('保存结果与当前主数据不一致。')
+      expect(message).not.toHaveBeenCalled()
+      await click('取消')
+    }
+    await click('删除')
+    if (success) {
+      expect(message).toHaveBeenCalledTimes(2)
+      expect(message).toHaveBeenLastCalledWith('主数据已删除。')
+      expect(store.maintenance.master).toMatchObject({ state: 'SUCCESS', message: '' })
+      expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+      expect(store.masterData).toEqual([])
+    } else {
+      expect(wrapper.get('[data-testid="master-feedback"]').text()).toContain('删除结果与当前对象不一致。')
+      expect(message).not.toHaveBeenCalled()
+      expect(store.masterData).toEqual([master])
+    }
+    await click('刷新')
+    expect(wrapper.get('[data-testid="master-feedback"]').text()).toBe('暂无记录。')
+    expect(message).toHaveBeenCalledTimes(success ? 2 : 0)
+  })
+
+  it('主数据空消息不渲染空白提示条', async () => {
+    useAdminStore().maintenance.master = { state: 'EMPTY', message: '', fieldPath: '' }
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+  })
+
+  it.each([
+    { section: 'master', component: MasterDataPanel, data: fixtures.masterData, content: 'MW-COMM', refresh: '刷新' },
+    { section: 'backup', component: BackupRestoreWizard, data: fixtures.backups, content: 'PREBACKUP-002', refresh: '刷新记录' },
+    { section: 'archive', component: ArchivePanel, data: [fixtures.archive], content: fixtures.archive.archiveId, refresh: '刷新归档' },
+    { section: 'health', component: HealthPanel, data: fixtures.diagnostics, content: '前端界面', refresh: '刷新状态' },
+  ] as const)('$section 加载成功不显示常驻提示，加载中和失败仍可见', async ({ section, component, data, content, refresh }) => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    let resolveLoad!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn()
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { resolveLoad = resolve }))
+      .mockRejectedValueOnce(new Error('offline')))
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/admin')
+    wrapper = mount(component, { global: { plugins: [ElementPlus, router] } })
+    await flushPromises()
+    expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('正在加载数据。')
+    resolveLoad({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-MAINTENANCE', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: Array.isArray(data) ? data.length : 1 },
+    }) } as Response)
+    await flushPromises()
+    expect(store.maintenance[section].state).toBe('SUCCESS')
+    expect(store.maintenance[section].message).toBe('')
+    expect(wrapper.find(`[data-testid="${section}-feedback"]`).exists()).toBe(false)
+    expect(wrapper.get(`[data-testid="${section}-table"]`).text()).toContain(content)
+    await click(refresh)
+    expect(store.maintenance[section].state).toBe('ERROR')
+    expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('系统管理服务暂时不可用，请稍后重试。')
+  })
 
   it('主数据列表筛选、独立编辑、新增与删除确认复用既有组件', async () => {
     const store = useAdminStore()
@@ -63,7 +153,7 @@ describe('P7 系统管理面板', () => {
     expect(store.loadMaintenance).toHaveBeenCalledWith('master')
   })
 
-  it('备份选择、取消操作、恢复证据与配置导出中文结果', async () => {
+  it('备份选择、取消操作和恢复证据不再包含配置导出入口', async () => {
     const store = useAdminStore()
     store.backups = structuredClone(fixtures.backups) as typeof store.backups
     const run = vi.spyOn(store, 'runMaintenanceAction').mockResolvedValue(true)
@@ -84,17 +174,60 @@ describe('P7 系统管理面板', () => {
     await flushPromises()
     expect(wrapper.get('[data-testid="restore-result"]').text()).toContain('已回滚')
     store.restoreResult = { ...store.restoreResult, result: 'SUCCESS', rolledBack: false }
-    store.fullConfigExport = { objectId: 'FULL-CONFIG', generated: false, classification: 'INTERNAL', watermark: '内部使用', verifiedAt: fixtures.epoch }
+    expect(wrapper.find('[data-testid="full-config-export"]').exists()).toBe(false)
+    await click('刷新记录')
+    expect(store.loadMaintenance).toHaveBeenCalledWith('backup')
+  })
+
+  it('完整配置导出流程演示明确不导出当前场景，保留确认、分级、水印和时间', async () => {
+    const store = useAdminStore()
+    useAuthStore().role = 'ADMIN'
+    const context = { confirmationId: 'CONF-EXPORT', actor: 'admin', role: 'ADMIN', createdAt: fixtures.epoch, expiresAt: '2026-08-06T08:05:00Z' }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-EXPORT', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: 1 },
+    }) }) as Response
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response({ ...context, state: 'AWAITING_CONFIRMATION' }))
+      .mockResolvedValueOnce(response({ ...context, state: 'CONFIRMED' }))
+      .mockResolvedValueOnce(response({ objectId: 'FULL-CONFIG', generated: false, classification: 'INTERNAL', watermark: '内部使用', verifiedAt: fixtures.epoch }))
+    vi.stubGlobal('fetch', fetchMock)
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    wrapper = mount(ScenarioConfigExport, { global: { plugins: [ElementPlus] } })
+    expect(wrapper.text()).toContain('不校验或导出当前场景内容')
     await click('确认并验证导出')
-    expect(run).toHaveBeenLastCalledWith('EXPORT', 'PREBACKUP-002')
-    expect(wrapper.get('[data-testid="full-config-result"]').text()).toContain('内部使用')
+    expect(fetchMock).not.toHaveBeenCalled()
+    await click('确认并验证导出')
+    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('不校验或导出当前场景内容'), '完整配置导出流程演示', expect.any(Object))
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ action: 'FULL_CONFIG_EXPORT', objectId: 'FULL-CONFIG' })
+    expect(fetchMock.mock.calls[2]![0]).toContain('/api/v1/admin/config/export')
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body)).toEqual({ format: 'JSON', confirmationId: 'CONF-EXPORT' })
+    expect(store.fullConfigExport?.generated).toBe(false)
+    expect(wrapper.text()).toContain('完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。')
+    for (const text of ['内部使用', fixtures.epoch]) expect(wrapper.get('[data-testid="full-config-result"]').text()).toContain(text)
     for (const [classification, label] of [['INTERNAL', '内部使用'], ['LEVEL_II', '二级'], ['LEVEL_III', '三级']] as const) {
-      store.fullConfigExport = { ...store.fullConfigExport, classification }
+      store.fullConfigExport = { ...store.fullConfigExport!, classification }
       await flushPromises()
       expect(wrapper.get('[data-testid="full-config-result"] .el-descriptions__content').text()).toBe(label)
     }
-    await click('刷新记录')
-    expect(store.loadMaintenance).toHaveBeenCalledWith('backup')
+  })
+
+  it('场景配置导出对操作员隐藏，离页后迟到的确认不触发请求', async () => {
+    const auth = useAuthStore()
+    auth.role = 'OPERATOR'
+    const run = vi.spyOn(useAdminStore(), 'runMaintenanceAction').mockResolvedValue(true)
+    wrapper = mount(ScenarioConfigExport, { global: { plugins: [ElementPlus] } })
+    expect(wrapper.find('[data-testid="full-config-export"]').exists()).toBe(false)
+    auth.role = 'ADMIN'
+    await flushPromises()
+    let confirm!: () => void
+    vi.spyOn(ElMessageBox, 'confirm').mockImplementation(() => new Promise(resolve => { confirm = () => resolve('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>) }))
+    await click('确认并验证导出')
+    wrapper.unmount()
+    wrapper = undefined
+    confirm()
+    await flushPromises()
+    expect(run).not.toHaveBeenCalled()
   })
 
   it('真实恢复成功后切换来源清除旧结果和成功反馈', async () => {

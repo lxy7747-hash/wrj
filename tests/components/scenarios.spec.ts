@@ -743,7 +743,7 @@ describe('P2-1 场景管理页面', () => {
   it.each([
     OPERATOR,
     ADMIN,
-  ])('场景配置对 $role 仅提供模板查看和应用', async (principal) => {
+  ])('场景配置对 $role 仅提供模板查看和应用，场景导出仅管理员可见', async (principal) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -755,7 +755,7 @@ describe('P2-1 场景管理页面', () => {
       templates: [template()],
       selectedTemplate: template(),
       templateState: 'SUCCESS',
-      templateResultMessage: '已加载 1 个场景模板。',
+      templateResultMessage: '',
       lastConfirmation: confirmation(),
     })
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
@@ -764,6 +764,7 @@ describe('P2-1 场景管理页面', () => {
     const panel = wrapper.get('[data-testid="template-library"]')
 
     expect(panel.text()).toContain('场景配置使用')
+    expect(panel.find('[data-testid="template-feedback"]').exists()).toBe(false)
     expect(panel.text()).toContain('跨海通联演示官方基线')
     expect(panel.text()).toContain('查看详情')
     expect(panel.text()).toContain('应用到当前场景')
@@ -772,6 +773,9 @@ describe('P2-1 场景管理页面', () => {
     expect(panel.text()).not.toMatch(/更新|导出|删除/)
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('CONF-P2-001')
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('已完成')
+    await wrapper.get('[data-testid="open-scenario-operations"]').trigger('click')
+    expect(wrapper.find('[data-testid="scenario-config-export"]').exists()).toBe(principal.role === 'ADMIN')
+    if (principal.role === 'ADMIN') expect(wrapper.get('[aria-label="场景快照操作"]').text()).toContain('完整配置导出流程演示')
   })
 
   it('在场景配置中查看并应用模板', { timeout: 15_000 }, async () => {

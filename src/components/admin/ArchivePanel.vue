@@ -30,7 +30,7 @@ onBeforeUnmount(() => store.resetMaintenance())
   <section class="maintenance-card" aria-label="仿真数据归档" data-testid="archive-panel">
     <header class="maintenance-toolbar"><h3>仿真数据管理</h3><DataExchangeStateTag :state="feedback.state" /><el-button :disabled="pending" @click="store.loadMaintenance('archive')">刷新归档</el-button></header>
     <el-input v-model="query" clearable placeholder="检索归档、任务、场景、运行、回放或报告编号" aria-label="归档检索" />
-    <el-alert :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" />
+    <el-alert v-if="feedback.message" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="archive-feedback" />
     <el-table v-loading="pending" :data="rows" stripe empty-text="暂无匹配归档" data-testid="archive-table">
       <el-table-column prop="archiveId" label="归档" min-width="130" /><el-table-column prop="taskId" label="任务" min-width="130" /><el-table-column prop="scenarioId" label="场景" min-width="130" /><el-table-column prop="runId" label="运行" min-width="130" />
       <el-table-column label="状态" width="100"><template #default>已建立索引</template></el-table-column><el-table-column label="操作" width="90" fixed="right"><template #default="{ row }"><el-button link type="primary" @click="showDetail(row)">详情</el-button></template></el-table-column>

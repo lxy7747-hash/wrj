@@ -23,6 +23,7 @@ import {
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
+import ScenarioConfigExport from '../../components/scenarios/ScenarioConfigExport.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
@@ -1542,6 +1543,7 @@ watch(activeTab, (tab) => {
               <el-button :disabled="pending || draft.locked || dirty" data-testid="undo-scenario" @click="undoScenario">撤销场景操作</el-button>
               <el-button type="danger" plain :disabled="pending || draft.locked || dirty" data-testid="reset-scenario" @click="resetScenario">重置当前场景</el-button>
             </div>
+            <ScenarioConfigExport />
             <pre class="scenario-json-preview" data-testid="scenario-json-preview">{{ JSON.stringify(draft.config, null, 2) }}</pre>
           </section>
           <ScriptPreview

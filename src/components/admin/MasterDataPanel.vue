@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { MasterData } from '../../contracts/domain-models'
 import { MASTER_DATA_KINDS } from '../../features/admin/admin-contract'
 import { useAdminStore } from '../../stores/admin'
@@ -24,7 +24,17 @@ function edit(row?: MasterData): void {
 
 /** 保存当前副本，失败时保留表单和字段提示。 */
 async function save(): Promise<void> {
-  if (editor.value && await store.saveMasterData({ ...editor.value, dataId: editor.value.dataId.trim(), kind: editor.value.kind.trim() }, creating.value)) editor.value = null
+  if (editor.value && await store.saveMasterData({ ...editor.value, dataId: editor.value.dataId.trim(), kind: editor.value.kind.trim() }, creating.value)) {
+    editor.value = null
+    showSuccessMessage()
+  }
+}
+
+/** 操作成功提示仅消费一次，清空消息避免同时留下常驻提示。 */
+function showSuccessMessage(): void {
+  if (!feedback.value.message) return
+  ElMessage.success(feedback.value.message)
+  store.maintenance.master.message = ''
 }
 
 /** 二次确认后删除所选数据；引用规则由服务端复验。 */
@@ -32,7 +42,7 @@ async function remove(row: MasterData): Promise<void> {
   const epoch = store.maintenanceEpoch
   try {
     await ElMessageBox.confirm(`确认删除“${row.dataId}”？已有引用的数据不能删除。`, '删除主数据', { confirmButtonText: '确认删除', cancelButtonText: '取消', type: 'warning' })
-    if (epoch === store.maintenanceEpoch) await store.runMaintenanceAction('DELETE', row.dataId)
+    if (epoch === store.maintenanceEpoch && await store.runMaintenanceAction('DELETE', row.dataId)) showSuccessMessage()
   } catch { /* 取消确认时不提交请求。 */ }
 }
 
@@ -52,7 +62,7 @@ onBeforeUnmount(() => store.resetMaintenance())
       <el-form-item label="检索"><el-input v-model="query" clearable placeholder="编号或类型" aria-label="主数据检索" /></el-form-item>
       <el-form-item label="类型"><el-select v-model="kind" style="width: 160px" aria-label="主数据类型筛选"><el-option label="全部类型" value="" /><el-option v-for="(label, value) in MASTER_DATA_KINDS" :key="value" :label="label" :value="value" /></el-select></el-form-item>
     </el-form>
-    <el-alert :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="master-feedback" />
+    <el-alert v-if="feedback.message" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="master-feedback" />
     <el-table v-loading="pending" :data="rows" row-key="dataId" stripe empty-text="暂无匹配的主数据" data-testid="master-table">
       <el-table-column prop="dataId" label="编号" min-width="140" />
       <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ MASTER_DATA_KINDS[row.kind] ?? row.kind }}</template></el-table-column>

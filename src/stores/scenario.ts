@@ -510,7 +510,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.templates = templates
         this.templateState = templates.length === 0 ? 'EMPTY' : 'SUCCESS'
         this.templateResultCode = templates.length === 0 ? 'EMPTY' : 'TEMPLATES_LOADED'
-        this.templateResultMessage = templates.length === 0 ? '模板库暂无数据。' : `已加载 ${templates.length} 个场景模板。`
+        this.templateResultMessage = templates.length === 0 ? '模板库暂无数据。' : ''
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
