@@ -1486,15 +1486,15 @@ watch(activeTab, (tab) => {
               </div>
             </div>
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
-              <el-table-column prop="id" label="设备 ID" min-width="130" />
+              <el-table-column prop="id" label="设备 ID"/>
               <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
               <el-table-column prop="platformId" label="所属干扰节点"/>
               <el-table-column prop="frequency" label="频率（MHz）" />
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
               <el-table-column prop="defaultPower" label="发射功率（W）"  />
               <el-table-column label="自动检测"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
-              <el-table-column label="探测距离（海里）" min-width="145"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="触发时间（秒）" min-width="130"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
+              <el-table-column label="探测距离（海里）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="触发时间（秒）"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
               <el-table-column label="方向（°）" ><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
               <el-table-column label="持续时间（s）" ><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
               <el-table-column label="启用">
@@ -1502,7 +1502,7 @@ watch(activeTab, (tab) => {
                   <el-switch :model-value="jammerExtension(row.id)?.enabled" :disabled="pending || draft.locked" :data-testid="`toggle-jammer-${row.id}`" @update:model-value="setJammerEnabled(row.id, $event)" />
                 </template>
               </el-table-column>
-              <el-table-column label="操作" fixed="right" width="140">
+              <el-table-column label="操作" fixed="right" align="center">
                 <template #default="{ row, $index }">
                   <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-jammer-${$index}`" @click="openJammerEditor(row, $index)">编辑</el-button>
                   <el-popconfirm title="确认删除该干扰设备？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removeJammer(row, $index)">
