@@ -33,7 +33,7 @@ export function isLocalReplaySnapshot(value: unknown): value is LocalReplaySnaps
   const initialById = new Map(snapshot.initial.nodes.map((node) => [node.platformId, node]))
   const ids = new Set<string>()
   let count = 0
-  let duration = Math.max(0, ...snapshot.initial.nodes.map((node) => node.time))
+  let duration = Math.max(0, ...snapshot.initial.nodes.map((node) => node.time), ...(snapshot.initial.connections?.map((record) => record.time) ?? []))
   for (const track of snapshot.tracks) {
     if (!track || typeof track !== 'object') return false
     const node = initialById.get(track.platformId)

@@ -22,7 +22,7 @@ export async function readLocalReplay(initialPath: string, positionPath: string 
   const tracks = new Map<string, PositionUpdate[]>()
   let issueCount = 0
   let recordCount = 0
-  let durationS = Math.max(0, ...initial.nodes.map((node) => node.time))
+  let durationS = Math.max(0, ...initial.nodes.map((node) => node.time), ...(initial.connections?.map((record) => record.time) ?? []))
   const issues: LocalReplaySnapshot['issues'] = []
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]!.replace(/\r$/, '')

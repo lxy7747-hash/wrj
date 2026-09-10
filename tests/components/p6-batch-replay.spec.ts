@@ -7,7 +7,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { Batch, Principal, Replay } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
-  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
+  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
 }))
 
 import BatchesPage from '../../src/pages/batches/batches.vue'
@@ -85,6 +85,97 @@ describe('P6 批量仿真与历史回放页面', () => {
     expect(useReplayStore().replay?.currentTimeS).toBe(0)
     wrapper.unmount()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('文件回放按游标展示卫星与微波关联，回退隐藏未来登记，重载清理旧关联', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    const satellite = {
+      sourceEventId: 'LOG-L10', time: 0, scope: 'INTER_PLATFORM' as const,
+      source: { platformName: 'A', communicationName: 'sat-a', address: '0.1.0.1' },
+      target: { platformName: 'B', communicationName: 'sat-b', address: '0.1.0.2' },
+      sourceType: 'satcom_1', targetType: 'satcom_2',
+    }
+    snapshot.initial.connections = [satellite, {
+      ...satellite, sourceEventId: 'LOG-L11', time: 1,
+      source: satellite.target, target: satellite.source,
+      sourceType: satellite.targetType, targetType: satellite.sourceType,
+    }, {
+      ...satellite, sourceEventId: 'LOG-L12', time: 3,
+      source: { ...satellite.source, communicationName: 'mw-a' },
+      target: { ...satellite.target, communicationName: 'mw-b' },
+      sourceType: 'microwave', targetType: 'microwave',
+    }]
+    const fetchSpy = vi.fn().mockResolvedValueOnce(success(snapshot))
+      .mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY)))
+      .mockRejectedValueOnce(new Error('文件暂不可读'))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    try {
+      const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
+      expect(map.props('fileLinks')).toEqual([expect.objectContaining({
+        type: 'SAT', sourcePlatformId: 'A', targetPlatformId: 'B', records: [satellite],
+      })])
+      expect(map.props('links')).toEqual([])
+      expect(map.props('frame')).toBeNull()
+      await wrapper.get('[data-testid="replay-play"]').trigger('click')
+      await vi.advanceTimersByTimeAsync(1000)
+      await flushPromises()
+      expect(map.props('fileLinks')).toHaveLength(1)
+      expect(map.props('fileLinks')[0].records).toHaveLength(2)
+      expect(map.props('initialNodes')[0].longitude).toBe(-78)
+      await wrapper.get('[role="slider"]').trigger('keydown', { key: 'End', code: 'End' })
+      await flushPromises()
+      expect(map.props('fileLinks').map((link: { type: string }) => link.type)).toEqual(['SAT', 'MICROWAVE'])
+      expect(map.props('initialNodes')[0].longitude).toBe(-79)
+      await wrapper.get('[role="slider"]').trigger('keydown', { key: 'Home', code: 'Home' })
+      await flushPromises()
+      expect(map.props('fileLinks')).toHaveLength(1)
+      expect(map.props('fileLinks')[0].records).toEqual([satellite])
+      expect(map.props('initialNodes')[0].longitude).toBe(-77)
+      expect(fetchSpy).toHaveBeenCalledOnce()
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileLinks')).toEqual([])
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
+    } finally {
+      wrapper.unmount()
+    }
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('末条位置在3秒、关联在10秒时可回放到登记时刻，回退隐藏关联且保持末条位置', async () => {
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.durationS = 10
+    snapshot.initial.connections = [{
+      sourceEventId: 'LOG-L10', time: 10, scope: 'INTER_PLATFORM',
+      source: { platformName: 'A', communicationName: 'mw-a', address: '1' },
+      target: { platformName: 'B', communicationName: 'mw-b', address: '2' },
+      sourceType: 'microwave', targetType: 'microwave',
+    }]
+    const fetchSpy = vi.fn().mockResolvedValue(success(snapshot))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    try {
+      const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
+      expect(map.props('fileLinks')).toEqual([])
+      await wrapper.get('[role="slider"]').trigger('keydown', { key: 'End', code: 'End' })
+      await flushPromises()
+      expect(useReplayStore().replay?.currentTimeS).toBe(10)
+      expect(map.props('fileLinks')).toEqual([expect.objectContaining({ records: snapshot.initial.connections })])
+      const lastNodes = structuredClone(map.props('initialNodes'))
+      expect(lastNodes[0]).toMatchObject({ longitude: -79, latitude: 32, altitude: 20, time: 3 })
+      expect(map.props('frame')).toBeNull()
+      expect(map.props('links')).toEqual([])
+      await useReplayStore().seek(9)
+      await flushPromises()
+      expect(useReplayStore().replay?.currentTimeS).toBe(9)
+      expect(map.props('fileLinks')).toEqual([])
+      expect(map.props('initialNodes')).toEqual(lastNodes)
+      expect(fetchSpy).toHaveBeenCalledOnce()
+    } finally { wrapper.unmount() }
   })
 
   it('真实文件读取失败展示中文错误，不回退旧地图', async () => {

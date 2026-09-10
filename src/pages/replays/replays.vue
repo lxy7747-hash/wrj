@@ -8,6 +8,7 @@ import { selectSituationLinks } from '../../features/situation/situation-model'
 import { replayEventTime, useReplayStore } from '../../stores/replay'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { selectReplayNodes } from '../../features/replays/local-replay'
+import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 
 const replayStore = useReplayStore()
@@ -17,6 +18,8 @@ const { frame: mockFrame, capabilityState: telemetryState, resultMessage: teleme
 const sourceKind = ref<'LOADING' | 'FILE' | 'MOCK'>('LOADING')
 const frame = computed(() => sourceKind.value === 'MOCK' ? mockFrame.value : null)
 const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
+// 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联。
+const fileLinks = computed(() => selectFileCommunicationLinks(localSnapshot.value?.initial.connections ?? [], replay.value?.currentTimeS ?? 0))
 const focusTarget = ref<SituationMapFocusTarget | null>(null)
 const selectedNodeId = ref('')
 const sliderTime = ref(0)
@@ -156,6 +159,7 @@ onBeforeUnmount(() => {
           :key="localSnapshot ? `${localSnapshot.initial.sha256}:${localSnapshot.sha256}` : 'mock'"
           :frame="frame"
           :initial-nodes="localSnapshot ? fileNodes : undefined"
+          :file-links="fileLinks"
           :links="links"
           :selected-node-id="selectedNodeId"
           :focus-target="focusTarget"
@@ -183,7 +187,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
-          <p>当前仅接入位置回放，不展示模拟链路或模拟事件。</p>
+          <p>按回放时刻展示位置及已登记的卫星、微波关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />

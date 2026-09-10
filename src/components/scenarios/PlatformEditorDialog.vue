@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import type { BusinessInformationNodeType, Platform, PlatformType, SatelliteType } from '../../contracts/domain-models'
-import { PLATFORM_TYPE_DOMAINS } from '../../features/scenarios/scenario-validation'
+import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS } from '../../features/scenarios/scenario-validation'
+import { PLATFORM_POSITION_RULES } from '../../features/scenarios/platform-position-rules'
 import WaypointMapPicker, { type WaypointMapPoint } from './WaypointMapPicker.vue'
 
 type PlatformTypeOption = { value: PlatformType, label: string }
@@ -20,7 +21,19 @@ const props = defineProps<{
   businessTypeCounts: Readonly<Record<BusinessInformationNodeType, number>>
   businessTypeLimits: Readonly<Record<BusinessInformationNodeType, number>>
   deploymentDomainLabels: Record<Platform['category'], string>
+  suggestPlatformId?: (type: PlatformType) => string
+  businessNodeCount?: number
 }>()
+
+const DEFAULT_TYPE_NAMES: Record<PlatformType, string> = {
+  REAR_COMMAND_NODE: '后方指挥节点',
+  FORWARD_RELAY_NODE: '高空前出中继节点',
+  GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
+  AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
+  COMMUNICATION_SATELLITE: '天通卫星',
+  GROUND_JAMMER_DETECTION_STATION: '地面干扰设备',
+  AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',
+}
 
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
@@ -44,14 +57,17 @@ const availableQuantity = computed(() => {
   const type = selectedBusinessType.value
   if (type === null) return 1
   const editingCurrentType = props.editing && props.platform?.type === type ? 1 : 0
-  return Math.max(0, props.businessTypeLimits[type] - props.businessTypeCounts[type] + editingCurrentType)
+  const typeRemaining = Math.max(0, props.businessTypeLimits[type] - props.businessTypeCounts[type] + editingCurrentType)
+  const totalCurrent = props.businessNodeCount ?? Object.values(props.businessTypeCounts).reduce((a, b) => a + b, 0)
+  const totalRemaining = Math.max(0, INFORMATION_NODE_LIMIT - totalCurrent + editingCurrentType)
+  return Math.min(typeRemaining, totalRemaining)
 })
 const showBatchQuantity = computed(() => !props.editing && editor.value?.type === 'AIRBORNE_MISSION_CLUSTER')
 const showGridSpacing = computed(() => showBatchQuantity.value && quantity.value > 1 && editor.value?.waypoints.length === 0)
 const invalidSpacing = computed(() => showGridSpacing.value && (!Number.isFinite(spacingKm.value) || spacingKm.value <= 0))
 const cannotAdd = computed(() => !props.editing && availableQuantity.value === 0)
 const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE')
-const isJammerStation = computed(() => editor.value?.type === 'GROUND_JAMMER_DETECTION_STATION')
+const positionRule = computed(() => editor.value ? PLATFORM_POSITION_RULES[editor.value.type] : undefined)
 const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value)
 
 /**
@@ -68,9 +84,32 @@ function synchronizeTypeFields(type: PlatformType): void {
   if (type === 'FORWARD_RELAY_NODE') {
     // 中继初始位置不开放编辑；保留范围内纬度，旧值越界时收敛到最近边界。
     const position = editor.value.initialPosition
-    position.longitude = 120.8
-    position.latitude = Number.isFinite(position.latitude) ? Math.min(25.7, Math.max(25.3, position.latitude)) : 25.3
-    position.altitude = 8000
+    const rule = PLATFORM_POSITION_RULES.FORWARD_RELAY_NODE!
+    position.longitude = rule.minLongitude
+    position.latitude = Number.isFinite(position.latitude) ? Math.min(rule.maxLatitude, Math.max(rule.minLatitude, position.latitude)) : rule.minLatitude
+    position.altitude = rule.altitude!
+  }
+  if (!props.editing) {
+    if (props.suggestPlatformId && (!editor.value.id || /^(PLAT|SUP)-\d+$/.test(editor.value.id.trim()))) {
+      editor.value.id = props.suggestPlatformId(type)
+    }
+    const currentName = editor.value.name ? editor.value.name.trim() : ''
+    const isDefaultName = !currentName || Object.values(DEFAULT_TYPE_NAMES).includes(currentName) || currentName === '神通卫星' || currentName === '地面固定式干扰侦测站' || currentName === '机载干扰平台'
+    if (isDefaultName) {
+      if (type === 'COMMUNICATION_SATELLITE') {
+        editor.value.name = editor.value.satelliteType === 'SHENTONG' ? '神通卫星' : '天通卫星'
+      } else {
+        editor.value.name = DEFAULT_TYPE_NAMES[type]
+      }
+    }
+  }
+}
+
+function onSatelliteTypeChange(satelliteType: SatelliteType): void {
+  if (editor.value === null || props.editing) return
+  const currentName = editor.value.name ? editor.value.name.trim() : ''
+  if (currentName === '天通卫星' || currentName === '神通卫星') {
+    editor.value.name = satelliteType === 'SHENTONG' ? '神通卫星' : '天通卫星'
   }
 }
 
@@ -149,16 +188,16 @@ watch(() => props.modelValue, (visible) => {
               <el-option-group label="信息节点">
                 <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-option-group>
-              <el-option-group label="支撑实体（不计入50个信息节点）">
+              <el-option-group :label="`支撑实体（不计入${INFORMATION_NODE_LIMIT}个信息节点）`">
                 <el-option v-for="option in supportingTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-option-group>
             </el-select>
             <span v-if="selectedBusinessType" class="platform-editor-field__hint">
-              当前 {{ businessTypeCounts[selectedBusinessType] }} / {{ businessTypeLimits[selectedBusinessType] }} 个
+              当前 {{ businessTypeCounts[selectedBusinessType] }} / {{ businessTypeLimits[selectedBusinessType] }} 个{{ (props.businessNodeCount ?? 0) >= INFORMATION_NODE_LIMIT ? `（信息节点已达 ${INFORMATION_NODE_LIMIT} 个上限）` : '' }}
             </span>
           </el-form-item>
           <el-form-item v-if="editor.type === 'COMMUNICATION_SATELLITE'" label="卫星类型">
-            <el-select v-model="editor.satelliteType" placeholder="请选择卫星类型" style="width: 100%" data-testid="platform-satellite-type">
+            <el-select v-model="editor.satelliteType" placeholder="请选择卫星类型" style="width: 100%" data-testid="platform-satellite-type" @change="onSatelliteTypeChange">
               <el-option v-for="option in satelliteTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
@@ -176,8 +215,8 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
         <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <div class="position-grid">
-          <el-form-item label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="isJammerStation ? 121.2 : editor.type === 'REAR_COMMAND_NODE' ? 118.5 : -180" :max="isJammerStation ? 121.8 : editor.type === 'REAR_COMMAND_NODE' ? 120 : 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-          <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="isJammerStation ? 24.8 : isForwardRelay ? 25.3 : editor.type === 'REAR_COMMAND_NODE' ? 24 : -90" :max="isJammerStation ? 25.4 : isForwardRelay ? 25.7 : editor.type === 'REAR_COMMAND_NODE' ? 25 : 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
+          <el-form-item label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="positionRule?.minLongitude ?? -180" :max="positionRule?.maxLongitude ?? 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
+          <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="positionRule?.minLatitude ?? -90" :max="positionRule?.maxLatitude ?? 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
           <el-form-item label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
         </div>
         <div v-if="showGridSpacing" class="position-grid">

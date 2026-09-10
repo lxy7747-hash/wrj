@@ -61,8 +61,8 @@ export const PLATFORM_TYPE_LABELS: Record<PlatformStatus['type'], string> = {
   GROUND_CLUSTER_COMMAND_NODE: '地面无人集群指挥车',
   AIRBORNE_MISSION_CLUSTER: '空中无人作业集群',
   COMMUNICATION_SATELLITE: '通信卫星',
-  GROUND_JAMMER_DETECTION_STATION: '地面固定式干扰侦测站',
-  AIRBORNE_JAMMER_PLATFORM: '机载干扰平台',
+  GROUND_JAMMER_DETECTION_STATION: '地面干扰设备',
+  AIRBORNE_JAMMER_PLATFORM: '机载干扰设备',
 }
 
 export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {

@@ -111,11 +111,11 @@ describe('P2-1 场景管理页面', () => {
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
     await wrapper.get('#tab-platforms').trigger('click')
-    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
     expect(type.findAllComponents({ name: 'ElOptionGroup' }).find(c => c.props('label').startsWith('支撑实体'))!
-      .findAllComponents({ name: 'ElOption' }).map(c => c.props('label'))).toContain('机载干扰平台')
+      .findAllComponents({ name: 'ElOption' }).map(c => c.props('label'))).toContain('机载干扰设备')
     type.vm.$emit('update:modelValue', 'AIRBORNE_JAMMER_PLATFORM')
     type.vm.$emit('change', 'AIRBORNE_JAMMER_PLATFORM')
     await flushPromises()
@@ -138,7 +138,7 @@ describe('P2-1 场景管理页面', () => {
     expect(persisted.revision).toBe(5)
     expect(await scenario.loadScenario()).toBe(true)
     await flushPromises()
-    expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰平台')
+    expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰设备')
     expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ type: 'AIRBORNE_JAMMER_PLATFORM', initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 } })
     await wrapper.get('#tab-jammers').trigger('click')
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
@@ -434,7 +434,7 @@ describe('P2-1 场景管理页面', () => {
     expect(await scenario.loadScenario()).toBe(true)
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     const pairs = [
-      ['add-business-platform', 'platform-table'], ['add-supporting-platform', 'platform-table'],
+      ['add-platform', 'platform-table'],
       ['add-link', 'link-table'],
       ['add-jammer', 'jammer-table'], ['add-sensor', 'sensor-table'],
     ] as const
@@ -1211,7 +1211,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.text()).toContain('信息节点 6 / 50')
     expect(wrapper.text()).toContain('节点类型 4 / 4')
     expect(wrapper.text()).toContain('支撑实体 2')
-    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await nextTick()
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
     const nameInput = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
@@ -1254,7 +1254,7 @@ describe('P2-1 场景管理页面', () => {
       },
     })
 
-    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
     await nextTick()
@@ -1332,10 +1332,11 @@ describe('P2-1 场景管理页面', () => {
       jammerIds: [],
     }))
     await nextTick()
-    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
 
     expect(scenario.draft?.config.platforms).toHaveLength(50)
-    expect(document.body.textContent).toContain('信息节点已达 50 个，不能继续新增。')
+    expect(document.body.textContent).toContain('信息节点已达 50 个上限，当前可新增支撑实体。')
   })
 
   it.each([1, 2])('仅输入编队原点时按 %s km 平铺新增，并保存重载保持坐标', async spacingKm => {
@@ -1351,7 +1352,7 @@ describe('P2-1 场景管理页面', () => {
     }))
     expect(await scenario.loadScenario()).toBe(true)
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
-    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const dialog = wrapper.findComponent({ name: 'PlatformEditorDialog' })
     const input = (id: string) => dialog.findAllComponents({ name: 'ElInputNumber' }).find(component => component.attributes('data-testid') === id)!
@@ -1398,7 +1399,7 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
-    await wrapper.get('[data-testid="add-business-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const quantity = wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === 'platform-quantity')!
@@ -1462,10 +1463,18 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
-    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
+    const typeSelect = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-type')!
+    typeSelect.vm.$emit('update:modelValue', 'COMMUNICATION_SATELLITE')
+    typeSelect.vm.$emit('change', 'COMMUNICATION_SATELLITE')
     await flushPromises()
     const satelliteSelect = wrapper.findAllComponents({ name: 'ElSelect' })
       .find((component) => component.attributes('data-testid') === 'platform-satellite-type')!
+    satelliteSelect.vm.$emit('update:modelValue', 'SHENTONG')
+    satelliteSelect.vm.$emit('change', 'SHENTONG')
+    await flushPromises()
     expect(satelliteSelect.props('modelValue')).toBe('SHENTONG')
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
@@ -1475,7 +1484,17 @@ describe('P2-1 场景管理页面', () => {
     })
     expect(wrapper.text()).toContain('神通卫星')
 
-    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
+    const typeSelect2 = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-type')!
+    typeSelect2.vm.$emit('update:modelValue', 'COMMUNICATION_SATELLITE')
+    typeSelect2.vm.$emit('change', 'COMMUNICATION_SATELLITE')
+    await flushPromises()
+    const satelliteSelect2 = wrapper.findAllComponents({ name: 'ElSelect' })
+      .find((component) => component.attributes('data-testid') === 'platform-satellite-type')!
+    satelliteSelect2.vm.$emit('update:modelValue', 'SHENTONG')
+    satelliteSelect2.vm.$emit('change', 'SHENTONG')
     await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
@@ -1507,7 +1526,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(scenario.draft?.config.platforms[3]).toMatchObject({ name: '空中无人作业集群（编辑）', waypoints: [] })
 
-    await wrapper.get('[data-testid="add-supporting-platform"]').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const typeSelect = wrapper.findAllComponents({ name: 'ElSelect' })
       .find((component) => component.attributes('data-testid') === 'platform-type')!

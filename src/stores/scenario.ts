@@ -15,6 +15,8 @@ import type {
 } from '../contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
 import { withScenarioBasicDefaults } from '../features/scenarios/scenario-basic'
+import { buildLocalSceneImport, type LocalSceneImport } from '../features/scenarios/local-scene-import'
+import { toRaw } from 'vue'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
@@ -206,6 +208,7 @@ export const useScenarioStore = defineStore('scenario', {
     preflight: { valid: true, errors: [], warnings: [] } as ValidationResult,
     requestEpoch: 0,
     scriptEpoch: 0,
+    localImportEpoch: 0,
   }),
 
   actions: {
@@ -298,7 +301,10 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 仅在已加载同一场景时更新草稿锁标记，不改变配置、修订号或未保存状态。
      */
     projectRuntimeLock(scenarioId: ScenarioId, locked: boolean): void {
-      if (this.draft?.config.scenario.id === scenarioId) this.draft.locked = locked
+      if (this.draft?.config.scenario.id === scenarioId && this.draft.locked !== locked) {
+        this.invalidateLocalFileImport()
+        this.draft.locked = locked
+      }
     },
 
     /**
@@ -314,6 +320,26 @@ export const useScenarioStore = defineStore('scenario', {
       this.resultCode = 'EMPTY'
       this.resultMessage = ''
       this.clearScriptPreview()
+    },
+
+    /** 本地文件只写入草稿；会话、草稿版本或配置锁变化后拒绝旧预览，仍需用户手动保存。 */
+    applyLocalFileImport(input: LocalSceneImport, requestEpoch: number, scriptEpoch: number, localImportEpoch: number): ValidationIssue[] {
+      if (!this.draft || this.draft.locked || requestEpoch !== this.requestEpoch || scriptEpoch !== this.scriptEpoch
+        || localImportEpoch !== this.localImportEpoch
+        || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.panelState)
+        || !useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) {
+        return [{ severity: 'ERROR', code: 'LOCAL_IMPORT_STALE', message: '草稿、权限或锁状态已变化，请重新打开导入预览。', fieldPath: 'scenario' }]
+      }
+      const result = buildLocalSceneImport(toRaw(this.draft.config), input)
+      if (!result.config) return result.errors
+      this.draft.config = result.config
+      this.markDirty()
+      return []
+    },
+
+    /** 预览关闭或锁状态变化只淘汰导入确认，不重置其他模块的在途操作。 */
+    invalidateLocalFileImport(): void {
+      this.localImportEpoch += 1
     },
 
     /** 清除脚本结果并使在途预览/预检失效，不影响其他场景和模板请求。 */
@@ -1028,6 +1054,7 @@ export const useScenarioStore = defineStore('scenario', {
     resetToSafeEmpty(): void {
       this.requestEpoch += 1
       this.scriptEpoch += 1
+      this.invalidateLocalFileImport()
       this.draft = null
       this.panelState = 'EMPTY'
       this.dirty = false

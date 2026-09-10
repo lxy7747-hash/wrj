@@ -15,6 +15,7 @@ import {
   LINK_MHZ_MINIMUM_STEP,
   LINK_TYPES,
   SATELLITE_TYPES,
+  PLATFORM_TYPE_DOMAINS,
   SUPPORTING_ENTITY_TYPES,
   inspectScenarioConfig,
   inspectScenarioUiExtensions,
@@ -24,6 +25,7 @@ import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../.
 import { useScenarioStore } from '../../stores/scenario'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import ScenarioConfigExport from '../../components/scenarios/ScenarioConfigExport.vue'
+import LocalSceneImport from '../../components/scenarios/LocalSceneImport.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
@@ -260,31 +262,67 @@ function nextPlatformId(prefix: 'PLAT-' | 'SUP-', reservedIds?: Set<string>): st
 }
 
 /**
- * 打开新增场景实体对话框。
- * @param classification 新实体属于业务信息节点还是支撑实体。
- * @returns 无返回值。
- * @sideEffects 达到容量上限时只显示中文提示；否则创建独立编辑副本并打开对话框。
+ * 根据类型建议生成未占用的场景实体 ID。
+ * @param type 场景实体类型。
+ * @returns 首个未被使用的三位序号 ID。
  */
-function openNewPlatform(classification: 'business' | 'supporting'): void {
+function suggestPlatformId(type: PlatformType): string {
+  const isBusiness = isBusinessInformationNodeType(type)
+  return nextPlatformId(isBusiness ? 'PLAT-' : 'SUP-')
+}
+
+/**
+ * 打开新增场景实体对话框。
+ * @param preferredType 可选预设类型或分类。
+ * @returns 无返回值。
+ * @sideEffects 创建独立编辑副本并打开对话框；若信息节点已达上限，默认切换为支撑实体并提示。
+ */
+function openNewPlatform(preferredType?: PlatformType | 'business' | 'supporting'): void {
   if (draft.value === null) return
-  if (classification === 'business' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
+  if (preferredType === 'business' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
     ElMessage.error('信息节点已达 50 个，不能继续新增。')
     return
   }
-  const business = classification === 'business'
-  const id = nextPlatformId(business ? 'PLAT-' : 'SUP-')
+
   const configuredSatelliteTypes = new Set(draft.value.config.platforms
     .filter((platform) => platform.type === 'COMMUNICATION_SATELLITE')
     .map((platform) => platform.satelliteType))
-  const satelliteType = configuredSatelliteTypes.has('TIANTONG') ? 'SHENTONG' : 'TIANTONG'
+  const defaultSatelliteType = configuredSatelliteTypes.has('TIANTONG') ? 'SHENTONG' : 'TIANTONG'
+
+  let targetType: PlatformType
+  if (preferredType && preferredType !== 'business' && preferredType !== 'supporting') {
+    targetType = preferredType
+  } else if (preferredType === 'supporting' || businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
+    targetType = 'COMMUNICATION_SATELLITE'
+    if (preferredType !== 'supporting' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
+      ElMessage.info('信息节点已达 50 个上限，当前可新增支撑实体。')
+    }
+  } else {
+    targetType = 'AIRBORNE_MISSION_CLUSTER'
+  }
+
+  const isBusiness = isBusinessInformationNodeType(targetType)
+  const id = suggestPlatformId(targetType)
   editingPlatformIndex.value = null
+
+  let defaultName: string
+  if (targetType === 'COMMUNICATION_SATELLITE') {
+    defaultName = `${defaultSatelliteType === 'TIANTONG' ? '天通' : '神通'}卫星`
+  } else {
+    defaultName = PLATFORM_TYPE_LABELS[targetType] || '新增实体'
+  }
+
   platformEditor.value = {
     id,
-    name: business ? '空中无人作业集群' : `${satelliteType === 'TIANTONG' ? '天通' : '神通'}卫星`,
-    type: business ? 'AIRBORNE_MISSION_CLUSTER' : 'COMMUNICATION_SATELLITE',
-    ...(business ? {} : { satelliteType }),
-    category: business ? 'air' : 'space',
-    initialPosition: { longitude: 0, latitude: 0, altitude: business ? 0 : 550000 },
+    name: defaultName,
+    type: targetType,
+    ...(targetType === 'COMMUNICATION_SATELLITE' ? { satelliteType: defaultSatelliteType } : {}),
+    category: PLATFORM_TYPE_DOMAINS[targetType] ?? (isBusiness ? 'air' : 'space'),
+    initialPosition: {
+      longitude: 0,
+      latitude: 0,
+      altitude: targetType === 'COMMUNICATION_SATELLITE' ? 550000 : 0,
+    },
     waypoints: [],
     linkIds: [],
     sensorIds: [],
@@ -1352,8 +1390,7 @@ watch(activeTab, (tab) => {
                 <el-tag>支撑实体 {{ supportingEntityCount }}</el-tag>
               </div>
               <div class="platform-actions">
-                <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-business-platform" @click="openNewPlatform('business')">新增信息节点</el-button>
-                <el-button :disabled="pending || draft.locked" data-testid="add-supporting-platform" @click="openNewPlatform('supporting')">新增支撑实体</el-button>
+                <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-platform" @click="openNewPlatform()">新增节点</el-button>
               </div>
             </div>
             <el-table :data="draft.config.platforms" stripe data-testid="platform-table">
@@ -1540,6 +1577,7 @@ watch(activeTab, (tab) => {
             <el-alert title="导入 ScenarioConfig 规范快照，UI 扩展按规则重建。以下操作不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
             <div class="platform-actions">
               <el-button type="primary" :disabled="pending || draft.locked" data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
+              <LocalSceneImport />
               <el-button :disabled="pending || draft.locked || dirty" data-testid="undo-scenario" @click="undoScenario">撤销场景操作</el-button>
               <el-button type="danger" plain :disabled="pending || draft.locked || dirty" data-testid="reset-scenario" @click="resetScenario">重置当前场景</el-button>
             </div>
@@ -1598,6 +1636,8 @@ watch(activeTab, (tab) => {
       :satellite-type-options="satelliteTypeOptions"
       :business-type-counts="businessNodeTypeCounts"
       :business-type-limits="INFORMATION_NODE_TYPE_LIMITS"
+      :business-node-count="businessNodeCount"
+      :suggest-platform-id="suggestPlatformId"
       :deployment-domain-labels="deploymentDomainLabels"
       @apply="applyPlatformEditor"
     />

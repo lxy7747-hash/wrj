@@ -90,6 +90,20 @@ describe('AFSIM 追加位置读取', () => {
     expect(await readFile(initialPath, 'utf8')).toBe(INITIAL_LOG)
   })
 
+  it('末条位置之后的有效关联登记延长回放，节点保持最后位置', async () => {
+    const { path } = await fixture(POSITION_CSV)
+    const initialPath = join(directory, 'initial.csv')
+    await writeFile(initialPath, `${INITIAL_LOG}\n0 COMM_TURNED_ON A Comm: a Type: microwave\n0 COMM_TURNED_ON B Comm: b Type: microwave\n10 LINK_ADDED_TO_MANAGER A a 1 linked to: B b 2\n`)
+    const snapshot = await readLocalReplay(initialPath, path)
+    expect(snapshot.initial.connections).toHaveLength(1)
+    expect(snapshot.durationS).toBe(10)
+    expect(isLocalReplaySnapshot(snapshot)).toBe(true)
+    expect(isLocalReplaySnapshot({ ...snapshot, durationS: 3 })).toBe(false)
+    expect(selectReplayNodes(snapshot, 10)).toEqual(selectReplayNodes(snapshot, 3))
+    expect(selectReplayNodes(snapshot, 2)[0]?.longitude).toBe(-78)
+    expect(isLocalReplaySnapshot({ ...snapshot, initial: { ...snapshot.initial, connections: [] }, durationS: 3 })).toBe(true)
+  })
+
   it('回放拒绝损坏轨迹，保留缺少更新的节点，不预读未来位置', () => {
     expect(isLocalReplaySnapshot(LOCAL_REPLAY)).toBe(true)
     const noB = { ...LOCAL_REPLAY, tracks: LOCAL_REPLAY.tracks.slice(1), recordCount: 2 }
