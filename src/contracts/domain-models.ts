@@ -187,13 +187,13 @@ export interface SensorUiExtension { sensorId: Identifier; type: 'ESM'; directio
 export interface ScenarioUiExtensions { jammers: JammerUiExtension[]; sensors: SensorUiExtension[]; }
 export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; }
 export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; officialLibraryChanged: false; locked: boolean; }
-export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; }
+export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface ScriptContract { scriptId: Identifier; taskId: TaskId; scenarioId: ScenarioId; configVersion: string; target: 'AFSIM 2.9.0'; checksum: string; preview: string; generatedTime: Iso8601Utc; }
 export interface ScenarioValidationRequest { config: ScenarioConfig; }
 export interface MutationRequest { expectedRevision: number; }
 export interface ScenarioImportRequest { items: ScenarioConfig[]; }
 export interface ScenarioImportResult { imported: number; rejected: number; drafts: ScenarioDraft[]; }
-export interface TemplateMutationRequest { name: string; config: ScenarioConfig; }
+export interface TemplateMutationRequest { name: string; config: ScenarioConfig; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface CopyTemplateRequest { name: string; }
 /** warningConfirmationId is mandatory by business rule when validation has WARNING and no ERROR. */
 export interface ScriptPreviewRequest { scenarioId: ScenarioId; warningConfirmationId?: Identifier; }

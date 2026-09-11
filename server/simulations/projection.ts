@@ -18,7 +18,7 @@ import type { ScenarioProjection } from '../scenarios/projection.js'
 
 export type SimulationProjectionResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 428; fieldPath?: string; message: string }
+  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 428 | 503; fieldPath?: string; message: string }
 
 const STARTED_AT = '2026-08-06T08:05:00Z'
 const FIXTURE_PROCESS_ID = 2900

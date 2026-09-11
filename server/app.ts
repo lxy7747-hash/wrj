@@ -25,12 +25,12 @@ import {
 } from './auth/projection.js'
 import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest } from './http/loopback.js'
-import { ScenarioProjection } from './scenarios/projection.js'
+import { ScenarioProjection, type ScenarioStorage } from './scenarios/projection.js'
 import { SimulationProjection, type SimulationProjectionResult } from './simulations/projection.js'
 import { ScriptProjection } from './scripts/projection.js'
 import { MockProjection } from './state/projection.js'
 import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
-import { TemplateProjection } from './templates/projection.js'
+import { TemplateProjection, type TemplateStorage } from './templates/projection.js'
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
@@ -49,6 +49,9 @@ export interface MockServerOptions {
   loadPositions?: () => Promise<PositionSnapshot>
   /** 读取本机真实文件回放快照，与 Mock 回放及实时位置游标隔离。 */
   loadLocalReplay?: () => Promise<LocalReplaySnapshot>
+  /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
+  scenarioStorage?: ScenarioStorage
+  templateStorage?: TemplateStorage
 }
 
 export interface MockServer {
@@ -532,10 +535,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
   const projection = new MockProjection()
   const auth = new AuthProjection()
-  const scenarios = new ScenarioProjection()
+  const scenarios = new ScenarioProjection(options.scenarioStorage)
   const simulations = new SimulationProjection(scenarios)
   const confirmations = new ConfirmationProjection(options.confirmationClock)
-  const templates = new TemplateProjection()
+  const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
   const admin = new AdminProjection()
@@ -937,7 +940,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
-   * 返回指定场景的当前内存草稿。
+   * 返回指定场景草稿；本机持久化模式的默认入口读取当前工作场景。
    * @param req 包含角色提示和场景编号的请求。
    * @param res 接收场景草稿或类型化错误的响应。
    * @returns 无返回值。
@@ -948,7 +951,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const requestId = 'REQ-P2-SCENARIO-GET'
     if (requireDemoRole(req, res, auth, 'SCENARIO_READ', scenarioId) === undefined) return
 
-    const result = scenarios.get(scenarioId)
+    const result = scenarios.get(scenarioId, options.scenarioStorage !== undefined)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -1088,8 +1091,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.get('/api/v1/templates', (req, res) => {
     const requestId = 'REQ-P2-TEMPLATES-LIST'
     if (requireDemoRole(req, res, auth, 'TEMPLATE_LIST') === undefined) return
-    const result = templates.list()
-    res.status(200).json(success(result, pageMeta(requestId, result.length, Math.max(1, result.length))))
+    try {
+      const result = templates.list()
+      res.status(200).json(success(result, pageMeta(requestId, result.length, Math.max(1, result.length))))
+    } catch {
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, message: '模板数据库读取失败，请稍后重试。' }))
+    }
   })
 
   /**
@@ -1097,7 +1104,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @param req 包含管理员角色及模板名称、配置的请求。
    * @param res 接收新模板或类型化错误的响应。
    * @returns 无返回值。
-   * @remarks 只写入内存模板库；操作员在进入请求体处理前即被拒绝。
+   * @remarks 使用注入的模板存储；操作员在进入请求体处理前即被拒绝。
    */
   app.post('/api/v1/templates', (req, res) => {
     const requestId = 'REQ-P2-TEMPLATE-CREATE'
@@ -1193,7 +1200,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result = scenarios.copyTemplate(template.data.config, req.body.name)
+    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -1839,12 +1846,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
+    // 本机场景只重载数据库，不用全局演示 reset 覆盖用户已保存配置。
+    try {
+      templates.reset()
+      scenarios.reset()
+    } catch {
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { message: '场景或模板数据库读取失败，未执行全局重置。' }))
+      return
+    }
     const result: ResetResult = realtime.reset()
     auth.reset()
-    scenarios.reset()
     simulations.reset()
     confirmations.reset()
-    templates.reset()
     scripts.reset()
     batchReplay.reset()
     admin.reset()

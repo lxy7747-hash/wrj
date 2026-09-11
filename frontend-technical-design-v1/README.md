@@ -41,4 +41,14 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、离线 Leaflet�
 
 ## 非目标与生产延期项
 
-本阶段不实现真实 AFSIM/插件、SQLite、文件系统、认证会话、密钥/加密、水印、防篡改存储、PDF/HTML/CSV 生成或生产部署。生产阶段需要另行批准：身份提供方、密钥托管、持久化迁移、受控目录、原子文件替换、进程沙箱、审计留存、分类审批、Leaflet 离线图资许可和端口配置。上述事项不得在 mock 中用伪实现暗示已具备安全能力。
+纯 Mock 阶段不实现真实 AFSIM/插件、SQLite、文件系统、认证会话、密钥/加密、水印、防篡改存储、PDF/HTML/CSV 生成或生产部署。生产阶段需要另行批准：身份提供方、密钥托管、持久化迁移、受控目录、原子文件替换、进程沙箱、审计留存、分类审批、Leaflet 离线图资许可和端口配置。上述事项不得在 mock 中用伪实现暗示已具备安全能力。
+
+### 2026-09-10 本机 SQLite 模板开发验证补充
+
+用户授权的 `server/local.ts` 本机入口通过 `SCENARIO_DB_PATH` 持久化非敏感场景和模板，属于上述纯 Mock 边界的独立开发验证入口；`server/index.ts` / Playwright 仍使用纯内存夹具。普通 SQLite 未加密，不代表生产安全能力已实现，使用与回退见根目录 `SQLite开发验证.md`。
+
+模板合同兼容扩展：`ScenarioTemplate` 与 `TemplateMutationRequest` 新增可选 `uiExtensions`，旧模板允许缺省，新模板保留完整扩展；模板六个接口增加明确的 503 存储失败响应。未修改确定性夹具、需求基线或 HTML 原型。当前重新冻结 SHA-256：
+
+- `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 同步）：`ECE5E12BCE449A0F89160D0ECBB1ABEE2F6B98B5156272248A626033CFA9E5A4`
+- `contracts/mock-api.openapi.yaml`：`DBA309956162FA0F8C2DE6753D833BD6713202B64C8823D228F3E6F1C1B90831`
+- `scripts/contracts/openapi-schema.snapshot.ts`：`B50498C3E50CA2E10C26D0AF79508F1C0AA3104113B8E8F3038F4CEB8C561AC2`

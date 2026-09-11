@@ -1016,6 +1016,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     expect(reloadedDraft).toEqual(savedDraft)
     await page.getByRole('tab', { name: '节点配置' }).click()
     const reloadedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 已编辑业务节点' })
+    await expect(reloadedRow).not.toContainText('PLAT-001')
+    await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
     await expect(reloadedRow).toContainText('PLAT-001')
     await expect(reloadedRow).toContainText('1')
     await reloadedRow.getByRole('button', { name: '编辑' }).click()
@@ -1088,6 +1090,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   expect((await loaded).status()).toBe(200)
+  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
   await page.getByRole('tab', { name: '链路配置' }).click()
   await page.getByTestId('add-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
@@ -1168,6 +1171,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const reloaded = await reloadedResponse
   expect(reloaded.status()).toBe(200)
   expect(((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data).toEqual(savedDraft)
+  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
   await page.getByRole('tab', { name: '链路配置' }).click()
   const reloadedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
   await expect(reloadedRow).toContainText('AIR-02')
@@ -1195,6 +1199,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   expect((await loaded).status()).toBe(200)
+  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
   await page.getByRole('tab', { name: '干扰设备' }).click()
 
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
@@ -1285,6 +1290,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.reload()
   expect((await reloadedResponse).status()).toBe(200)
   expect(await loadScenarioDraft(request)).toEqual(savedDraft)
+  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
   await page.getByRole('tab', { name: '干扰设备' }).click()
   const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(reloadedRow).toContainText('AJ-001')
@@ -1356,6 +1362,8 @@ test('P2-6 maintains templates in system management and applies them in scenario
   await messageBox.getByRole('button', { name: '新建', exact: true }).click()
   expect((await createdResponse).status()).toBe(201)
   await expect(page.getByTestId('template-table')).toContainText(createdName)
+  await expect(page.locator('.el-message--success').filter({ hasText: createdName })).toBeVisible()
+  await expect(page.getByTestId('template-feedback')).toHaveCount(0)
 
   const importedName = 'E2E 导入模板'
   await page.getByTestId('import-template').click()
@@ -1371,7 +1379,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   await page.getByTestId('load-template-TPL-SCN-002').click()
   expect((await detailResponse).status()).toBe(200)
   await expect(page.getByTestId('template-detail')).toContainText('TPL-SCN-002')
-  await expect(page.getByTestId('template-feedback')).toContainText(createdName)
+  await expect(page.getByTestId('template-feedback')).toHaveCount(0)
 
   await page.getByTestId('update-template-TPL-SCN-002').click()
   const updatedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
@@ -1389,7 +1397,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   await expect(messageBox).toHaveCount(0)
 
   await page.getByTestId('delete-template-TPL-SCN-003').click()
-  const deleteConfirmation = page.locator('.el-popconfirm').filter({ hasText: '确认删除该官方模板？' })
+  const deleteConfirmation = page.locator('.el-popconfirm').filter({ hasText: '确认删除该场景模板？' })
   await expect(deleteConfirmation).toBeVisible()
   const deletedResponse = page.waitForResponse((response) => response.request().method() === 'DELETE'
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-003')
@@ -1455,7 +1463,8 @@ test('P2-6 maintains templates in system management and applies them in scenario
     && new URL(response.url()).pathname === '/api/v1/templates/TPL-SCN-001/copy')
   await messageBox.getByRole('button', { name: '应用', exact: true }).click()
   expect((await operatorCopyResponse).status()).toBe(201)
-  await expect(page.getByTestId('template-feedback')).toContainText('E2E 操作员场景')
+  await expect(page.locator('.el-message--success').filter({ hasText: 'E2E 操作员场景' })).toBeVisible()
+  await expect(page.getByTestId('template-feedback')).toHaveCount(0)
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

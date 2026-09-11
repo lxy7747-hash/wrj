@@ -12,6 +12,7 @@ const props = defineProps<{
   modelValue: boolean
   platform: Platform | null
   editing: boolean
+  showIds?: boolean
   error: string
   pending: boolean
   locked: boolean
@@ -177,7 +178,7 @@ watch(() => props.modelValue, (visible) => {
       <section class="platform-editor-section" aria-labelledby="platform-basic-title">
         <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
         <div class="platform-editor-grid">
-          <el-form-item label="场景实体 ID">
+          <el-form-item v-show="showIds" label="场景实体 ID">
             <el-input v-model="editor.id" :disabled="editing" data-testid="platform-id" />
           </el-form-item>
           <el-form-item label="名称">
@@ -231,13 +232,13 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="platform-relation-title" class="platform-editor-section__title">关联资源</h4>
         <div class="position-grid">
           <el-form-item label="链路">
-            <el-input :model-value="editor.linkIds.join(', ')" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
+            <el-input :model-value="showIds ? editor.linkIds.join(', ') : `${editor.linkIds.length} 条关联链路`" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
           </el-form-item>
           <el-form-item label="传感器">
             <el-input :model-value="editor.sensorIds.join(', ')" readonly placeholder="由传感器归属自动生成" data-testid="platform-sensor-ids" />
           </el-form-item>
           <el-form-item label="干扰器">
-            <el-input :model-value="editor.jammerIds.join(', ')" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
+            <el-input :model-value="showIds ? editor.jammerIds.join(', ') : `${editor.jammerIds.length} 台干扰设备`" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
           </el-form-item>
         </div>
       </section>

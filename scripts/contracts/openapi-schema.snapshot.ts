@@ -5311,6 +5311,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'ScenarioTemplate': {
     'additionalProperties': false,
     'properties': {
+      'uiExtensions': {
+        '$ref': '#/components/schemas/ScenarioUiExtensions'
+      },
       'config': {
         '$ref': '#/components/schemas/ScenarioConfig'
       },
@@ -6052,6 +6055,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'TemplateMutationRequest': {
     'additionalProperties': false,
     'properties': {
+      'uiExtensions': {
+        '$ref': '#/components/schemas/ScenarioUiExtensions'
+      },
       'config': {
         '$ref': '#/components/schemas/ScenarioConfigWrite'
       },

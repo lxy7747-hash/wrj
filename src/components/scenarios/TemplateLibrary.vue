@@ -55,9 +55,9 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
     </div>
 
     <el-alert
-      v-if="state !== 'LOADING' && resultMessage"
+      v-if="state === 'ERROR' && resultMessage"
       class="platform-feedback"
-      :type="state === 'ERROR' ? 'error' : 'success'"
+      type="error"
       :closable="false"
       :title="resultMessage"
       show-icon
@@ -69,7 +69,7 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       <el-table-column prop="templateId" label="模板 ID" min-width="130" />
       <el-table-column prop="name" label="模板名称" min-width="220" show-overflow-tooltip />
       <el-table-column prop="version" label="版本" width="80" />
-      <el-table-column label="类型" width="90"><template #default>官方模板</template></el-table-column>
+      <el-table-column label="类型" width="90"><template #default>场景模板</template></el-table-column>
       <el-table-column prop="referenceCount" label="历史引用" width="90" />
       <el-table-column label="操作" fixed="right" :width="canMaintain ? 270 : 210">
         <template #default="{ row }">
@@ -78,7 +78,7 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
           <template v-if="canMaintain">
             <el-button link type="primary" :disabled="pending || !draftAvailable" :data-testid="`update-template-${row.templateId}`" @click="emit('update', row)">更新</el-button>
             <el-button link type="primary" :disabled="pending" :data-testid="`export-template-${row.templateId}`" @click="emit('export', row)">导出</el-button>
-            <el-popconfirm title="确认删除该官方模板？" confirm-button-text="删除" cancel-button-text="取消" @confirm="emit('delete', row.templateId)">
+            <el-popconfirm title="确认删除该场景模板？" confirm-button-text="删除" cancel-button-text="取消" @confirm="emit('delete', row.templateId)">
               <template #reference><el-button link type="danger" :disabled="pending" :data-testid="`delete-template-${row.templateId}`">删除</el-button></template>
             </el-popconfirm>
           </template>

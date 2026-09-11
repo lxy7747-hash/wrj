@@ -49,6 +49,27 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
+  it('模板合同兼容旧配置，支持完整 UI 扩展并拒绝额外或非法字段', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile({ ...schema, $ref: '#/$defs/TemplateMutationRequest' })
+    const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
+    const legacy = { name: '旧模板', config }
+    expect(validate(legacy)).toBe(true)
+    const uiExtensions = { jammers: config.jammers.map(item => ({ jammerId: item.id, direction: 123, duration: 87, enabled: false })),
+      sensors: config.sensors.map(item => ({ sensorId: item.id, type: 'ESM', direction: 'OMNI', probability: 0.37, enabled: true })) }
+    expect(validate({ ...legacy, uiExtensions })).toBe(true)
+    expect(validate({ ...legacy, uiExtensions: null })).toBe(false)
+    expect(validate({ ...legacy, uiExtensions: { ...uiExtensions, extra: true } })).toBe(false)
+    expect(validate({ ...legacy, uiExtensions, extra: true })).toBe(false)
+    const validateResponse = ajv.compile({ ...schema, $ref: '#/$defs/ScenarioTemplate' })
+    const template = { templateId: 'TPL-SCN-001', ...legacy, version: '1', official: true, referenceCount: 0 }
+    expect(validateResponse(template)).toBe(true)
+    expect(validateResponse({ ...template, uiExtensions })).toBe(true)
+    expect(validateResponse({ ...template, uiExtensions: null })).toBe(false)
+  })
+
   it('单链路业务允许旧记录，关联后强制非空链路、明确方向和单目标', () => {
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
     const ajv = new Ajv2020({ allErrors: true, strict: false })

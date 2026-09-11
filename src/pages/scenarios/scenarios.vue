@@ -23,6 +23,7 @@ import {
 } from '../../features/scenarios/scenario-validation'
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
+import { useAuthStore } from '../../stores/auth'
 import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import ScenarioConfigExport from '../../components/scenarios/ScenarioConfigExport.vue'
 import LocalSceneImport from '../../components/scenarios/LocalSceneImport.vue'
@@ -32,8 +33,10 @@ import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialo
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
+import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 const scenarioStore = useScenarioStore()
+const authStore = useAuthStore()
 const {
   draft,
   dirty,
@@ -53,6 +56,7 @@ const {
   preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
+const showIds = ref(false)
 const draftReviewed = ref(false)
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
@@ -141,6 +145,9 @@ const validationCompleted = computed(() => draftReviewed.value || resultCode.val
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
 const configurationTab = computed(() => ['scenario', 'platforms', 'links', 'jammers', 'data'].includes(activeTab.value))
 const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
+const alreadySaved = computed(() => draft.value !== null && draft.value.revision > 0
+  && !dirty.value && !draft.value.locked && !pending.value && !scriptPending.value)
+const canMaintainTemplates = computed(() => authStore.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed)
 const preflightPassed = computed(() => script.value !== null && scriptResultCode.value === 'PREFLIGHT_SUCCESS')
 const canPreviewScript = computed(() => draftReviewed.value && draft.value !== null && !draft.value.locked
   && !dirty.value && panelState.value === 'SUCCESS' && validation.value.errors.length === 0)
@@ -150,7 +157,9 @@ watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
 
 /** 根据当前草稿和脚本结果提示下一步，不把已加载或已生成误报为预检通过。 */
 const workflowMessage = computed(() => {
-  if (draft.value === null) return '加载场景后，配置参数，再校验并保存，最后生成脚本并执行预检。'
+  if (draft.value === null) return panelState.value === 'EMPTY'
+    ? '暂无场景，可新建场景，也可导入完整快照或选择场景模板。'
+    : '加载场景后，配置参数，再校验并保存，最后生成脚本并执行预检。'
   if (draft.value.locked) return '场景运行中，配置已锁定。请先停止仿真，再修改配置或生成脚本。'
   if (pending.value || scriptPending.value) return '正在处理当前操作，请稍候。'
   if (validation.value.errors.length > 0) return '请在校验结果中点击问题定位；修正参数后重新校验并保存。'
@@ -1024,6 +1033,8 @@ function focusValidationField(fieldPath: string): void {
  * @sideEffects 切换页签；集合项问题会打开对应编辑弹框并显示中文原因。
  */
 async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
+  // 编号异常定位时展开隐藏字段，不影响正常配置的精简展示。
+  if (issue.fieldPath === 'scenario.id' || /(?:\.id|Ids|\.linkId)$/.test(issue.fieldPath) || issue.code.endsWith('_ID_DUPLICATED')) showIds.value = true
   const platformIndex = Number(/^platforms\[(\d+)\]/.exec(issue.fieldPath)?.[1])
   const linkIndex = Number(/^links\[(\d+)\]/.exec(issue.fieldPath)?.[1])
   const jammerIndex = Number(/^(?:jammers|uiExtensions\.jammers)\[(\d+)\]/.exec(issue.fieldPath)?.[1])
@@ -1083,6 +1094,31 @@ async function validateScenario(): Promise<void> {
  */
 async function loadScenario(): Promise<void> {
   await scenarioStore.loadScenario()
+}
+
+function createScenario(): void {
+  if (scenarioStore.createScenario()) activeTab.value = 'scenario'
+}
+
+/** 模板保存当前已落盘配置的独立副本；确认期间草稿变化或会话失效则取消。 */
+async function saveAsTemplate(): Promise<void> {
+  if (!canMaintainTemplates.value || !alreadySaved.value || templatePending.value) return
+  const epoch = scenarioStore.requestEpoch
+  const scriptEpoch = scenarioStore.scriptEpoch
+  const currentDraft = draft.value
+  try {
+    const { value } = await ElMessageBox.prompt('将当前已保存场景及扩展参数复制为模板，不改变原场景。', '另存为模板', {
+      inputValue: `${currentDraft!.config.scenario.name} 模板`,
+      inputValidator: name => name.trim() !== '' || '请输入模板名称。',
+      confirmButtonText: '保存模板', cancelButtonText: '取消',
+    })
+    if (epoch !== scenarioStore.requestEpoch || scriptEpoch !== scenarioStore.scriptEpoch
+      || currentDraft !== draft.value || !alreadySaved.value || !canMaintainTemplates.value || templatePending.value) return
+    if (await scenarioStore.createTemplate(value)) ElMessage.success(scenarioStore.templateResultMessage)
+    else if (epoch === scenarioStore.requestEpoch) ElMessage.error(scenarioStore.templateResultMessage)
+  } catch {
+    // 取消不创建模板、不修改草稿。
+  }
 }
 
 /**
@@ -1169,7 +1205,7 @@ async function applyTemplate(template: ScenarioTemplate): Promise<void> {
       inputValue: `${template.name} 场景`,
       inputValidator: (name) => name.trim() !== '' || '请输入临时场景名称。',
     })
-    await scenarioStore.copyTemplate(template.templateId, value)
+    if (await scenarioStore.copyTemplate(template.templateId, value)) ElMessage.success(templateResultMessage.value)
   } catch {
     // 用户取消应用时保持工作草稿不变。
   }
@@ -1197,6 +1233,10 @@ watch(activeTab, (tab) => {
         <el-button :type="activeTab === 'script' ? 'primary' : 'default'" :aria-current="activeTab === 'script' ? 'step' : undefined" :disabled="!canPreviewScript || scriptPending" title="当前配置校验通过且已保存后可进入" data-testid="workflow-script" @click="activeTab = 'script'">3 脚本预览与预检</el-button>
       </nav>
       <div class="scenario-header__actions" aria-label="场景辅助工具">
+        <el-checkbox v-if="draft" v-model="showIds" data-testid="show-scenario-ids">显示编号</el-checkbox>
+        <el-tooltip v-if="canMaintainTemplates" content="请先保存场景；运行中或处理中不可另存模板。" :disabled="alreadySaved && !templatePending">
+          <span><el-button :disabled="!alreadySaved || templatePending" :loading="templatePending" data-testid="save-as-template" @click="saveAsTemplate">另存为模板</el-button></span>
+        </el-tooltip>
         <el-button :type="activeTab === 'templates' ? 'primary' : 'default'" :aria-pressed="activeTab === 'templates'" data-testid="open-scenario-templates" @click="activeTab = 'templates'">场景模板</el-button>
         <el-button :type="activeTab === 'operations' ? 'primary' : 'default'" :aria-pressed="activeTab === 'operations'" data-testid="open-scenario-operations" @click="activeTab = 'operations'">场景操作</el-button>
       </div>
@@ -1208,8 +1248,8 @@ watch(activeTab, (tab) => {
         <el-tag :type="panelState === 'ERROR' ? 'danger' : dirty ? 'warning' : 'success'">
           {{ dirty ? '未保存' : stateLabels[panelState] }}
         </el-tag>
-        <span v-if="draft" class="console-chip">修订 {{ draft.revision }}</span>
-        <el-button v-if="panelState === 'ERROR' && !dirty" :loading="pending" @click="loadScenario">
+        <span v-if="draft" class="console-chip">{{ draft.revision === 0 ? '尚未保存' : `修订 ${draft.revision}` }}</span>
+        <el-button v-if="(panelState === 'ERROR' || panelState === 'EMPTY') && !dirty" :loading="pending" @click="loadScenario">
           重新加载
         </el-button>
         <el-button
@@ -1221,22 +1261,26 @@ watch(activeTab, (tab) => {
         >
           整体校验
         </el-button>
-        <el-button
-          :type="activeTab === 'validation' && dirty ? 'primary' : 'default'"
-          :disabled="draft === null || draft?.locked || !dirty || scriptPending"
-          :loading="pending"
-          data-testid="save-scenario"
-          @click="saveScenario"
-        >
-          校验并保存
-        </el-button>
+        <el-tooltip content="已保存，无需重复保存" :disabled="!alreadySaved" placement="top">
+          <span :tabindex="alreadySaved ? 0 : undefined" :aria-label="alreadySaved ? '已保存，无需重复保存' : undefined" data-testid="save-scenario-hint">
+            <el-button
+              :type="activeTab === 'validation' && dirty ? 'primary' : 'default'"
+              :disabled="draft === null || draft?.locked || !dirty || scriptPending"
+              :loading="pending"
+              data-testid="save-scenario"
+              @click="saveScenario"
+            >
+              校验并保存
+            </el-button>
+          </span>
+        </el-tooltip>
         <el-button v-if="configurationTab" type="primary" :disabled="draft === null || pending || scriptPending" data-testid="next-validation" @click="activeTab = 'validation'">下一步：校验与保存</el-button>
         <el-button v-else-if="activeTab === 'validation'" type="primary" :disabled="!canPreviewScript || scriptPending" data-testid="next-script" @click="activeTab = 'script'">下一步：脚本预览</el-button>
       </div>
     </div>
 
     <el-alert
-      v-if="panelState === 'ERROR' && activeTab !== 'validation'"
+      v-if="panelState === 'ERROR' && (activeTab !== 'validation' || draft === null)"
       class="scenario-feedback"
       type="error"
       :closable="false"
@@ -1261,7 +1305,7 @@ watch(activeTab, (tab) => {
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-label="场景基础">
         <div class="form-grid form-grid--scenario">
-          <el-form-item label="场景编号" :error="issueMessage('scenario.id')">
+          <el-form-item v-show="showIds" label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
           </el-form-item>
           <el-form-item label="场景名称" :error="issueMessage('scenario.name')">
@@ -1394,8 +1438,8 @@ watch(activeTab, (tab) => {
               </div>
             </div>
             <el-table :data="draft.config.platforms" stripe data-testid="platform-table">
-              <el-table-column prop="id" label="场景实体 ID" min-width="130" />
-              <el-table-column prop="name" label="名称" min-width="180" show-overflow-tooltip />
+              <el-table-column v-if="showIds" prop="id" label="场景实体 ID" min-width="130" />
+              <el-table-column label="名称" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.id) }}</template></el-table-column>
               <el-table-column label="分类" width="120">
                 <template #default="{ row }">
                   {{ isBusinessInformationNodeType(row.type) ? '信息节点' : '支撑实体' }}
@@ -1441,7 +1485,8 @@ watch(activeTab, (tab) => {
               </div>
             </div>
             <el-table :data="draft.config.links" stripe data-testid="link-table">
-              <el-table-column prop="id" label="链路 ID" min-width="120" />
+              <el-table-column v-if="showIds" prop="id" label="链路 ID" min-width="120" />
+              <el-table-column v-else type="index" label="序号" width="65" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
               <el-table-column label="链路状态" width="100"><template #default="{ row }">
                 <el-tag :type="readLinkEnabled(row, linkSettings) ? 'success' : 'info'">
@@ -1449,8 +1494,8 @@ watch(activeTab, (tab) => {
                 </el-tag>
               </template></el-table-column>
               <el-table-column label="中继卫星" min-width="140"><template #default>{{ linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : '—' }}</template></el-table-column>
-              <el-table-column prop="sourcePlatformId" label="源平台" min-width="120" />
-              <el-table-column prop="targetPlatformId" label="目标平台" min-width="120" />
+              <el-table-column label="源平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
+              <el-table-column label="目标平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
               <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
               <el-table-column prop="bandwidth" label="带宽（MHz）" min-width="110" />
               <el-table-column label="方向" width="80"><template #default="{ row }">{{ linkDirectionLabels[row.direction] }}</template></el-table-column>
@@ -1486,9 +1531,10 @@ watch(activeTab, (tab) => {
               </div>
             </div>
             <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
-              <el-table-column prop="id" label="设备 ID"/>
+              <el-table-column v-if="showIds" prop="id" label="设备 ID"/>
+              <el-table-column v-else type="index" label="序号" width="65" />
               <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
-              <el-table-column prop="platformId" label="所属干扰节点"/>
+              <el-table-column label="所属干扰节点" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.platformId, showIds) }}</template></el-table-column>
               <el-table-column prop="frequency" label="频率（MHz）" />
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
               <el-table-column prop="defaultPower" label="发射功率（W）"  />
@@ -1624,7 +1670,31 @@ watch(activeTab, (tab) => {
       </div>
     </el-form>
 
+    <div v-else class="scenario-stage-content">
+      <TemplateLibrary
+        v-if="activeTab === 'templates'"
+        :can-maintain="false"
+        :allow-apply="true"
+        :pending="templatePending"
+        :draft-available="false"
+        :draft-locked="false"
+        :templates="templates"
+        :state="templateState"
+        :result-message="templateResultMessage"
+        :selected-template="selectedTemplate"
+        :last-confirmation="lastConfirmation"
+        @load="scenarioStore.loadTemplate"
+        @copy="applyTemplate"
+      />
+      <el-empty v-else-if="panelState === 'EMPTY'" description="暂无场景，请新建场景、导入快照或选择场景模板。" data-testid="scenario-empty">
+        <el-button type="primary" data-testid="create-scenario" @click="createScenario">新建场景</el-button>
+        <el-button data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
+        <el-button @click="activeTab = 'templates'">选择场景模板</el-button>
+      </el-empty>
+    </div>
+
     <PlatformEditorDialog
+      :show-ids="showIds"
       v-model="platformDialogVisible"
       :platform="platformEditor"
       :editing="editingPlatformIndex !== null"
@@ -1643,6 +1713,7 @@ watch(activeTab, (tab) => {
     />
 
     <LinkEditorDialog
+      :show-ids="showIds"
       v-model="linkDialogVisible"
       :link="linkEditorLink"
       :editing="editingLinkIndex !== null"
@@ -1661,6 +1732,7 @@ watch(activeTab, (tab) => {
     />
 
     <JammerEditorDialog
+      :show-ids="showIds"
       v-model="jammerDialogVisible"
       :jammer="jammerEditorJammer"
       :ui-extension="jammerEditorUiExtension"

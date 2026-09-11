@@ -5,12 +5,21 @@ import type {
   ScenarioTemplate,
   TemplateMutationRequest,
 } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
+import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type TemplateProjectionResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422; fieldPath?: string; message: string }
+  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 503; fieldPath?: string; message: string }
+
+export interface TemplateStorage {
+  load(): ScenarioTemplate[]
+  save(template: ScenarioTemplate, expectedVersion?: string): boolean
+  delete(templateId: string, expectedVersion: string): boolean
+}
+
+const storageFailure = { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '模板数据库读写失败，请稍后重试。' } as const
+const storageConflict = { ok: false, code: 'CONFLICT', status: 409, message: '模板已变化或名称已被使用，请重新加载。' } as const
 
 interface TemplateRuntimeState {
   templates: ScenarioTemplate[]
@@ -43,9 +52,9 @@ function createRuntimeState(): TemplateRuntimeState {
  * @returns 规范请求，或首个可定位错误。
  * @remarks 仅检查闭合结构和场景配置，不修改模板投影。
  */
-function inspectMutation(value: unknown): TemplateProjectionResult<TemplateMutationRequest> {
+export function inspectTemplateMutation(value: unknown): TemplateProjectionResult<TemplateMutationRequest> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)
-    || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'name') || !Object.hasOwn(value, 'config')) {
+    || !Object.keys(value).every(key => ['name', 'config', 'uiExtensions'].includes(key)) || !Object.hasOwn(value, 'name') || !Object.hasOwn(value, 'config')) {
     return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '模板请求结构不正确。' }
   }
   const candidate = value as Partial<TemplateMutationRequest>
@@ -63,14 +72,37 @@ function inspectMutation(value: unknown): TemplateProjectionResult<TemplateMutat
       message: issue?.message ?? '模板场景配置校验失败。',
     }
   }
-  return { ok: true, data: { name: candidate.name.trim(), config: candidate.config as ScenarioConfig } }
+  if (Object.hasOwn(candidate, 'uiExtensions')) {
+    const extensions = inspectScenarioUiExtensions(candidate.uiExtensions,
+      inspection.jammers!.map(item => item.id), inspection.sensors!.map(item => item.id))
+    if (!extensions.result.valid) {
+      const issue = extensions.result.errors[0]!
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: issue.fieldPath, message: issue.message }
+    }
+  }
+  return { ok: true, data: { name: candidate.name.trim(), config: candidate.config as ScenarioConfig,
+    ...(candidate.uiExtensions === undefined ? {} : { uiExtensions: structuredClone(candidate.uiExtensions) }) } }
 }
 
 export class TemplateProjection {
   private state = createRuntimeState()
 
+  constructor(private readonly storage?: TemplateStorage) {
+    this.reset()
+  }
+
+  private refresh(): boolean {
+    try {
+      if (this.storage) this.reset()
+      return true
+    } catch {
+      return false
+    }
+  }
+
   /** 返回全部模板的独立副本。 */
   list(): ScenarioTemplate[] {
+    if (this.storage) this.reset()
     return structuredClone(this.state.templates)
   }
 
@@ -80,6 +112,7 @@ export class TemplateProjection {
    * @returns 模板副本，或未找到错误。
    */
   get(templateId: string): TemplateProjectionResult<ScenarioTemplate> {
+    if (!this.refresh()) return storageFailure
     const template = this.state.templates.find((item) => item.templateId === templateId)
     return template === undefined
       ? { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定模板。' }
@@ -87,13 +120,14 @@ export class TemplateProjection {
   }
 
   /**
-   * 新建官方内存模板。
+   * 新建官方模板；配置了持久化存储时先落盘再更新内存。
    * @param value 未受信任的模板请求体。
    * @returns 新建模板，或校验、重名错误。
    * @remarks 成功时版本从 1 开始且引用数为 0。
    */
   create(value: unknown): TemplateProjectionResult<ScenarioTemplate> {
-    const mutation = inspectMutation(value)
+    if (!this.refresh()) return storageFailure
+    const mutation = inspectTemplateMutation(value)
     if (!mutation.ok) return mutation
     if (this.state.templates.some((template) => template.name === mutation.data.name)) {
       return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'name', message: '模板名称已存在。' }
@@ -104,8 +138,12 @@ export class TemplateProjection {
       version: '1',
       official: true,
       config: structuredClone(mutation.data.config),
+      ...(mutation.data.uiExtensions === undefined ? {} : { uiExtensions: structuredClone(mutation.data.uiExtensions) }),
       referenceCount: 0,
     }
+    try {
+      if (this.storage && !this.storage.save(template)) return storageConflict
+    } catch { return storageFailure }
     this.state.nextSequence += 1
     this.state.templates.push(template)
     return { ok: true, data: structuredClone(template) }
@@ -118,9 +156,10 @@ export class TemplateProjection {
    * @returns 更新后的模板，或未找到、校验、重名错误。
    */
   update(templateId: string, value: unknown): TemplateProjectionResult<ScenarioTemplate> {
+    if (!this.refresh()) return storageFailure
     const index = this.state.templates.findIndex((template) => template.templateId === templateId)
     if (index < 0) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定模板。' }
-    const mutation = inspectMutation(value)
+    const mutation = inspectTemplateMutation(value)
     if (!mutation.ok) return mutation
     if (this.state.templates.some((template, candidateIndex) => candidateIndex !== index && template.name === mutation.data.name)) {
       return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'name', message: '模板名称已存在。' }
@@ -132,6 +171,12 @@ export class TemplateProjection {
       version: String(Number(current.version) + 1),
       config: structuredClone(mutation.data.config),
     }
+    // 旧请求未携带扩展时按旧模板语义重建，不把旧扩展绑定到不同的新实体上。
+    if (mutation.data.uiExtensions === undefined) delete updated.uiExtensions
+    else updated.uiExtensions = structuredClone(mutation.data.uiExtensions)
+    try {
+      if (this.storage && !this.storage.save(updated, current.version)) return storageConflict
+    } catch { return storageFailure }
     this.state.templates[index] = updated
     return { ok: true, data: structuredClone(updated) }
   }
@@ -143,17 +188,26 @@ export class TemplateProjection {
    * @remarks 二次确认由路由层先行消费；引用检查在确认后再次执行。
    */
   delete(templateId: string): TemplateProjectionResult<DeleteResult> {
+    if (!this.refresh()) return storageFailure
     const index = this.state.templates.findIndex((template) => template.templateId === templateId)
     if (index < 0) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定模板。' }
     if (this.state.templates[index]!.referenceCount > 0) {
       return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'referenceCount', message: '模板仍被历史记录引用，不能删除。' }
     }
+    try {
+      if (this.storage && !this.storage.delete(templateId, this.state.templates[index]!.version)) return storageConflict
+    } catch { return storageFailure }
     this.state.templates.splice(index, 1)
     return { ok: true, data: { deleted: true, objectId: templateId } }
   }
 
-  /** 恢复冻结夹具中的模板基线。 */
+  /** SQLite 模式只重载用户模板；纯 Mock 才恢复夹具。 */
   reset(): void {
-    this.state = createRuntimeState()
+    if (!this.storage) {
+      this.state = createRuntimeState()
+      return
+    }
+    const templates = this.storage.load()
+    this.state = { templates, nextSequence: Math.max(0, ...templates.map(item => Number(/^TPL-SCN-(\d+)$/.exec(item.templateId)?.[1] ?? 0))) + 1 }
   }
 }

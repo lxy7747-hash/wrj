@@ -4,6 +4,7 @@ import type { InformationDemand, Link, LinkType, Platform } from '../../contract
 import { LINK_PARAMETER_DEFAULTS } from '../../features/scenarios/link-settings'
 import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
 import BusinessEditorDialog from './BusinessEditorDialog.vue'
+import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type LinkTypeOption = { value: LinkType, label: string }
 
@@ -11,6 +12,7 @@ const props = defineProps<{
   modelValue: boolean
   link: Link | null
   editing: boolean
+  showIds?: boolean
   error: string
   pending: boolean
   locked: boolean
@@ -92,7 +94,7 @@ watch(() => editor.value?.direction, direction => {
           <el-form-item label="当前链路">
             <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
           </el-form-item>
-          <el-form-item label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
+          <el-form-item v-show="showIds" label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
         </div>
       </section>
 
@@ -101,12 +103,12 @@ watch(() => editor.value?.direction, direction => {
         <div class="link-editor-grid">
           <el-form-item label="源平台">
             <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source">
-              <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="目标平台">
             <el-select v-model="editor.targetPlatformId" filterable style="width: 100%" data-testid="link-target">
-              <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
         </div>

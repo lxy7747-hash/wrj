@@ -196,6 +196,88 @@ function deferred<T>(): {
 }
 
 describe('P2-1 场景 Store', () => {
+  it('新建只生成空白本地草稿，不请求接口；不完整配置校验/保存被阻止', async () => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(store.createScenario()).toBe(true)
+    expect(store.draft).toMatchObject({ revision: 0, locked: false, config: {
+      scenario: { name: '', description: '', startTime: '' },
+      platforms: [], links: [], jammers: [], sensors: [], informationDemand: [],
+    }, uiExtensions: { jammers: [], sensors: [] } })
+    expect(store.draft!.config.scenario.id).toMatch(/^SCN-[a-f0-9-]{36}$/)
+    expect(store.dirty).toBe(true)
+    const id = store.draft!.config.scenario.id
+    expect(store.createScenario()).toBe(false)
+    expect(store.draft!.config.scenario.id).toBe(id)
+    expect(await store.validateScenario()).toBe(false)
+    expect(store.validation.errors.map(error => error.fieldPath)).toContain('scenario.name')
+    expect(await store.saveScenario()).toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
+  })
+
+  it('未授权或加载在途时不能新建，已有草稿不被覆盖', () => {
+    const store = useScenarioStore()
+    expect(store.createScenario()).toBe(false)
+    expect(store.draft).toBeNull()
+    expect(store.resultCode).toBe('PERMISSION_DENIED')
+    store.resetToSafeEmpty()
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    store.panelState = 'LOADING'
+    expect(store.createScenario()).toBe(false)
+    expect(store.draft).toBeNull()
+  })
+
+  it('新草稿填齐后本地校验不请求不存在的资源，首次保存才 PUT，重载一致', async () => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    store.createScenario()
+    const id = store.draft!.config.scenario.id
+    const complete = scenarioDraft(1)
+    complete.config.scenario.id = id
+    // 用合法配置填齐新草稿，仍通过正式 Store 校验、保存和加载动作，不绕过写入入口。
+    store.draft!.config = structuredClone(complete.config)
+    store.draft!.uiExtensions = structuredClone(complete.uiExtensions)
+    store.markDirty()
+    expect(await store.validateScenario()).toBe(true)
+    expect(store.dirty).toBe(true)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockResolvedValue(jsonResponse(success(complete)))
+    expect(await store.saveScenario()).toBe(true)
+    expect(fetchSpy.mock.calls[0]![0]).toContain(`/scenarios/${id}`)
+    expect(fetchSpy.mock.calls[0]![1].method).toBe('PUT')
+    expect(store.draft!.revision).toBe(1)
+    expect(store.dirty).toBe(false)
+    await store.loadScenario(id)
+    expect(store.draft!.config.scenario.id).toBe(id)
+    expect(store.draft!.config.platforms).toEqual(complete.config.platforms)
+  })
+
+  it('404 NOT_FOUND 清除旧草稿及预览并进入 EMPTY，不把权限/服务错误当空库', async () => {
+    const missing: ApiFailure = {
+      ok: false,
+      error: { code: 'NOT_FOUND', message: '未找到指定场景。', retryable: false, correlationId: 'CORR-EMPTY' },
+      meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+    }
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success(scenarioDraft())))
+      .mockResolvedValueOnce({ ...jsonResponse(missing, false), status: 404 })
+      .mockResolvedValueOnce({ ...jsonResponse({ ...missing, error: { ...missing.error, code: 'PERMISSION_DENIED' } }, false), status: 403 })
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    await store.loadScenario()
+    store.markDirty()
+    expect(await store.loadScenario()).toBe(false)
+    expect(store.$state).toMatchObject({ draft: null, dirty: false, panelState: 'EMPTY', resultCode: 'EMPTY', script: null, lastConfirmation: null })
+    expect(store.resultMessage).toContain('暂无场景')
+    await store.loadScenario()
+    expect(store.panelState).toBe('ERROR')
+    expect(store.resultCode).toBe('PERMISSION_DENIED')
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     sessionStorage.clear()
@@ -453,6 +535,31 @@ describe('P2-1 场景 Store', () => {
 })
 
 describe('P2-6 场景模板 Store', () => {
+  it('模板创建、更新、导出导入保留 UI 扩展；旧模板仍可读，非法扩展不进入 Store', async () => {
+    useAuthStore().$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const store = useScenarioStore()
+    const saved = scenarioDraft()
+    saved.uiExtensions.jammers[0]!.direction = 123
+    const extended = { ...template(), config: saved.config, uiExtensions: saved.uiExtensions }
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success(extended)))
+    vi.stubGlobal('fetch', fetchSpy)
+    fetchSpy.mockResolvedValueOnce(jsonResponse(success(saved)))
+    await store.loadScenario()
+    expect(await store.createTemplate('完整模板')).toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls.at(-1)![1].body).uiExtensions).toEqual(saved.uiExtensions)
+    expect(await store.updateTemplate(extended.templateId, '更新')).toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls.at(-1)![1].body).uiExtensions).toEqual(saved.uiExtensions)
+    const exported = await store.exportTemplate(extended.templateId)
+    expect(JSON.parse(exported!).uiExtensions).toEqual(saved.uiExtensions)
+    expect(await store.importTemplate(exported!)).toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls.at(-1)![1].body).uiExtensions).toEqual(saved.uiExtensions)
+    fetchSpy.mockResolvedValueOnce(jsonResponse(success({ ...extended, uiExtensions: { jammers: [], sensors: [] } })))
+    expect(await store.loadTemplate(extended.templateId)).toBeUndefined()
+    expect(store.templateResultCode).toBe('INVALID_RESPONSE')
+    fetchSpy.mockResolvedValueOnce(jsonResponse(success(template())))
+    expect(await store.loadTemplate(extended.templateId)).toBeDefined()
+  })
+
   beforeEach(() => {
     setActivePinia(createPinia())
     sessionStorage.clear()

@@ -15,7 +15,12 @@ import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type ScenarioProjectionResult<T> =
   | { ok: true; data: T }
-  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422; fieldPath?: string; message: string }
+  | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 503; fieldPath?: string; message: string }
+
+export interface ScenarioStorage {
+  load(): ScenarioDraft | undefined
+  save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean
+}
 
 /**
  * 创建可重置的确定性场景草稿。
@@ -122,8 +127,32 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
 }
 
 export class ScenarioProjection {
-  private draft = createDraft()
+  private draft: ScenarioDraft | null
   private history: ScenarioDraft[] = []
+  private persisted: { id: string; revision: number } | undefined
+
+  constructor(private readonly storage?: ScenarioStorage) {
+    this.draft = storage ? storage.load() ?? null : createDraft()
+    this.persisted = this.draft && storage ? { id: this.draft.config.scenario.id, revision: this.draft.revision } : undefined
+  }
+
+  // 先提交数据库再更新内存和撤销栈，落盘失败不能留下“保存成功”的半成品。
+  private commit(draft: ScenarioDraft, undo = false): ScenarioProjectionResult<ScenarioDraft> {
+    if (this.storage) {
+      try {
+        if (!this.storage.save(draft, this.persisted)) {
+          return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'revision', message: '数据库场景已变化，请重新加载后再操作。' }
+        }
+      } catch {
+        return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '场景写入数据库失败，原数据未改变，请检查数据库是否可写后重试。' }
+      }
+      this.persisted = { id: draft.config.scenario.id, revision: draft.revision }
+    }
+    if (undo) this.history.pop()
+    else if (this.draft) this.history.push(structuredClone(this.draft))
+    this.draft = structuredClone(draft)
+    return { ok: true, data: structuredClone(this.draft) }
+  }
 
   /**
    * 同步仿真运行持有的场景配置锁。
@@ -133,7 +162,7 @@ export class ScenarioProjection {
    * @remarks 只改变运行期锁投影，不递增配置修订号，也不写入撤销历史。
    */
   setLocked(scenarioId: string, locked: boolean): ScenarioProjectionResult<ScenarioDraft> {
-    if (scenarioId !== this.draft.config.scenario.id) {
+    if (!this.draft || scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
     this.draft.locked = locked
@@ -144,10 +173,30 @@ export class ScenarioProjection {
    * 读取指定场景的独立草稿副本。
    * @param scenarioId 路由中的场景编号。
    * @returns 找到时返回草稿副本，否则返回 404 结果。
-   * @remarks 不修改服务端草稿状态。
+   * @remarks 本机存储变化时刷新工作副本，纯 Mock 仅返回内存副本。
    */
-  get(scenarioId: string): ScenarioProjectionResult<ScenarioDraft> {
-    if (scenarioId !== this.draft.config.scenario.id) {
+  get(scenarioId: string, currentWorkspace = false): ScenarioProjectionResult<ScenarioDraft> {
+    if (this.storage) {
+      let stored: ScenarioDraft | undefined
+      try {
+        stored = this.storage.load()
+      } catch {
+        return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '场景数据库读取失败，请检查数据库，未回退到演示数据。' }
+      }
+      if (!stored) {
+        this.draft = null
+        this.persisted = undefined
+        this.history = []
+      }
+      if (stored && (stored.revision !== this.persisted?.revision || stored.config.scenario.id !== this.persisted?.id)) {
+        this.draft = { ...stored, locked: this.draft?.locked ?? false }
+        this.persisted = { id: stored.config.scenario.id, revision: stored.revision }
+        this.history = []
+      }
+      // 现有页面默认请求 SCN-001；本机模式将其作为当前工作场景入口，兼容导入后的编号。
+      if (this.draft && currentWorkspace && scenarioId === 'SCN-001') return { ok: true, data: structuredClone(this.draft) }
+    }
+    if (!this.draft || scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
     return { ok: true, data: structuredClone(this.draft) }
@@ -160,15 +209,15 @@ export class ScenarioProjection {
    * @returns 新的工作草稿，或锁定、字段校验错误。
    * @remarks 保留当前工作场景编号，成功时替换内存草稿并递增修订号。
    */
-  copyTemplate(config: ScenarioConfig, name: string): ScenarioProjectionResult<ScenarioDraft> {
-    if (this.draft.locked) {
+  copyTemplate(config: ScenarioConfig, name: string, uiExtensions?: ScenarioDraft['uiExtensions']): ScenarioProjectionResult<ScenarioDraft> {
+    if (this.draft?.locked) {
       return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     }
     if (name.trim() === '') {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'name', message: '临时场景名称不能为空。' }
     }
     const candidate = structuredClone(config)
-    candidate.scenario.id = this.draft.config.scenario.id
+    candidate.scenario.id = this.draft?.config.scenario.id ?? candidate.scenario.id
     candidate.scenario.name = name.trim()
     const inspection = inspectScenarioConfig(candidate, 'write')
     if (!inspection.result.valid) {
@@ -181,15 +230,19 @@ export class ScenarioProjection {
         message: issue.message,
       }
     }
-    this.history.push(structuredClone(this.draft))
-    this.draft = {
+    const extensions = uiExtensions ?? createUiExtensions(candidate)
+    const extensionInspection = inspectScenarioUiExtensions(extensions, candidate.jammers.map(item => item.id), candidate.sensors.map(item => item.id))
+    if (!extensionInspection.result.valid) {
+      const issue = extensionInspection.result.errors[0]!
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: issue.fieldPath, message: issue.message }
+    }
+    return this.commit({
       config: candidate,
-      uiExtensions: createUiExtensions(candidate),
-      revision: this.draft.revision + 1,
+      uiExtensions: structuredClone(extensions),
+      revision: (this.draft?.revision ?? 0) + 1,
       officialLibraryChanged: false,
       locked: false,
-    }
-    return { ok: true, data: structuredClone(this.draft) }
+    })
   }
 
   /**
@@ -200,7 +253,7 @@ export class ScenarioProjection {
    * @remarks 只读取候选配置，不修改服务端草稿和修订号。
    */
   validate(scenarioId: string, value: unknown): ScenarioProjectionResult<ValidationResult> {
-    if (scenarioId !== this.draft.config.scenario.id) {
+    if (!this.draft || scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
     if (this.draft.locked) {
@@ -238,10 +291,10 @@ export class ScenarioProjection {
    * @remarks 成功时替换场景身份、递增修订号；失败时保持原草稿不变。
    */
   save(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
-    if (scenarioId !== this.draft.config.scenario.id) {
+    if (this.draft && scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     }
-    if (this.draft.locked) {
+    if (this.draft?.locked) {
       return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     }
 
@@ -282,22 +335,22 @@ export class ScenarioProjection {
       }
     }
 
-    this.history.push(structuredClone(this.draft))
-    this.draft = {
+    return this.commit({
+      locked: false,
+      officialLibraryChanged: false,
       ...this.draft,
       config: structuredClone(candidate as ScenarioConfig),
       uiExtensions: {
         jammers: structuredClone(extensionInspection.jammers!),
         sensors: structuredClone(extensionInspection.sensors!),
       },
-      revision: this.draft.revision + 1,
-    }
-    return { ok: true, data: structuredClone(this.draft) }
+      revision: (this.draft?.revision ?? 0) + 1,
+    })
   }
 
   /** 校验并导入一个完整场景配置快照。 */
   importSnapshots(value: unknown): ScenarioProjectionResult<ScenarioImportResult> {
-    if (this.draft.locked) {
+    if (this.draft?.locked) {
       return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     }
     if (typeof value !== 'object' || value === null || Array.isArray(value)
@@ -316,13 +369,13 @@ export class ScenarioProjection {
     const draft: ScenarioDraft = {
       config,
       uiExtensions: createUiExtensions(config),
-      revision: this.draft.revision + 1,
+      revision: (this.draft?.revision ?? 0) + 1,
       officialLibraryChanged: false,
       locked: false,
     }
 
-    this.history.push(structuredClone(this.draft))
-    this.draft = structuredClone(draft)
+    const saved = this.commit(draft)
+    if (!saved.ok) return saved
     return { ok: true, data: { imported: 1, rejected: 0, drafts: [structuredClone(draft)] } }
   }
 
@@ -333,15 +386,15 @@ export class ScenarioProjection {
    * @returns 恢复后的新修订草稿，或编号、锁、修订冲突错误。
    */
   undo(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    if (!this.draft) return { ok: false, code: 'NOT_FOUND', status: 404, message: '暂无场景。' }
     if (scenarioId !== this.draft.config.scenario.id) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     if (this.draft.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     const request = readMutationRequest(value)
     if (request === undefined) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '预期修订号格式不正确。' }
     if (request.expectedRevision !== this.draft.revision) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景修订号已变化，请重新加载。' }
-    const previous = this.history.pop()
+    const previous = this.history.at(-1)
     if (previous === undefined) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'history', message: '没有可撤销的场景操作。' }
-    this.draft = { ...structuredClone(previous), revision: this.draft.revision + 1, locked: false }
-    return { ok: true, data: structuredClone(this.draft) }
+    return this.commit({ ...structuredClone(previous), revision: this.draft.revision + 1, locked: false }, true)
   }
 
   /**
@@ -351,24 +404,25 @@ export class ScenarioProjection {
    * @returns 可撤销的新修订草稿。
    */
   resetDraft(scenarioId: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    if (!this.draft) return { ok: false, code: 'NOT_FOUND', status: 404, message: '暂无场景。' }
     if (scenarioId !== this.draft.config.scenario.id) return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
     if (this.draft.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, fieldPath: 'scenario', message: '场景正在运行，当前配置已锁定。' }
     const request = readMutationRequest(value)
     if (request === undefined) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '预期修订号格式不正确。' }
     if (request.expectedRevision !== this.draft.revision) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景修订号已变化，请重新加载。' }
     const baseline = createDraft()
-    this.history.push(structuredClone(this.draft))
-    this.draft = { ...baseline, revision: this.draft.revision + 1 }
-    return { ok: true, data: structuredClone(this.draft) }
+    return this.commit({ ...baseline, revision: this.draft.revision + 1 })
   }
 
   /**
    * 恢复确定性场景草稿基线。
    * @returns 无返回值。
-   * @remarks 替换当前内存草稿，并将修订号恢复为 4。
+   * @remarks 纯 Mock 恢复修订号 4；本机存储仅重新加载已保存场景，不写库、不删除数据。
    */
   reset(): void {
-    this.draft = createDraft()
+    const stored = this.storage?.load()
+    this.draft = this.storage ? stored ?? null : createDraft()
+    this.persisted = stored ? { id: stored.config.scenario.id, revision: stored.revision } : undefined
     this.history = []
   }
 }

@@ -2,6 +2,7 @@
 import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
 import { isJammerPlatformType, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
+import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
 
@@ -10,6 +11,7 @@ const props = defineProps<{
   jammer: Jammer | null
   uiExtension: JammerUiExtension | null
   editing: boolean
+  showIds?: boolean
   error: string
   pending: boolean
   locked: boolean
@@ -72,7 +74,7 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-basic-title">
         <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
-          <el-form-item label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
+          <el-form-item v-show="showIds" label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
           <el-form-item label="干扰方式">
             <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
               <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
@@ -81,7 +83,7 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="所属干扰节点">
             <el-select v-model="editor.platformId" filterable placeholder="请选择所属干扰节点" style="width: 100%" data-testid="jammer-platform">
               <el-option v-if="legacyPlatformId" :label="`${legacyPlatformName}（${legacyPlatformId}，旧归属待修正）`" :value="legacyPlatformId" disabled />
-              <el-option v-for="platform in jammerPlatforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
+              <el-option v-for="platform in jammerPlatforms" :key="platform.id" :label="scenarioPlatformLabel(jammerPlatforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
             <small class="field-hint">选择设备的搭载节点，位置沿用该节点，不是选择干扰目标。</small>
             <small v-if="legacyPlatformId" class="field-hint" data-testid="jammer-legacy-owner">旧归属不是干扰节点，请重新选择；取消不会修改原数据。</small>

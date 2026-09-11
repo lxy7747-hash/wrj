@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
-import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
+import { scenarioPlatformLabel, SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
@@ -94,6 +94,174 @@ function confirmation(): ConfirmationContext {
 }
 
 describe('P2-1 场景管理页面', () => {
+  it('管理员从已保存场景另存完整模板，原场景不变；取消和修改后禁止误存', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: structuredClone(ADMIN), role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const initial = draft()
+    initial.uiExtensions.jammers[0]!.direction = 123
+    const fetchSpy = vi.fn().mockResolvedValueOnce(response(initial))
+      .mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: {
+        ...template(), name: '另存测试', config: initial.config, uiExtensions: initial.uiExtensions,
+      }, meta: META }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    const store = useScenarioStore()
+    const before = JSON.stringify(store.draft)
+    const saved = JSON.parse(before) as ScenarioDraft
+    const prompt = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '另存测试' } as never)
+    await wrapper.get('[data-testid="save-as-template"]').trigger('click')
+    await flushPromises()
+    expect(fetchSpy.mock.calls.at(-1)![0]).toContain('/api/v1/templates')
+    expect(JSON.parse(fetchSpy.mock.calls.at(-1)![1].body)).toEqual({ name: '另存测试', config: saved.config, uiExtensions: saved.uiExtensions })
+    expect(JSON.stringify(store.draft)).toBe(before)
+    expect(store.dirty).toBe(false)
+    prompt.mockRejectedValueOnce('cancel')
+    await wrapper.get('[data-testid="save-as-template"]').trigger('click')
+    await flushPromises()
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    await wrapper.get('[data-testid="scenario-name"]').setValue('未保存修改')
+    expect(wrapper.get('[data-testid="save-as-template"]').attributes('disabled')).toBeDefined()
+    useAuthStore().$patch({ principal: structuredClone(OPERATOR), role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    await nextTick()
+    expect(wrapper.find('[data-testid="save-as-template"]').exists()).toBe(false)
+  })
+
+  it('另存模板确认期间登出，迟到确认不创建模板', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
+    const fetchSpy = vi.fn().mockResolvedValue(response(draft()))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    let confirm!: (value: { value: string }) => void
+    vi.spyOn(ElMessageBox, 'prompt').mockImplementation(() => new Promise(resolve => { confirm = resolve as typeof confirm }) as never)
+    await wrapper.get('[data-testid="save-as-template"]').trigger('click')
+    useScenarioStore().resetToSafeEmpty()
+    confirm({ value: '过期模板' })
+    await flushPromises()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(useScenarioStore().templates).toEqual([])
+  })
+
+  it('默认隐藏四类编号，显示编号开关不改变草稿和关联；弹框仍保留自动编号', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const initial = draft()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(initial)))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    const store = useScenarioStore()
+    const original = JSON.stringify(store.draft)
+    const toggle = wrapper.get('[data-testid="show-scenario-ids"] input')
+    expect(wrapper.get('[data-testid="scenario-id"]').isVisible()).toBe(false)
+    await toggle.setValue(true)
+    expect(wrapper.get('[data-testid="scenario-id"]').isVisible()).toBe(true)
+    await toggle.setValue(false)
+    for (const [tab, kind, header] of [
+      ['platforms', 'platform', '场景实体 ID'], ['links', 'link', '链路 ID'], ['jammers', 'jammer', '设备 ID'],
+    ]) {
+      await wrapper.get(`#tab-${tab}`).trigger('click')
+      await flushPromises()
+      expect(wrapper.get(`[data-testid="${kind}-table"]`).text()).not.toContain(header)
+      await wrapper.get(`[data-testid="edit-${kind}-0"]`).trigger('click')
+      await flushPromises()
+      const id = document.querySelector<HTMLInputElement>(`[data-testid="${kind}-id"]`)!
+      expect(id.closest('.el-form-item')?.getAttribute('style')).toContain('display: none')
+      const value = id.value
+      await toggle.setValue(true)
+      expect(wrapper.get(`[data-testid="${kind}-table"]`).text()).toContain(header)
+      expect(id.closest('.el-form-item')?.getAttribute('style')).not.toContain('display: none')
+      expect(id.value).toBe(value)
+      document.querySelector<HTMLElement>(`[data-testid="cancel-${kind}"]`)!.click()
+      await flushPromises()
+      await toggle.setValue(false)
+    }
+    expect(JSON.stringify(store.draft)).toBe(original)
+    expect(store.dirty).toBe(false)
+    expect(scenarioPlatformLabel([{ id: 'A', name: '节点' }], 'A')).toBe('节点')
+    expect(scenarioPlatformLabel([{ id: 'A', name: '节点' }, { id: 'B', name: '节点' }], 'A')).toBe('节点（A）')
+    expect(scenarioPlatformLabel([], 'MISSING')).toBe('MISSING')
+  })
+
+  it('空态点击新建后显示空白配置表单，不自动请求保存且不带入演示节点', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: false, status: 404, json: async () => ({
+      ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
+      meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+    }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.get('[data-testid="create-scenario"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="scenario-empty"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
+    expect(wrapper.get<HTMLInputElement>('[data-testid="scenario-name"]').element.value).toBe('')
+    expect(wrapper.get<HTMLInputElement>('[data-testid="scenario-start-time"] input').element.value).toBe('')
+    expect(useScenarioStore().draft!.config.platforms).toEqual([])
+    expect(useScenarioStore().dirty).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    expect(useScenarioStore().validation.errors.length).toBeGreaterThan(0)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('空库显示空态且不生成草稿，可通过已有导入入口创建首个场景', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({
+        ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
+        meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: { imported: 1, rejected: 0, drafts: [draft()] }, meta: META }) })
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scenario-empty"]').text()).toContain('暂无场景')
+    expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeDefined()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(draft().config) } as never)
+    await wrapper.get('[data-testid="import-scenario-snapshot"]').trigger('click')
+    await flushPromises()
+    expect(fetchSpy.mock.calls[1]![0]).toContain('/api/v1/scenarios/import')
+    expect(wrapper.find('[data-testid="scenario-empty"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
+  })
+
+  it('空库可以显式选择模板，应用成功后才出现场景编辑器', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({
+        ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
+        meta: { requestId: META.requestId, generatedAt: META.generatedAt },
+      }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: [template()], meta: { ...META, total: 1 } }) })
+      .mockResolvedValueOnce(response(draft()))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    await wrapper.get('[data-testid="open-scenario-templates"]').trigger('click')
+    await flushPromises()
+    expect(useScenarioStore().draft).toBeNull()
+    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: '选择的场景' } as never)
+    await wrapper.get('[data-testid="copy-template-TPL-SCN-001"]').trigger('click')
+    await flushPromises()
+    expect(useScenarioStore().panelState).toBe('SUCCESS')
+    expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
   it('机载干扰平台作为空中支撑实体新增、保存回读且可作为干扰归属平台', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -593,11 +761,25 @@ describe('P2-1 场景管理页面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(fetchSpy.mock.calls.every(([url, options]) => String(url).endsWith('/validate') && options.method === 'POST')).toBe(true)
     expect(scenario.draft?.revision).toBe(4)
+    const savedHint = wrapper.get('[data-testid="save-scenario-hint"]')
+    expect(savedHint.attributes('aria-label')).toBe('已保存，无需重复保存')
+    expect(savedHint.attributes('tabindex')).toBe('0')
+    const tooltip = wrapper.findAllComponents({ name: 'ElTooltip' }).find(item => item.props('content') === '已保存，无需重复保存')!
+    expect(tooltip.props('disabled')).toBe(false)
+    scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, true)
+    await nextTick()
+    expect(tooltip.props('disabled')).toBe(true)
+    expect(savedHint.attributes('aria-label')).toBeUndefined()
+    scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, false)
+    await nextTick()
     expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="next-script"]').trigger('click')
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(true)
     await wrapper.get('[data-testid="workflow-config"]').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('校验后修改')
+    expect(tooltip.props('disabled')).toBe(true)
+    expect(savedHint.attributes('aria-label')).toBeUndefined()
+    expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
     await wrapper.get('[data-testid="next-validation"]').trigger('click')
     expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeDefined()
@@ -802,7 +984,7 @@ describe('P2-1 场景管理页面', () => {
     expect(copySpy).toHaveBeenCalledWith('TPL-SCN-001', '模板场景')
   })
 
-  it('在系统管理中完成官方模板维护动作', { timeout: 15_000 }, async () => {
+  it('在系统管理中完成场景模板维护，成功仅浮层提示，历史结果不重播', { timeout: 15_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -813,7 +995,9 @@ describe('P2-1 场景管理页面', () => {
       panelState: 'SUCCESS',
       templates: [template()],
       templateState: 'SUCCESS',
+      templateResultMessage: '场景模板“已有模板”版本 1 已新建。',
     })
+    const messageSpy = vi.spyOn(ElMessage, 'success')
     const promptSpy = vi.spyOn(ElMessageBox, 'prompt')
       .mockResolvedValueOnce({ value: '新建模板' } as never)
       .mockResolvedValueOnce({ value: '{"name":"导入模板","config":{}}' } as never)
@@ -838,10 +1022,14 @@ describe('P2-1 场景管理页面', () => {
         },
       },
     })
-    await nextTick()
+    await flushPromises()
     const panel = wrapper.get('[data-testid="template-library"]')
     expect(wrapper.get('.admin-page').attributes('aria-label')).toBe('场景模板维护')
     expect(panel.text()).toContain('管理员维护')
+    expect(panel.text()).toContain('场景模板')
+    expect(panel.text()).not.toContain('官方模板')
+    expect(panel.find('[data-testid="template-feedback"]').exists()).toBe(false)
+    expect(messageSpy).not.toHaveBeenCalled()
     expect(panel.text()).not.toContain('应用到当前场景')
     await panel.get('[data-testid="create-template"]').trigger('click')
     await flushPromises()
@@ -862,6 +1050,9 @@ describe('P2-1 场景管理页面', () => {
     expect(updateSpy).toHaveBeenCalledWith('TPL-SCN-001', '跨海通联演示官方基线')
     expect(exportSpy).toHaveBeenCalledWith('TPL-SCN-001')
     expect(deleteSpy).toHaveBeenCalledWith('TPL-SCN-001')
+    expect(messageSpy).toHaveBeenCalledTimes(4)
+    expect(messageSpy).toHaveBeenCalledWith(scenario.templateResultMessage)
+    expect(panel.find('[data-testid="template-feedback"]').exists()).toBe(false)
   })
 
   it('取消应用模板时保持当前场景不变并展示模板错误反馈', { timeout: 15_000 }, async () => {
@@ -1508,6 +1699,7 @@ describe('P2-1 场景管理页面', () => {
     const scenario = useScenarioStore(pinia)
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('[data-testid="show-scenario-ids"] input').setValue(true)
 
     await wrapper.get('#tab-platforms').trigger('click')
     await nextTick()

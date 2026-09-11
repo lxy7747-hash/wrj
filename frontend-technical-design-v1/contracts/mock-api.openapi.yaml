@@ -686,9 +686,13 @@
         "tags": [
           "templates"
         ],
-        "summary": "List official immutable fixtures and temporary copies",
+        "summary": "List templates from configured storage",
         "x-rbac": "BUSINESS_READ",
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -711,9 +715,13 @@
         "tags": [
           "templates"
         ],
-        "summary": "Create official in-memory template fixture",
+        "summary": "Create official template in configured storage",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "201": {
             "description": "Typed deterministic success",
             "content": {
@@ -786,6 +794,10 @@
         "summary": "Get template",
         "x-rbac": "BUSINESS_READ",
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -821,6 +833,10 @@
         "summary": "Update official template fixture",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -896,6 +912,10 @@
         "summary": "Confirmed delete with reference protection",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -974,6 +994,10 @@
           }
         ],
         "responses": {
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
           "201": {
             "description": "Typed deterministic success",
             "content": {
@@ -5542,6 +5566,9 @@
           "referenceCount"
         ],
         "properties": {
+          "uiExtensions": {
+            "$ref": "#/components/schemas/ScenarioUiExtensions"
+          },
           "templateId": {
             "type": "string",
             "minLength": 1
@@ -7009,6 +7036,9 @@
           "config"
         ],
         "properties": {
+          "uiExtensions": {
+            "$ref": "#/components/schemas/ScenarioUiExtensions"
+          },
           "name": {
             "type": "string",
             "minLength": 1
