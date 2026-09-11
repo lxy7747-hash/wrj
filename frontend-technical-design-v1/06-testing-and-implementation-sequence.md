@@ -72,7 +72,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；32 个 POST/PUT/
 |---|---|
 | `/login` | 三种认证结果；ADMIN 与 OPERATOR 分别登录；无 token/cookie |
 | `/situation` | F-00042 同帧地图/面板/弹窗；仿真状态/锁 |
-| `/scenarios` | 完整编辑、校验、单快照 import/undo/reset、模板 RBAC、脚本预览 |
+| `/scenarios` | 列表、新建/复制、指定编号编辑、保存返回列表、模板创建、确认删除/锁保护；完整校验、单快照 import/undo/reset、模板 RBAC、脚本预览 |
 | `/batches` | 12 行、参数、状态与 report pair |
 | `/reports` | RUN/BATCH source 原子切换；Level II/III 权限和确认 |
 | `/replays` | REPLAY-001 控件、事件、corrupt/empty overlay |

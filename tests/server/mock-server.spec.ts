@@ -1042,7 +1042,6 @@ describe('P0 deterministic mock server', () => {
       .set('X-Demo-Role', 'OPERATOR')
     const original = ((await load().expect(200)).body as { data: ScenarioDraft }).data
     const importedConfig = structuredClone(original.config)
-    importedConfig.scenario.id = 'SCN-IMPORT'
     importedConfig.scenario.name = '导入快照场景'
 
     const importedResponse = await request(baseUrl)
@@ -1052,10 +1051,10 @@ describe('P0 deterministic mock server', () => {
       .send({ items: [importedConfig] })
       .expect(200)
     const imported = (importedResponse.body as { data: { imported: number; rejected: number; drafts: ScenarioDraft[] } }).data
-    expect(imported).toMatchObject({ imported: 1, rejected: 0, drafts: [{ config: { scenario: { id: 'SCN-IMPORT' } } }] })
+    expect(imported).toMatchObject({ imported: 1, rejected: 0, drafts: [{ config: { scenario: { id: 'SCN-001' } } }] })
 
     const undone = await request(baseUrl)
-      .post('/api/v1/scenarios/SCN-IMPORT/undo')
+      .post('/api/v1/scenarios/SCN-001/undo')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
       .send({ expectedRevision: imported.drafts[0]!.revision })

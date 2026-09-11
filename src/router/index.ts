@@ -75,7 +75,7 @@ export const routeRecords: RouteRecordRaw[] = [
   {
     path: '/scenarios',
     name: 'scenarios',
-    component: () => import('../pages/scenarios/scenarios.vue'),
+    component: () => import('../pages/scenarios/ScenarioWorkspace.vue'),
     beforeEnter: requirePrincipal,
     meta: { title: '场景管理', guard: 'principal', layout: 'workspace' },
   },

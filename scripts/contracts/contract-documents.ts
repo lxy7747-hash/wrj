@@ -99,6 +99,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/scenarios', operationId: 'getapiV1Scenarios' },
   { method: 'post', path: '/api/v1/scenarios', operationId: 'postapiV1Scenarios' },
   { method: 'get', path: '/api/v1/scenarios/{scenarioId}', operationId: 'getapiV1ScenariosScenarioId' },
+  { method: 'delete', path: '/api/v1/scenarios/{scenarioId}', operationId: 'deleteapiV1ScenariosScenarioId' },
   { method: 'put', path: '/api/v1/scenarios/{scenarioId}', operationId: 'putapiV1ScenariosScenarioId' },
   { method: 'post', path: '/api/v1/scenarios/{scenarioId}/validate', operationId: 'postapiV1ScenariosScenarioIdValidate' },
   { method: 'post', path: '/api/v1/scenarios/{scenarioId}/undo', operationId: 'postapiV1ScenariosScenarioIdUndo' },
@@ -163,7 +164,8 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1MetaDecisions: operationSchemaBinding(null, '200', '#/components/schemas/DecisionMetadataList'),
   getapiV1MetaRoutes: operationSchemaBinding(null, '200', '#/components/schemas/RouteMetadataList'),
   getapiV1Scenarios: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioList'),
-  postapiV1Scenarios: operationSchemaBinding('#/components/schemas/ScenarioConfigWrite', '201', '#/components/schemas/ScenarioDraft'),
+  postapiV1Scenarios: operationSchemaBinding('#/components/schemas/ScenarioDraftUpdate', '201', '#/components/schemas/ScenarioDraft'),
+  deleteapiV1ScenariosScenarioId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   getapiV1ScenariosScenarioId: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioDraft'),
   putapiV1ScenariosScenarioId: operationSchemaBinding('#/components/schemas/ScenarioDraftUpdate', '200', '#/components/schemas/ScenarioDraft'),
   postapiV1ScenariosScenarioIdValidate: operationSchemaBinding('#/components/schemas/ScenarioValidationRequest', '200', '#/components/schemas/ValidationResult'),
@@ -228,14 +230,15 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1MetaInterfaces: [],
   getapiV1MetaDecisions: [],
   getapiV1MetaRoutes: [],
-  getapiV1Scenarios: [],
-  postapiV1Scenarios: ['422'],
-  getapiV1ScenariosScenarioId: ['404'],
-  putapiV1ScenariosScenarioId: ['409', '422'],
-  postapiV1ScenariosScenarioIdValidate: ['409', '422'],
-  postapiV1ScenariosScenarioIdUndo: ['404', '409', '422'],
-  postapiV1ScenariosScenarioIdReset: ['404', '409', '422'],
-  postapiV1ScenariosImport: ['409', '422'],
+  getapiV1Scenarios: ['403', '503'],
+  postapiV1Scenarios: ['403', '409', '422', '503'],
+  getapiV1ScenariosScenarioId: ['404', '503'],
+  deleteapiV1ScenariosScenarioId: ['403', '404', '409', '422', '503'],
+  putapiV1ScenariosScenarioId: ['409', '422', '503'],
+  postapiV1ScenariosScenarioIdValidate: ['409', '422', '503'],
+  postapiV1ScenariosScenarioIdUndo: ['404', '409', '422', '503'],
+  postapiV1ScenariosScenarioIdReset: ['404', '409', '422', '503'],
+  postapiV1ScenariosImport: ['409', '422', '503'],
   getapiV1Templates: ['503'],
   postapiV1Templates: ['403', '409', '422', '503'],
   getapiV1TemplatesTemplateId: ['404', '503'],
@@ -440,6 +443,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/GetapiV1MetaDecisionsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1MetaRoutesResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1ScenariosResponse/properties/ok/const', true],
+  ['#/components/schemas/DeleteapiV1ScenariosScenarioIdResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1ScenariosResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1ScenariosScenarioIdResponse/properties/ok/const', true],
   ['#/components/schemas/PutapiV1ScenariosScenarioIdResponse/properties/ok/const', true],
@@ -1442,12 +1446,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 64) {
+  if (operationCount !== 65) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 64 operations, found ${operationCount}`,
+      `Expected exactly 65 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))

@@ -26,7 +26,7 @@ function response(data: unknown): Response {
 function loads() {
   return [
     vi.spyOn(useAuthStore(), 'refreshPermissions').mockResolvedValue(true),
-    vi.spyOn(useScenarioStore(), 'loadScenario').mockResolvedValue(true),
+    vi.spyOn(useScenarioStore(), 'loadScenes').mockResolvedValue(true),
     vi.spyOn(useSimulationStore(), 'resetProjection').mockResolvedValue(true),
     vi.spyOn(useTelemetryStore(), 'loadFrame').mockResolvedValue(true),
     vi.spyOn(useBatchStore(), 'loadComparison').mockResolvedValue(true),

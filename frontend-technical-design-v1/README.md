@@ -18,7 +18,7 @@
 |---:|---|---|---|
 | 1 | `多手段无人集群通联技术软件需求规格说明-lxy - 副本.docx` | `7F8F252BDD5763E564D2DA460DCE3E5C1885F082FF863ABB29A4994E9A159253` | 产品范围、29 项 canonical 需求、7 类接口、容量、角色、单位及验收目标 |
 | 2 | `多手段无人集群通联技术软件详细设计说明-lxy - 副本.docx` | `21DBD43D74B29F57E7F508A5D83A87219B6CBEA957A2D68CFB949DA5820CB05D` | 分层架构、数据结构、流程、异常、安全和测试设计；不得缩减需求规格 |
-| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.33，场景变更已实现，待变更验收） | `6B557A82358355D415C2F8184340C98166C5C43F28CAB45EF25181C33F892499` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
+| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.34，场景列表变更待验收） | `F4C32AF1C04D04050BE6870E94F5212CD9258FC6AA7E7CD446E380024CFF6D0A` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
 | 4 | `多手段集群通联仿真软件-UI原型设计稿V1.2.html` | `83E431388C0FBC7C4771088DCA1E4AB01376C085037019C7E0F696ED329A3C0C` | 页面布局、中文文案和交互演示；只作表现参考，不替代需求或技术合同 |
 
 冲突处理固定为：先按需求规格说明确定产品需求，再由详细设计补充流程、数据和异常；评审通过的前端需求基线负责记录面向本阶段的采用决策；HTML 不得反向覆盖前三者。任何来源变更都必须重新计算哈希、复核八项决策并更新全部追踪目的地。源文件始终只读。
@@ -52,3 +52,11 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、离线 Leaflet�
 - `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 同步）：`ECE5E12BCE449A0F89160D0ECBB1ABEE2F6B98B5156272248A626033CFA9E5A4`
 - `contracts/mock-api.openapi.yaml`：`DBA309956162FA0F8C2DE6753D833BD6713202B64C8823D228F3E6F1C1B90831`
 - `scripts/contracts/openapi-schema.snapshot.ts`：`B50498C3E50CA2E10C26D0AF79508F1C0AA3104113B8E8F3038F4CEB8C561AC2`
+
+### 2026-09-11 场景列表合同补充（当前冻结记录）
+
+列表/新建接口正式实现，按编号 GET/PUT，新增带 `expectedRevision` 查询参数的 DELETE；`ScenarioDraftUpdate` 增加可选 `expectedRevision`，`CopyTemplateRequest` 增加可选目标 `scenarioId`。页面新建及复制使用 POST，不覆盖同编号记录；旧 PUT 创建调用保留兼容。65 个操作、32 个 POST/PUT/PATCH 写操作（DELETE 另计）。存量 SQLite 表结构及数据不变，fixture 和 HTML 原型不变。
+
+- `contracts/domain-models.ts`（与源码镜像一致）：`99371DB7D72DCFCEE1826E27336A3637ADABC77D1CFDA2058665509347130FA2`
+- `contracts/mock-api.openapi.yaml`：`E1ABE93AFE8D26C776B05A422A88210045E6D50306DA3097BDE55B5398042DF5`
+- `scripts/contracts/openapi-schema.snapshot.ts`：`6029A740FBA86062B0708D3D791DD462ED1DEE97FE20499A327FB749E74023E3`

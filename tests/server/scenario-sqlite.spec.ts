@@ -66,6 +66,49 @@ afterEach(async () => {
 })
 
 describe('SQLite 场景开发持久化', () => {
+  it('列表、多场景同修订持久化、独立编辑及按修订删除不会影响其他场景', async () => {
+    const path = await databasePath()
+    const first = await start(path)
+    expect((await first.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toEqual([])
+    const a = draft()
+    const b = draft()
+    b.config.scenario.id = 'SCN-SECOND'
+    b.config.scenario.name = '第二个场景'
+    const savedA = (await first.api.post('/api/v1/scenarios').set(headers).send(update(a)).expect(201)).body.data
+    const savedB = (await first.api.post('/api/v1/scenarios').set(headers).send(update(b)).expect(201)).body.data
+    expect(savedA.revision).toBe(savedB.revision)
+    await first.api.post('/api/v1/scenarios').set(headers).send(update(a)).expect(409)
+    expect((await first.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toHaveLength(2)
+    const renamed = structuredClone(savedA)
+    renamed.config.scenario.name = '只修改第一个'
+    const changedA = (await first.api.put(endpoint).set(headers).send({ ...update(renamed), expectedRevision: savedA.revision }).expect(200)).body.data
+    expect(first.storage.load('SCN-SECOND')).toEqual(savedB)
+    await first.stop()
+    const second = await start(path)
+    expect((await second.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(changedA)
+    expect((await second.api.get('/api/v1/scenarios/SCN-SECOND').set(headers).expect(200)).body.data).toEqual(savedB)
+    await second.api.delete(endpoint).set(headers).expect(422)
+    await second.api.delete(`${endpoint}?expectedRevision=${savedA.revision}`).set(headers).expect(409)
+    await second.api.delete(`${endpoint}?expectedRevision=${changedA.revision}`).set({ ...headers, 'X-Demo-Role': 'UNKNOWN' }).expect(403)
+    await second.api.delete(`${endpoint}?expectedRevision=${changedA.revision}`).set(headers).expect(200)
+    await second.api.get(endpoint).set(headers).expect(404)
+    expect((await second.api.get('/api/v1/scenarios').set(headers).expect(200)).body.data).toEqual([savedB])
+  })
+
+  it('运行锁只作用于对应场景，禁止删除或写入；模板按新编号创建不覆盖来源', async () => {
+    const projection = new ScenarioProjection()
+    const original = projection.get('SCN-001').data
+    expect(projection.copyTemplate(original.config, '模板副本', original.uiExtensions, 'SCN-COPY').ok).toBe(true)
+    projection.setLocked('SCN-COPY', true)
+    expect(projection.delete('SCN-COPY', { expectedRevision: 1 })).toMatchObject({ ok: false, status: 409, code: 'CONFIG_LOCKED' })
+    const copy = projection.get('SCN-COPY').data
+    expect(projection.save('SCN-COPY', update(copy))).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
+    expect(projection.get('SCN-001').data).toEqual(original)
+    projection.setLocked('SCN-COPY', false)
+    expect(projection.delete('SCN-COPY', { expectedRevision: 1 }).ok).toBe(true)
+    expect(projection.list()).toEqual([original])
+  })
+
   it('空白新草稿不能写库，填齐后按新编号首次保存并在重启后恢复', async () => {
     const path = await databasePath()
     const first = await start(path)
@@ -134,24 +177,26 @@ describe('SQLite 场景开发持久化', () => {
     const second = await start(path)
     const original = draft()
     await first.api.put(endpoint).set(headers).send(update(original)).expect(200)
-    await second.api.put(endpoint).set(headers).send(update(original)).expect(409)
+    const stale = (await second.api.get(endpoint).set(headers).expect(200)).body.data as ScenarioDraft
+    await first.api.put(endpoint).set(headers).send({ ...update(stale), expectedRevision: stale.revision }).expect(200)
+    await second.api.put(endpoint).set(headers).send({ ...update(stale), expectedRevision: stale.revision }).expect(409)
     const refreshed = (await second.api.get(endpoint).set(headers).expect(200)).body.data as ScenarioDraft
     refreshed.config.scenario.name = '重新加载后修改'
     await second.api.put(endpoint).set(headers).send(update(refreshed)).expect(200)
     expect(first.storage.load().config.scenario.name).toBe('重新加载后修改')
   })
 
-  it('导入新编号后默认入口和重启恢复当前工作场景，同时保留原编号记录', async () => {
+  it('导入新编号保留独立记录，重启后按指定编号读取而非默认别名', async () => {
     const path = await databasePath()
     const first = await start(path)
     const original = draft()
-    await first.api.put(endpoint).set(headers).send(update(original)).expect(200)
+    const saved = (await first.api.put(endpoint).set(headers).send(update(original)).expect(200)).body.data
     original.config.scenario.id = 'SCN-IMPORTED'
     const imported = (await first.api.post('/api/v1/scenarios/import').set(headers).send({ items: [original.config] }).expect(200)).body.data.drafts[0]
-    expect((await first.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(imported)
+    expect((await first.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
     await first.stop()
     const second = await start(path)
-    expect((await second.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(imported)
+    expect((await second.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
     expect((await second.api.get('/api/v1/scenarios/SCN-IMPORTED').set(headers).expect(200)).body.data).toEqual(imported)
     const db = new DatabaseSync(path, { readOnly: true })
     try { expect(db.prepare('SELECT count(*) AS count FROM scenarios').get().count).toBe(2) } finally { db.close() }
@@ -222,7 +267,7 @@ describe('SQLite 场景开发持久化', () => {
       if (mutation === 'extensions') db.exec("UPDATE scenarios SET ui_extensions_json = '{}'")
       if (mutation === 'tie') db.exec("INSERT INTO scenarios SELECT 'SCN-OTHER', name, config_json, ui_extensions_json, revision FROM scenarios")
     } finally { db.close() }
-    expect(() => storage.load()).toThrow()
+    expect(() => storage.list()).toThrow()
   })
 
   it('拒绝数据库非递增修订号，事务回滚后仍可读取旧值', async () => {

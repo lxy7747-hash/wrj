@@ -176,6 +176,58 @@ test.beforeEach(async ({ request }) => {
   await resetMock(request)
 })
 
+test('场景列表：新建取消、复制保存、按编号编辑重载、模板创建和确认删除', async ({ page, request }) => {
+  const audit = auditConsole(page)
+  await loginAs(page, 'operator')
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await expect(page.getByTestId('scene-list')).toBeVisible()
+  await expect(page.getByTestId('scenario-name')).toHaveCount(0)
+  const original = await loadScenarioDraft(request)
+  await page.getByTestId('scene-create').click()
+  await expect(page.getByTestId('scenario-name')).toHaveValue('')
+  await page.getByTestId('back-scene-list').click()
+  await page.getByRole('button', { name: '继续编辑', exact: true }).click()
+  await expect(page.getByTestId('scenario-name')).toBeVisible()
+  await page.getByTestId('back-scene-list').click()
+  await page.getByRole('button', { name: '丢弃并离开', exact: true }).click()
+  await page.getByTestId('scene-copy-SCN-001').click()
+  await page.getByTestId('scenario-name').fill('列表复制回归')
+  const createdResponse = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/scenarios')
+  await page.getByTestId('save-scenario').click()
+  const created = await createdResponse
+  expect(created.status()).toBe(201)
+  const copied = (await created.json() as ApiSuccess<ScenarioDraft>).data
+  expect(copied.config.scenario.id).not.toBe('SCN-001')
+  await expect(page.getByTestId('scene-list')).toBeVisible()
+  await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(2)
+  await page.getByTestId(`scene-edit-${copied.config.scenario.id}`).click()
+  await expect(page.getByTestId('scenario-name')).toHaveValue('列表复制回归')
+  await page.getByTestId('scenario-name').fill('列表编辑回归')
+  await page.getByTestId('save-scenario').click()
+  await expect(page.getByTestId('scene-list')).toBeVisible()
+  await page.reload()
+  await page.getByTestId(`scene-edit-${copied.config.scenario.id}`).click()
+  await expect(page.getByTestId('scenario-name')).toHaveValue('列表编辑回归')
+  expect(await loadScenarioDraft(request)).toEqual(original)
+  await page.getByTestId('back-scene-list').click()
+  await page.getByTestId('scene-from-template').click()
+  await page.getByTestId('scene-template-select').click()
+  await page.getByRole('option').first().click()
+  await page.getByTestId('scene-template-name').fill('列表模板回归')
+  await page.getByTestId('scene-template-confirm').click()
+  await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(3)
+  await page.getByTestId(`scene-delete-${copied.config.scenario.id}`).click()
+  await page.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(page.getByTestId(`scene-edit-${copied.config.scenario.id}`)).toBeVisible()
+  await page.getByTestId(`scene-delete-${copied.config.scenario.id}`).click()
+  await page.locator('.el-message-box').getByRole('button', { name: '删除', exact: true }).click()
+  await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(2)
+  await expect(page.getByTestId(`scene-edit-${copied.config.scenario.id}`)).toHaveCount(0)
+  expect(audit.errors).toEqual([])
+  expect(audit.http404s).toEqual([])
+  expect([...audit.nonLoopbackHosts]).toEqual([])
+})
+
 test('anonymous access keeps login public and redirects every protected route', async ({ page }) => {
   const audit = auditConsole(page)
 
@@ -330,6 +382,7 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
 
   await expect(panel.getByTestId('full-config-export')).toHaveCount(0)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   await page.getByTestId('open-scenario-operations').click()
   const exportPanel = page.getByTestId('scenario-config-export')
   await expect(exportPanel).toContainText('不校验或导出当前场景内容')
@@ -851,6 +904,7 @@ test.describe('P2-1 scenario business loop', () => {
     const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    await page.getByTestId('scene-edit-SCN-001').click()
     expect((await loaded).status()).toBe(200)
     expect(await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone)).toBe('America/New_York')
 
@@ -893,6 +947,7 @@ test.describe('P2-1 scenario business loop', () => {
     const reloaded = page.waitForResponse((response) => response.request().method() === 'GET'
       && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
     await page.reload()
+    await page.getByTestId('scene-edit-SCN-001').click()
     expect((await reloaded).status()).toBe(200)
     await expect(name).toHaveValue('跨海通联时区验证场景')
     await expect(startTime).toHaveValue('2026-08-07 09:30')
@@ -908,6 +963,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     const audit = auditConsole(page)
     await loginAs(page, 'operator')
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    await page.getByTestId('scene-edit-SCN-001').click()
     await page.getByRole('tab', { name: '节点配置' }).click()
     await page.getByTestId('add-platform').click()
     await page.getByTestId('platform-type').click()
@@ -950,6 +1006,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     expect(snapshot.config.platforms.find(({ name }) => name === 'E2E 神通配置')).toMatchObject({ type: 'COMMUNICATION_SATELLITE', satelliteType: 'SHENTONG', category: 'space' })
     const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET' && new URL(response.url()).pathname === SCENARIO_PATH)
     await page.reload()
+    await page.getByTestId('scene-edit-SCN-001').click()
     expect(((await (await reloadedResponse).json()) as ApiSuccess<ScenarioDraft>).data).toEqual(snapshot)
     await page.getByRole('tab', { name: '节点配置' }).click()
     await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
@@ -966,6 +1023,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
       && new URL(response.url()).pathname === SCENARIO_PATH)
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    await page.getByTestId('scene-edit-SCN-001').click()
     expect((await loaded).status()).toBe(200)
     await page.getByRole('tab', { name: '节点配置' }).click()
 
@@ -1010,6 +1068,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
       && new URL(response.url()).pathname === SCENARIO_PATH)
     await page.reload()
+    await page.getByTestId('scene-edit-SCN-001').click()
     const reloaded = await reloadedResponse
     expect(reloaded.status()).toBe(200)
     const reloadedDraft = ((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1017,7 +1076,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByRole('tab', { name: '节点配置' }).click()
     const reloadedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 已编辑业务节点' })
     await expect(reloadedRow).not.toContainText('PLAT-001')
-    await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
+    await page.getByTestId('show-scenario-ids').click()
+  await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
     await expect(reloadedRow).toContainText('PLAT-001')
     await expect(reloadedRow).toContainText('1')
     await reloadedRow.getByRole('button', { name: '编辑' }).click()
@@ -1089,8 +1149,10 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
+  await page.getByTestId('show-scenario-ids').click()
+  await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
   await page.getByRole('tab', { name: '链路配置' }).click()
   await page.getByTestId('add-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
@@ -1168,10 +1230,12 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.reload()
+  await page.getByTestId('scene-edit-SCN-001').click()
   const reloaded = await reloadedResponse
   expect(reloaded.status()).toBe(200)
   expect(((await reloaded.json()) as ApiSuccess<ScenarioDraft>).data).toEqual(savedDraft)
-  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
+  await page.getByTestId('show-scenario-ids').click()
+  await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
   await page.getByRole('tab', { name: '链路配置' }).click()
   const reloadedRow = page.getByTestId('link-table').getByRole('row').filter({ hasText: 'L-CFG-001' })
   await expect(reloadedRow).toContainText('AIR-02')
@@ -1198,8 +1262,10 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
+  await page.getByTestId('show-scenario-ids').click()
+  await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
   await page.getByRole('tab', { name: '干扰设备' }).click()
 
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
@@ -1288,9 +1354,11 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.reload()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await reloadedResponse).status()).toBe(200)
   expect(await loadScenarioDraft(request)).toEqual(savedDraft)
-  await page.getByRole('checkbox', { name: '显示编号', exact: true }).check()
+  await page.getByTestId('show-scenario-ids').click()
+  await expect(page.getByRole('checkbox', { name: '显示编号', exact: true })).toBeChecked()
   await page.getByRole('tab', { name: '干扰设备' }).click()
   const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(reloadedRow).toContainText('AJ-001')
@@ -1309,6 +1377,7 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
 
   const validate = page.getByTestId('validate-scenario')
@@ -1342,13 +1411,13 @@ test('P2-6 maintains templates in system management and applies them in scenario
   const baseline = await loadScenarioDraft(request)
 
   await loginAs(page, 'admin')
+  await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
+  await expect(page.getByTestId('scenario-name')).toHaveValue(baseline.config.scenario.name)
   await page.getByRole('link', { name: '系统管理', exact: true }).click()
-  const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
-    && new URL(response.url()).pathname === SCENARIO_PATH)
   const templatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates')
   await page.getByRole('menuitem', { name: '场景模板维护', exact: true }).click()
-  expect((await scenarioLoaded).status()).toBe(200)
   expect((await templatesLoaded).status()).toBe(200)
   await expect(page.getByLabel('场景模板维护', { exact: true })).toBeVisible()
   await expect(page.getByTestId('template-library')).not.toContainText('应用到当前场景')
@@ -1437,6 +1506,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   const operatorScenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await operatorScenarioLoaded).status()).toBe(200)
   const operatorTemplatesLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/templates')
@@ -1479,6 +1549,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
   await page.getByRole('tab', { name: '传感器与输出' }).click()
 
@@ -1522,6 +1593,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.reload()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await reloadedResponse).status()).toBe(200)
   await page.getByRole('tab', { name: '传感器与输出' }).click()
   await expect(page.getByTestId('sensor-frequency-min-0').locator('input')).toHaveValue('2100')
@@ -1587,6 +1659,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
 
   await page.getByTestId('scenario-time-step').locator('input').fill('6')
@@ -1600,6 +1673,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   const restored = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.reload()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await restored).status()).toBe(200)
   await expect(page.getByRole('tab')).toHaveCount(5)
   await expect(page.getByTestId('scenario-next-step')).toContainText('当前草稿已保存')
@@ -1786,6 +1860,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
+  await page.getByTestId('scene-edit-SCN-001').click()
   expect((await scenarioLoaded).status()).toBe(200)
   await expect(page.getByTestId('scenario-name')).toBeEnabled()
 

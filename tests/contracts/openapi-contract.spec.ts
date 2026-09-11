@@ -65,7 +65,7 @@ describe('OpenAPI contract audit', () => {
     expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SERVERS', path: '$.servers' }))
   })
 
-  it('accepts the authoritative 64-operation contract', () => {
+  it('accepts the authoritative 65-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(asObject(openApi).servers).toEqual([expect.objectContaining({ url: 'http://127.0.0.1:4173' })])
@@ -78,9 +78,9 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(64)
+    expect(operations).toHaveLength(65)
     expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(32)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(64)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(65)
   })
 
   it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {

@@ -80,7 +80,7 @@ export const useUiStore = defineStore('ui', {
           || payload.data.nextSequence !== 1 || !isRfc3339DateTime(payload.data.generatedAt)) throw new Error()
         const loads: [string, () => Promise<boolean>][] = [
           ['权限', () => auth.refreshPermissions()],
-          ['场景', () => useScenarioStore().loadScenario()],
+          ['场景列表', () => useScenarioStore().loadScenes()],
           ['仿真运行', () => useSimulationStore().resetProjection()],
           ['态势帧', () => telemetry.loadFrame()],
           ['批次', () => useBatchStore().loadComparison()],

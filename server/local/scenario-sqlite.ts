@@ -22,24 +22,32 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
           revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)
         ) STRICT;
       `)
-      this.load()
+      this.list()
     } catch {
       this.db.close()
       throw new Error('场景数据库结构或数据无效；未覆盖已有数据，请检查数据库。')
     }
   }
 
-  load(): ScenarioDraft | undefined {
-    // 当前接口只有一个工作场景；修订号在导入/切换编号后仍递增，保留其他编号的已存行。
-    const rows = this.db.prepare('SELECT * FROM scenarios ORDER BY revision DESC LIMIT 2').all()
-    const row = rows[0]
+  load(id?: string): ScenarioDraft | undefined {
+    // 无编号仅供旧开发工具读取单记录；业务入口始终按编号读取，不用修订号选择场景。
+    const row = id === undefined
+      ? this.db.prepare('SELECT * FROM scenarios ORDER BY id LIMIT 1').get()
+      : this.db.prepare('SELECT * FROM scenarios WHERE id = ?').get(id)
     if (!row) return undefined
-    if (rows[1]?.revision === row.revision) throw new Error('无法确定唯一的当前场景。')
+    return this.readRow(row)
+  }
+
+  list(): ScenarioDraft[] {
+    return this.db.prepare('SELECT * FROM scenarios ORDER BY id').all().map(row => this.readRow(row))
+  }
+
+  private readRow(row: Record<string, unknown>): ScenarioDraft {
     if (typeof row.config_json !== 'string' || typeof row.ui_extensions_json !== 'string'
       || !Number.isSafeInteger(row.revision) || Number(row.revision) < 1) throw new Error('场景存储结构不正确。')
     const config: unknown = JSON.parse(row.config_json)
     const inspection = inspectScenarioConfig(config, 'read')
-    if (!inspection.result.valid || inspection.identity?.id !== row.id || inspection.identity.name !== row.name) {
+    if (!inspection.result.valid || !inspection.identity || inspection.identity.id !== row.id || inspection.identity.name !== row.name) {
       throw new Error('数据库场景配置校验失败。')
     }
     const uiExtensions: unknown = JSON.parse(row.ui_extensions_json)
@@ -58,7 +66,7 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean {
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const current = this.load()
+      const current = this.load(draft.config.scenario.id)
       if (current?.config.scenario.id !== expected?.id || current?.revision !== expected?.revision) {
         this.db.exec('ROLLBACK')
         return false
@@ -82,5 +90,9 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
 
   close(): void {
     this.db.close()
+  }
+
+  delete(id: string, revision: number): boolean {
+    return this.db.prepare('DELETE FROM scenarios WHERE id = ? AND revision = ?').run(id, revision).changes === 1
   }
 }

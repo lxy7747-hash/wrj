@@ -864,17 +864,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'CopyTemplateRequest': {
+    'type': 'object',
     'additionalProperties': false,
-    'properties': {
-      'name': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
     'required': [
       'name'
     ],
-    'type': 'object'
+    'properties': {
+      'name': {
+        'type': 'string',
+        'minLength': 1
+      },
+      'scenarioId': {
+        'type': 'string',
+        'minLength': 1,
+        'pattern': '^SCN-'
+      }
+    }
   },
   'CsvContractList': {
     'items': {
@@ -3941,7 +3946,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'PostapiV1ScenariosRequest': {
-    '$ref': '#/components/schemas/ScenarioConfigWrite'
+    '$ref': '#/components/schemas/ScenarioDraftUpdate'
   },
   'PostapiV1ScenariosResponse': {
     'additionalProperties': false,
@@ -5197,6 +5202,26 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'DeleteapiV1ScenariosScenarioIdResponse': {
+    'type': 'object',
+    'additionalProperties': false,
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'properties': {
+      'ok': {
+        'const': true
+      },
+      'data': {
+        '$ref': '#/components/schemas/DeleteResult'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      }
+    }
+  },
   'ScenarioDraft': {
     'additionalProperties': false,
     'properties': {
@@ -5227,20 +5252,24 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'ScenarioDraftUpdate': {
+    'type': 'object',
     'additionalProperties': false,
+    'required': [
+      'config',
+      'uiExtensions'
+    ],
     'properties': {
       'config': {
         '$ref': '#/components/schemas/ScenarioConfigWrite'
       },
       'uiExtensions': {
         '$ref': '#/components/schemas/ScenarioUiExtensions'
+      },
+      'expectedRevision': {
+        'type': 'integer',
+        'minimum': 0
       }
-    },
-    'required': [
-      'config',
-      'uiExtensions'
-    ],
-    'type': 'object'
+    }
   },
   'ScenarioIdentity': {
     'additionalProperties': false,

@@ -13,7 +13,7 @@ import InteractionsPage from '../../src/pages/interactions/interactions.vue'
 import LoginPage from '../../src/pages/login/login.vue'
 import ReplaysPage from '../../src/pages/replays/replays.vue'
 import ReportsPage from '../../src/pages/reports/reports.vue'
-import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
+import ScenariosPage from '../../src/pages/scenarios/ScenarioWorkspace.vue'
 import SituationPage from '../../src/pages/situation/situation.vue'
 import TraceabilityPage from '../../src/pages/traceability/traceability.vue'
 import type {

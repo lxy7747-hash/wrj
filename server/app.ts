@@ -235,10 +235,11 @@ function isConfirmRequest(value: unknown): value is { confirm: true } {
 }
 
 /** 校验模板复制请求中的非空名称。 */
-function isCopyTemplateRequest(value: unknown): value is { name: string } {
-  return isStrictObject(value, ['name'])
+function isCopyTemplateRequest(value: unknown): value is { name: string; scenarioId?: string } {
+  return isStrictObject(value, ['name'], ['scenarioId'])
     && typeof value.name === 'string'
     && value.name.trim().length > 0
+    && (value.scenarioId === undefined || (typeof value.scenarioId === 'string' && value.scenarioId.startsWith('SCN-')))
 }
 
 /** 校验脚本预览请求中的场景编号和可选警告确认编号。 */
@@ -946,12 +947,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @returns 无返回值。
    * @remarks 只读取场景投影，不修改草稿修订号。
    */
+  app.get('/api/v1/scenarios', (req, res) => {
+    if (requireDemoRole(req, res, auth, 'SCENARIO_LIST') === undefined) return
+    try {
+      const items = scenarios.list()
+      res.status(200).json(success(items, pageMeta('REQ-SCENARIOS-LIST', items.length, Math.max(1, items.length))))
+    } catch {
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { message: '场景列表读取失败，请重试。' }))
+    }
+  })
+
+  app.post('/api/v1/scenarios', (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_CREATE')
+    if (role === undefined) return
+    const result = scenarios.create(req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_CREATE')
+      res.status(result.status).json(failure(result.code, result.status, { message: result.message, fieldPath: result.fieldPath }))
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_CREATE', result.data.config.scenario.id)
+    res.status(201).json(success(result.data, pageMeta('REQ-SCENARIOS-CREATE')))
+  })
+
+  app.delete('/api/v1/scenarios/:scenarioId', (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_DELETE', req.params.scenarioId)
+    if (role === undefined) return
+    const revision = req.query.expectedRevision
+    const result = scenarios.delete(req.params.scenarioId, { expectedRevision: typeof revision === 'string' && /^\d+$/.test(revision) ? Number(revision) : undefined })
+    if (!result.ok) {
+      auth.recordError(actorForRole(role), role, 'SCENARIO_DELETE', req.params.scenarioId)
+      res.status(result.status).json(failure(result.code, result.status, { message: result.message, fieldPath: result.fieldPath }))
+      return
+    }
+    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_DELETE', req.params.scenarioId)
+    res.status(200).json(success(result.data, pageMeta('REQ-SCENARIOS-DELETE')))
+  })
+
   app.get('/api/v1/scenarios/:scenarioId', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-GET'
     if (requireDemoRole(req, res, auth, 'SCENARIO_READ', scenarioId) === undefined) return
 
-    const result = scenarios.get(scenarioId, options.scenarioStorage !== undefined)
+    const result = scenarios.get(scenarioId)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -1200,7 +1238,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions)
+    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions, req.body.scenarioId)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,

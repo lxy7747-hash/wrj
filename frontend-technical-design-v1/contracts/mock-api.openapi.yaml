@@ -260,7 +260,7 @@
         "tags": [
           "scenarios"
         ],
-        "summary": "List in-memory scenario drafts",
+        "summary": "List saved scenarios by identity",
         "x-rbac": "BUSINESS_READ",
         "responses": {
           "200": {
@@ -269,6 +269,26 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetapiV1ScenariosResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -285,7 +305,7 @@
         "tags": [
           "scenarios"
         ],
-        "summary": "Create temporary in-memory draft",
+        "summary": "Create a new saved scenario; reject duplicate identity",
         "x-rbac": "SCENARIO_DRAFT_WRITE",
         "responses": {
           "201": {
@@ -298,8 +318,38 @@
               }
             }
           },
+          "403": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -359,6 +409,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1ScenariosScenarioId",
@@ -404,6 +464,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "putapiV1ScenariosScenarioId",
@@ -422,6 +492,90 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Delete unlocked scene after UI confirmation and expected revision check",
+        "x-rbac": "SCENARIO_DRAFT_WRITE",
+        "responses": {
+          "200": {
+            "description": "Typed deterministic success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteapiV1ScenariosScenarioIdResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator permission required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteapiV1ScenariosScenarioId",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          },
+          {
+            "name": "expectedRevision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ]
       }
     },
     "/api/v1/scenarios/{scenarioId}/validate": {
@@ -462,6 +616,16 @@
           },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -539,6 +703,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1ScenariosScenarioIdUndo",
@@ -609,6 +783,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1ScenariosScenarioIdReset",
@@ -654,6 +838,16 @@
           },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -5509,6 +5703,26 @@
           }
         }
       },
+      "DeleteapiV1ScenariosScenarioIdResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeleteResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
       "ScenarioDraft": {
         "type": "object",
         "additionalProperties": false,
@@ -5551,6 +5765,10 @@
           },
           "uiExtensions": {
             "$ref": "#/components/schemas/ScenarioUiExtensions"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -7058,6 +7276,11 @@
           "name": {
             "type": "string",
             "minLength": 1
+          },
+          "scenarioId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^SCN-"
           }
         }
       },
@@ -8056,7 +8279,7 @@
         }
       },
       "PostapiV1ScenariosRequest": {
-        "$ref": "#/components/schemas/ScenarioConfigWrite"
+        "$ref": "#/components/schemas/ScenarioDraftUpdate"
       },
       "PostapiV1ScenariosResponse": {
         "type": "object",
