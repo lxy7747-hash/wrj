@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   CapabilityState,
@@ -49,7 +50,7 @@ async function fetchSimulation(owner: object, input: string, init?: RequestInit)
   pendingRequests.set(owner, requests)
   requests.set(controller, timer)
   try {
-    return await fetch(input, { ...init, signal: controller.signal })
+    return await apiFetch(input, { ...init, signal: controller.signal })
   } catch (error) {
     if (controller.signal.aborted) throw new SimulationTimeoutError()
     throw error

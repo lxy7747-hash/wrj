@@ -64,6 +64,51 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'AuditExportResult': {
+    'additionalProperties': false,
+    'properties': {
+      'classification': {
+        'const': 'INTERNAL'
+      },
+      'content': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'fileName': {
+        'pattern': '^operation_audit_[0-9]{14}_[A-Za-z0-9_-]+\\.txt$',
+        'type': 'string'
+      },
+      'generated': {
+        'const': true
+      },
+      'objectId': {
+        'const': 'AUDIT-LOG'
+      },
+      'recordCount': {
+        'minimum': 0,
+        'type': 'integer'
+      },
+      'verifiedAt': {
+        'format': 'date-time',
+        'type': 'string'
+      },
+      'watermark': {
+        'minLength': 1,
+        'type': 'string'
+      }
+    },
+    'required': [
+      'objectId',
+      'generated',
+      'classification',
+      'watermark',
+      'verifiedAt',
+      'fileName',
+      'content',
+      'recordCount'
+    ],
+    'type': 'object'
+  },
   'AuditExportRequest': {
     'additionalProperties': false,
     'properties': {
@@ -272,7 +317,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         ]
       },
       'sessionCreated': {
-        'const': false
+        'description': 'true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry.',
+        'type': 'boolean'
       }
     },
     'required': [
@@ -864,22 +910,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'CopyTemplateRequest': {
-    'type': 'object',
     'additionalProperties': false,
+    'properties': {
+      'name': {
+        'minLength': 1,
+        'type': 'string'
+      },
+      'scenarioId': {
+        'minLength': 1,
+        'pattern': '^SCN-',
+        'type': 'string'
+      }
+    },
     'required': [
       'name'
     ],
-    'properties': {
-      'name': {
-        'type': 'string',
-        'minLength': 1
-      },
-      'scenarioId': {
-        'type': 'string',
-        'minLength': 1,
-        'pattern': '^SCN-'
-      }
-    }
+    'type': 'object'
   },
   'CsvContractList': {
     'items': {
@@ -960,6 +1006,26 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'DeleteapiV1AdminUsersUserIdResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/DeleteResult'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
+  'DeleteapiV1ScenariosScenarioIdResponse': {
     'additionalProperties': false,
     'properties': {
       'data': {
@@ -1160,23 +1226,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'Environment': {
     'additionalProperties': false,
     'properties': {
-      'simClockSpeed': {
-        'type': 'number',
-        'exclusiveMinimum': 0,
-        'default': 2
-      },
-      'transmissionDistance': {
-        'type': 'number',
-        'minimum': 150,
-        'maximum': 410,
-        'default': 300,
-        'description': '海峡宽度，单位 km；不是各条链路的实际通信距离。'
-      },
-      'rainCloudAttenuation': {
-        'type': 'string',
-        'enum': ['none', 'lightRain', 'moderateRain', 'heavyRain'],
-        'default': 'lightRain'
-      },
       'humidityPercent': {
         'maximum': 100,
         'minimum': 0,
@@ -1184,6 +1233,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       'multipathEnabled': {
         'type': 'boolean'
+      },
+      'rainCloudAttenuation': {
+        'default': 'lightRain',
+        'enum': [
+          'none',
+          'lightRain',
+          'moderateRain',
+          'heavyRain'
+        ],
+        'type': 'string'
       },
       'rainLossDbPerKm': {
         'minimum': 0,
@@ -1197,7 +1256,19 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'minimum': 0,
         'type': 'number'
       },
+      'simClockSpeed': {
+        'default': 2,
+        'exclusiveMinimum': 0,
+        'type': 'number'
+      },
       'temperatureC': {
+        'type': 'number'
+      },
+      'transmissionDistance': {
+        'default': 300,
+        'description': '海峡宽度，单位 km；不是各条链路的实际通信距离。',
+        'maximum': 410,
+        'minimum': 150,
         'type': 'number'
       }
     },
@@ -1834,6 +1905,26 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'GetapiV1AuthSessionResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/AuthResult'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
   'GetapiV1BatchesBatchIdResponse': {
     'additionalProperties': false,
     'properties': {
@@ -2281,22 +2372,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'InformationDemand': {
     'additionalProperties': false,
-    'if': { 'required': ['linkId'] },
-    'then': {
-      'required': ['direction'],
-      'properties': { 'destinationPlatformIds': { 'maxItems': 1 } }
+    'if': {
+      'required': [
+        'linkId'
+      ]
     },
     'properties': {
-      'linkId': {
-        'type': 'string',
-        'minLength': 1
-      },
-      'direction': {
-        'enum': ['FORWARD', 'REVERSE']
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
       'destinationPlatformIds': {
         'items': {
           'minLength': 1,
@@ -2305,6 +2386,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'minItems': 1,
         'type': 'array',
         'uniqueItems': true
+      },
+      'direction': {
+        'enum': [
+          'FORWARD',
+          'REVERSE'
+        ]
+      },
+      'enabled': {
+        'type': 'boolean'
       },
       'frequencyHz': {
         'minimum': 0,
@@ -2315,6 +2405,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'type': 'string'
       },
       'informationType': {
+        'type': 'string'
+      },
+      'linkId': {
+        'minLength': 1,
         'type': 'string'
       },
       'maxLatencyMs': {
@@ -2351,6 +2445,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'maxLatencyMs',
       'minDataRateMbps'
     ],
+    'then': {
+      'properties': {
+        'destinationPlatformIds': {
+          'maxItems': 1
+        }
+      },
+      'required': [
+        'direction'
+      ]
+    },
     'type': 'object'
   },
   'InterfaceMetadata': {
@@ -2392,10 +2496,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'Jammer': {
     'additionalProperties': false,
     'properties': {
-      'triggerTimeS': {
-        'minimum': 0,
-        'type': 'number'
-      },
       'autoDetect': {
         'type': 'boolean'
       },
@@ -2422,6 +2522,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'platformId': {
         'minLength': 1,
         'type': 'string'
+      },
+      'triggerTimeS': {
+        'minimum': 0,
+        'type': 'number'
       },
       'type': {
         'enum': [
@@ -2754,60 +2858,37 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'Link': {
+    'additionalProperties': false,
     'allOf': [
       {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'SAT'
-            }
-          }
-        },
         'else': {
           'properties': {
             'relayPlatformId': {
               'type': 'null'
             }
           }
+        },
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'SAT'
+            }
+          }
         }
       }
     ],
-    'additionalProperties': false,
     'properties': {
-      'enabled': {
-        'type': 'boolean',
-        'default': true
-      },
-      'antennaGainCorrectionDb': {
-        'type': 'number',
-        'default': 0
-      },
-      'coding': {
-        'type': [
-          'string',
-          'null'
-        ],
-        'pattern': '^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$'
-      },
-      'antiJammingGainDb': {
-        'type': 'number',
-        'minimum': 0,
-        'default': 0
-      },
-      'spatialIsolationDb': {
-        'type': 'number',
-        'minimum': 0,
-        'default': 0
-      },
-      'relayPlatformId': {
-        'type': [
-          'string',
-          'null'
-        ],
-        'minLength': 1
-      },
       'antennaGain': {
         '$ref': '#/components/schemas/AntennaGain'
+      },
+      'antennaGainCorrectionDb': {
+        'default': 0,
+        'type': 'number'
+      },
+      'antiJammingGainDb': {
+        'default': 0,
+        'minimum': 0,
+        'type': 'number'
       },
       'bandwidth': {
         'exclusiveMinimum': 0,
@@ -2817,6 +2898,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         'maximum': 1,
         'minimum': 0,
         'type': 'number'
+      },
+      'coding': {
+        'pattern': '^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$',
+        'type': [
+          'string',
+          'null'
+        ]
       },
       'dataRate': {
         'minimum': 0,
@@ -2828,6 +2916,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'REVERSE'
         ],
         'type': 'string'
+      },
+      'enabled': {
+        'default': true,
+        'type': 'boolean'
       },
       'frequency': {
         'exclusiveMinimum': 0,
@@ -2844,9 +2936,21 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         ],
         'type': 'string'
       },
+      'relayPlatformId': {
+        'minLength': 1,
+        'type': [
+          'string',
+          'null'
+        ]
+      },
       'sourcePlatformId': {
         'minLength': 1,
         'type': 'string'
+      },
+      'spatialIsolationDb': {
+        'default': 0,
+        'minimum': 0,
+        'type': 'number'
       },
       'targetPlatformId': {
         'minLength': 1,
@@ -3053,19 +3157,34 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'passwordFixture': {
-        'type': 'string'
+        'description': 'Legacy wire field name retained for compatibility; carries the entered password, never a fixture selector. Do not log or persist plaintext.',
+        'maxLength': 128,
+        'minLength': 1,
+        'type': 'string',
+        'writeOnly': true
       },
       'username': {
-        'enum': [
-          'admin',
-          'operator',
-          'locked'
-        ]
+        'maxLength': 64,
+        'minLength': 1,
+        'pattern': '.*\\S.*',
+        'type': 'string'
       }
     },
     'required': [
       'username',
       'passwordFixture'
+    ],
+    'type': 'object'
+  },
+  'LogoutRequest': {
+    'additionalProperties': false,
+    'properties': {
+      'confirm': {
+        'const': true
+      }
+    },
+    'required': [
+      'confirm'
     ],
     'type': 'object'
   },
@@ -3078,7 +3197,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'dataId': {
         'minLength': 1,
         'not': {
-          'enum': ['.', '..']
+          'enum': [
+            '.',
+            '..'
+          ]
         },
         'type': 'string'
       },
@@ -3232,48 +3354,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
-  'PlatformWrite': {
-    'allOf': [
-      {
-        '$ref': '#/components/schemas/Platform'
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'COMMUNICATION_SATELLITE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'required': [
-            'satelliteType'
-          ]
-        }
-      }
-    ]
-  },
-  'ScenarioConfigWrite': {
-    'description': '写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。',
-    'allOf': [
-      {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      },
-      {
-        'properties': {
-          'platforms': {
-            'items': {
-              '$ref': '#/components/schemas/PlatformWrite'
-            },
-            'type': 'array'
-          }
-        }
-      }
-    ]
-  },
   'Platform': {
     'additionalProperties': false,
     'allOf': [
@@ -3412,10 +3492,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       {
         'if': {
-          'properties': { 'type': { 'const': 'AIRBORNE_JAMMER_PLATFORM' } },
-          'required': ['type']
+          'properties': {
+            'type': {
+              'const': 'AIRBORNE_JAMMER_PLATFORM'
+            }
+          },
+          'required': [
+            'type'
+          ]
         },
-        'then': { 'properties': { 'category': { 'const': 'air' } } }
+        'then': {
+          'properties': {
+            'category': {
+              'const': 'air'
+            }
+          }
+        }
       }
     ],
     'properties': {
@@ -3575,6 +3667,30 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'PlatformWrite': {
+    'allOf': [
+      {
+        '$ref': '#/components/schemas/Platform'
+      },
+      {
+        'if': {
+          'properties': {
+            'type': {
+              'const': 'COMMUNICATION_SATELLITE'
+            }
+          },
+          'required': [
+            'type'
+          ]
+        },
+        'then': {
+          'required': [
+            'satelliteType'
+          ]
+        }
+      }
+    ]
+  },
   'Position': {
     'additionalProperties': false,
     'properties': {
@@ -3607,7 +3723,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'data': {
-        '$ref': '#/components/schemas/ExportStatus'
+        '$ref': '#/components/schemas/AuditExportResult'
       },
       'meta': {
         '$ref': '#/components/schemas/Meta'
@@ -3742,6 +3858,29 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     '$ref': '#/components/schemas/LoginRequest'
   },
   'PostapiV1AuthLoginResponse': {
+    'additionalProperties': false,
+    'properties': {
+      'data': {
+        '$ref': '#/components/schemas/AuthResult'
+      },
+      'meta': {
+        '$ref': '#/components/schemas/Meta'
+      },
+      'ok': {
+        'const': true
+      }
+    },
+    'required': [
+      'ok',
+      'data',
+      'meta'
+    ],
+    'type': 'object'
+  },
+  'PostapiV1AuthLogoutRequest': {
+    '$ref': '#/components/schemas/LogoutRequest'
+  },
+  'PostapiV1AuthLogoutResponse': {
     'additionalProperties': false,
     'properties': {
       'data': {
@@ -4948,86 +5087,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'minItems': 11,
     'type': 'array'
   },
-  'ScenarioLinkSettings': {
-    'type': 'object',
-    'additionalProperties': false,
-    'required': [
-      'enabledSatellites',
-      'switchCooldownS',
-      'priority'
-    ],
-    'properties': {
-      'enabledTypes': {
-        'deprecated': true,
-        'description': '仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。',
-        'type': 'object',
-        'additionalProperties': false,
-        'required': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'properties': {
-          'SAT': {
-            'type': 'boolean'
-          },
-          'MICROWAVE': {
-            'type': 'boolean'
-          },
-          'DATALINK': {
-            'type': 'boolean'
-          },
-          'LASER': {
-            'type': 'boolean'
-          }
-        }
-      },
-      'enabledSatellites': {
-        'type': 'object',
-        'additionalProperties': false,
-        'required': [
-          'TIANTONG',
-          'SHENTONG'
-        ],
-        'properties': {
-          'TIANTONG': {
-            'type': 'boolean'
-          },
-          'SHENTONG': {
-            'type': 'boolean'
-          }
-        }
-      },
-      'switchCooldownS': {
-        'type': 'number',
-        'minimum': 0,
-        'default': 5
-      },
-      'priority': {
-        'type': 'array',
-        'minItems': 4,
-        'maxItems': 4,
-        'uniqueItems': true,
-        'items': {
-          'type': 'string',
-          'enum': [
-            'SAT',
-            'MICROWAVE',
-            'DATALINK',
-            'LASER'
-          ]
-        }
-      }
-    }
-  },
   'ScenarioConfig': {
     'additionalProperties': false,
     'properties': {
-      'jammingEnabled': {
-        'type': 'boolean'
-      },
-      'linkSettings': { '$ref': '#/components/schemas/ScenarioLinkSettings' },
       'informationDemand': {
         'items': {
           '$ref': '#/components/schemas/InformationDemand'
@@ -5040,6 +5102,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           '$ref': '#/components/schemas/Jammer'
         },
         'type': 'array'
+      },
+      'jammingEnabled': {
+        'type': 'boolean'
+      },
+      'linkSettings': {
+        '$ref': '#/components/schemas/ScenarioLinkSettings'
       },
       'links': {
         'items': {
@@ -5056,18 +5124,18 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         'minItems': 1,
         'type': 'array',
-        'x-business-information-node-types': [
-          'REAR_COMMAND_NODE',
-          'FORWARD_RELAY_NODE',
-          'GROUND_CLUSTER_COMMAND_NODE',
-          'AIRBORNE_MISSION_CLUSTER'
-        ],
         'x-business-information-node-limits': {
           'AIRBORNE_MISSION_CLUSTER': 47,
           'FORWARD_RELAY_NODE': 1,
           'GROUND_CLUSTER_COMMAND_NODE': 1,
           'REAR_COMMAND_NODE': 1
         },
+        'x-business-information-node-types': [
+          'REAR_COMMAND_NODE',
+          'FORWARD_RELAY_NODE',
+          'GROUND_CLUSTER_COMMAND_NODE',
+          'AIRBORNE_MISSION_CLUSTER'
+        ],
         'x-max-business-information-nodes': 50,
         'x-min-business-information-nodes': 1,
         'x-supporting-entity-types-excluded-from-capacity': [
@@ -5102,6 +5170,24 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object',
     'x-fixture-path': '$.scenario',
     'x-source': 'SRS §1.2.2 and §3.5.3 Table 22; approved frontend baseline V1.1 §6.1'
+  },
+  'ScenarioConfigWrite': {
+    'allOf': [
+      {
+        '$ref': '#/components/schemas/ScenarioConfig'
+      },
+      {
+        'properties': {
+          'platforms': {
+            'items': {
+              '$ref': '#/components/schemas/PlatformWrite'
+            },
+            'type': 'array'
+          }
+        }
+      }
+    ],
+    'description': '写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。'
   },
   'ScenarioCoverageFixture': {
     'additionalProperties': false,
@@ -5202,26 +5288,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
-  'DeleteapiV1ScenariosScenarioIdResponse': {
-    'type': 'object',
-    'additionalProperties': false,
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'properties': {
-      'ok': {
-        'const': true
-      },
-      'data': {
-        '$ref': '#/components/schemas/DeleteResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      }
-    }
-  },
   'ScenarioDraft': {
     'additionalProperties': false,
     'properties': {
@@ -5252,24 +5318,24 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'ScenarioDraftUpdate': {
-    'type': 'object',
     'additionalProperties': false,
-    'required': [
-      'config',
-      'uiExtensions'
-    ],
     'properties': {
       'config': {
         '$ref': '#/components/schemas/ScenarioConfigWrite'
       },
+      'expectedRevision': {
+        'minimum': 0,
+        'type': 'integer'
+      },
       'uiExtensions': {
         '$ref': '#/components/schemas/ScenarioUiExtensions'
-      },
-      'expectedRevision': {
-        'type': 'integer',
-        'minimum': 0
       }
-    }
+    },
+    'required': [
+      'config',
+      'uiExtensions'
+    ],
+    'type': 'object'
   },
   'ScenarioIdentity': {
     'additionalProperties': false,
@@ -5331,6 +5397,79 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
+  'ScenarioLinkSettings': {
+    'additionalProperties': false,
+    'properties': {
+      'enabledSatellites': {
+        'additionalProperties': false,
+        'properties': {
+          'SHENTONG': {
+            'type': 'boolean'
+          },
+          'TIANTONG': {
+            'type': 'boolean'
+          }
+        },
+        'required': [
+          'TIANTONG',
+          'SHENTONG'
+        ],
+        'type': 'object'
+      },
+      'enabledTypes': {
+        'additionalProperties': false,
+        'deprecated': true,
+        'description': '仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。',
+        'properties': {
+          'DATALINK': {
+            'type': 'boolean'
+          },
+          'LASER': {
+            'type': 'boolean'
+          },
+          'MICROWAVE': {
+            'type': 'boolean'
+          },
+          'SAT': {
+            'type': 'boolean'
+          }
+        },
+        'required': [
+          'SAT',
+          'MICROWAVE',
+          'DATALINK',
+          'LASER'
+        ],
+        'type': 'object'
+      },
+      'priority': {
+        'items': {
+          'enum': [
+            'SAT',
+            'MICROWAVE',
+            'DATALINK',
+            'LASER'
+          ],
+          'type': 'string'
+        },
+        'maxItems': 4,
+        'minItems': 4,
+        'type': 'array',
+        'uniqueItems': true
+      },
+      'switchCooldownS': {
+        'default': 5,
+        'minimum': 0,
+        'type': 'number'
+      }
+    },
+    'required': [
+      'enabledSatellites',
+      'switchCooldownS',
+      'priority'
+    ],
+    'type': 'object'
+  },
   'ScenarioList': {
     'items': {
       '$ref': '#/components/schemas/ScenarioDraft'
@@ -5340,9 +5479,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'ScenarioTemplate': {
     'additionalProperties': false,
     'properties': {
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      },
       'config': {
         '$ref': '#/components/schemas/ScenarioConfig'
       },
@@ -5359,6 +5495,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'templateId': {
         'minLength': 1,
         'type': 'string'
+      },
+      'uiExtensions': {
+        '$ref': '#/components/schemas/ScenarioUiExtensions'
       },
       'version': {
         'type': 'string'
@@ -6084,15 +6223,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'TemplateMutationRequest': {
     'additionalProperties': false,
     'properties': {
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      },
       'config': {
         '$ref': '#/components/schemas/ScenarioConfigWrite'
       },
       'name': {
         'minLength': 1,
         'type': 'string'
+      },
+      'uiExtensions': {
+        '$ref': '#/components/schemas/ScenarioUiExtensions'
       }
     },
     'required': [
@@ -6199,6 +6338,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'UserRoleCommand': {
     'additionalProperties': false,
+    'allOf': [
+      {
+        'if': {
+          'required': [
+            'password'
+          ]
+        },
+        'then': {
+          'properties': {
+            'operation': {
+              'const': 'CREATE'
+            }
+          }
+        }
+      }
+    ],
     'properties': {
       'confirmationId': {
         'minLength': 1,
@@ -6212,6 +6367,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           'ENABLE',
           'DISABLE'
         ]
+      },
+      'password': {
+        'description': 'Required when creating a SQLite account; never returned in User.',
+        'maxLength': 32,
+        'minLength': 6,
+        'type': 'string',
+        'writeOnly': true
       },
       'user': {
         '$ref': '#/components/schemas/User'

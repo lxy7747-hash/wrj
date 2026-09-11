@@ -186,6 +186,7 @@ watch(templateMaintenanceVisible, (visible) => {
   display: grid;
   min-width: 0;
   gap: var(--space-4, 1rem);
+  padding-top: var(--space-3, 0.75rem) !important;
 }
 
 .admin-page :deep(.maintenance-card) { display: grid; gap: 16px; min-width: 0; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 8px; align-content: start; }

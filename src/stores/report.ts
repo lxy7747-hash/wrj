@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   CapabilityState,
@@ -122,7 +123,7 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/reports`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         if (epoch !== this.requestEpoch) return false
@@ -157,7 +158,7 @@ export const useReportStore = defineStore('report', {
       this.pendingFormat = null
       this.exportResult = null
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(reportId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(reportId)}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         if (epoch !== this.requestEpoch) return false
@@ -198,7 +199,7 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': 'ADMIN' },
           body: JSON.stringify({ action: 'BATCH_LEVEL_III_EXPORT', objectId: report.reportId }),
@@ -230,7 +231,7 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(this.confirmation.confirmationId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(this.confirmation.confirmationId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': 'ADMIN' },
           body: JSON.stringify({ confirm: true }),
@@ -268,7 +269,7 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/export`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/export`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify({ reportId: report.reportId, format, ...(confirmationId === undefined ? {} : { confirmationId }) }),

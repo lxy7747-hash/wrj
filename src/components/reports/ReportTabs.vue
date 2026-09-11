@@ -10,6 +10,7 @@ import type {
   TelemetryFrame,
 } from '../../contracts/domain-models'
 import { formatBer } from '../../features/situation/situation-model'
+import { formatDateTime } from '../../features/shared/date-time'
 
 const props = withDefaults(defineProps<{
   report: Report
@@ -74,7 +75,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
     <header class="report-tabs__meta">
       <div><span>统计范围</span><strong>{{ sourceRange }}</strong></div>
       <div><span>数据来源</span><strong>{{ isBatch ? '批量聚合报告' : '单次仿真报告' }}</strong></div>
-      <div><span>生成时刻</span><strong>{{ report.generatedTime }}</strong></div>
+      <div><span>生成时刻</span><strong>{{ formatDateTime(report.generatedTime) }}</strong></div>
       <div><span>数据分级</span><strong>{{ report.classification === 'LEVEL_III' ? '三级' : '二级' }}</strong></div>
     </header>
 

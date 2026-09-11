@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { nextTick } from 'vue'
 import { defineStore } from 'pinia'
 import { isRfc3339DateTime } from '../features/scenarios/scenario-validation'
@@ -69,7 +70,7 @@ export const useUiStore = defineStore('ui', {
         useAdminStore().invalidateConfirmation()
         this.clearBusinessProjections()
         step = '重置服务'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/reset`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reset`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ confirm: true }),
         })

@@ -939,6 +939,8 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(generateSpy).toHaveBeenNthCalledWith(2, true)
     expect(preflightSpy).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('2026-08-06 16:00:00')
+    expect(scenario.script?.generatedTime).toBe(META.generatedAt)
     expect(wrapper.text()).toContain('2:3')
     expect(wrapper.text()).toContain('—')
 

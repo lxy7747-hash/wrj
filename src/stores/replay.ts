@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import { markRaw, toRaw } from 'vue'
 import type {
@@ -93,7 +94,7 @@ export const useReplayStore = defineStore('replay', {
       const timeout = setTimeout(() => request.abort(), 10_000)
       this.state = 'LOADING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/replays/local-file`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/replays/local-file`, {
           headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
         })
         const snapshot = await readSuccess(response, isLocalReplaySnapshot)
@@ -131,7 +132,7 @@ export const useReplayStore = defineStore('replay', {
       runtimeFor(this).pendingCommand = null
       this.state = 'LOADING'
       try {
-        const listResponse = await fetch(`${resolveMockOrigin()}/api/v1/replays`, {
+        const listResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/replays`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         const replays = await readSuccess(listResponse, (value): value is Replay[] => Array.isArray(value) && value.every(isReplay))
@@ -141,7 +142,7 @@ export const useReplayStore = defineStore('replay', {
           return true
         }
         const listed = replays[0]!
-        const detailResponse = await fetch(`${resolveMockOrigin()}/api/v1/replays/${encodeURIComponent(listed.replayId)}`, {
+        const detailResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/replays/${encodeURIComponent(listed.replayId)}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         const replay = await readSuccess(detailResponse, isReplay)
@@ -151,7 +152,7 @@ export const useReplayStore = defineStore('replay', {
           ? telemetry.events.map((event) => ({ ...event })) as ReplayEvent[]
           : undefined
         if (events === undefined) {
-          const eventsResponse = await fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(listed.runId)}/events`, {
+          const eventsResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(listed.runId)}/events`, {
             headers: { 'X-Demo-Role': useAuthStore().role },
           })
           events = await readSuccess(eventsResponse, (value): value is ReplayEvent[] => Array.isArray(value) && value.every(isSituationEvent))
@@ -234,7 +235,7 @@ export const useReplayStore = defineStore('replay', {
       runtime.pendingCommand = epoch
       if (command.command === 'SEEK' && this.state !== 'PLAYING') this.state = 'SEEKING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/replays/${encodeURIComponent(this.replay.replayId)}/commands`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/replays/${encodeURIComponent(this.replay.replayId)}/commands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify(command),

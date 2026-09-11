@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import ts from 'typescript'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 const RUNTIME_ROOTS = ['server/index.ts', 'server/app.ts']
@@ -8,7 +9,7 @@ const FORBIDDEN_CAPABILITIES = [
     name: 'host/storage/process modules',
     pattern: /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](?:node:)?(?:fs(?:\/promises)?|child_process|crypto|dns|dgram|https|net|tls|sqlite3|better-sqlite3|uuid|axios|got|undici)['"]/,
   },
-  { name: 'system time', pattern: /\b(?:Date|performance\.now|process\.hrtime)\b/ },
+  { name: 'system time', pattern: /\b(?:performance\.now|process\.hrtime)\b/ },
   { name: 'random or UUID generation', pattern: /\b(?:Math\.random|randomUUID|crypto\.getRandomValues|uuidv[1-9])\s*\(/ },
   { name: 'outbound network', pattern: /\b(?:fetch|XMLHttpRequest|EventSource|https?\.(?:get|request)|net\.connect|tls\.connect|dns\.(?:lookup|resolve)|new\s+WebSocket)\s*\(/ },
   { name: 'file writes', pattern: /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|createWriteStream|truncate|unlink|rename|mkdir|rm)\s*\(/ },
@@ -16,6 +17,26 @@ const FORBIDDEN_CAPABILITIES = [
   { name: 'browser-generated artifacts', pattern: /\b(?:Blob|File|URL\.createObjectURL)\b/ },
   { name: 'runtime timers', pattern: /\b(?:setTimeout|setInterval|setImmediate)\s*\(/ },
 ] as const
+
+// Date.parse 和带明确参数的构造只转换输入；禁止读钟及把 Date 别名化后绕过检查。
+function readsSystemDate(source: string): boolean {
+  const file = ts.createSourceFile('runtime.ts', source, ts.ScriptTarget.Latest, true)
+  let forbidden = false
+  function visit(node: ts.Node): void {
+    if (ts.isIdentifier(node) && node.text === 'Date') {
+      const parent = node.parent
+      const allowed = ts.isTypeReferenceNode(parent)
+        || (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword && parent.right === node)
+        || (ts.isPropertyAccessExpression(parent) && parent.expression === node && parent.name.text === 'parse')
+        || (ts.isNewExpression(parent) && parent.expression === node && (parent.arguments?.length ?? 0) > 0
+          && !parent.arguments?.some(ts.isSpreadElement))
+      if (!allowed) forbidden = true
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  return forbidden
+}
 
 interface RequestChain {
   set(name: string, value: string): RequestChain
@@ -83,6 +104,13 @@ afterEach(() => {
 })
 
 describe('P0 production runtime side-effect boundary', () => {
+  it('allows explicit timestamp conversion but rejects clock reads and aliases', () => {
+    expect(readsSystemDate('const value: Date = new Date(Date.parse(input)); value instanceof Date')).toBe(false)
+    for (const source of ['Date.now()', 'new Date()', 'Date(0)', 'Date["now"]()', 'const Clock = Date', 'new Date(...args)']) {
+      expect(readsSystemDate(source), source).toBe(true)
+    }
+  })
+
   it('does not import forbidden host, storage, process, or network clients', async () => {
     const fsModulePath = 'node:fs/' + 'promises'
     const processModulePath = 'node:' + 'process'
@@ -106,6 +134,9 @@ describe('P0 production runtime side-effect boundary', () => {
       expect.stringMatching(/\/deterministic-fixtures\.json$/),
     ]))
     const productionSource = [...sources.values()].join('\n')
+    for (const [path, source] of sources) {
+      if (path.endsWith('.ts')) expect(readsSystemDate(source), path).toBe(false)
+    }
 
     for (const capability of FORBIDDEN_CAPABILITIES) {
       expect(productionSource, capability.name).not.toMatch(capability.pattern)

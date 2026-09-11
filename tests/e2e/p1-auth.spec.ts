@@ -396,7 +396,8 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
   expect(exportBody).toMatchObject({ data: { objectId: 'FULL-CONFIG', classification: 'INTERNAL', generated: false } })
   await expect(exportPanel).toContainText('完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。')
   await expect(exportPanel.getByTestId('full-config-result')).toContainText(exportBody.data.watermark)
-  await expect(exportPanel.getByTestId('full-config-result')).toContainText(exportBody.data.verifiedAt)
+  expect(exportBody.data.verifiedAt).toBe('2026-08-06T08:00:00Z')
+  await expect(exportPanel.getByTestId('full-config-result')).toContainText('2026-08-06 16:00:00')
 
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
   await page.getByRole('menuitem', { name: '仿真数据管理', exact: true }).click()
@@ -421,7 +422,7 @@ test('P7 ADMIN filters and confirms audit export while OPERATOR remains denied',
   await page.getByRole('menuitem', { name: '操作审计日志' }).click()
   await page.waitForURL('**/admin?section=audit-logs')
   await expect(page.getByRole('heading', { name: '操作审计日志' })).toBeVisible()
-  await expect(page.getByTestId('audit-table')).toContainText('THRESHOLD_UPDATE')
+  await expect(page.getByTestId('audit-table')).toContainText('修改阈值')
 
   await page.getByRole('textbox', { name: '用户' }).fill('admin')
   await page.getByRole('textbox', { name: '模块' }).fill('SCENARIO_CONFIGURATION')
@@ -434,11 +435,14 @@ test('P7 ADMIN filters and confirms audit export while OPERATOR remains denied',
   })
   await page.getByRole('button', { name: '查询' }).click()
   expect((await filteredResponse).status()).toBe(200)
-  await expect(page.getByTestId('audit-table')).toContainText('SCENARIO_CONFIGURATION')
+  await expect(page.getByTestId('audit-table')).toContainText('场景配置')
+
+  // 修改后不点查询，导出仍使用发起时的新条件，不复用旧列表。
+  await page.getByRole('textbox', { name: '模块' }).fill('AUTHENTICATION')
 
   const confirmationCreated = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/confirmations')
-  await page.getByRole('button', { name: '确认并验证导出' }).click()
+  await page.getByRole('button', { name: '导出日志' }).click()
   expect((await confirmationCreated).status()).toBe(201)
   await expect(page.getByRole('dialog', { name: '确认导出审计日志' })).toBeVisible()
 
@@ -446,12 +450,29 @@ test('P7 ADMIN filters and confirms audit export while OPERATOR remains denied',
     && /^\/api\/v1\/confirmations\/[^/]+$/.test(new URL(response.url()).pathname))
   const exported = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/admin/audit/export')
+  const downloading = page.waitForEvent('download')
   await page.getByTestId('confirm-audit-export').click()
   expect((await confirmationAccepted).status()).toBe(200)
-  expect((await exported).status()).toBe(200)
-  await expect(page.getByTestId('audit-export-status')).toContainText('INTERNAL')
+  const exportResponse = await exported
+  expect(exportResponse.status()).toBe(200)
+  expect(exportResponse.request().postDataJSON().module).toBe('AUTHENTICATION')
+  const file = (await exportResponse.json()).data
+  const download = await downloading
+  expect(download.suggestedFilename()).toBe(file.fileName)
+  expect(await download.failure()).toBeNull()
+  const stream = await download.createReadStream()
+  const decoder = new TextDecoder()
+  let text = ''
+  for await (const chunk of stream!) text += decoder.decode(chunk, { stream: true })
+  text += decoder.decode()
+  expect(text).toBe(file.content)
+  expect(text).toContain('登录')
+  expect(text).not.toContain('修改阈值')
+  expect(text).toContain('未加密')
+  expect(file.recordCount).toBeGreaterThan(0)
+  await expect(page.getByTestId('audit-export-status')).toContainText('内部使用')
   await expect(page.getByTestId('audit-export-status')).toContainText('内部使用 · admin · AUDIT-LOG')
-  await expect(page.getByTestId('audit-export-status')).toContainText('2026-08-06T08:00:00Z')
+  await expect(page.getByTestId('audit-export-status')).toContainText('2026-08-06 16:00:00')
 
   await page.getByTestId('logout').click()
   await loginAs(page, 'operator')
@@ -500,7 +521,7 @@ test('操作员可使用当前菜单和隐藏页面且禁止越权访问', async
   for (const route of [...SHARED_WORKSPACE_ROUTES, OPERATOR_SYSTEM_ROUTE]) {
     await visitWorkspaceRoute(page, route)
   }
-  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('账号管理')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem')).toHaveText(['数据交换与接口'])
   await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem', { name: '数据交换与接口', exact: true })).toBeVisible()
 
   await page.evaluate(() => {
@@ -877,7 +898,7 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   const aggregateExport = adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001/export')
   await dialog.getByTestId('confirm-report-export').click()
   expect((await aggregateExport).status()).toBe(200)
-  await expect(adminPage.locator('.reports-page__export-result')).toContainText('2026-08-06T10:08:00Z')
+  await expect(adminPage.locator('.reports-page__export-result')).toContainText('2026-08-06 18:08:00')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])

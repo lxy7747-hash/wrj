@@ -7,11 +7,20 @@ import 'element-plus/es/components/message-box/style/css'
 import './styles/console-theme.css'
 import App from './App.vue'
 import router from './router'
+import { useAuthStore } from './stores/auth'
+import { onSessionExpired } from './features/shared/api-fetch'
 
 const app = createApp(App)
 const pinia = createPinia()
 
 app.use(pinia)
 provideGlobalConfig({ locale: zhCn }, app, true)
-app.use(router)
-app.mount('#app')
+const auth = useAuthStore(pinia)
+onSessionExpired(() => {
+  auth.resetToSafeEmpty()
+  void router.replace('/login')
+})
+void auth.restoreSession().finally(() => {
+  app.use(router)
+  app.mount('#app')
+})

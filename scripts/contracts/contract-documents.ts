@@ -91,6 +91,8 @@ const SCHEMA_BEARING_KEYS = Object.freeze([
 ] as const)
 const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'post', path: '/api/v1/auth/login', operationId: 'postapiV1AuthLogin' },
+  { method: 'get', path: '/api/v1/auth/session', operationId: 'getapiV1AuthSession' },
+  { method: 'post', path: '/api/v1/auth/logout', operationId: 'postapiV1AuthLogout' },
   { method: 'get', path: '/api/v1/auth/permissions', operationId: 'getapiV1AuthPermissions' },
   { method: 'get', path: '/api/v1/meta/capabilities', operationId: 'getapiV1MetaCapabilities' },
   { method: 'get', path: '/api/v1/meta/interfaces', operationId: 'getapiV1MetaInterfaces' },
@@ -158,6 +160,8 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AuthLogin: operationSchemaBinding('#/components/schemas/LoginRequest', '200', '#/components/schemas/AuthResult'),
+  getapiV1AuthSession: operationSchemaBinding(null, '200', '#/components/schemas/AuthResult'),
+  postapiV1AuthLogout: operationSchemaBinding('#/components/schemas/LogoutRequest', '200', '#/components/schemas/AuthResult'),
   getapiV1AuthPermissions: operationSchemaBinding(null, '200', '#/components/schemas/PermissionSet'),
   getapiV1MetaCapabilities: operationSchemaBinding(null, '200', '#/components/schemas/CapabilityMetadataList'),
   getapiV1MetaInterfaces: operationSchemaBinding(null, '200', '#/components/schemas/InterfaceMetadataList'),
@@ -213,7 +217,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   putapiV1AdminUsersUserId: operationSchemaBinding('#/components/schemas/UserRoleCommand', '200', '#/components/schemas/User'),
   deleteapiV1AdminUsersUserId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   getapiV1AdminAudit: operationSchemaBinding(null, '200', '#/components/schemas/AuditList'),
-  postapiV1AdminAuditExport: operationSchemaBinding('#/components/schemas/AuditExportRequest', '200', '#/components/schemas/ExportStatus'),
+  postapiV1AdminAuditExport: operationSchemaBinding('#/components/schemas/AuditExportRequest', '200', '#/components/schemas/AuditExportResult'),
   getapiV1AdminBackups: operationSchemaBinding(null, '200', '#/components/schemas/BackupList'),
   postapiV1AdminBackup: operationSchemaBinding('#/components/schemas/BackupRequest', '200', '#/components/schemas/BackupRecord'),
   postapiV1AdminRestore: operationSchemaBinding('#/components/schemas/RestoreRequest', '200', '#/components/schemas/RestoreResult'),
@@ -224,71 +228,73 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
-  postapiV1AuthLogin: ['401', '423'],
-  getapiV1AuthPermissions: ['403'],
-  getapiV1MetaCapabilities: [],
-  getapiV1MetaInterfaces: [],
-  getapiV1MetaDecisions: [],
-  getapiV1MetaRoutes: [],
-  getapiV1Scenarios: ['403', '503'],
-  postapiV1Scenarios: ['403', '409', '422', '503'],
-  getapiV1ScenariosScenarioId: ['404', '503'],
-  deleteapiV1ScenariosScenarioId: ['403', '404', '409', '422', '503'],
-  putapiV1ScenariosScenarioId: ['409', '422', '503'],
-  postapiV1ScenariosScenarioIdValidate: ['409', '422', '503'],
-  postapiV1ScenariosScenarioIdUndo: ['404', '409', '422', '503'],
-  postapiV1ScenariosScenarioIdReset: ['404', '409', '422', '503'],
-  postapiV1ScenariosImport: ['409', '422', '503'],
-  getapiV1Templates: ['503'],
-  postapiV1Templates: ['403', '409', '422', '503'],
-  getapiV1TemplatesTemplateId: ['404', '503'],
-  putapiV1TemplatesTemplateId: ['403', '404', '409', '422', '503'],
-  deleteapiV1TemplatesTemplateId: ['403', '404', '409', '428', '503'],
-  postapiV1TemplatesTemplateIdCopy: ['403', '404', '409', '422', '503'],
-  postapiV1ScriptsPreview: ['409', '422', '428'],
-  postapiV1ScriptsScriptIdPreflight: ['422'],
-  getapiV1ContractsScenarioConfig: [],
-  getapiV1ContractsFrontendTypes: [],
-  getapiV1ContractsCsv: [],
-  getapiV1Simulations: [],
-  postapiV1Simulations: ['409'],
-  getapiV1SimulationsRunId: ['404'],
-  postapiV1SimulationsRunIdCommands: ['409', '428'],
-  postapiV1TasksTaskIdJammersJammerIdCommands: ['403', '404', '409', '422'],
-  postapiV1TasksTaskIdJammersJammerIdParameters: ['403', '404', '409', '422'],
-  getapiV1SimulationsRunIdFramesFrameId: ['404'],
-  getapiV1SimulationsRunIdEvents: [],
-  postapiV1SimulationsRunIdEvents: ['403', '404', '409', '422'],
-  getapiV1Batches: [],
-  postapiV1Batches: ['422'],
-  getapiV1BatchesBatchId: ['404', '409'],
-  postapiV1BatchesBatchIdCommands: ['409'],
-  getapiV1Reports: [],
-  getapiV1ReportsReportId: [],
-  postapiV1ReportsReportIdExport: ['403', '428'],
-  postapiV1Confirmations: ['400', '403'],
-  postapiV1ConfirmationsConfirmationId: ['400', '403', '409'],
-  getapiV1Replays: [],
-  getapiV1ReplaysReplayId: [],
-  postapiV1ReplaysReplayIdCommands: ['409'],
-  getapiV1AdminMasterData: ['403'],
-  postapiV1AdminMasterData: ['403', '409', '422'],
-  putapiV1AdminMasterDataDataId: ['403', '404', '409', '422'],
-  deleteapiV1AdminMasterDataDataId: ['403', '404', '409', '428'],
-  getapiV1AdminUsers: [],
-  postapiV1AdminUsers: [],
-  putapiV1AdminUsersUserId: ['409'],
-  deleteapiV1AdminUsersUserId: ['409'],
-  getapiV1AdminAudit: ['400', '403'],
-  postapiV1AdminAuditExport: ['400', '403', '409', '428'],
-  getapiV1AdminBackups: ['403'],
-  postapiV1AdminBackup: ['403', '404', '409', '422', '428'],
-  postapiV1AdminRestore: ['403', '404', '409', '422', '428'],
-  getapiV1AdminHealth: ['403'],
-  getapiV1AdminArchives: ['403'],
-  postapiV1Reset: [],
-  getwsV1: ['400', '403'],
-  postapiV1AdminConfigExport: ['403', '409', '422', '428'],
+  postapiV1AuthLogin: ['401', '423', '429'],
+  getapiV1AuthSession: ['403'],
+  postapiV1AuthLogout: ['400', '403'],
+  getapiV1AuthPermissions: ['401', '403'],
+  getapiV1MetaCapabilities: ['401'],
+  getapiV1MetaInterfaces: ['401'],
+  getapiV1MetaDecisions: ['401'],
+  getapiV1MetaRoutes: ['401'],
+  getapiV1Scenarios: ['401', '403', '503'],
+  postapiV1Scenarios: ['401', '403', '409', '422', '503'],
+  getapiV1ScenariosScenarioId: ['401', '404', '503'],
+  deleteapiV1ScenariosScenarioId: ['401', '403', '404', '409', '422', '503'],
+  putapiV1ScenariosScenarioId: ['401', '409', '422', '503'],
+  postapiV1ScenariosScenarioIdValidate: ['401', '409', '422', '503'],
+  postapiV1ScenariosScenarioIdUndo: ['401', '404', '409', '422', '503'],
+  postapiV1ScenariosScenarioIdReset: ['401', '404', '409', '422', '503'],
+  postapiV1ScenariosImport: ['401', '409', '422', '503'],
+  getapiV1Templates: ['401', '503'],
+  postapiV1Templates: ['401', '403', '409', '422', '503'],
+  getapiV1TemplatesTemplateId: ['401', '404', '503'],
+  putapiV1TemplatesTemplateId: ['401', '403', '404', '409', '422', '503'],
+  deleteapiV1TemplatesTemplateId: ['401', '403', '404', '409', '428', '503'],
+  postapiV1TemplatesTemplateIdCopy: ['401', '403', '404', '409', '422', '503'],
+  postapiV1ScriptsPreview: ['401', '409', '422', '428'],
+  postapiV1ScriptsScriptIdPreflight: ['401', '422'],
+  getapiV1ContractsScenarioConfig: ['401'],
+  getapiV1ContractsFrontendTypes: ['401'],
+  getapiV1ContractsCsv: ['401'],
+  getapiV1Simulations: ['401'],
+  postapiV1Simulations: ['401', '409'],
+  getapiV1SimulationsRunId: ['401', '404'],
+  postapiV1SimulationsRunIdCommands: ['401', '409', '428'],
+  postapiV1TasksTaskIdJammersJammerIdCommands: ['401', '403', '404', '409', '422'],
+  postapiV1TasksTaskIdJammersJammerIdParameters: ['401', '403', '404', '409', '422'],
+  getapiV1SimulationsRunIdFramesFrameId: ['401', '404'],
+  getapiV1SimulationsRunIdEvents: ['401'],
+  postapiV1SimulationsRunIdEvents: ['401', '403', '404', '409', '422'],
+  getapiV1Batches: ['401'],
+  postapiV1Batches: ['401', '422'],
+  getapiV1BatchesBatchId: ['401', '404', '409'],
+  postapiV1BatchesBatchIdCommands: ['401', '409'],
+  getapiV1Reports: ['401'],
+  getapiV1ReportsReportId: ['401'],
+  postapiV1ReportsReportIdExport: ['401', '403', '428'],
+  postapiV1Confirmations: ['401', '400', '403'],
+  postapiV1ConfirmationsConfirmationId: ['401', '400', '403', '409'],
+  getapiV1Replays: ['401'],
+  getapiV1ReplaysReplayId: ['401'],
+  postapiV1ReplaysReplayIdCommands: ['401', '409'],
+  getapiV1AdminMasterData: ['401', '403'],
+  postapiV1AdminMasterData: ['401', '403', '409', '422'],
+  putapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '422'],
+  deleteapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '428'],
+  getapiV1AdminUsers: ['401'],
+  postapiV1AdminUsers: ['401'],
+  putapiV1AdminUsersUserId: ['401', '409'],
+  deleteapiV1AdminUsersUserId: ['401', '409'],
+  getapiV1AdminAudit: ['401', '400', '403'],
+  postapiV1AdminAuditExport: ['401', '400', '403', '409', '428'],
+  getapiV1AdminBackups: ['401', '403'],
+  postapiV1AdminBackup: ['401', '403', '404', '409', '422', '428'],
+  postapiV1AdminRestore: ['401', '403', '404', '409', '422', '428'],
+  getapiV1AdminHealth: ['401', '403'],
+  getapiV1AdminArchives: ['401', '403'],
+  postapiV1Reset: ['401'],
+  getwsV1: ['401', '400', '403'],
+  postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/Platform/allOf/0/if/properties/type/const','REAR_COMMAND_NODE'],
@@ -308,6 +314,10 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/Platform/allOf/7/then/properties/category/const','air'],
   ['#/components/schemas/PlatformWrite/allOf/1/if/properties/type/const','COMMUNICATION_SATELLITE'],
   ['#/components/parameters/DemoRole/schema/enum', ['ADMIN','OPERATOR']],
+  ['#/components/schemas/UserRoleCommand/allOf/0/then/properties/operation/const', 'CREATE'],
+  ['#/components/schemas/LogoutRequest/properties/confirm/const', true],
+  ['#/components/schemas/GetapiV1AuthSessionResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1AuthLogoutResponse/properties/ok/const', true],
   ['#/components/schemas/Environment/properties/rainCloudAttenuation/enum', ['none','lightRain','moderateRain','heavyRain']],
   ['#/components/schemas/Platform/properties/type/enum', ['REAR_COMMAND_NODE','FORWARD_RELAY_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER','COMMUNICATION_SATELLITE','GROUND_JAMMER_DETECTION_STATION','AIRBORNE_JAMMER_PLATFORM']],
   ['#/components/schemas/Platform/properties/satelliteType/enum', ['TIANTONG','SHENTONG']],
@@ -368,10 +378,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/ArchiveRecord/properties/status/const', 'INDEXED'],
   ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
   ['#/components/schemas/ErrorEnvelope/properties/ok/const', false],
-  ['#/components/schemas/LoginRequest/properties/username/enum', ['admin','operator','locked']],
   ['#/components/schemas/AuthResult/properties/principal/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
-  ['#/components/schemas/AuthResult/properties/sessionCreated/const', false],
   ['#/components/schemas/PermissionSet/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/CapabilityMetadata/allOf/0/if/properties/id/enum', ['DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS','DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX','DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER','DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT','DSDWRJQTLJS-XQ-GRYGZ-ESMGL','DSDWRJQTLJS-XQ-LLQHYYX-LLJC','DSDWRJQTLJS-XQ-LLQHYYX-QXL','DSDWRJQTLJS-XQ-LLQHYYX-HXL','DSDWRJQTLJS-XQ-LLQHYYX-QHJY']],
   ['#/components/schemas/CapabilityMetadata/allOf/0/then/properties/states/not/contains/const', 'EXECUTING'],
@@ -501,6 +509,9 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/AuditExportRequest/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/AuditExportRequest/properties/result/enum', ['SUCCESS','DENIED','ERROR']],
   ['#/components/schemas/AuditExportRequest/properties/export/const', true],
+  ['#/components/schemas/AuditExportResult/properties/objectId/const', 'AUDIT-LOG'],
+  ['#/components/schemas/AuditExportResult/properties/generated/const', true],
+  ['#/components/schemas/AuditExportResult/properties/classification/const', 'INTERNAL'],
   ['#/components/schemas/LinkStatusSummary/properties/linkType/enum', ['SAT','MICROWAVE','DATALINK','LASER']],
   ['#/components/schemas/LinkStatusSummary/properties/status/enum', ['UP','DOWN']],
 ] as const satisfies readonly (readonly [string, unknown])[])
@@ -1185,6 +1196,10 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
 
       operationCount += 1
       const operationPath = `$.paths[${JSON.stringify(route)}].${method}`
+      const publicAuth = ['/api/v1/auth/login', '/api/v1/auth/session', '/api/v1/auth/logout'].includes(route)
+      if (JSON.stringify(operation.security) !== JSON.stringify(publicAuth ? [] : [{ SessionCookie: [] }])) {
+        addFinding(findings, 'OPENAPI_SESSION_SECURITY', `${operationPath}.security`, 'Local authentication must use the frozen session cookie requirement')
+      }
       const owner = `${method.toUpperCase()} ${route}`
       const operationId = stringAt(operation, 'operationId')
       const expectedOperation = EXPECTED_OPENAPI_OPERATIONS.find(
@@ -1211,7 +1226,7 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       }
 
       const operationParameterValues = Array.isArray(operation.parameters) ? operation.parameters : []
-      if (route !== '/api/v1/auth/login'
+      if (!['/api/v1/auth/login', '/api/v1/auth/session', '/api/v1/auth/logout'].includes(route)
         && !parameterReferences(operationParameterValues).includes(DEMO_ROLE_REF)) {
         addFinding(
           findings,
@@ -1446,12 +1461,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 65) {
+  if (operationCount !== 67) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 65 operations, found ${operationCount}`,
+      `Expected exactly 67 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1470,27 +1485,31 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 32 || requestSchemaOwners.size !== 32) {
+  if (writeCount !== 33 || requestSchemaOwners.size !== 33) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 32 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 33 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 
   const demoRole = parameters.DemoRole
+  const sessionCookie = components && objectAt(components, 'securitySchemes')?.SessionCookie
+  if (!isObject(sessionCookie) || sessionCookie.type !== 'apiKey' || sessionCookie.in !== 'cookie' || sessionCookie.name !== 'wrj_session') {
+    addFinding(findings, 'OPENAPI_SESSION_SECURITY', '$.components.securitySchemes.SessionCookie', 'SessionCookie must be the wrj_session cookie')
+  }
   const demoRoleSchema = isObject(demoRole) ? objectAt(demoRole, 'schema') : undefined
   if (!isObject(demoRole)
     || demoRole.name !== 'X-Demo-Role'
     || demoRole.in !== 'header'
-    || demoRole.required !== true
+    || demoRole.required !== false
     || !sameStrings(demoRoleSchema?.enum, ['ADMIN', 'OPERATOR'])) {
     addFinding(
       findings,
       'OPENAPI_DEMO_ROLE',
       '$.components.parameters.DemoRole',
-      'DemoRole must be the required X-Demo-Role header with ADMIN and OPERATOR values',
+      'DemoRole must be the optional Mock-only X-Demo-Role header with ADMIN and OPERATOR values',
     )
   }
 

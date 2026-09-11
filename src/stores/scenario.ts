@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   ApiErrorCode,
@@ -226,7 +227,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.listState = 'LOADING'
       this.listMessage = ''
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios`, { headers: { 'X-Demo-Role': useAuthStore().role } })
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios`, { headers: { 'X-Demo-Role': useAuthStore().role } })
         const payload = await readJson(response)
         if (epoch !== this.listEpoch || session !== this.requestEpoch) return false
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
@@ -251,7 +252,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.listState = 'EXECUTING'
       try {
         const id = scene.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}?expectedRevision=${scene.revision}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}?expectedRevision=${scene.revision}`, {
           method: 'DELETE', headers: { 'X-Demo-Role': useAuthStore().role },
         })
         const payload = await readJson(response)
@@ -364,7 +365,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.panelState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return false
@@ -513,7 +514,7 @@ export const useScenarioStore = defineStore('scenario', {
       try {
         this.panelState = 'EXECUTING'
         const scenarioId = this.draft.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/validate`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ config: this.draft.config }),
@@ -601,7 +602,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.panelState = 'EXECUTING'
         const scenarioId = this.draft.config.scenario.id
         const creating = this.draft.revision === 0
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios${creating ? '' : `/${encodeURIComponent(scenarioId)}`}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios${creating ? '' : `/${encodeURIComponent(scenarioId)}`}`, {
           method: creating ? 'POST' : 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -643,7 +644,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return false
@@ -676,7 +677,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return undefined
@@ -725,7 +726,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ name: name.trim(), config: templateConfig, ...(templateExtensions === undefined ? {} : { uiExtensions: templateExtensions }) }),
@@ -797,7 +798,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ name, config: this.draft.config, uiExtensions: this.draft.uiExtensions }),
@@ -843,7 +844,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ name, scenarioId: this.draft?.config.scenario.id ?? `SCN-${crypto.randomUUID()}` }),
@@ -913,7 +914,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+        const createResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: templateId }),
@@ -925,7 +926,7 @@ export const useScenarioStore = defineStore('scenario', {
         if (awaiting === undefined) throw new InvalidScenarioResponseError()
         this.lastConfirmation = awaiting
 
-        const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+        const confirmResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ confirm: true }),
@@ -938,7 +939,7 @@ export const useScenarioStore = defineStore('scenario', {
         }
         this.lastConfirmation = confirmed
 
-        const deleteResponse = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const deleteResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           method: 'DELETE',
           headers: { 'X-Demo-Role': auth.role, 'X-Confirmation-Id': awaiting.confirmationId },
         })
@@ -988,7 +989,7 @@ export const useScenarioStore = defineStore('scenario', {
       const requestEpoch = this.requestEpoch
       this.panelState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/import`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/import`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ items: [value] }),
@@ -1040,7 +1041,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.panelState = 'EXECUTING'
       try {
         const scenarioId = this.draft.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/${action}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/${action}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ expectedRevision: this.draft.revision }),
@@ -1088,7 +1089,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.scriptState = 'EXECUTING'
       try {
         if (this.validation.warnings.length > 0 && confirmWarnings) {
-          const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+          const createResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ action: 'SCENARIO_WARNING_CONTINUE', objectId: this.draft.config.scenario.id }),
@@ -1099,7 +1100,7 @@ export const useScenarioStore = defineStore('scenario', {
           if (!createResponse.ok) throw readApiFailure(createPayload) ?? new InvalidScenarioResponseError()
           const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
           if (awaiting === undefined) throw new InvalidScenarioResponseError()
-          const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+          const confirmResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ confirm: true }),
@@ -1112,7 +1113,7 @@ export const useScenarioStore = defineStore('scenario', {
           this.lastConfirmation = confirmed
           confirmationId = confirmed.confirmationId
         }
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/preview`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scripts/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ scenarioId: this.draft.config.scenario.id, ...(confirmationId === undefined ? {} : { warningConfirmationId: confirmationId }) }),
@@ -1147,7 +1148,7 @@ export const useScenarioStore = defineStore('scenario', {
       const scriptEpoch = ++this.scriptEpoch
       this.scriptState = 'VALIDATING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ checksum: this.script.checksum }),

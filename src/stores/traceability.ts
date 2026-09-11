@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type { CapabilityState, FixtureMetadata } from '../contracts/domain-models'
 import { isAdminObject, isAdminText } from '../features/admin/admin-contract'
@@ -54,7 +55,7 @@ export const useTraceabilityStore = defineStore('traceability', {
       try {
         const metadata = {} as FixtureMetadata
         for (const [section, count] of Object.entries({ capabilities: 29, interfaces: 7, decisions: 8, routes: 11 })) {
-          const response = await fetch(`${resolveMockOrigin()}/api/v1/meta/${section}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
+          const response = await apiFetch(`${resolveMockOrigin()}/api/v1/meta/${section}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
           const payload = await response.json()
           if (epoch !== this.requestEpoch) return false
           this.state = 'VALIDATING'

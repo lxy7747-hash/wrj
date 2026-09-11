@@ -34,7 +34,7 @@
 | DSDWRJQTLJS-XQ-XTGL-JCSJ | SRS 3.2.1.7/3.3.7.1; DD 4.1.7/4.2.7.1/5.7.2.1; HTML cap-jcsj | `/admin` | `AdminPage/MasterDataPanel` | `adminStore`, `authStore` | `MasterData` | `/api/v1/admin/master-data*` | MW-COMM v4, referenceCount=2 | 六态+CRUD/RBAC/引用/版本 | T-XQ-026 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-XTGL-YHJS | SRS 3.2.1.7/3.3.7.2; DD 4.1.7/4.2.7.2/5.7.2.2; HTML cap-yhjs | `/admin`, `/login` | `AdminPage/UserRolePanel`, `LoginPage/AuthResultPanel` | `authStore`, `adminStore` | `User`, `Principal`, `RbacDecision` | auth; `/api/v1/admin/users*` | USR-ADMIN, USR-OPERATOR | 六态+成功/凭据/锁定/拒绝/last-admin | T-XQ-027 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-XTGL-BFHF | SRS 3.2.1.7/3.3.7.3; DD 4.1.7/4.2.7.3/5.7.2.3; HTML cap-bfhf | `/admin` | `AdminPage/BackupRestoreWizard` | `adminStore`, `authStore` | `BackupRecord`, `ConfirmationState` | `GET /api/v1/admin/backups`、`POST /api/v1/admin/backup` and `/api/v1/admin/restore` | PREBACKUP-002 / BACKUP-CORRUPT-001 / BACKUP-ROLLBACK-001 | 六态+prebackup/check/confirm/progress/rollback | T-XQ-028 | VISIBLE_CONTRACT |
-| DSDWRJQTLJS-XQ-XTGL-CZRZ | SRS 3.2.1.7/3.3.7.4; DD 4.1.7/4.2.7.4/5.7.2.4; HTML cap-czrz | `/admin` | `AdminPage/AuditPanel` | `adminStore`, `authStore` | `AuditRecord` | `GET /api/v1/admin/audit`; export | AUD-001 immutableFixture | 六态+筛选/分类/水印/不可改 | T-XQ-029 | INTERACTIVE_UI |
+| DSDWRJQTLJS-XQ-XTGL-CZRZ | SRS 3.2.1.7/3.3.7.4; DD 4.1.7/4.2.7.4/5.7.2.4; HTML cap-czrz | `/admin` | `AdminPage/AuditLog` | `adminStore`, `authStore` | `AuditRecord`, `AuditExportResult` | `GET /api/v1/admin/audit`; `POST /api/v1/admin/audit/export` | 本机 SQLite 真实记录；纯 Mock 使用 AUD-001 | 六态+筛选/分类/水印/只读 TXT 下载；用户批准开发阶段明文，加密待补 | T-XQ-029 | INTERACTIVE_UI |
 
 ## 7 类接口
 

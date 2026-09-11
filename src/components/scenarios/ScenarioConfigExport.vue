@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { useAdminStore } from '../../stores/admin'
 import { useAuthStore } from '../../stores/auth'
+import { formatDateTime } from '../../features/shared/date-time'
 
 const store = useAdminStore()
 const auth = useAuthStore()
@@ -33,7 +34,7 @@ onBeforeUnmount(() => store.resetMaintenance())
     <el-descriptions v-if="store.fullConfigExport" :column="1" border data-testid="full-config-result">
       <el-descriptions-item label="数据分级">{{ classificationLabels[store.fullConfigExport.classification] }}</el-descriptions-item>
       <el-descriptions-item label="水印">{{ store.fullConfigExport.watermark }}</el-descriptions-item>
-      <el-descriptions-item label="验证时间">{{ store.fullConfigExport.verifiedAt }}</el-descriptions-item>
+      <el-descriptions-item label="验证时间">{{ formatDateTime(store.fullConfigExport.verifiedAt) }}</el-descriptions-item>
     </el-descriptions>
   </section>
 </template>

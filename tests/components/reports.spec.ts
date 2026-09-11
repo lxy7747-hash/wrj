@@ -46,7 +46,7 @@ describe('P3 报表内容', () => {
       global: { plugins: [ElementPlus] },
     })
     expect(wrapper.text()).toContain('RUN-001 · T+0～7200 s')
-    expect(wrapper.text()).toContain('2026-08-06T10:06:30Z')
+    expect(wrapper.text()).toContain('2026-08-06 18:06:30')
     expect(wrapper.text()).toContain('单位：dB')
     expect(wrapper.findAll('.el-tabs__item').map((tab) => tab.text())).toEqual([
       '汇总', '分链路', '干扰影响', '切换事件', '批量对比', '时序曲线',
@@ -198,7 +198,7 @@ describe('P3 报表内容', () => {
     expect(document.body.textContent).toContain('确认验证三级批量报告导出')
     document.querySelector<HTMLElement>('[data-testid="confirm-report-export"]')?.click()
     await flushPromises()
-    expect(wrapper.get('.reports-page__export-result').text()).toContain('2026-08-06T10:08:00Z')
+    expect(wrapper.get('.reports-page__export-result').text()).toContain('2026-08-06 18:08:00')
     wrapper.unmount()
   })
 })

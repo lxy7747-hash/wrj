@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
 import { useAuthStore } from './stores/auth'
@@ -46,7 +47,7 @@ const systemManagementPath = computed(() => (
  */
 async function logout(): Promise<void> {
   if (ui.resetState === 'EXECUTING') ui.cancelReset()
-  auth.resetToSafeEmpty()
+  try { await auth.logout() } catch { ElMessage.warning('本地身份已清除，但服务端退出未确认，请恢复连接后重试退出。') }
   await router.replace('/login')
 }
 </script>
@@ -105,7 +106,7 @@ async function logout(): Promise<void> {
         <div class="system-management__body">
           <aside class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="$route.fullPath">
-              <el-menu-item-group title="模型与参数">
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="模型与参数">
                 <el-menu-item index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
                 <el-menu-item
                   index="/admin?section=equipment-library"
@@ -115,7 +116,7 @@ async function logout(): Promise<void> {
                 </el-menu-item>
                 <el-menu-item index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group title="账号与维护">
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="账号与维护">
                 <el-menu-item
                   index="/admin?section=audit-logs"
                   :disabled="auth.principal?.role !== 'ADMIN'"
@@ -125,7 +126,7 @@ async function logout(): Promise<void> {
                 <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
                 <el-menu-item index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group title="数据与运行">
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="数据与运行">
                 <el-menu-item index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
                 <el-menu-item index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
               </el-menu-item-group>

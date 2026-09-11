@@ -533,6 +533,7 @@ describe('P3-2 遥测 Store', () => {
     expect(scenario.draft.locked).toBe(false)
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(fetchSpy).toHaveBeenCalledWith('http://127.0.0.1:4173/api/v1/simulations', {
+      credentials: 'include',
       headers: { 'X-Demo-Role': 'OPERATOR' },
       signal: expect.any(AbortSignal),
     })

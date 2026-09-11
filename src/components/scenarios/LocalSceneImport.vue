@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { apiFetch } from '../../features/shared/api-fetch'
+
 import { computed, onBeforeUnmount, ref, toRaw, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { PlatformType, ValidationIssue } from '../../contracts/domain-models'
@@ -71,7 +73,7 @@ async function load(): Promise<void> {
   const timeout = setTimeout(() => current.abort(), 10_000)
   try {
     const read = async (path: string) => {
-      const response = await fetch(`${resolveMockOrigin()}/api/v1/situation/${path}`, {
+      const response = await apiFetch(`${resolveMockOrigin()}/api/v1/situation/${path}`, {
         headers: { 'X-Demo-Role': auth.role }, signal: current.signal,
       })
       if (!response.ok) throw new Error('本地文件读取失败，请检查本机服务和文件后重试。')

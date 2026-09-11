@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import {
   EVENTS_CSV_HEADER,
@@ -192,10 +193,10 @@ export const useDataExchangeStore = defineStore('dataExchange', {
       try {
         const headers = { 'X-Demo-Role': useAuthStore().role }
         const [scenarioResponse, frontendResponse, csvResponse, interfaceResponse] = await Promise.all([
-          fetch(`${resolveMockOrigin()}/api/v1/contracts/scenario-config`, { headers }),
-          fetch(`${resolveMockOrigin()}/api/v1/contracts/frontend-types`, { headers }),
-          fetch(`${resolveMockOrigin()}/api/v1/contracts/csv`, { headers }),
-          fetch(`${resolveMockOrigin()}/api/v1/meta/interfaces`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/contracts/scenario-config`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/contracts/frontend-types`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/contracts/csv`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/meta/interfaces`, { headers }),
         ])
         if (requestEpoch !== this.requestEpoch) return false
         this.loadState = 'VALIDATING'

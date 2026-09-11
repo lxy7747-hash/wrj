@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { storeToRefs } from 'pinia'
 import type { AuditRecord, Role } from '../../contracts/domain-models'
 import { type AuditFilters, useAdminStore } from '../../stores/admin'
+import { formatDateTime } from '../../features/shared/date-time'
+import { formatAction, formatModule, formatObject, roleLabels, resultLabels } from '../../features/admin/audit-labels'
 
 const adminStore = useAdminStore()
 const {
@@ -19,6 +22,7 @@ const actor = ref('')
 const role = ref<Role | ''>('')
 const module = ref('')
 const result = ref<AuditRecord['result'] | ''>('')
+
 
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(auditState.value))
 
@@ -43,16 +47,34 @@ function exportAudit(): void {
   void adminStore.exportAudit(selectedFilters())
 }
 
-function confirmExport(): void {
-  void adminStore.confirmAuditExport()
+let active = true
+onBeforeUnmount(() => {
+  active = false
+  if (auditConfirmation.value !== null) adminStore.cancelAuditExport()
+})
+
+async function confirmExport(): Promise<void> {
+  if (!await adminStore.confirmAuditExport() || !active || auditExportStatus.value === null) return
+  const result = auditExportStatus.value
+  let url: string | undefined
+  const link = document.createElement('a')
+  try {
+    url = URL.createObjectURL(new Blob(['\uFEFF', result.content], { type: 'text/plain;charset=utf-8' }))
+    link.href = url
+    link.download = result.fileName
+    document.body.append(link)
+    link.click()
+    ElMessage.success(`已发起下载，共 ${result.recordCount} 条审计记录。`)
+  } catch {
+    ElMessage.error('下载未能启动，请重新发起导出。')
+  } finally {
+    link.remove()
+    if (url !== undefined) URL.revokeObjectURL(url)
+  }
 }
 
 function cancelExport(): void {
   adminStore.cancelAuditExport()
-}
-
-function tableRowClassName({ row }: { row: AuditRecord }): string {
-  return row.result === 'SUCCESS' ? '' : 'risk-row'
 }
 
 onMounted(queryAudit)
@@ -85,7 +107,7 @@ onMounted(queryAudit)
         <el-option label="错误" value="ERROR" />
       </el-select>
       <el-button type="primary" :loading="pending" @click="queryAudit">查询</el-button>
-      <el-button :loading="pending" @click="exportAudit">确认并验证导出</el-button>
+      <el-button :loading="pending" @click="exportAudit">导出日志</el-button>
     </div>
 
     <p v-if="auditState === 'LOADING'" data-testid="audit-state">正在准备审计查询…</p>
@@ -104,28 +126,30 @@ onMounted(queryAudit)
       data-testid="audit-table"
       :data="auditRecords"
       stripe
-      :row-class-name="tableRowClassName"
+      :row-class-name="({ row }: { row: AuditRecord }) => row.result === 'SUCCESS' ? '' : 'risk-row'"
       style="width: 100%"
     >
-      <el-table-column prop="occurredAt" label="时间" />
+      <el-table-column prop="occurredAt" label="时间" min-width="180" :formatter="(row: AuditRecord) => formatDateTime(row.occurredAt)" />
       <el-table-column prop="actor" label="用户" />
-      <el-table-column prop="role" label="角色" />
-      <el-table-column prop="module" label="模块" />
-      <el-table-column prop="action" label="操作" />
-      <el-table-column prop="objectId" label="操作对象" />
-      <el-table-column prop="result" label="结果" />
+      <el-table-column prop="role" label="角色" :formatter="(row: AuditRecord) => roleLabels[row.role]" />
+      <el-table-column prop="module" label="模块" :formatter="formatModule" />
+      <el-table-column prop="action" label="操作" :formatter="formatAction" />
+      <el-table-column prop="objectId" label="操作对象" :formatter="formatObject" />
+      <el-table-column prop="result" label="结果" :formatter="(row: AuditRecord) => resultLabels[row.result]" />
     </el-table>
 
     <el-descriptions
       v-if="auditExportStatus !== null"
       data-testid="audit-export-status"
-      title="导出验证结果"
+      title="导出文件信息"
       :column="1"
       border
     >
-      <el-descriptions-item label="数据分级">{{ auditExportStatus.classification }}</el-descriptions-item>
+      <el-descriptions-item label="文件">{{ auditExportStatus.fileName }}</el-descriptions-item>
+      <el-descriptions-item label="记录数量">{{ auditExportStatus.recordCount }}</el-descriptions-item>
+      <el-descriptions-item label="数据分级">内部使用</el-descriptions-item>
       <el-descriptions-item label="水印">{{ auditExportStatus.watermark }}</el-descriptions-item>
-      <el-descriptions-item label="验证时间">{{ auditExportStatus.verifiedAt }}</el-descriptions-item>
+      <el-descriptions-item label="验证时间">{{ formatDateTime(auditExportStatus.verifiedAt) }}</el-descriptions-item>
     </el-descriptions>
 
     <el-dialog
@@ -134,7 +158,7 @@ onMounted(queryAudit)
       width="460px"
       @update:model-value="(visible: boolean) => { if (!visible) cancelExport() }"
     >
-      <p>将按当前筛选条件验证审计日志导出，本阶段不会生成真实文件。</p>
+      <p>将按发起导出时的筛选条件下载 TXT 日志。文件为开发验证用明文，尚未加密，请妥善保管。</p>
       <template #footer>
         <el-button @click="cancelExport">取消</el-button>
         <el-button
@@ -190,10 +214,6 @@ onMounted(queryAudit)
 
 .filter-bar :deep(.filter-time-range) {
   width: 100%;
-}
-
-:deep(.risk-row) {
-  background-color: #fff2f2 !important;
 }
 
 :deep(.risk-row td) {

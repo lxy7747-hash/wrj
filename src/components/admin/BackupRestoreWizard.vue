@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { useAdminStore } from '../../stores/admin'
+import { formatDateTime } from '../../features/shared/date-time'
 import DataExchangeStateTag from '../data-exchange/DataExchangeStateTag.vue'
 
 const store = useAdminStore()
@@ -36,7 +37,7 @@ onBeforeUnmount(() => store.resetMaintenance())
     <el-alert v-if="feedback.message" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="backup-feedback" />
     <el-table v-loading="pending" :data="store.backups" row-key="backupId" stripe empty-text="暂无备份记录" data-testid="backup-table">
       <el-table-column prop="backupId" label="备份编号" min-width="190" />
-      <el-table-column prop="createdAt" label="创建时间" min-width="180" />
+      <el-table-column prop="createdAt" label="创建时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
       <el-table-column label="完整性" width="110"><template #default="{ row }"><el-tag :type="row.status === 'VALID_FIXTURE' ? 'success' : 'danger'">{{ row.status === 'VALID_FIXTURE' ? '校验通过' : '校验失败' }}</el-tag></template></el-table-column>
       <el-table-column prop="checksum" label="校验和" min-width="180" />
       <el-table-column label="操作" width="120" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="pending" @click="selectedBackupId = row.backupId">选择恢复</el-button></template></el-table-column>

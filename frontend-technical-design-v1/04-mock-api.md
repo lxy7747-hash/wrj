@@ -26,7 +26,11 @@
 
 ## RBAC
 
-`X-Demo-Role: ADMIN|OPERATOR` 是 OpenAPI 复用且必填的 header parameter，也是无状态测试输入；除公开 login 外每个 REST/WS operation 都显式引用它。login 不发 token/cookie。两角色均可读取业务数据、建立临时场景、运行仿真、查看批次/回放/报告并导出普通 Level II 状态。仅 ADMIN 可维护官方模板、主数据、用户/角色、备份恢复、审计、全量配置或 Level III 批次导出。Level III 还需要有效一次性 confirmationId。当前管理员和最后管理员均不能删除/降级，返回 `LAST_ADMIN_GUARD`。
+本机 server/local.ts 使用 SQLite users 和 HttpOnly Cookie 会话；公开 login/session/logout，其他 REST/WS operation 使用 SessionCookie。X-Demo-Role 仅为独立 server/index.ts 的无状态测试输入，本机入口忽略调用者提供的角色。两角色均可读取业务数据、建立场景、运行仿真、查看批次/回放/报告并导出普通 Level II 状态。仅 ADMIN 可维护官方模板、主数据、用户/角色、备份恢复、审计、全量配置或 Level III 批次导出。Level III 还需要有效一次性 confirmationId；本机确认绑定当前账号。当前管理员和最后管理员均不能删除/降级，返回 LAST_ADMIN_GUARD。
+
+2026-09-11 授权扩展：新增 GET /api/v1/auth/session、POST /api/v1/auth/logout，共 67 个操作、33 个 POST/PUT/PATCH。旧 wire 字段 passwordFixture 为兼容保留，在本机入口传输真实密码，仅用于 scrypt 校验，禁止日志记录或响应回传；username 不再限定演示枚举。会话有效期 8 小时，进程重启失效；退出、用户变更即时撤销，WS 空闲会话每 30 秒复核。用户创建密码 6–32 位（首次初始化管理员仍为 12–128 位）；纯 Mock 允许不提供密码保持旧用例兼容。本机真实时间、随机盐和 SQLite 仅由 server/local 层提供，不进入纯 Mock 副作用闭包。
+
+后续审计授权：本机日志存入同库 audit_logs，初始空表，取消演示记录，不迁移旧内存日志。沿用 AuditRecord 和现有查询筛选接口；登录、退出、鉴权拒绝和已有业务审计统一持久化，重启/reset 不清除。纯 Mock 仍读取 fixture 并在 reset 后恢复。immutableFixture 为旧传输字段，不作防篡改承诺。审计导出使用独立 AuditExportResult（generated:true），包含 UTF-8 TXT 内容、文件名、记录数、分类、水印和实际导出时间，浏览器生成下载文件。服务端按发起导出时的筛选值查询并消费 ADMIN 一次性确认，导出成功/失败/拒绝同样记录；导出本身不混入该次内容快照。用户批准当前明文开发验证，加密与密钥管理待补。存储故障沿用现有 INVALID_REQUEST 错误信封，业务与审计未形成跨模块统一事务，失败时需先重查业务结果。
 
 ## Endpoint 组
 
@@ -35,7 +39,7 @@
 - script/contract：只返回预览、预检、五接口与三 CSV 描述。
 - simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实。`POST /api/v1/simulations/{runId}/events` 输入 `ClosedLoopContext`、返回 `JammingDecision`，同目标同帧重复迁移返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`；参数同步使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/parameters`，输入 `JammingParameterSet`、返回四端版本一致的 `SyncResult`，旧版本或错误生效帧被拒绝。Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
 - batch/report/replay：BATCH-001 固定 12 对；普通与批次 report source 不混用；回放只移动游标；export 始终 `generated:false`。
-- admin：所有 master/user/audit/backup/archive/health 都是内存状态；恢复失败仅展示回滚合同。主数据删除、backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；所有导出结果固定 `generated:false`。
+- admin：纯 Mock 的 master/user/audit/backup/archive/health 为内存状态，本机 users/audit 已接 SQLite；恢复失败仅展示回滚合同。主数据删除、backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；仅审计导出返回 `AuditExportResult/generated:true`，其他导出仍保留原 `generated:false` 合同。
 - reset：清理定时器、连接、确认和可变 projection，重载 fixture，并把 WS sequence 恢复为 1。
 
 ### P7 系统维护确认与数据规则（2026-09-05）

@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { CapabilityState, Role, User } from '../../contracts/domain-models'
+import { ElMessage } from 'element-plus'
+import type { Role, User } from '../../contracts/domain-models'
 import { useAdminStore } from '../../stores/admin'
+import { useAuthStore } from '../../stores/auth'
 
 const admin = useAdminStore()
+const auth = useAuthStore()
+onMounted(() => { void admin.refreshUsers() })
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
 
 /**
@@ -23,7 +27,15 @@ const userSummary = computed(() => ({
   total: users.value.length,
   administrators: users.value.filter((user) => user.role === 'ADMIN').length,
   active: users.value.filter((user) => user.status === 'ACTIVE').length,
+  activeAdministrators: users.value.filter((user) => user.role === 'ADMIN' && user.status === 'ACTIVE').length,
 }))
+
+function adminProtection(user: User): string | undefined {
+  if (user.role !== 'ADMIN') return undefined
+  if (user.userId === auth.principal?.userId) return '当前登录管理员不能切换角色或禁用自己'
+  if (userSummary.value.activeAdministrators <= 1) return '必须保留至少一个启用的管理员'
+  return undefined
+}
 
 const createForm = reactive<{ username: string; role: Role; status: User['status'] }>({
   username: '',
@@ -31,6 +43,18 @@ const createForm = reactive<{ username: string; role: Role; status: User['status
   status: 'ACTIVE',
 })
 const pendingDelete = ref<User | null>(null)
+const initialPassword = ref('')
+const createDialogVisible = ref(false)
+const createError = ref('')
+
+function resetCreateForm(): void {
+  Object.assign(createForm, { username: '', role: 'OPERATOR', status: 'ACTIVE' })
+  initialPassword.value = ''
+  createError.value = ''
+}
+watch(createDialogVisible, (visible) => {
+  if (!visible) resetCreateForm()
+})
 const roleLabels: Record<Role, string> = {
   OPERATOR: '操作员（OPERATOR）',
   ADMIN: '管理员（ADMIN）',
@@ -39,14 +63,6 @@ const statusLabels: Record<User['status'], string> = {
   ACTIVE: '启用（ACTIVE）',
   DISABLED: '禁用（DISABLED）',
   LOCKED: '锁定（LOCKED）',
-}
-const panelStateLabels: Record<CapabilityState, string> = {
-  LOADING: '加载中（LOADING）',
-  VALIDATING: '校验中（VALIDATING）',
-  EXECUTING: '执行中（EXECUTING）',
-  SUCCESS: '成功（SUCCESS）',
-  EMPTY: '暂无用户（EMPTY）',
-  ERROR: '失败（ERROR）',
 }
 const rolePermissions = [
   {
@@ -60,13 +76,34 @@ const rolePermissions = [
 ]
 
 /**
- * 提交创建用户表单，并在创建成功后清空用户名输入框。
+ * 提交创建用户表单；成功关闭弹窗，失败保留表单并显示原因。
  * @returns 表单提交完成后兑现且不返回值的 Promise。
- * @sideEffects 调用用户管理 Store；成功时更新用户列表并清空 `createForm.username`。
+ * @sideEffects 调用用户管理 Store；结束后清空密码，关闭时重置表单。
  */
 async function createUser(): Promise<void> {
-  const created = await admin.createUser(createForm.username, createForm.role, createForm.status)
-  if (created) createForm.username = ''
+  if (pending.value) return
+  createError.value = ''
+  const created = await admin.createUser(createForm.username, createForm.role, createForm.status, initialPassword.value)
+  initialPassword.value = ''
+  if (created) {
+    createDialogVisible.value = false
+    ElMessage.success(resultMessage.value)
+  }
+  else createError.value = resultMessage.value
+}
+
+async function updateUser(user: User, operation: 'UPDATE' | 'ENABLE' | 'DISABLE', next: User): Promise<void> {
+  if (pending.value || (operation !== 'ENABLE' && adminProtection(user))) return
+  const epoch = admin.requestEpoch
+  const updated = await admin.mutateUser(user, operation, next)
+  if (epoch !== admin.requestEpoch) return
+  if (!updated) {
+    ElMessage.error(resultMessage.value)
+    return
+  }
+  ElMessage.success(operation === 'UPDATE'
+    ? `用户 ${user.username} 已切换为${roleLabels[next.role]}。`
+    : resultMessage.value)
 }
 
 /**
@@ -76,6 +113,7 @@ async function createUser(): Promise<void> {
  * @sideEffects 将 `pendingDelete` 更新为指定用户。
  */
 function requestDelete(user: User): void {
+  if (pending.value || user.userId === auth.principal?.userId) return
   pendingDelete.value = user
 }
 
@@ -95,33 +133,29 @@ function cancelDelete(): void {
  */
 async function confirmDelete(): Promise<void> {
   const user = pendingDelete.value
-  if (user === null) return
-  await admin.mutateUser(user, 'DELETE', user)
+  if (user === null || pending.value || user.userId === auth.principal?.userId) return
+  const deleted = await admin.mutateUser(user, 'DELETE', user)
+  if (deleted) ElMessage.success(resultMessage.value)
   pendingDelete.value = null
 }
 </script>
 
 <template>
   <div class="account-management">
-    <header class="admin-header">
-      <div class="summary-strip" aria-label="用户摘要">
-        <span class="console-chip"><b>{{ userSummary.total }}</b> 用户总数</span>
-        <span class="console-chip"><b>{{ userSummary.administrators }}</b> 管理员</span>
-        <span class="console-chip summary-chip--active"><b>{{ userSummary.active }}</b> 已启用</span>
-      </div>
-    </header>
-
-    <section class="console-panel console-section" aria-labelledby="create-user-title">
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">账号录入</p>
-          <h3 id="create-user-title">创建用户</h3>
-        </div>
-        <span class="section-note">新账号将按所选角色与状态提交</span>
-      </div>
-      <el-form class="create-form" :inline="true" :model="createForm" @submit.prevent="createUser">
+    <el-dialog
+      v-model="createDialogVisible"
+      title="创建用户"
+      width="min(480px, calc(100vw - 32px))"
+      :show-close="!pending"
+      :close-on-click-modal="!pending"
+      :close-on-press-escape="!pending"
+    >
+      <el-form class="create-form" label-position="top" :model="createForm" :disabled="pending" @submit.prevent="createUser">
         <el-form-item label="用户名">
           <el-input v-model="createForm.username" data-testid="create-username" autocomplete="off" />
+        </el-form-item>
+        <el-form-item label="初始密码">
+          <el-input v-model="initialPassword" type="password" show-password autocomplete="new-password" placeholder="6–32 位" :minlength="6" :maxlength="32" data-testid="create-password" />
         </el-form-item>
         <el-form-item label="角色">
           <el-select v-model="createForm.role" data-testid="create-role">
@@ -136,11 +170,15 @@ async function confirmDelete(): Promise<void> {
             <el-option :label="statusLabels.LOCKED" value="LOCKED" />
           </el-select>
         </el-form-item>
-        <el-button native-type="submit" type="primary" :loading="pending" data-testid="create-user">
-          创建用户
-        </el-button>
+        <el-alert v-if="createError" type="error" :title="createError" :closable="false" data-testid="create-user-error" />
+        <div class="create-actions">
+          <el-button :disabled="pending" data-testid="cancel-create-user" @click="createDialogVisible = false">取消</el-button>
+          <el-button native-type="submit" type="primary" :loading="pending" data-testid="create-user">
+            创建用户
+          </el-button>
+        </div>
       </el-form>
-    </section>
+    </el-dialog>
 
     <section class="console-panel console-section" aria-labelledby="user-list-title">
       <div class="section-heading section-heading--toolbar">
@@ -148,11 +186,15 @@ async function confirmDelete(): Promise<void> {
           <p class="section-kicker">账号目录</p>
           <h3 id="user-list-title">用户列表</h3>
         </div>
-        <div class="panel-toolbar">
-          <el-tag :type="panelState === 'ERROR' ? 'danger' : panelState === 'SUCCESS' ? 'success' : 'info'">
-            {{ panelStateLabels[panelState] }}
-          </el-tag>
-          <el-button type="primary" :loading="pending" @click="admin.refreshUsers">刷新用户</el-button>
+        <div class="section-heading__actions">
+          <div class="summary-strip" aria-label="用户摘要">
+            <span class="console-chip"><b>{{ userSummary.total }}</b> 用户总数</span>
+            <span class="console-chip"><b>{{ userSummary.administrators }}</b> 管理员</span>
+            <span class="console-chip summary-chip--active"><b>{{ userSummary.active }}</b> 已启用</span>
+          </div>
+          <div class="panel-toolbar">
+            <el-button type="primary" :disabled="pending" data-testid="open-create-user" @click="createDialogVisible = true">创建用户</el-button>
+          </div>
         </div>
       </div>
 
@@ -169,8 +211,9 @@ async function confirmDelete(): Promise<void> {
             <template #default="scope">
               <el-button
                 size="small"
-                :disabled="pending"
-                @click="admin.mutateUser(scope.row, 'UPDATE', { ...scope.row, role: scope.row.role === 'ADMIN' ? 'OPERATOR' : 'ADMIN' })"
+                :disabled="pending || !!adminProtection(scope.row)"
+                :title="adminProtection(scope.row)"
+                @click="updateUser(scope.row, 'UPDATE', { ...scope.row, role: scope.row.role === 'ADMIN' ? 'OPERATOR' : 'ADMIN' })"
               >
                 切换角色
               </el-button>
@@ -178,15 +221,16 @@ async function confirmDelete(): Promise<void> {
                 v-if="scope.row.status === 'DISABLED'"
                 size="small"
                 :disabled="pending"
-                @click="admin.mutateUser(scope.row, 'ENABLE', { ...scope.row, status: 'ACTIVE' })"
+                @click="updateUser(scope.row, 'ENABLE', { ...scope.row, status: 'ACTIVE' })"
               >
                 启用
               </el-button>
               <el-button
                 v-else
                 size="small"
-                :disabled="pending"
-                @click="admin.mutateUser(scope.row, 'DISABLE', { ...scope.row, status: 'DISABLED' })"
+                :disabled="pending || !!adminProtection(scope.row)"
+                :title="adminProtection(scope.row)"
+                @click="updateUser(scope.row, 'DISABLE', { ...scope.row, status: 'DISABLED' })"
               >
                 禁用
               </el-button>
@@ -194,7 +238,8 @@ async function confirmDelete(): Promise<void> {
                 size="small"
                 type="danger"
                 plain
-                :disabled="pending"
+                :disabled="pending || scope.row.userId === auth.principal?.userId"
+                :title="scope.row.userId === auth.principal?.userId ? '当前登录账号不能删除自己' : undefined"
                 @click="requestDelete(scope.row)"
               >
                 删除
@@ -205,30 +250,33 @@ async function confirmDelete(): Promise<void> {
       </div>
     </section>
 
-    <section
+    <el-dialog
       v-if="pendingDelete"
-      class="delete-confirmation"
-      role="alertdialog"
-      aria-modal="true"
-      aria-labelledby="delete-confirmation-title"
+      :model-value="true"
+      title="确认删除用户"
+      width="min(420px, calc(100vw - 32px))"
+      :show-close="!pending"
+      :close-on-click-modal="!pending"
+      :close-on-press-escape="!pending"
       aria-describedby="delete-confirmation-description"
       data-testid="delete-confirmation"
+      @update:model-value="(visible: boolean) => { if (!visible) cancelDelete() }"
     >
-      <p class="section-kicker section-kicker--danger">破坏性操作</p>
-      <h3 id="delete-confirmation-title">确认删除用户</h3>
       <p id="delete-confirmation-description">
-        即将删除用户 {{ pendingDelete.username }}（{{ pendingDelete.userId }}）。请确认是否继续。
+        确定删除用户“{{ pendingDelete.username }}”吗？删除后该账号将无法登录。
       </p>
-      <el-button data-testid="cancel-delete" :disabled="pending" @click="cancelDelete">取消</el-button>
-      <el-button
-        data-testid="confirm-delete"
-        type="danger"
-        :loading="pending"
-        @click="confirmDelete"
-      >
-        确认删除
-      </el-button>
-    </section>
+      <template #footer>
+        <el-button data-testid="cancel-delete" :disabled="pending" @click="cancelDelete">取消</el-button>
+        <el-button
+          data-testid="confirm-delete"
+          type="danger"
+          :loading="pending"
+          @click="confirmDelete"
+        >
+          确认删除
+        </el-button>
+      </template>
+    </el-dialog>
 
     <section class="console-panel console-section" aria-labelledby="permission-map-title">
       <div class="section-heading">
@@ -246,7 +294,7 @@ async function confirmDelete(): Promise<void> {
       </div>
     </section>
 
-    <section class="result-section" aria-label="操作结果">
+    <section v-if="panelState === 'ERROR'" class="result-section" aria-label="操作结果">
       <div class="result-section__label">最近操作结果</div>
       <el-alert
         class="panel-result"
@@ -263,39 +311,31 @@ async function confirmDelete(): Promise<void> {
 .account-management {
   display: grid;
   min-width: 0;
-  gap: var(--space-4, 1rem);
-}
-
-.admin-header {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-5, 1.5rem);
-  padding-bottom: var(--space-4, 1rem);
-  border-bottom: 1px solid var(--console-border);
+  gap: var(--space-3, 0.75rem);
 }
 
 .summary-strip {
   display: flex;
   flex: 0 0 auto;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  justify-content: flex-start;
+  align-items: center;
   gap: var(--space-2, 0.5rem);
 }
 
 .summary-strip .console-chip {
-  min-height: 2.25rem;
-  padding: 0 var(--space-3, 0.75rem);
+  min-height: 1.75rem;
+  padding: 0 var(--space-2, 0.5rem);
   color: var(--console-text-muted);
   font-weight: 500;
+  font-size: var(--console-font-size-min, 12px);
   letter-spacing: 0.02em;
 }
 
 .summary-strip b {
   color: var(--console-cyan);
   font-family: Consolas, "SFMono-Regular", monospace;
-  font-size: 1rem;
+  font-size: 0.875rem;
 }
 
 .summary-strip .summary-chip--active {
@@ -318,11 +358,23 @@ async function confirmDelete(): Promise<void> {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4, 1rem);
-  margin-bottom: var(--space-4, 1rem);
+  margin-bottom: var(--space-3, 0.75rem);
 }
 
-.section-heading h3,
-.delete-confirmation h3 {
+.section-heading--toolbar {
+  flex-wrap: wrap;
+  gap: var(--space-3, 0.75rem);
+}
+
+.section-heading__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3, 0.75rem);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.section-heading h3 {
   margin: 0.15rem 0 0;
   color: var(--console-text);
   font-size: 1rem;
@@ -335,10 +387,6 @@ async function confirmDelete(): Promise<void> {
   font-weight: 700;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-}
-
-.section-kicker--danger {
-  color: var(--console-danger);
 }
 
 .section-note {
@@ -356,7 +404,7 @@ async function confirmDelete(): Promise<void> {
 
 .create-form {
   display: grid;
-  grid-template-columns: minmax(10rem, 1.35fr) minmax(10rem, 1fr) minmax(10rem, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: end;
   gap: var(--space-3, 0.75rem);
 }
@@ -382,8 +430,10 @@ async function confirmDelete(): Promise<void> {
   width: 100%;
 }
 
-.create-form > :deep(.el-button) {
-  min-width: 7.5rem;
+.create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2, 0.5rem);
 }
 
 .table-scroll {
@@ -399,21 +449,6 @@ async function confirmDelete(): Promise<void> {
 
 .permission-table {
   min-width: 46rem;
-}
-
-.delete-confirmation {
-  padding: var(--space-4, 1rem);
-  border: 1px solid color-mix(in srgb, var(--console-danger) 68%, var(--console-border));
-  border-left-width: 3px;
-  border-radius: var(--console-radius);
-  background: color-mix(in srgb, var(--console-danger) 8%, var(--console-bg-elevated));
-}
-
-.delete-confirmation p:not(.section-kicker) {
-  margin: var(--space-2, 0.5rem) 0 var(--space-3, 0.75rem);
-  color: var(--console-text-muted);
-  font-size: 0.82rem;
-  line-height: 1.65;
 }
 
 .result-section {
@@ -444,28 +479,9 @@ async function confirmDelete(): Promise<void> {
   border-radius: 0;
 }
 
-@media (max-width: 980px) {
-  .admin-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .summary-strip {
-    justify-content: flex-start;
-  }
-
-  .create-form {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 560px) {
   .account-management {
-    gap: var(--space-3, 0.75rem);
-  }
-
-  .admin-header {
-    gap: var(--space-3, 0.75rem);
+    gap: var(--space-2, 0.5rem);
   }
 
   .summary-strip {
@@ -492,21 +508,19 @@ async function confirmDelete(): Promise<void> {
     gap: var(--space-2, 0.5rem);
   }
 
+  .section-heading__actions {
+    width: 100%;
+    justify-content: space-between;
+    gap: var(--space-2, 0.5rem);
+  }
+
   .section-note {
     text-align: left;
   }
 
   .panel-toolbar {
     width: 100%;
-    justify-content: space-between;
-  }
-
-  .create-form {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .create-form > :deep(.el-button) {
-    width: 100%;
+    justify-content: flex-end;
   }
 
   .result-section {

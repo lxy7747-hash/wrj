@@ -332,7 +332,7 @@ describe('P2-1 场景 Store', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
-      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+      { headers: { 'X-Demo-Role': 'OPERATOR' }, credentials: 'include' },
     )
     expect(scenario.draft?.config.scenario.name).toBe('跨海通联演示')
     expect(scenario.draft?.config.scenario.duration).toBe(7200)
@@ -869,7 +869,7 @@ describe('P2-6 场景模板 Store', () => {
     expect(scenario.lastConfirmation).toEqual({ ...confirmed, state: 'CLOSED' })
     expect(fetchSpy).toHaveBeenNthCalledWith(3,
       'http://127.0.0.1:4173/api/v1/templates/TPL-SCN-002',
-      { method: 'DELETE', headers: { 'X-Demo-Role': 'ADMIN', 'X-Confirmation-Id': awaiting.confirmationId } },
+      { method: 'DELETE', credentials: 'include', headers: { 'X-Demo-Role': 'ADMIN', 'X-Confirmation-Id': awaiting.confirmationId } },
     )
 
     await expect(scenario.deleteTemplate('TPL-SCN-001')).resolves.toBe(false)

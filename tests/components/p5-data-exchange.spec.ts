@@ -50,6 +50,7 @@ describe('P5 数据交换页面', () => {
 
   it('监控仅统计本页消息，区分重复与拒绝，限制缓存并清理订阅和计时器', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
+    vi.setSystemTime(new Date('2026-09-11T06:01:57.327Z'))
     const intervalSpy = vi.spyOn(globalThis, 'setInterval')
     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
     const telemetry = useTelemetryStore()
@@ -66,6 +67,7 @@ describe('P5 数据交换页面', () => {
     expect(telemetry.acceptEnvelope({ ...envelope, schemaVersion: '99' })).toBe(false)
     await vi.advanceTimersByTimeAsync(1000)
     const table = wrapper.get('[data-testid="exchange-records"]')
+    expect(table.text()).toContain('2026-09-11 14:01:57')
     expect(table.text()).toContain('通过')
     expect(table.text()).toContain('忽略')
     expect(table.text()).toContain('拒绝')
