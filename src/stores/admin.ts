@@ -478,7 +478,7 @@ export const useAdminStore = defineStore('admin', {
         } else if (operation === 'BACKUP') {
           if (!isBackupRecord(result) || this.backups.some((item) => item.backupId === result.backupId)) throw new Error('备份记录格式或编号不正确。')
           this.backups = [...this.backups, result]
-          message = '备份流程完成，未生成实际备份文件。'
+          message = result.status === 'VALID' ? 'SQLite 备份文件已创建并校验，记录已保存。' : '备份流程完成，未生成实际备份文件。'
         } else if (operation === 'RESTORE') {
           if (!isRestoreResult(result)) throw new Error('恢复流程结果不正确。')
           this.restoreResult = result
@@ -486,7 +486,7 @@ export const useAdminStore = defineStore('admin', {
             this.showMaintenanceError('backup', new Error(result.integrityValid ? '恢复失败，已回滚；恢复前备份已保留。' : '完整性校验失败，恢复未开始；恢复前备份已保留。'))
             return false
           }
-          message = '恢复流程验证通过，未操作实际数据库。'
+          message = result.generated ? 'SQLite 数据已恢复，审计记录保留，请重新登录。' : '恢复流程验证通过，未操作实际数据库。'
         } else {
           const exported = readExportStatus(payload)
           if (!exported || exported.objectId !== 'FULL-CONFIG' || exported.classification !== 'INTERNAL') throw new Error('配置导出结果不正确。')

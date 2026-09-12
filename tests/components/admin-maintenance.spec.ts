@@ -158,7 +158,9 @@ describe('P7 系统管理面板', () => {
     store.backups = structuredClone(fixtures.backups) as typeof store.backups
     const run = vi.spyOn(store, 'runMaintenanceAction').mockResolvedValue(true)
     vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
-    wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus] } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/admin')
+    wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
     await click('创建备份')
     expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('2026-08-06 18:08:00')
@@ -232,7 +234,7 @@ describe('P7 系统管理面板', () => {
     expect(run).not.toHaveBeenCalled()
   })
 
-  it('真实恢复成功后切换来源清除旧结果和成功反馈', async () => {
+  it('Mock 恢复成功后切换来源清除旧结果和成功反馈', async () => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().$patch({ role: 'ADMIN' })
@@ -250,7 +252,9 @@ describe('P7 系统管理面板', () => {
       .mockResolvedValueOnce(response({ prebackupId: 'PREBACKUP-002', integrityValid: true, progress: 100, result: 'SUCCESS', rolledBack: false, generated: false }))
     vi.stubGlobal('fetch', fetchMock)
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
-    wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus] } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/admin')
+    wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
     await click('选择恢复')
     await click('恢复所选备份')
@@ -264,6 +268,39 @@ describe('P7 系统管理面板', () => {
     expect(wrapper.get('[data-testid="backup-feedback"]').text()).not.toContain('验证通过')
     expect(store.maintenance.backup.state).toBe('EMPTY')
     expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('SQLite 恢复通过正式 Store 流程执行确认，成功清空身份并提示重新登录', async () => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    const auth = useAuthStore()
+    auth.$patch({ principal: { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', permissions: ['BACKUP_RESTORE'] }, role: 'ADMIN' })
+    const backup = { backupId: 'BACKUP-SQLITE', status: 'VALID', checksum: 'A'.repeat(64), createdAt: fixtures.epoch }
+    const context = { confirmationId: 'CONF-SQLITE', actor: 'admin', role: 'ADMIN', createdAt: fixtures.epoch, expiresAt: '2026-08-06T08:05:00Z' }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-SQLITE', generatedAt: fixtures.epoch, page: 1, pageSize: 1, total: 1 },
+    }) }) as Response
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([backup]))
+      .mockResolvedValueOnce(response({ ...context, state: 'AWAITING_CONFIRMATION' }))
+      .mockResolvedValueOnce(response({ ...context, state: 'CONFIRMED' }))
+      .mockResolvedValueOnce(response({ prebackupId: 'PREBACKUP-SQLITE', integrityValid: true, progress: 100, result: 'SUCCESS', rolledBack: false, generated: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const message = vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
+    await router.push('/admin')
+    wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('SQLite 文件')
+    await click('选择恢复')
+    await click('恢复所选备份')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await click('恢复所选备份')
+    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('当前审计日志保留'), '恢复备份', expect.anything())
+    expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operation: 'RESTORE', backupId: 'BACKUP-SQLITE', confirmationId: 'CONF-SQLITE' })
+    expect(auth.principal).toBeNull()
+    expect(router.currentRoute.value.path).toBe('/login')
+    expect(message).toHaveBeenCalledWith('SQLite 数据已恢复，审计记录保留，请重新登录。')
   })
 
   it('归档详情复用索引编号并可进入关联报告', async () => {

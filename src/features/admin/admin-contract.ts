@@ -32,7 +32,8 @@ export function isMasterData(value: unknown): value is MasterData {
 export function isBackupRecord(value: unknown): value is BackupRecord {
   return isAdminObject(value, ['backupId', 'status', 'checksum', 'createdAt'])
     && isAdminText(value.backupId) && isAdminText(value.checksum)
-    && (value.status === 'VALID_FIXTURE' || value.status === 'INVALID_FIXTURE')
+    && (value.status === 'VALID_FIXTURE' || value.status === 'INVALID_FIXTURE' || value.status === 'VALID' || value.status === 'INVALID')
+    && (!(value.status === 'VALID' || value.status === 'INVALID') || /^[A-F0-9]{64}$/.test(value.checksum))
     && isRfc3339DateTime(value.createdAt)
 }
 
@@ -40,7 +41,7 @@ export function isBackupRecord(value: unknown): value is BackupRecord {
 export function isRestoreResult(value: unknown): value is RestoreResult {
   if (!isAdminObject(value, ['prebackupId', 'integrityValid', 'progress', 'result', 'rolledBack', 'generated'])
     || !isAdminText(value.prebackupId) || typeof value.integrityValid !== 'boolean'
-    || typeof value.rolledBack !== 'boolean' || value.generated !== false
+    || typeof value.rolledBack !== 'boolean' || typeof value.generated !== 'boolean'
     || typeof value.progress !== 'number' || !Number.isFinite(value.progress) || value.progress < 0 || value.progress > 100) return false
   return value.result === 'SUCCESS'
     ? value.integrityValid && value.progress === 100 && !value.rolledBack

@@ -34,7 +34,7 @@ import { TemplateProjection, type TemplateStorage } from './templates/projection
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
-import { AdminProjection, type AdminResult } from './admin/projection.js'
+import { AdminProjection, type AdminResult, type BackupStorage } from './admin/projection.js'
 import { isAdminText } from '../src/features/admin/admin-contract.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
@@ -55,6 +55,7 @@ export interface MockServerOptions {
   scenarioStorage?: ScenarioStorage
   templateStorage?: TemplateStorage
   authStorage?: AuthSqliteStorage
+  backupStorage?: BackupStorage
 }
 
 export interface MockServer {
@@ -551,7 +552,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
-  const admin = new AdminProjection()
+  const admin = new AdminProjection(options.backupStorage)
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -1724,10 +1725,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   /** 返回可供恢复选择的备份目录。 */
   app.get('/api/v1/admin/backups', (req, res) => {
     if (!requireAdmin(req, res, auth, 'BACKUP_LIST')) return
-    finishAdmin(res, 'BACKUP_LIST', { ok: true, data: admin.listBackups() })
+    try { finishAdmin(res, 'BACKUP_LIST', { ok: true, data: admin.listBackups() }) }
+    catch { finishAdmin(res, 'BACKUP_LIST', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '备份目录读取失败，未回退到演示记录。' }) }
   })
 
-  /** 校验并执行备份的内存流程；确认不能用于恢复操作。 */
+  /** 校验并执行备份；确认不能用于恢复操作。 */
   app.post('/api/v1/admin/backup', (req, res) => {
     if (!requireAdmin(req, res, auth, 'BACKUP_CREATE')) return
     if (!isStrictObject(req.body, ['operation'], ['backupId', 'confirmationId']) || req.body.operation !== 'BACKUP'
@@ -1748,6 +1750,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     if (!confirmAdmin(res, req.body.confirmationId, 'BACKUP_RESTORE', `RESTORE:${req.body.backupId}`)) return
     const result = admin.restore(req.body.backupId)
+    if (result.ok && result.data.generated && result.data.result === 'SUCCESS') {
+      options.authStorage?.revokeAllSessions()
+      realtime.reset()
+      simulations.reset()
+      scenarios.reset()
+      templates.reset()
+      confirmations.reset()
+      scripts.reset()
+      batchReplay.reset()
+    }
     if (result.ok && result.data.result === 'FAILURE') {
       auth.recordError('admin', 'ADMIN', 'BACKUP_RESTORE', req.body.backupId)
       res.status(200).json(success(result.data, pageMeta('REQ-P7-BACKUP_RESTORE')))

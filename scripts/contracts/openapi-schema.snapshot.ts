@@ -335,12 +335,37 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   'BackupRecord': {
     'additionalProperties': false,
+    'allOf': [
+      {
+        'if': {
+          'properties': {
+            'status': {
+              'enum': [
+                'VALID',
+                'INVALID'
+              ]
+            }
+          },
+          'required': [
+            'status'
+          ]
+        },
+        'then': {
+          'properties': {
+            'checksum': {
+              'pattern': '^[A-F0-9]{64}$'
+            }
+          }
+        }
+      }
+    ],
     'properties': {
       'backupId': {
         'minLength': 1,
         'type': 'string'
       },
       'checksum': {
+        'minLength': 1,
         'type': 'string'
       },
       'createdAt': {
@@ -350,7 +375,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'status': {
         'enum': [
           'VALID_FIXTURE',
-          'INVALID_FIXTURE'
+          'INVALID_FIXTURE',
+          'VALID',
+          'INVALID'
         ]
       }
     },
@@ -4882,7 +4909,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'additionalProperties': false,
     'properties': {
       'generated': {
-        'const': false
+        'type': 'boolean'
       },
       'integrityValid': {
         'type': 'boolean'

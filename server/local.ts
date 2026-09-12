@@ -4,6 +4,7 @@ import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
 import { readLocalReplay } from './local/afsim-replay-reader.js'
 import { AuthSqliteStorage } from './local/auth-sqlite.js'
+import { BackupSqliteStorage } from './local/backup-sqlite.js'
 
 // 本机文件配置与纯 Mock 入口分离；路径只存于忽略的 .env.local，不写入共享代码。
 try {
@@ -32,6 +33,7 @@ try {
   scenarioStorage?.close()
   throw error
 }
+const backupStorage = new BackupSqliteStorage(scenarioDbPath)
 const server = createMockServer({
   port,
   loadInitialNodes: logPath ? () => readInitialNodes(logPath) : undefined,
@@ -40,8 +42,10 @@ const server = createMockServer({
   scenarioStorage,
   templateStorage,
   authStorage,
+  backupStorage,
 })
 function closeStorage(): void {
+  backupStorage.close()
   authStorage.close()
   scenarioStorage?.close()
   templateStorage?.close()

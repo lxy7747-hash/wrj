@@ -4,11 +4,19 @@ import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type AdminResult<T> = { ok: true; data: T } | { ok: false; code: ApiErrorCode; status: number; message: string; fieldPath?: string }
 
+export interface BackupStorage {
+  listBackups(): BackupRecord[]
+  backup(backupId?: string): AdminResult<BackupRecord>
+  restore(backupId: string): AdminResult<RestoreResult>
+}
+
 /** 系统维护内存数据的唯一所有者；不访问文件、数据库或操作系统进程。 */
 export class AdminProjection {
   private masterData = loadFixtureProjection().masterData
   private backups = loadFixtureProjection().backups
   private nextBackup = 1
+
+  constructor(private readonly backupStorage?: BackupStorage) {}
 
   /** 返回可独立修改的主数据快照。 */
   listMasterData(): MasterData[] { return structuredClone(this.masterData) }
@@ -51,10 +59,11 @@ export class AdminProjection {
   }
 
   /** 返回备份目录的独立副本。 */
-  listBackups(): BackupRecord[] { return structuredClone(this.backups) }
+  listBackups(): BackupRecord[] { return this.backupStorage ? this.backupStorage.listBackups() : structuredClone(this.backups) }
 
   /** 创建内存备份记录；可选编号不允许覆盖已有记录。 */
   backup(backupId?: string): AdminResult<BackupRecord> {
+    if (this.backupStorage) return this.backupStorage.backup(backupId)
     const id = backupId ?? `BACKUP-P7-${String(this.nextBackup++).padStart(3, '0')}`
     if (this.backups.some((item) => item.backupId === id)) return { ok: false, code: 'CONFLICT', status: 409, message: '备份编号已存在，未覆盖原记录。', fieldPath: 'backupId' }
     const record: BackupRecord = { backupId: id, status: 'VALID_FIXTURE', checksum: `MOCK-${id}`, createdAt: loadFixtureProjection().clock.levelThreeVerifiedAt }
@@ -67,6 +76,7 @@ export class AdminProjection {
    * @param backupId 已确认的恢复来源编号。
    */
   restore(backupId: string): AdminResult<RestoreResult> {
+    if (this.backupStorage) return this.backupStorage.restore(backupId)
     const record = this.backups.find((item) => item.backupId === backupId)
     if (!record) return { ok: false, code: 'NOT_FOUND', status: 404, message: '备份记录不存在。', fieldPath: 'backupId' }
     const integrityValid = record.status === 'VALID_FIXTURE'

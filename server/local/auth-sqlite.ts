@@ -143,5 +143,6 @@ export class AuthSqliteStorage implements AuthStorage {
     const token = this.token(cookie)
     if (token) this.sessions.delete(digest(token))
   }
+  revokeAllSessions(): void { this.sessions.clear() }
   close(): void { this.sessions.clear(); this.db.close() }
 }

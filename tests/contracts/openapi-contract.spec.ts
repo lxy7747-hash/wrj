@@ -63,6 +63,26 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('freezes real SQLite backup status, checksum and restore results while retaining pure Mock compatibility', () => {
+    const document = loadContractDocuments().openApi
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile(schemaAt(document, 'BackupRecord'))
+    const record = { backupId: 'BACKUP-TEST', status: 'VALID', checksum: 'A'.repeat(64), createdAt: '2026-09-11T08:00:00Z' }
+    expect(validate(record)).toBe(true)
+    expect(validate({ ...record, status: 'INVALID' })).toBe(true)
+    expect(validate({ ...record, status: 'VALID_FIXTURE', checksum: 'MOCK-TEST' })).toBe(true)
+    for (const change of [{ status: 'UNKNOWN' }, { checksum: '' }, { checksum: 'MOCK-TEST' }, { extra: true }]) expect(validate({ ...record, ...change })).toBe(false)
+    const result = ajv.compile(schemaAt(document, 'RestoreResult'))
+    const restored = { prebackupId: 'PREBACKUP-TEST', integrityValid: true, progress: 100, result: 'SUCCESS', rolledBack: false, generated: true }
+    expect(result(restored)).toBe(true)
+    expect(result({ ...restored, generated: false })).toBe(true)
+    expect(result({ ...restored, generated: 'true' })).toBe(false)
+    for (const path of ['/api/v1/admin/backups', '/api/v1/admin/backup', '/api/v1/admin/restore']) {
+      expect(responseSchemaAt(document, path, path.endsWith('/backups') ? 'get' : 'post', '503').$ref).toBe('#/components/schemas/ErrorEnvelope')
+    }
+  })
+
   it('freezes downloadable audit results without changing other export status contracts', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })

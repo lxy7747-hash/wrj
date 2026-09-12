@@ -18,7 +18,7 @@
 |---:|---|---|---|
 | 1 | `多手段无人集群通联技术软件需求规格说明-lxy - 副本.docx` | `7F8F252BDD5763E564D2DA460DCE3E5C1885F082FF863ABB29A4994E9A159253` | 产品范围、29 项 canonical 需求、7 类接口、容量、角色、单位及验收目标 |
 | 2 | `多手段无人集群通联技术软件详细设计说明-lxy - 副本.docx` | `21DBD43D74B29F57E7F508A5D83A87219B6CBEA957A2D68CFB949DA5820CB05D` | 分层架构、数据结构、流程、异常、安全和测试设计；不得缩减需求规格 |
-| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.38，账号密码范围变更待验收） | `4FC38BC263C34680B137056F5CB36EF2A11BD80F920BBA33DA27E608C716BF02` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
+| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.39，本机备份恢复变更待验收） | `24929B16B11D0994BBC370DAFD8664DFE2286B4C9B160CFE1846C81A604C8ADA` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
 | 4 | `多手段集群通联仿真软件-UI原型设计稿V1.2.html` | `83E431388C0FBC7C4771088DCA1E4AB01376C085037019C7E0F696ED329A3C0C` | 页面布局、中文文案和交互演示；只作表现参考，不替代需求或技术合同 |
 
 冲突处理固定为：先按需求规格说明确定产品需求，再由详细设计补充流程、数据和异常；评审通过的前端需求基线负责记录面向本阶段的采用决策；HTML 不得反向覆盖前三者。任何来源变更都必须重新计算哈希、复核八项决策并更新全部追踪目的地。源文件始终只读。
@@ -86,9 +86,18 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、离线 Leaflet�
 - `contracts/mock-api.openapi.yaml`：`E6DD0F590118097C51D0E8BAFAA1230E4AF8D316BA2E1F268A4B5C78D9D21887`
 - `scripts/contracts/openapi-schema.snapshot.ts`：`1222CD807E1852BE803470606D06780F3DA89F9E9CB8B89820A065A9AB5DD727`
 
-### 2026-09-11 新建用户密码范围 6–32 位（当前冻结记录）
+### 2026-09-11 新建用户密码范围 6–32 位（历史冻结记录）
 
 用户确认将新建账号密码上限改为 32 位；UI、API、SQLite 写入及 schema snapshot 同步。登录仍接受既有的最长 128 位密码；首次初始化管理员仍为 12–128 位。无数据库迁移，不修改既有哈希；新旧服务混用时旧服务仍接受较长的新密码，需重启接口使规则一致。回退保留现有账号。领域模型、fixture、原型不变。
 
 - `contracts/mock-api.openapi.yaml`：`B48BBF63C406D62DDE58C6C60F5B5832B80B7E5757DB79B1FB7CC3F7C8D75A85`
 - `scripts/contracts/openapi-schema.snapshot.ts`：`7BD9F2D6C9E5647C8A28B30A3815C40D5C4A7C94E748D89C9105FAC8E93AD991`
+
+### 2026-09-11 本机 SQLite 备份／恢复（当前冻结记录）
+
+用户授权真实备份、独立持久化目录、预备份、完整性与结构检查、事务恢复和失败回滚。真实状态新增 VALID/INVALID，checksum 为大写 SHA-256；RestoreResult.generated 支持 boolean，true 表示真实流程，不替代 result 的成功/失败含义。三接口补充 503，管理员权限及一次性确认保留。恢复场景、模板和账号，审计不回退，旧会话与内存运行失效。前后端同步升级；回退不删除数据库或备份目录。加密仍后续补，不表示灾难恢复已完成。
+
+- `contracts/domain-models.ts`（与源码镜像一致）：`B5F5763B131EED29715E14D4CA73730268BBD18E2018934C3EFB75904725DE23`
+- `contracts/mock-api.openapi.yaml`：`87F4F12C02BDB82A0F79B034418FAB8AE27253E32F6B3E85E1A6BF4A19872C42`
+- `scripts/contracts/openapi-schema.snapshot.ts`：`8F5FE1E2CA3D790DE032B5E4A2618D4C591822876DF01B415476BC6A7BA3D73F`
+- `contracts/deterministic-fixtures.json` 未修改：`2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84`；HTML 原型、原始 SRS/DD 未修改。

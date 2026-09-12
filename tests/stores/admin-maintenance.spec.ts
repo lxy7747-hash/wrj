@@ -33,6 +33,22 @@ describe('P7 系统维护状态', () => {
   beforeEach(() => { setActivePinia(createPinia()); useAuthStore().$patch({ role: 'ADMIN' }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
 
+  it('真实 SQLite 备份和恢复使用正式响应，不再显示未生成文件；非法摘要拒绝入库', async () => {
+    const store = useAdminStore()
+    const actual = { ...backup, backupId: 'BACKUP-SQLITE', status: 'VALID', checksum: 'A'.repeat(64) }
+    actionResponses(actual)
+    expect(await store.runMaintenanceAction('BACKUP')).toBe(true)
+    expect(store.backups).toEqual([actual])
+    expect(store.maintenance.backup.message).toContain('SQLite 备份文件已创建')
+    actionResponses({ ...restore, generated: true })
+    expect(await store.runMaintenanceAction('RESTORE', actual.backupId)).toBe(true)
+    expect(store.restoreResult?.generated).toBe(true)
+    expect(store.maintenance.backup.message).toContain('请重新登录')
+    actionResponses({ ...actual, backupId: 'BROKEN', checksum: 'MOCK-INVALID' })
+    expect(await store.runMaintenanceAction('BACKUP')).toBe(false)
+    expect(store.backups).toEqual([actual])
+  })
+
   it('四类列表从接口加载、清空、拒绝重复编号和无效结构', async () => {
     const store = useAdminStore()
     const fetchMock = vi.fn()
@@ -119,7 +135,7 @@ describe('P7 系统维护状态', () => {
   it('拒绝无效确认、错对象删除、重复备份、不实恢复和导出', async () => {
     const store = useAdminStore()
     for (const [operation, invalid] of [
-      ['DELETE', { deleted: true, objectId: 'WRONG' }], ['BACKUP', {}], ['RESTORE', { ...restore, generated: true }], ['EXPORT', { ...exported, objectId: 'WRONG' }], ['EXPORT', { ...exported, classification: 'LEVEL_III' }],
+      ['DELETE', { deleted: true, objectId: 'WRONG' }], ['BACKUP', {}], ['RESTORE', { ...restore, generated: 'true' }], ['EXPORT', { ...exported, objectId: 'WRONG' }], ['EXPORT', { ...exported, classification: 'LEVEL_III' }],
     ] as const) {
       actionResponses(invalid)
       expect(await store.runMaintenanceAction(operation, 'ID')).toBe(false)

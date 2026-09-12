@@ -314,7 +314,7 @@ export interface User { userId: Identifier; username: string; role: Role; status
 export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; }
 export interface MasterDataRequest { operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: MasterData; confirmationId?: Identifier; }
 export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
-export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE'; checksum: string; createdAt: Iso8601Utc; }
+export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; }
 export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; confirmationId: Identifier; }
 export interface RestoreRequest { operation: 'RESTORE'; backupId: Identifier; confirmationId: Identifier; }
 export interface AuditRecord { auditId: Identifier; actor: string; role: Role; module: string; action: string; objectId?: Identifier; result: 'SUCCESS' | 'DENIED' | 'ERROR'; occurredAt: Iso8601Utc; immutableFixture: true; }
@@ -324,7 +324,7 @@ export interface AuditExportResult { objectId: 'AUDIT-LOG'; generated: true; cla
 export interface SystemHealth { ui: 'HEALTHY'; engine: 'NOT_CONNECTED_BY_DESIGN'; database: 'NOT_CONNECTED_BY_DESIGN'; channel: 'NOT_CONNECTED_BY_DESIGN'; }
 export interface ArchiveRecord { archiveId: ArchiveId; taskId: TaskId; scenarioId: ScenarioId; runId: RunId; replayId: ReplayId; reportId: ReportId; status: 'INDEXED'; }
 export interface DeleteResult { deleted: boolean; objectId: Identifier; }
-export interface RestoreResult { prebackupId: Identifier; integrityValid: boolean; progress: Percent0To100; result: 'SUCCESS' | 'FAILURE'; rolledBack: boolean; generated: false; }
+export interface RestoreResult { prebackupId: Identifier; integrityValid: boolean; progress: Percent0To100; result: 'SUCCESS' | 'FAILURE'; rolledBack: boolean; generated: boolean; }
 export interface ExportStatus { objectId: Identifier; generated: false; classification: 'INTERNAL' | 'LEVEL_II' | 'LEVEL_III'; watermark: string; verifiedAt: Iso8601Utc; }
 export interface FullConfigExportRequest { format: 'JSON'; confirmationId: Identifier; }
 export interface ResetRequest { confirm: true; }

@@ -52,6 +52,12 @@
 
 ## WebSocket `/ws/v1`
 
+### 本机备份／恢复补充（2026-09-11，用户授权）
+
+`server/local.ts` 注入真实 SQLite 备份存储；`server/index.ts` 仍保持纯 Mock。GET `/api/v1/admin/backups` 读取独立持久化目录，POST `/api/v1/admin/backup` 创建一致性 `.db` 文件，POST `/api/v1/admin/restore` 先创建预备份，再校验并以事务恢复场景、模板及账号，保留当前审计历史。权限和一次性确认不变；三个接口新增 503 存储失败响应。
+
+真实备份状态为 `VALID/INVALID`，校验和为 64 位大写 SHA-256；Mock 状态维持 `*_FIXTURE`。`RestoreResult.generated=true` 标识真实流程（包括生成预备份后校验拒绝或事务回滚），result 才决定恢复是否成功；Mock 继续 false。真实恢复成功必须使所有旧会话失效、关闭旧实时订阅并重置内存运行投影；页面提示重新登录。备份未加密，目录不随业务数据库恢复，跨版本结构不兼容拒绝恢复。
+
 topics 固定为需求基线规定的五项：`simulation.frame`, `runtime.state`, `link.metric`, `jammer.event`, `switch.event`。仿真控制通过 REST 命令 endpoint，不另设 `control.command`；节点状态由 `simulation.frame` payload 承载，不另设 `node.state`。envelope 固定 `type/schemaVersion/topic/taskId/sequence`，按需带 `simulationTime/frameId` 和 payload。每个 task/topic 序号严格递增；重复序号丢弃，缺口返回 `SEQUENCE_GAP` 并触发 REST 快照重载。
 
 非回环 peer、无效 envelope 或越权 topic 使用 close code 1008 拒绝。客户端重连间隔固定 250/500/1000/2000 ms，第四次失败进入 FAILED；订阅携带 lastSequence，服务端按冻结日志补发或明确返回 gap。reset 主动关闭旧连接，客户端重新认证角色夹具并从 sequence 1 订阅。

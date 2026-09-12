@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { useRouter } from 'vue-router'
 import { useAdminStore } from '../../stores/admin'
+import { useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../features/shared/date-time'
 import DataExchangeStateTag from '../data-exchange/DataExchangeStateTag.vue'
 
 const store = useAdminStore()
+const auth = useAuthStore()
+const router = useRouter()
 const selectedBackupId = ref('')
 const feedback = computed(() => store.maintenance.backup)
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(feedback.value.state))
@@ -20,9 +24,16 @@ async function execute(operation: 'BACKUP' | 'RESTORE'): Promise<void> {
   const epoch = store.maintenanceEpoch
   try {
     await ElMessageBox.confirm(operation === 'RESTORE'
-      ? `确认从“${targetId}”恢复？系统将先保留恢复前备份，完整性校验失败时终止恢复。`
-      : `确认${labels[operation]}？当前阶段仅验证流程，不生成实际文件。`, labels[operation], { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
-    if (epoch === store.maintenanceEpoch) await store.runMaintenanceAction(operation, targetId)
+      ? `确认从“${targetId}”恢复场景、模板和账号？当前审计日志保留。系统先创建恢复前备份，校验失败不恢复，写入失败回滚。成功后清空内存仿真状态，需用备份中的账号密码重新登录。`
+      : '确认创建数据库备份？本机接口生成未加密 SQLite 文件，请妥善保管。纯 Mock 仅验证流程。', labels[operation], { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
+    if (epoch !== store.maintenanceEpoch) return
+    const succeeded = await store.runMaintenanceAction(operation, targetId)
+    if (epoch !== store.maintenanceEpoch || !succeeded) return
+    ElMessage.success(feedback.value.message)
+    if (operation === 'RESTORE' && restore.value?.generated) {
+      auth.resetToSafeEmpty()
+      await router.replace('/login')
+    }
   } catch { /* 用户取消时保留当前记录。 */ }
 }
 
@@ -33,12 +44,13 @@ onBeforeUnmount(() => store.resetMaintenance())
 <template>
   <section id="cap-bfhf" class="maintenance-card" aria-label="数据库备份与恢复" data-testid="backup-panel">
     <header class="maintenance-toolbar"><h3>数据库备份 / 恢复</h3><DataExchangeStateTag :state="feedback.state" /><el-button :disabled="pending" @click="store.loadMaintenance('backup')">刷新记录</el-button><el-button type="primary" :disabled="pending" data-testid="backup-create" @click="execute('BACKUP')">创建备份</el-button></header>
-    <p class="maintenance-note">当前验证备份与恢复流程，不读写实际数据库或备份文件。</p>
-    <el-alert v-if="feedback.message" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="backup-feedback" />
+    <p class="maintenance-note">本机模式生成真实 SQLite 备份，目录记录独立保存；恢复场景、模板和账号，不回退审计日志。备份尚未加密，仅限非敏感开发数据。纯 Mock 模式不生成文件。</p>
+    <el-alert v-if="feedback.message && feedback.state !== 'SUCCESS'" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="backup-feedback" />
     <el-table v-loading="pending" :data="store.backups" row-key="backupId" stripe empty-text="暂无备份记录" data-testid="backup-table">
       <el-table-column prop="backupId" label="备份编号" min-width="190" />
       <el-table-column prop="createdAt" label="创建时间" min-width="180"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
-      <el-table-column label="完整性" width="110"><template #default="{ row }"><el-tag :type="row.status === 'VALID_FIXTURE' ? 'success' : 'danger'">{{ row.status === 'VALID_FIXTURE' ? '校验通过' : '校验失败' }}</el-tag></template></el-table-column>
+      <el-table-column label="完整性" width="110"><template #default="{ row }"><el-tag :type="row.status === 'VALID' || row.status === 'VALID_FIXTURE' ? 'success' : 'danger'">{{ row.status === 'VALID' || row.status === 'VALID_FIXTURE' ? '校验通过' : '校验失败' }}</el-tag></template></el-table-column>
+      <el-table-column label="来源" width="110"><template #default="{ row }">{{ row.status.endsWith('_FIXTURE') ? 'Mock 流程' : 'SQLite 文件' }}</template></el-table-column>
       <el-table-column prop="checksum" label="校验和" min-width="180" />
       <el-table-column label="操作" width="120" fixed="right"><template #default="{ row }"><el-button link type="primary" :disabled="pending" @click="selectedBackupId = row.backupId">选择恢复</el-button></template></el-table-column>
     </el-table>

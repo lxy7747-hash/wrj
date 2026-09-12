@@ -3851,9 +3851,19 @@
         "tags": [
           "admin"
         ],
-        "summary": "Return backup workflow fixture; never access SQLite/files",
+        "summary": "Create verified SQLite backup in local mode; pure Mock returns fixture only",
         "x-rbac": "BACKUP_RESTORE",
         "responses": {
+          "503": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -3953,9 +3963,19 @@
         "tags": [
           "admin"
         ],
-        "summary": "Return prebackup/check/confirm/progress/rollback projection only",
+        "summary": "Restore local SQLite data transactionally after prebackup and validation; preserve audit history",
         "x-rbac": "BACKUP_RESTORE",
         "responses": {
+          "503": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -4466,6 +4486,16 @@
           }
         ],
         "responses": {
+          "503": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "200": {
             "description": "内存备份记录",
             "content": {
@@ -7410,17 +7440,44 @@
           "status": {
             "enum": [
               "VALID_FIXTURE",
-              "INVALID_FIXTURE"
+              "INVALID_FIXTURE",
+              "VALID",
+              "INVALID"
             ]
           },
           "checksum": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "createdAt": {
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "VALID",
+                    "INVALID"
+                  ]
+                }
+              },
+              "required": [
+                "status"
+              ]
+            },
+            "then": {
+              "properties": {
+                "checksum": {
+                  "pattern": "^[A-F0-9]{64}$"
+                }
+              }
+            }
+          }
+        ]
       },
       "AuditRecord": {
         "type": "object",
@@ -8138,7 +8195,7 @@
             "type": "boolean"
           },
           "generated": {
-            "const": false
+            "type": "boolean"
           }
         }
       },
