@@ -52,7 +52,7 @@ onUnmounted(() => {
         <h2 id="data-exchange-title">数据交换与接口</h2>
       </div>
       <div class="data-exchange-page__status">
-        <el-tag type="warning" effect="plain">Mock 监控</el-tag>
+        <el-tag type="warning" effect="plain">{{ store.monitor ? '本机监控 / Mock 遥测' : store.monitorState === 'SUCCESS' ? 'Mock 监控' : '监控待确认' }}</el-tag>
         <el-button data-testid="open-exchange-tools" @click="openTools()">接口工具</el-button>
       </div>
     </header>

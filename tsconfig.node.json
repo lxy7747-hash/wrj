@@ -20,6 +20,7 @@
     "scripts/**/*.ts",
     "server/**/*.ts",
     "src/features/data-exchange/afsim-event-log.ts",
+    "src/features/data-exchange/local-monitor.ts",
     "src/features/situation/initial-nodes.ts",
     "src/features/situation/file-communication-links.ts",
     "src/features/situation/position-updates.ts",

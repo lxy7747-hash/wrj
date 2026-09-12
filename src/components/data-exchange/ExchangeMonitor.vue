@@ -27,6 +27,8 @@ let bucketCount = 0
 let bucketDuration = 0
 let sampledAt = performance.now()
 let timer: ReturnType<typeof setInterval> | undefined
+let monitorTicks = 0
+const fileOperationLabels = { INITIAL_NODES: '初始节点读取', POSITIONS: '位置增量读取', LOCAL_REPLAY: '文件历史读取' }
 
 const connectionLabel = computed(() => ({
   DISCONNECTED: '未连接', CONNECTING: '连接中', SUBSCRIBED: '已订阅', RETRYING: '重连中', FAILED: '连接失败',
@@ -34,9 +36,12 @@ const connectionLabel = computed(() => ({
 const connectionTone = computed(() => telemetry.connectionState === 'SUBSCRIBED' ? 'success'
   : telemetry.connectionState === 'FAILED' ? 'danger' : 'muted')
 const serviceLabel = computed(() => ({
-  EMPTY: '未检查', LOADING: '请求中', VALIDATING: '校验中', EXECUTING: '处理中', SUCCESS: '请求成功', ERROR: '请求失败',
-})[store.loadState])
-const serviceTone = computed(() => store.loadState === 'SUCCESS' ? 'success' : store.loadState === 'ERROR' ? 'danger' : 'muted')
+  EMPTY: '未检查', LOADING: '检查中', SUCCESS: store.monitor ? '本机服务正常' : 'Mock 服务可达', ERROR: '请求失败',
+})[store.monitorState])
+const serviceTone = computed(() => store.monitorState === 'SUCCESS' ? 'success' : store.monitorState === 'ERROR' ? 'danger' : 'muted')
+const databaseLabel = computed(() => store.monitorState === 'ERROR' ? '状态未知'
+  : store.monitorState === 'LOADING' ? '检查中' : store.monitor?.database === 'HEALTHY' ? '检查通过'
+    : store.monitor?.database === 'ERROR' ? '检查失败' : store.monitorState === 'SUCCESS' ? '未接入（Mock）' : '未检查')
 const wsAddress = new URL('/ws/v1', resolveMockOrigin())
 wsAddress.protocol = wsAddress.protocol === 'https:' ? 'wss:' : 'ws:'
 const rate = computed(() => samples.value.at(-1)?.rate ?? 0)
@@ -108,7 +113,9 @@ const stopObserving = telemetry.$onAction(({ name, args, after }) => {
 })
 
 onMounted(() => {
+  void store.loadMonitor()
   timer = setInterval(() => {
+    if (++monitorTicks % 5 === 0) void store.loadMonitor()
     const now = performance.now()
     const elapsedSeconds = Math.max((now - sampledAt) / 1000, 0.001)
     if (received.value > 0) {
@@ -119,7 +126,7 @@ onMounted(() => {
     sampledAt = now
   }, 1000)
 })
-onUnmounted(() => { clearInterval(timer); stopObserving() })
+onUnmounted(() => { clearInterval(timer); stopObserving(); store.clearMonitor() })
 
 /** 复用遥测快照及订阅入口；失败保留原有中文错误，不启动真实引擎。 */
 async function connect(): Promise<void> {
@@ -135,7 +142,7 @@ async function connect(): Promise<void> {
         { label: '本地服务', value: serviceLabel, tone: serviceTone, path: 'M4 3h16v7H4z M4 14h16v7H4z M7 6h1 M7 17h1 M11 6h6 M11 17h6' },
         { label: 'WebSocket', value: connectionLabel, tone: connectionTone, path: 'M8 5h11v11 M19 5l-6 6 M16 19H5V8 M5 19l6-6' },
         { label: 'AFSIM 引擎', value: '未接入', tone: 'muted', path: 'M9 3h6l1 4 4 2v6l-4 2-1 4H9l-1-4-4-2V9l4-2z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0' },
-        { label: 'SQLite', value: '未接入', tone: 'muted', path: 'M4 6a8 3 0 1 0 16 0a8 3 0 1 0-16 0 M4 6v12a8 3 0 0 0 16 0V6 M4 12a8 3 0 0 0 16 0' },
+        { label: 'SQLite', value: databaseLabel, tone: store.monitor?.database === 'HEALTHY' ? 'success' : store.monitor?.database === 'ERROR' ? 'danger' : 'muted', path: 'M4 6a8 3 0 1 0 16 0a8 3 0 1 0-16 0 M4 6v12a8 3 0 0 0 16 0V6 M4 12a8 3 0 0 0 16 0' },
         { label: '接收速率', value: `${rate.toFixed(1)} KB/s`, tone: 'accent', path: 'M2 12h5l3-8 4 16 3-8h5' },
         { label: '本页收包数', value: received, tone: 'accent', path: 'M4 20V10h3v10 M11 20V4h3v16 M18 20v-7h3v7' },
       ]" :key="card.label" class="monitor-status">
@@ -145,6 +152,7 @@ async function connect(): Promise<void> {
     </div>
 
     <el-alert v-if="telemetry.capabilityState === 'ERROR'" :title="telemetry.resultMessage" type="error" :closable="false" show-icon />
+    <el-alert v-if="store.monitorMessage" :title="store.monitorMessage" type="error" :closable="false" show-icon data-testid="local-monitor-error" />
 
     <div class="monitor-workspace">
       <section class="monitor-panel monitor-channels" aria-label="接口通道状态">
@@ -204,6 +212,21 @@ async function connect(): Promise<void> {
       </section>
     </div>
 
+    <section class="monitor-panel" aria-label="本地文件读取记录" data-testid="local-file-monitor">
+      <header><h3>本地文件读取记录</h3><span class="panel-caption">{{ store.monitor ? 'SQLite 历史最近 50 次' : '本机读取记录' }} · 每 5 秒刷新</span><el-button :loading="store.monitorState === 'LOADING'" @click="store.loadMonitor()">刷新监控</el-button></header>
+      <el-table :data="store.monitor?.records ?? []" max-height="240" row-key="sequence" empty-text="暂无实际文件读取记录" data-testid="local-file-records">
+        <el-table-column label="完成时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.completedAt) }}</template></el-table-column>
+        <el-table-column prop="fileName" label="文件" min-width="160" />
+        <el-table-column label="读取用途" min-width="130"><template #default="{ row }">{{ fileOperationLabels[row.operation as keyof typeof fileOperationLabels] }}</template></el-table-column>
+        <el-table-column label="结果" width="100"><template #default="{ row }">{{ row.status === 'ERROR' ? '读取失败' : row.issueCount > 0 ? '含异常行' : '读取成功' }}</template></el-table-column>
+        <el-table-column label="耗时（ms）" width="110"><template #default="{ row }">{{ row.durationMs.toFixed(2) }}</template></el-table-column>
+        <el-table-column label="快照记录数" width="105"><template #default="{ row }">{{ row.recordCount ?? '—' }}</template></el-table-column>
+        <el-table-column label="异常行数" width="95"><template #default="{ row }">{{ row.issueCount ?? '—' }}</template></el-table-column>
+        <el-table-column label="错误码" min-width="170"><template #default="{ row }">{{ row.errorCode ?? '—' }}</template></el-table-column>
+      </el-table>
+      <p class="monitor-footnote">检查时间：{{ store.monitor ? formatDateTime(store.monitor.checkedAt) : '—' }}。仅记录原有节点、位置和历史文件读取，不触发额外读取；快照记录数不是本次新增行数。</p>
+    </section>
+
     <section class="monitor-panel monitor-connection" aria-label="连接详情">
       <header><h3>连接详情</h3><span class="panel-caption">Mock 数据通道</span></header>
       <div class="connection-content">
@@ -220,12 +243,12 @@ async function connect(): Promise<void> {
         </div>
       </div>
     </section>
-    <p class="monitor-footnote">本页消息统计：大小为 JSON 文本估算，耗时为同步校验与投影耗时（非网络时延）。文件区仅展示合同与内存校验；真实文件、引擎和数据库尚未接入。</p>
+    <p class="monitor-footnote">消息统计仅含本页 Mock 遥测通道；大小为 JSON 文本估算，耗时为同步校验与投影耗时（非网络时延）。SQLite 为只读健康检查，文件记录来自本机实际读取并存入独立 SQLite 记录库，重启保留；AFSIM 引擎未接入。</p>
   </div>
 </template>
 
 <style scoped>
-.exchange-monitor { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 12px; }
+.exchange-monitor { display: flex; min-height: 0; flex: 1 0 auto; flex-direction: column; gap: 12px; }
 .monitor-status-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; }
 .monitor-status, .monitor-panel { border: 1px solid var(--console-border); border-radius: 4px; background: var(--console-bg-elevated); }
 .monitor-status { display: flex; align-items: center; gap: 14px; min-width: 0; padding: 16px; background: linear-gradient(120deg, var(--console-surface-raised), var(--console-bg-elevated)); }

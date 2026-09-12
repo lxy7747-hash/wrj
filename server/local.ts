@@ -5,6 +5,7 @@ import { createPositionReader } from './local/afsim-position-reader.js'
 import { readLocalReplay } from './local/afsim-replay-reader.js'
 import { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { BackupSqliteStorage } from './local/backup-sqlite.js'
+import { LocalExchangeMonitor } from './local/exchange-monitor.js'
 
 // 本机文件配置与纯 Mock 入口分离；路径只存于忽略的 .env.local，不写入共享代码。
 try {
@@ -34,17 +35,21 @@ try {
   throw error
 }
 const backupStorage = new BackupSqliteStorage(scenarioDbPath)
+const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
+const positionReader = logPath && positionPath ? createPositionReader(positionPath) : undefined
 const server = createMockServer({
   port,
-  loadInitialNodes: logPath ? () => readInitialNodes(logPath) : undefined,
-  loadPositions: logPath && positionPath ? createPositionReader(positionPath) : undefined,
-  loadLocalReplay: logPath ? () => readLocalReplay(logPath, positionPath) : undefined,
+  loadInitialNodes: logPath ? () => exchangeMonitor.read('INITIAL_NODES', logPath, () => readInitialNodes(logPath), value => ({ recordCount: value.nodes.length, issueCount: 0 })) : undefined,
+  loadPositions: positionReader && positionPath ? () => exchangeMonitor.read('POSITIONS', positionPath, positionReader, value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
+  loadLocalReplay: logPath ? () => exchangeMonitor.read('LOCAL_REPLAY', positionPath ?? logPath, () => readLocalReplay(logPath, positionPath), value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
+  loadExchangeMonitor: () => exchangeMonitor.snapshot(),
   scenarioStorage,
   templateStorage,
   authStorage,
   backupStorage,
 })
 function closeStorage(): void {
+  exchangeMonitor.close()
   backupStorage.close()
   authStorage.close()
   scenarioStorage?.close()

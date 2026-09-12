@@ -42,11 +42,44 @@ describe('P5 数据交换页面', () => {
       if (path.endsWith('/scenario-config')) return Promise.resolve(successResponse(fixtureSource.contracts.scenarioConfig))
       if (path.endsWith('/frontend-types')) return Promise.resolve(successResponse(fixtureSource.contracts.frontendTypes))
       if (path.endsWith('/csv')) return Promise.resolve(successResponse(fixtureSource.contracts.csv))
+      if (path.endsWith('/data-exchange/monitor')) return Promise.resolve(successResponse(null))
       return Promise.resolve(successResponse(fixtureSource.metadata.interfaces))
     }))
   })
 
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  it('正式加载监控显示 SQLite 实况和实际文件记录，轮询失败清除旧记录，离页停止轮询', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const record = { sequence: 2, operation: 'POSITIONS', fileName: 'platform_positions.csv', completedAt: '2026-09-12T00:00:00Z', durationMs: 2.5,
+      status: 'ERROR', recordCount: null, issueCount: null, errorCode: 'LOCAL_READ_FAILED' }
+    const snapshot = { service: 'HEALTHY', database: 'HEALTHY', recordStorage: 'HEALTHY', checkedAt: record.completedAt, records: [record,
+      { ...record, sequence: 1, operation: 'INITIAL_NODES', fileName: 'j_1.csv', status: 'SUCCESS', recordCount: 12, issueCount: 0, errorCode: null }] }
+    const fetcher = vi.fn().mockResolvedValueOnce(successResponse(snapshot))
+      .mockResolvedValueOnce(successResponse({ ...snapshot, recordStorage: 'ERROR' }))
+      .mockResolvedValueOnce(successResponse({ ...snapshot, database: 'ERROR' })).mockRejectedValue(new Error('offline'))
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = mount(ExchangeMonitor, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.text()).toContain('本机服务正常')
+    expect(wrapper.text()).toContain('SQLite检查通过')
+    expect(wrapper.text()).toContain('SQLite 历史最近 50 次')
+    expect(wrapper.text()).toContain('重启保留')
+    expect(wrapper.get('[data-testid="local-file-records"]').text()).toContain('j_1.csv')
+    expect(wrapper.get('[data-testid="local-file-records"]').text()).toContain('LOCAL_READ_FAILED')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.get('[data-testid="local-monitor-error"]').text()).toContain('交换记录存储异常')
+    expect(wrapper.text()).toContain('SQLite检查通过')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.text()).toContain('SQLite检查失败')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.text()).toContain('SQLite状态未知')
+    expect(wrapper.get('[data-testid="local-file-records"]').text()).not.toContain('j_1.csv')
+    expect(wrapper.get('[data-testid="local-monitor-error"]').text()).toContain('请求失败')
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(fetcher).toHaveBeenCalledTimes(4)
+  })
 
   it('监控仅统计本页消息，区分重复与拒绝，限制缓存并清理订阅和计时器', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
@@ -55,10 +88,11 @@ describe('P5 数据交换页面', () => {
     const clearSpy = vi.spyOn(globalThis, 'clearInterval')
     const telemetry = useTelemetryStore()
     const wrapper = mount(ExchangeMonitor, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
     const monitorTimer = intervalSpy.mock.results[intervalSpy.mock.calls.findIndex((call) => call[1] === 1000)].value
     expect(wrapper.findAll('.monitor-status')).toHaveLength(6)
     expect(wrapper.text()).toContain('AFSIM 引擎未接入')
-    expect(wrapper.text()).toContain('SQLite未接入')
+    expect(wrapper.text()).toContain('SQLite未接入（Mock）')
     expect(wrapper.findAll('.monitor-curve')).toHaveLength(0)
     const envelope = { type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId: 'TASK-001', sequence: 43,
       frameId: fixtureSource.frame.frameId, simulationTime: fixtureSource.frame.simulationTime, payload: fixtureSource.frame }

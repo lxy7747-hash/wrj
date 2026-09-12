@@ -37,6 +37,7 @@ import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/pr
 import { AdminProjection, type AdminResult, type BackupStorage } from './admin/projection.js'
 import { isAdminText } from '../src/features/admin/admin-contract.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
+import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-monitor.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
@@ -56,6 +57,7 @@ export interface MockServerOptions {
   templateStorage?: TemplateStorage
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
+  loadExchangeMonitor?: () => LocalMonitorSnapshot
 }
 
 export interface MockServer {
@@ -741,6 +743,20 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       res.status(200).json(success(items, pageMeta(requestId, items.length, items.length)))
     })
   }
+
+  /** 本机只读监控扩展；纯 Mock 返回 null，不伪造健康或文件读取记录。 */
+  app.get('/api/v1/data-exchange/monitor', (req, res) => {
+    if (requireDemoRole(req, res, auth, 'EXCHANGE_MONITOR_READ') === undefined) return
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '监控接口不接受文件路径或查询参数。' }))
+      return
+    }
+    try {
+      res.status(200).json(success(options.loadExchangeMonitor?.() ?? null, pageMeta('REQ-EXCHANGE-MONITOR')))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, { message: '本机监控读取失败，请稍后重试。' }))
+    }
+  })
 
   /** 返回七类接口的确定性元数据。 */
   app.get('/api/v1/meta/interfaces', (req, res) => {

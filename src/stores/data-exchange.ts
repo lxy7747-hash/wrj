@@ -14,6 +14,7 @@ import {
 import { createCsvExample as buildCsvExample, inspectCsvText, type CsvValidationResult } from '../features/data-exchange/csv-contract'
 import { inspectScenarioConfig } from '../features/scenarios/scenario-validation'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { isLocalMonitorSnapshot, type LocalMonitorSnapshot } from '../features/data-exchange/local-monitor'
 
 export interface ProcessContractResult {
   status: 'NOT_STARTED' | 'RUNNING' | 'EXITED' | 'TERMINATED' | 'ERROR'
@@ -159,6 +160,8 @@ async function readInterfaces(response: Response): Promise<InterfaceMetadata[]> 
   return payload.data
 }
 
+const monitorCancellations = new WeakMap<object, () => void>()
+
 export const useDataExchangeStore = defineStore('dataExchange', {
   state: () => ({
     loadState: 'EMPTY' as CapabilityState,
@@ -179,9 +182,67 @@ export const useDataExchangeStore = defineStore('dataExchange', {
     processResult: null as ProcessContractResult | null,
     processMessage: '尚未检查进程管理合同。',
     requestEpoch: 0,
+    monitor: null as LocalMonitorSnapshot | null,
+    monitorState: 'EMPTY' as 'EMPTY' | 'LOADING' | 'SUCCESS' | 'ERROR',
+    monitorMessage: '',
+    monitorEpoch: 0,
   }),
 
   actions: {
+    async loadMonitor(): Promise<boolean> {
+      if (this.monitorState === 'LOADING') return false
+      const epoch = ++this.monitorEpoch
+      const controller = new AbortController()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let cancel!: () => void
+      this.monitorState = 'LOADING'
+      try {
+        const cancelled = new Promise<never>((_, reject) => {
+          cancel = () => { controller.abort(); reject(new Error('本机监控请求已取消或超时。')) }
+          monitorCancellations.set(this, cancel)
+          timer = setTimeout(cancel, 5000)
+        })
+        // 请求与响应体共用 5 秒期限；即使传输层忽略 abort，迟到结果也不再写入。
+        const { response, body } = await Promise.race([
+          (async () => {
+            const response = await apiFetch(`${resolveMockOrigin()}/api/v1/data-exchange/monitor`, {
+              headers: { 'X-Demo-Role': useAuthStore().role }, signal: controller.signal,
+            })
+            controller.signal.throwIfAborted()
+            const body = await response.json() as { ok?: unknown; data?: unknown }
+            return { response, body }
+          })(),
+          cancelled,
+        ])
+        if (epoch !== this.monitorEpoch) return false
+        if (!response.ok || body?.ok !== true || !isLocalMonitorSnapshot(body.data)) throw new Error('本机监控响应无效或服务不可达，请刷新重试。')
+        this.monitor = body.data
+        this.monitorState = 'SUCCESS'
+        this.monitorMessage = [body.data?.database === 'ERROR' ? 'SQLite 检查失败，请检查数据库文件与访问权限。' : '',
+          body.data?.recordStorage === 'ERROR' ? '交换记录存储异常，部分读取可能未记录，请检查磁盘与数据库后重试。' : ''].filter(Boolean).join(' ')
+        return true
+      } catch {
+        if (epoch !== this.monitorEpoch) return false
+        this.monitor = null
+        this.monitorState = 'ERROR'
+        this.monitorMessage = '本机监控请求失败，旧状态与文件记录已清除，请刷新重试。'
+        return false
+      } finally {
+        clearTimeout(timer)
+        controller.abort()
+        if (monitorCancellations.get(this) === cancel) monitorCancellations.delete(this)
+      }
+    },
+
+    clearMonitor(): void {
+      this.monitorEpoch += 1
+      monitorCancellations.get(this)?.()
+      monitorCancellations.delete(this)
+      this.monitor = null
+      this.monitorState = 'EMPTY'
+      this.monitorMessage = ''
+    },
+
     /**
      * 从本机 Mock 并行加载 P5 所需的规范合同。
      * @returns 四类响应均通过闭合校验时返回 `true`。
@@ -355,6 +416,7 @@ export const useDataExchangeStore = defineStore('dataExchange', {
 
     /** 清空本页派生状态，不修改场景、仿真或遥测事实。 */
     resetToSafeEmpty(): void {
+      this.clearMonitor()
       this.requestEpoch += 1
       this.loadState = 'EMPTY'
       this.resultCode = 'EMPTY'
