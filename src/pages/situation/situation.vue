@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { apiFetch } from '../../features/shared/api-fetch'
+
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
@@ -97,7 +99,7 @@ async function pollPositions(): Promise<void> {
   const timeout = setTimeout(() => request.abort(), 10_000)
   let configured = true
   try {
-    const response = await fetch(`${resolveMockOrigin()}/api/v1/situation/positions`, {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/situation/positions`, {
       headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
     })
     const body = await response.json()
@@ -136,7 +138,7 @@ async function initializeSituation(): Promise<void> {
   sourceState.value = 'LOADING'
   sourceMessage.value = '正在读取初始节点位置。'
   try {
-    const response = await fetch(`${resolveMockOrigin()}/api/v1/situation/initial-nodes`, {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/situation/initial-nodes`, {
       headers: { 'X-Demo-Role': useAuthStore().role },
     })
     const body = await response.json()

@@ -1,5 +1,5 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessage } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryHistory } from 'vue-router'
@@ -13,7 +13,7 @@ import InteractionsPage from '../../src/pages/interactions/interactions.vue'
 import LoginPage from '../../src/pages/login/login.vue'
 import ReplaysPage from '../../src/pages/replays/replays.vue'
 import ReportsPage from '../../src/pages/reports/reports.vue'
-import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
+import ScenariosPage from '../../src/pages/scenarios/ScenarioWorkspace.vue'
 import SituationPage from '../../src/pages/situation/situation.vue'
 import TraceabilityPage from '../../src/pages/traceability/traceability.vue'
 import type {
@@ -30,6 +30,7 @@ import type {
 } from '../../src/contracts/domain-models'
 import { createAppRouter, requireAdmin, requirePrincipal, routeRecords } from '../../src/router'
 import { resolveMockOrigin, useAuthStore } from '../../src/stores/auth'
+import { useAdminStore } from '../../src/stores/admin'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
@@ -55,6 +56,8 @@ const ADMIN: Principal = {
   role: 'ADMIN',
   permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'],
 }
+
+const USERS: User[] = [ADMIN, OPERATOR].map(({ userId, username, role }) => ({ userId, username, role, status: 'ACTIVE' }))
 
 function response(body: unknown, ok = true): Response {
   return {
@@ -315,7 +318,7 @@ describe('P1 authentication and routing', () => {
 
   it.each([
     [{ username: '', password: DEFAULT_LOGIN_PASSWORD }, 'empty username'],
-    [{ username: 'unknown', password: DEFAULT_LOGIN_PASSWORD }, 'unsupported username'],
+    [{ username: 'x'.repeat(65), password: DEFAULT_LOGIN_PASSWORD }, 'overlong username'],
     [{ username: 'operator', password: '  ' }, 'empty password'],
   ])('rejects $1 without a request and resets prior state', async (credentials) => {
     const auth = useAuthStore()
@@ -379,6 +382,7 @@ describe('P1 authentication and routing', () => {
     await expect(auth.login({ username: 'admin', password: DEFAULT_LOGIN_PASSWORD })).resolves.toEqual(loginResult)
     await expect(auth.refreshPermissions()).resolves.toBe(true)
     expect(fetchSpy).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:4173/api/v1/auth/permissions', {
+      credentials: 'include',
       method: 'GET',
       headers: { 'X-Demo-Role': 'ADMIN' },
     })
@@ -511,37 +515,61 @@ describe('P1 authentication and routing', () => {
   })
 
   it('renders AdminPage with formal Chinese labels and no validation-stage terminology', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(success(USERS))))
     const { wrapper } = await mountAt(AdminPage, '/admin')
     await flushPromises()
 
     expect(wrapper.get('[aria-label="账号管理"]').attributes('aria-label')).toBe('账号管理')
-    expect(wrapper.get('[data-testid="create-user"]').text()).toBe('创建用户')
+    expect(wrapper.get('[data-testid="open-create-user"]').text()).toBe('创建用户')
+    expect(wrapper.text()).not.toContain('刷新用户')
+    expect(wrapper.text()).not.toContain('成功（SUCCESS）')
+    expect(wrapper.find('input[data-testid="create-username"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('管理员（ADMIN）')
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('启用（ACTIVE）')
     expect(wrapper.text()).not.toMatch(/夹具|演示|demo|P0|P1|Mock|页面外壳|shell|本机 Mock|UserRolePanel/i)
   })
 
-  it('refreshes and enables users through the AdminPage adapter', async () => {
+  it.each([ADMIN, { ...ADMIN, userId: 'USR-SECOND', username: 'second-admin' }])('disables self-deletion for $username', async (current) => {
+    const records: User[] = [...USERS, { userId: 'USR-SECOND', username: 'second-admin', role: 'ADMIN', status: 'ACTIVE' }]
+    const fetchSpy = vi.fn().mockResolvedValue(response(success(records)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper, auth } = await mountAt(AdminPage, '/admin')
+    auth.principal = structuredClone(current)
+    await flushPromises()
+    const row = wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row')
+      .find(item => item.findAll('td')[0]?.text() === current.username)!
+    const button = row.findAll('button').find(item => item.text() === '删除')!
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(button.attributes('title')).toContain('不能删除自己')
+    await button.trigger('click')
+    expect(wrapper.find('[data-testid="delete-confirmation"]').exists()).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['启用', 'ENABLE', 'DISABLED', 'OPERATOR', 'ACTIVE', '用户 operator 已启用。'],
+    ['禁用', 'DISABLE', 'ACTIVE', 'OPERATOR', 'DISABLED', '用户 operator 已禁用。'],
+    ['切换角色', 'UPDATE', 'ACTIVE', 'ADMIN', 'ACTIVE', '用户 operator 已切换为管理员（ADMIN）。'],
+  ] as const)('shows successful %s feedback through the AdminPage adapter', async (label, operation, status, nextRole, nextStatus, message) => {
+    const notify = vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
     const disabled: User = {
       userId: 'USR-OPERATOR',
       username: 'operator',
       role: 'OPERATOR',
-      status: 'DISABLED',
+      status,
     }
-    const enabled: User = { ...disabled, status: 'ACTIVE' }
+    const enabled: User = { ...disabled, role: nextRole, status: nextStatus }
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(response(success([disabled])))
       .mockResolvedValueOnce(response(success(enabled)))
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountAt(AdminPage, '/admin')
 
-    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新用户'))
-    expect(refreshButton).toBeDefined()
-    await refreshButton!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('DISABLED')
+    expect(wrapper.text()).toContain(status)
 
-    const enableButton = wrapper.findAll('button').find((button) => button.text().includes('启用'))
+    const enableButton = wrapper.findAll('button').find((button) => button.text().trim() === label)
     expect(enableButton).toBeDefined()
     await enableButton!.trigger('click')
     await flushPromises()
@@ -549,9 +577,12 @@ describe('P1 authentication and routing', () => {
     const mutation = JSON.parse(String(mutationInit.body)) as { operation: string; user: User }
     expect(mutationUrl).toBe(`http://127.0.0.1:4173/api/v1/admin/users/${mutation.user.userId}`)
     expect(mutationInit.method).toBe('PUT')
-    expect(mutation.operation).toBe('ENABLE')
-    expect(wrapper.text()).toContain('ACTIVE')
-    expect(wrapper.text()).toContain('结果代码：SUCCESS')
+    expect(mutation.operation).toBe(operation)
+    expect(mutation.user).toEqual(enabled)
+    expect(useAdminStore().users).toEqual([enabled])
+    expect(notify).toHaveBeenCalledExactlyOnceWith(message)
+    expect(wrapper.find('.result-section').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('creates with POST, exposes role permissions, and deletes with DELETE through AdminPage', async () => {
@@ -562,6 +593,7 @@ describe('P1 authentication and routing', () => {
       status: 'ACTIVE',
     }
     const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(response(success(USERS)))
       .mockResolvedValueOnce(response(success(created)))
       .mockImplementationOnce((url: string) => {
         const objectId = decodeURIComponent(url.split('/').at(-1) ?? '')
@@ -572,15 +604,22 @@ describe('P1 authentication and routing', () => {
 
     await flushPromises()
     expect(wrapper.get('[data-testid="role-permission-map"]').text()).toContain('BUSINESS_READ')
+    await wrapper.get('[data-testid="open-create-user"]').trigger('click')
+    await flushPromises()
     await wrapper.get('input[data-testid="create-username"]').setValue('reviewer')
+    expect(wrapper.get('input[data-testid="create-password"]').attributes('placeholder')).toBe('6–32 位')
+    expect(wrapper.get('input[data-testid="create-password"]').attributes('maxlength')).toBe('32')
+    expect(wrapper.get('input[data-testid="create-password"]').attributes('minlength')).toBe('6')
+    await wrapper.get('input[data-testid="create-password"]').setValue('123456')
     await wrapper.get('form.create-form').trigger('submit')
     await flushPromises()
 
-    expect(fetchSpy).toHaveBeenNthCalledWith(1, 'http://127.0.0.1:4173/api/v1/admin/users', expect.objectContaining({
+    expect(fetchSpy).toHaveBeenNthCalledWith(2, 'http://127.0.0.1:4173/api/v1/admin/users', expect.objectContaining({
       method: 'POST',
-      body: JSON.stringify({ operation: 'CREATE', user: created }),
+      body: JSON.stringify({ operation: 'CREATE', user: created, password: '123456' }),
     }))
     expect(wrapper.text()).toContain('reviewer')
+    expect(wrapper.findComponent({ name: 'ElDialog' }).props('modelValue')).toBe(false)
 
     const operatorRow = wrapper.findAll('.el-table__body tbody tr').find((row) => row.text().includes('operator'))
     const deleteButton = operatorRow?.findAll('button').find((button) => button.text().trim() === '删除')
@@ -588,9 +627,11 @@ describe('P1 authentication and routing', () => {
     await deleteButton!.trigger('click')
     await flushPromises()
 
-    expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(wrapper.get('[data-testid="delete-confirmation"]').attributes('role')).toBe('alertdialog')
-    expect(wrapper.get('[data-testid="delete-confirmation"]').text()).toContain('USR-OPERATOR')
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(wrapper.findAll('[role="dialog"]').some(dialog => dialog.text().includes('确认删除用户'))).toBe(true)
+    expect(wrapper.findAllComponents({ name: 'ElDialog' }).find(dialog => dialog.props('title') === '确认删除用户')?.props('width'))
+      .toBe('min(420px, calc(100vw - 32px))')
+    expect(wrapper.get('[data-testid="delete-confirmation"]').text()).toContain('operator')
     await wrapper.get('[data-testid="confirm-delete"]').trigger('click')
     await flushPromises()
 
@@ -602,31 +643,48 @@ describe('P1 authentication and routing', () => {
   })
 
   it('localizes empty create input and preserves users for an invalid DELETE result', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue(response(success({
+    const fetchSpy = vi.fn().mockResolvedValueOnce(response(success(USERS))).mockResolvedValue(response(success({
       deleted: true,
       objectId: 'USR-WRONG',
     })))
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountAt(AdminPage, '/admin')
+    await flushPromises()
 
+    await wrapper.get('[data-testid="open-create-user"]').trigger('click')
+    await flushPromises()
     await wrapper.get('form.create-form').trigger('submit')
     await flushPromises()
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('VALIDATION_FAILED')
     expect(wrapper.text()).toContain('用户名')
+    expect(wrapper.get('[data-testid="create-user-error"]').text()).toContain('请输入用户名')
+    expect(wrapper.findComponent({ name: 'ElDialog' }).props('modelValue')).toBe(true)
+    await wrapper.get('input[data-testid="create-username"]').setValue('cancelled-user')
+    await wrapper.get('input[data-testid="create-password"]').setValue('cancelled-password')
+    await wrapper.get('[data-testid="cancel-create-user"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.findComponent({ name: 'ElDialog' }).props('modelValue')).toBe(false)
+    await wrapper.get('[data-testid="open-create-user"]').trigger('click')
+    await flushPromises()
+    expect((wrapper.get('input[data-testid="create-username"]').element as HTMLInputElement).value).toBe('')
+    expect((wrapper.get('input[data-testid="create-password"]').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.find('[data-testid="create-user-error"]').exists()).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    await wrapper.get('[data-testid="cancel-create-user"]').trigger('click')
 
     const operatorRow = wrapper.findAll('.el-table__body tbody tr').find((row) => row.text().includes('operator'))
     const deleteButton = operatorRow?.findAll('button').find((button) => button.text().trim() === '删除')
     await deleteButton!.trigger('click')
     await flushPromises()
 
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
     const confirmationText = wrapper.get('[data-testid="delete-confirmation"]').text()
     expect(confirmationText).toContain('确认删除用户')
     expect(confirmationText).not.toMatch(/夹具|演示|demo|P0|P1|Mock|页面外壳|shell|本机 Mock|UserRolePanel/i)
     await wrapper.get('[data-testid="cancel-delete"]').trigger('click')
     expect(wrapper.find('[data-testid="delete-confirmation"]').exists()).toBe(false)
-    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
 
     await deleteButton!.trigger('click')
     await wrapper.get('[data-testid="confirm-delete"]').trigger('click')
@@ -640,24 +698,58 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('operator')
   })
 
-  it('shows AdminPage refresh and last-admin mutation failures', async () => {
+  it.each(['切换角色', '禁用'])('shows %s rejection feedback after a stale multi-admin listing and refresh failures', async (label) => {
+    const notify = vi.spyOn(ElMessage, 'error').mockReturnValue({ close: vi.fn() })
+    const other: User = { userId: 'USR-SECOND', username: 'second-admin', role: 'ADMIN', status: 'ACTIVE' }
     const fetchSpy = vi.fn()
-      .mockRejectedValueOnce(new Error('Users offline'))
+      .mockResolvedValueOnce(response(success([...USERS, other])))
       .mockResolvedValueOnce(response(apiFailure('LAST_ADMIN_GUARD', '不能变更最后一个管理员'), false))
+      .mockRejectedValueOnce(new Error('Users offline'))
     vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountAt(AdminPage, '/admin')
 
-    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新用户'))
-    await refreshButton!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('NETWORK_ERROR')
-    expect(wrapper.text()).toContain('Users offline')
 
-    const roleButton = wrapper.findAll('button').find((button) => button.text().includes('切换角色'))
+    const row = wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row').find(item => item.text().includes(other.username))!
+    const roleButton = row.findAll('button').find((button) => button.text().trim() === label)
+    expect(roleButton!.attributes('disabled')).toBeUndefined()
     await roleButton!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('LAST_ADMIN_GUARD')
     expect(wrapper.text()).toContain('不能变更最后一个管理员')
+    expect(notify).toHaveBeenCalledExactlyOnceWith('不能变更最后一个管理员')
+    expect(useAdminStore().users).toEqual([...USERS, other])
+    await useAdminStore().refreshUsers()
+    await flushPromises()
+    expect(wrapper.text()).toContain('NETWORK_ERROR')
+    expect(wrapper.text()).toContain('Users offline')
+    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__body tbody tr')).toHaveLength(0)
+  })
+
+  it.each(['only-account', 'with-operator', 'with-disabled-admin'])('protects the sole active administrator (%s)', async (scenario) => {
+    const records: User[] = scenario === 'only-account' ? [USERS[0]!] : [...USERS]
+    if (scenario === 'with-disabled-admin') records.push({ userId: 'USR-SECOND', username: 'second-admin', role: 'ADMIN', status: 'DISABLED' })
+    const fetchSpy = vi.fn().mockResolvedValue(response(success(records)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountAt(AdminPage, '/admin')
+    await flushPromises()
+    const rows = wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row')
+    const current = rows.find(row => row.findAll('td')[0]?.text() === 'admin')!
+    for (const label of ['切换角色', '禁用', '删除']) {
+      const button = current.findAll('button').find(item => item.text() === label)!
+      expect(button.attributes('disabled')).toBeDefined()
+      expect(button.attributes('title')).toContain('当前登录')
+      await button.trigger('click')
+    }
+    if (scenario === 'with-disabled-admin') {
+      const disabled = rows.find(row => row.text().includes('second-admin'))!
+      const demote = disabled.findAll('button').find(item => item.text() === '切换角色')!
+      expect(demote.attributes('disabled')).toBeDefined()
+      expect(demote.attributes('title')).toContain('至少一个启用的管理员')
+      expect(disabled.findAll('button').find(item => item.text() === '启用')!.attributes('disabled')).toBeUndefined()
+    }
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
   })
 
   it.each([
@@ -677,33 +769,30 @@ describe('P1 authentication and routing', () => {
       status: 'ACTIVE',
       secret: 'must-not-cross-the-contract',
     }],
-  ])('keeps the prior AdminPage projection for %s', async (_caseName, invalidUser) => {
+  ])('clears the AdminPage projection for %s', async (_caseName, invalidUser) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(success([invalidUser]))))
     const { wrapper } = await mountAt(AdminPage, '/admin')
 
-    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新用户'))
-    await refreshButton!.trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('INVALID_RESPONSE')
-    expect(wrapper.text()).toContain('admin')
+    expect(wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__body tbody tr')).toHaveLength(0)
     expect(wrapper.text()).not.toContain('broken')
   })
 
-  it('shows AdminPage LOADING then VALIDATING while a refresh response is pending', async () => {
+  it('disables account creation during automatic loading and validation', async () => {
     const fetchResult = deferred<Response>()
     const jsonResult = deferred<ReturnType<typeof success<User[]>>>()
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(fetchResult.promise))
     const { wrapper } = await mountAt(AdminPage, '/admin')
-    const refreshButton = wrapper.findAll('button').find((button) => button.text().includes('刷新用户'))
-
-    void refreshButton!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('LOADING')
+    expect(useAdminStore().panelState).toBe('LOADING')
+    expect(wrapper.get('[data-testid="open-create-user"]').attributes('disabled')).toBeDefined()
 
     fetchResult.resolve({ ok: true, json: () => jsonResult.promise } as Response)
     await flushPromises()
-    expect(wrapper.text()).toContain('VALIDATING')
+    expect(useAdminStore().panelState).toBe('VALIDATING')
+    expect(wrapper.get('[data-testid="open-create-user"]').attributes('disabled')).toBeDefined()
 
     jsonResult.resolve(success([{
       userId: 'USR-OPERATOR',
@@ -712,7 +801,8 @@ describe('P1 authentication and routing', () => {
       status: 'ACTIVE',
     }]))
     await flushPromises()
-    expect(wrapper.text()).toContain('SUCCESS')
+    expect(useAdminStore().panelState).toBe('SUCCESS')
+    expect(wrapper.get('[data-testid="open-create-user"]').attributes('disabled')).toBeUndefined()
   })
 
   it('keeps fixed calculation evidence on the authoritative interactions route', async () => {

@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   Batch,
@@ -146,7 +147,7 @@ export const useBatchStore = defineStore('batch', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/batches`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/batches`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify(this.form),
@@ -178,7 +179,7 @@ export const useBatchStore = defineStore('batch', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/batches/${encodeURIComponent(this.batch.batchId)}/commands`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/batches/${encodeURIComponent(this.batch.batchId)}/commands`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify({ command }),
@@ -210,7 +211,7 @@ export const useBatchStore = defineStore('batch', {
         let selectedId = batchId
         let listedBatch: Batch | undefined
         if (selectedId === undefined) {
-          const listResponse = await fetch(`${resolveMockOrigin()}/api/v1/batches`, {
+          const listResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/batches`, {
             headers: { 'X-Demo-Role': useAuthStore().role },
           })
           const batches = await readSuccess(listResponse, (value): value is Batch[] => Array.isArray(value) && value.every(isBatch))
@@ -232,7 +233,7 @@ export const useBatchStore = defineStore('batch', {
           this.resultMessage = '批次尚未形成可读取的运行结果。'
           return true
         }
-        const detailResponse = await fetch(`${resolveMockOrigin()}/api/v1/batches/${encodeURIComponent(selectedId)}`, {
+        const detailResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/batches/${encodeURIComponent(selectedId)}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         if (epoch !== this.requestEpoch) return false

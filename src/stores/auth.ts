@@ -1,3 +1,4 @@
+import { apiFetch, invalidateSessionRequests } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   ApiFailure,
@@ -221,7 +222,7 @@ function isApiFailure(value: unknown): value is ApiFailure {
 function isAuthResult(value: unknown): value is AuthResult {
   if (typeof value !== 'object' || value === null) return false
   const candidate = value as { authenticated?: unknown; principal?: unknown; reason?: unknown; sessionCreated?: unknown }
-  if (typeof candidate.authenticated !== 'boolean' || candidate.sessionCreated !== false) return false
+  if (typeof candidate.authenticated !== 'boolean' || typeof candidate.sessionCreated !== 'boolean') return false
   const supportedReason = candidate.reason === undefined
     || candidate.reason === 'INVALID_CREDENTIALS'
     || candidate.reason === 'ACCOUNT_LOCKED'
@@ -282,7 +283,7 @@ function readPermissionSet(value: unknown): PermissionSet | undefined {
  * @remarks This pure validator performs no network access and does not mutate store state.
  */
 function isLoginUsername(username: string): username is LoginRequest['username'] {
-  return username === 'admin' || username === 'operator' || username === 'locked'
+  return username.length > 0 && username.length <= 64
 }
 
 /**
@@ -294,7 +295,7 @@ function isLoginUsername(username: string): username is LoginRequest['username']
  */
 function toLoginRequest(credentials: LoginCredentials): LoginRequest | undefined {
   const username = credentials.username.trim()
-  if (!isLoginUsername(username) || !credentials.password.trim()) return undefined
+  if (!isLoginUsername(username) || !credentials.password.trim() || credentials.password.length > 128) return undefined
   return { username, passwordFixture: credentials.password }
 }
 
@@ -311,9 +312,8 @@ function isAuthResultForRequest(
   result: AuthResult,
   request: LoginRequest,
 ): result is AuthResult & { authenticated: true; principal: Principal } {
-  if (!result.authenticated || result.principal === undefined || request.username === 'locked') return false
-  const expectedRole: Role = request.username === 'admin' ? 'ADMIN' : 'OPERATOR'
-  return result.principal.username === request.username && result.principal.role === expectedRole
+  if (!result.authenticated || result.principal === undefined) return false
+  return result.principal.username === request.username
 }
 
 export const useAuthStore = defineStore('auth', {
@@ -328,6 +328,7 @@ export const useAuthStore = defineStore('auth', {
       lastDenial: null as RbacDecision | null,
       lastCode: null as AuthFeedbackCode | null,
       lastMessage: '',
+      requestEpoch: 0,
     }
   },
 
@@ -335,14 +336,16 @@ export const useAuthStore = defineStore('auth', {
     /**
      * 通过冻结的开发传输合同验证应用凭据。
      *
-     * @param credentials - 用户输入的用户名和密码，仅支持固定用户名进入网络请求。
+     * @param credentials - 用户输入的用户名和密码；本机入口验证 SQLite 中的账号。
      * @returns 校验通过的认证结果，或按安全关闭策略生成的未认证结果。
      * @remarks 依次更新认证阶段并对有效输入发起一次回环 POST；成功时替换内存主体并持久化
      * 安全身份投影，失败时恢复 OPERATOR 基线并清除会话投影，且绝不持久化密码。
      */
     async login(credentials: LoginCredentials): Promise<AuthResult> {
+      invalidateSessionRequests()
       clearStoredPrincipal()
       this.authState = 'LOADING'
+      const epoch = ++this.requestEpoch
       this.principal = null
       this.role = 'OPERATOR'
       this.permissions = []
@@ -353,6 +356,7 @@ export const useAuthStore = defineStore('auth', {
 
       // Yield between the three visible phases so assistive UI and tests can observe the contract order.
       await Promise.resolve()
+      if (epoch !== this.requestEpoch) return { authenticated: false, sessionCreated: false }
       this.authState = 'VALIDATING'
 
       const request = toLoginRequest(credentials)
@@ -370,18 +374,18 @@ export const useAuthStore = defineStore('auth', {
         return result
       }
 
-      this.role = request.username === 'admin' ? 'ADMIN' : 'OPERATOR'
-
       await Promise.resolve()
+      if (epoch !== this.requestEpoch) return { authenticated: false, sessionCreated: false }
       this.authState = 'EXECUTING'
 
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/auth/login`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(request),
         })
         const payload: unknown = await response.json().catch(() => undefined)
+        if (epoch !== this.requestEpoch) return { authenticated: false, sessionCreated: false }
         const result = readAuthResult(payload)
 
         if (response.ok && result !== undefined && isAuthResultForRequest(result, request)) {
@@ -426,6 +430,7 @@ export const useAuthStore = defineStore('auth', {
         clearStoredPrincipal()
         return rejected
       } catch {
+        if (epoch !== this.requestEpoch) return { authenticated: false, sessionCreated: false }
         const result: AuthResult = { authenticated: false, sessionCreated: false }
         this.principal = null
         this.role = 'OPERATOR'
@@ -440,12 +445,49 @@ export const useAuthStore = defineStore('auth', {
     },
 
     /**
-     * 刷新当前已认证角色的权限。
+     * 启动时向服务端验证 Cookie 会话，缓存身份不作为本机鉴权凭据。
      *
-     * @returns 接受与当前角色匹配的权限集时返回 true，否则返回 false。
-     * @remarks 无参数；主体存在时发起一次回环 GET，成功时更新内存主体及会话投影，响应无效、
-     * 无主体或传输失败时清除全部认证能力和会话投影。
+     * @returns 校验或失败清理完成后结束，供启动流程继续挂载。
+     * @remarks 请求与响应体共用 5 秒期限；超时不保留缓存身份，迟到结果不写入状态。
      */
+    async restoreSession(): Promise<void> {
+      const epoch = this.requestEpoch
+      const controller = new AbortController()
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            controller.abort()
+            reject(new Error('会话恢复超时。'))
+          }, 5000)
+        })
+        // 竞争包含完整读取过程；即便传输层忽略 abort，也不会阻塞启动或回写迟到身份。
+        const { response, result } = await Promise.race([
+          (async () => {
+            const response = await apiFetch(`${resolveMockOrigin()}/api/v1/auth/session`, { signal: controller.signal })
+            const result = response.headers.get('X-Auth-Mode') === 'mock' ? undefined : readAuthResult(await response.json())
+            return { response, result }
+          })(),
+          timeout,
+        ])
+        if (epoch !== this.requestEpoch) return
+        if (response.headers.get('X-Auth-Mode') === 'mock') return
+        if (!response.ok || !result?.authenticated || !result.principal || !result.sessionCreated) { this.resetToSafeEmpty(); return }
+        this.principal = result.principal
+        this.role = result.principal.role
+        this.permissions = [...result.principal.permissions]
+        this.authState = 'SUCCESS'
+        storePrincipal(result.principal)
+      } catch { if (epoch === this.requestEpoch) this.resetToSafeEmpty() }
+      finally { clearTimeout(timer) }
+    },
+
+    async logout(): Promise<void> {
+      this.resetToSafeEmpty()
+      const response = await apiFetch(`${resolveMockOrigin()}/api/v1/auth/logout`, { method: 'POST', signal: AbortSignal.timeout(5000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) })
+      if (!response.ok) throw new Error('服务端退出失败。')
+    },
+
     async refreshPermissions(): Promise<boolean> {
       if (this.principal === null) {
         this.resetToSafeEmpty()
@@ -455,7 +497,7 @@ export const useAuthStore = defineStore('auth', {
       const principal = this.principal
       this.authState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/auth/permissions`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/auth/permissions`, {
           method: 'GET',
           headers: { 'X-Demo-Role': this.role },
         })
@@ -519,6 +561,8 @@ export const useAuthStore = defineStore('auth', {
      * 中的身份投影，不访问 Cookie 或 localStorage。
      */
     resetToSafeEmpty(): void {
+      invalidateSessionRequests()
+      this.requestEpoch += 1
       this.principal = null
       this.role = 'OPERATOR'
       this.permissions = []

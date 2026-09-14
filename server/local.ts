@@ -3,6 +3,7 @@ import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
 import { readLocalReplay } from './local/afsim-replay-reader.js'
+import { AuthSqliteStorage } from './local/auth-sqlite.js'
 
 // 本机文件配置与纯 Mock 入口分离；路径只存于忽略的 .env.local，不写入共享代码。
 try {
@@ -15,6 +16,9 @@ if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new RangeError('
 const logPath = process.env.AFSIM_EVENT_LOG_PATH?.trim()
 const positionPath = process.env.AFSIM_POSITION_LOG_PATH?.trim()
 const scenarioDbPath = process.env.SCENARIO_DB_PATH?.trim()
+if (!scenarioDbPath) throw new Error('本机启动必须配置 SCENARIO_DB_PATH，不允许回退到 Mock 登录。')
+const authStorage = new AuthSqliteStorage(scenarioDbPath, process.env.AUTH_BOOTSTRAP_PASSWORD)
+delete process.env.AUTH_BOOTSTRAP_PASSWORD
 // 动态导入保证未配置 SQLite 的原有 Mock/文件入口不加载数据库驱动。
 const scenarioStorage = scenarioDbPath
   ? new (await import('./local/scenario-sqlite.js')).ScenarioSqliteStorage(scenarioDbPath)
@@ -35,8 +39,10 @@ const server = createMockServer({
   loadLocalReplay: logPath ? () => readLocalReplay(logPath, positionPath) : undefined,
   scenarioStorage,
   templateStorage,
+  authStorage,
 })
 function closeStorage(): void {
+  authStorage.close()
   scenarioStorage?.close()
   templateStorage?.close()
 }

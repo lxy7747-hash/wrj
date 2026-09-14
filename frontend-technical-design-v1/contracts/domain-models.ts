@@ -34,8 +34,8 @@ export type Permission =
   | 'BATCH_LEVEL_III_EXPORT';
 export interface Principal { userId: Identifier; username: string; role: Role; permissions: readonly Permission[]; }
 export interface RbacDecision { allowed: boolean; permission: Permission; reason?: 'PERMISSION_DENIED' | 'LAST_ADMIN_GUARD' | 'CONFIRMATION_REQUIRED'; }
-export interface LoginRequest { username: 'admin' | 'operator' | 'locked'; passwordFixture: string; }
-export interface AuthResult { authenticated: boolean; principal?: Principal; reason?: 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED'; sessionCreated: false; }
+export interface LoginRequest { username: string; passwordFixture: string; }
+export interface AuthResult { authenticated: boolean; principal?: Principal; reason?: 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED'; sessionCreated: boolean; }
 
 /** Four business information-node roles counted by the 50-node capacity rule. */
 export type BusinessInformationNodeType =
@@ -185,7 +185,7 @@ export interface ValidationResult { valid: boolean; errors: ValidationIssue[]; w
 export interface JammerUiExtension { jammerId: Identifier; direction: Degrees; duration: Seconds; enabled: boolean; }
 export interface SensorUiExtension { sensorId: Identifier; type: 'ESM'; direction: 'OMNI' | Degrees; probability: Ratio01; enabled: boolean; }
 export interface ScenarioUiExtensions { jammers: JammerUiExtension[]; sensors: SensorUiExtension[]; }
-export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; }
+export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; expectedRevision?: number; }
 export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; officialLibraryChanged: false; locked: boolean; }
 export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface ScriptContract { scriptId: Identifier; taskId: TaskId; scenarioId: ScenarioId; configVersion: string; target: 'AFSIM 2.9.0'; checksum: string; preview: string; generatedTime: Iso8601Utc; }
@@ -194,7 +194,7 @@ export interface MutationRequest { expectedRevision: number; }
 export interface ScenarioImportRequest { items: ScenarioConfig[]; }
 export interface ScenarioImportResult { imported: number; rejected: number; drafts: ScenarioDraft[]; }
 export interface TemplateMutationRequest { name: string; config: ScenarioConfig; uiExtensions?: ScenarioDraft['uiExtensions']; }
-export interface CopyTemplateRequest { name: string; }
+export interface CopyTemplateRequest { name: string; scenarioId?: ScenarioId; }
 /** warningConfirmationId is mandatory by business rule when validation has WARNING and no ERROR. */
 export interface ScriptPreviewRequest { scenarioId: ScenarioId; warningConfirmationId?: Identifier; }
 export interface PreflightRequest { checksum: string; }
@@ -313,13 +313,14 @@ export interface ConfirmationContext { confirmationId: Identifier; state: Confir
 export interface User { userId: Identifier; username: string; role: Role; status: 'ACTIVE' | 'DISABLED' | 'LOCKED'; lastLoginAt?: Iso8601Utc; }
 export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; }
 export interface MasterDataRequest { operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: MasterData; confirmationId?: Identifier; }
-export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; }
+export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
 export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE'; checksum: string; createdAt: Iso8601Utc; }
 export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; confirmationId: Identifier; }
 export interface RestoreRequest { operation: 'RESTORE'; backupId: Identifier; confirmationId: Identifier; }
 export interface AuditRecord { auditId: Identifier; actor: string; role: Role; module: string; action: string; objectId?: Identifier; result: 'SUCCESS' | 'DENIED' | 'ERROR'; occurredAt: Iso8601Utc; immutableFixture: true; }
 export interface AuditRequest { from?: Iso8601Utc; to?: Iso8601Utc; actor?: string; role?: Role; module?: string; action?: string; result?: AuditRecord['result']; export?: boolean; confirmationId?: Identifier; }
 export interface AuditExportRequest extends AuditRequest { export: true; confirmationId: Identifier; }
+export interface AuditExportResult { objectId: 'AUDIT-LOG'; generated: true; classification: 'INTERNAL'; watermark: string; verifiedAt: Iso8601Utc; fileName: string; content: string; recordCount: number; }
 export interface SystemHealth { ui: 'HEALTHY'; engine: 'NOT_CONNECTED_BY_DESIGN'; database: 'NOT_CONNECTED_BY_DESIGN'; channel: 'NOT_CONNECTED_BY_DESIGN'; }
 export interface ArchiveRecord { archiveId: ArchiveId; taskId: TaskId; scenarioId: ScenarioId; runId: RunId; replayId: ReplayId; reportId: ReportId; status: 'INDEXED'; }
 export interface DeleteResult { deleted: boolean; objectId: Identifier; }

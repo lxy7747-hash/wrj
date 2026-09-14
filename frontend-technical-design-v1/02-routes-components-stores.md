@@ -18,6 +18,8 @@
 
 未知路径重定向 `/login` 不新增命名路由。`requirePrincipal` 只检查内存 principal；`requireAdmin` 同时在 UI 产生 `PERMISSION_DENIED` 证据。真正操作仍由 mock 的 `x-rbac` 重验。
 
+2026-09-11 场景列表补充：`/scenarios` 的页面壳由 `ScenarioWorkspace.vue` 实现，复用原 `scenarios.vue` 编辑器；不增加命名路由。进入先加载列表，用户选择新建、编辑、复制或从模板创建；保存返回列表。`scenarioStore` 增加 `scenes/listState`、`loadScenes/deleteScene/prepareSceneCopy`，按编号隔离加载与写入；列表请求、编辑草稿及预览在会话重置后不得回写。删除需用户确认和最新修订，运行锁定时拒绝。模板仍为独立配置副本。
+
 ## Pinia Store 合同
 
 | Store | 唯一拥有的 state | Actions | 不得拥有 |

@@ -38,6 +38,17 @@ export interface PermissionSet {
   permissions: readonly Permission[]
 }
 
+export interface AuthStorage {
+  list(): User[]
+  verify(username: string, password: string): boolean
+  save(user: User, password?: string): void
+  delete(id: string): void
+  time(): string
+  revokeUser(id: string): void
+  readAudit(): AuditRecord[]
+  appendAudit(record: Omit<AuditRecord, 'auditId'>): void
+}
+
 export interface ProjectionFailure {
   ok: false
   code: ApiErrorCode
@@ -65,11 +76,11 @@ interface AuthRuntimeState {
  * @returns A fresh runtime state with independent user/audit arrays and reset audit sequencing.
  * @remarks Loads fixture data but performs no persistence, network, clock, or process side effects.
  */
-function createRuntimeState(): AuthRuntimeState {
+function createRuntimeState(includeAudit = true): AuthRuntimeState {
   const fixture = loadFixtureProjection()
   return {
     users: fixture.principals,
-    audit: fixture.audit,
+    audit: includeAudit ? fixture.audit : [],
     nextAuditSequence: 1,
     occurredAt: fixture.epoch,
   }
@@ -128,15 +139,36 @@ function moduleForAction(action: string): string {
 
 export class AuthProjection {
   private runtimeState = createRuntimeState()
+  private currentActor = 'admin'
+  private currentUserId = CURRENT_ADMIN_ID
+  private currentRole: Role = 'ADMIN'
+  actorId(): string { return this.currentUserId }
+  actorName(): string { return this.currentActor }
+
+  constructor(private readonly storage?: AuthStorage) {
+    if (storage) this.runtimeState.audit = []
+    this.refreshUsers()
+  }
+
+  private refreshUsers(): void {
+    if (this.storage) this.runtimeState.users = this.storage.list()
+  }
+
+  setActor(user: User): void {
+    this.currentActor = user.username
+    this.currentUserId = user.userId
+    this.currentRole = user.role
+  }
 
   /**
-   * Restores all authentication users, audit records, and deterministic counters from fixtures.
+   * Resets Mock projections; local users and audit history remain owned by SQLite.
    *
    * @returns Nothing.
-   * @remarks Replaces the complete in-memory runtime state and performs no external persistence.
+   * @remarks 本机模式不导入演示日志、不清空数据库审计记录。
    */
   reset(): void {
-    this.runtimeState = createRuntimeState()
+    this.runtimeState = createRuntimeState(!this.storage)
+    this.refreshUsers()
   }
 
   /**
@@ -146,6 +178,7 @@ export class AuthProjection {
    * @remarks Reads state without mutating it or exposing internal references.
    */
   usersSnapshot(): User[] {
+    this.refreshUsers()
     return structuredClone(this.runtimeState.users)
   }
 
@@ -156,7 +189,7 @@ export class AuthProjection {
    * @remarks Reads state without mutating it or exposing internal references.
    */
   auditSnapshot(): AuditRecord[] {
-    return structuredClone(this.runtimeState.audit)
+    return this.storage ? this.storage.readAudit() : structuredClone(this.runtimeState.audit)
   }
 
   /**
@@ -176,11 +209,12 @@ export class AuthProjection {
    * @param request - Closed username and password-fixture request received from the HTTP adapter.
    * @returns A principal-bearing success or a typed locked/invalid-credentials failure.
    * @remarks Updates last-login time for a successful user and appends a SUCCESS/ERROR audit
-   * record for every attempt; it never creates a browser session or external persistence.
+   * record for every attempt; SQLite mode persists account changes, HTTP owns session cookies.
    */
   login(request: LoginRequest): ProjectionResult<AuthResult> {
+    this.refreshUsers()
     const role = inferredRole(request.username)
-    if (request.username === 'locked') {
+    if (!this.storage && request.username === 'locked') {
       this.appendAudit(request.username, role, 'AUTH_LOGIN', undefined, 'ERROR')
       return { ok: false, code: 'ACCOUNT_LOCKED', status: 423 }
     }
@@ -194,15 +228,16 @@ export class AuthProjection {
     if (
       user === undefined
       || user.status !== 'ACTIVE'
-      || request.passwordFixture !== DEFAULT_LOGIN_PASSWORD
+      || !(this.storage ? this.storage.verify(request.username, request.passwordFixture) : request.passwordFixture === DEFAULT_LOGIN_PASSWORD)
     ) {
       this.appendAudit(request.username, user?.role ?? role, 'AUTH_LOGIN', user?.userId, 'ERROR')
       return { ok: false, code: 'INVALID_CREDENTIALS', status: 401 }
     }
 
-    user.lastLoginAt = this.runtimeState.occurredAt
+    user.lastLoginAt = this.storage?.time() ?? this.runtimeState.occurredAt
+    this.storage?.save(user)
     this.appendAudit(user.username, user.role, 'AUTH_LOGIN', user.userId, 'SUCCESS')
-    // P1 is intentionally stateless: a successful fixture login never creates persistence.
+    // HTTP 层仅在配置本机账号库时建立 Cookie 会话，纯 Mock 保持无状态。
     return {
       ok: true,
       data: {
@@ -221,6 +256,11 @@ export class AuthProjection {
    * @remarks Appends the user on success and records a SUCCESS/ERROR audit outcome.
    */
   create(command: UserRoleCommand): ProjectionResult<User> {
+    this.refreshUsers()
+    if ((this.storage || command.password !== undefined)
+      && (typeof command.password !== 'string' || !command.password.trim() || command.password.length < 6 || command.password.length > 32)) {
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'password' }
+    }
     const user = structuredClone(command.user)
     const duplicate = this.runtimeState.users.some(
       (candidate) => candidate.userId === user.userId || candidate.username === user.username,
@@ -230,6 +270,7 @@ export class AuthProjection {
       return { ok: false, code: 'CONFLICT', status: 409 }
     }
 
+    this.storage?.save(user, command.password)
     this.runtimeState.users.push(user)
     this.appendAudit('admin', 'ADMIN', 'USER_CREATE', user.userId, 'SUCCESS')
     return { ok: true, data: structuredClone(user) }
@@ -245,6 +286,7 @@ export class AuthProjection {
    * every terminal outcome; no external persistence occurs.
    */
   update(userId: string, command: UserRoleCommand): ProjectionResult<User> {
+    this.refreshUsers()
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
       this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
@@ -285,6 +327,8 @@ export class AuthProjection {
       return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
     }
 
+    this.storage?.save(next)
+    this.storage?.revokeUser(userId)
     this.runtimeState.users[index] = next
     this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'SUCCESS')
     return { ok: true, data: structuredClone(next) }
@@ -298,6 +342,7 @@ export class AuthProjection {
    * @remarks Removes one in-memory user only after guard approval and records the outcome in audit.
    */
   delete(userId: string): ProjectionResult<{ deleted: boolean; objectId: string }> {
+    this.refreshUsers()
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
       this.appendAudit('admin', 'ADMIN', 'USER_DELETE', userId, 'ERROR')
@@ -313,6 +358,7 @@ export class AuthProjection {
       return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
     }
 
+    this.storage?.delete(userId)
     this.runtimeState.users.splice(index, 1)
     this.appendAudit('admin', 'ADMIN', 'USER_DELETE', userId, 'SUCCESS')
     return { ok: true, data: { deleted: true, objectId: userId } }
@@ -384,7 +430,7 @@ export class AuthProjection {
       (candidate) => candidate.role === 'ADMIN' && candidate.status === 'ACTIVE',
     ).length
     // The fixture's current administrator is never deleted/demoted; no operation may remove the last active admin.
-    return current.userId === CURRENT_ADMIN_ID || activeAdminCount <= 1
+    return current.userId === this.currentUserId || activeAdminCount <= 1
   }
 
   /**
@@ -405,18 +451,18 @@ export class AuthProjection {
     objectId: string | undefined,
     result: AuditRecord['result'],
   ): void {
-    const auditId = `AUD-P1-${String(this.runtimeState.nextAuditSequence).padStart(4, '0')}`
-    this.runtimeState.nextAuditSequence += 1
-    this.runtimeState.audit.push({
-      auditId,
-      actor,
+    const record: Omit<AuditRecord, 'auditId'> = {
+      actor: this.storage && role === this.currentRole && (actor === 'admin' || actor === 'operator') && !action.startsWith('AUTH_') ? this.currentActor : actor,
       role,
       module: moduleForAction(action),
       action,
       ...(objectId === undefined ? {} : { objectId }),
       result,
-      occurredAt: this.runtimeState.occurredAt,
+      occurredAt: this.storage?.time() ?? this.runtimeState.occurredAt,
       immutableFixture: true,
-    })
+    }
+    if (this.storage) { this.storage.appendAudit(record); return }
+    const auditId = `AUD-P1-${String(this.runtimeState.nextAuditSequence++).padStart(4, '0')}`
+    this.runtimeState.audit.push({ auditId, ...record })
   }
 }

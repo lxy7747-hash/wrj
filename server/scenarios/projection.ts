@@ -18,8 +18,10 @@ export type ScenarioProjectionResult<T> =
   | { ok: false; code: ApiErrorCode; status: 404 | 409 | 422 | 503; fieldPath?: string; message: string }
 
 export interface ScenarioStorage {
-  load(): ScenarioDraft | undefined
+  load(id?: string): ScenarioDraft | undefined
+  list(): ScenarioDraft[]
   save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean
+  delete(id: string, revision: number): boolean
 }
 
 /**
@@ -126,13 +128,13 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
   return candidate
 }
 
-export class ScenarioProjection {
+class ScenarioDocument {
   private draft: ScenarioDraft | null
   private history: ScenarioDraft[] = []
   private persisted: { id: string; revision: number } | undefined
 
-  constructor(private readonly storage?: ScenarioStorage) {
-    this.draft = storage ? storage.load() ?? null : createDraft()
+  constructor(private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null) {
+    this.draft = storage ? storage.load() ?? null : initial
     this.persisted = this.draft && storage ? { id: this.draft.config.scenario.id, revision: this.draft.revision } : undefined
   }
 
@@ -175,7 +177,7 @@ export class ScenarioProjection {
    * @returns 找到时返回草稿副本，否则返回 404 结果。
    * @remarks 本机存储变化时刷新工作副本，纯 Mock 仅返回内存副本。
    */
-  get(scenarioId: string, currentWorkspace = false): ScenarioProjectionResult<ScenarioDraft> {
+  get(scenarioId: string): ScenarioProjectionResult<ScenarioDraft> {
     if (this.storage) {
       let stored: ScenarioDraft | undefined
       try {
@@ -193,8 +195,6 @@ export class ScenarioProjection {
         this.persisted = { id: stored.config.scenario.id, revision: stored.revision }
         this.history = []
       }
-      // 现有页面默认请求 SCN-001；本机模式将其作为当前工作场景入口，兼容导入后的编号。
-      if (this.draft && currentWorkspace && scenarioId === 'SCN-001') return { ok: true, data: structuredClone(this.draft) }
     }
     if (!this.draft || scenarioId !== this.draft.config.scenario.id) {
       return { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定场景。' }
@@ -299,10 +299,13 @@ export class ScenarioProjection {
     }
 
     if (typeof value !== 'object' || value === null || Array.isArray(value)
-      || Object.keys(value).length !== 2 || !Object.hasOwn(value, 'config') || !Object.hasOwn(value, 'uiExtensions')) {
+      || !Object.keys(value).every(key => ['config', 'uiExtensions', 'expectedRevision'].includes(key)) || !Object.hasOwn(value, 'config') || !Object.hasOwn(value, 'uiExtensions')) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '场景草稿更新结构不正确。' }
     }
     const update = value as unknown as ScenarioDraftUpdate
+    if (update.expectedRevision !== undefined && (!Number.isInteger(update.expectedRevision) || update.expectedRevision < 0 || update.expectedRevision !== (this.draft?.revision ?? 0))) {
+      return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景已被更新，请重新加载后再保存。' }
+    }
     const candidate = withDerivedPlatformAssociations(update.config)
     const inspection = inspectScenarioConfig(candidate, 'write')
     if (!inspection.result.valid) {
@@ -411,18 +414,107 @@ export class ScenarioProjection {
     if (request === undefined) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '预期修订号格式不正确。' }
     if (request.expectedRevision !== this.draft.revision) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景修订号已变化，请重新加载。' }
     const baseline = createDraft()
+    baseline.config.scenario.id = this.draft.config.scenario.id
     return this.commit({ ...baseline, revision: this.draft.revision + 1 })
   }
 
-  /**
-   * 恢复确定性场景草稿基线。
-   * @returns 无返回值。
-   * @remarks 纯 Mock 恢复修订号 4；本机存储仅重新加载已保存场景，不写库、不删除数据。
-   */
+}
+
+/** 每个场景独立维护锁、修订及撤销历史；读取列表不能切换另一个请求的写入目标。 */
+export class ScenarioProjection {
+  private documents = new Map<string, ScenarioDocument>()
+
+  constructor(private readonly storage?: ScenarioStorage) { this.reset() }
+
+  private document(id: string): ScenarioDocument {
+    let document = this.documents.get(id)
+    if (!document) {
+      document = new ScenarioDocument(this.storage ? {
+        load: () => this.storage!.load(id),
+        save: (draft, expected) => this.storage!.save(draft, expected),
+      } : undefined)
+      this.documents.set(id, document)
+    }
+    return document
+  }
+
+  list(): ScenarioDraft[] {
+    const ids = this.storage ? this.storage.list().map(item => item.config.scenario.id) : [...this.documents.keys()]
+    return ids.flatMap(id => {
+      const result = this.get(id)
+      if (!result.ok) {
+        if (result.status === 404) return []
+        throw new Error(result.message)
+      }
+      return [result.data]
+    })
+  }
+
+  get(id: string): ScenarioProjectionResult<ScenarioDraft> {
+    try { return this.document(id).get(id) }
+    catch { return { ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message: '场景数据库读取失败。' } }
+  }
+  setLocked(id: string, locked: boolean): ScenarioProjectionResult<ScenarioDraft> {
+    const current = this.get(id)
+    return current.ok ? this.document(id).setLocked(id, locked) : current
+  }
+  save(id: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    try { return this.document(id).save(id, value) }
+    catch { return { ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message: '场景数据库读取失败。' } }
+  }
+  create(value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    const id = (value as { config?: ScenarioConfig } | null)?.config?.scenario?.id
+    if (typeof id !== 'string' || !id.trim()) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'scenario.id', message: '场景编号不能为空。' }
+    const current = this.get(id)
+    if (current.ok) return { ok: false, status: 409, code: 'CONFLICT', fieldPath: 'scenario.id', message: '场景编号已存在，请重新新建。' }
+    return current.status === 404 ? this.document(id).save(id, value) : current
+  }
+  validate(id: string, value: unknown): ScenarioProjectionResult<ValidationResult> {
+    const current = this.get(id)
+    return current.ok ? this.document(id).validate(id, value) : current
+  }
+  undo(id: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    const current = this.get(id)
+    return current.ok ? this.document(id).undo(id, value) : current
+  }
+  resetDraft(id: string, value: unknown): ScenarioProjectionResult<ScenarioDraft> {
+    const current = this.get(id)
+    return current.ok ? this.document(id).resetDraft(id, value) : current
+  }
+  copyTemplate(config: ScenarioConfig, name: string, extensions?: ScenarioDraft['uiExtensions'], id = 'SCN-001'): ScenarioProjectionResult<ScenarioDraft> {
+    const current = this.get(id)
+    if (!current.ok && current.status !== 404) return current
+    const candidate = structuredClone(config)
+    candidate.scenario.id = id as ScenarioId
+    return this.document(id).copyTemplate(candidate, name, extensions)
+  }
+  importSnapshots(value: unknown): ScenarioProjectionResult<ScenarioImportResult> {
+    const id = (value as { items?: ScenarioConfig[] } | null)?.items?.[0]?.scenario?.id
+    if (typeof id !== 'string' || !id.trim()) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'items', message: '场景快照导入请求结构不正确。' }
+    const current = this.get(id)
+    if (!current.ok && current.status !== 404) return current
+    return this.document(id).importSnapshots(value)
+  }
+  delete(id: string, value: unknown): ScenarioProjectionResult<{ deleted: true; objectId: string }> {
+    const current = this.get(id)
+    if (!current.ok) return current
+    if (current.data.locked) return { ok: false, status: 409, code: 'CONFIG_LOCKED', message: '场景正在运行，不能删除。' }
+    const request = readMutationRequest(value)
+    if (!request) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'expectedRevision', message: '请提供待删除场景的修订号。' }
+    if (request.expectedRevision !== current.data.revision) return { ok: false, status: 409, code: 'CONFLICT', message: '场景已变化，请刷新列表后重试。' }
+    try {
+      if (this.storage && !this.storage.delete(id, request.expectedRevision)) return { ok: false, status: 409, code: 'CONFLICT', message: '场景已变化，请刷新列表后重试。' }
+    } catch { return { ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message: '场景删除失败，原数据未改变。' } }
+    this.documents.delete(id)
+    return { ok: true, data: { deleted: true, objectId: id } }
+  }
   reset(): void {
-    const stored = this.storage?.load()
-    this.draft = this.storage ? stored ?? null : createDraft()
-    this.persisted = stored ? { id: stored.config.scenario.id, revision: stored.revision } : undefined
-    this.history = []
+    // 先验证全部存量数据，失败不清掉运行期上下文。
+    this.storage?.list()
+    this.documents.clear()
+    if (!this.storage) {
+      const initial = createDraft()
+      this.documents.set(initial.config.scenario.id, new ScenarioDocument(undefined, initial))
+    }
   }
 }

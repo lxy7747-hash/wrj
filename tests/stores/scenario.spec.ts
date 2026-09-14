@@ -196,6 +196,40 @@ function deferred<T>(): {
 }
 
 describe('P2-1 场景 Store', () => {
+  it('失败重试保留目标编号；切换、新建、复制和返回列表重置不会沿用旧编号', async () => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const sceneB = scenarioDraft()
+    sceneB.config.scenario.id = 'SCN-B'
+    const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new Error('offline again'))
+      .mockResolvedValueOnce(jsonResponse(success(sceneB)))
+      .mockResolvedValue(jsonResponse(success(scenarioDraft())))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(await store.loadScenario('SCN-B')).toBe(false)
+    expect(store.draft).toBeNull()
+    expect(store.currentScenarioId).toBe('SCN-B')
+    expect(await store.loadScenario()).toBe(false)
+    expect(store.currentScenarioId).toBe('SCN-B')
+    expect(await store.loadScenario()).toBe(true)
+    expect(store.draft?.config.scenario.id).toBe('SCN-B')
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual(Array(3).fill('http://127.0.0.1:4173/api/v1/scenarios/SCN-B'))
+    expect(await store.loadScenario('SCN-001')).toBe(true)
+    expect(store.currentScenarioId).toBe('SCN-001')
+    store.resetToSafeEmpty()
+    expect(store.currentScenarioId).toBeNull()
+    expect(store.createScenario()).toBe(true)
+    expect(store.currentScenarioId).toBe(store.draft!.config.scenario.id)
+    const newId = store.currentScenarioId
+    expect(store.prepareSceneCopy(sceneB.config, sceneB.uiExtensions, 'B 副本')).toBe(true)
+    expect(store.currentScenarioId).toBe(store.draft!.config.scenario.id)
+    expect(store.currentScenarioId).not.toBe(newId)
+    store.resetToSafeEmpty()
+    expect(store.currentScenarioId).toBeNull()
+    expect(await store.loadScenario()).toBe(true)
+    expect(fetchSpy.mock.calls.at(-1)![0]).toBe('http://127.0.0.1:4173/api/v1/scenarios/SCN-001')
+  })
+
   it('新建只生成空白本地草稿，不请求接口；不完整配置校验/保存被阻止', async () => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const fetchSpy = vi.fn()
@@ -229,7 +263,7 @@ describe('P2-1 场景 Store', () => {
     expect(store.draft).toBeNull()
   })
 
-  it('新草稿填齐后本地校验不请求不存在的资源，首次保存才 PUT，重载一致', async () => {
+  it('新草稿填齐后本地校验不请求不存在的资源，首次保存才 POST，重载一致', async () => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
@@ -247,8 +281,8 @@ describe('P2-1 场景 Store', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
     fetchSpy.mockResolvedValue(jsonResponse(success(complete)))
     expect(await store.saveScenario()).toBe(true)
-    expect(fetchSpy.mock.calls[0]![0]).toContain(`/scenarios/${id}`)
-    expect(fetchSpy.mock.calls[0]![1].method).toBe('PUT')
+    expect(fetchSpy.mock.calls[0]![0]).toBe('http://127.0.0.1:4173/api/v1/scenarios')
+    expect(fetchSpy.mock.calls[0]![1].method).toBe('POST')
     expect(store.draft!.revision).toBe(1)
     expect(store.dirty).toBe(false)
     await store.loadScenario(id)
@@ -298,7 +332,7 @@ describe('P2-1 场景 Store', () => {
 
     expect(fetchSpy).toHaveBeenCalledWith(
       'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
-      { headers: { 'X-Demo-Role': 'OPERATOR' } },
+      { headers: { 'X-Demo-Role': 'OPERATOR' }, credentials: 'include' },
     )
     expect(scenario.draft?.config.scenario.name).toBe('跨海通联演示')
     expect(scenario.draft?.config.scenario.duration).toBe(7200)
@@ -308,6 +342,49 @@ describe('P2-1 场景 Store', () => {
     })
     expect(scenario.panelState).toBe('SUCCESS')
     expect(scenario.dirty).toBe(false)
+  })
+
+  it('列表不自动选中场景，拒绝重复身份及非法记录；重置淘汰在途列表', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success([scenarioDraft()])))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(await store.loadScenes()).toBe(true)
+    expect(store.scenes).toHaveLength(1)
+    expect(store.draft).toBeNull()
+    for (const data of [[scenarioDraft(), scenarioDraft()], [{}], null]) {
+      fetchSpy.mockResolvedValueOnce(jsonResponse(success(data)))
+      expect(await store.loadScenes()).toBe(false)
+      expect(store.listState).toBe('ERROR')
+      expect(store.scenes).toEqual([])
+    }
+    let release!: (value: Response) => void
+    fetchSpy.mockReturnValueOnce(new Promise<Response>(resolve => { release = resolve }))
+    const loading = store.loadScenes()
+    store.resetToSafeEmpty()
+    release(jsonResponse(success([scenarioDraft()])))
+    expect(await loading).toBe(false)
+    expect(store.listState).toBe('EMPTY')
+    expect(store.scenes).toEqual([])
+  })
+
+  it('复制生成独立未保存身份，删除携带对应修订并刷新列表', async () => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const original = scenarioDraft()
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(store.prepareSceneCopy(original.config, original.uiExtensions, '副本')).toBe(true)
+    expect(store.draft?.config.scenario.id).not.toBe(original.config.scenario.id)
+    expect(store.draft?.revision).toBe(0)
+    expect(store.dirty).toBe(true)
+    expect(original.config.scenario.name).not.toBe('副本')
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(await store.deleteScene({ ...original, locked: true })).toBe(false)
+    fetchSpy.mockResolvedValueOnce(jsonResponse(success({ deleted: true, objectId: original.config.scenario.id })))
+      .mockResolvedValueOnce(jsonResponse(success([])))
+    expect(await store.deleteScene(original)).toBe(true)
+    expect(fetchSpy.mock.calls[0]).toEqual(['http://127.0.0.1:4173/api/v1/scenarios/SCN-001?expectedRevision=4', expect.objectContaining({ method: 'DELETE' })])
+    expect(store.listState).toBe('EMPTY')
   })
 
   it('保存有效修改并使用服务端返回的修订号', async () => {
@@ -331,6 +408,7 @@ describe('P2-1 场景 Store', () => {
         body: JSON.stringify({
           config: { ...scenarioDraft().config, scenario: { ...scenarioDraft().config.scenario, name: '台海通联验证场景' } },
           uiExtensions: scenarioDraft().uiExtensions,
+          expectedRevision: 4,
         }),
       }),
     )
@@ -791,7 +869,7 @@ describe('P2-6 场景模板 Store', () => {
     expect(scenario.lastConfirmation).toEqual({ ...confirmed, state: 'CLOSED' })
     expect(fetchSpy).toHaveBeenNthCalledWith(3,
       'http://127.0.0.1:4173/api/v1/templates/TPL-SCN-002',
-      { method: 'DELETE', headers: { 'X-Demo-Role': 'ADMIN', 'X-Confirmation-Id': awaiting.confirmationId } },
+      { method: 'DELETE', credentials: 'include', headers: { 'X-Demo-Role': 'ADMIN', 'X-Confirmation-Id': awaiting.confirmationId } },
     )
 
     await expect(scenario.deleteTemplate('TPL-SCN-001')).resolves.toBe(false)

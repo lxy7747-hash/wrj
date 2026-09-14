@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   ApiFailure,
@@ -810,7 +811,7 @@ export const useTelemetryStore = defineStore('telemetry', {
 
       this.jammerControlState = 'EXECUTING'
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/commands`,
           {
             method: 'POST',
@@ -861,7 +862,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       }
       this.closedLoopState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify(context),
@@ -942,7 +943,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       }
       this.syncState = 'EXECUTING'
       try {
-        const response = await fetch(
+        const response = await apiFetch(
           `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/parameters`,
           {
             method: 'POST',
@@ -997,8 +998,8 @@ export const useTelemetryStore = defineStore('telemetry', {
       try {
         const headers = { 'X-Demo-Role': useAuthStore().role }
         const [frameResponse, eventResponse] = await Promise.all([
-          fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/frames/${encodeURIComponent(frameId)}`, { headers }),
-          fetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/frames/${encodeURIComponent(frameId)}`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, { headers }),
         ])
         if (epoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'

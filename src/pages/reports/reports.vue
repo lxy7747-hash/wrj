@@ -7,6 +7,7 @@ import type { ReportExportRequest } from '../../contracts/domain-models'
 import { useBatchStore } from '../../stores/batch'
 import { useReportStore } from '../../stores/report'
 import { useTelemetryStore } from '../../stores/telemetry'
+import { formatDateTime } from '../../features/shared/date-time'
 
 const reportStore = useReportStore()
 const batchStore = useBatchStore()
@@ -114,7 +115,7 @@ async function confirmExport(): Promise<void> {
       type="success"
       show-icon
       :closable="false"
-      :title="`${exportResult.watermark} · 验证时刻 ${exportResult.verifiedAt}`"
+      :title="`${exportResult.watermark} · 验证时刻 ${formatDateTime(exportResult.verifiedAt)}`"
     />
 
     <el-dialog

@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   ApiErrorCode,
@@ -193,6 +194,7 @@ function readDeleteResult(payload: unknown): DeleteResult | undefined {
 export const useScenarioStore = defineStore('scenario', {
   state: () => ({
     draft: null as ScenarioDraft | null,
+    currentScenarioId: null as ScenarioId | null,
     panelState: 'EMPTY' as CapabilityState,
     dirty: false,
     validation: { valid: true, errors: [], warnings: [] } as ValidationResult,
@@ -212,9 +214,75 @@ export const useScenarioStore = defineStore('scenario', {
     requestEpoch: 0,
     scriptEpoch: 0,
     localImportEpoch: 0,
+    scenes: [] as ScenarioDraft[],
+    listState: 'EMPTY' as CapabilityState,
+    listMessage: '',
+    listEpoch: 0,
   }),
 
   actions: {
+    async loadScenes(): Promise<boolean> {
+      const epoch = ++this.listEpoch
+      const session = this.requestEpoch
+      this.listState = 'LOADING'
+      this.listMessage = ''
+      try {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios`, { headers: { 'X-Demo-Role': useAuthStore().role } })
+        const payload = await readJson(response)
+        if (epoch !== this.listEpoch || session !== this.requestEpoch) return false
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
+        const data = unwrapSuccessData(payload)
+        if (!Array.isArray(data)) throw new InvalidScenarioResponseError()
+        const scenes = data.map(item => readScenarioDraft({ ok: true, data: item }))
+        if (scenes.some(item => !item) || new Set(scenes.map(item => item!.config.scenario.id)).size !== scenes.length) throw new InvalidScenarioResponseError()
+        this.scenes = scenes as ScenarioDraft[]
+        this.listState = scenes.length ? 'SUCCESS' : 'EMPTY'
+        return true
+      } catch (error) {
+        if (epoch !== this.listEpoch || session !== this.requestEpoch) return false
+        this.scenes = []
+        this.listState = 'ERROR'
+        this.listMessage = readApiFailure(error)?.error.message ?? (error instanceof Error ? error.message : '场景列表加载失败。')
+        return false
+      }
+    },
+    async deleteScene(scene: ScenarioDraft): Promise<boolean> {
+      if (scene.locked || !useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
+      const epoch = this.requestEpoch
+      this.listState = 'EXECUTING'
+      try {
+        const id = scene.config.scenario.id
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}?expectedRevision=${scene.revision}`, {
+          method: 'DELETE', headers: { 'X-Demo-Role': useAuthStore().role },
+        })
+        const payload = await readJson(response)
+        if (epoch !== this.requestEpoch) return false
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
+        if (readDeleteResult(payload)?.objectId !== id) throw new InvalidScenarioResponseError()
+        if (this.draft?.config.scenario.id === id) this.resetToSafeEmpty()
+        await this.loadScenes()
+        return true
+      } catch (error) {
+        if (epoch !== this.requestEpoch) return false
+        this.listState = 'ERROR'
+        this.listMessage = readApiFailure(error)?.error.message ?? '场景删除失败，请刷新后重试。'
+        return false
+      }
+    },
+    /** 复制只创建待保存草稿，生成新身份；不会改写来源场景或模板。 */
+    prepareSceneCopy(config: ScenarioConfig, extensions: ScenarioDraft['uiExtensions'], name: string): boolean {
+      if (!useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
+      this.resetToSafeEmpty()
+      this.draft = { config: structuredClone(toRaw(config)), uiExtensions: structuredClone(toRaw(extensions)), revision: 0, locked: false, officialLibraryChanged: false }
+      this.draft.config.scenario.id = `SCN-${crypto.randomUUID()}` as ScenarioId
+      this.currentScenarioId = this.draft.config.scenario.id
+      this.draft.config.scenario.name = name
+      this.dirty = true
+      this.panelState = 'SUCCESS'
+      this.resultCode = 'SCENARIO_NEW'
+      this.resultMessage = '场景副本尚未保存。'
+      return true
+    },
     /** 初始空态的新建动作只创建本地草稿，不请求接口、不覆盖已有草稿。 */
     createScenario(): boolean {
       if (this.draft !== null || this.panelState !== 'EMPTY') return false
@@ -227,6 +295,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.clearScriptPreview()
       this.lastConfirmation = null
       this.draft = createEmptyScenarioDraft(`SCN-${crypto.randomUUID()}`)
+      this.currentScenarioId = this.draft.config.scenario.id
       this.dirty = true
       this.validation = { valid: true, errors: [], warnings: [] }
       this.panelState = 'SUCCESS'
@@ -280,16 +349,23 @@ export const useScenarioStore = defineStore('scenario', {
 
     /**
      * 从本机 Node.js Mock 服务加载指定场景草稿。
-     * @param scenarioId 需要加载的场景编号，默认读取确定性场景 SCN-001。
+     * @param scenarioId 需要加载的场景编号；省略时重试当前场景，尚未选择时才读取 SCN-001。
      * @returns 加载成功时返回 `true`，失败时返回 `false`。
      * @sideEffects 更新六态面板状态；成功时替换草稿并清除未保存标记。
      */
-    async loadScenario(scenarioId: ScenarioId = 'SCN-001'): Promise<boolean> {
-      const requestEpoch = this.requestEpoch
+    async loadScenario(scenarioId?: ScenarioId): Promise<boolean> {
+      scenarioId ??= this.draft?.config.scenario.id ?? this.currentScenarioId ?? 'SCN-001'
+      const requestEpoch = ++this.requestEpoch
+      // 加载失败仍保留目标身份，不依赖即将清空的草稿。
+      this.currentScenarioId = scenarioId
+      this.draft = null
+      this.dirty = false
+      this.lastConfirmation = null
+      this.clearScriptPreview()
       this.panelState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return false
@@ -310,9 +386,10 @@ export const useScenarioStore = defineStore('scenario', {
         }
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
-        if (draft === undefined) throw new InvalidScenarioResponseError()
+        if (draft === undefined || draft.config.scenario.id !== scenarioId) throw new InvalidScenarioResponseError()
 
         this.draft = draft
+        this.currentScenarioId = draft.config.scenario.id
         this.dirty = false
         this.validation = { valid: true, errors: [], warnings: [] }
         this.panelState = 'SUCCESS'
@@ -426,7 +503,7 @@ export const useScenarioStore = defineStore('scenario', {
 
       this.panelState = 'VALIDATING'
       this.validation = inspectScenarioConfig(this.draft.config, 'write').result
-      // 新草稿尚无服务端资源，使用同一规则本地预检；首次 PUT 仍由服务端再次严格校验。
+      // 新草稿尚无服务端资源，使用同一规则本地预检；首次 POST 仍由服务端再次严格校验。
       if (this.draft.revision === 0) {
         const valid = this.validation.valid
         this.panelState = valid ? 'SUCCESS' : 'ERROR'
@@ -437,7 +514,7 @@ export const useScenarioStore = defineStore('scenario', {
       try {
         this.panelState = 'EXECUTING'
         const scenarioId = this.draft.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/validate`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ config: this.draft.config }),
@@ -524,13 +601,14 @@ export const useScenarioStore = defineStore('scenario', {
       try {
         this.panelState = 'EXECUTING'
         const scenarioId = this.draft.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}`, {
-          method: 'PUT',
+        const creating = this.draft.revision === 0
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios${creating ? '' : `/${encodeURIComponent(scenarioId)}`}`, {
+          method: creating ? 'POST' : 'PUT',
           headers: {
             'Content-Type': 'application/json',
             'X-Demo-Role': auth.role,
           },
-          body: JSON.stringify({ config: this.draft.config, uiExtensions: this.draft.uiExtensions }),
+          body: JSON.stringify({ config: this.draft.config, uiExtensions: this.draft.uiExtensions, expectedRevision: this.draft.revision }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.panelState = 'VALIDATING'
@@ -538,9 +616,10 @@ export const useScenarioStore = defineStore('scenario', {
         if (requestEpoch !== this.requestEpoch) return false
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
         const draft = readScenarioDraft(payload)
-        if (draft === undefined) throw new InvalidScenarioResponseError()
+        if (draft === undefined || draft.config.scenario.id !== scenarioId) throw new InvalidScenarioResponseError()
 
         this.draft = draft
+        this.currentScenarioId = draft.config.scenario.id
         this.dirty = false
         this.validation = { valid: true, errors: [], warnings: [] }
         this.panelState = 'SUCCESS'
@@ -565,7 +644,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return false
@@ -598,7 +677,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'LOADING'
       try {
         const auth = useAuthStore()
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (requestEpoch !== this.requestEpoch) return undefined
@@ -647,7 +726,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ name: name.trim(), config: templateConfig, ...(templateExtensions === undefined ? {} : { uiExtensions: templateExtensions }) }),
@@ -719,7 +798,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ name, config: this.draft.config, uiExtensions: this.draft.uiExtensions }),
@@ -765,10 +844,10 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ name }),
+          body: JSON.stringify({ name, scenarioId: this.draft?.config.scenario.id ?? `SCN-${crypto.randomUUID()}` }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.templateState = 'VALIDATING'
@@ -778,6 +857,7 @@ export const useScenarioStore = defineStore('scenario', {
         const draft = readScenarioDraft(payload)
         if (draft === undefined) throw new InvalidScenarioResponseError()
         this.draft = draft
+        this.currentScenarioId = draft.config.scenario.id
         this.dirty = false
         this.validation = { valid: true, errors: [], warnings: [] }
         this.templateState = 'SUCCESS'
@@ -834,7 +914,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.templateState = 'VALIDATING'
       try {
         this.templateState = 'EXECUTING'
-        const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+        const createResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ action: 'OFFICIAL_TEMPLATE_DELETE', objectId: templateId }),
@@ -846,7 +926,7 @@ export const useScenarioStore = defineStore('scenario', {
         if (awaiting === undefined) throw new InvalidScenarioResponseError()
         this.lastConfirmation = awaiting
 
-        const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+        const confirmResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ confirm: true }),
@@ -859,7 +939,7 @@ export const useScenarioStore = defineStore('scenario', {
         }
         this.lastConfirmation = confirmed
 
-        const deleteResponse = await fetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
+        const deleteResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}`, {
           method: 'DELETE',
           headers: { 'X-Demo-Role': auth.role, 'X-Confirmation-Id': awaiting.confirmationId },
         })
@@ -909,7 +989,7 @@ export const useScenarioStore = defineStore('scenario', {
       const requestEpoch = this.requestEpoch
       this.panelState = 'EXECUTING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/import`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/import`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ items: [value] }),
@@ -920,6 +1000,7 @@ export const useScenarioStore = defineStore('scenario', {
         const result = readScenarioImportResult(payload)
         if (result === undefined || result.imported !== 1 || result.rejected !== 0 || result.drafts.length !== 1) throw new InvalidScenarioResponseError()
         this.draft = result.drafts[0]
+        this.currentScenarioId = this.draft.config.scenario.id
         this.dirty = false
         this.validation = { valid: true, errors: [], warnings: [] }
         this.panelState = 'SUCCESS'
@@ -960,7 +1041,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.panelState = 'EXECUTING'
       try {
         const scenarioId = this.draft.config.scenario.id
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/${action}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(scenarioId)}/${action}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ expectedRevision: this.draft.revision }),
@@ -975,6 +1056,7 @@ export const useScenarioStore = defineStore('scenario', {
         this.validation = { valid: true, errors: [], warnings: [] }
         this.panelState = 'SUCCESS'
         this.resultCode = action === 'undo' ? 'SCENARIO_UNDONE' : 'SCENARIO_RESET'
+        this.currentScenarioId = draft.config.scenario.id
         this.resultMessage = successMessage
         this.clearScriptPreview()
         return true
@@ -1007,7 +1089,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.scriptState = 'EXECUTING'
       try {
         if (this.validation.warnings.length > 0 && confirmWarnings) {
-          const createResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+          const createResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ action: 'SCENARIO_WARNING_CONTINUE', objectId: this.draft.config.scenario.id }),
@@ -1018,7 +1100,7 @@ export const useScenarioStore = defineStore('scenario', {
           if (!createResponse.ok) throw readApiFailure(createPayload) ?? new InvalidScenarioResponseError()
           const awaiting = readConfirmationContext(createPayload, 'AWAITING_CONFIRMATION')
           if (awaiting === undefined) throw new InvalidScenarioResponseError()
-          const confirmResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
+          const confirmResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(awaiting.confirmationId)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
             body: JSON.stringify({ confirm: true }),
@@ -1031,7 +1113,7 @@ export const useScenarioStore = defineStore('scenario', {
           this.lastConfirmation = confirmed
           confirmationId = confirmed.confirmationId
         }
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/preview`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scripts/preview`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ scenarioId: this.draft.config.scenario.id, ...(confirmationId === undefined ? {} : { warningConfirmationId: confirmationId }) }),
@@ -1066,7 +1148,7 @@ export const useScenarioStore = defineStore('scenario', {
       const scriptEpoch = ++this.scriptEpoch
       this.scriptState = 'VALIDATING'
       try {
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scripts/${encodeURIComponent(this.script.scriptId)}/preflight`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ checksum: this.script.checksum }),
@@ -1098,6 +1180,11 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 使在途请求失效，清除草稿、校验问题和未保存标记，并将面板状态重置为空。
      */
     resetToSafeEmpty(): void {
+      this.currentScenarioId = null
+      this.listEpoch += 1
+      this.scenes = []
+      this.listState = 'EMPTY'
+      this.listMessage = ''
       this.requestEpoch += 1
       this.scriptEpoch += 1
       this.invalidateLocalFileImport()

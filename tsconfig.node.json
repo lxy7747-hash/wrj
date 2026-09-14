@@ -29,6 +29,8 @@
     "src/features/scenarios/scenario-basic.ts",
     "src/features/scenarios/link-settings.ts",
     "src/features/scenarios/jammer-settings.ts",
-    "src/features/admin/admin-contract.ts"
+    "src/features/admin/admin-contract.ts",
+    "src/features/admin/audit-labels.ts",
+    "src/features/shared/date-time.ts"
   ]
 }

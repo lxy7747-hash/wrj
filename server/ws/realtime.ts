@@ -30,6 +30,7 @@ export interface RealtimeController {
   publishRuntimeState(run: SimulationRun): void
   publishJammerStatus(status: JammerStatusData, frameId: FrameId): void
   invalidateForReset(): void
+  revalidateSessions(): void
   reset(): ResetResult
   close(): Promise<void>
 }
@@ -211,8 +212,16 @@ export function attachRealtimeServer(
   httpServer: HttpServer,
   projection: MockProjection,
   currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
+  authorize?: (request: IncomingMessage) => boolean,
 ): RealtimeController {
   const clients = new Map<WebSocket, Set<WsTopic>>()
+  const requests = new Map<WebSocket, IncomingMessage>()
+  function revalidateSessions(): void {
+    if (!authorize) return
+    for (const [client, request] of requests) {
+      if (!authorize(request)) { clients.delete(client); requests.delete(client); client.close(1008, 'SESSION_EXPIRED') }
+    }
+  }
   const currentEnvelopes = new Map<WsTopic, string>()
   const webSocketServer = new WebSocketServer({
     noServer: true,
@@ -220,6 +229,8 @@ export function attachRealtimeServer(
   })
 
   const replayTopic = (client: WebSocket, topic: WsTopic): void => {
+    revalidateSessions()
+    if (!clients.has(client)) return
     let message = currentEnvelopes.get(topic)
     if (message === undefined) {
       const snapshot = projection.snapshot()
@@ -245,7 +256,11 @@ export function attachRealtimeServer(
     client.send(message)
   }
 
-  webSocketServer.on('connection', (client) => trackClient(client, clients, projection, replayTopic))
+  webSocketServer.on('connection', (client, request) => {
+    requests.set(client, request)
+    client.once('close', () => requests.delete(client))
+    trackClient(client, clients, projection, replayTopic)
+  })
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
     const requestUrl = new URL(request.url ?? '/', 'ws://127.0.0.1')
@@ -259,16 +274,16 @@ export function attachRealtimeServer(
     const roleValue = (Array.isArray(role) ? undefined : role) ?? requestUrl.searchParams.get('role') ?? undefined
 
     webSocketServer.handleUpgrade(request, socket, head, (client) => {
-      webSocketServer.emit('connection', client, request)
-
       if (!loopback.allowed) {
         reject(client, 'LOOPBACK_ONLY', loopback.message)
         return
       }
 
-      if (!isDemoRole(roleValue)) {
+      if (authorize ? !authorize(request) : !isDemoRole(roleValue)) {
         reject(client, 'INVALID_ENVELOPE', 'A valid demo role is required.')
+        return
       }
+      webSocketServer.emit('connection', client, request)
     })
   })
 
@@ -278,12 +293,15 @@ export function attachRealtimeServer(
       client.close(1008, 'RESET')
     }
     clients.clear()
+    requests.clear()
     currentEnvelopes.clear()
   }
 
   return {
     activeClientCount: () => clients.size,
+    revalidateSessions,
     publishRuntimeState: (run): void => {
+      revalidateSessions()
       const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
       if (subscribers.length === 0) {
         currentEnvelopes.delete('runtime.state')
@@ -300,6 +318,7 @@ export function attachRealtimeServer(
       subscribers.forEach(([client]) => client.send(message))
     },
     publishJammerStatus: (status, frameId): void => {
+      revalidateSessions()
       const envelope: RealtimeEnvelope<JammerStatusData> = createEnvelope(
         projection,
         'jammer.event',

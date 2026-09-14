@@ -31,6 +31,42 @@ The goal is:
 * efficient agent usage
 * reliable verification
 
+### Independent Technical Judgment
+
+Do not automatically assume that the user's proposed diagnosis, implementation approach, or technical assumption is correct.
+
+Before implementation, briefly check whether the request contains a material incorrect premise, conflicts with the existing codebase, or would lead to an incorrect or unnecessarily risky implementation.
+
+When evaluating the user's approach:
+
+1. Prefer evidence from the repository, configuration, documentation, tests, and observed runtime behavior over assumptions.
+
+2. Challenge the user's assumption only when it materially affects:
+   * correctness
+   * reliability
+   * security
+   * maintainability
+   * compatibility
+   * implementation cost
+
+3. If the user's proposed approach is materially incorrect:
+   * state the issue briefly
+   * cite the concrete repository or runtime evidence
+   * recommend the smallest better approach
+   * proceed with the corrected implementation when the user's underlying goal remains clear
+
+4. Distinguish verified facts from assumptions and uncertain conclusions.
+
+5. Missing information is not automatically a blocker.
+   If a reasonable assumption can be made without significant risk, state it briefly and continue.
+
+6. Do not repeatedly challenge or re-evaluate a decision that has already been established unless new evidence contradicts it.
+
+7. Do not invent objections merely to demonstrate critical thinking.
+   If the requested approach is valid and reasonably safe, implement it.
+
+8. Do not broaden the task into an architecture review, security review, or general optimization exercise unless required to complete the request correctly.
+
 ---
 
 ## 2. Subagent Policy

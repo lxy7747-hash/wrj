@@ -143,10 +143,9 @@ describe('deterministic fixture contract', () => {
         const satellite = config.platforms.find(({ type }) => type === 'COMMUNICATION_SATELLITE')!
         delete satellite.satelliteType
         if (satelliteType !== undefined) satellite.satelliteType = satelliteType as never
-        const request = name === 'PostapiV1ScenariosRequest' ? config
-          : name === 'ScenarioImportRequest' ? { items: [config] }
-            : name === 'TemplateMutationRequest' ? { config, name: '卫星合同测试' }
-              : { config, uiExtensions: { jammers: [], sensors: [] } }
+        const request = name === 'ScenarioImportRequest' ? { items: [config] }
+          : name === 'TemplateMutationRequest' ? { config, name: '卫星合同测试' }
+            : { config, uiExtensions: { jammers: [], sensors: [] } }
         expect(validate(request), `${name}: ${satelliteType}`).toBe(satelliteType === 'TIANTONG' || satelliteType === 'SHENTONG')
       }
     }

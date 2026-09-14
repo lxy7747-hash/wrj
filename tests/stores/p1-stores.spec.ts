@@ -108,11 +108,12 @@ describe('P1 store coverage: admin', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const admin = useAdminStore()
 
-    expect(admin.panelState).toBe('SUCCESS')
+    expect(admin.panelState).toBe('EMPTY')
 
     const refresh = admin.refreshUsers()
     expect(admin.panelState).toBe('LOADING')
     refreshResponse.resolve({ ok: true, json: () => refreshPayload.promise } as Response)
+    await Promise.resolve()
     await Promise.resolve()
     expect(admin.panelState).toBe('VALIDATING')
     refreshPayload.resolve(success([]))
@@ -133,6 +134,7 @@ describe('P1 store coverage: admin', () => {
     await Promise.resolve()
     expect(admin.panelState).toBe('EXECUTING')
     mutationResponse.resolve({ ok: true, json: () => mutationPayload.promise } as Response)
+    await Promise.resolve()
     await Promise.resolve()
     expect(admin.panelState).toBe('VALIDATING')
     mutationPayload.resolve(success(promoted))
@@ -178,11 +180,13 @@ describe('P1 store coverage: admin', () => {
     const original: User = { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', status: 'ACTIVE' }
     const promoted: User = { ...original, role: 'ADMIN' }
     const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(success([original])))
       .mockResolvedValueOnce(jsonResponse(success(promoted)))
       .mockResolvedValueOnce(jsonResponse(success({ deleted: true, objectId: 'USR-OPERATOR', extra: 1 })))
     vi.stubGlobal('fetch', fetchSpy)
     const admin = useAdminStore()
 
+    await admin.refreshUsers()
     await expect(admin.mutateUser(original, 'UPDATE', promoted)).resolves.toBe(true)
     expect(admin.users).toContainEqual(promoted)
 
@@ -437,7 +441,7 @@ describe('P1 store coverage: auth', () => {
       .mockResolvedValueOnce(jsonResponse(success({
         authenticated: true,
         principal: ADMIN_PRINCIPAL,
-        sessionCreated: true,
+        sessionCreated: 'invalid',
       })))
       .mockRejectedValueOnce(new Error('offline'))
     vi.stubGlobal('fetch', fetchSpy)

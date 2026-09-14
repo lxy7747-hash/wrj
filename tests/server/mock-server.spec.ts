@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { ApiSuccess, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
+import type { ApiSuccess, AuditExportResult, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 const ORIGIN = 'http://127.0.0.1:5173'
@@ -1042,7 +1042,6 @@ describe('P0 deterministic mock server', () => {
       .set('X-Demo-Role', 'OPERATOR')
     const original = ((await load().expect(200)).body as { data: ScenarioDraft }).data
     const importedConfig = structuredClone(original.config)
-    importedConfig.scenario.id = 'SCN-IMPORT'
     importedConfig.scenario.name = '导入快照场景'
 
     const importedResponse = await request(baseUrl)
@@ -1052,10 +1051,10 @@ describe('P0 deterministic mock server', () => {
       .send({ items: [importedConfig] })
       .expect(200)
     const imported = (importedResponse.body as { data: { imported: number; rejected: number; drafts: ScenarioDraft[] } }).data
-    expect(imported).toMatchObject({ imported: 1, rejected: 0, drafts: [{ config: { scenario: { id: 'SCN-IMPORT' } } }] })
+    expect(imported).toMatchObject({ imported: 1, rejected: 0, drafts: [{ config: { scenario: { id: 'SCN-001' } } }] })
 
     const undone = await request(baseUrl)
-      .post('/api/v1/scenarios/SCN-IMPORT/undo')
+      .post('/api/v1/scenarios/SCN-001/undo')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
       .send({ expectedRevision: imported.drafts[0]!.revision })
@@ -2296,7 +2295,7 @@ describe('P0 deterministic mock server', () => {
       .expect(400)
   })
 
-  it('consumes AUDIT_EXPORT confirmation once and returns read-only classification evidence', async () => {
+  it('consumes AUDIT_EXPORT confirmation once and returns the filtered TXT snapshot', async () => {
     const { baseUrl } = await startServer()
     const adminHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
     await request(baseUrl)
@@ -2339,10 +2338,11 @@ describe('P0 deterministic mock server', () => {
     expect(exported.body).toMatchObject({
       data: {
         objectId: 'AUDIT-LOG',
-        generated: false,
+        generated: true,
         classification: 'INTERNAL',
         watermark: '内部使用 · admin · AUDIT-LOG',
         verifiedAt: '2026-08-06T08:00:00Z',
+        recordCount: 1,
       },
     })
     await request(baseUrl)
@@ -2350,6 +2350,11 @@ describe('P0 deterministic mock server', () => {
       .set(adminHeaders)
       .send({ export: true, confirmationId: context.confirmationId })
       .expect(409)
+    const file = (exported.body as ApiSuccess<AuditExportResult>).data
+    expect(file.content).toContain('修改阈值')
+    expect(file.content).toContain('未加密')
+    expect(file.fileName).toMatch(/^operation_audit_\d{14}_[A-Za-z0-9_-]+\.txt$/)
+    expect(exported.headers['cache-control']).toBe('no-store')
   })
 
   it('提供 P6 固定批次的创建、控制和 12 行结果', async () => {

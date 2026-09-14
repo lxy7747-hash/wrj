@@ -46,7 +46,9 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
     } else if (path === '/situation') {
       await expect(page.locator('.offline-map')).toBeVisible()
     } else if (path === '/scenarios') {
-      await expect(page.getByTestId('scenario-id')).toHaveValue('SCN-001')
+      await expect(page.getByTestId('scene-list')).toBeVisible()
+      await expect(page.getByTestId('scene-edit-SCN-001')).toBeVisible()
+      await expect(page.getByTestId('scenario-id')).toHaveCount(0)
     } else if (path === '/reports') {
       await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
     } else if (path === '/replays') {

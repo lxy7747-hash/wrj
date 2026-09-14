@@ -1,4 +1,6 @@
 import { beforeAll, describe, expect, it } from 'vitest'
+import Ajv2020 from 'ajv/dist/2020.js'
+import addFormats from 'ajv-formats'
 
 type JsonObject = Record<string, unknown>
 type ValidationFinding = { code: string; path: string; message: string }
@@ -22,6 +24,15 @@ function asObject(value: unknown): JsonObject {
   }
   return value as JsonObject
 }
+
+it('freezes new-account passwords at 6–32 characters', () => {
+  const { openApi } = loadContractDocuments()
+  const password = asObject(asObject(schemaAt(openApi, 'UserRoleCommand').properties).password)
+  const validate = new Ajv2020({ strict: false }).compile(password)
+  for (const length of [5, 6, 32, 33, 128]) {
+    expect(validate('x'.repeat(length)), `length=${length}`).toBe(length >= 6 && length <= 32)
+  }
+})
 
 function operationAt(openApi: unknown, route: string, method: string): JsonObject {
   const document = asObject(openApi)
@@ -52,6 +63,32 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('freezes downloadable audit results without changing other export status contracts', () => {
+    const document = loadContractDocuments().openApi
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile(schemaAt(document, 'AuditExportResult'))
+    const file = { objectId: 'AUDIT-LOG', generated: true, classification: 'INTERNAL', watermark: '内部使用',
+      verifiedAt: '2026-09-11T06:01:57Z', fileName: 'operation_audit_20260911140157_CONF-001.txt', content: '审计日志', recordCount: 0 }
+    expect(validate(file)).toBe(true)
+    for (const change of [{ generated: false }, { objectId: 'OTHER' }, { classification: 'PUBLIC' },
+      { fileName: '../log.txt' }, { content: '' }, { recordCount: -1 }, { recordCount: 0.5 }, { extra: true }, { verifiedAt: 'invalid' }]) {
+      expect(validate({ ...file, ...change })).toBe(false)
+    }
+    const { content: omitted, ...missingContent } = file
+    expect(omitted).toBe('审计日志')
+    expect(validate(missingContent)).toBe(false)
+    expect(schemaPropertyAt(document, 'ExportStatus', 'generated').const).toBe(false)
+  })
+
+  it('rejects removal of session authentication from protected operations', () => {
+    const document = structuredClone(loadContractDocuments().openApi)
+    operationAt(document, '/api/v1/admin/users', 'get').security = []
+    expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SESSION_SECURITY' }))
+    const modified = asObject(structuredClone(loadContractDocuments().openApi))
+    asObject(asObject(asObject(modified.components).securitySchemes).SessionCookie).name = 'other_cookie'
+    expect(auditOpenApi(modified)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SESSION_SECURITY', path: '$.components.securitySchemes.SessionCookie' }))
+  })
   it.each([
     undefined,
     [],
@@ -65,7 +102,7 @@ describe('OpenAPI contract audit', () => {
     expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SERVERS', path: '$.servers' }))
   })
 
-  it('accepts the authoritative 64-operation contract', () => {
+  it('accepts the authoritative 67-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(asObject(openApi).servers).toEqual([expect.objectContaining({ url: 'http://127.0.0.1:4173' })])
@@ -78,9 +115,9 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(64)
-    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(32)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(64)
+    expect(operations).toHaveLength(67)
+    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(33)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(67)
   })
 
   it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {
@@ -334,16 +371,12 @@ describe('OpenAPI contract audit', () => {
     }))
   })
 
-  it('rejects a changed LoginRequest username type while retaining its enum', () => {
+  it('rejects a changed LoginRequest username type while retaining its bounds', () => {
     const { openApi } = loadContractDocuments()
     const candidate = structuredClone(openApi)
     schemaPropertyAt(candidate, 'LoginRequest', 'username').type = 'number'
 
-    expect(schemaPropertyAt(candidate, 'LoginRequest', 'username').enum).toEqual([
-      'admin',
-      'operator',
-      'locked',
-    ])
+    expect(schemaPropertyAt(candidate, 'LoginRequest', 'username')).toMatchObject({ minLength: 1, maxLength: 64 })
     expect(auditOpenApi(candidate)).toContainEqual(expect.objectContaining({
       code: 'OPENAPI_SCHEMA_SNAPSHOT',
       path: '#/components/schemas/LoginRequest/properties/username/type',

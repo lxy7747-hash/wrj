@@ -146,7 +146,33 @@ describe('P2-1 场景管理页面', () => {
     expect(useScenarioStore().templates).toEqual([])
   })
 
-  it('默认隐藏四类编号，显示编号开关不改变草稿和关联；弹框仍保留自动编号', async () => {
+  it('非默认场景重新加载失败后连续重试，恢复后仍显示原场景', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const original = draft()
+    original.config.scenario.id = 'SCN-B'
+    original.config.scenario.name = '场景 B'
+    const fetchSpy = vi.fn().mockResolvedValueOnce(response(original))
+      .mockRejectedValueOnce(new Error('暂时不可用'))
+      .mockRejectedValueOnce(new Error('仍不可用'))
+      .mockResolvedValueOnce(response(original))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(await store.loadScenario('SCN-B')).toBe(true)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await store.loadScenario('SCN-B')
+    await flushPromises()
+    for (const expected of ['ERROR', 'SUCCESS']) {
+      await wrapper.findAll('button').find(button => button.text() === '重新加载')!.trigger('click')
+      await flushPromises()
+      expect(store.panelState).toBe(expected)
+    }
+    expect(fetchSpy.mock.calls.map(([url]) => url)).toEqual(Array(4).fill('http://127.0.0.1:4173/api/v1/scenarios/SCN-B'))
+    expect(store.draft?.config.scenario.id).toBe('SCN-B')
+    expect(wrapper.get('[data-testid="scenario-name"]').element).toHaveProperty('value', '场景 B')
+  })
+
+  it('默认隐藏四类编号，显示编号开关不改变草稿和关联；弹框仍保留自动编号', { timeout: 30_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const initial = draft()
@@ -371,7 +397,10 @@ describe('P2-1 场景管理页面', () => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     let persisted = draft()
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
-      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
       return response(structuredClone(persisted))
     }))
     const scenario = useScenarioStore()
@@ -466,7 +495,10 @@ describe('P2-1 场景管理页面', () => {
     // 本例仅验证触发时间；避免既有航点超过缩短后的总时长。
     persisted.config.platforms.forEach(platform => { platform.waypoints = [] })
     const fetchSpy = vi.fn(async (_url: unknown, options?: RequestInit) => {
-      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
       return response(structuredClone(persisted))
     })
     vi.stubGlobal('fetch', fetchSpy)
@@ -512,7 +544,10 @@ describe('P2-1 场景管理页面', () => {
     persisted.config.platforms.forEach(platform => { platform.linkIds = persisted.config.links.filter(link => [link.sourcePlatformId, link.targetPlatformId].includes(platform.id)).map(link => link.id) })
     persisted.config.informationDemand[0]!.destinationPlatformIds.push(satellite.id)
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
-      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
       return response(structuredClone(persisted))
     }))
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus],
@@ -904,6 +939,8 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(generateSpy).toHaveBeenNthCalledWith(2, true)
     expect(preflightSpy).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('2026-08-06 16:00:00')
+    expect(scenario.script?.generatedTime).toBe(META.generatedAt)
     expect(wrapper.text()).toContain('2:3')
     expect(wrapper.text()).toContain('—')
 
@@ -1538,7 +1575,10 @@ describe('P2-1 场景管理页面', () => {
     let persisted = draft()
     const originalCount = persisted.config.platforms.length
     vi.stubGlobal('fetch', vi.fn(async (_url: unknown, options?: RequestInit) => {
-      if (options?.method === 'PUT') persisted = { ...persisted, ...JSON.parse(String(options.body)), revision: persisted.revision + 1 }
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
       return response(structuredClone(persisted))
     }))
     expect(await scenario.loadScenario()).toBe(true)

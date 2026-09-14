@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { formatDateTime } from '../../features/shared/date-time'
 import type { CapabilityState, ScriptContract, ValidationResult } from '../../contracts/domain-models'
 
 const props = defineProps<{
@@ -55,7 +56,7 @@ function scriptLocation(fieldPath: string): string {
         <el-descriptions-item label="输出路径">{{ outputDirectory }}</el-descriptions-item>
         <el-descriptions-item label="校验和">{{ script.checksum }}</el-descriptions-item>
         <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
-        <el-descriptions-item label="生成时间">{{ script.generatedTime }}</el-descriptions-item>
+        <el-descriptions-item label="生成时间">{{ formatDateTime(script.generatedTime) }}</el-descriptions-item>
       </el-descriptions>
       <pre class="scenario-script-preview" data-testid="script-preview">{{ script.preview }}</pre>
     </template>

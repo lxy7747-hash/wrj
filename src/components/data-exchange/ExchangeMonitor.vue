@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatDateTime } from '../../features/shared/date-time'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { WsTopic } from '../../contracts/domain-models'
 import { resolveMockOrigin } from '../../stores/auth'
@@ -100,7 +101,7 @@ const stopObserving = telemetry.$onAction(({ name, args, after }) => {
     bucketBytes += size
     bucketCount += 1
     bucketDuration += duration
-    records.value = [{ id: received.value, time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+    records.value = [{ id: received.value, time: formatDateTime(new Date()),
       topic: knownTopic ? topicLabels[topic as WsTopic] : '未知消息', size,
       status: !accepted ? '拒绝' : duplicate ? '忽略' : '通过' }, ...records.value].slice(0, 50)
   })
@@ -194,7 +195,7 @@ async function connect(): Promise<void> {
       <section class="monitor-panel monitor-records" aria-label="最近交换记录">
         <header><h3>最近交换记录</h3><span class="panel-caption">{{ records.length }} / 50 条</span></header>
         <el-table :data="records" size="small" height="100%" empty-text="暂无交换记录，请连接通道" data-testid="exchange-records">
-          <el-table-column prop="time" label="接收时刻" width="88" />
+          <el-table-column prop="time" label="接收时刻" width="180" />
           <el-table-column prop="topic" label="数据类型" min-width="85" />
           <el-table-column label="大小" width="82"><template #default="{ row }">{{ formatBytes(row.size) }}</template></el-table-column>
           <el-table-column label="状态" width="64"><template #default="{ row }"><el-tag size="small" effect="plain" :type="row.status === '拒绝' ? 'danger' : row.status === '忽略' ? 'info' : 'success'">{{ row.status }}</el-tag></template></el-table-column>

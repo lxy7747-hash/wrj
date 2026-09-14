@@ -1,6 +1,6 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ApiFailure, ApiSuccess, AuditRecord, ConfirmationContext, ExportStatus, PageMeta } from '../../src/contracts/domain-models'
+import type { ApiFailure, ApiSuccess, AuditRecord, AuditExportResult, ConfirmationContext, PageMeta } from '../../src/contracts/domain-models'
 import { isAuditRecord, useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
 
@@ -151,12 +151,13 @@ describe('admin audit store', () => {
   })
 
   it('creates a confirmation before consuming the current export filters', async () => {
-    const exported: ExportStatus = {
+    const exported: AuditExportResult = {
       objectId: 'AUDIT-LOG',
-      generated: false,
+      generated: true,
       classification: 'INTERNAL',
       watermark: '内部使用 · admin · AUDIT-LOG',
       verifiedAt: '2026-08-06T08:00:00Z',
+      fileName: 'operation_audit_20260806160000_CONF-AUDIT-001.txt', content: '操作审计日志\r\n测试记录\r\n', recordCount: 1,
     }
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(response(success(confirmation('AWAITING_CONFIRMATION'))))
@@ -210,6 +211,44 @@ describe('admin audit store', () => {
     await expect(store.confirmAuditExport()).resolves.toBe(false)
     expect(store.auditResultCode).toBe('INVALID_RESPONSE')
     expect(store.auditExportStatus).toBeNull()
+  })
+
+  it.each([
+    { generated: false }, { objectId: 'OTHER' }, { classification: 'PUBLIC' }, { watermark: '' },
+    { verifiedAt: '2026-02-30T00:00:00Z' }, { fileName: '../audit.txt' }, { fileName: 'audit.html' },
+    { content: '' }, { content: 12 }, { recordCount: -1 }, { recordCount: 1.5 }, { extra: true },
+  ])('rejects a malformed downloadable artifact: %j', async (invalid) => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(response(success(confirmation('AWAITING_CONFIRMATION'))))
+      .mockResolvedValueOnce(response(success(confirmation('CONFIRMED'))))
+      .mockResolvedValueOnce(response(success({ objectId: 'AUDIT-LOG', generated: true, classification: 'INTERNAL',
+        watermark: '内部使用', verifiedAt: META.generatedAt, fileName: 'operation_audit_20260806160000_CONF-AUDIT-001.txt',
+        content: '审计日志', recordCount: 0, ...invalid }))))
+    const store = useAdminStore()
+    expect(await store.exportAudit()).toBe(true)
+    expect(await store.confirmAuditExport()).toBe(false)
+    expect(store.auditState).toBe('ERROR')
+    expect(store.auditResultCode).toBe('INVALID_RESPONSE')
+    expect(store.auditExportStatus).toBeNull()
+  })
+
+  it.each(['reset', 'cancel'] as const)('discards a late export after %s', async (operation) => {
+    let resolveExport!: (value: Response) => void
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(response(success(confirmation('AWAITING_CONFIRMATION'))))
+      .mockResolvedValueOnce(response(success(confirmation('CONFIRMED'))))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { resolveExport = resolve })))
+    const store = useAdminStore()
+    await store.exportAudit()
+    const pending = store.confirmAuditExport()
+    await vi.waitFor(() => expect(resolveExport).toBeTypeOf('function'))
+    if (operation === 'reset') store.resetToSafeEmpty()
+    else store.cancelAuditExport()
+    resolveExport(response(success({ objectId: 'AUDIT-LOG', generated: true, classification: 'INTERNAL',
+      watermark: '内部使用', verifiedAt: META.generatedAt, fileName: 'operation_audit_20260806160000_CONF-AUDIT-001.txt', content: '旧日志', recordCount: 0 })))
+    expect(await pending).toBe(false)
+    expect(store.auditExportStatus).toBeNull()
+    expect(store.auditState).toBe('EMPTY')
   })
 
   it('cancels a pending export without consuming its confirmation', async () => {

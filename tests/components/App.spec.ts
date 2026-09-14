@@ -192,6 +192,12 @@ describe('App shell', () => {
     expect(operatorWrapper.get('.app-shell__navigation').text())
       .not.toMatch(/夹具|演示|P0|P1|Mock|页面外壳|shell/)
 
+    await router.push('/admin/data-exchange')
+    await flushPromises()
+    const operatorManagementNavigation = operatorWrapper.get('[aria-label="系统管理导航"]')
+    expect(operatorManagementNavigation.findAll('.el-menu-item').map(item => item.text())).toEqual(['数据交换与接口'])
+    expect(operatorManagementNavigation.text()).not.toMatch(/模型与参数|账号与维护|数据与运行/)
+
     await router.push('/blueprint')
     await flushPromises()
     const capabilityNavigation = operatorWrapper.get('[aria-label="能力与接口导航"]')
@@ -264,7 +270,7 @@ describe('App shell', () => {
     await flushPromises()
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('操作审计日志')
     expect(adminWrapper.get('#audit-logs-title').text()).toBe('操作审计日志')
-    expect(adminWrapper.get('.audit-log-card .el-table').text()).toContain('THRESHOLD_UPDATE')
+    expect(adminWrapper.get('.audit-log-card .el-table').text()).toContain('修改阈值')
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)
@@ -394,7 +400,8 @@ describe('App shell', () => {
     await router.push('/situation')
     await router.isReady()
     let resolveSimulation!: (response: Response) => void
-    const fetchSpy = vi.fn().mockReturnValue(new Promise<Response>((resolve) => { resolveSimulation = resolve }))
+    const fetchSpy = vi.fn().mockReturnValueOnce(new Promise<Response>((resolve) => { resolveSimulation = resolve }))
+      .mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: { authenticated: false, sessionCreated: false } }) })
     const webSocketSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
@@ -409,7 +416,8 @@ describe('App shell', () => {
     await flushPromises()
 
     expect(router.currentRoute.value.path).toBe('/login')
-    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy.mock.calls[1]![0]).toBe('http://127.0.0.1:4173/api/v1/auth/logout')
     expect(webSocketSpy).not.toHaveBeenCalled()
     expect(useTelemetryStore(pinia)).toMatchObject({
       frame: null,

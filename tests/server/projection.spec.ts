@@ -16,6 +16,7 @@ interface MockProjectionInstance {
 interface ScenarioProjectionInstance {
   copyTemplate(config: DeterministicFixtureSet['scenario'], name: string): unknown
   get(scenarioId: string): unknown
+  setLocked(scenarioId: string, locked: boolean): unknown
   importSnapshots(value: unknown): unknown
   validate(scenarioId: string, value: unknown): unknown
   save(scenarioId: string, value: unknown): unknown
@@ -168,7 +169,7 @@ describe('fixture projection', () => {
       code: 'VALIDATION_FAILED',
       fieldPath: 'links[0].txPower',
     })
-    ;(scenario as unknown as { draft: ScenarioDraft }).draft.locked = true
+    scenario.setLocked('SCN-001', true)
     expect(scenario.copyTemplate(config, '锁定模板')).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
   })
 
@@ -176,8 +177,9 @@ describe('fixture projection', () => {
     const scenario = new ScenarioProjection()
 
     expect(scenario.validate('SCN-NOT-FOUND', {})).toMatchObject({ ok: false, code: 'NOT_FOUND' })
-    expect(scenario.save('SCN-NOT-FOUND', {})).toMatchObject({ ok: false, code: 'NOT_FOUND' })
-    ;(scenario as unknown as { draft: ScenarioDraft }).draft.locked = true
+    expect(scenario.save('SCN-NOT-FOUND', {})).toMatchObject({ ok: false, code: 'VALIDATION_FAILED' })
+    expect(scenario.get('SCN-NOT-FOUND')).toMatchObject({ ok: false, code: 'NOT_FOUND' })
+    scenario.setLocked('SCN-001', true)
     expect(scenario.validate('SCN-001', {})).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
     expect(scenario.save('SCN-001', {})).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })
     expect(scenario.importSnapshots({ items: [loadFixtureProjection().scenario] })).toMatchObject({ ok: false, code: 'CONFIG_LOCKED' })

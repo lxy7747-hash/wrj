@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
   ApiFailure,
@@ -5,6 +6,7 @@ import type {
   BackupRecord,
   AuditRecord,
   AuditRequest,
+  AuditExportResult,
   CapabilityState,
   ConfirmationContext,
   ConfirmationAction,
@@ -34,7 +36,7 @@ async function requestMaintenance(path: string, init: RequestInit = {}): Promise
   if (useAuthStore().role !== 'ADMIN') throw new Error('仅管理员可执行此操作。')
   let response: Response
   try {
-    response = await fetch(`${resolveMockOrigin()}/api/v1/${path}`, { ...init, headers: {
+    response = await apiFetch(`${resolveMockOrigin()}/api/v1/${path}`, { ...init, headers: {
       'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role, ...init.headers,
     } })
   } catch { throw new Error('系统管理服务暂时不可用，请稍后重试。') }
@@ -49,21 +51,9 @@ const AUDIT_KEYS = new Set(['auditId', 'actor', 'role', 'module', 'action', 'obj
 const META_KEYS = new Set(['requestId', 'generatedAt', 'page', 'pageSize', 'total'])
 const CONFIRMATION_KEYS = new Set(['confirmationId', 'state', 'actor', 'role', 'createdAt', 'expiresAt'])
 const EXPORT_STATUS_KEYS = new Set(['objectId', 'generated', 'classification', 'watermark', 'verifiedAt'])
+const AUDIT_EXPORT_KEYS = new Set([...EXPORT_STATUS_KEYS, 'fileName', 'content', 'recordCount'])
 
 export type AuditFilters = Omit<AuditRequest, 'export' | 'confirmationId'>
-
-/**
- * 创建首次刷新前展示的确定性用户初始投影。
- *
- * @returns 包含基线管理员和操作员账号的新数组。
- * @remarks 纯工厂函数，不访问网络，也不暴露共享可变数组。
- */
-function initialUsers(): User[] {
-  return [
-    { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', status: 'ACTIVE' },
-    { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', status: 'ACTIVE' },
-  ]
-}
 
 class InvalidResponseError extends Error {
   /**
@@ -303,12 +293,26 @@ function readExportStatus(payload: unknown): ExportStatus | undefined {
     : undefined
 }
 
+function readAuditExport(payload: unknown): AuditExportResult | undefined {
+  const data = readStrictData(payload)
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
+  if (Object.keys(data).length !== AUDIT_EXPORT_KEYS.size || Object.keys(data).some((key) => !AUDIT_EXPORT_KEYS.has(key))) return undefined
+  const result = data as Partial<AuditExportResult>
+  return result.objectId === 'AUDIT-LOG' && result.generated === true && result.classification === 'INTERNAL'
+    && typeof result.watermark === 'string' && result.watermark.length > 0
+    && typeof result.verifiedAt === 'string' && isRfc3339DateTime(result.verifiedAt)
+    && typeof result.fileName === 'string' && /^operation_audit_[0-9]{14}_[A-Za-z0-9_-]+\.txt$/.test(result.fileName)
+    && typeof result.content === 'string' && result.content.length > 0
+    && Number.isInteger(result.recordCount) && (result.recordCount ?? -1) >= 0
+    ? result as AuditExportResult : undefined
+}
+
 export const useAdminStore = defineStore('admin', {
   state: () => ({
-    users: initialUsers(),
-    panelState: 'SUCCESS' as CapabilityState,
-    resultCode: 'READY',
-    resultMessage: '用户列表已就绪。',
+    users: [] as User[],
+    panelState: 'EMPTY' as CapabilityState,
+    resultCode: 'EMPTY',
+    resultMessage: '尚未加载账号。',
     auditRecords: [] as AuditRecord[],
     auditFilters: {} as AuditFilters,
     auditState: 'EMPTY' as CapabilityState,
@@ -316,7 +320,7 @@ export const useAdminStore = defineStore('admin', {
     auditResultMessage: '暂无审计记录。',
     auditConfirmation: null as ConfirmationContext | null,
     auditExportFilters: {} as AuditFilters,
-    auditExportStatus: null as ExportStatus | null,
+    auditExportStatus: null as AuditExportResult | null,
     masterData: [] as MasterData[],
     backups: [] as BackupRecord[],
     archives: [] as ArchiveRecord[],
@@ -552,7 +556,7 @@ export const useAdminStore = defineStore('admin', {
       try {
         const auth = useAuthStore()
         // 该内部请求头仅传递角色提示，服务端仍独立执行权限校验。
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/admin/users`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/users`, {
           headers: { 'X-Demo-Role': auth.role },
         })
         if (epoch !== this.requestEpoch) return
@@ -568,7 +572,7 @@ export const useAdminStore = defineStore('admin', {
         this.resultCode = 'SUCCESS'
         this.resultMessage = '用户列表已刷新。'
       } catch (error) {
-        if (epoch === this.requestEpoch) this.showPanelError(error, '用户刷新失败。')
+        if (epoch === this.requestEpoch) { this.users = []; this.showPanelError(error, '用户刷新失败。') }
       }
     },
 
@@ -580,13 +584,19 @@ export const useAdminStore = defineStore('admin', {
      * @returns 操作成功时为 `true`，请求失败或响应无效时为 `false`。
      * @sideEffects 更新六态面板状态和结果信息；成功时增补、替换或移除用户，失败时保留原列表。
      */
-    async mutateUser(user: User, operation: UserRoleCommand['operation'], next: User): Promise<boolean> {
+    async mutateUser(user: User, operation: UserRoleCommand['operation'], next: User, password?: string): Promise<boolean> {
       const epoch = this.requestEpoch
       this.panelState = 'LOADING'
       await Promise.resolve()
       if (epoch !== this.requestEpoch) return false
       this.panelState = 'VALIDATING'
-      const command: UserRoleCommand = { operation, user: next }
+      const command: UserRoleCommand = { operation, user: next, ...(password ? { password } : {}) }
+      if (operation === 'CREATE' && password !== undefined && (!password.trim() || password.length < 6 || password.length > 32)) {
+        this.panelState = 'ERROR'
+        this.resultCode = 'VALIDATION_FAILED'
+        this.resultMessage = '密码须为 6–32 位，不能全为空白。'
+        return false
+      }
 
       try {
         await Promise.resolve()
@@ -596,7 +606,7 @@ export const useAdminStore = defineStore('admin', {
         const collectionUrl = `${resolveMockOrigin()}/api/v1/admin/users`
         const memberUrl = `${collectionUrl}/${encodeURIComponent(user.userId)}`
         const method = operation === 'CREATE' ? 'POST' : operation === 'DELETE' ? 'DELETE' : 'PUT'
-        const response = await fetch(operation === 'CREATE' ? collectionUrl : memberUrl, {
+        const response = await apiFetch(operation === 'CREATE' ? collectionUrl : memberUrl, {
           method,
           headers: {
             'Content-Type': 'application/json',
@@ -648,7 +658,7 @@ export const useAdminStore = defineStore('admin', {
      * @returns 创建成功时为 `true`，本地校验或服务端处理失败时为 `false`。
      * @sideEffects 更新面板状态与结果信息；服务端创建成功时向用户列表追加新用户。
      */
-    async createUser(usernameInput: string, role: Role, status: User['status']): Promise<boolean> {
+    async createUser(usernameInput: string, role: Role, status: User['status'], password?: string): Promise<boolean> {
       const username = usernameInput.trim()
       this.panelState = 'VALIDATING'
       if (username.length === 0) {
@@ -664,7 +674,7 @@ export const useAdminStore = defineStore('admin', {
         role,
         status,
       }
-      return this.mutateUser(user, 'CREATE', user)
+      return this.mutateUser(user, 'CREATE', user, password)
     },
 
     /** Loads immutable audit records using the closed administrator filter contract. */
@@ -682,7 +692,7 @@ export const useAdminStore = defineStore('admin', {
         await Promise.resolve()
         if (epoch !== this.requestEpoch) return false
         this.auditState = 'EXECUTING'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/admin/audit${query.size === 0 ? '' : `?${query}`}`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/audit${query.size === 0 ? '' : `?${query}`}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
         if (epoch !== this.requestEpoch) return false
@@ -715,7 +725,7 @@ export const useAdminStore = defineStore('admin', {
       this.auditExportStatus = null
       try {
         const headers = { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role }
-        const createdResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
+        const createdResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' }),
@@ -746,45 +756,46 @@ export const useAdminStore = defineStore('admin', {
       const epoch = this.requestEpoch
       const created = this.auditConfirmation
       if (created === null || created.state !== 'AWAITING_CONFIRMATION') return false
+      const isCurrent = () => epoch === this.requestEpoch && this.auditConfirmation?.confirmationId === created.confirmationId
       this.auditState = 'EXECUTING'
       try {
         const headers = { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role }
-        const confirmedResponse = await fetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(created.confirmationId)}`, {
+        const confirmedResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/confirmations/${encodeURIComponent(created.confirmationId)}`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ confirm: true }),
         })
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditState = 'VALIDATING'
         const confirmedPayload: unknown = await confirmedResponse.json().catch(() => undefined)
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         if (!confirmedResponse.ok) throw readFailure(confirmedPayload) ?? new InvalidAuditResponseError()
         const confirmed = readConfirmation(confirmedPayload, 'CONFIRMED')
         if (confirmed === undefined) throw new InvalidAuditResponseError()
         this.auditConfirmation = confirmed
 
         this.auditState = 'EXECUTING'
-        const exportResponse = await fetch(`${resolveMockOrigin()}/api/v1/admin/audit/export`, {
+        const exportResponse = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/audit/export`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ ...this.auditExportFilters, export: true, confirmationId: confirmed.confirmationId }),
         })
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditState = 'VALIDATING'
         const exportPayload: unknown = await exportResponse.json().catch(() => undefined)
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         if (!exportResponse.ok) throw readFailure(exportPayload) ?? new InvalidAuditResponseError()
-        const status = readExportStatus(exportPayload)
+        const status = readAuditExport(exportPayload)
         if (status === undefined || status.objectId !== 'AUDIT-LOG') throw new InvalidAuditResponseError()
         this.auditExportStatus = status
         this.auditConfirmation = null
         this.auditExportFilters = {}
         this.auditState = 'SUCCESS'
         this.auditResultCode = 'SUCCESS'
-        this.auditResultMessage = '审计日志导出验证通过，未生成文件。'
+        this.auditResultMessage = `已生成 ${status.recordCount} 条审计记录的明文 TXT 文件。`
         return true
       } catch (error) {
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditConfirmation = null
         this.auditExportFilters = {}
         this.auditExportStatus = null

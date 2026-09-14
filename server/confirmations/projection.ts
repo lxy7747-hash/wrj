@@ -13,6 +13,7 @@ interface StoredConfirmation {
   context: ConfirmationContext
   action: ConfirmationAction
   objectId: string
+  owner?: string
 }
 
 const DEFAULT_NOW = '2026-08-06T08:00:00Z'
@@ -32,7 +33,7 @@ export class ConfirmationProjection {
   private contexts = new Map<string, StoredConfirmation>()
   private nextSequence = 1
 
-  constructor(private readonly clock: ConfirmationClock = DEFAULT_CLOCK) {}
+  constructor(private readonly clock: ConfirmationClock = DEFAULT_CLOCK, private readonly owner?: () => { id: string; name: string }) {}
 
   /** 判断确认上下文是否已到期，并在到期时立即移除。 */
   private hasExpired(confirmationId: string, stored: StoredConfirmation): boolean {
@@ -56,12 +57,12 @@ export class ConfirmationProjection {
     const context: ConfirmationContext = {
       confirmationId,
       state: 'AWAITING_CONFIRMATION',
-      actor: role === 'ADMIN' ? 'admin' : 'operator',
+      actor: this.owner?.().name ?? (role === 'ADMIN' ? 'admin' : 'operator'),
       role,
       createdAt,
       expiresAt: this.clock.expiresAt(createdAt),
     }
-    this.contexts.set(confirmationId, { context, action, objectId })
+    this.contexts.set(confirmationId, { context, action, objectId, ...(this.owner ? { owner: this.owner().id } : {}) })
     return structuredClone(context)
   }
 
@@ -77,7 +78,7 @@ export class ConfirmationProjection {
     if (stored === undefined || this.hasExpired(confirmationId, stored) || stored.context.state !== 'AWAITING_CONFIRMATION') {
       return { ok: false, code: 'CONFIRMATION_EXPIRED', status: 409, message: '二次确认已失效。' }
     }
-    if (stored.context.role !== role) {
+    if (stored.context.role !== role || (this.owner && stored.owner !== this.owner().id)) {
       return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '当前角色不能处理该确认。' }
     }
     stored.context.state = 'CONFIRMED'
@@ -105,7 +106,7 @@ export class ConfirmationProjection {
       || stored.objectId !== objectId) {
       return { ok: false, code: 'CONFIRMATION_EXPIRED', status: 409, message: '二次确认已失效。' }
     }
-    if (stored.context.role !== role) {
+    if (stored.context.role !== role || (this.owner && stored.owner !== this.owner().id)) {
       return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '当前角色不能处理该确认。' }
     }
     this.contexts.delete(confirmationId)

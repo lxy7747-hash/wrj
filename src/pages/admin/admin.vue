@@ -50,13 +50,12 @@ const auditLogsVisible = computed(() => route.query.section === 'audit-logs')
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
 
 /**
- * 加载场景模板维护所需的当前场景和官方模板列表。
+ * 加载模板列表；新建模板只使用用户已选择的场景，不隐式读取默认编号。
  * @returns 所有必要读取结束后兑现且不返回值的 Promise。
  * @sideEffects 仅在数据尚未加载时调用场景 Store，不重复读取已有投影。
  */
 async function loadTemplateMaintenance(): Promise<void> {
   const requests: Promise<boolean>[] = []
-  if (draft.value === null) requests.push(scenarioStore.loadScenario())
   if (templateState.value === 'EMPTY' && templates.value.length === 0) requests.push(scenarioStore.loadTemplates())
   await Promise.all(requests)
 }
@@ -187,6 +186,7 @@ watch(templateMaintenanceVisible, (visible) => {
   display: grid;
   min-width: 0;
   gap: var(--space-4, 1rem);
+  padding-top: var(--space-3, 0.75rem) !important;
 }
 
 .admin-page :deep(.maintenance-card) { display: grid; gap: 16px; min-width: 0; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 8px; align-content: start; }

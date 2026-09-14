@@ -161,6 +161,7 @@ describe('P7 系统管理面板', () => {
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     await click('创建备份')
+    expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('2026-08-06 18:08:00')
     expect(run).not.toHaveBeenCalled()
     await click('创建备份')
     expect(run).toHaveBeenLastCalledWith('BACKUP', '')
@@ -204,7 +205,8 @@ describe('P7 系统管理面板', () => {
     expect(JSON.parse(fetchMock.mock.calls[2]![1].body)).toEqual({ format: 'JSON', confirmationId: 'CONF-EXPORT' })
     expect(store.fullConfigExport?.generated).toBe(false)
     expect(wrapper.text()).toContain('完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。')
-    for (const text of ['内部使用', fixtures.epoch]) expect(wrapper.get('[data-testid="full-config-result"]').text()).toContain(text)
+    for (const text of ['内部使用', '2026-08-06 16:00:00']) expect(wrapper.get('[data-testid="full-config-result"]').text()).toContain(text)
+    expect(store.fullConfigExport?.verifiedAt).toBe(fixtures.epoch)
     for (const [classification, label] of [['INTERNAL', '内部使用'], ['LEVEL_II', '二级'], ['LEVEL_III', '三级']] as const) {
       store.fullConfigExport = { ...store.fullConfigExport!, classification }
       await flushPromises()

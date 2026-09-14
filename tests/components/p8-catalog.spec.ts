@@ -36,6 +36,7 @@ async function page(component: typeof Blueprint | typeof Traceability | typeof I
 
 describe('P8 目录页面与重置入口', () => {
   it('重置权限失败不会被 App 覆盖成空态，主动退出则取消协调', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }))
     const router = createAppRouter(createMemoryHistory())
     await router.push('/interactions')
     const wrapper = mount(App, { global: { plugins: [ElementPlus, router], stubs: { RouterView: true } } })

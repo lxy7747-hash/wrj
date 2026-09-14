@@ -39,6 +39,8 @@ import { isAdminText } from '../src/features/admin/admin-contract.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
+import type { AuthSqliteStorage } from './local/auth-sqlite.js'
+import { buildAuditExport } from './auth/audit-export.js'
 
 export interface MockServerOptions {
   port?: number
@@ -52,6 +54,7 @@ export interface MockServerOptions {
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
   templateStorage?: TemplateStorage
+  authStorage?: AuthSqliteStorage
 }
 
 export interface MockServer {
@@ -166,8 +169,9 @@ function readDemoRole(req: Request): Role | undefined {
 }
 
 /** Returns the deterministic principal name represented by a validated role hint. */
-function actorForRole(role: Role): 'admin' | 'operator' {
-  return role === 'ADMIN' ? 'admin' : 'operator'
+const authenticatedUsers = new WeakMap<Request, User>()
+function actorForRequest(req: Request, role: Role): string {
+  return authenticatedUsers.get(req)?.username ?? (role === 'ADMIN' ? 'admin' : 'operator')
 }
 
 /**
@@ -235,10 +239,11 @@ function isConfirmRequest(value: unknown): value is { confirm: true } {
 }
 
 /** 校验模板复制请求中的非空名称。 */
-function isCopyTemplateRequest(value: unknown): value is { name: string } {
-  return isStrictObject(value, ['name'])
+function isCopyTemplateRequest(value: unknown): value is { name: string; scenarioId?: string } {
+  return isStrictObject(value, ['name'], ['scenarioId'])
     && typeof value.name === 'string'
     && value.name.trim().length > 0
+    && (value.scenarioId === undefined || (typeof value.scenarioId === 'string' && value.scenarioId.startsWith('SCN-')))
 }
 
 /** 校验脚本预览请求中的场景编号和可选警告确认编号。 */
@@ -323,7 +328,8 @@ function filterAudit(records: AuditRecord[], filters: AuditRequest): AuditRecord
 function isLoginShape(value: unknown): value is Record<'username' | 'passwordFixture', string> {
   return isStrictObject(value, ['username', 'passwordFixture'])
     && typeof value.username === 'string'
-    && typeof value.passwordFixture === 'string'
+    && typeof value.passwordFixture === 'string' && value.passwordFixture.length > 0 && value.passwordFixture.length <= 128
+    && value.username.trim().length > 0 && value.username.length <= 64
 }
 
 /**
@@ -352,7 +358,8 @@ function isUser(value: unknown): value is User {
  * @remarks This pure validator does not authorize the command or mutate projection state.
  */
 function isUserRoleCommand(value: unknown): value is UserRoleCommand {
-  return isStrictObject(value, ['operation', 'user'], ['confirmationId'])
+  return isStrictObject(value, ['operation', 'user'], ['confirmationId', 'password'])
+    && (value.password === undefined || (value.operation === 'CREATE' && typeof value.password === 'string' && value.password.trim().length > 0 && value.password.length >= 6 && value.password.length <= 32))
     && (
       value.operation === 'CREATE'
       || value.operation === 'UPDATE'
@@ -534,10 +541,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   }
 
   const projection = new MockProjection()
-  const auth = new AuthProjection()
+  const auth = new AuthProjection(options.authStorage)
   const scenarios = new ScenarioProjection(options.scenarioStorage)
   const simulations = new SimulationProjection(scenarios)
-  const confirmations = new ConfirmationProjection(options.confirmationClock)
+  const confirmations = new ConfirmationProjection(options.confirmationClock ?? (options.authStorage ? {
+    now: () => options.authStorage!.time(),
+    expiresAt: created => options.authStorage!.expiresAt(created),
+  } : undefined), options.authStorage ? () => ({ id: auth.actorId(), name: auth.actorName() }) : undefined)
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
@@ -560,11 +570,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.use((req, res, next) => {
     const decision = assertLoopbackRequest(req)
     if (!decision.allowed) {
+      if (options.authStorage) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_LOOPBACK_DENIED')
       res.status(403).json(failure('LOOPBACK_ONLY', 403, { message: decision.message }))
       return
     }
 
     res.setHeader('Access-Control-Allow-Origin', decision.origin)
+    res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role, X-Confirmation-Id')
     res.setHeader('Vary', 'Origin')
@@ -581,6 +593,24 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    */
   app.options(/^\/api(?:\/.*)?$/, (_req, res) => {
     res.sendStatus(204)
+  })
+
+  // SQLite 模式统一验证会话；不接受浏览器提供的身份或角色作为授权依据。
+  app.use('/api', (req, res, next) => {
+    if (!options.authStorage) { next(); return }
+    res.setHeader('Cache-Control', 'no-store')
+    if (req.path === '/v1/auth/login' || req.path === '/v1/auth/logout' || req.path === '/v1/auth/session') { next(); return }
+    const user = options.authStorage.currentUser(req.headers.cookie)
+    if (!user) {
+      // 无有效会话时不能信任角色头、用户名或请求体来归属审计身份。
+      auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_SESSION_DENIED')
+      res.status(401).json(failure('INVALID_CREDENTIALS', 401, { message: '登录已失效，请重新登录。' }))
+      return
+    }
+    authenticatedUsers.set(req, user)
+    req.headers['x-demo-role'] = user.role
+    auth.setActor(user)
+    next()
   })
 
   /**
@@ -628,7 +658,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    if (req.body.username !== 'admin' && req.body.username !== 'operator' && req.body.username !== 'locked') {
+    if (!options.authStorage && req.body.username !== 'admin' && req.body.username !== 'operator' && req.body.username !== 'locked') {
       auth.recordError(req.body.username, 'OPERATOR', 'AUTH_LOGIN')
       res.status(401).json(failure('INVALID_CREDENTIALS', 401, {
         requestId,
@@ -637,11 +667,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
+    if (options.authStorage && !options.authStorage.allowLogin()) {
+      auth.recordDenied(req.body.username, 'OPERATOR', 'AUTH_LOGIN_RATE_LIMITED')
+      res.setHeader('Retry-After', '60')
+      res.status(429).json(failure('INVALID_REQUEST', 429, { message: '登录尝试过于频繁，请一分钟后重试。' }))
+      return
+    }
+    options.authStorage?.revokeSession(req.headers.cookie)
     const result = auth.login(req.body as LoginRequest)
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }
+    if (options.authStorage && result.data.principal) {
+      const token = options.authStorage.issueSession(result.data.principal.userId)
+      res.setHeader('Set-Cookie', `wrj_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`)
+      result.data.sessionCreated = true
+    }
     res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  app.get('/api/v1/auth/session', (req, res) => {
+    const user = options.authStorage?.currentUser(req.headers.cookie)
+    res.setHeader('X-Auth-Mode', options.authStorage ? 'sqlite' : 'mock')
+    res.setHeader('Access-Control-Expose-Headers', 'X-Auth-Mode')
+    const data = user ? { authenticated: true, sessionCreated: true, principal: { userId: user.userId, username: user.username, role: user.role, permissions: auth.permissionSet(user.role).permissions } }
+      : { authenticated: false, sessionCreated: false }
+    res.status(200).json(success(data, pageMeta('REQ-AUTH-SESSION')))
+  })
+
+  app.post('/api/v1/auth/logout', (req, res) => {
+    const user = options.authStorage?.currentUser(req.headers.cookie)
+    if (!isStrictObject(req.body, ['confirm']) || req.body.confirm !== true) {
+      if (options.authStorage) auth.recordError(user?.username ?? 'anonymous', user?.role ?? 'OPERATOR', 'AUTH_LOGOUT', user?.userId)
+      res.status(400).json(failure('INVALID_REQUEST', 400, { fieldPath: 'confirm' }))
+      return
+    }
+    options.authStorage?.revokeSession(req.headers.cookie)
+    realtime?.revalidateSessions()
+    if (options.authStorage) {
+      if (user) auth.recordSuccess(user.username, user.role, 'AUTH_LOGOUT', user.userId)
+      else auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_LOGOUT')
+    }
+    res.setHeader('Set-Cookie', 'wrj_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+    res.status(200).json(success({ authenticated: false, sessionCreated: false }, pageMeta('REQ-AUTH-LOGOUT')))
   })
 
   /**
@@ -771,11 +839,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = simulations.create(req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_CREATE')
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE')
       sendSimulationFailure(res, result, requestId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_CREATE', result.data.runId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_CREATE', result.data.runId)
     realtime.publishRuntimeState(result.data)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
@@ -817,7 +885,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SIMULATION_CLOSED_LOOP', runId)
     if (role === undefined) return
     if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
-      auth.recordDenied(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+      auth.recordDenied(actorForRequest(req, role), role, 'SIMULATION_CLOSED_LOOP', runId)
       res.status(403).json(failure('PERMISSION_DENIED', 403, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -827,11 +895,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     const result = simulations.runClosedLoop(runId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CLOSED_LOOP', runId)
       sendSimulationFailure(res, result, requestId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_CLOSED_LOOP', runId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_CLOSED_LOOP', runId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -847,7 +915,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const inspected = simulations.inspectCommand(runId, req.body)
     if (!inspected.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
       sendSimulationFailure(res, inspected, requestId)
       return
     }
@@ -855,7 +923,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     let stopConfirmed = false
     if (command.command === 'STOP') {
       if (command.confirmationId === undefined) {
-        auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
           requestId,
           generatedAt: P1_GENERATED_AT,
@@ -865,7 +933,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       const confirmed = confirmations.consume(command.confirmationId, 'SIMULATION_STOP', runId, role)
       if (!confirmed.ok) {
-        auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
           requestId,
           generatedAt: P1_GENERATED_AT,
@@ -878,11 +946,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result = simulations.command(runId, command, stopConfirmed)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
       sendSimulationFailure(res, result, requestId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_COMMAND', runId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
     realtime.publishRuntimeState(result.data)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
@@ -894,7 +962,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_COMMAND', jammerId)
     if (role === undefined) return
     if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
-      auth.recordDenied(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+      auth.recordDenied(actorForRequest(req, role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
       res.status(403).json(failure('PERMISSION_DENIED', 403, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -905,11 +973,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result = simulations.controlJammer(taskId, jammerId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
       sendSimulationFailure(res, result, requestId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_JAMMER_COMMAND', jammerId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -920,7 +988,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_SYNC', jammerId)
     if (role === undefined) return
     if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
-      auth.recordDenied(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      auth.recordDenied(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
       res.status(403).json(failure('PERMISSION_DENIED', 403, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -930,11 +998,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     const result = simulations.syncJammerParameters(taskId, jammerId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
       sendSimulationFailure(res, result, requestId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
     realtime.publishJammerStatus(result.data.jammerStatus, result.data.effectiveFrameId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
@@ -946,12 +1014,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @returns 无返回值。
    * @remarks 只读取场景投影，不修改草稿修订号。
    */
+  app.get('/api/v1/scenarios', (req, res) => {
+    if (requireDemoRole(req, res, auth, 'SCENARIO_LIST') === undefined) return
+    try {
+      const items = scenarios.list()
+      res.status(200).json(success(items, pageMeta('REQ-SCENARIOS-LIST', items.length, Math.max(1, items.length))))
+    } catch {
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { message: '场景列表读取失败，请重试。' }))
+    }
+  })
+
+  app.post('/api/v1/scenarios', (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_CREATE')
+    if (role === undefined) return
+    const result = scenarios.create(req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_CREATE')
+      res.status(result.status).json(failure(result.code, result.status, { message: result.message, fieldPath: result.fieldPath }))
+      return
+    }
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_CREATE', result.data.config.scenario.id)
+    res.status(201).json(success(result.data, pageMeta('REQ-SCENARIOS-CREATE')))
+  })
+
+  app.delete('/api/v1/scenarios/:scenarioId', (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCENARIO_DELETE', req.params.scenarioId)
+    if (role === undefined) return
+    const revision = req.query.expectedRevision
+    const result = scenarios.delete(req.params.scenarioId, { expectedRevision: typeof revision === 'string' && /^\d+$/.test(revision) ? Number(revision) : undefined })
+    if (!result.ok) {
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_DELETE', req.params.scenarioId)
+      res.status(result.status).json(failure(result.code, result.status, { message: result.message, fieldPath: result.fieldPath }))
+      return
+    }
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_DELETE', req.params.scenarioId)
+    res.status(200).json(success(result.data, pageMeta('REQ-SCENARIOS-DELETE')))
+  })
+
   app.get('/api/v1/scenarios/:scenarioId', (req, res) => {
     const scenarioId = req.params.scenarioId
     const requestId = 'REQ-P2-SCENARIO-GET'
     if (requireDemoRole(req, res, auth, 'SCENARIO_READ', scenarioId) === undefined) return
 
-    const result = scenarios.get(scenarioId, options.scenarioStorage !== undefined)
+    const result = scenarios.get(scenarioId)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -978,7 +1083,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result = scenarios.validate(scenarioId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCENARIO_VALIDATE', scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_VALIDATE', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -987,7 +1092,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_VALIDATE', scenarioId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_VALIDATE', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1006,7 +1111,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
     const result = scenarios.save(scenarioId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCENARIO_UPDATE', scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_UPDATE', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1015,7 +1120,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_UPDATE', scenarioId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_UPDATE', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1027,7 +1132,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = scenarios.undo(scenarioId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCENARIO_UNDO', scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_UNDO', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1036,7 +1141,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_UNDO', scenarioId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_UNDO', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1048,7 +1153,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = scenarios.resetDraft(scenarioId, req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCENARIO_RESET', scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_RESET', scenarioId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1057,7 +1162,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_RESET', scenarioId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_RESET', scenarioId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1068,7 +1173,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = scenarios.importSnapshots(req.body)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCENARIO_IMPORT')
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_IMPORT')
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1077,7 +1182,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCENARIO_IMPORT')
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCENARIO_IMPORT')
     res.status(200).json(success(result.data, pageMeta(requestId, result.data.imported, result.data.imported)))
   })
 
@@ -1200,7 +1305,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions)
+    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions, req.body.scenarioId)
     if (!result.ok) {
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -1219,26 +1324,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SCRIPT_PREVIEW')
     if (role === undefined) return
     if (!isScriptPreviewRequest(req.body)) {
-      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW')
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW')
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'request' }))
       return
     }
     const draft = scenarios.get(req.body.scenarioId)
     if (!draft.ok) {
-      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: draft.message, fieldPath: 'scenarioId' }))
       return
     }
     const validation = inspectScenarioConfig(draft.data.config, 'write').result
     if (validation.errors.length > 0) {
       const issue = validation.errors[0]!
-      auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, message: issue.message, fieldPath: issue.fieldPath }))
       return
     }
     if (validation.warnings.length > 0) {
       if (req.body.warningConfirmationId === undefined) {
-        auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
+        auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
         res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, { requestId, generatedAt: P1_GENERATED_AT, message: '场景存在校验警告，生成脚本前需要一次性确认。' }))
         return
       }
@@ -1249,12 +1354,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         role,
       )
       if (!confirmation.ok) {
-        auth.recordError(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
+        auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
         res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, { requestId, generatedAt: P1_GENERATED_AT, message: confirmation.message }))
         return
       }
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
     res.status(200).json(success(scripts.preview(draft.data), pageMeta(requestId)))
   })
 
@@ -1265,13 +1370,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const role = requireDemoRole(req, res, auth, 'SCRIPT_PREFLIGHT', scriptId)
     if (role === undefined) return
     if (!isPreflightRequest(req.body)) {
-      auth.recordError(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREFLIGHT', scriptId)
       res.status(422).json(failure('VALIDATION_FAILED', 422, { requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'checksum' }))
       return
     }
     const result = scripts.preflight(scriptId, req.body.checksum)
     if (!result.ok) {
-      auth.recordError(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREFLIGHT', scriptId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1280,7 +1385,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'SCRIPT_PREFLIGHT', scriptId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_PREFLIGHT', scriptId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1299,10 +1404,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = batchReplay.createBatch(req.body)
     if (sendBatchReplayFailure(res, result, requestId)) {
-      auth.recordError(actorForRole(role), role, 'BATCH_CREATE')
+      auth.recordError(actorForRequest(req, role), role, 'BATCH_CREATE')
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'BATCH_CREATE', result.data.batchId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'BATCH_CREATE', result.data.batchId)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1324,10 +1429,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = batchReplay.commandBatch(batchId, req.body)
     if (sendBatchReplayFailure(res, result, requestId)) {
-      auth.recordError(actorForRole(role), role, 'BATCH_COMMAND', batchId)
+      auth.recordError(actorForRequest(req, role), role, 'BATCH_COMMAND', batchId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'BATCH_COMMAND', batchId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'BATCH_COMMAND', batchId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1357,10 +1462,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (role === undefined) return
     const result = batchReplay.commandReplay(replayId, req.body)
     if (sendBatchReplayFailure(res, result, requestId)) {
-      auth.recordError(actorForRole(role), role, 'REPLAY_COMMAND', replayId)
+      auth.recordError(actorForRequest(req, role), role, 'REPLAY_COMMAND', replayId)
       return
     }
-    auth.recordSuccess(actorForRole(role), role, 'REPLAY_COMMAND', replayId)
+    auth.recordSuccess(actorForRequest(req, role), role, 'REPLAY_COMMAND', replayId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1692,11 +1797,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(records, pageMeta(requestId, records.length, Math.max(1, records.length))))
   })
 
-  /** Validates a confirmed audit export and returns classification evidence without creating a file. */
+  /** 按同一查询规则导出确认后的只读快照，不在服务器写入临时文件。 */
   app.post('/api/v1/admin/audit/export', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
     const requestId = 'REQ-P7-AUDIT-EXPORT'
     if (!requireAdmin(req, res, auth, 'AUDIT_EXPORT', 'AUDIT-LOG')) return
     if (!isAuditRequest(req.body, true)) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1705,6 +1812,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     if (req.body.confirmationId === undefined) {
+      auth.recordDenied(actorForRequest(req, 'ADMIN'), 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
       res.status(428).json(failure('CONFIRMATION_REQUIRED', 428, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1714,6 +1822,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     const confirmation = confirmations.consume(req.body.confirmationId, 'AUDIT_EXPORT', 'AUDIT-LOG', 'ADMIN')
     if (!confirmation.ok) {
+      auth.recordDenied(actorForRequest(req, 'ADMIN'), 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
       res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1721,14 +1830,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result: ExportStatus = {
-      objectId: 'AUDIT-LOG',
-      generated: false,
-      classification: 'INTERNAL',
-      watermark: '内部使用 · admin · AUDIT-LOG',
-      verifiedAt: P1_GENERATED_AT,
+    try {
+      const actor = actorForRequest(req, 'ADMIN')
+      const verifiedAt = options.authStorage?.time() ?? P1_GENERATED_AT
+      const records = filterAudit(auth.auditSnapshot(), req.body)
+      const result = buildAuditExport(records, req.body, actor, verifiedAt, req.body.confirmationId)
+      // 先记录本次导出，再返回文件；本次操作不混入刚取得的导出快照。
+      auth.recordSuccess(actor, 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
+      res.status(200).json(success(result, { ...pageMeta(requestId), generatedAt: verifiedAt }))
+    } catch {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
+      res.status(400).json(failure('INVALID_REQUEST', 400, { requestId, message: '审计日志导出失败，请检查存储后重新发起确认。' }))
     }
-    res.status(200).json(success(result, pageMeta(requestId)))
   })
 
   /**
@@ -1756,6 +1869,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    */
   app.post('/api/v1/admin/users', (req, res) => {
     const requestId = 'REQ-P1-USERS-CREATE'
+    if (req.body?.operation === 'CREATE' && typeof req.body.password === 'string' && !req.body.password.trim()) {
+      auth.recordError('admin', 'ADMIN', 'USER_CREATE')
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'password', message: '密码不能全为空白。',
+      }))
+      return
+    }
     if (!isUserRoleCommand(req.body) || req.body.operation !== 'CREATE') {
       auth.recordError('admin', 'ADMIN', 'USER_CREATE')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
@@ -1803,6 +1923,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     const result = auth.update(userId, req.body)
+    realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }
@@ -1821,6 +1942,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-DELETE'
     const result = auth.delete(userId)
+    realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }
@@ -1892,14 +2014,24 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @returns Nothing.
    * @remarks Sends one 400 JSON response and does not mutate projections.
    */
-  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
+    if (options.authStorage && error instanceof SyntaxError && ['/api/v1/auth/login', '/api/v1/auth/logout'].includes(req.path)) {
+      const user = options.authStorage.currentUser(req.headers.cookie)
+      auth.recordError(user?.username ?? 'anonymous', user?.role ?? 'OPERATOR', req.path.endsWith('/login') ? 'AUTH_LOGIN' : 'AUTH_LOGOUT', user?.userId)
+    }
     const details = error instanceof Error ? error.message : 'Unknown JSON parsing error.'
     res.status(400).json(failure('INVALID_REQUEST', 400, { details }))
   })
 
   const httpServer = createServer(app)
-  realtime = attachRealtimeServer(httpServer, projection, () => simulations.list()[0])
+  realtime = attachRealtimeServer(httpServer, projection, () => simulations.list()[0], options.authStorage
+    ? request => {
+      const allowed = options.authStorage!.currentUser(request.headers.cookie) !== undefined
+      if (!allowed) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_WS_DENIED')
+      return allowed
+    } : undefined)
   httpServer.listen(port, '127.0.0.1')
+  if (options.authStorage) httpServer.once('close', options.authStorage.watchSessions(() => realtime?.revalidateSessions()))
 
   let closePromise: Promise<void> | undefined
   return {

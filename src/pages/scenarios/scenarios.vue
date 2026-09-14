@@ -36,6 +36,8 @@ import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vu
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 const scenarioStore = useScenarioStore()
+const props = defineProps<{ managed?: boolean }>()
+const emit = defineEmits<{ saved: []; back: [] }>()
 const authStore = useAuthStore()
 const {
   draft,
@@ -1132,6 +1134,7 @@ async function saveScenario(): Promise<void> {
   if (await scenarioStore.saveScenario()) {
     draftReviewed.value = true
     ElMessage.success('场景草稿已保存。')
+    if (props.managed) emit('saved')
   } else {
     activeTab.value = 'validation'
   }
@@ -1225,6 +1228,7 @@ watch(activeTab, (tab) => {
 <template>
   <section class="page scenario-page" aria-label="场景配置">
     <header class="scenario-header" aria-label="场景操作">
+      <el-button v-if="managed" data-testid="back-scene-list" @click="emit('back')">返回场景列表</el-button>
       <nav class="scenario-workflow" aria-label="场景工作流程">
         <el-button :type="configurationTab ? 'primary' : 'default'" :aria-current="configurationTab ? 'step' : undefined" data-testid="workflow-config" @click="activeTab = 'scenario'">1 配置参数</el-button>
         <span aria-hidden="true">→</span>

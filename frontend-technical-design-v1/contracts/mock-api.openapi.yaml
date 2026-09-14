@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.1.0",
-    "description": "Documentation contract only, synchronized to the SRS, detailed design, and approved frontend requirements baseline V1.1. Every operation has a typed request/response contract. A later local Express mock MUST bind 127.0.0.1 only, validate requests and deterministic-fixtures.json against these schemas, load immutable in-memory fixtures at startup/reset, and perform no file, SQLite, process, encryption, or export operation. Authentication is stateless and fake."
+    "version": "1.2.0",
+    "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; other simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
     {
@@ -58,7 +58,7 @@
         "tags": [
           "auth"
         ],
-        "summary": "Return fake stateless principal; no session or token",
+        "summary": "Authenticate SQLite account and issue HttpOnly session; isolated Mock entry remains stateless",
         "x-rbac": "PUBLIC",
         "requestBody": {
           "required": true,
@@ -100,10 +100,21 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1AuthLogin",
-        "parameters": []
+        "parameters": [],
+        "security": []
       }
     },
     "/api/v1/auth/permissions": {
@@ -124,6 +135,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Typed deterministic error",
             "content": {
@@ -139,6 +160,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -161,12 +187,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1MetaCapabilities",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -189,12 +230,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1MetaInterfaces",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -217,12 +273,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1MetaDecisions",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -245,12 +316,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1MetaRoutes",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -260,7 +346,7 @@
         "tags": [
           "scenarios"
         ],
-        "summary": "List in-memory scenario drafts",
+        "summary": "List saved scenarios by identity",
         "x-rbac": "BUSINESS_READ",
         "responses": {
           "200": {
@@ -272,6 +358,36 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1Scenarios",
@@ -279,13 +395,18 @@
           {
             "$ref": "#/components/parameters/DemoRole"
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       },
       "post": {
         "tags": [
           "scenarios"
         ],
-        "summary": "Create temporary in-memory draft",
+        "summary": "Create a new saved scenario; reject duplicate identity",
         "x-rbac": "SCENARIO_DRAFT_WRITE",
         "responses": {
           "201": {
@@ -298,8 +419,48 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -324,7 +485,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scenarios/{scenarioId}": {
@@ -350,8 +516,28 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -365,6 +551,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       },
@@ -385,6 +576,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Typed deterministic error",
             "content": {
@@ -397,6 +598,16 @@
           },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -421,7 +632,111 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "scenarios"
+        ],
+        "summary": "Delete unlocked scene after UI confirmation and expected revision check",
+        "x-rbac": "SCENARIO_DRAFT_WRITE",
+        "responses": {
+          "200": {
+            "description": "Typed deterministic success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeleteapiV1ScenariosScenarioIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator permission required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Template not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteapiV1ScenariosScenarioId",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          },
+          {
+            "name": "expectedRevision",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scenarios/{scenarioId}/validate": {
@@ -450,6 +765,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Typed deterministic error",
             "content": {
@@ -469,6 +794,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1ScenariosScenarioIdValidate",
@@ -481,7 +816,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scenarios/{scenarioId}/undo": {
@@ -506,6 +846,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1ScenariosScenarioIdUndoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -539,6 +889,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1ScenariosScenarioIdUndo",
@@ -551,7 +911,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scenarios/{scenarioId}/reset": {
@@ -576,6 +941,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1ScenariosScenarioIdResetResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -609,6 +984,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1ScenariosScenarioIdReset",
@@ -621,7 +1006,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scenarios/import": {
@@ -642,6 +1032,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Scenario locked or import conflict",
             "content": {
@@ -654,6 +1054,16 @@
           },
           "422": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Typed scenario storage or validation error",
             "content": {
               "application/json": {
                 "schema": {
@@ -678,7 +1088,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/templates": {
@@ -689,16 +1104,32 @@
         "summary": "List templates from configured storage",
         "x-rbac": "BUSINESS_READ",
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/GetapiV1TemplatesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -709,6 +1140,11 @@
           {
             "$ref": "#/components/parameters/DemoRole"
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       },
       "post": {
@@ -718,16 +1154,22 @@
         "summary": "Create official template in configured storage",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "201": {
             "description": "Typed deterministic success",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1TemplatesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -761,6 +1203,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1Templates",
@@ -778,7 +1230,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/templates/{templateId}": {
@@ -794,10 +1251,6 @@
         "summary": "Get template",
         "x-rbac": "BUSINESS_READ",
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
@@ -808,8 +1261,28 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
             "content": {
               "application/json": {
                 "schema": {
@@ -824,6 +1297,11 @@
           {
             "$ref": "#/components/parameters/DemoRole"
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       },
       "put": {
@@ -833,16 +1311,22 @@
         "summary": "Update official template fixture",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PutapiV1TemplatesTemplateIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -886,6 +1370,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "putapiV1TemplatesTemplateId",
@@ -903,7 +1397,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -912,16 +1411,22 @@
         "summary": "Confirmed delete with reference protection",
         "x-rbac": "OFFICIAL_TEMPLATE_MAINTAIN",
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "200": {
             "description": "Typed deterministic success",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteapiV1TemplatesTemplateIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -965,6 +1470,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "deleteapiV1TemplatesTemplateId",
@@ -974,6 +1489,11 @@
           },
           {
             "$ref": "#/components/parameters/ConfirmationIdHeader"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -994,16 +1514,22 @@
           }
         ],
         "responses": {
-          "503": {
-            "description": "Local SQLite storage unavailable; no successful mutation",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
-          },
           "201": {
             "description": "Typed deterministic success",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1TemplatesTemplateIdCopyResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1047,6 +1573,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "Local SQLite storage unavailable; no successful mutation",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1TemplatesTemplateIdCopy",
@@ -1059,7 +1595,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scripts/preview": {
@@ -1076,6 +1617,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1ScriptsPreviewResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1126,7 +1677,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/scripts/{scriptId}/preflight": {
@@ -1155,6 +1711,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Typed deterministic error",
             "content": {
@@ -1176,7 +1742,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/contracts/scenario-config": {
@@ -1196,12 +1767,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1ContractsScenarioConfig",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -1224,12 +1810,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1ContractsFrontendTypes",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -1252,12 +1853,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1ContractsCsv",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -1279,12 +1895,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1Simulations",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       },
@@ -1301,6 +1932,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1SimulationsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1331,7 +1972,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/simulations/{runId}": {
@@ -1360,6 +2006,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Typed deterministic error",
             "content": {
@@ -1371,7 +2027,12 @@
             }
           }
         },
-        "operationId": "getapiV1SimulationsRunId"
+        "operationId": "getapiV1SimulationsRunId",
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/simulations/{runId}/commands": {
@@ -1396,6 +2057,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1SimulationsRunIdCommandsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1431,7 +2102,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{taskId}/jammers/{jammerId}/commands": {
@@ -1459,6 +2135,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdCommandsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1514,7 +2200,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/simulations/{runId}/frames/{frameId}": {
@@ -1546,6 +2237,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Typed deterministic error",
             "content": {
@@ -1557,7 +2258,12 @@
             }
           }
         },
-        "operationId": "getapiV1SimulationsRunIdFramesFrameId"
+        "operationId": "getapiV1SimulationsRunIdFramesFrameId",
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/simulations/{runId}/events": {
@@ -1582,12 +2288,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1SimulationsRunIdEvents",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       },
@@ -1604,6 +2325,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1SimulationsRunIdEventsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1664,7 +2395,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/batches": {
@@ -1684,12 +2420,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1Batches",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       },
@@ -1706,6 +2457,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1BatchesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1736,7 +2497,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/batches/{batchId}": {
@@ -1765,6 +2531,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Typed deterministic error",
             "content": {
@@ -1786,7 +2562,12 @@
             }
           }
         },
-        "operationId": "getapiV1BatchesBatchId"
+        "operationId": "getapiV1BatchesBatchId",
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/batches/{batchId}/commands": {
@@ -1815,6 +2596,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Typed deterministic error",
             "content": {
@@ -1836,7 +2627,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/reports": {
@@ -1856,12 +2652,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1Reports",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -1891,9 +2702,24 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
-        "operationId": "getapiV1ReportsReportId"
+        "operationId": "getapiV1ReportsReportId",
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/reports/{reportId}/export": {
@@ -1918,6 +2744,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1ReportsReportIdExportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -1953,7 +2789,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/confirmations": {
@@ -1977,6 +2818,16 @@
           },
           "400": {
             "description": "Confirmation request validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
             "content": {
               "application/json": {
                 "schema": {
@@ -2011,7 +2862,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/confirmations/{confirmationId}": {
@@ -2051,6 +2907,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Administrator permission required",
             "content": {
@@ -2082,7 +2948,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/replays": {
@@ -2102,12 +2973,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1Replays",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -2137,9 +3023,24 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
-        "operationId": "getapiV1ReplaysReplayId"
+        "operationId": "getapiV1ReplaysReplayId",
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/replays/{replayId}/commands": {
@@ -2168,6 +3069,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Typed deterministic error",
             "content": {
@@ -2189,7 +3100,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/master-data": {
@@ -2210,6 +3126,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Typed deterministic error",
             "content": {
@@ -2226,6 +3152,11 @@
           {
             "$ref": "#/components/parameters/DemoRole"
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       },
       "post": {
@@ -2241,6 +3172,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminMasterDataResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2291,7 +3232,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/master-data/{dataId}": {
@@ -2313,6 +3259,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PutapiV1AdminMasterDataDataIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2373,7 +3329,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -2388,6 +3349,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteapiV1AdminMasterDataDataIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2441,6 +3412,11 @@
           {
             "$ref": "#/components/parameters/ConfirmationIdHeader"
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       }
     },
@@ -2461,12 +3437,27 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "getapiV1AdminUsers",
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       },
@@ -2483,6 +3474,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminUsersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2503,7 +3504,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/users/{userId}": {
@@ -2525,6 +3531,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PutapiV1AdminUsersUserIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2555,7 +3571,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -2570,6 +3591,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DeleteapiV1AdminUsersUserIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2589,6 +3620,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -2613,6 +3649,16 @@
           },
           "400": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
             "content": {
               "application/json": {
                 "schema": {
@@ -2700,6 +3746,11 @@
               ]
             }
           }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
         ]
       }
     },
@@ -2708,7 +3759,7 @@
         "tags": [
           "admin"
         ],
-        "summary": "Return classified export status only",
+        "summary": "Export a confirmed filtered audit snapshot as plaintext UTF-8 TXT for development verification",
         "x-rbac": "AUDIT_READ",
         "responses": {
           "200": {
@@ -2723,6 +3774,16 @@
           },
           "400": {
             "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
             "content": {
               "application/json": {
                 "schema": {
@@ -2777,7 +3838,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/backup": {
@@ -2794,6 +3860,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminBackupResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2864,7 +3940,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/restore": {
@@ -2881,6 +3962,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminRestoreResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -2951,7 +4042,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/health": {
@@ -2972,6 +4068,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "受控操作失败",
             "content": {
@@ -2987,6 +4093,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -3009,6 +4120,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "受控操作失败",
             "content": {
@@ -3024,6 +4145,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -3045,6 +4171,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "operationId": "postapiV1Reset",
@@ -3062,7 +4198,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/ws/v1": {
@@ -3087,6 +4228,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Typed deterministic error",
             "content": {
@@ -3102,6 +4253,11 @@
         "parameters": [
           {
             "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
           }
         ]
       }
@@ -3120,6 +4276,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1AdminConfigExportResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -3180,7 +4346,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters": {
@@ -3208,6 +4379,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PostapiV1TasksTaskIdJammersJammerIdParametersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -3263,7 +4444,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
       }
     },
     "/api/v1/admin/backups": {
@@ -3290,6 +4476,16 @@
               }
             }
           },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "403": {
             "description": "受控操作失败",
             "content": {
@@ -3300,7 +4496,98 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "getapiV1AuthSession",
+        "summary": "Restore server-verified principal, or authenticated=false when absent",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetapiV1AuthSessionResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "operationId": "postapiV1AuthLogout",
+        "summary": "Revoke current session and clear cookie",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostapiV1AuthLogoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostapiV1AuthLogoutResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": []
       }
     }
   },
@@ -3309,8 +4596,8 @@
       "DemoRole": {
         "name": "X-Demo-Role",
         "in": "header",
-        "required": true,
-        "description": "Stateless fake role input; never a production credential",
+        "required": false,
+        "description": "Only for the isolated deterministic Mock entry; ignored by SQLite session authentication.",
         "schema": {
           "type": "string",
           "enum": [
@@ -3567,7 +4854,12 @@
           },
           "rainCloudAttenuation": {
             "type": "string",
-            "enum": ["none", "lightRain", "moderateRain", "heavyRain"],
+            "enum": [
+              "none",
+              "lightRain",
+              "moderateRain",
+              "heavyRain"
+            ],
             "default": "lightRain"
           },
           "seaState": {
@@ -3901,10 +5193,22 @@
           },
           {
             "if": {
-              "properties": { "type": { "const": "AIRBORNE_JAMMER_PLATFORM" } },
-              "required": ["type"]
+              "properties": {
+                "type": {
+                  "const": "AIRBORNE_JAMMER_PLATFORM"
+                }
+              },
+              "required": [
+                "type"
+              ]
             },
-            "then": { "properties": { "category": { "const": "air" } } }
+            "then": {
+              "properties": {
+                "category": {
+                  "const": "air"
+                }
+              }
+            }
           }
         ]
       },
@@ -4252,10 +5556,20 @@
       "InformationDemand": {
         "type": "object",
         "additionalProperties": false,
-        "if": { "required": ["linkId"] },
+        "if": {
+          "required": [
+            "linkId"
+          ]
+        },
         "then": {
-          "required": ["direction"],
-          "properties": { "destinationPlatformIds": { "maxItems": 1 } }
+          "required": [
+            "direction"
+          ],
+          "properties": {
+            "destinationPlatformIds": {
+              "maxItems": 1
+            }
+          }
         },
         "required": [
           "id",
@@ -4294,7 +5608,10 @@
             "type": "string"
           },
           "direction": {
-            "enum": ["FORWARD", "REVERSE"]
+            "enum": [
+              "FORWARD",
+              "REVERSE"
+            ]
           },
           "enabled": {
             "type": "boolean"
@@ -4410,7 +5727,9 @@
           "informationDemand"
         ],
         "properties": {
-          "linkSettings": { "$ref": "#/components/schemas/ScenarioLinkSettings" },
+          "linkSettings": {
+            "$ref": "#/components/schemas/ScenarioLinkSettings"
+          },
           "schemaVersion": {
             "const": "1.0"
           },
@@ -5509,6 +6828,26 @@
           }
         }
       },
+      "DeleteapiV1ScenariosScenarioIdResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeleteResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
       "ScenarioDraft": {
         "type": "object",
         "additionalProperties": false,
@@ -5551,6 +6890,10 @@
           },
           "uiExtensions": {
             "$ref": "#/components/schemas/ScenarioUiExtensions"
+          },
+          "expectedRevision": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },
@@ -6028,7 +7371,10 @@
             "type": "string",
             "minLength": 1,
             "not": {
-              "enum": [".", ".."]
+              "enum": [
+                ".",
+                ".."
+              ]
             }
           },
           "kind": {
@@ -6346,14 +7692,17 @@
         ],
         "properties": {
           "username": {
-            "enum": [
-              "admin",
-              "operator",
-              "locked"
-            ]
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": ".*\\S.*"
           },
           "passwordFixture": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "writeOnly": true,
+            "description": "Legacy wire field name retained for compatibility; carries the entered password, never a fixture selector. Do not log or persist plaintext."
           }
         }
       },
@@ -6407,7 +7756,8 @@
             ]
           },
           "sessionCreated": {
-            "const": false
+            "type": "boolean",
+            "description": "true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry."
           }
         }
       },
@@ -6792,6 +8142,51 @@
           }
         }
       },
+      "AuditExportResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "objectId",
+          "generated",
+          "classification",
+          "watermark",
+          "verifiedAt",
+          "fileName",
+          "content",
+          "recordCount"
+        ],
+        "properties": {
+          "objectId": {
+            "const": "AUDIT-LOG"
+          },
+          "generated": {
+            "const": true
+          },
+          "classification": {
+            "const": "INTERNAL"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1
+          },
+          "verifiedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "fileName": {
+            "type": "string",
+            "pattern": "^operation_audit_[0-9]{14}_[A-Za-z0-9_-]+\\.txt$"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recordCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "ExportStatus": {
         "type": "object",
         "additionalProperties": false,
@@ -7058,6 +8453,11 @@
           "name": {
             "type": "string",
             "minLength": 1
+          },
+          "scenarioId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^SCN-"
           }
         }
       },
@@ -7342,8 +8742,31 @@
           "confirmationId": {
             "type": "string",
             "minLength": 1
+          },
+          "password": {
+            "type": "string",
+            "minLength": 6,
+            "maxLength": 32,
+            "writeOnly": true,
+            "description": "Required when creating a SQLite account; never returned in User."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "required": [
+                "password"
+              ]
+            },
+            "then": {
+              "properties": {
+                "operation": {
+                  "const": "CREATE"
+                }
+              }
+            }
+          }
+        ]
       },
       "AuditRequest": {
         "type": "object",
@@ -8056,7 +9479,7 @@
         }
       },
       "PostapiV1ScenariosRequest": {
-        "$ref": "#/components/schemas/ScenarioConfigWrite"
+        "$ref": "#/components/schemas/ScenarioDraftUpdate"
       },
       "PostapiV1ScenariosResponse": {
         "type": "object",
@@ -9086,7 +10509,7 @@
             "const": true
           },
           "data": {
-            "$ref": "#/components/schemas/ExportStatus"
+            "$ref": "#/components/schemas/AuditExportResult"
           },
           "meta": {
             "$ref": "#/components/schemas/Meta"
@@ -9728,6 +11151,69 @@
             "$ref": "#/components/schemas/Meta"
           }
         }
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "confirm": {
+            "const": true
+          }
+        },
+        "required": [
+          "confirm"
+        ]
+      },
+      "GetapiV1AuthSessionResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuthResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PostapiV1AuthLogoutResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/AuthResult"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PostapiV1AuthLogoutRequest": {
+        "$ref": "#/components/schemas/LogoutRequest"
+      }
+    },
+    "securitySchemes": {
+      "SessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "wrj_session",
+        "description": "Required by normal local startup. X-Demo-Role is ignored; only isolated server/index.ts permits Mock roles."
       }
     }
   },

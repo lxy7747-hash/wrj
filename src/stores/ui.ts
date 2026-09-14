@@ -1,3 +1,4 @@
+import { apiFetch } from '../features/shared/api-fetch'
 import { nextTick } from 'vue'
 import { defineStore } from 'pinia'
 import { isRfc3339DateTime } from '../features/scenarios/scenario-validation'
@@ -69,7 +70,7 @@ export const useUiStore = defineStore('ui', {
         useAdminStore().invalidateConfirmation()
         this.clearBusinessProjections()
         step = '重置服务'
-        const response = await fetch(`${resolveMockOrigin()}/api/v1/reset`, {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reset`, {
           method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
           body: JSON.stringify({ confirm: true }),
         })
@@ -80,7 +81,7 @@ export const useUiStore = defineStore('ui', {
           || payload.data.nextSequence !== 1 || !isRfc3339DateTime(payload.data.generatedAt)) throw new Error()
         const loads: [string, () => Promise<boolean>][] = [
           ['权限', () => auth.refreshPermissions()],
-          ['场景', () => useScenarioStore().loadScenario()],
+          ['场景列表', () => useScenarioStore().loadScenes()],
           ['仿真运行', () => useSimulationStore().resetProjection()],
           ['态势帧', () => telemetry.loadFrame()],
           ['批次', () => useBatchStore().loadComparison()],
