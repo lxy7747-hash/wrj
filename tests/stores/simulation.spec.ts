@@ -120,6 +120,89 @@ describe('P3-1 仿真 Store', () => {
     useAuthStore().$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
   }
 
+  it('选择已保存场景并在开始前重读，创建请求使用选中编号而非编辑草稿', async () => {
+    authorizeOperator()
+    const draft = scenarioDraft()
+    draft.config.scenario.id = 'SCN-B'
+    let current = run('STOPPED')
+    const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/scenarios/SCN-B')) return successResponse(draft)
+      if (init?.method === 'POST' && url.endsWith('/simulations')) {
+        expect(JSON.parse(String(init.body)).scenarioId).toBe('SCN-B')
+        current = { ...run('IDLE', true), scenarioId: 'SCN-B' }
+        return successResponse(current)
+      }
+      if (url.endsWith('/commands')) return successResponse({ ...run('RUNNING', true), scenarioId: 'SCN-B' })
+      return successResponse([current])
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const store = useSimulationStore()
+    expect(await store.selectScene('SCN-B')).toBe(true)
+    draft.revision = 5
+    draft.config.scenario.name = '最新保存名称'
+    expect(await store.start()).toBe(true)
+    expect(store.selectedScene?.revision).toBe(5)
+    expect(store.selectedScene?.config.scenario.name).toBe('最新保存名称')
+    expect(store.run?.scenarioId).toBe('SCN-B')
+    expect(store.uiStatus).toBe('RUNNING')
+  })
+
+  it('运行锁阻止切换，失败选择不替换当前已选快照，清空选择不改编辑草稿', async () => {
+    authorizeOperator()
+    const draft = scenarioDraft()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse([run('STOPPED')]))
+      .mockResolvedValueOnce(successResponse(draft)).mockResolvedValueOnce(successResponse([run('RUNNING', true)])))
+    const store = useSimulationStore()
+    expect(await store.selectScene('SCN-001')).toBe(true)
+    expect(await store.selectScene('SCN-B')).toBe(false)
+    expect(store.selectedScene?.config.scenario.id).toBe('SCN-001')
+    expect(store.resultMessage).toContain('先停止')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse([run('STOPPED')])).mockResolvedValueOnce(successResponse({})))
+    expect(await store.selectScene('SCN-B')).toBe(false)
+    expect(store.selectedScene?.config.scenario.id).toBe('SCN-001')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([run('STOPPED')])))
+    expect(await store.selectScene('')).toBe(true)
+    expect(store.selectedScene).toBeNull()
+  })
+
+  it.each(['run', 'scene', 'body'] as const)('取消选择后 %s 阶段迟到响应不写入所选场景', async phase => {
+    authorizeOperator()
+    const late = deferred<Response>()
+    const lateBody = deferred<unknown>()
+    const fetcher = vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith('/simulations')) return phase === 'run' ? late.promise : Promise.resolve(successResponse([run('STOPPED')]))
+      return phase === 'scene' ? late.promise : Promise.resolve({ ok: true, json: () => lateBody.promise })
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const store = useSimulationStore()
+    const lifetime = new AbortController()
+    const pending = store.selectScene('SCN-001', lifetime.signal)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(phase === 'run' ? 1 : 2))
+    lifetime.abort()
+    if (phase === 'body') lateBody.resolve({ ok: true, data: scenarioDraft() })
+    else late.resolve(successResponse(phase === 'run' ? [run('STOPPED')] : scenarioDraft()))
+    expect(await pending).toBe(false)
+    expect(store.selectedScene).toBeNull()
+    expect(store.selectingScene).toBe(false)
+    expect(store.capabilityState).not.toBe('ERROR')
+    expect(fetcher).toHaveBeenCalledTimes(phase === 'run' ? 1 : 2)
+  })
+
+  it('登出清空后迟到的场景选择不回写', async () => {
+    authorizeOperator()
+    const deferredScene = deferred<Response>()
+    const fetcher = vi.fn().mockResolvedValueOnce(successResponse([run('STOPPED')])).mockReturnValueOnce(deferredScene.promise)
+    vi.stubGlobal('fetch', fetcher)
+    const store = useSimulationStore()
+    const pending = store.selectScene('SCN-001')
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+    store.resetToSafeEmpty()
+    deferredScene.resolve(successResponse(scenarioDraft()))
+    expect(await pending).toBe(false)
+    expect(store.selectedScene).toBeNull()
+    expect(store.selectingScene).toBe(false)
+  })
+
   it('在网络边界接受闭合运行并拒绝损坏字段', () => {
     const valid = run('RUNNING', true)
     expect(isSimulationRun(valid)).toBe(true)

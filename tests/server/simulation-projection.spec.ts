@@ -73,7 +73,7 @@ describe('P3-1 仿真服务端投影', () => {
     expect(projections().simulations.create({ taskId: 'TASK-OTHER', scenarioId: 'SCN-001' })).toMatchObject({
       ok: false,
       code: 'VALIDATION_FAILED',
-      fieldPath: 'scenarioId',
+      fieldPath: 'taskId',
     })
     const { simulations } = projections()
     expect(simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })).toMatchObject({

@@ -7,11 +7,12 @@ import type {
   SimulationCommand,
   SimulationMode,
   SimulationRun,
+  ScenarioDraft,
   UiSimulationStatus,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
-import { useScenarioStore } from './scenario'
+import { readScenarioDraft, useScenarioStore } from './scenario'
 
 const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt'])
 const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage'])
@@ -50,7 +51,7 @@ async function fetchSimulation(owner: object, input: string, init?: RequestInit)
   pendingRequests.set(owner, requests)
   requests.set(controller, timer)
   try {
-    return await apiFetch(input, { ...init, signal: controller.signal })
+    return await apiFetch(input, { ...init, signal: init?.signal ? AbortSignal.any([controller.signal, init.signal]) : controller.signal })
   } catch (error) {
     if (controller.signal.aborted) throw new SimulationTimeoutError()
     throw error
@@ -123,6 +124,8 @@ export const useSimulationStore = defineStore('simulation', {
     lastConfirmation: null as ConfirmationContext | null,
     requestEpoch: 0,
     runtimeSyncEpoch: 0,
+    selectedScene: null as ScenarioDraft | null,
+    selectingScene: false,
   }),
 
   getters: {
@@ -136,6 +139,38 @@ export const useSimulationStore = defineStore('simulation', {
   },
 
   actions: {
+    /** 只选择服务端已保存的快照，不使用编辑器的未保存草稿；运行锁由服务端复核。 */
+    async selectScene(id: string, signal?: AbortSignal): Promise<boolean> {
+      if (this.pending || this.selectingScene || signal?.aborted) return false
+      const epoch = this.requestEpoch
+      this.selectingScene = true
+      try {
+        if (!await this.resetProjection() || epoch !== this.requestEpoch || signal?.aborted) return false
+        if ((this.run?.configLocked || this.uiStatus === 'RUNNING' || this.uiStatus === 'PAUSED') && id !== this.run?.scenarioId) {
+          this.showError(undefined, '请先停止当前 Mock 运行，再切换场景。')
+          return false
+        }
+        if (!id) { this.selectedScene = null; return true }
+        const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}`, {
+          headers: { 'X-Demo-Role': useAuthStore().role },
+          signal,
+        })
+        if (epoch !== this.requestEpoch || signal?.aborted) return false
+        const payload = await readJson(response)
+        if (epoch !== this.requestEpoch || signal?.aborted) return false
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
+        const scene = readScenarioDraft(payload)
+        if (!scene || scene.config.scenario.id !== id) throw new InvalidSimulationResponseError()
+        this.selectedScene = scene
+        this.resultMessage = '已选择保存的场景配置；Mock 运行不生成真实遥测。'
+        return true
+      } catch (error) {
+        if (epoch === this.requestEpoch && !signal?.aborted) this.showError(error, '场景选择失败。')
+        return false
+      } finally {
+        if (epoch === this.requestEpoch) this.selectingScene = false
+      }
+    },
     /**
      * 将异常转换为仿真控制的中文错误反馈。
      * @param error 捕获到的网络、合同或 API 失败对象。
@@ -253,11 +288,12 @@ export const useSimulationStore = defineStore('simulation', {
       const requestEpoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       this.configurationLockState = 'LOCKING'
+      const scenarioId = this.selectedScene?.config.scenario.id ?? 'SCN-001'
       try {
         const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/simulations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ taskId: 'TASK-001', scenarioId: 'SCN-001' }),
+          body: JSON.stringify({ taskId: 'TASK-001', scenarioId }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'
@@ -265,7 +301,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch) return false
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const run = readRun(payload)
-        if (run === undefined || !run.configLocked || run.uiStatus !== 'IDLE') throw new InvalidSimulationResponseError()
+        if (run === undefined || run.scenarioId !== scenarioId || !run.configLocked || run.uiStatus !== 'IDLE') throw new InvalidSimulationResponseError()
         this.applyRun(run)
         this.capabilityState = 'SUCCESS'
         this.resultCode = 'SIMULATION_CREATED'
@@ -336,8 +372,14 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 可能依次创建运行、锁定场景并发送 START/RESUME 命令。
      */
     async start(): Promise<boolean> {
+      if (this.selectingScene || this.pending) return false
+      if (this.selectedScene && this.run?.configLocked && this.run.scenarioId !== this.selectedScene.config.scenario.id) {
+        this.showError(undefined, '其他场景已有运行，请先停止该运行。')
+        return false
+      }
       if (this.run?.uiStatus === 'PAUSED') return this.resume()
       if (this.run === null || ['STOPPED', 'COMPLETED', 'ERROR'].includes(this.run.uiStatus)) {
+        if (this.selectedScene && !await this.selectScene(this.selectedScene.config.scenario.id)) return false
         if (!await this.create()) return false
       }
       return this.sendCommand({ command: 'START', mode: this.mode })
@@ -471,6 +513,8 @@ export const useSimulationStore = defineStore('simulation', {
       this.resultCode = 'EMPTY'
       this.resultMessage = '尚未创建仿真运行。'
       this.lastConfirmation = null
+      this.selectedScene = null
+      this.selectingScene = false
     },
   },
 })

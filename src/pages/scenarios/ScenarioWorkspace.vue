@@ -1,14 +1,17 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ScenarioDraft } from '../../contracts/domain-models'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
+import { useSimulationStore } from '../../stores/simulation'
 import ScenarioEditor from './scenarios.vue'
 
 const store = useScenarioStore()
 const auth = useAuthStore()
+const router = useRouter()
+const simulationStore = useSimulationStore()
 const editing = ref(false)
 const selecting = ref(false)
 const templateDialog = ref(false)
@@ -16,8 +19,11 @@ const templateId = ref('')
 const templateName = ref('')
 const busy = computed(() => selecting.value || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(store.listState))
 const canWrite = computed(() => auth.authorize('SCENARIO_DRAFT_WRITE').allowed)
+const sceneSelectionDisabled = computed(() => busy.value || simulationStore.pending || simulationStore.selectingScene
+  || simulationStore.run?.configLocked || ['RUNNING', 'PAUSED'].includes(simulationStore.uiStatus))
 let active = true
-onBeforeUnmount(() => { active = false })
+const selectionLifetime = new AbortController()
+onBeforeUnmount(() => { active = false; selectionLifetime.abort() })
 
 async function mayLeave(): Promise<boolean> {
   if (!editing.value || !store.dirty) return true
@@ -53,6 +59,21 @@ async function open(scene: ScenarioDraft, copy = false): Promise<void> {
     const current = store.draft!
     if (copy && !store.prepareSceneCopy(current.config, current.uiExtensions, `${current.config.scenario.name} 副本`)) return
     editing.value = true
+  } finally { selecting.value = false }
+}
+
+async function selectScene(scene: ScenarioDraft): Promise<void> {
+  if (sceneSelectionDisabled.value || !auth.principal) return
+  const epoch = store.requestEpoch
+  selecting.value = true
+  try {
+    const selected = await simulationStore.selectScene(scene.config.scenario.id, selectionLifetime.signal)
+    if (!active || !auth.principal || epoch !== store.requestEpoch) return
+    if (!selected) {
+      ElMessage.error(simulationStore.resultMessage)
+      return
+    }
+    await router.push('/situation')
   } finally { selecting.value = false }
 }
 
@@ -115,6 +136,7 @@ onMounted(() => { void store.loadScenes() })
       <el-table-column label="节点 / 链路" width="140"><template #default="{ row }">{{ row.config.platforms.length }} / {{ row.config.links.length }}</template></el-table-column>
       <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="row.locked ? 'warning' : 'success'">{{ row.locked ? '运行中 · 已锁定' : '已保存' }}</el-tag></template></el-table-column>
       <el-table-column label="操作" width="250" fixed="right"><template #default="{ row }">
+        <el-button link type="primary" :disabled="sceneSelectionDisabled" :data-testid="`scene-select-${row.config.scenario.id}`" @click="selectScene(row)">选用场景</el-button>
         <el-button link type="primary" :disabled="busy" :data-testid="`scene-edit-${row.config.scenario.id}`" @click="open(row)">{{ row.locked ? '查看' : '编辑' }}</el-button>
         <el-button link type="primary" :disabled="busy || !canWrite" :data-testid="`scene-copy-${row.config.scenario.id}`" @click="open(row, true)">复制</el-button>
         <el-button link type="danger" :disabled="busy || row.locked || !canWrite" :data-testid="`scene-delete-${row.config.scenario.id}`" @click="remove(row)">删除</el-button>

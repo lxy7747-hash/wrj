@@ -14,6 +14,7 @@ import type {
 } from '../../src/contracts/domain-models.js'
 import { assertLoopbackRequest } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
+import { ownsFixedEvidence } from '../simulations/projection.js'
 
 const CANONICAL_TOPICS = new Set<WsTopic>([
   'simulation.frame',
@@ -231,6 +232,10 @@ export function attachRealtimeServer(
   const replayTopic = (client: WebSocket, topic: WsTopic): void => {
     revalidateSessions()
     if (!clients.has(client)) return
+    // 自选场景只有 Mock 控制状态，不能重放固定样例的链路与事件作为它的结果。
+    // 没有运行时仍按无运行处理：依赖运行的主题各自缺失，静态链路摘要照常返回。
+    const run = currentRun()
+    if (topic !== 'runtime.state' && run !== undefined && !ownsFixedEvidence(run)) return
     let message = currentEnvelopes.get(topic)
     if (message === undefined) {
       const snapshot = projection.snapshot()
@@ -319,6 +324,7 @@ export function attachRealtimeServer(
     },
     publishJammerStatus: (status, frameId): void => {
       revalidateSessions()
+      if (!ownsFixedEvidence(currentRun())) return
       const envelope: RealtimeEnvelope<JammerStatusData> = createEnvelope(
         projection,
         'jammer.event',

@@ -38,7 +38,7 @@ class InvalidScenarioResponseError extends Error {
  * @returns 合同有效时返回场景草稿，否则返回 `undefined`。
  * @remarks 校验场景外壳、全部规范字段及界面扩展，不修改响应载荷。
  */
-function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
+export function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   const data = unwrapSuccessData(payload)
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const draft = data as Partial<ScenarioDraft>

@@ -144,6 +144,11 @@ function createIdleRun(request: SimulationCreateRequest, totalDuration: number):
   }
 }
 
+/** 固定证据仅属于默认演示场景，不能作为其他场景的运行结果。 */
+export function ownsFixedEvidence(run: SimulationRun | undefined): boolean {
+  return run?.scenarioId === loadFixtureProjection().scenario.scenario.id
+}
+
 export class SimulationProjection {
   private run = structuredClone(loadFixtureProjection().run)
   private readonly processedClosedLoops = new Set<string>()
@@ -176,7 +181,7 @@ export class SimulationProjection {
    */
   getFrame(runId: string, frameId: string): SimulationProjectionResult<TelemetryFrame> {
     const frame = loadFixtureProjection().frame
-    return runId === this.run.runId && frameId === frame.frameId
+    return ownsFixedEvidence(this.run) && runId === this.run.runId && frameId === frame.frameId
       ? { ok: true, data: structuredClone(frame) }
       : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定遥测帧。' }
   }
@@ -188,7 +193,7 @@ export class SimulationProjection {
    * @remarks 只读取冻结事实，不接受或生成新事件。
    */
   listEvents(runId: string): SimulationProjectionResult<Array<DetectionEvent | SwitchEvent>> {
-    return runId === this.run.runId
+    return ownsFixedEvidence(this.run) && runId === this.run.runId
       ? { ok: true, data: structuredClone(loadFixtureProjection().events) }
       : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定仿真运行。' }
   }
@@ -208,8 +213,8 @@ export class SimulationProjection {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '当前已有仿真运行，不能重复创建。' }
     }
     const fixture = loadFixtureProjection()
-    if (request.taskId !== fixture.task.taskId || request.scenarioId !== fixture.scenario.scenario.id) {
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'scenarioId', message: '任务与场景不匹配。' }
+    if (request.taskId !== fixture.task.taskId) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'taskId', message: '任务编号与当前演示任务不匹配。' }
     }
     const locked = this.scenarios.setLocked(request.scenarioId, true)
     if (!locked.ok) return locked
@@ -318,6 +323,7 @@ export class SimulationProjection {
    * @remarks 能力上限直接取当前场景配置；仅更新确定性控制结果，不连接真实设备。
    */
   controlJammer(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<JammerState> {
+    if (!ownsFixedEvidence(this.run)) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'scenarioId', message: '当前场景暂无对应运行证据。' }
     if (taskId !== this.run.taskId) {
       return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'taskId', message: '未找到指定任务。' }
     }
@@ -369,6 +375,7 @@ export class SimulationProjection {
    * @sideEffects 成功后登记同目标同帧的迁移键，防止第二次动作。
    */
   runClosedLoop(runId: string, value: unknown): SimulationProjectionResult<JammingDecision> {
+    if (!ownsFixedEvidence(this.run)) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'scenarioId', message: '当前场景暂无对应运行证据。' }
     if (runId !== this.run.runId) {
       return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'runId', message: '未找到指定仿真运行。' }
     }
@@ -426,6 +433,7 @@ export class SimulationProjection {
    * @sideEffects 成功时更新设备的最新参数版本；失败不修改版本。
    */
   syncJammerParameters(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<SyncResult> {
+    if (!ownsFixedEvidence(this.run)) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'scenarioId', message: '当前场景暂无对应运行证据。' }
     const parameterSet = readJammingParameterSet(value)
     if (parameterSet === undefined) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'parameters', message: '干扰参数同步请求结构不正确。' }

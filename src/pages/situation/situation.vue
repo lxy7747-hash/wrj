@@ -3,16 +3,19 @@ import { apiFetch } from '../../features/shared/api-fetch'
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { DetectionEvent, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
+import type { DetectionEvent, Link, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
 import LinkCandidatePanel from '../../components/situation/LinkCandidatePanel.vue'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
+import SavedScenePreview from '../../components/situation/SavedScenePreview.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
+  JAMMER_TYPE_LABELS,
+  PLATFORM_TYPE_LABELS,
   formatBer,
   formatSimulationTime,
   getJammerTypeLabel,
@@ -27,6 +30,7 @@ import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { isPositionSnapshot, mergePositionNodes, type PositionSnapshot } from '../../features/situation/position-updates'
 import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
+import { readLinkEnabled } from '../../features/scenarios/link-settings'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -43,6 +47,12 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 
 const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
+const selectedScene = computed(() => simulationStore.selectedScene)
+const savedNodeGroups = computed(() => [
+  { title: '信息节点', platforms: selectedScene.value?.config.platforms.filter(platform => BUSINESS_NODE_TYPES.has(platform.type)) ?? [] },
+  { title: '支撑实体', platforms: selectedScene.value?.config.platforms.filter(platform => !BUSINESS_NODE_TYPES.has(platform.type)) ?? [] },
+])
+const otherSceneRun = computed(() => selectedScene.value && simulationStore.run?.scenarioId !== selectedScene.value.config.scenario.id)
 const telemetryStore = useTelemetryStore()
 const {
   run: simulationRun,
@@ -71,7 +81,8 @@ const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
-const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'ERROR'>('LOADING')
+const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'ERROR'>('LOADING')
+let sourceEpoch = 0
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
 const positionSnapshot = ref<PositionSnapshot | null>(null)
 const fileNodes = computed(() => initialSnapshot.value
@@ -83,7 +94,7 @@ let positionTimer: ReturnType<typeof setTimeout> | undefined
 let positionRequest: AbortController | null = null
 const sourceMessage = ref('正在读取初始节点位置。')
 // 同一时刻只使用一种数据源，不把文件坐标与 Mock 链路、事件混合。
-const frame = computed(() => sourceState.value === 'MOCK' ? mockFrame.value : null)
+const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
 
 /** 离开页面或重载来源时终止位置请求及后续轮询，不影响其他数据源。 */
 function stopPositionPolling(): void {
@@ -133,8 +144,17 @@ async function pollPositions(): Promise<void> {
 
 /** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
+  const epoch = ++sourceEpoch
   stopPositionPolling()
   positionSnapshot.value = null
+  if (selectedScene.value) {
+    initialSnapshot.value = null
+    telemetryStore.disconnectAndReset()
+    sourceState.value = 'SCENE'
+    sourceMessage.value = '已保存场景配置预览；未接入真实求解引擎。'
+    await simulationStore.resetProjection()
+    return
+  }
   sourceState.value = 'LOADING'
   sourceMessage.value = '正在读取初始节点位置。'
   try {
@@ -142,7 +162,7 @@ async function initializeSituation(): Promise<void> {
       headers: { 'X-Demo-Role': useAuthStore().role },
     })
     const body = await response.json()
-    if (unmounted) return
+    if (unmounted || epoch !== sourceEpoch) return
     if (!response.ok || body.ok !== true || !isInitialNodeSnapshot(body.data)) throw new Error('初始位置响应不可用')
     if (body.data !== null) {
       telemetryStore.disconnectAndReset()
@@ -156,15 +176,19 @@ async function initializeSituation(): Promise<void> {
     initialSnapshot.value = null
     sourceState.value = 'MOCK'
   } catch {
-    if (unmounted) return
+    if (unmounted || epoch !== sourceEpoch) return
     sourceState.value = 'ERROR'
     sourceMessage.value = '初始节点读取失败，请检查本机日志路径、文件完整性及初始坐标后重试。'
     return
   }
   const simulationLoaded = await simulationStore.resetProjection()
-  if (unmounted || !simulationLoaded) return
+  if (unmounted || epoch !== sourceEpoch || !simulationLoaded) return
+  if (simulationStore.run && simulationStore.run.scenarioId !== 'SCN-001') {
+    if (await simulationStore.selectScene(simulationStore.run.scenarioId) && !unmounted && epoch === sourceEpoch) await initializeSituation()
+    return
+  }
   const loaded = await telemetryStore.loadFrame()
-  if (!unmounted && loaded) telemetryStore.connect()
+  if (!unmounted && epoch === sourceEpoch && loaded) telemetryStore.connect()
 }
 
 onMounted(initializeSituation)
@@ -187,7 +211,27 @@ watch(frame, (nextFrame) => {
 }, { immediate: true })
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
+const displayedLinks = computed(() => selectedScene.value
+  ? selectedScene.value.config.links.map(link => ({ linkId: link.id, type: link.type,
+    sourceName: selectedScene.value!.config.platforms.find(platform => platform.id === link.sourcePlatformId)!.name,
+    destinationName: selectedScene.value!.config.platforms.find(platform => platform.id === link.targetPlatformId)!.name,
+    live: null, configured: link }))
+  : situationLinks.value.map(link => ({ linkId: link.linkId, type: link.type, sourceName: link.sourceName,
+    destinationName: link.destinationName, live: link, configured: null })))
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
+const selectedConfiguredLink = computed(() => {
+  const link = selectedScene.value?.config.links.find(link => link.id === selectedLinkId.value)
+  return link ? { ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) } : null
+})
+watch([selectedLink, selectedConfiguredLink], ([live, configured]) => {
+  if (!live && !configured) linkDialogVisible.value = false
+})
+watch(() => selectedScene.value?.config.scenario.id, () => {
+  selectedNodeId.value = ''
+  selectedLinkId.value = ''
+  mapFocusTarget.value = null
+  stopDialogVisible.value = false
+})
 const situationMetrics = computed(() => frame.value === null
   ? null
   : selectSituationMetrics(frame.value, events.value, situationLinks.value))
@@ -197,8 +241,12 @@ const displayedBusinessPlatforms = computed(() => initialSnapshot.value ? fileNo
 const supportingPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => !BUSINESS_NODE_TYPES.has(platform.type),
 ))
-const jammers = computed(() => (frame.value?.platforms ?? []).flatMap((platform) => platform.jammers))
-const detectionEvent = computed(() => events.value.find(
+const jammers = computed(() => selectedScene.value
+  ? selectedScene.value.config.jammers.map(jammer => ({ jammerId: jammer.id, platformId: jammer.platformId,
+    power: jammer.defaultPower, frequency: jammer.frequency, bandwidth: jammer.bandwidth, active: null }))
+  : (frame.value?.platforms ?? []).flatMap((platform) => platform.jammers))
+const displayedEvents = computed(() => frame.value ? events.value : [])
+const detectionEvent = computed(() => displayedEvents.value.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
 const maximumLinkAgeMs = computed(() => Math.max(0, ...situationLinks.value.map((link) => link.ageMs)))
@@ -317,6 +365,11 @@ function openLinkDetails(link: SituationLinkView): void {
   linkDialogVisible.value = true
 }
 
+function openConfiguredLinkDetails(link: Link): void {
+  selectedLinkId.value = link.id
+  linkDialogVisible.value = true
+}
+
 /**
  * 打开当前固定帧的链路候选快照。
  * @returns 无返回值。
@@ -367,7 +420,8 @@ function focusLinkOnMap(linkId: string): void {
  */
 function focusInterferenceOnMap(jammerId: string, platformId: string): void {
   selectedNodeId.value = platformId
-  requestMapFocus('interference', jammerId)
+  // 尚无运行证据时只定位配置所属节点，不推断干扰范围。
+  requestMapFocus(selectedScene.value ? 'node' : 'interference', selectedScene.value ? platformId : jammerId)
 }
 
 /**
@@ -378,6 +432,11 @@ function focusInterferenceOnMap(jammerId: string, platformId: string): void {
  * @sideeffect 无副作用。
  */
 function jammerTypeLabel(jammerId: string, platformId: string): string {
+  if (selectedScene.value) {
+    const jammer = selectedScene.value.config.jammers.find(item => item.id === jammerId)!
+    const platform = selectedScene.value.config.platforms.find(item => item.id === platformId)!
+    return `${platform.category === 'AIR' ? '机载' : '地面'}${JAMMER_TYPE_LABELS[jammer.type]}干扰设备`
+  }
   const location = frame.value?.platforms
     .find((platform) => platform.platformId === platformId)?.type === 'AIRBORNE_MISSION_CLUSTER'
     ? '机载'
@@ -403,18 +462,19 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   <section id="page-situation" class="situation-page" aria-labelledby="situation-title">
     <h2 id="situation-title" class="situation-page__semantic-title">态势主界面</h2>
 
+    <div>
     <SimulationToolbar
-      :read-only="sourceState !== 'MOCK'"
-      :status="simulationStatus"
-      :current-time="simulationTime"
+      :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE'"
+      :status="otherSceneRun ? 'STOPPED' : simulationStatus"
+      :current-time="otherSceneRun ? 0 : simulationTime"
       :speed="simulationSpeed"
       :mode="simulationMode"
-      :lock-state="configurationLockState"
+      :lock-state="otherSceneRun ? 'UNLOCKED' : configurationLockState"
       :capability-state="simulationCapabilityState"
-      :process-id="simulationRun?.canonical.processId ?? null"
-      :progress="simulationRun?.canonical.progress ?? 0"
-      :pending="simulationPending"
-      :feedback="sourceState === 'MOCK' ? simulationFeedback : sourceMessage"
+      :process-id="otherSceneRun ? null : simulationRun?.canonical.processId ?? null"
+      :progress="otherSceneRun ? 0 : simulationRun?.canonical.progress ?? 0"
+      :pending="simulationPending || simulationStore.selectingScene"
+      :feedback="sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @step="stepSimulation"
@@ -422,9 +482,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       @update:speed="updateSpeed"
       @update:mode="updateMode"
     />
+    </div>
 
     <div
-      v-if="(frame && situationMetrics) || (sourceState === 'FILE' && initialSnapshot)"
+      v-if="selectedScene || (frame && situationMetrics) || (sourceState === 'FILE' && initialSnapshot)"
       class="situation-page__workspace"
       :class="{
         'situation-page__workspace--scene-collapsed': sceneSummaryCollapsed,
@@ -437,7 +498,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         aria-label="场景配置"
         :data-collapsed="sceneSummaryCollapsed"
       >
-      <strong class="node-jammer-count">{{ initialSnapshot ? `${initialSnapshot.nodes.length} 个` : `${situationMetrics?.businessNodeCount} / ${BUSINESS_NODE_CAPACITY}` }}</strong>
+      <strong class="node-jammer-count">{{ selectedScene ? `${savedNodeGroups[0]!.platforms.length} / ${BUSINESS_NODE_CAPACITY}` : initialSnapshot ? `${initialSnapshot.nodes.length} 个` : `${situationMetrics?.businessNodeCount} / ${BUSINESS_NODE_CAPACITY}` }}</strong>
         <button
           type="button"
           class="floating-panel__toggle floating-panel__toggle--left"
@@ -465,7 +526,51 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </div>
 
         <div class="scene-summary__content" :aria-label="`${summaryTabs.find((tab) => tab.key === activeTab)?.label}摘要`">
-          <template v-if="activeTab === 'nodes'">
+          <template v-if="selectedScene">
+            <template v-if="activeTab === 'nodes'">
+              <div v-for="group in savedNodeGroups" :key="group.title" class="summary-group">
+                <h3>{{ group.title }} · {{ group.platforms.length }} 个</h3>
+                <ul>
+                  <li v-for="platform in group.platforms" :key="platform.id">
+                    <button type="button" class="summary-focus-button" :data-testid="`focus-node-${platform.id}`"
+                      :aria-label="`在地图中定位${platform.name}`" :aria-pressed="selectedNodeId === platform.id" @click="focusNodeOnMap(platform.id)">
+                      <span>{{ platform.id }}</span><small>{{ PLATFORM_TYPE_LABELS[platform.type] }}</small>
+                    </button>
+                  </li>
+                </ul>
+              </div>
+            </template>
+            <div v-else-if="activeTab === 'links'" class="summary-group">
+              <ul>
+                <li v-for="link in selectedScene.config.links" :key="link.id">
+                  <button type="button" class="summary-focus-button" :data-testid="`focus-link-${link.id}`"
+                    :aria-label="`在地图中定位${LINK_TYPE_LABELS[link.type]} ${link.id}`" @click="focusLinkOnMap(link.id)">
+                    <span>{{ link.id }}</span><small>{{ LINK_TYPE_LABELS[link.type] }}</small>
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div v-else-if="activeTab === 'interference'" class="summary-group">
+              <ul>
+                <li v-for="jammer in selectedScene.config.jammers" :key="jammer.id">
+                  <button type="button" class="summary-focus-button" :data-testid="`focus-interference-${jammer.id}`"
+                    :aria-label="`在地图中定位干扰设备${jammer.id}`" @click="focusInterferenceOnMap(jammer.id, jammer.platformId)">
+                    <span>{{ jammerTypeLabel(jammer.id, jammer.platformId) }}</span><small>暂无数据</small>
+                  </button>
+                </li>
+              </ul>
+            </div>
+            <div v-else class="summary-group">
+              <h3>运行时序</h3>
+              <dl class="timing-list">
+                <div><dt>帧标识</dt><dd>暂无数据</dd></div>
+                <div><dt>任务 / 运行</dt><dd>{{ otherSceneRun ? '暂无数据' : `${simulationRun?.taskId} / ${simulationRun?.runId}` }}</dd></div>
+                <div><dt>仿真时刻</dt><dd>{{ otherSceneRun ? 0 : simulationTime }} s</dd></div>
+                <div><dt>帧序号</dt><dd>暂无数据</dd></div>
+              </dl>
+            </div>
+          </template>
+          <template v-else-if="activeTab === 'nodes'">
             <div class="summary-group">
               <h3>信息节点 · {{ initialSnapshot?.nodes.length ?? situationMetrics?.businessNodeCount }} 个</h3>
               <ul>
@@ -548,7 +653,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       </aside>
 
       <main class="situation-center" data-testid="situation-center">
+        <SavedScenePreview v-if="selectedScene" :scene="selectedScene" :selected-node-id="selectedNodeId" :focus-target="mapFocusTarget"
+          @select-node="selectedNodeId = $event" @select-configured-link="openConfiguredLinkDetails" />
         <OfflineSituationMap
+          v-else
           :key="initialSnapshot?.sha256 ?? 'mock'"
           :frame="frame"
           :initial-nodes="initialSnapshot ? fileNodes : undefined"
@@ -566,7 +674,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       </main>
 
       <aside
-        v-if="frame && situationMetrics"
+        v-if="selectedScene || (frame && situationMetrics)"
         class="telemetry-panel"
         :class="{ 'is-collapsed': telemetryPanelCollapsed }"
         aria-label="链路、干扰与事件"
@@ -580,13 +688,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :aria-label="telemetryPanelCollapsed ? '展开链路、干扰与事件' : '折叠链路、干扰与事件'"
           @click="toggleTelemetryPanel"
         ><span aria-hidden="true">{{ telemetryPanelCollapsed ? '‹' : '›' }}</span></button>
-        <section class="telemetry-section telemetry-section--links" :data-frame-id="frame.frameId">
+        <section class="telemetry-section telemetry-section--links" :data-frame-id="frame?.frameId">
           <div class="panel-heading">
             <div><strong>全链路状态</strong></div>
             <div>
-              <span class="panel-heading__more">异常 {{ situationMetrics.degradedLinkCount + situationMetrics.downLinkCount }} 条</span>
-              <el-button link type="primary" data-testid="open-link-candidates" @click="openLinkCandidates">
-                候选 {{ frame.evidence.routeCandidates.length }} 条
+              <span class="panel-heading__more">异常 {{ situationMetrics ? `${situationMetrics.degradedLinkCount + situationMetrics.downLinkCount} 条` : '暂无数据' }}</span>
+              <el-button link type="primary" data-testid="open-link-candidates" :disabled="!frame" @click="openLinkCandidates">
+                候选 {{ frame ? `${frame.evidence.routeCandidates.length} 条` : '暂无数据' }}
               </el-button>
             </div>
           </div>
@@ -595,39 +703,40 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
               <tbody>
                 <tr
-                  v-for="link in situationLinks"
+                  v-for="link in displayedLinks"
                   :key="link.linkId"
                   tabindex="0"
                   role="button"
                   :data-link-id="link.linkId"
-                  :class="{ 'is-exception': link.status !== 'UP' }"
-                  @click="openLinkDetails(link)"
-                  @keydown.enter="openLinkDetails(link)"
+                  :class="{ 'is-exception': link.live && link.live.status !== 'UP' }"
+                  @click="link.live ? openLinkDetails(link.live) : openConfiguredLinkDetails(link.configured!)"
+                  @keydown.enter="link.live ? openLinkDetails(link.live) : openConfiguredLinkDetails(link.configured!)"
                 >
                   <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small>{{ link.linkId }}</small></td>
                   <td>{{ link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '') }}</td>
-                  <td>{{ link.snrDb.toFixed(2) }}</td>
-                  <td>{{ formatBer(link.ber) }}</td>
-                  <td><LinkStateBadge :link="link" /></td>
+                  <td>{{ link.live ? link.live.snrDb.toFixed(2) : '暂无数据' }}</td>
+                  <td>{{ link.live ? formatBer(link.live.ber) : '暂无数据' }}</td>
+                  <td><LinkStateBadge v-if="link.live" :link="link.live" /><span v-else>暂无数据</span></td>
                 </tr>
               </tbody>
             </table>
-            <el-empty v-if="situationLinks.length === 0" description="暂无链路数据" :image-size="48" />
+            <el-empty v-if="displayedLinks.length === 0" description="暂无链路数据" :image-size="48" />
           </div>
         </section>
 
         <section class="telemetry-section telemetry-section--jammer">
           <div class="panel-heading"><div><strong>干扰 / 侦测设备</strong></div><span class="panel-heading__more">{{ jammers.length }} 台</span></div>
+          <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
           <div class="jammer-list">
             <article v-for="jammer in jammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
-              <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active ? '活动' : '待机' }}</span></div>
-              <small>搭载平台：{{ getPlatformName(jammer.platformId, frame) }} · {{ jammer.platformId }}</small>
+              <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
+              <small>搭载平台：{{ selectedScene ? selectedScene.config.platforms.find(platform => platform.id === jammer.platformId)?.name : getPlatformName(jammer.platformId, frame!) }} · {{ jammer.platformId }}</small>
               <dl>
                 <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
                 <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
                 <div><dt>带宽</dt><dd>{{ jammer.bandwidth }} MHz</dd></div>
               </dl>
-              <div class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
+              <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
             </article>
           </div>
           <p v-if="detectionEvent" class="detection-state">
@@ -636,13 +745,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--events">
-          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ events.length }} 条</span></div>
+          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ frame ? `${displayedEvents.length} 条` : '暂无数据' }}</span></div>
           <ol class="event-list">
-            <li v-for="event in events" :key="event.eventId">
+            <li v-for="event in displayedEvents" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.type === 'DETECTION' ? '侦测' : '链路切换' }}</strong></div>
               <p>{{ eventDescription(event) }}</p><small>{{ event.eventId }} · {{ event.frameId }}</small>
             </li>
           </ol>
+          <p v-if="!frame" class="panel-caption">暂无当前运行事件</p>
         </section>
       </aside>
     </div>
@@ -659,12 +769,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span data-testid="frame-freshness">最大数据年龄 {{ maximumLinkAgeMs }} ms · {{ frameFreshnessLabel }}</span>
       <strong>4 类业务信息节点 · 4 类链路 · 2 种干扰设备</strong>
     </footer>
-    <footer v-else-if="sourceState === 'FILE' && initialSnapshot" class="situation-footer">
+    <footer v-else-if="!selectedScene && sourceState === 'FILE' && initialSnapshot" class="situation-footer">
       <span>来源：{{ initialSnapshot.fileName }}</span>
       <span>初始节点 {{ initialSnapshot.nodes.length }} 个 · 点击左侧节点可定位</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" />
     <LinkCandidatePanel
       v-model="candidatePanelVisible"
       :frame="frame"
@@ -674,7 +784,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       @reload="retryTelemetry"
     />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。</p>
+      <p class="stop-dialog-copy">{{ selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
         <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>

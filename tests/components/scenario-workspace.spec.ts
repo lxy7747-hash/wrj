@@ -7,6 +7,7 @@ import ElementPlus, { ElMessage, ElMessageBox, ElSelect } from 'element-plus'
 import Workspace from '../../src/pages/scenarios/ScenarioWorkspace.vue'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useAuthStore } from '../../src/stores/auth'
+import { useSimulationStore } from '../../src/stores/simulation'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
 
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
@@ -47,6 +48,7 @@ async function setup() {
   vi.stubGlobal('fetch', fetchSpy)
   const router = createRouter({ history: createMemoryHistory(), routes: [
     { path: '/scenarios', component: Workspace },
+    { path: '/situation', component: { template: '<p>态势主界面</p>' } },
     { path: '/other', component: { template: '<p>other</p>' } },
     { path: '/login', component: { template: '<p>login</p>' } },
   ] })
@@ -56,6 +58,65 @@ async function setup() {
   await flushPromises()
   return { wrapper, router, store: useScenarioStore(), scenes, templates, fetchSpy }
 }
+
+it('列表选用指定场景成功后跳转态势页，不打开编辑器', async () => {
+  const { wrapper, router, store } = await setup()
+  const select = vi.spyOn(useSimulationStore(), 'selectScene').mockResolvedValue(true)
+  await wrapper.get('[data-testid="scene-select-SCN-001"]').trigger('click')
+  await flushPromises()
+  expect(select).toHaveBeenCalledExactlyOnceWith('SCN-001', expect.any(AbortSignal))
+  expect(router.currentRoute.value.path).toBe('/situation')
+  expect(wrapper.text()).toContain('态势主界面')
+  expect(store.draft).toBeNull()
+})
+
+it('选用失败显示原因并留在列表，可再次选择', async () => {
+  const { wrapper, router } = await setup()
+  const simulation = useSimulationStore()
+  const select = vi.spyOn(simulation, 'selectScene').mockImplementation(async () => {
+    simulation.resultMessage = '场景已删除，请刷新列表。'
+    return false
+  })
+  const error = vi.spyOn(ElMessage, 'error')
+  await wrapper.get('[data-testid="scene-select-SCN-001"]').trigger('click')
+  await flushPromises()
+  expect(select).toHaveBeenCalledOnce()
+  expect(error).toHaveBeenCalledWith('场景已删除，请刷新列表。')
+  expect(router.currentRoute.value.path).toBe('/scenarios')
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeUndefined()
+})
+
+it('选用请求期间禁止重复点击，离页后迟到结果不跳转', async () => {
+  const { wrapper, router } = await setup()
+  let resolveSelection!: (selected: boolean) => void
+  const select = vi.spyOn(useSimulationStore(), 'selectScene').mockReturnValue(new Promise<boolean>(resolve => { resolveSelection = resolve }))
+  await wrapper.get('[data-testid="scene-select-SCN-001"]').trigger('click')
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeDefined()
+  await wrapper.get('[data-testid="scene-select-SCN-001"]').trigger('click')
+  expect(select).toHaveBeenCalledOnce()
+  await router.push('/other')
+  await flushPromises()
+  expect(select.mock.calls[0]![1]?.aborted).toBe(true)
+  resolveSelection(true)
+  await flushPromises()
+  expect(router.currentRoute.value.path).toBe('/other')
+})
+
+it('列表选用入口保留已有请求和运行锁禁用条件', async () => {
+  const { wrapper } = await setup()
+  const simulation = useSimulationStore()
+  const select = vi.spyOn(simulation, 'selectScene')
+  simulation.capabilityState = 'LOADING'
+  await flushPromises()
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeDefined()
+  simulation.capabilityState = 'EMPTY'
+  const { run } = await import('../../frontend-technical-design-v1/contracts/deterministic-fixtures.json')
+  simulation.run = { ...structuredClone(run), configLocked: true } as NonNullable<typeof simulation.run>
+  await flushPromises()
+  await wrapper.get('[data-testid="scene-select-SCN-001"]').trigger('click')
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeDefined()
+  expect(select).not.toHaveBeenCalled()
+})
 
 it('从列表按编号编辑、保存返回、刷新；复制使用独立草稿且不改来源', async () => {
   const { wrapper, store, scenes } = await setup()

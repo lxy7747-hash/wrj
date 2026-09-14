@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { Link } from '../../contracts/domain-models'
 import {
   LINK_TYPE_LABELS,
   formatBer,
@@ -9,6 +10,7 @@ import {
 const props = defineProps<{
   modelValue: boolean
   link: SituationLinkView | null
+  configuredLink?: Link | null
 }>()
 
 defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -52,11 +54,26 @@ function reasonLabel(reason: string): string {
     <template #header>
       <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : '链路不存在或已从当前帧移除' }}</strong>
+        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
-    <el-empty v-if="!link" description="未找到所选链路，未显示历史数据" :image-size="64" data-testid="link-detail-missing" />
+    <div v-if="!link && configuredLink" class="link-quality-dialog__body" data-testid="link-detail-configured">
+      <p>{{ configuredLink.sourcePlatformId }} → {{ configuredLink.targetPlatformId }}</p>
+      <dl class="link-quality-dialog__grid">
+        <div><dt>链路体制</dt><dd>{{ LINK_TYPE_LABELS[configuredLink.type] }}</dd></div>
+        <div><dt>配置开关</dt><dd>{{ configuredLink.enabled === false ? '停用' : '启用' }}</dd></div>
+        <div><dt>频率</dt><dd>{{ configuredLink.frequency }} MHz</dd></div>
+        <div><dt>带宽</dt><dd>{{ configuredLink.bandwidth }} MHz</dd></div>
+        <div><dt>发射功率</dt><dd>{{ configuredLink.txPower }} W</dd></div>
+        <div><dt>调制方式</dt><dd>{{ configuredLink.modulation }}</dd></div>
+        <div><dt>误码率阈值</dt><dd>{{ formatBer(configuredLink.berThreshold) }}</dd></div>
+        <div><dt>数据速率</dt><dd>{{ configuredLink.dataRate }} Mbps</dd></div>
+        <div v-for="label in ['信噪比 SNR', '误码率 BER', '界面状态', '规范状态']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+      </dl>
+      <p class="link-quality-dialog__notice">以上为已保存配置；尚无当前运行结果，未使用历史数据。</p>
+    </div>
+    <el-empty v-else-if="!link" description="未找到所选链路，未显示历史数据" :image-size="64" data-testid="link-detail-missing" />
     <el-alert
       v-else-if="stale"
       type="warning"

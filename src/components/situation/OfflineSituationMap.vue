@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { TelemetryFrame } from '../../contracts/domain-models'
+import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import {
@@ -20,6 +20,7 @@ const props = defineProps<{
   frame: TelemetryFrame | null
   initialNodes?: SituationMapNode[]
   fileLinks?: FileCommunicationLink[]
+  configuredLinks?: Link[]
   links: SituationLinkView[]
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
@@ -28,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   'select-node': [platformId: string]
   'select-link': [link: SituationLinkView]
+  'select-configured-link': [link: Link]
 }>()
 
 const mapContainer = ref<HTMLElement | null>(null)
@@ -198,6 +200,8 @@ onMounted(() => {
     frame: props.frame,
     initialNodes: props.initialNodes,
     fileLinks: props.fileLinks,
+    configuredLinks: props.configuredLinks,
+    onSelectConfiguredLink: link => emit('select-configured-link', link),
     onSelectFileLink: link => {
       selectedFileLinkId.value = link.id
       fileLinkDialogVisible.value = true
@@ -233,6 +237,10 @@ watch(() => props.initialNodes, (nodes) => {
 
 watch(() => props.fileLinks, links => {
   mapController.value?.setFileLinks(links ?? [])
+})
+
+watch(() => props.configuredLinks, links => {
+  mapController.value?.setConfiguredLinks(links)
 })
 
 watch(selectedFileLink, link => {
@@ -280,7 +288,7 @@ onBeforeUnmount(() => {
       class="offline-map__canvas"
       data-testid="leaflet-situation-map"
       role="application"
-      :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : '真实日志节点位置与通信关联图'"
+      :aria-label="frame ? `固定帧 ${frame.frameId} Leaflet 节点、链路和干扰态势图` : configuredLinks ? '所选场景初始位置与配置链路图' : '真实日志节点位置与通信关联图'"
     ></div>
 
     <div class="offline-map__topbar">
@@ -298,7 +306,7 @@ onBeforeUnmount(() => {
           type="button"
           :class="{ active: layers[layer[0]] }"
           :aria-pressed="layers[layer[0]]"
-          :disabled="!frame && (layer[0] === 'interference' || (layer[0] === 'links' && !hasFileLinks))"
+          :disabled="!frame && (layer[0] === 'interference' || (layer[0] === 'links' && !hasFileLinks && !configuredLinks?.length))"
           @click="toggleLayer(layer[0])"
         >{{ layer[1] }}</button>
         <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
@@ -419,7 +427,7 @@ onBeforeUnmount(() => {
           <div><dt>类型</dt><dd>{{ selectedNodeType }}</dd></div>
           <div><dt>{{ frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
-          <div><dt>速度</dt><dd>{{ selectedNode.speed }} m/s</dd></div>
+          <div><dt>速度</dt><dd>{{ configuredLinks ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
         </dl>
         <p v-if="nodeOutsideBasemap" class="selected-node-dialog__notice">
           该节点位于当前离线底图覆盖范围之外，坐标按原值显示。
@@ -428,7 +436,7 @@ onBeforeUnmount(() => {
           v-if="selectedNode.type === 'COMMUNICATION_SATELLITE'"
           class="selected-node-dialog__notice"
         >
-          二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。
+          {{ configuredLinks ? '二维地图按卫星配置经纬度显示，高度不按地图比例呈现。' : '二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。' }}
         </p>
       </div>
     </el-dialog>
