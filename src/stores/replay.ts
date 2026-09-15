@@ -84,7 +84,7 @@ export const useReplayStore = defineStore('replay', {
   actions: {
     /**
      * 读取本机文件回放快照；true 为已加载，null 为未配置，false 为读取失败。
-     * 不配置时才允许页面继续原有 Mock 流程，失败不回退假数据。
+     * 未配置时显示空态，读取失败显示错误，页面不回退演示数据。
      */
     async loadLocalFile(): Promise<boolean | null> {
       this.resetToSafeEmpty()

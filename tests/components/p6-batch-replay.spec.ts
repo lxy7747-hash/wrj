@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { Batch, Principal, Replay } from '../../src/contracts/domain-models'
+import type { Batch, Principal } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
   default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
@@ -14,7 +14,6 @@ import BatchesPage from '../../src/pages/batches/batches.vue'
 import ReplaysPage from '../../src/pages/replays/replays.vue'
 import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
-import { useTelemetryStore } from '../../src/stores/telemetry'
 import { useReplayStore } from '../../src/stores/replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 
@@ -222,75 +221,70 @@ describe('P6 批量仿真与历史回放页面', () => {
     wrapper.unmount()
   })
 
-  it('展示只读回放地图、事件时间轴并执行播放与事件定位', async () => {
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input)
-      if (url.endsWith('/replays/local-file')) return Promise.resolve(success(null))
-      if (url.includes('/frames/')) return Promise.resolve(success(fixtureSource.frame))
-      if (url.endsWith('/simulations/RUN-001/events')) return Promise.resolve(success(fixtureSource.events))
-      if (url.endsWith('/api/v1/replays')) return Promise.resolve(success([fixtureSource.replay]))
-      if (url.endsWith('/api/v1/replays/REPLAY-001')) return Promise.resolve(success(fixtureSource.replay))
-      if (url.endsWith('/commands')) {
-        const command = JSON.parse(String(init?.body)) as { command: string; value?: number }
-        const state = command.command === 'PLAY' ? 'PLAYING' : 'PAUSED'
-        return Promise.resolve(success({
-          ...fixtureSource.replay,
-          state,
-          currentTimeS: command.command === 'SEEK' ? command.value : fixtureSource.replay.currentTimeS,
-        } as Replay))
-      }
-      throw new Error(`未处理请求：${url}`)
-    }))
+  it('未配置本地数据时只显示空态，重新加载可恢复真实文件，不请求演示接口', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(success(null))
+      .mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY)))
+      .mockResolvedValueOnce(success(null))
+    vi.stubGlobal('fetch', fetchSpy)
     const { wrapper } = await mountPage(ReplaysPage, '/replays')
-
-    expect(wrapper.find('#replays-title').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="replay-play"]').text()).toBe('播放')
-    expect(wrapper.get('[data-testid="offline-map-stub"]')).toBeTruthy()
-    expect(wrapper.findAll('[data-testid="replay-timeline"] .replay-timeline__events button')).toHaveLength(3)
-    expect(wrapper.get('[data-testid="replay-event-detail"]').text()).toContain('SW-004')
-    await wrapper.get('[data-testid="replay-play"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-testid="replay-play"]').text()).toBe('暂停')
-    await wrapper.findAll('[data-testid="replay-timeline"] .replay-timeline__events button')[0]!.trigger('click')
-    await flushPromises()
-    expect(wrapper.get('[data-testid="replay-event-detail"]').text()).toContain('DET-042')
-    wrapper.unmount()
+    try {
+      expect(wrapper.text()).toContain('暂无本地回放数据，请配置数据文件后重新加载。')
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="replay-play"]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('F-00042')
+      expect(fetchSpy).toHaveBeenCalledOnce()
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('positions.csv')
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(true)
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('暂无本地回放数据')
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
+      expect(useReplayStore().localSnapshot).toBeNull()
+      expect(fetchSpy).toHaveBeenCalledTimes(3)
+      expect(fetchSpy.mock.calls.every(([url]) => String(url).endsWith('/api/v1/replays/local-file'))).toBe(true)
+    } finally { wrapper.unmount() }
   })
 
-  it('遥测加载期间离页后不再加载回放或重启计时器', async () => {
+  it('本地文件加载期间离页，迟到响应不能恢复数据或启动播放', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
-    let finishLoad!: (loaded: boolean) => void
-    vi.spyOn(useTelemetryStore(), 'loadFrame').mockReturnValue(new Promise<boolean>((resolve) => { finishLoad = resolve }))
-    const load = vi.spyOn(useReplayStore(), 'load')
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(null)))
+    let finishLoad!: (response: Response) => void
+    const fetchSpy = vi.fn().mockReturnValue(new Promise<Response>((resolve) => { finishLoad = resolve }))
+    vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ReplaysPage, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
+    expect(wrapper.find('.el-skeleton').exists()).toBe(true)
     wrapper.unmount()
-    finishLoad(true)
+    finishLoad(success(structuredClone(LOCAL_REPLAY)))
     await flushPromises()
-    expect(load).not.toHaveBeenCalled()
+    expect(fetchSpy).toHaveBeenCalledOnce()
     expect(useReplayStore().state).toBe('EMPTY')
+    expect(useReplayStore().replay).toBeNull()
+    expect(useReplayStore().localSnapshot).toBeNull()
+    expect(fetchSpy.mock.calls[0]?.[1].signal.aborted).toBe(true)
   })
 
-  it('明确展示回放空态和损坏态', async () => {
-    const baseFetch = (replays: unknown, replayDetail?: unknown) => vi.fn((input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.endsWith('/replays/local-file')) return Promise.resolve(success(null))
-      if (url.includes('/frames/')) return Promise.resolve(success(fixtureSource.frame))
-      if (url.endsWith('/simulations/RUN-001/events')) return Promise.resolve(success(fixtureSource.events))
-      if (url.endsWith('/api/v1/replays')) return Promise.resolve(success(replays))
-      return Promise.resolve(success(replayDetail))
-    })
-
-    vi.stubGlobal('fetch', baseFetch([]))
-    const empty = await mountPage(ReplaysPage, '/replays')
-    expect(empty.wrapper.text()).toContain('暂无可用回放记录')
-    empty.wrapper.unmount()
-
-    vi.stubGlobal('fetch', baseFetch([fixtureSource.replay], { ...fixtureSource.replay, currentTimeS: 9000 }))
-    const corrupt = await mountPage(ReplaysPage, '/replays')
-    expect(corrupt.wrapper.text()).toContain('回放数据损坏')
-    corrupt.wrapper.unmount()
+  it('本地数据校验失败清除旧地图并提示错误，重试恢复后仍只加载本地文件', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY)))
+      .mockResolvedValueOnce(success({ ...structuredClone(LOCAL_REPLAY), durationS: -1 }))
+      .mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    try {
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.text()).toContain('回放数据损坏')
+      expect(wrapper.text()).toContain('历史回放数据格式不正确。')
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(false)
+      expect(wrapper.find('[data-testid="replay-play"]').exists()).toBe(false)
+      expect(useReplayStore().localSnapshot).toBeNull()
+      await wrapper.get('.el-result button').trigger('click')
+      await flushPromises()
+      expect(wrapper.find('[data-testid="offline-map-stub"]').exists()).toBe(true)
+      expect(fetchSpy).toHaveBeenCalledTimes(3)
+      expect(fetchSpy.mock.calls.every(([url]) => String(url).endsWith('/api/v1/replays/local-file'))).toBe(true)
+    } finally { wrapper.unmount() }
   })
 })

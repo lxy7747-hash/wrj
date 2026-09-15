@@ -1,10 +1,12 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
 
+import { LOCAL_REPLAY } from '../fixtures/local-replay'
+
 const PASSWORD = '123456'
-const REPLAY_FIXTURE = {
-  replayId: 'REPLAY-001', runId: 'RUN-001', state: 'PAUSED', durationS: 7200,
-  currentTimeS: 2537, eventIds: ['DET-042', 'SW-003', 'SW-004'],
-} as const
+// 测试替身只提供本地文件接口样本，不恢复产品中的演示回退。
+const FILE_REPLAY = structuredClone(LOCAL_REPLAY)
+FILE_REPLAY.durationS = 60
+FILE_REPLAY.tracks[1]!.positions[1]!.time = 60
 
 interface BrowserAudit {
   errors: string[]
@@ -67,102 +69,98 @@ test('P6 批量任务、聚合报告与只读回放主链', async ({ page, reque
   await page.waitForURL(/\/reports\?reportId=RPT-BATCH-001/)
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
 
+  await page.route('**/api/v1/replays/local-file', (route) => route.fulfill({ json: { ok: true, data: FILE_REPLAY } }))
   await page.getByRole('link', { name: '历史回放', exact: true }).click()
   await page.waitForURL('**/replays')
-  await expect(page.getByText('只读快照 · RUN-001 · F-00042')).toBeVisible()
-  await expect(page.getByTestId('replay-timeline').locator('.replay-timeline__events button')).toHaveCount(3)
-  await expect(page.getByTestId('replay-event-detail')).toContainText('SW-004')
+  await expect(page.getByText('文件回放 · 00:00:00')).toBeVisible()
+  await expect(page.getByTestId('replay-event-detail')).toContainText('位置记录')
+  await expect(page.getByTestId('replay-timeline').locator('.replay-timeline__events button')).toHaveCount(0)
+  await expect(page.getByText('SW-004')).toHaveCount(0)
   await page.getByTestId('replay-play').click()
   await expect(page.getByTestId('replay-play')).toHaveText('暂停')
   const cursor = page.locator('.replay-controls__slider span').first()
-  await expect(cursor).not.toHaveText('00:42:17', { timeout: 3_000 })
-  const paused = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/replays/REPLAY-001/commands'
-    && response.request().postDataJSON().command === 'PAUSE')
+  await expect(cursor).not.toHaveText('00:00:00', { timeout: 4_000 })
   await page.getByTestId('replay-play').click()
-  const pauseResponse = await paused
-  expect(pauseResponse.status()).toBe(200)
-  await pauseResponse.finished()
   await expect(page.getByTestId('replay-play')).toHaveText('播放')
   const pausedTime = await cursor.textContent()
   await page.waitForTimeout(1_100)
   await expect(cursor).toHaveText(pausedTime ?? '')
-  await page.getByTestId('replay-timeline').getByRole('button', { name: /DET-042/ }).click()
-  await expect(page.getByTestId('replay-event-detail')).toContainText('DET-042')
+  await page.getByRole('slider', { name: '回放进度' }).press('End')
+  await expect(cursor).toHaveText('00:01:00')
+  await page.getByRole('slider', { name: '回放进度' }).press('Home')
+  await expect(cursor).toHaveText('00:00:00')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P6 播放中跨页返回续播，重复进入后暂停不再推进', async ({ page, request }) => {
+test('P6 本地回放离页清理，重复进入重新加载后播放与暂停正常', async ({ page, request }) => {
   const audit = auditBrowser(page)
-  const commands: string[] = []
-  page.on('request', (outgoing) => {
-    if (outgoing.method() === 'POST' && new URL(outgoing.url()).pathname === '/api/v1/replays/REPLAY-001/commands') {
-      commands.push(outgoing.postDataJSON().command)
-    }
-  })
   await resetMock(request)
   await login(page)
+  const replayRequests: string[] = []
+  page.on('request', (outgoing) => {
+    const path = new URL(outgoing.url()).pathname
+    if (path.startsWith('/api/v1/replays')) replayRequests.push(path)
+  })
+  await page.route('**/api/v1/replays/local-file', (route) => route.fulfill({ json: { ok: true, data: FILE_REPLAY } }))
   await page.getByRole('link', { name: '历史回放', exact: true }).click()
   const play = page.getByTestId('replay-play')
   const cursor = page.locator('.replay-controls__slider span').first()
+  for (let visit = 0; visit < 2; visit += 1) {
+    await expect(play).toHaveText('播放')
+    await expect(cursor).toHaveText('00:00:00')
+    await play.click()
+    await expect(play).toHaveText('暂停')
+    await expect(cursor).not.toHaveText('00:00:00', { timeout: 4_000 })
+    await page.getByRole('link', { name: '报表中心', exact: true }).click()
+    const requestsAfterLeaving = replayRequests.length
+    await page.waitForTimeout(1_100)
+    expect(replayRequests).toHaveLength(requestsAfterLeaving)
+    await page.getByRole('link', { name: '历史回放', exact: true }).click()
+  }
   await expect(play).toHaveText('播放')
   await play.click()
-  await expect(play).toHaveText('暂停')
-  await expect(cursor).not.toHaveText('00:42:17', { timeout: 4_000 })
-  for (let visit = 0; visit < 2; visit += 1) {
-    // 使用可见菜单离页，继续验证组件卸载后的计时器清理，不用整页刷新替代。
-    await page.getByRole('link', { name: '报表中心', exact: true }).click()
-    await page.waitForURL('**/reports')
-    const commandsAfterLeaving = commands.length
-    await page.waitForTimeout(1_100)
-    expect(commands).toHaveLength(commandsAfterLeaving)
-    expect(commands).not.toContain('PAUSE')
-    await page.getByRole('link', { name: '历史回放', exact: true }).click()
-    await expect(play).toHaveText('暂停')
-    const resumedAt = await cursor.textContent()
-    await expect(cursor).not.toHaveText(resumedAt!, { timeout: 4_000 })
-  }
-  const paused = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/replays/REPLAY-001/commands'
-    && response.request().postDataJSON().command === 'PAUSE')
+  await expect(cursor).not.toHaveText('00:00:00', { timeout: 4_000 })
   await play.click()
-  expect((await paused).status()).toBe(200)
   await expect(play).toHaveText('播放')
   const pausedAt = await cursor.textContent()
-  const commandsAfterPausing = commands.length
   await page.waitForTimeout(1_100)
   await expect(cursor).toHaveText(pausedAt!)
-  expect(commands).toHaveLength(commandsAfterPausing)
+  expect(replayRequests).toEqual(Array(3).fill('/api/v1/replays/local-file'))
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P6 历史回放明确呈现空态和损坏态', async ({ page, request }) => {
+test('P6 未配置和损坏的本地回放只提示异常，不加载演示数据，重试可恢复', async ({ page, request }) => {
   const audit = auditBrowser(page)
   await resetMock(request)
   await login(page)
-  await page.route('**/api/v1/replays', async (route) => {
-    await route.fulfill({ json: { ok: true, data: [], meta: { requestId: 'REQ-P6-EMPTY', generatedAt: '2026-08-06T08:00:00Z', page: 1, pageSize: 1, total: 0 } } })
+  const replayRequests: string[] = []
+  page.on('request', (outgoing) => {
+    const path = new URL(outgoing.url()).pathname
+    if (path.startsWith('/api/v1/replays') || path.includes('/frames/') || path.endsWith('/events')) replayRequests.push(path)
   })
+  let data: unknown = null
+  await page.route('**/api/v1/replays/local-file', (route) => route.fulfill({ json: { ok: true, data } }))
   await page.getByRole('link', { name: '历史回放', exact: true }).click()
-  await expect(page.getByText('暂无可用回放记录')).toBeVisible()
+  await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。')).toBeVisible()
+  await expect(page.getByTestId('replay-play')).toHaveCount(0)
+  expect(replayRequests).toEqual(['/api/v1/replays/local-file'])
 
-  await page.unroute('**/api/v1/replays')
-  await page.route('**/api/v1/replays/REPLAY-001', async (route) => {
-    await route.fulfill({ json: {
-      ok: true,
-      data: { ...REPLAY_FIXTURE, currentTimeS: 9000 },
-      meta: { requestId: 'REQ-P6-CORRUPT', generatedAt: '2026-08-06T08:00:00Z', page: 1, pageSize: 1, total: 1 },
-    } })
-  })
-  await page.getByRole('link', { name: '态势主界面', exact: true }).click()
-  await page.getByRole('link', { name: '历史回放', exact: true }).click()
-  await expect(page.getByText('回放数据损坏')).toBeVisible()
+  data = { ...FILE_REPLAY, durationS: -1 }
+  await page.locator('.replays-page__header').getByRole('button', { name: '重新加载' }).click()
+  await expect(page.getByText('回放数据损坏', { exact: true })).toBeVisible()
+  await expect(page.getByText('历史回放数据格式不正确。')).toBeVisible()
+  await expect(page.getByTestId('replay-play')).toHaveCount(0)
 
+  data = FILE_REPLAY
+  await page.locator('.el-result').getByRole('button', { name: '重新加载' }).click()
+  await expect(page.getByTestId('replay-play')).toBeVisible()
+  await expect(page.getByText('F-00042')).toHaveCount(0)
+  expect(replayRequests).toEqual(Array(3).fill('/api/v1/replays/local-file'))
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
