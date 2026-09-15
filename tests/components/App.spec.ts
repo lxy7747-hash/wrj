@@ -382,6 +382,36 @@ describe('App shell', () => {
     wrapper.unmount()
   })
 
+  it.each(['logout', 'expired'] as const)('clears the remembered scene on %s and does not restore it for another account', async action => {
+    sessionStorage.clear()
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore()
+    auth.$patch({ principal: { userId: 'USR-A', username: 'A', role: 'OPERATOR', permissions: ['BUSINESS_READ'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ'] })
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify({ ok: true,
+      data: url.endsWith('/simulations') ? [] : url.includes('/scenarios/') ? scene : null,
+    }))))
+    const simulation = useSimulationStore()
+    expect(await simulation.selectScene(scene.config.scenario.id)).toBe(true)
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/situation')
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
+    try {
+      await flushPromises()
+      expect(simulation.readSelectedSceneId()).toBe(scene.config.scenario.id)
+      if (action === 'logout') await wrapper.get('[data-testid="logout"]').trigger('click')
+      else auth.resetToSafeEmpty()
+      await flushPromises()
+      expect(simulation.selectedScene).toBeNull()
+      expect(sessionStorage.getItem('wrj.simulation.selectedScene')).toBeNull()
+      auth.$patch({ principal: { userId: 'USR-B', username: 'B', role: 'OPERATOR', permissions: ['BUSINESS_READ'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ'] })
+      expect(simulation.readSelectedSceneId()).toBeNull()
+    } finally { wrapper.unmount(); sessionStorage.clear() }
+  })
+
   it('does not load telemetry or reconnect after logout during situation bootstrap', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

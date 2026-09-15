@@ -1,17 +1,11 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import type { CapabilityState, ConfigurationLockState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
-import { formatSimulationTime } from '../../features/situation/situation-model'
+import type { CapabilityState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
 
-const props = defineProps<{
+defineProps<{
   status: UiSimulationStatus
-  currentTime: number
   speed: number
   mode: SimulationMode
-  lockState: ConfigurationLockState
   capabilityState: CapabilityState
-  processId: number | null
-  progress: number
   pending: boolean
   feedback: string
   /** 只读初始位置尚未接入运行引擎，禁止调用 Mock 控制命令。 */
@@ -27,22 +21,6 @@ defineEmits<{
   'update:mode': [value: SimulationMode]
 }>()
 
-const statusLabel = computed(() => ({
-  IDLE: '待运行',
-  STOPPED: '已停止',
-  RUNNING: '运行中',
-  PAUSED: '已暂停',
-  COMPLETED: '已完成',
-  ERROR: '运行异常',
-})[props.status])
-
-const lockLabel = computed(() => ({
-  UNLOCKED: '场景配置未锁定',
-  LOCKING: '正在锁定场景配置',
-  LOCKED: '场景配置已锁定',
-  UNLOCKING: '正在解除场景配置锁',
-  ERROR: '场景配置锁异常',
-})[props.lockState])
 </script>
 
 <template>
@@ -117,16 +95,8 @@ const lockLabel = computed(() => ({
     <div v-if="readOnly" class="simulation-toolbar__runtime" aria-live="polite">
       <small>{{ feedback }}</small>
     </div>
-    <div v-else class="simulation-toolbar__runtime" aria-live="polite">
-      <strong data-testid="simulation-clock">{{ formatSimulationTime(currentTime) }}</strong>
-      <span :class="['runtime-state', `runtime-state--${status.toLowerCase()}`]">
-        <i aria-hidden="true"></i>{{ statusLabel }}
-      </span>
-      <small data-testid="simulation-feedback">{{ lockLabel }} · {{ feedback }}</small>
-      <small data-testid="engine-resource">
-        AFSIM 2.9.0 · {{ processId === null ? '模拟进程资源已释放' : `模拟进程 ${processId}` }} · 进度 {{ progress.toFixed(1) }}%
-      </small>
-      <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">运行控制异常</small>
+    <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">
+      <small class="simulation-toolbar__error">{{ feedback || '运行控制异常' }}</small>
     </div>
   </header>
 </template>
@@ -226,50 +196,12 @@ const lockLabel = computed(() => ({
   text-align: right;
 }
 
-.simulation-toolbar__runtime strong {
-  color: var(--console-cyan);
-  font-family: Consolas, monospace;
-  font-size: 0.82rem;
-}
-
 .simulation-toolbar__runtime small {
   grid-column: 1 / -1;
 }
 
 .simulation-toolbar__error {
   color: var(--console-danger) !important;
-}
-
-.runtime-state {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  color: var(--console-text-muted);
-  font-size: var(--console-font-size-min);
-}
-
-.runtime-state i {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: var(--console-text-dim);
-}
-
-.runtime-state--running i {
-  background: var(--console-teal);
-  box-shadow: 0 0 0.5rem rgba(77, 224, 181, 0.7);
-}
-
-.runtime-state--paused i {
-  background: var(--console-amber);
-}
-
-.runtime-state--completed i {
-  background: var(--console-cyan);
-}
-
-.runtime-state--error i {
-  background: #ff5b5b;
 }
 
 @media (max-width: 1500px) {

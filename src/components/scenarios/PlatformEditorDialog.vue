@@ -69,6 +69,7 @@ const invalidSpacing = computed(() => showGridSpacing.value && (!Number.isFinite
 const cannotAdd = computed(() => !props.editing && availableQuantity.value === 0)
 const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE')
 const positionRule = computed(() => editor.value ? PLATFORM_POSITION_RULES[editor.value.type] : undefined)
+const waypointBounds = computed(() => editor.value?.type === 'AIRBORNE_MISSION_CLUSTER' ? positionRule.value : undefined)
 const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value)
 
 /**
@@ -249,8 +250,8 @@ watch(() => props.modelValue, (visible) => {
           <el-button size="small" :disabled="pending || locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
         </div>
         <el-table :data="editor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
-          <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="-180" :max="180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="-90" :max="90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
+          <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="waypointBounds?.minLongitude ?? -180" :max="waypointBounds?.maxLongitude ?? 180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
+          <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="waypointBounds?.minLatitude ?? -90" :max="waypointBounds?.maxLatitude ?? 90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
           <el-table-column label="高度（m）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
           <el-table-column label="速度（m/s）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.speed" :min="0" controls-position="right" :data-testid="`waypoint-speed-${$index}`" /></template></el-table-column>
           <el-table-column label="到达时间（s）" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
@@ -274,6 +275,7 @@ watch(() => props.modelValue, (visible) => {
     v-model="waypointPickerVisible"
     :longitude="waypointPickerPoint.longitude"
     :latitude="waypointPickerPoint.latitude"
+    :bounds="waypointBounds"
     @confirm="applyWaypointMapPoint"
   />
 </template>

@@ -183,6 +183,7 @@ describe('态势主界面', () => {
   }
 
   beforeEach(() => {
+    sessionStorage.clear()
     mapControllerMock.latestOptions = null
     vi.clearAllMocks()
     vi.stubGlobal('fetch', situationFetch())
@@ -195,6 +196,101 @@ describe('态势主界面', () => {
     document.body.innerHTML = ''
     vi.unstubAllGlobals()
     vi.useRealTimers()
+    sessionStorage.clear()
+  })
+
+  it.each(['SCN-001', 'SCN-B'])('刷新恢复 %s 的地图、两行节点和右侧抽屉，不切回本机文件', async id => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    scene.config.scenario.id = id
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([])
+      if (url.endsWith(`/scenarios/${id}`)) return successResponse(scene)
+      if (url.endsWith('/initial-nodes')) return successResponse(INITIAL_NODES)
+      throw new Error(`Unexpected request ${url}`)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    await mountSituationPage(id)
+    mountedWrapper!.unmount()
+    mountedWrapper = null
+    scene.revision += 1
+    scene.config.platforms[0]!.name = '服务端最新节点名称'
+    const wrapper = await mountSituationPage()
+    expect(useSimulationStore().selectedScene?.config.scenario.id).toBe(id)
+    expect(mapControllerMock.latestOptions?.initialNodes?.[0]?.name).toBe('服务端最新节点名称')
+    const panel = wrapper.get('.telemetry-panel')
+    expect(panel.findAll('.panel-heading strong').map(item => item.text())).toEqual(['全链路状态', '干扰 / 侦测设备', '同帧事件'])
+    expect(panel.findAll('tr[data-link-id]')).toHaveLength(scene.config.links.length)
+    expect(wrapper.get('.summary-focus-button').findAll('span, small')).toHaveLength(2)
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    expect(panel.attributes('data-collapsed')).toBe('true')
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    expect(panel.attributes('data-collapsed')).toBe('false')
+    await panel.get('tr[data-link-id="L-MW-01"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="link-detail-configured"]')?.textContent).toContain('规范状态暂无数据')
+    expect(fetcher.mock.calls.some(([url]) => /initial-nodes|positions|frames|events/.test(url))).toBe(false)
+  })
+
+  it('刷新加载失败可连续重试原场景，未恢复前不展示旧配置或切换文件数据', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    scene.config.scenario.id = 'SCN-B'
+    let failed = false
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([])
+      if (url.endsWith('/scenarios/SCN-B')) return failed
+        ? new Response(JSON.stringify({ ok: false, error: { code: 'NOT_FOUND', message: '场景读取失败。' } }), { status: 404 })
+        : successResponse(scene)
+      throw new Error(`Unexpected request ${url}`)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    await mountSituationPage('SCN-B')
+    mountedWrapper!.unmount()
+    mountedWrapper = null
+    failed = true
+    const wrapper = await mountSituationPage()
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(wrapper.text()).toContain('场景 SCN-B 加载失败')
+      expect(wrapper.find('.telemetry-panel').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
+      await wrapper.get('.telemetry-empty button').trigger('click')
+      await flushPromises()
+    }
+    failed = false
+    await wrapper.get('.telemetry-empty button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.telemetry-panel').exists()).toBe(true)
+    expect(useSimulationStore().selectedScene?.config.scenario.id).toBe('SCN-B')
+    expect(fetcher.mock.calls.every(([url]) => url.endsWith('/simulations') || url.endsWith('/scenarios/SCN-B'))).toBe(true)
+  })
+
+  it.each(['离页', '退出', '重置'])('场景恢复在途时%s，迟到响应不恢复场景或缓存', async action => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    scene.config.scenario.id = 'SCN-B'
+    let late = false
+    let finish!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([])
+      if (late) return new Promise<Response>(resolve => { finish = resolve })
+      return successResponse(scene)
+    }))
+    await mountSituationPage('SCN-B')
+    mountedWrapper!.unmount()
+    mountedWrapper = null
+    late = true
+    const wrapper = await mountSituationPage()
+    expect(finish).toBeDefined()
+    if (action === '退出') useAuthStore().resetToSafeEmpty()
+    if (action !== '离页') useSimulationStore().resetToSafeEmpty()
+    wrapper.unmount()
+    mountedWrapper = null
+    finish(successResponse(scene))
+    await flushPromises()
+    expect(useSimulationStore().selectedScene).toBeNull()
+    expect(useSimulationStore().selectingScene).toBe(false)
+    expect(useSimulationStore().readSelectedSceneId()).toBe(action === '离页' ? 'SCN-B' : null)
   })
 
   it('选用场景请求跨页迟到时维持完整文件模式，离页后不残留轮询', async () => {
@@ -315,7 +411,22 @@ describe('态势主界面', () => {
     expect(useTelemetryStore().frame).toBeNull()
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
     expect(wrapper.get('.node-jammer-count').text()).toBe('2 个')
-    expect(wrapper.find('.telemetry-panel').exists()).toBe(false)
+    const panel = wrapper.get('.telemetry-panel')
+    expect(panel.findAll('.panel-heading strong').map(item => item.text())).toEqual(['全链路状态', '干扰 / 侦测设备', '同帧事件'])
+    expect(panel.text()).toContain('当前文件未提供链路质量数据')
+    expect(panel.text()).toContain('暂无干扰 / 侦测设备运行数据')
+    expect(panel.text()).toContain('暂无当前运行事件')
+    expect(panel.findAll('.telemetry-empty-state.el-empty')).toHaveLength(2)
+    expect(panel.find('.jammer-list').exists()).toBe(false)
+    expect(panel.find('.event-list').exists()).toBe(false)
+    expect(panel.findAll('tr[data-link-id]')).toHaveLength(0)
+    expect(panel.get('[data-testid="open-link-candidates"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('.situation-page__workspace').classes()).not.toContain('situation-page__workspace--telemetry-collapsed')
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    expect(panel.attributes('data-collapsed')).toBe('true')
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    expect(panel.attributes('data-collapsed')).toBe('false')
+    expect(wrapper.get('.situation-page__workspace').classes()).not.toContain('situation-page__workspace--telemetry-collapsed')
     expect(wrapper.find('.metric-panel').exists()).toBe(false)
     expect(wrapper.find('.offline-map__legend').exists()).toBe(false)
     expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: INITIAL_NODES.nodes })
@@ -483,7 +594,7 @@ describe('态势主界面', () => {
     expect(summary.get('[data-testid="toggle-scene-summary"]').attributes('aria-expanded')).toBe('false')
     await summary.get('[data-testid="toggle-scene-summary"]').trigger('click')
     expect(summary.attributes('data-collapsed')).toBe('false')
-    expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
+    expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
     expect(wrapper.find('.telemetry-panel').exists()).toBe(true)
     expect(wrapper.find('[data-frame-id="F-00042"]').exists()).toBe(false)
     expect(mapControllerMock.latestOptions?.frame).toBeNull()
@@ -595,13 +706,14 @@ describe('态势主界面', () => {
     expect(wrapper.text()).not.toContain('配置可查看')
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('运行中')
-    expect(wrapper.text()).toContain('场景配置已锁定')
-    expect(wrapper.get('[data-testid="engine-resource"]').text()).toContain('模拟进程 2900')
+    expect(useSimulationStore().run).toMatchObject({ uiStatus: 'RUNNING', configLocked: true, canonical: { processId: 2900 } })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
 
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('已暂停')
+    expect(useSimulationStore().uiStatus).toBe('PAUSED')
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('继续')
 
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
@@ -610,10 +722,25 @@ describe('态势主界面', () => {
     confirmButton?.click()
     await flushPromises()
 
-    expect(wrapper.get('[data-testid="simulation-clock"]').text()).toBe('T+ 00:00:00')
-    expect(wrapper.text()).toContain('场景配置未锁定')
-    expect(wrapper.get('[data-testid="engine-resource"]').text()).toContain('模拟进程资源已释放')
+    expect(useSimulationStore().run).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { currentTime: 0, processId: null } })
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
     expect(fetchSpy).toHaveBeenCalledTimes(10)
+  })
+
+  it('删除常驻运行说明后，开始失败仍显示具体错误', async () => {
+    const fetchSpy = situationFetch([
+      [simulationRun('COMPLETED', false)],
+      simulationRun('IDLE', true),
+    ])
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    fetchSpy.mockRejectedValueOnce(new Error('启动服务不可用'))
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.simulation-toolbar [role="alert"]').text()).toContain('启动服务不可用')
+    expect(wrapper.find('[data-testid="engine-resource"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="simulation-clock"]').exists()).toBe(false)
   })
 
   it('移除指标筛选框后地图、表格和计数均使用全部链路', async () => {

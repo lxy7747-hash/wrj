@@ -101,6 +101,11 @@ export class ScriptProjection {
   private scripts = new Map<string, ScriptContract>()
   private nextSequence = 1
 
+  get(scriptId: string): ScriptContract | undefined {
+    const script = this.scripts.get(scriptId)
+    return script === undefined ? undefined : structuredClone(script)
+  }
+
   /** 生成并保存当前草稿的确定性内存脚本预览。 */
   preview(draft: ScenarioDraft): ScriptContract {
     const preview = buildPreview(draft)

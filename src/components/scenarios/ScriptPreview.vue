@@ -39,7 +39,7 @@ function scriptLocation(fieldPath: string): string {
 <!--    </div>-->
     <el-alert v-if="resultMessage && state !== 'EMPTY'" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
     <p class="script-guidance" data-testid="script-next-step">
-      {{ preflightPassed ? '预检已通过。当前仅为内存预览，不会写入本地文件或启动真实 AFSIM。' : script ? '下一步：点击“执行预检”。如重新生成预览，需要重新预检。' : dirty ? '请先点击上方“校验并保存”，再生成脚本预览，最后执行预检。' : '场景已保存：先生成脚本预览，最后执行预检。生成预览不会启动仿真。' }}
+      {{ preflightPassed ? '预检已通过；保存场景时由本机服务写入 TXT，不会启动真实 AFSIM。' : script ? '下一步：点击“执行预检”。如重新生成预览，需要重新预检。' : dirty ? '请先点击上方“保存”，生成 TXT 后可执行预检。' : '场景已保存：点击“保存”可重新生成 TXT。生成预览不会启动仿真。' }}
     </p>
     <div class="platform-actions">
       <el-tooltip content="请先保存草稿" placement="top" :disabled="!dirty">

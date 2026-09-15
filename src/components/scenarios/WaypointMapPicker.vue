@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { MAP_CONFIG } from '../../config/map.config'
+import type { PLATFORM_POSITION_RULES } from '../../features/scenarios/platform-position-rules'
 
 export interface WaypointMapPoint {
   longitude: number
@@ -13,6 +14,7 @@ const props = defineProps<{
   modelValue: boolean
   longitude: number
   latitude: number
+  bounds?: NonNullable<(typeof PLATFORM_POSITION_RULES)['AIRBORNE_MISSION_CLUSTER']>
 }>()
 
 const emit = defineEmits<{
@@ -22,8 +24,18 @@ const emit = defineEmits<{
 
 const mapContainer = ref<HTMLElement | null>(null)
 const selectedPoint = ref<WaypointMapPoint | null>(null)
+const selectionError = ref('')
+const rangeHint = computed(() => props.bounds
+  ? `选点范围：经度 ${props.bounds.minLongitude}°E～${props.bounds.maxLongitude}°E，纬度 ${props.bounds.minLatitude}°N～${props.bounds.maxLatitude}°N。`
+  : '')
 let map: L.Map | null = null
 let marker: L.CircleMarker | null = null
+
+function isAllowedPoint(longitude: number, latitude: number): boolean {
+  return Number.isFinite(longitude) && Number.isFinite(latitude)
+    && longitude >= (props.bounds?.minLongitude ?? -180) && longitude <= (props.bounds?.maxLongitude ?? 180)
+    && latitude >= (props.bounds?.minLatitude ?? -90) && latitude <= (props.bounds?.maxLatitude ?? 90)
+}
 
 /**
  * 判断现有经纬度是否适合作为地图初始选点。
@@ -32,12 +44,7 @@ let marker: L.CircleMarker | null = null
  * @returns 坐标合法且不是新增航点的零值占位时返回 `true`。
  */
 function hasInitialPoint(longitude: number, latitude: number): boolean {
-  return Number.isFinite(longitude)
-    && Number.isFinite(latitude)
-    && longitude >= -180
-    && longitude <= 180
-    && latitude >= -90
-    && latitude <= 90
+  return isAllowedPoint(longitude, latitude)
     && (longitude !== 0 || latitude !== 0)
 }
 
@@ -79,6 +86,15 @@ function renderMarker(point: WaypointMapPoint): void {
  * @sideEffects 更新待确认经纬度并刷新地图标记。
  */
 function handleMapClick(event: L.LeafletMouseEvent): void {
+  // 先检查原始坐标，避免六位小数舍入将范围外的点误判为边界内。
+  if (!isAllowedPoint(event.latlng.lng, event.latlng.lat)) {
+    selectedPoint.value = null
+    selectionError.value = `选点超出允许范围，请重新选择。${rangeHint.value}`
+    marker?.remove()
+    marker = null
+    return
+  }
+  selectionError.value = ''
   selectedPoint.value = {
     longitude: normalizeCoordinate(event.latlng.lng),
     latitude: normalizeCoordinate(event.latlng.lat),
@@ -142,13 +158,14 @@ function destroyMap(): void {
  * @sideEffects 向父组件提交经纬度并关闭弹窗；高度由父组件统一设置为 0。
  */
 function confirmPoint(): void {
-  if (selectedPoint.value === null) return
+  if (selectedPoint.value === null || !isAllowedPoint(selectedPoint.value.longitude, selectedPoint.value.latitude)) return
   emit('confirm', selectedPoint.value)
   emit('update:modelValue', false)
 }
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
+  selectionError.value = ''
   selectedPoint.value = hasInitialPoint(props.longitude, props.latitude)
     ? { longitude: props.longitude, latitude: props.latitude }
     : null
@@ -171,6 +188,8 @@ onBeforeUnmount(destroyMap)
     @closed="destroyMap"
   >
     <p class="waypoint-map-dialog__hint">单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。</p>
+    <p v-if="rangeHint" class="waypoint-map-dialog__hint" data-testid="waypoint-range-hint">{{ rangeHint }}</p>
+    <el-alert v-if="selectionError" :title="selectionError" type="error" :closable="false" show-icon data-testid="waypoint-range-error" />
     <div
       ref="mapContainer"
       class="waypoint-map-dialog__map"

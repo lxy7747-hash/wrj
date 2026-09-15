@@ -43,6 +43,28 @@ function completeLink(input: ImportInput): void {
 }
 
 describe('本地场景导入候选', () => {
+  it.each([
+    [117, 21, true], [122, 26, true], [119.5, 24, true],
+    [116.999999, 24, false], [122.000001, 24, false],
+    [119.5, 20.999999, false], [119.5, 26.000001, false],
+  ])('无人机集群保存边界 %s/%s，通过=%s，拒绝时服务端草稿不变', (longitude, latitude, accepted) => {
+    const projection = new ScenarioProjection()
+    const loaded = projection.get('SCN-001')
+    if (!loaded.ok) throw new Error('missing fixture')
+    const before = structuredClone(loaded.data)
+    const candidate = structuredClone(before)
+    Object.assign(candidate.config.platforms.find(p => p.type === 'AIRBORNE_MISSION_CLUSTER')!.initialPosition, { longitude, latitude })
+    const result = projection.save('SCN-001', { config: candidate.config, uiExtensions: candidate.uiExtensions, expectedRevision: before.revision })
+    expect(result.ok).toBe(accepted)
+    const reloaded = projection.get('SCN-001')
+    if (!reloaded.ok) throw new Error('missing fixture')
+    if (accepted) {
+      expect(reloaded.data.config.platforms.find(p => p.type === 'AIRBORNE_MISSION_CLUSTER')!.initialPosition).toMatchObject({ longitude, latitude })
+    } else {
+      expect(reloaded.data).toEqual(before)
+    }
+  })
+
   it('新增、显式映射已有节点和最新位置选择均保留其他配置，源数据不变', () => {
     const base = config()
     const original = structuredClone(base)
@@ -109,6 +131,7 @@ describe('本地场景导入候选', () => {
 
   it.each([
     ['REAR_COMMAND_NODE', 118.5, 120, 24, 25, 0],
+    ['AIRBORNE_MISSION_CLUSTER', 117, 122, 21, 26, 4000],
     ['FORWARD_RELAY_NODE', 120.8, 120.8, 25.3, 25.7, 8000],
     ['GROUND_JAMMER_DETECTION_STATION', 121.2, 121.8, 24.8, 25.4, 0],
   ] as const)('%s 边界可导入，越界拒绝且原配置不变', (type, minLon, maxLon, minLat, maxLat, altitude) => {

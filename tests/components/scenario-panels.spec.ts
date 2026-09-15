@@ -272,11 +272,34 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
     type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
     await flushPromises()
-    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
-    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    expect(longitude.attributes()).toMatchObject({ min: '117', max: '122' })
+    expect(latitude.attributes()).toMatchObject({ min: '21', max: '26' })
+    for (const [lng, lat, expectedLng, expectedLat] of [
+      [116.9, 20.9, 117, 21], [122.1, 26.1, 122, 26],
+      [117, 21, 117, 21], [122, 26, 122, 26], [119.5, 24, 119.5, 24],
+    ]) {
+      await longitude.setValue(String(lng))
+      await latitude.setValue(String(lat))
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: expectedLng, latitude: expectedLat } })
+    }
     expect(wrapper.get('#platform-position-title').text()).toBe('编队原点')
     expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).props('bounds')).toEqual({ minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 })
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    const waypointLongitude = wrapper.get('[data-testid="waypoint-longitude-0"] input')
+    const waypointLatitude = wrapper.get('[data-testid="waypoint-latitude-0"] input')
+    expect(waypointLongitude.attributes()).toMatchObject({ min: '117', max: '122' })
+    expect(waypointLatitude.attributes()).toMatchObject({ min: '21', max: '26' })
+    for (const [lng, lat, expectedLng, expectedLat] of [
+      [116, 25, 117, 25], [122.1, 26.1, 122, 26], [117, 21, 117, 21], [122, 26, 122, 26],
+    ]) {
+      await waypointLongitude.setValue(String(lng))
+      await waypointLatitude.setValue(String(lat))
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ waypoints: [{ longitude: expectedLng, latitude: expectedLat }] })
+    }
     expect(platform.initialPosition).toEqual(originalPosition)
     expect(platform.waypoints).toHaveLength(1)
     type.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
@@ -284,6 +307,9 @@ describe('场景拆分面板', () => {
     await flushPromises()
     expect(longitude.attributes()).toMatchObject({ min: '121.2', max: '121.8' })
     expect(latitude.attributes()).toMatchObject({ min: '24.8', max: '25.4' })
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).props('bounds')).toBeUndefined()
+    expect(waypointLongitude.attributes()).toMatchObject({ min: '-180', max: '180' })
+    expect(waypointLatitude.attributes()).toMatchObject({ min: '-90', max: '90' })
     expect(longitude.attributes('disabled')).toBeUndefined()
     expect(latitude.attributes('disabled')).toBeUndefined()
     for (const [lng, lat, expectedLng, expectedLat] of [
@@ -302,8 +328,8 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
     type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
     await flushPromises()
-    expect(longitude.attributes()).toMatchObject({ min: '-180', max: '180' })
-    expect(latitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    expect(longitude.attributes()).toMatchObject({ min: '117', max: '122' })
+    expect(latitude.attributes()).toMatchObject({ min: '21', max: '26' })
     wrapper.unmount()
   })
 
@@ -373,12 +399,11 @@ describe('场景拆分面板', () => {
     failed.unmount()
 
     const empty = mountValidationPanel()
-    expect(empty.text()).toContain('可单独执行整体校验')
-    expect(empty.text()).toContain('校验并保存')
+    expect(empty.text()).toContain('点击“保存”时会自动检查配置')
     empty.unmount()
 
     const success = mountValidationPanel({ completed: true })
-    expect(success.text()).toContain('整体校验通过')
+    expect(success.text()).toContain('配置检查通过')
     success.unmount()
   })
 

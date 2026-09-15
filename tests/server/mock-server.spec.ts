@@ -4,6 +4,29 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
+describe('集群航点写入范围', () => {
+  it.each([[117, 21, true], [122, 26, true], [116, 25, false], [122.0000001, 25, false], [119, 20.9999999, false], [119, 26.0000001, false]] as const)(
+    '航点 %s/%s：边界通过、越界拒绝且草稿不变', async (longitude, latitude, valid) => {
+      const { baseUrl } = await startServer()
+      const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+      const path = '/api/v1/scenarios/SCN-001'
+      const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+      const config = structuredClone(original.config)
+      const index = config.platforms.findIndex(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')
+      config.platforms[index]!.waypoints = [{ longitude, latitude, altitude: 0, speed: 1, arrivalTime: 1 }]
+      const response = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(valid ? 200 : 422)
+      if (valid) {
+        expect((response.body as ApiSuccess<ScenarioDraft>).data.config.platforms[index]!.waypoints).toEqual(config.platforms[index]!.waypoints)
+      } else {
+        expect(response.body).toMatchObject({ error: { fieldPath: expect.stringMatching(new RegExp(`^platforms\\[${index}\\]\\.waypoints\\[0\\]\\.(longitude|latitude)$`)) } })
+        await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
+        await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '越界航点', config }).expect(422)
+        expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(original)
+      }
+    },
+  )
+})
+
 describe('单链路业务配置', () => {
   it('旧业务兼容读取，明确关联后 PUT/GET、导入和模板保留关联及参数', async () => {
     const { baseUrl } = await startServer()

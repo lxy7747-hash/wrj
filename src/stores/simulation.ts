@@ -19,6 +19,11 @@ const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'proce
 const UI_STATUSES = new Set<UiSimulationStatus>(['IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'])
 const CANONICAL_STATUSES = new Set(['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'])
 const REQUEST_TIMEOUT_MS = 5_000
+const SELECTED_SCENE_KEY = 'wrj.simulation.selectedScene'
+
+function clearSelectedScene(): void {
+  try { window.sessionStorage.removeItem(SELECTED_SCENE_KEY) } catch { /* 存储不可用不影响内存清理。 */ }
+}
 
 class InvalidSimulationResponseError extends Error {
   /** 创建仿真响应不符合合同时使用的标记错误。 */
@@ -139,33 +144,46 @@ export const useSimulationStore = defineStore('simulation', {
   },
 
   actions: {
+    /** 只恢复同一账号的场景编号；配置及权限始终重新从服务端读取。 */
+    readSelectedSceneId(): string | null {
+      const userId = useAuthStore().principal?.userId
+      try {
+        const saved = JSON.parse(window.sessionStorage.getItem(SELECTED_SCENE_KEY) ?? 'null')
+        if (userId && saved && saved.userId === userId
+          && typeof saved.scenarioId === 'string' && saved.scenarioId.startsWith('SCN-')) return saved.scenarioId
+      } catch { /* 损坏或不可用的浏览器存储不作为场景来源。 */ }
+      clearSelectedScene()
+      return null
+    },
     /** 只选择服务端已保存的快照，不使用编辑器的未保存草稿；运行锁由服务端复核。 */
     async selectScene(id: string, signal?: AbortSignal): Promise<boolean> {
-      if (this.pending || this.selectingScene || signal?.aborted) return false
+      const userId = useAuthStore().principal?.userId
+      if (!userId || this.pending || this.selectingScene || signal?.aborted) return false
       const epoch = this.requestEpoch
       this.selectingScene = true
       try {
-        if (!await this.resetProjection() || epoch !== this.requestEpoch || signal?.aborted) return false
+        if (!await this.resetProjection() || epoch !== this.requestEpoch || signal?.aborted || userId !== useAuthStore().principal?.userId) return false
         if ((this.run?.configLocked || this.uiStatus === 'RUNNING' || this.uiStatus === 'PAUSED') && id !== this.run?.scenarioId) {
           this.showError(undefined, '请先停止当前 Mock 运行，再切换场景。')
           return false
         }
-        if (!id) { this.selectedScene = null; return true }
+        if (!id) { this.selectedScene = null; clearSelectedScene(); return true }
         const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
           signal,
         })
-        if (epoch !== this.requestEpoch || signal?.aborted) return false
+        if (epoch !== this.requestEpoch || signal?.aborted || userId !== useAuthStore().principal?.userId) return false
         const payload = await readJson(response)
-        if (epoch !== this.requestEpoch || signal?.aborted) return false
+        if (epoch !== this.requestEpoch || signal?.aborted || userId !== useAuthStore().principal?.userId) return false
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const scene = readScenarioDraft(payload)
         if (!scene || scene.config.scenario.id !== id) throw new InvalidSimulationResponseError()
         this.selectedScene = scene
+        try { window.sessionStorage.setItem(SELECTED_SCENE_KEY, JSON.stringify({ userId, scenarioId: id })) } catch { /* 禁用存储时本次选用仍有效。 */ }
         this.resultMessage = '已选择保存的场景配置；Mock 运行不生成真实遥测。'
         return true
       } catch (error) {
-        if (epoch === this.requestEpoch && !signal?.aborted) this.showError(error, '场景选择失败。')
+        if (epoch === this.requestEpoch && !signal?.aborted && userId === useAuthStore().principal?.userId) this.showError(error, '场景选择失败。')
         return false
       } finally {
         if (epoch === this.requestEpoch) this.selectingScene = false
@@ -258,7 +276,13 @@ export const useSimulationStore = defineStore('simulation', {
         if (runs === undefined) throw new InvalidSimulationResponseError()
         const run = runs.find((candidate) => candidate.runId === 'RUN-001')
         if (run === undefined) {
-          this.resetToSafeEmpty()
+          // 无运行不等于退出会话，不能使正在恢复的场景选择失效。
+          this.run = null
+          this.configurationLockState = 'UNLOCKED'
+          this.capabilityState = 'EMPTY'
+          this.resultCode = 'EMPTY'
+          this.resultMessage = '尚未创建仿真运行。'
+          this.lastConfirmation = null
           return true
         }
         this.applyRun(run)
@@ -515,6 +539,7 @@ export const useSimulationStore = defineStore('simulation', {
       this.lastConfirmation = null
       this.selectedScene = null
       this.selectingScene = false
+      clearSelectedScene()
     },
   },
 })

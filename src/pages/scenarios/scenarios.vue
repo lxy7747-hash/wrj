@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, toRaw, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
+import { saveScriptText } from '../../features/scenarios/script-file'
 import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
@@ -60,6 +61,9 @@ const {
 const activeTab = ref('scenario')
 const showIds = ref(false)
 const draftReviewed = ref(false)
+const savingScript = ref(false)
+let active = true
+onBeforeUnmount(() => { active = false })
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
@@ -161,23 +165,23 @@ watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
 const workflowMessage = computed(() => {
   if (draft.value === null) return panelState.value === 'EMPTY'
     ? '暂无场景，可新建场景，也可导入完整快照或选择场景模板。'
-    : '加载场景后，配置参数，再校验并保存，最后生成脚本并执行预检。'
+    : '加载场景后配置参数，点击“保存”即可自动检查并保存。'
   if (draft.value.locked) return '场景运行中，配置已锁定。请先停止仿真，再修改配置或生成脚本。'
   if (pending.value || scriptPending.value) return '正在处理当前操作，请稍候。'
-  if (validation.value.errors.length > 0) return '请在校验结果中点击问题定位；修正参数后重新校验并保存。'
+  if (validation.value.errors.length > 0) return '请在检查结果中点击问题定位；修正参数后重新保存。'
   if (panelState.value === 'ERROR') return `${resultMessage.value} 请处理后重试。`
-  if (configurationTab.value) return `${dirty.value ? '参数有未保存修改。' : '当前草稿已保存。'} 下一步：进入“校验与保存”检查当前配置。`
+  if (configurationTab.value) return dirty.value ? '参数有未保存修改，点击“保存”将自动检查并保存，然后生成 TXT 脚本。' : '当前草稿已保存；再次点击“保存”可重新生成 TXT，不重复写入配置。'
   if (activeTab.value === 'validation') {
-    if (dirty.value) return '参数有未保存修改，请点击“校验并保存”，无需先单独执行整体校验。'
+    if (dirty.value) return '参数有未保存修改，点击“保存”将自动检查并保存。'
     if (canPreviewScript.value) return '当前配置校验通过且已保存。下一步：脚本预览。'
-    return '当前草稿已保存，请点击“整体校验”；通过后进入脚本预览，无需重复保存。'
+    return '请处理检查结果后重新点击“保存”。'
   }
-  if (dirty.value) return '参数有未保存修改，请返回“校验与保存”处理后再生成脚本。'
+  if (dirty.value) return '参数有未保存修改，请点击“保存”后再生成脚本。'
   if (scriptState.value === 'ERROR') return '脚本处理未通过，请查看脚本区域的问题提示；修改配置后需重新保存、生成和预检。'
-  if (preflightPassed.value) return '脚本预检已通过，本页流程已完成。当前仅为内存预览，未写入文件或启动真实 AFSIM。'
+  if (preflightPassed.value) return '脚本预检已通过，未启动真实 AFSIM。TXT 写入结果及路径以实际写入响应为准。'
   if (script.value !== null) return '脚本预览已生成，尚未完成预检。下一步：进入脚本区域，点击“执行预检”。'
   if (activeTab.value === 'script') return '当前草稿已保存。下一步：点击下方“生成脚本预览”，生成后再执行预检。'
-  return '完成场景操作后，请返回“配置参数”，再进入“校验与保存”。'
+  return '完成场景操作后，可返回“配置参数”继续编辑并保存。'
 })
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
@@ -1079,17 +1083,6 @@ async function locateValidationIssue(issue: ValidationIssue): Promise<void> {
 }
 
 /**
- * 执行当前草稿的整体校验并展示结果页签。
- * @returns 校验请求结束后无返回值。
- * @sideEffects 进入校验阶段并记录当前草稿的校验结果；不修改或重复保存草稿。
- */
-async function validateScenario(): Promise<void> {
-  activeTab.value = 'validation'
-  draftReviewed.value = false
-  draftReviewed.value = await scenarioStore.validateScenario()
-}
-
-/**
  * 重新加载确定性场景草稿。
  * @returns 加载流程结束后兑现且不返回值的 Promise。
  * @sideEffects 调用场景 Store，并以服务端草稿替换当前页面数据。
@@ -1129,15 +1122,42 @@ async function saveAsTemplate(): Promise<void> {
  * @sideEffects 进入校验阶段；保存成功后开放脚本入口，失败时展示问题以便定位。
  */
 async function saveScenario(): Promise<void> {
-  activeTab.value = 'validation'
+  if (savingScript.value || pending.value || scriptPending.value) return
+  const saved = alreadySaved.value
+  const epoch = scenarioStore.requestEpoch
+  const userId = authStore.principal?.userId
+  savingScript.value = true
   draftReviewed.value = false
-  if (await scenarioStore.saveScenario()) {
-    draftReviewed.value = true
-    ElMessage.success('场景草稿已保存。')
-    if (props.managed) emit('saved')
-  } else {
-    activeTab.value = 'validation'
-  }
+  try {
+    // 未修改的已保存草稿仍须检查后开放脚本入口，但不重复 PUT 或增加修订号。
+    if (await (saved ? scenarioStore.validateScenario() : scenarioStore.saveScenario())) {
+      if (!active || epoch !== scenarioStore.requestEpoch || userId !== authStore.principal?.userId || !draft.value) return
+      const savedDraft = draft.value
+      const current = () => active && epoch === scenarioStore.requestEpoch && userId === authStore.principal?.userId
+        && draft.value === savedDraft && !dirty.value && !savedDraft.locked
+      draftReviewed.value = true
+      activeTab.value = validation.value.warnings.length > 0 ? 'validation' : 'scenario'
+      const generated = await generateScriptPreview()
+      if (!current()) return
+      if (!generated || !script.value || script.value.scenarioId !== savedDraft.config.scenario.id
+        || script.value.configVersion !== `${savedDraft.config.scenario.id}-v${savedDraft.revision}`) {
+        ElMessage.warning(`场景配置已保存，但 TXT 未生成。${!generated ? scriptResultMessage.value : '脚本版本与当前场景不一致。'} 请重试保存。`)
+        return
+      }
+      try {
+        const path = await saveScriptText(script.value)
+        if (!current()) return
+        await ElMessageBox.alert(`TXT 已生成并写入：${path}`, '场景保存成功', { confirmButtonText: '知道了' }).catch(() => {})
+        if (!current()) return
+      } catch (error) {
+        if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
+        return
+      }
+      if (!saved && props.managed) emit('saved')
+    } else {
+      if (active && epoch === scenarioStore.requestEpoch) activeTab.value = 'validation'
+    }
+  } finally { savingScript.value = false }
 }
 
 /** 粘贴并导入完整场景快照；不访问模板库或全局 Mock 重置。 */
@@ -1181,16 +1201,26 @@ async function resetScenario(): Promise<void> {
 }
 
 /** 生成脚本预览；遇到 WARNING 时只在本次确认后继续。 */
-async function generateScriptPreview(): Promise<void> {
-  if (await scenarioStore.generateScriptPreview()) return
-  if (scenarioStore.scriptResultCode !== 'CONFIRMATION_REQUIRED') return
+async function generateScriptPreview(): Promise<boolean> {
+  const currentDraft = draft.value
+  const epoch = scenarioStore.requestEpoch
+  const userId = authStore.principal?.userId
+  const current = () => active && epoch === scenarioStore.requestEpoch && userId === authStore.principal?.userId
+    && draft.value === currentDraft && !dirty.value && !draft.value?.locked
+  const generated = await scenarioStore.generateScriptPreview()
+  if (!current()) return false
+  if (generated) return true
+  if (scenarioStore.scriptResultCode !== 'CONFIRMATION_REQUIRED') return false
+  const scriptEpoch = scenarioStore.scriptEpoch
   try {
     await ElMessageBox.confirm(`${scenarioStore.scriptResultMessage} 是否继续生成？`, '脚本预览警告', {
       confirmButtonText: '本次继续', cancelButtonText: '取消', type: 'warning',
     })
-    await scenarioStore.generateScriptPreview(true)
+    if (!current() || scriptEpoch !== scenarioStore.scriptEpoch) return false
+    return await scenarioStore.generateScriptPreview(true) && current()
   } catch {
     // 用户取消后不创建一次性确认上下文。
+    return false
   }
 }
 
@@ -1230,11 +1260,8 @@ watch(activeTab, (tab) => {
     <header class="scenario-header" aria-label="场景操作">
       <el-button v-if="managed" data-testid="back-scene-list" @click="emit('back')">返回场景列表</el-button>
       <nav class="scenario-workflow" aria-label="场景工作流程">
-        <el-button :type="configurationTab ? 'primary' : 'default'" :aria-current="configurationTab ? 'step' : undefined" data-testid="workflow-config" @click="activeTab = 'scenario'">1 配置参数</el-button>
-        <span aria-hidden="true">→</span>
-        <el-button :type="activeTab === 'validation' ? 'primary' : 'default'" :aria-current="activeTab === 'validation' ? 'step' : undefined" data-testid="workflow-validation" @click="activeTab = 'validation'">2 校验与保存</el-button>
-        <span aria-hidden="true">→</span>
-        <el-button :type="activeTab === 'script' ? 'primary' : 'default'" :aria-current="activeTab === 'script' ? 'step' : undefined" :disabled="!canPreviewScript || scriptPending" title="当前配置校验通过且已保存后可进入" data-testid="workflow-script" @click="activeTab = 'script'">3 脚本预览与预检</el-button>
+        <el-button :type="configurationTab ? 'primary' : 'default'" :aria-current="configurationTab ? 'step' : undefined" data-testid="workflow-config" @click="activeTab = 'scenario'">配置参数</el-button>
+        <el-button :type="activeTab === 'script' ? 'primary' : 'default'" :aria-current="activeTab === 'script' ? 'step' : undefined" :disabled="!canPreviewScript || scriptPending" title="当前配置校验通过且已保存后可进入" data-testid="workflow-script" @click="activeTab = 'script'">脚本预览与预检</el-button>
       </nav>
       <div class="scenario-header__actions" aria-label="场景辅助工具">
         <el-checkbox v-if="draft" v-model="showIds" data-testid="show-scenario-ids">显示编号</el-checkbox>
@@ -1257,29 +1284,14 @@ watch(activeTab, (tab) => {
           重新加载
         </el-button>
         <el-button
-          :type="activeTab === 'validation' && !dirty ? 'primary' : 'default'"
-          :disabled="draft === null || draft.locked || pending || scriptPending"
-          :loading="pending && activeTab === 'validation'"
-          data-testid="validate-scenario"
-          @click="validateScenario"
+          type="primary"
+          :disabled="draft === null || draft?.locked || pending || scriptPending || savingScript"
+          :loading="pending || savingScript"
+          data-testid="save-scenario"
+          @click="saveScenario"
         >
-          整体校验
+          保存
         </el-button>
-        <el-tooltip content="已保存，无需重复保存" :disabled="!alreadySaved" placement="top">
-          <span :tabindex="alreadySaved ? 0 : undefined" :aria-label="alreadySaved ? '已保存，无需重复保存' : undefined" data-testid="save-scenario-hint">
-            <el-button
-              :type="activeTab === 'validation' && dirty ? 'primary' : 'default'"
-              :disabled="draft === null || draft?.locked || !dirty || scriptPending"
-              :loading="pending"
-              data-testid="save-scenario"
-              @click="saveScenario"
-            >
-              校验并保存
-            </el-button>
-          </span>
-        </el-tooltip>
-        <el-button v-if="configurationTab" type="primary" :disabled="draft === null || pending || scriptPending" data-testid="next-validation" @click="activeTab = 'validation'">下一步：校验与保存</el-button>
-        <el-button v-else-if="activeTab === 'validation'" type="primary" :disabled="!canPreviewScript || scriptPending" data-testid="next-script" @click="activeTab = 'script'">下一步：脚本预览</el-button>
       </div>
     </div>
 

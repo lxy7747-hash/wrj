@@ -15,6 +15,7 @@ import type {
 } from '../../contracts/domain-models'
 
 import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
+import { PLATFORM_POSITION_RULES } from './platform-position-rules'
 
 const ROOT_KEYS = [
   'schemaVersion',
@@ -584,7 +585,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (typeof scenario.id !== 'string' || !scenario.id.startsWith('SCN-')) addError(errors, 'ID_INVALID', '场景编号必须以 SCN- 开头。', 'scenario.id')
   if (typeof scenario.name !== 'string' || scenario.name.trim().length === 0 || scenario.name.length > 128) addError(errors, 'NAME_INVALID', '场景名称为必填项，且不能超过 128 个字符。', 'scenario.name')
   if (typeof scenario.description !== 'string' || scenario.description.length > 512) addError(errors, 'DESCRIPTION_INVALID', '场景描述不能超过 512 个字符。', 'scenario.description')
-  if (!isRfc3339DateTime(scenario.startTime)) addError(errors, 'START_TIME_INVALID', '开始时间必须是有效的 RFC 3339 时间。', 'scenario.startTime')
+  if (!isRfc3339DateTime(scenario.startTime)) addError(errors, 'START_TIME_INVALID', '开始时间必须是有效时间。', 'scenario.startTime')
   if (!isFiniteNumber(scenario.duration, Number.MIN_VALUE)) addError(errors, 'DURATION_INVALID', '仿真时长必须大于 0 秒。', 'scenario.duration')
   if (!isFiniteNumber(scenario.timeStep, Number.MIN_VALUE)) addError(errors, 'TIME_STEP_INVALID', '时间步长必须大于 0 秒。', 'scenario.timeStep')
 
@@ -689,6 +690,15 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         addError(errors, 'PLATFORM_CATEGORY_MISMATCH', '部署域必须与场景实体类型一致。', `${path}.category`)
       }
       inspectPosition(platform.initialPosition, `${path}.initialPosition`, false, errors)
+      if (mode === 'write' && platform.type === 'AIRBORNE_MISSION_CLUSTER' && isClosedObject(platform.initialPosition, POSITION_KEYS)) {
+        const rule = PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER!
+        if (!isFiniteNumber(platform.initialPosition.longitude, rule.minLongitude, rule.maxLongitude)) {
+          addError(errors, 'FORMATION_LONGITUDE_INVALID', '无人机集群编队原点经度必须在 117°E～122°E 范围内。', `${path}.initialPosition.longitude`)
+        }
+        if (!isFiniteNumber(platform.initialPosition.latitude, rule.minLatitude, rule.maxLatitude)) {
+          addError(errors, 'FORMATION_LATITUDE_INVALID', '无人机集群编队原点纬度必须在 21°N～26°N 范围内。', `${path}.initialPosition.latitude`)
+        }
+      }
       if (!Array.isArray(platform.waypoints)) {
         addError(errors, 'WAYPOINTS_INVALID', '航点必须是数组。', `${path}.waypoints`)
       } else {
@@ -696,6 +706,15 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         platform.waypoints.forEach((waypoint, waypointIndex) => {
           const waypointPath = `${path}.waypoints[${waypointIndex}]`
           inspectPosition(waypoint, waypointPath, true, errors)
+          if (mode === 'write' && platform.type === 'AIRBORNE_MISSION_CLUSTER' && isClosedObject(waypoint, WAYPOINT_KEYS)) {
+            const rule = PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER!
+            if (!isFiniteNumber(waypoint.longitude, rule.minLongitude, rule.maxLongitude)) {
+              addError(errors, 'WAYPOINT_LONGITUDE_INVALID', '无人机集群航点经度必须在 117°E～122°E 范围内。', `${waypointPath}.longitude`)
+            }
+            if (!isFiniteNumber(waypoint.latitude, rule.minLatitude, rule.maxLatitude)) {
+              addError(errors, 'WAYPOINT_LATITUDE_INVALID', '无人机集群航点纬度必须在 21°N～26°N 范围内。', `${waypointPath}.latitude`)
+            }
+          }
           if (typeof waypoint !== 'object' || waypoint === null) return
           const arrivalTime = (waypoint as { arrivalTime?: unknown }).arrivalTime
           if (!isFiniteNumber(arrivalTime, 0)) return

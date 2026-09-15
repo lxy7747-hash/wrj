@@ -15,6 +15,7 @@ import type {
   ResetResult,
   Role,
   ScriptPreviewRequest,
+  ScriptContract,
   User,
   UserRoleCommand,
 } from '../src/contracts/domain-models.js'
@@ -58,6 +59,8 @@ export interface MockServerOptions {
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
   loadExchangeMonitor?: () => LocalMonitorSnapshot
+  /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
+  writeScriptText?: (script: ScriptContract, revision: number) => Promise<string>
 }
 
 export interface MockServer {
@@ -1378,6 +1381,35 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
     res.status(200).json(success(scripts.preview(draft.data), pageMeta(requestId)))
+  })
+
+  /** 本机扩展：只落盘服务端已生成且仍匹配已保存场景的文本。 */
+  app.post('/api/v1/scripts/:scriptId/local-file', async (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'SCRIPT_FILE_WRITE', req.params.scriptId)
+    if (role === undefined) return
+    if (!isPreflightRequest(req.body) || Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '只允许提交脚本校验和。', fieldPath: 'checksum' }))
+      return
+    }
+    const script = scripts.get(req.params.scriptId)
+    const draft = script ? scenarios.get(script.scenarioId) : undefined
+    if (!script || script.checksum !== req.body.checksum || !draft?.ok || draft.data.locked
+      || script.configVersion !== `${script.scenarioId}-v${draft.data.revision}`) {
+      res.status(409).json(failure('VALIDATION_FAILED', 409, { message: '脚本已失效或场景已锁定，请重新保存生成。', fieldPath: 'scriptId' }))
+      return
+    }
+    if (!options.writeScriptText) {
+      res.status(503).json(failure('START_FAILED', 503, { message: '当前为纯 Mock 服务，未启用本机 TXT 写入。' }))
+      return
+    }
+    try {
+      const path = await options.writeScriptText(script, draft.data.revision)
+      auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_FILE_WRITE', script.scenarioId)
+      res.status(200).json(success({ scriptId: script.scriptId, configVersion: script.configVersion, path }, pageMeta('REQ-SCRIPT-FILE')))
+    } catch {
+      auth.recordError(actorForRequest(req, role), role, 'SCRIPT_FILE_WRITE', script.scenarioId)
+      res.status(503).json(failure('START_FAILED', 503, { message: 'TXT 写入失败，请检查 output/scripts 目录权限及磁盘空间后重试。', retryable: true }))
+    }
   })
 
   /** 对已生成脚本执行校验和、结构、版本和路径预检。 */

@@ -23,6 +23,7 @@ const leafletMocks = vi.hoisted(() => {
   const marker = {
     addTo: vi.fn(() => marker),
     setLatLng: vi.fn(),
+    remove: vi.fn(),
   }
   return { state, map, tileLayer, zoomControl, createZoomControl, marker }
 })
@@ -38,12 +39,63 @@ vi.mock('leaflet', () => ({
 }))
 
 import WaypointMapPicker from '../../src/components/scenarios/WaypointMapPicker.vue'
+import { PLATFORM_POSITION_RULES } from '../../src/features/scenarios/platform-position-rules'
 
 describe('航点地图选点', () => {
   afterEach(() => {
     vi.clearAllMocks()
     leafletMocks.state.clickHandler = undefined
     document.body.innerHTML = ''
+  })
+
+  it.each([[116, 25], [116.9999999, 24], [122.0000001, 24], [119, 20.9999999], [119, 26.0000001], [NaN, 24]])('集群地图拒绝越界选点 %s/%s，清除旧点且可重新选取边界', async (lng, lat) => {
+    const wrapper = mount(WaypointMapPicker, {
+      attachTo: document.body,
+      props: { modelValue: true, longitude: 119, latitude: 24, bounds: PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    wrapper.getComponent({ name: 'ElDialog' }).vm.$emit('opened')
+    await nextTick()
+    expect(document.body.textContent).toContain('经度 117°E～122°E，纬度 21°N～26°N')
+    leafletMocks.state.clickHandler?.({ latlng: { lng, lat } })
+    await nextTick()
+    const confirm = document.querySelector<HTMLButtonElement>('[data-testid="confirm-waypoint-point"]')!
+    expect(confirm.disabled).toBe(true)
+    expect(document.body.textContent).toContain('选点超出允许范围')
+    expect(document.body.textContent).not.toContain('经度 119.000000°')
+    expect(leafletMocks.marker.remove).toHaveBeenCalledOnce()
+    confirm.click()
+    expect(wrapper.emitted('confirm')).toBeUndefined()
+    for (const [longitude, latitude] of [[117, 21], [122, 26]]) {
+      leafletMocks.state.clickHandler?.({ latlng: { lng: longitude!, lat: latitude! } })
+      await nextTick()
+      expect(confirm.disabled).toBe(false)
+      expect(document.querySelector('[data-testid="waypoint-range-error"]')).toBeNull()
+      confirm.click()
+      expect(wrapper.emitted('confirm')?.at(-1)).toEqual([{ longitude, latitude }])
+    }
+    wrapper.unmount()
+  })
+
+  it('旧的越界航点不可直接确认，不传范围的其他类型仍可选取该点', async () => {
+    const wrapper = mount(WaypointMapPicker, {
+      attachTo: document.body,
+      props: { modelValue: true, longitude: 123, latitude: 27, bounds: PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="confirm-waypoint-point"]')!.disabled).toBe(true)
+    wrapper.unmount()
+    const unrestricted = mount(WaypointMapPicker, {
+      attachTo: document.body,
+      props: { modelValue: true, longitude: 123, latitude: 27 },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    document.querySelector<HTMLButtonElement>('[data-testid="confirm-waypoint-point"]')!.click()
+    expect(unrestricted.emitted('confirm')?.at(-1)).toEqual([{ longitude: 123, latitude: 27 }])
+    unrestricted.unmount()
   })
 
   it('加载离线地图并将点击坐标按六位小数提交', async () => {

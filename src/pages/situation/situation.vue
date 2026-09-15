@@ -47,7 +47,7 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 
 const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
-const selectedScene = computed(() => simulationStore.selectedScene)
+const selectedScene = computed(() => sourceState.value === 'SCENE' ? simulationStore.selectedScene : null)
 const savedNodeGroups = computed(() => [
   { title: '信息节点', platforms: selectedScene.value?.config.platforms.filter(platform => BUSINESS_NODE_TYPES.has(platform.type)) ?? [] },
   { title: '支撑实体', platforms: selectedScene.value?.config.platforms.filter(platform => !BUSINESS_NODE_TYPES.has(platform.type)) ?? [] },
@@ -60,7 +60,6 @@ const {
   currentTime: simulationTime,
   speedMultiplier: simulationSpeed,
   mode: simulationMode,
-  configurationLockState,
   capabilityState: simulationCapabilityState,
   resultMessage: simulationFeedback,
   pending: simulationPending,
@@ -83,6 +82,7 @@ const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'ERROR'>('LOADING')
 let sourceEpoch = 0
+let sourceRequest: AbortController | null = null
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
 const positionSnapshot = ref<PositionSnapshot | null>(null)
 const fileNodes = computed(() => initialSnapshot.value
@@ -145,14 +145,27 @@ async function pollPositions(): Promise<void> {
 /** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
   const epoch = ++sourceEpoch
+  sourceRequest?.abort()
+  const request = new AbortController()
+  sourceRequest = request
   stopPositionPolling()
   positionSnapshot.value = null
-  if (selectedScene.value) {
+  const sceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
+  if (sceneId) {
     initialSnapshot.value = null
     telemetryStore.disconnectAndReset()
+    sourceState.value = 'LOADING'
+    sourceMessage.value = '正在恢复所选场景。'
+    const sessionEpoch = simulationStore.requestEpoch
+    const loaded = await simulationStore.selectScene(sceneId, request.signal)
+    if (unmounted || epoch !== sourceEpoch || sessionEpoch !== simulationStore.requestEpoch) return
+    if (!loaded) {
+      sourceState.value = 'ERROR'
+      sourceMessage.value = `场景 ${sceneId} 加载失败：${simulationStore.resultMessage}`
+      return
+    }
     sourceState.value = 'SCENE'
     sourceMessage.value = '已保存场景配置预览；未接入真实求解引擎。'
-    await simulationStore.resetProjection()
     return
   }
   sourceState.value = 'LOADING'
@@ -160,6 +173,7 @@ async function initializeSituation(): Promise<void> {
   try {
     const response = await apiFetch(`${resolveMockOrigin()}/api/v1/situation/initial-nodes`, {
       headers: { 'X-Demo-Role': useAuthStore().role },
+      signal: request.signal,
     })
     const body = await response.json()
     if (unmounted || epoch !== sourceEpoch) return
@@ -195,6 +209,7 @@ onMounted(initializeSituation)
 
 onBeforeUnmount(() => {
   unmounted = true
+  sourceRequest?.abort()
   stopPositionPolling()
   telemetryStore.disconnectAndReset()
 })
@@ -466,13 +481,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     <SimulationToolbar
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE'"
       :status="otherSceneRun ? 'STOPPED' : simulationStatus"
-      :current-time="otherSceneRun ? 0 : simulationTime"
       :speed="simulationSpeed"
       :mode="simulationMode"
-      :lock-state="otherSceneRun ? 'UNLOCKED' : configurationLockState"
       :capability-state="simulationCapabilityState"
-      :process-id="otherSceneRun ? null : simulationRun?.canonical.processId ?? null"
-      :progress="otherSceneRun ? 0 : simulationRun?.canonical.progress ?? 0"
       :pending="simulationPending || simulationStore.selectingScene"
       :feedback="sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
@@ -489,7 +500,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       class="situation-page__workspace"
       :class="{
         'situation-page__workspace--scene-collapsed': sceneSummaryCollapsed,
-        'situation-page__workspace--telemetry-collapsed': telemetryPanelCollapsed || sourceState === 'FILE',
+        'situation-page__workspace--telemetry-collapsed': telemetryPanelCollapsed,
       }"
     >
       <aside
@@ -674,7 +685,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       </main>
 
       <aside
-        v-if="selectedScene || (frame && situationMetrics)"
         class="telemetry-panel"
         :class="{ 'is-collapsed': telemetryPanelCollapsed }"
         aria-label="链路、干扰与事件"
@@ -720,14 +730,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                 </tr>
               </tbody>
             </table>
-            <el-empty v-if="displayedLinks.length === 0" description="暂无链路数据" :image-size="48" />
+            <el-empty v-if="displayedLinks.length === 0" :description="sourceState === 'FILE' ? '当前文件未提供链路质量数据' : '暂无链路数据'" :image-size="48" />
           </div>
         </section>
 
         <section class="telemetry-section telemetry-section--jammer">
-          <div class="panel-heading"><div><strong>干扰 / 侦测设备</strong></div><span class="panel-heading__more">{{ jammers.length }} 台</span></div>
-          <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
-          <div class="jammer-list">
+          <div class="panel-heading"><div><strong>干扰 / 侦测设备</strong></div><span class="panel-heading__more">{{ sourceState === 'FILE' ? '暂无数据' : `${jammers.length} 台` }}</span></div>
+          <div v-if="jammers.length" class="jammer-list">
+            <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
             <article v-for="jammer in jammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
               <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
               <small>搭载平台：{{ selectedScene ? selectedScene.config.platforms.find(platform => platform.id === jammer.platformId)?.name : getPlatformName(jammer.platformId, frame!) }} · {{ jammer.platformId }}</small>
@@ -739,6 +749,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
             </article>
           </div>
+          <el-empty v-else class="telemetry-empty-state" description="暂无干扰 / 侦测设备运行数据" :image-size="48" />
           <p v-if="detectionEvent" class="detection-state">
             {{ detectionEvent.sensorId }} 已发现 {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
           </p>
@@ -746,13 +757,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
         <section class="telemetry-section telemetry-section--events">
           <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ frame ? `${displayedEvents.length} 条` : '暂无数据' }}</span></div>
-          <ol class="event-list">
+          <ol v-if="displayedEvents.length" class="event-list">
             <li v-for="event in displayedEvents" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.type === 'DETECTION' ? '侦测' : '链路切换' }}</strong></div>
               <p>{{ eventDescription(event) }}</p><small>{{ event.eventId }} · {{ event.frameId }}</small>
             </li>
           </ol>
-          <p v-if="!frame" class="panel-caption">暂无当前运行事件</p>
+          <el-empty v-else class="telemetry-empty-state" description="暂无当前运行事件" :image-size="48" />
         </section>
       </aside>
     </div>
@@ -862,6 +873,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-section:last-child { border-bottom: 0; }
 .telemetry-section--links, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
 .telemetry-section--jammer { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.telemetry-empty-state { min-height: 0; overflow-y: auto; padding: .5rem; }
+.telemetry-empty-state :deep(.el-empty__description) { margin-top: .6rem; }
+.telemetry-empty-state :deep(.el-empty__description p) { color: #829db3; font-size: 12px; line-height: 1.5; text-align: center; }
+.jammer-list > .panel-caption { margin: 0; padding: .6rem .85rem; color: #829db3; font-size: 12px; }
 .link-table-wrap, .event-list, .jammer-list { min-height: 0; overflow-y: auto; }
 .link-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .link-table th { position: sticky; z-index: 1; top: 0; padding: .45rem .5rem; color: #8fb6d9; background: #102a40; font-size: 12px; font-weight: 600; text-align: left; }

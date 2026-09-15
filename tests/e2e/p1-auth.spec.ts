@@ -1393,6 +1393,8 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
 
 test('P2-5 OPERATOR validates warnings and locates an invalid time step', async ({ page, request }) => {
   const audit = auditConsole(page)
+  const errorUrls: string[] = []
+  page.on('console', message => { if (message.type() === 'error') errorUrls.push(message.location().url) })
 
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1401,28 +1403,33 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
 
-  const validate = page.getByTestId('validate-scenario')
+  const validate = page.getByTestId('save-scenario')
   const warningResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
+  const confirmationRequired = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview` && response.status() === 428)
   await validate.click()
   expect((await warningResponse).status()).toBe(200)
+  expect((await confirmationRequired).status()).toBe(428)
+  const messageBox = page.locator('.el-message-box')
+  await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
+  await messageBox.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(messageBox).toBeHidden()
   const validationPanel = page.getByTestId('validation-panel')
   await expect(validationPanel).toContainText('当前雨衰值未匹配设备默认值，生成脚本前需要确认。')
 
   await page.getByTestId('workflow-config').click()
   const timeStep = page.getByTestId('scenario-time-step').locator('input')
   await timeStep.fill('-1')
-  const errorResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
   await validate.click()
-  expect((await errorResponse).status()).toBe(200)
 
   const timeStepIssue = validationPanel.getByRole('button').filter({ hasText: 'scenario.timeStep' })
   await expect(timeStepIssue).toContainText('时间步长必须大于 0 秒。')
   await timeStepIssue.click()
   await expect(timeStep).toBeFocused()
 
-  expect(audit.errors).toEqual([])
+  expect(audit.errors).toEqual(['Failed to load resource: the server responded with a status of 428 (Precondition Required)'])
+  expect(errorUrls).toEqual([`${MOCK_ORIGIN}/api/v1/scripts/preview`])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1676,6 +1683,8 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
 
 test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates preflight issues', async ({ page, request }) => {
   const audit = auditConsole(page)
+  const errorUrls: string[] = []
+  page.on('console', message => { if (message.type() === 'error') errorUrls.push(message.location().url) })
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === SCENARIO_PATH)
@@ -1700,22 +1709,27 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await expect(page.getByTestId('scenario-next-step')).toContainText('当前草稿已保存')
   await expect(page.getByTestId('next-script')).toHaveCount(0)
   await expect(page.getByTestId('workflow-script')).toBeDisabled()
-  await page.getByTestId('next-validation').click()
-  await expect(page.getByTestId('next-script')).toBeDisabled()
-  await expect(page.getByTestId('save-scenario')).toBeDisabled()
+  await expect(page.getByTestId('workflow-validation')).toHaveCount(0)
+  await expect(page.getByTestId('save-scenario')).toBeEnabled()
   const validationFinished = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
-  await page.getByTestId('validate-scenario').click()
+  const automaticConfirmationRequired = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview` && response.status() === 428)
+  await page.getByTestId('save-scenario').click()
   expect((await validationFinished).status()).toBe(200)
-  await expect(page.getByTestId('next-script')).toBeEnabled()
-  await page.getByTestId('next-script').click()
+  expect((await automaticConfirmationRequired).status()).toBe(428)
+  const messageBox = page.locator('.el-message-box')
+  await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
+  await messageBox.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(messageBox).toBeHidden()
+  await expect(page.getByTestId('workflow-script')).toBeEnabled()
+  await page.getByTestId('workflow-script').click()
 
   const confirmationRequired = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/scripts/preview'
     && response.status() === 428)
   await page.getByTestId('generate-script').click()
   expect((await confirmationRequired).status()).toBe(428)
-  const messageBox = page.locator('.el-message-box')
   await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
 
   const previewReady = page.waitForResponse((response) => response.request().method() === 'POST'
@@ -1750,20 +1764,21 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
 
   await page.unroute('**/api/v1/scripts/*/preflight')
   await page.getByTestId('preflight-script').click()
-  await expect(page.getByTestId('scenario-next-step')).toContainText('本页流程已完成')
-  await expect(page.getByTestId('script-next-step')).toContainText('不会写入本地文件或启动真实 AFSIM')
+  await expect(page.getByTestId('scenario-next-step')).toContainText('脚本预检已通过，未启动真实 AFSIM')
+  await expect(page.getByTestId('script-next-step')).toContainText('保存场景时由本机服务写入 TXT，不会启动真实 AFSIM')
   await page.screenshot({ path: test.info().outputPath('scenario-workflow-preflight.png') })
   await page.getByTestId('workflow-config').click()
   await page.getByTestId('scenario-name').fill('流程回归：修改后重新生成')
   await expect(page.getByTestId('scenario-next-step')).toContainText('未保存修改')
   await expect(page.getByTestId('workflow-script')).toBeDisabled()
   await expect(page.getByTestId('script-preview')).toHaveCount(0)
-  await page.getByTestId('next-validation').click()
-  await expect(page.getByTestId('next-script')).toBeDisabled()
+  await expect(page.getByTestId('workflow-validation')).toHaveCount(0)
 
   expect(audit.errors).toEqual([
     'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
+    'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
   ])
+  expect(errorUrls).toEqual(Array(2).fill(`${MOCK_ORIGIN}/api/v1/scripts/preview`))
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1779,8 +1794,8 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await loginAs(page, 'operator')
   expect((await runLoaded).status()).toBe(200)
   const toolbar = page.getByLabel('仿真控制', { exact: true })
-  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
-  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程资源已释放')
+  await expect(toolbar.locator('.simulation-toolbar__runtime')).toHaveCount(0)
+  await expect(toolbar.getByTestId('simulation-start')).toBeEnabled()
   const footer = page.locator('.situation-footer')
   await expect(footer).toContainText('实时已订阅')
   await expect(footer).not.toContainText('固定帧')
@@ -1822,8 +1837,8 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await remoteToolbar.getByTestId('simulation-start').click()
   expect((await remoteCreated).status()).toBe(201)
   expect((await remoteStarted).status()).toBe(200)
-  await expect(toolbar.getByText('运行中', { exact: true })).toBeVisible()
-  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置已锁定')
+  await expect(toolbar.getByTestId('simulation-pause')).toBeEnabled()
+  await expect(toolbar.getByTestId('simulation-start')).toBeDisabled()
   expect((await loadScenarioDraft(request)).locked).toBe(true)
 
   await remoteToolbar.getByTestId('simulation-stop').click()
@@ -1831,8 +1846,8 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const remoteStopped = waitForRemoteCommand('STOP')
   await remoteStopDialog.getByTestId('confirm-stop').click()
   expect((await remoteStopped).status()).toBe(200)
-  await expect(toolbar.getByText('已停止', { exact: true })).toBeVisible()
-  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定')
+  await expect(toolbar.getByTestId('simulation-start')).toBeEnabled()
+  await expect(toolbar.getByTestId('simulation-stop')).toBeDisabled()
   expect((await loadScenarioDraft(request)).locked).toBe(false)
   expect(remoteAudit.errors).toEqual([])
   expect(remoteAudit.http404s).toEqual([])
@@ -1845,20 +1860,20 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await toolbar.getByTestId('simulation-start').click()
   expect((await created).status()).toBe(201)
   expect((await started).status()).toBe(200)
-  await expect(toolbar.getByText('运行中', { exact: true })).toBeVisible()
-  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置已锁定 · 仿真已开始。')
-  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程 2900')
+  await expect(toolbar.getByTestId('simulation-pause')).toBeEnabled()
+  expect((await (await started).json()).data).toMatchObject({ uiStatus: 'RUNNING', configLocked: true, canonical: { processId: 2900 } })
   expect((await loadScenarioDraft(request)).locked).toBe(true)
 
   const paused = waitForCommand('PAUSE')
   await toolbar.getByTestId('simulation-pause').click()
   expect((await paused).status()).toBe(200)
-  await expect(toolbar.getByText('已暂停', { exact: true })).toBeVisible()
+  await expect(toolbar.getByTestId('simulation-start')).toContainText('继续')
+  await expect(toolbar.getByTestId('simulation-step')).toBeEnabled()
 
   const stepped = waitForCommand('STEP')
   await toolbar.getByTestId('simulation-step').click()
   expect((await stepped).status()).toBe(200)
-  await expect(toolbar.getByTestId('simulation-clock')).toHaveText('T+ 00:00:01')
+  expect((await (await stepped).json()).data.canonical.currentTime).toBe(1)
 
   await toolbar.getByTestId('simulation-stop').click()
   const stopDialog = page.getByRole('dialog', { name: '确认停止仿真' })
@@ -1873,9 +1888,9 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   expect((await confirmationAccepted).status()).toBe(200)
   expect((await stopped).status()).toBe(200)
   await expect(stopDialog).toHaveCount(0)
-  await expect(toolbar.getByText('已停止', { exact: true })).toBeVisible()
-  await expect(toolbar.getByTestId('simulation-feedback')).toContainText('场景配置未锁定 · 仿真已停止，场景配置已解锁。')
-  await expect(toolbar.getByTestId('engine-resource')).toContainText('模拟进程资源已释放')
+  await expect(toolbar.getByTestId('simulation-start')).toBeEnabled()
+  await expect(toolbar.locator('.simulation-toolbar__runtime')).toHaveCount(0)
+  expect((await (await stopped).json()).data).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { currentTime: 0, processId: null } })
   expect((await loadScenarioDraft(request)).locked).toBe(false)
 
   const scenarioLoaded = page.waitForResponse((response) => response.request().method() === 'GET'

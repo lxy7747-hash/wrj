@@ -16,6 +16,18 @@ import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
 enableAutoUnmount(afterEach)
+vi.mock('../../src/features/scenarios/script-file', () => ({ saveScriptText: vi.fn().mockResolvedValue('H:\\output\\SCN-001-r5.txt') }))
+
+function mockGeneratedScript(store: ReturnType<typeof useScenarioStore>): void {
+  vi.spyOn(ElMessageBox, 'alert').mockResolvedValue('confirm' as never)
+  vi.spyOn(store, 'generateScriptPreview').mockImplementation(async () => {
+    const current = store.draft!
+    store.script = { scriptId: 'SCRIPT-TEST', taskId: 'TASK-001', scenarioId: current.config.scenario.id,
+      configVersion: `${current.config.scenario.id}-v${current.revision}`, target: 'AFSIM 2.9.0',
+      checksum: 'FNV1A-MOCK-TEST', preview: '# 组件流程测试', generatedTime: META.generatedAt }
+    return true
+  })
+}
 
 const OPERATOR: Principal = {
   userId: 'USR-OPERATOR',
@@ -461,7 +473,8 @@ describe('P2-1 场景管理页面', () => {
     expect(dialog.props('demand')).toEqual(savedDemand)
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
     wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', {
       severity: 'ERROR', code: 'TEST', message: '请检查通信方向', fieldPath: `informationDemand[${original.informationDemand.length}].direction`,
     })
@@ -617,7 +630,8 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.jammers[0]).toMatchObject({ type: 'SWEEP', detectionRange: 44448, triggerTimeS: 300 })
     expect(scenario.draft!.config.jammers[1]!.detectionRange).toBe(150000)
     expect(inspectScenarioConfig(scenario.draft!.config, 'write').result.valid).toBe(false)
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
     wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', { severity: 'ERROR', code: 'TEST', message: '请检查触发时间', fieldPath: 'jammers[0].triggerTimeS' })
     await flushPromises()
     dialog.vm.$emit('opened')
@@ -671,6 +685,7 @@ describe('P2-1 场景管理页面', () => {
 
     const saved = draft(5)
     saved.config.scenario.name = '台海通联验证场景'
+    mockGeneratedScript(scenario)
     const fetchSpy = vi.fn().mockResolvedValue(response(saved))
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
@@ -687,27 +702,29 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="scenario-name"]').setValue(saved.config.scenario.name)
     expect(scenario.dirty).toBe(true)
-    expect(wrapper.get('[data-testid="save-scenario"]').text()).toBe('校验并保存')
-    expect(wrapper.get('[data-testid="next-validation"]').text()).toBe('下一步：校验与保存')
+    expect(wrapper.get('[data-testid="save-scenario"]').text()).toBe('保存')
+    expect(wrapper.find('[data-testid="validate-scenario"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="workflow-validation"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="next-validation"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="next-script"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('无需先单独执行整体校验')
+    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('点击“保存”将自动检查并保存')
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
 
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(scenario.draft?.revision).toBe(5)
-    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('场景草稿已保存。')
+    expect(messageSpy).not.toHaveBeenCalled()
+    expect(ElMessageBox.alert).toHaveBeenCalledExactlyOnceWith('TXT 已生成并写入：H:\\output\\SCN-001-r5.txt', '场景保存成功', { confirmButtonText: '知道了' })
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')
     expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT' })
-    expect(wrapper.get('[data-testid="next-script"]').text()).toBe('下一步：脚本预览')
-    await wrapper.get('[data-testid="next-script"]').trigger('click')
+    expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('点击下方“生成脚本预览”')
-    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('最后执行预检')
-    expect(wrapper.get('[data-testid="preflight-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('脚本预览已生成')
+    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('点击“执行预检”')
+    expect(wrapper.get('[data-testid="preflight-script"]').attributes('disabled')).toBeUndefined()
   })
 
   it('按文档展示五项环境配置，分钟换算后保存且不提交重复时长字段', async () => {
@@ -769,55 +786,43 @@ describe('P2-1 场景管理页面', () => {
     }))
   })
 
-  it('已保存草稿先进入校验阶段，校验通过才开放脚本且不重复保存', async () => {
+  it('已保存草稿点击保存只检查；失败展示结果，通过后开放脚本，不重复写入', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
-    const auth = useAuthStore(pinia)
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const scenario = useScenarioStore(pinia)
+    mockGeneratedScript(scenario)
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('校验服务不可用。'))
       .mockResolvedValue(validationResponse({ valid: true, errors: [], warnings: [] }))
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
-    expect(wrapper.get('[data-testid="next-validation"]').text()).toBe('下一步：校验与保存')
+    expect(wrapper.find('[data-testid="workflow-validation"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
-    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
-    expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('校验服务不可用。')
+    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(fetchSpy.mock.calls.every(([url, options]) => String(url).endsWith('/validate') && options.method === 'POST')).toBe(true)
     expect(scenario.draft?.revision).toBe(4)
-    const savedHint = wrapper.get('[data-testid="save-scenario-hint"]')
-    expect(savedHint.attributes('aria-label')).toBe('已保存，无需重复保存')
-    expect(savedHint.attributes('tabindex')).toBe('0')
-    const tooltip = wrapper.findAllComponents({ name: 'ElTooltip' }).find(item => item.props('content') === '已保存，无需重复保存')!
-    expect(tooltip.props('disabled')).toBe(false)
+    expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeUndefined()
     scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, true)
     await nextTick()
-    expect(tooltip.props('disabled')).toBe(true)
-    expect(savedHint.attributes('aria-label')).toBeUndefined()
+    expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeDefined()
     scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, false)
     await nextTick()
-    expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeUndefined()
-    await wrapper.get('[data-testid="next-script"]').trigger('click')
+    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(true)
     await wrapper.get('[data-testid="workflow-config"]').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('校验后修改')
-    expect(tooltip.props('disabled')).toBe(true)
-    expect(savedHint.attributes('aria-label')).toBeUndefined()
     expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
-    expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeDefined()
   })
 
   it('编辑完整数据域并进入场景快照和脚本操作', { timeout: 15_000 }, async () => {
@@ -917,7 +922,8 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
 
     vi.spyOn(scenario, 'validateScenario').mockResolvedValue(true)
-    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    vi.spyOn(scenario, 'generateScriptPreview').mockResolvedValue(false)
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
 
     scenario.scriptResultCode = 'CONFIRMATION_REQUIRED'
@@ -933,6 +939,7 @@ describe('P2-1 场景管理页面', () => {
       warnings: [],
     }
     const generateSpy = vi.spyOn(scenario, 'generateScriptPreview').mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    generateSpy.mockClear()
     await wrapper.get('[data-testid="workflow-script"]').trigger('click')
     await wrapper.get('[data-testid="generate-script"]').trigger('click')
     await wrapper.get('[data-testid="preflight-script"]').trigger('click')
@@ -947,16 +954,15 @@ describe('P2-1 场景管理页面', () => {
     scenario.scriptResultCode = 'PREFLIGHT_SUCCESS'
     scenario.preflight = { valid: true, errors: [], warnings: [] }
     await nextTick()
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('本页流程已完成')
-    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('不会写入本地文件或启动真实 AFSIM')
+    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('脚本预检已通过，未启动真实 AFSIM')
+    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('保存场景时由本机服务写入 TXT，不会启动真实 AFSIM')
     await wrapper.get('[data-testid="workflow-config"]').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('重新编辑场景')
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('未保存修改')
     await wrapper.get('[data-testid="workflow-script"]').trigger('click')
     expect(wrapper.find('[data-testid="script-preview"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
-    await wrapper.get('[data-testid="next-validation"]').trigger('click')
-    expect(wrapper.get('[data-testid="next-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
   })
 
   it.each([
@@ -1231,7 +1237,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('开始时间必须是有效的 RFC 3339 时间。')
+    expect(wrapper.text()).toContain('开始时间必须是有效时间。')
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
@@ -1252,7 +1258,7 @@ describe('P2-1 场景管理页面', () => {
 
     expect(wrapper.text()).toContain('场景名称为必填项，且不能超过 128 个字符。')
     expect(fetchSpy).not.toHaveBeenCalled()
-    expect(wrapper.get('[data-testid="workflow-validation"]').attributes('aria-current')).toBe('step')
+    expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(true)
     await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="scenario-name"]').exists()).toBe(true)
@@ -1284,7 +1290,7 @@ describe('P2-1 场景管理页面', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
-    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('错误 1')
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('links[0].txPower')
@@ -1310,7 +1316,7 @@ describe('P2-1 场景管理页面', () => {
     else scenario.draft!.config.linkSettings.switchCooldownS = -1
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(validationResponse(inspectScenarioConfig(scenario.draft!.config).result)))
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
-    await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     const fieldPath = field === 'enabled' ? 'links[0].enabled' : field === 'priority' ? 'linkSettings.priority' : 'linkSettings.switchCooldownS'
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain(fieldPath)
@@ -1323,8 +1329,7 @@ describe('P2-1 场景管理页面', () => {
     expect(dialog!.querySelector(target)).not.toBeNull()
     expect(wrapper.get('#tab-links').attributes('aria-selected')).toBe('true')
     expect(wrapper.find('section[aria-label="链路配置"] > .section-heading [data-testid="open-link-settings"]').exists()).toBe(true)
-    expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain('/validate')
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
   })
 
   it('在没有本地问题时展示整体校验请求级失败', async () => {
@@ -1374,7 +1379,7 @@ describe('P2-1 场景管理页面', () => {
       vi.stubGlobal('fetch', vi.fn().mockImplementation(failure.reply))
       const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
-      await wrapper.get('[data-testid="validate-scenario"]').trigger('click')
+      await wrapper.get('[data-testid="save-scenario"]').trigger('click')
       await flushPromises()
 
       const panel = wrapper.get('[data-testid="validation-panel"]')
@@ -1404,9 +1409,10 @@ describe('P2-1 场景管理页面', () => {
       },
     })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    vi.spyOn(scenario, 'saveScenario').mockResolvedValue(false)
     const openValidationTab = async (): Promise<void> => {
-      await wrapper.get('[data-testid="workflow-validation"]').trigger('click')
-      await nextTick()
+      await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+      await flushPromises()
     }
 
     await openValidationTab()
@@ -1457,7 +1463,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
       name: '新增空中无人作业集群',
       type: 'AIRBORNE_MISSION_CLUSTER',
-      waypoints: [{ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 }],
+      waypoints: [{ longitude: 117, latitude: 21, altitude: 0, speed: 0, arrivalTime: 0 }],
     })
     expect(scenario.dirty).toBe(true)
     wrapper.unmount()
@@ -1599,13 +1605,13 @@ describe('P2-1 场景管理页面', () => {
     expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(true)
     expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
     input('platform-spacing').vm.$emit('update:modelValue', spacingKm)
-    input('platform-longitude').vm.$emit('update:modelValue', 180)
+    input('platform-spacing').vm.$emit('update:modelValue', 50000)
     await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
     expect(document.body.textContent).toContain('平铺范围超出经纬度边界')
     expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
-    input('platform-longitude').vm.$emit('update:modelValue', 119.5)
+    input('platform-spacing').vm.$emit('update:modelValue', spacingKm)
     await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()

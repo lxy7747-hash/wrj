@@ -1,4 +1,6 @@
 import { loadEnvFile } from 'node:process'
+import { fileURLToPath } from 'node:url'
+import { writeScriptText } from './local/script-file.js'
 import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
@@ -39,6 +41,7 @@ const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
 const positionReader = logPath && positionPath ? createPositionReader(positionPath) : undefined
 const server = createMockServer({
   port,
+  writeScriptText: (script, revision) => writeScriptText(fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision),
   loadInitialNodes: logPath ? () => exchangeMonitor.read('INITIAL_NODES', logPath, () => readInitialNodes(logPath), value => ({ recordCount: value.nodes.length, issueCount: 0 })) : undefined,
   loadPositions: positionReader && positionPath ? () => exchangeMonitor.read('POSITIONS', positionPath, positionReader, value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
   loadLocalReplay: logPath ? () => exchangeMonitor.read('LOCAL_REPLAY', positionPath ?? logPath, () => readLocalReplay(logPath, positionPath), value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,

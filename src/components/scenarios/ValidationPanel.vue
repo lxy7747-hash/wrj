@@ -39,8 +39,8 @@ const issues = computed(() => [...props.validation.errors, ...props.validation.w
       data-testid="validation-request-error"
       show-icon
     />
-    <el-empty v-else-if="!completed && issues.length === 0" description="可单独执行整体校验；有修改时，也可直接点击上方“校验并保存”" />
-    <el-result v-else-if="issues.length === 0" icon="success" title="整体校验通过" sub-title="有未保存修改时，请校验并保存；已保存则可进入脚本预览。" />
+    <el-empty v-else-if="!completed && issues.length === 0" description="点击“保存”时会自动检查配置。" />
+    <el-result v-else-if="issues.length === 0" icon="success" title="配置检查通过" sub-title="有未保存修改时，请点击“保存”；已保存则可进入脚本预览。" />
     <div v-else class="validation-panel__results">
       <el-alert
         :type="validation.errors.length > 0 ? 'error' : 'warning'"

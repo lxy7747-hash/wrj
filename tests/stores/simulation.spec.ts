@@ -120,6 +120,48 @@ describe('P3-1 仿真 Store', () => {
     useAuthStore().$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
   }
 
+  it('刷新只恢复同账号场景编号，无运行也能重新加载最新配置，失败重试不换场景', async () => {
+    authorizeOperator()
+    const draft = scenarioDraft()
+    draft.config.scenario.id = 'SCN-B'
+    let failed = false
+    const fetcher = vi.fn(async (url: string) => url.endsWith('/simulations')
+      ? successResponse([])
+      : failed ? failureResponse('NOT_FOUND', '场景暂不可用。') : successResponse(draft))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await useSimulationStore().selectScene('SCN-B')).toBe(true)
+    expect(JSON.parse(sessionStorage.getItem('wrj.simulation.selectedScene')!)).toEqual({ userId: OPERATOR.userId, scenarioId: 'SCN-B' })
+    setActivePinia(createPinia())
+    authorizeOperator()
+    const restored = useSimulationStore()
+    expect(restored.selectedScene).toBeNull()
+    expect(restored.readSelectedSceneId()).toBe('SCN-B')
+    failed = true
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await restored.selectScene(restored.readSelectedSceneId()!)).toBe(false)
+      expect(restored.selectedScene).toBeNull()
+      expect(restored.readSelectedSceneId()).toBe('SCN-B')
+    }
+    failed = false
+    draft.revision = 7
+    expect(await restored.selectScene(restored.readSelectedSceneId()!)).toBe(true)
+    expect(restored.selectedScene?.revision).toBe(7)
+    expect(fetcher.mock.calls.filter(([url]) => url.includes('/scenarios/')).every(([url]) => url.endsWith('/SCN-B'))).toBe(true)
+    restored.resetToSafeEmpty()
+    expect(restored.readSelectedSceneId()).toBeNull()
+  })
+
+  it.each([
+    '{broken',
+    JSON.stringify({ userId: 'OTHER', scenarioId: 'SCN-B' }),
+    JSON.stringify({ userId: OPERATOR.userId, scenarioId: ['SCN-B'] }),
+  ])('拒绝损坏或其他账号的场景选择缓存：%s', saved => {
+    authorizeOperator()
+    sessionStorage.setItem('wrj.simulation.selectedScene', saved)
+    expect(useSimulationStore().readSelectedSceneId()).toBeNull()
+    expect(sessionStorage.getItem('wrj.simulation.selectedScene')).toBeNull()
+  })
+
   it('选择已保存场景并在开始前重读，创建请求使用选中编号而非编辑草稿', async () => {
     authorizeOperator()
     const draft = scenarioDraft()
@@ -163,6 +205,7 @@ describe('P3-1 仿真 Store', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([run('STOPPED')])))
     expect(await store.selectScene('')).toBe(true)
     expect(store.selectedScene).toBeNull()
+    expect(store.readSelectedSceneId()).toBeNull()
   })
 
   it.each(['run', 'scene', 'body'] as const)('取消选择后 %s 阶段迟到响应不写入所选场景', async phase => {
@@ -201,6 +244,7 @@ describe('P3-1 仿真 Store', () => {
     expect(await pending).toBe(false)
     expect(store.selectedScene).toBeNull()
     expect(store.selectingScene).toBe(false)
+    expect(sessionStorage.getItem('wrj.simulation.selectedScene')).toBeNull()
   })
 
   it('在网络边界接受闭合运行并拒绝损坏字段', () => {
