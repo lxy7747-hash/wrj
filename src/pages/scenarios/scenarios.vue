@@ -415,7 +415,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
       candidate.platforms.push(platform)
     }
   } else candidate.platforms[editingPlatformIndex.value] = editedPlatform
-  const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
+  const issue = inspectScenarioConfig(candidate, 'write').result.errors.find((item) => (
     item.fieldPath.startsWith('platforms') || item.code === 'PLATFORM_REFERENCE_NOT_FOUND'
     || item.fieldPath.endsWith('.relayPlatformId') || item.fieldPath.startsWith('linkSettings.enabledSatellites')
   ))

@@ -42,6 +42,67 @@ async function start(now?: () => number) {
 }
 
 describe('SQLite authentication', () => {
+  it('验证兼容既有哈希且不阻塞事件循环，最多两个在途验证并在完成后释放容量', async () => {
+    const { storage, api } = await start()
+    let completed = false
+    const first = storage.verify('admin', PASSWORD).then((value: boolean) => { completed = true; return value })
+    const second = storage.verify('admin', 'wrong')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(completed).toBe(false)
+    expect(storage.allowLogin()).toBe(false)
+    expect(await storage.verify('admin', PASSWORD)).toBe(false)
+    await api.post('/api/v1/auth/login').set(headers).send({ username: 'admin', passwordFixture: PASSWORD }).expect(429)
+    expect(await Promise.all([first, second])).toEqual([true, false])
+    expect(storage.allowLogin()).toBe(true)
+    expect(await storage.verify('missing-user', PASSWORD)).toBe(false)
+    expect(await storage.verify('admin', PASSWORD)).toBe(true)
+  })
+
+  it.each(['disable', 'delete', 'revoke', 'restore', 'rename', 'password'])('在途登录遇到 %s 后不能签发会话或写回旧账号', async action => {
+    const { storage, api } = await start()
+    const verify = storage.verify.bind(storage)
+    const spy = vi.spyOn(storage, 'verify').mockImplementation((username, password) => {
+      const pending = verify(username, password)
+      const user = storage.list()[0]
+      if (action === 'disable') storage.save({ ...user, status: 'DISABLED' })
+      if (action === 'delete') storage.delete(user.userId)
+      if (action === 'revoke') storage.revokeUser(user.userId)
+      if (action === 'restore') storage.revokeAllSessions()
+      if (action === 'rename') storage.save({ ...user, username: 'renamed' })
+      if (action === 'password') {
+        const db = new DatabaseSync(path)
+        try { db.prepare('UPDATE users SET password_hash=? WHERE user_id=?').run('00'.repeat(32), user.userId) }
+        finally { db.close() }
+      }
+      return pending
+    })
+    try {
+      const result = await api.post('/api/v1/auth/login').set(headers).send({ username: 'admin', passwordFixture: PASSWORD })
+      expect(result.status).toBe(401)
+      expect(result.headers['set-cookie']).toBeUndefined()
+      expect(storage.list()[0]?.lastLoginAt).toBeUndefined()
+      if (action === 'disable') expect(storage.list()[0].status).toBe('DISABLED')
+      if (action === 'delete') expect(storage.list()).toHaveLength(0)
+    } finally { spy.mockRestore() }
+  })
+
+  it('关闭数据库后在途验证安全失效，不读取已关闭连接', async () => {
+    const storage = new AuthSqliteStorage(path, PASSWORD)
+    const pending = storage.verify('admin', PASSWORD)
+    storage.close()
+    expect(await pending).toBe(false)
+    expect(await storage.verify('admin', PASSWORD)).toBe(false)
+  })
+
+  it('投影重置使在途登录失效，但不修改已有账号', async () => {
+    const { storage } = await start()
+    const projection = new AuthProjection(storage)
+    const pending = projection.login({ username: 'admin', passwordFixture: PASSWORD })
+    projection.reset()
+    expect(await pending).toMatchObject({ ok: false, status: 401 })
+    expect(storage.list()[0].lastLoginAt).toBeUndefined()
+  })
+
   it('rejects whitespace passwords at initialization, storage and HTTP creation without adding accounts', async () => {
     expect(() => { const unexpected = new AuthSqliteStorage(path, ' '.repeat(12)); unexpected.close() }).toThrow(/不能全为空白/)
     const { api, login, storage } = await start()
@@ -68,7 +129,7 @@ describe('SQLite authentication', () => {
     const password = '  secret  '
     await api.post('/api/v1/admin/users').set(headers).set('Cookie', cookie).send({ operation: 'CREATE', user, password }).expect(201)
     await login(user.username, password)
-    expect(storage.verify(user.username, password.trim())).toBe(false)
+    expect(await storage.verify(user.username, password.trim())).toBe(false)
   })
 
   it.each([5, 6, 32, 33, 128])('enforces the new-account password boundary at %i characters', async (length) => {
@@ -81,7 +142,7 @@ describe('SQLite authentication', () => {
     await api.post('/api/v1/admin/users').set(headers).set('Cookie', cookie)
       .send({ operation: 'CREATE', user, password }).expect(allowed ? 201 : 400)
     if (allowed) {
-      expect(storage.verify(user.username, password)).toBe(true)
+      expect(await storage.verify(user.username, password)).toBe(true)
       await login(user.username, password)
     } else {
       expect(() => storage.save(user, password)).toThrow('密码须为 6–32 位。')
@@ -95,7 +156,7 @@ describe('SQLite authentication', () => {
     previous.close()
     const { login, storage } = await start()
     await login('admin', previousPassword)
-    expect(storage.verify('admin', previousPassword)).toBe(true)
+    expect(await storage.verify('admin', previousPassword)).toBe(true)
   })
 
   it('rejects deletion of the authenticated account even with two active administrators', async () => {

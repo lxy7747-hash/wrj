@@ -5,6 +5,15 @@ import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
 import { fileCommunicationType, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
 
+async function fileVersion(path: string): Promise<string> {
+  const info = await stat(path, { bigint: true })
+  if (!info.isFile()) throw new Error('输入路径必须为普通文件。')
+  return [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs, info.birthtimeNs].join(':')
+}
+
+// ponytail: 单机只缓存最近一个初始日志快照；多日志并用时再改为有界 LRU。
+let initialCache: { path: string; version: string; pending: Promise<InitialNodeSnapshot> } | undefined
+
 /**
  * 有界只读加载指定日志；拒绝读取过程中变化的文件，不启动监听或写回源文件。
  * @param inputPath 本机启动配置或命令行明确指定的文件路径，不来自 HTTP 参数。
@@ -59,6 +68,23 @@ export async function readAfsimLogFile(inputPath: string) {
  * @param inputPath 本机配置的事件日志路径。
  */
 export async function readInitialNodes(inputPath: string): Promise<InitialNodeSnapshot> {
+  const path = resolve(inputPath)
+  const version = await fileVersion(path)
+  if (initialCache?.path !== path || initialCache.version !== version) {
+    const pending = loadInitialNodes(path).then(async snapshot => {
+      if (await fileVersion(path) !== version) throw new Error('文件在读取期间发生变化，请在写入稳定后重试。')
+      return snapshot
+    })
+    const entry = { path, version, pending }
+    initialCache = entry
+    void pending.catch(() => { if (initialCache === entry) initialCache = undefined })
+  }
+  const snapshot = await initialCache.pending
+  if (await fileVersion(path) !== version) throw new Error('文件在读取期间发生变化，请在写入稳定后重试。')
+  return structuredClone(snapshot)
+}
+
+async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot> {
   const parsed = await readAfsimLogFile(inputPath)
   if (!parsed.valid) throw new Error('日志解析失败，请先检查来源行号。')
   const nodes = parsed.nodes.map((node) => {

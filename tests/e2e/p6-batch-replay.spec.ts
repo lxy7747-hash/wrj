@@ -140,6 +140,7 @@ test('P6 未配置和损坏的本地回放只提示异常，不加载演示数�
   await login(page)
   const replayRequests: string[] = []
   page.on('request', (outgoing) => {
+    if (new URL(page.url()).pathname !== '/replays') return
     const path = new URL(outgoing.url()).pathname
     if (path.startsWith('/api/v1/replays') || path.includes('/frames/') || path.endsWith('/events')) replayRequests.push(path)
   })

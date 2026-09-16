@@ -1320,8 +1320,17 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     const fieldPath = field === 'enabled' ? 'links[0].enabled' : field === 'priority' ? 'linkSettings.priority' : 'linkSettings.switchCooldownS'
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain(fieldPath)
-    await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
-    await flushPromises()
+    const expectedWarning = { name: 'ElementPlusError', message: '[ElSwitch] model-value must be active-value or inactive-value' }
+    const originalWarn = console.warn.bind(console)
+    const warningSpy = field === 'enabled' ? vi.spyOn(console, 'warn').mockImplementation((...args) => {
+      if (args.length === 1 && args[0]?.name === expectedWarning.name && args[0]?.message === expectedWarning.message) return
+      originalWarn(...args)
+    }) : undefined
+    try {
+      await wrapper.get('[data-testid="locate-validation-issue-0"]').trigger('click')
+      await flushPromises()
+      if (warningSpy) expect(warningSpy).toHaveBeenCalledExactlyOnceWith(expect.objectContaining(expectedWarning))
+    } finally { warningSpy?.mockRestore() }
     const dialog = document.querySelector(`[data-testid="${field === 'enabled' ? 'link-dialog' : 'link-settings-dialog'}"]`)
     expect(dialog).not.toBeNull()
     const target = field === 'enabled' ? '[data-testid="link-enabled"] input'
@@ -1612,6 +1621,19 @@ describe('P2-1 场景管理页面', () => {
     expect(document.body.textContent).toContain('平铺范围超出经纬度边界')
     expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
     input('platform-spacing').vm.$emit('update:modelValue', spacingKm)
+    const before = JSON.stringify(scenario.draft)
+    for (const [longitude, latitude] of [[117, 25], [122, 25], [119.5, 21], [119.5, 26]]) {
+      input('platform-longitude').vm.$emit('update:modelValue', longitude)
+      input('platform-latitude').vm.$emit('update:modelValue', latitude)
+      await nextTick()
+      document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+      await flushPromises()
+      expect(document.body.textContent).toContain('无人机集群编队原点')
+      expect(JSON.stringify(scenario.draft)).toBe(before)
+      expect(scenario.dirty).toBe(false)
+    }
+    input('platform-longitude').vm.$emit('update:modelValue', 119.5)
+    input('platform-latitude').vm.$emit('update:modelValue', 25)
     await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
@@ -1642,6 +1664,10 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === 'platform-quantity')!
     expect(quantity.props('max')).toBe(44)
     quantity.vm.$emit('update:modelValue', 44)
+    for (const [id, value] of [['platform-longitude', 119.5], ['platform-latitude', 25]] as const) {
+      wrapper.findAllComponents({ name: 'ElInputNumber' }).find(component => component.attributes('data-testid') === id)!.vm.$emit('update:modelValue', value)
+    }
+    await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
 

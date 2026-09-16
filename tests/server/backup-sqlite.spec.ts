@@ -121,7 +121,7 @@ it('真实备份含所有表、SHA-256、WAL 已提交数据，目录重开后�
   expect(existsSync(join(directory, 'outside.db'))).toBe(false)
 })
 
-it('恢复真实场景、模板和账号，保留当前审计及恢复前快照；已打开连接读取恢复结果', () => {
+it('恢复真实场景、模板和账号，保留当前审计及恢复前快照；已打开连接读取恢复结果', async () => {
   const { db, auth, scenes, templates, backups } = setup()
   const original = Object.fromEntries(['scenarios', 'scenario_templates', 'users'].map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]))
   expect(backups.backup('SOURCE').ok).toBe(true)
@@ -134,7 +134,7 @@ it('恢复真实场景、模板和账号，保留当前审计及恢复前快照�
   for (const table of ['scenarios', 'scenario_templates', 'users']) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual(original[table])
   expect(scenes.list()).toHaveLength(1)
   expect(templates.load()).toHaveLength(1)
-  expect(auth.verify('admin', password)).toBe(true)
+  expect(await auth.verify('admin', password)).toBe(true)
   expect(auth.readAudit()).toEqual(audit)
   const prebackup = new DatabaseSync(join(backups.directory, `${result.data.prebackupId}.db`), { readOnly: true })
   try { expect(prebackup.prepare('SELECT count(*) AS n FROM scenarios').get().n).toBe(0) } finally { prebackup.close() }

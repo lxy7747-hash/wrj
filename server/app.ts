@@ -653,7 +653,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @returns Nothing.
    * @remarks Records every terminal login outcome and writes exactly one HTTP response.
    */
-  app.post('/api/v1/auth/login', (req, res) => {
+  app.post('/api/v1/auth/login', async (req, res) => {
     const requestId = 'REQ-P1-AUTH-LOGIN'
     if (!isLoginShape(req.body)) {
       auth.recordError('anonymous', 'OPERATOR', 'AUTH_LOGIN')
@@ -680,7 +680,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     options.authStorage?.revokeSession(req.headers.cookie)
-    const result = auth.login(req.body as LoginRequest)
+    const result = await auth.login(req.body as LoginRequest)
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }

@@ -43,7 +43,7 @@ export interface SituationMapController {
    * 替换地图当前展示的链路集合。
    * @param links 新的链路视图列表。
    * @returns 无返回值。
-   * @sideeffect 清空并重建链路图层及其键盘交互标记。
+   * @sideeffect 按身份增删链路并更新已有曲线、样式和键盘交互数据。
    */
   setLinks: (links: SituationLinkView[]) => void
 
@@ -51,7 +51,7 @@ export interface SituationMapController {
    * 替换地图当前使用的完整遥测帧。
    * @param frame 新的同帧节点、链路和干扰数据。
    * @returns 无返回值。
-   * @sideeffect 重建全部业务图层并保留仍有效的选中目标。
+   * @sideeffect 增量更新业务图层并保留仍有效的选中目标。
    */
   setFrame: (frame: TelemetryFrame | null) => void
 
@@ -68,7 +68,7 @@ export interface SituationMapController {
    * 更新当前选中节点。
    * @param platformId 要选中的平台唯一标识。
    * @returns 无返回值。
-   * @sideeffect 重建节点图层以刷新选中态样式。
+   * @sideeffect 更新对应节点图标以刷新选中态样式。
    */
   setSelectedNodeId: (platformId: string) => void
 
@@ -450,13 +450,13 @@ export function createSituationMapController(options: SituationMapControllerOpti
         renderBusinessLayers()
         options.onSelectConfiguredLink?.(link)
       })
-      layerGroups.interference.clearLayers()
+      renderInterference(layerGroups.interference, null, '')
     } else {
       renderFileLinks(layerGroups.links, currentNodes, fileLinks, link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileLink?.(link)
       })
-      layerGroups.interference.clearLayers()
+      renderInterference(layerGroups.interference, null, '')
     }
     renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
   }
@@ -706,7 +706,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
       offlineLabelLayer.remove()
       map.remove()
       map = null
-      Object.values(layerGroups).forEach((group) => group.clearLayers())
+      Object.values(layerGroups).forEach((group) => {
+        group.clearLayers()
+        nodeLayers.delete(group)
+        connectionLayers.delete(group)
+        interferenceLayers.delete(group)
+      })
       currentLinks = []
     },
   }
@@ -802,54 +807,58 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   return root
 }
 
-/**
- * 重建固定帧节点图层。
- * @param group 节点专用图层组。
- * @param nodes 当前数据源提供的位置节点，不要求完整遥测指标。
- * @param selectedNodeId 当前选中的平台标识。
- * @param onSelectNode 节点点击或键盘确认时的回调。
- * @returns 无返回值。
- * @sideeffect 清空并向图层组添加可点击、可聚焦的 Leaflet 标记。
- */
+const nodeLayers = new WeakMap<L.LayerGroup, Map<string, { marker: L.Marker; appearance: string }>>()
+
+/** 按节点身份复用 Marker；位置更新不替换图标，选中和名称变化只更新对应图标。 */
 function renderNodes(
   group: L.LayerGroup,
   nodes: SituationMapNode[],
   selectedNodeId: string,
   onSelectNode: (platformId: string) => void,
 ): void {
-  group.clearLayers()
-
-  nodes.forEach((platform) => {
+  const entries = nodeLayers.get(group) ?? new Map<string, { marker: L.Marker; appearance: string }>()
+  nodeLayers.set(group, entries)
+  const ids = new Set(nodes.map(node => node.platformId))
+  for (const [id, entry] of entries) {
+    if (!ids.has(id)) { group.removeLayer(entry.marker); entries.delete(id) }
+  }
+  for (const platform of nodes) {
     const selected = platform.platformId === selectedNodeId
-    const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
-    const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
-    const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
-    const tooltip = document.createElement('span')
-    tooltip.textContent = `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type}`
-
-    const marker = L.marker(pointForPlatform(platform), {
-      icon: L.divIcon({
+    const appearance = JSON.stringify([platform.name, platform.type, selected])
+    let entry = entries.get(platform.platformId)
+    if (!entry) {
+      const marker = L.marker(pointForPlatform(platform), {
+        title: `选择节点 ${platform.name}${platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''}`,
+        keyboard: true, riseOnHover: true, riseOffset: 500, bubblingMouseEvents: false,
+      })
+      marker.on('click', () => onSelectNode(platform.platformId))
+      bindMarkerKeyboardSelection(marker, () => onSelectNode(platform.platformId))
+      entry = { marker, appearance: '' }
+      entries.set(platform.platformId, entry)
+    }
+    const { marker } = entry
+    if (!marker.getLatLng().equals(pointForPlatform(platform))) marker.setLatLng(pointForPlatform(platform))
+    if (entry.appearance !== appearance) {
+      const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
+      const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
+      const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
+      marker.options.title = accessibleName
+      marker.setIcon(L.divIcon({
         html: createNodeIconContent(platform, selected),
-        className: selected
-          ? 'situation-map-node-marker situation-map-node-marker--selected'
-          : 'situation-map-node-marker',
+        className: selected ? 'situation-map-node-marker situation-map-node-marker--selected' : 'situation-map-node-marker',
         iconSize: compact ? [44, 40] : [160, 52],
-        iconAnchor: compact ? [22, 16] : [80, 16],
-        tooltipAnchor: [0, -16],
-      }),
-      keyboard: true,
-      title: accessibleName,
-      riseOnHover: true,
-      riseOffset: 500,
-      zIndexOffset: selected ? 1000 : 0,
-      bubblingMouseEvents: false,
-    })
-
-    marker.bindTooltip(tooltip, { direction: 'top', offset: [0, -12] })
-    marker.on('click', () => onSelectNode(platform.platformId))
-    bindMarkerKeyboardSelection(marker, () => onSelectNode(platform.platformId))
-    marker.addTo(group)
-  })
+        iconAnchor: compact ? [22, 16] : [80, 16], tooltipAnchor: [0, -16],
+      }))
+      const element = marker.getElement()
+      if (element) element.title = accessibleName
+      marker.setZIndexOffset(selected ? 1000 : 0)
+      const tooltip = document.createElement('span')
+      tooltip.textContent = `${platform.name}${orbitSuffix} · ${PLATFORM_TYPE_LABELS[platform.type as keyof typeof PLATFORM_TYPE_LABELS] ?? platform.type}`
+      marker.bindTooltip(tooltip, { direction: 'top', offset: [0, -12] })
+      entry.appearance = appearance
+    }
+    if (!group.hasLayer(marker)) marker.addTo(group)
+  }
 }
 
 /**
@@ -941,175 +950,160 @@ function sampleConnectionCurve(source: SituationMapNode, destination: SituationM
   return samples
 }
 
-/**
- * 重建链路曲线和键盘命中点。
- * @param group 链路专用图层组。
- * @param links 当前要展示的链路列表。
- * @param selectedLinkId 当前联动选中的链路标识。
- * @param onSelectLink 链路点击或键盘确认时的回调。
- * @returns 无返回值。
- * @sideeffect 清空并向图层组添加曲线、提示和透明键盘标记。
- */
-function renderLinks(
-  group: L.LayerGroup,
-  frame: TelemetryFrame,
-  links: SituationLinkView[],
-  selectedLinkId: string,
-  onSelectLink: (link: SituationLinkView) => void,
-): void {
-  group.clearLayers()
+interface ConnectionDrawing {
+  id: string
+  points: L.LatLngTuple[]
+  name: string
+  style: L.PathOptions
+  hitClass: string
+  select: () => void
+}
+interface ConnectionLayer {
+  line: L.Polyline
+  marker: L.Marker
+  drawing: ConnectionDrawing
+  geometry: string
+  appearance: string
+}
+const connectionLayers = new WeakMap<L.LayerGroup, Map<string, ConnectionLayer>>()
 
-  links.forEach((link) => {
+/** 三种来源共用图层更新；回调始终读取最新记录，隐藏图层也只更新、不重新开启。 */
+function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[]): void {
+  const entries = connectionLayers.get(group) ?? new Map<string, ConnectionLayer>()
+  connectionLayers.set(group, entries)
+  const ids = new Set(drawings.map(drawing => drawing.id))
+  for (const [id, entry] of entries) {
+    if (!ids.has(id)) { group.removeLayer(entry.line); group.removeLayer(entry.marker); entries.delete(id) }
+  }
+  for (const drawing of drawings) {
+    const midpoint = drawing.points[Math.floor(drawing.points.length / 2)]!
+    const geometry = JSON.stringify(drawing.points)
+    const appearance = JSON.stringify([drawing.name, drawing.style])
+    let entry = entries.get(drawing.id)
+    if (!entry) {
+      const hit = document.createElement('span')
+      hit.textContent = drawing.name
+      hit.style.cssText = 'display:block;width:28px;height:28px;opacity:0'
+      const marker = L.marker(midpoint, {
+        icon: L.divIcon({ html: hit, className: drawing.hitClass, iconSize: [28, 28], iconAnchor: [14, 14] }),
+        keyboard: true, title: drawing.name, bubblingMouseEvents: false, zIndexOffset: 750,
+      })
+      const line = L.polyline(drawing.points, { ...drawing.style, bubblingMouseEvents: false, interactive: true })
+      const created: ConnectionLayer = { line, marker, drawing, geometry, appearance: '' }
+      const select = () => created.drawing.select()
+      line.on('click', select)
+      marker.on('click', select)
+      bindMarkerKeyboardSelection(marker, select)
+      entry = created
+      entries.set(drawing.id, entry)
+      line.addTo(group)
+      marker.addTo(group)
+    }
+    entry.drawing = drawing
+    if (entry.geometry !== geometry) {
+      entry.line.setLatLngs(drawing.points)
+      entry.marker.setLatLng(midpoint)
+      entry.geometry = geometry
+    }
+    if (entry.appearance !== appearance) {
+      // setStyle 不会更新 SVG class，且未指定的 dashArray 不会自动清除。
+      entry.line.setStyle({ dashArray: undefined, ...drawing.style })
+      entry.line.getElement()?.classList.toggle('situation-map-link--selected', drawing.style.className === 'situation-map-link--selected')
+      const tooltip = document.createElement('span')
+      tooltip.textContent = drawing.name
+      entry.line.bindTooltip(tooltip, { sticky: true })
+      entry.marker.options.title = drawing.name
+      const element = entry.marker.getElement()
+      if (element) element.title = drawing.name
+      const hit = (entry.marker.options.icon as L.DivIcon).options.html as HTMLElement
+      hit.textContent = drawing.name
+      entry.appearance = appearance
+    }
+  }
+}
+
+/** 运行链路保留规范/三态投影语义，仅局部刷新几何和样式。 */
+function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: SituationLinkView[], selectedLinkId: string, onSelectLink: (link: SituationLinkView) => void): void {
+  renderConnections(group, links.flatMap(link => {
     const points = sampleLinkCurve(frame, link)
-    if (points.length === 0) return
-    const selected = link.linkId === selectedLinkId
-
-    const accessibleName = `${LINK_TYPE_LABELS[link.type]}，${link.sourceName}至${link.destinationName}，${LINK_STATUS_LABELS[link.status]}`
-    const tooltip = document.createElement('span')
-    tooltip.textContent = accessibleName
-
-    const line = L.polyline(points, {
-      ...linkStyle(link),
-      ...(selected ? {
-        weight: 6,
-        opacity: 1,
-        className: 'situation-map-link--selected',
-      } : {}),
-      bubblingMouseEvents: false,
-      interactive: true,
-    })
-    line.bindTooltip(tooltip, { sticky: true })
-    line.on('click', () => onSelectLink(link))
-    line.addTo(group)
-
-    const keyboardHit = document.createElement('span')
-    keyboardHit.textContent = accessibleName
-    keyboardHit.style.display = 'block'
-    keyboardHit.style.width = '28px'
-    keyboardHit.style.height = '28px'
-    keyboardHit.style.opacity = '0'
-
-    const midpoint = points[Math.floor(points.length / 2)] as L.LatLngTuple
-    const keyboardMarker = L.marker(midpoint, {
-      icon: L.divIcon({
-        html: keyboardHit,
-        className: 'situation-map-link-keyboard-hit',
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      }),
-      keyboard: true,
-      title: accessibleName,
-      bubblingMouseEvents: false,
-      zIndexOffset: 750,
-    })
-    keyboardMarker.on('click', () => onSelectLink(link))
-    bindMarkerKeyboardSelection(keyboardMarker, () => onSelectLink(link))
-    keyboardMarker.addTo(group)
-  })
+    if (!points.length) return []
+    return [{
+      id: `runtime:${link.linkId}`, points,
+      name: `${LINK_TYPE_LABELS[link.type]}，${link.sourceName}至${link.destinationName}，${LINK_STATUS_LABELS[link.status]}`,
+      style: { ...linkStyle(link), className: '', ...(link.linkId === selectedLinkId ? { weight: 6, opacity: 1, className: 'situation-map-link--selected' } : {}) },
+      hitClass: 'situation-map-link-keyboard-hit', select: () => onSelectLink(link),
+    }]
+  }))
 }
 
 /** 配置连线使用中性虚线，不把配置启停推断成运行通断或链路质量。 */
 function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void): void {
-  group.clearLayers()
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
-  for (const [index, link] of links.entries()) {
+  renderConnections(group, links.flatMap((link, index) => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
-    if (!source || !target) continue
-    const points = sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0)
-    const name = `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；暂无运行数据`
-    const tooltip = document.createElement('span')
-    tooltip.textContent = name
-    L.polyline(points, { color: '#8496a3', weight: selectedId === link.id ? 5 : 3, dashArray: '6 6',
-      opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link', bubblingMouseEvents: false })
-      .bindTooltip(tooltip, { sticky: true }).on('click', () => onSelect(link)).addTo(group)
-    const hit = document.createElement('span')
-    hit.textContent = name
-    hit.style.cssText = 'display:block;width:28px;height:28px;opacity:0'
-    const marker = L.marker(points[Math.floor(points.length / 2)]!, {
-      icon: L.divIcon({ html: hit, className: 'situation-map-configured-link-hit', iconSize: [28, 28], iconAnchor: [14, 14] }),
-      keyboard: true, title: name, bubblingMouseEvents: false, zIndexOffset: 750,
-    })
-    marker.on('click', () => onSelect(link))
-    bindMarkerKeyboardSelection(marker, () => onSelect(link))
-    marker.addTo(group)
-  }
+    if (!source || !target) return []
+    return [{
+      id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0),
+      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；暂无运行数据`,
+      style: { color: '#8496a3', weight: selectedId === link.id ? 5 : 3, dashArray: '6 6', opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
+      hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
+    }]
+  }))
 }
 
 /** 文件连线只表达登记关联；端点始终取本轮最新节点坐标，明细保留原始方向。 */
-function renderFileLinks(
-  group: L.LayerGroup,
-  nodes: SituationMapNode[],
-  links: FileCommunicationLink[],
-  onSelect: (link: FileCommunicationLink) => void,
-): void {
-  group.clearLayers()
+function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: FileCommunicationLink[], onSelect: (link: FileCommunicationLink) => void): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
-  for (const [index, link] of links.entries()) {
+  renderConnections(group, links.flatMap((link, index) => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
-    if (!source || !target) continue
-    const points = sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0)
-    const name = `${FILE_COMMUNICATION_LABELS[link.type]}关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知`
-    const tooltip = document.createElement('span')
-    tooltip.textContent = name
-    const line = L.polyline(points, {
-      ...LINK_TYPE_STYLES[link.type], className: 'situation-map-file-link',
-      bubblingMouseEvents: false,
-    })
-    line.bindTooltip(tooltip, { sticky: true }).on('click', () => onSelect(link)).addTo(group)
-    const hit = document.createElement('span')
-    hit.textContent = name
-    hit.style.cssText = 'display:block;width:28px;height:28px;opacity:0'
-    const marker = L.marker(points[Math.floor(points.length / 2)]!, {
-      icon: L.divIcon({ html: hit, className: 'situation-map-file-link-hit', iconSize: [28, 28], iconAnchor: [14, 14] }),
-      keyboard: true, title: name, bubblingMouseEvents: false, zIndexOffset: 750,
-    })
-    marker.on('click', () => onSelect(link))
-    bindMarkerKeyboardSelection(marker, () => onSelect(link))
-    marker.addTo(group)
-  }
+    if (!source || !target) return []
+    return [{
+      id: `file:${link.id}`, points: sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0),
+      name: `${FILE_COMMUNICATION_LABELS[link.type]}关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知`,
+      style: { ...LINK_TYPE_STYLES[link.type], className: 'situation-map-file-link' },
+      hitClass: 'situation-map-file-link-hit', select: () => onSelect(link),
+    }]
+  }))
 }
 
-/**
- * 构建活动干扰范围图层。
- * @param group 干扰范围专用图层组。
- * @param selectedJammerId 当前联动选中的干扰设备标识。
- * @returns 无返回值。
- * @sideeffect 清空并向图层组添加固定半径的活动干扰圈和永久标签。
- */
-function renderInterference(group: L.LayerGroup, frame: TelemetryFrame, selectedJammerId: string): void {
-  group.clearLayers()
+const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean }>>()
 
-  frame.platforms
-    .filter((platform) => platform.jammers.some((jammer) => jammer.active))
-    .forEach((platform) => {
-      const selected = platform.jammers.some((jammer) => (
-        jammer.active && jammer.jammerId === selectedJammerId
-      ))
-      const color = selected ? '#f5b942' : '#ff526d'
-      const label = document.createElement('span')
-      label.textContent = selected ? '已选：活动干扰范围（示意）' : '活动干扰范围（示意）'
-
-      L.circle(pointForPlatform(platform), {
-        radius: MAP_CONFIG.activeInterferenceRadiusMeters,
-        color,
-        weight: selected ? 4 : 1.5,
-        opacity: selected ? 1 : 0.9,
-        dashArray: '8 6',
-        fill: true,
-        fillColor: color,
-        fillOpacity: selected ? 0.2 : 0.09,
-        className: selected ? 'situation-map-interference--selected' : undefined,
-        interactive: true,
-      })
-        .bindTooltip(label, {
-          permanent: true,
-          direction: 'top',
-          className: 'situation-map-interference-label',
-        })
-        .addTo(group)
-    })
+/** 按平台复用活动干扰圈，更新位置、选中样式和标签，移除已失效的范围。 */
+function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string): void {
+  const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean }>()
+  interferenceLayers.set(group, entries)
+  const platforms = frame?.platforms.filter(platform => platform.jammers.some(jammer => jammer.active)) ?? []
+  const ids = new Set(platforms.map(platform => platform.platformId))
+  for (const [id, entry] of entries) {
+    if (!ids.has(id)) { group.removeLayer(entry.circle); entries.delete(id) }
+  }
+  for (const platform of platforms) {
+    const selected = platform.jammers.some(jammer => jammer.active && jammer.jammerId === selectedJammerId)
+    let entry = entries.get(platform.platformId)
+    if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform))) entry.circle.setLatLng(pointForPlatform(platform))
+    if (entry?.selected === selected) continue
+    const color = selected ? '#f5b942' : '#ff526d'
+    const label = document.createElement('span')
+    label.textContent = selected ? '已选：活动干扰范围（示意）' : '活动干扰范围（示意）'
+    const style: L.CircleMarkerOptions = {
+      color, weight: selected ? 4 : 1.5, opacity: selected ? 1 : 0.9, dashArray: '8 6',
+      fill: true, fillColor: color, fillOpacity: selected ? 0.2 : 0.09,
+      className: selected ? 'situation-map-interference--selected' : '', interactive: true,
+    }
+    if (!entry) {
+      const circle = L.circle(pointForPlatform(platform), { ...style, radius: MAP_CONFIG.activeInterferenceRadiusMeters })
+        .bindTooltip(label, { permanent: true, direction: 'top', className: 'situation-map-interference-label' }).addTo(group)
+      entry = { circle, selected }
+      entries.set(platform.platformId, entry)
+    } else {
+      entry.circle.setStyle(style)
+      entry.circle.getElement()?.classList.toggle('situation-map-interference--selected', selected)
+      entry.circle.setTooltipContent(label)
+      entry.selected = selected
+    }
+  }
 }
 
 /**

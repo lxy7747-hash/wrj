@@ -219,7 +219,7 @@ onMounted(() => {
  * 在链路输入变化时刷新 Leaflet 链路图层。
  * @param links 父组件传入的最新链路列表。
  * @returns 无返回值。
- * @sideeffect 清空并重建控制器中的链路图层。
+ * @sideeffect 按链路身份更新控制器中的坐标、样式和交互数据。
  */
 watch(() => props.links, (links) => {
   mapController.value?.setLinks(links)

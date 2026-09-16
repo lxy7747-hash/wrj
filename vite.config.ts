@@ -21,7 +21,7 @@ export default defineConfig({
       'element-plus/es',
       // 与当前模板及消息 API 使用的组件保持一致；新增组件时同步样式入口。
       ...[
-        'alert', 'base', 'button', 'card', 'collapse', 'collapse-item', 'container',
+        'alert', 'base', 'button', 'card', 'checkbox', 'collapse', 'collapse-item', 'container',
         'date-picker', 'descriptions', 'descriptions-item', 'dialog', 'drawer', 'empty',
         'form', 'form-item', 'input', 'input-number', 'loading', 'main', 'menu',
         'menu-item', 'menu-item-group', 'message', 'message-box', 'option', 'option-group',

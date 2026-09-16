@@ -52,7 +52,8 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
     } else if (path === '/reports') {
       await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
     } else if (path === '/replays') {
-      await expect(page.getByTestId('replay-timeline')).toBeVisible()
+      await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。', { exact: true })).toBeVisible()
+      await expect(page.getByTestId('replay-timeline')).toHaveCount(0)
     } else if (path === '/admin') {
       await expect(page.getByTestId('user-role-panel')).toBeVisible()
     }

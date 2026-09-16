@@ -1,13 +1,15 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
-import { randomBytes, scryptSync, timingSafeEqual, createHash } from 'node:crypto'
+import { randomBytes, scrypt, scryptSync, timingSafeEqual, createHash } from 'node:crypto'
 import type { AuditRecord, User } from '../../src/contracts/domain-models.js'
 import type { AuthStorage } from '../auth/projection.js'
 
 const SESSION_MS = 8 * 60 * 60 * 1000
 export const SESSION_COOKIE = 'wrj_session'
 export const validPassword = (value: unknown): value is string => typeof value === 'string' && value.trim().length > 0 && value.length >= 6 && value.length <= 128
-const derive = (password: string, salt: Buffer) => scryptSync(password, salt, 32, { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 })
+const SCRYPT_OPTIONS = { N: 32768, r: 8, p: 3, maxmem: 64 * 1024 * 1024 }
+const MAX_CONCURRENT_SCRYPT = 2
+const derive = (password: string, salt: Buffer) => scryptSync(password, salt, 32, SCRYPT_OPTIONS)
 const digest = (token: string) => createHash('sha256').update(token).digest('hex')
 
 /** 账号持久化；会话只保留在当前进程，重启必须重新登录。 */
@@ -16,6 +18,10 @@ export class AuthSqliteStorage implements AuthStorage {
   private readonly sessions = new Map<string, { userId: string; expires: number }>()
   private loginWindow = 0
   private loginCount = 0
+  private activeVerifications = 0
+  // ponytail: 账号撤权会保守地淘汰所有在途登录；高并发管理场景再细化到单账号。
+  private authRevision = 0
+  private closed = false
 
   constructor(path: string, bootstrapPassword?: string, private readonly now = Date.now) {
     if (!isAbsolute(path)) throw new Error('账号数据库路径必须为绝对路径。')
@@ -82,15 +88,27 @@ export class AuthSqliteStorage implements AuthStorage {
   allowLogin(): boolean {
     if (this.now() - this.loginWindow >= 60_000) { this.loginWindow = this.now(); this.loginCount = 0 }
     // 单机服务按进程限制尝试次数，随机用户名不能绕过限制或扩大计数表。
-    return ++this.loginCount <= 30
+    return ++this.loginCount <= 30 && this.activeVerifications < MAX_CONCURRENT_SCRYPT
   }
 
-  verify(username: string, password: string): boolean {
-    const row = this.db.prepare('SELECT password_salt, password_hash FROM users WHERE username = ?').get(username)
+  async verify(username: string, password: string): Promise<boolean> {
+    // 不排无界队列，最多两次 scrypt 并行，为文件读取等线程池任务留余量。
+    if (this.closed || this.activeVerifications >= MAX_CONCURRENT_SCRYPT) return false
+    const revision = this.authRevision
+    const query = 'SELECT user_id, username, role, status, password_salt, password_hash FROM users WHERE username = ?'
+    const row = this.db.prepare(query).get(username)
     const salt = Buffer.from(row ? String(row.password_salt) : '00'.repeat(16), 'hex')
     const expected = Buffer.from(row ? String(row.password_hash) : '00'.repeat(32), 'hex')
-    const actual = derive(password, salt)
-    return timingSafeEqual(actual, expected) && row !== undefined
+    this.activeVerifications++
+    try {
+      const actual = await new Promise<Buffer>((resolve, reject) => {
+        scrypt(password, salt, 32, SCRYPT_OPTIONS, (error, key) => error ? reject(error) : resolve(key))
+      })
+      if (this.closed || revision !== this.authRevision) return false
+      const current = this.db.prepare(query).get(username)
+      return timingSafeEqual(actual, expected) && row !== undefined && current?.status === 'ACTIVE'
+        && JSON.stringify(current) === JSON.stringify(row)
+    } finally { this.activeVerifications-- }
   }
 
   save(user: User, password?: string): void {
@@ -112,6 +130,7 @@ export class AuthSqliteStorage implements AuthStorage {
 
   delete(id: string): void { this.db.prepare('DELETE FROM users WHERE user_id=?').run(id); this.revokeUser(id) }
   revokeUser(id: string): void {
+    this.authRevision++
     for (const [key, session] of this.sessions) if (session.userId === id) this.sessions.delete(key)
   }
 
@@ -143,6 +162,6 @@ export class AuthSqliteStorage implements AuthStorage {
     const token = this.token(cookie)
     if (token) this.sessions.delete(digest(token))
   }
-  revokeAllSessions(): void { this.sessions.clear() }
-  close(): void { this.sessions.clear(); this.db.close() }
+  revokeAllSessions(): void { this.authRevision++; this.sessions.clear() }
+  close(): void { this.closed = true; this.revokeAllSessions(); this.db.close() }
 }

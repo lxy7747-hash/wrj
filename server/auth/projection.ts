@@ -40,7 +40,7 @@ export interface PermissionSet {
 
 export interface AuthStorage {
   list(): User[]
-  verify(username: string, password: string): boolean
+  verify(username: string, password: string): Promise<boolean>
   save(user: User, password?: string): void
   delete(id: string): void
   time(): string
@@ -139,6 +139,7 @@ function moduleForAction(action: string): string {
 
 export class AuthProjection {
   private runtimeState = createRuntimeState()
+  private loginRevision = 0
   private currentActor = 'admin'
   private currentUserId = CURRENT_ADMIN_ID
   private currentRole: Role = 'ADMIN'
@@ -167,6 +168,7 @@ export class AuthProjection {
    * @remarks 本机模式不导入演示日志、不清空数据库审计记录。
    */
   reset(): void {
+    this.loginRevision++
     this.runtimeState = createRuntimeState(!this.storage)
     this.refreshUsers()
   }
@@ -211,7 +213,8 @@ export class AuthProjection {
    * @remarks Updates last-login time for a successful user and appends a SUCCESS/ERROR audit
    * record for every attempt; SQLite mode persists account changes, HTTP owns session cookies.
    */
-  login(request: LoginRequest): ProjectionResult<AuthResult> {
+  async login(request: LoginRequest): Promise<ProjectionResult<AuthResult>> {
+    const revision = this.loginRevision
     this.refreshUsers()
     const role = inferredRole(request.username)
     if (!this.storage && request.username === 'locked') {
@@ -219,16 +222,22 @@ export class AuthProjection {
       return { ok: false, code: 'ACCOUNT_LOCKED', status: 423 }
     }
 
-    const user = this.runtimeState.users.find((candidate) => candidate.username === request.username)
+    let user = this.runtimeState.users.find((candidate) => candidate.username === request.username)
     if (user?.status === 'LOCKED') {
       this.appendAudit(request.username, user.role, 'AUTH_LOGIN', user.userId, 'ERROR')
       return { ok: false, code: 'ACCOUNT_LOCKED', status: 423 }
     }
 
+    const verified = user?.status === 'ACTIVE'
+      && (this.storage ? await this.storage.verify(request.username, request.passwordFixture) : request.passwordFixture === DEFAULT_LOGIN_PASSWORD)
+    // 哈希计算期间账号可能被停用、删除或改名，不能把旧用户对象写回。
+    this.refreshUsers()
+    user = this.runtimeState.users.find((candidate) => candidate.username === request.username)
     if (
       user === undefined
       || user.status !== 'ACTIVE'
-      || !(this.storage ? this.storage.verify(request.username, request.passwordFixture) : request.passwordFixture === DEFAULT_LOGIN_PASSWORD)
+      || !verified
+      || revision !== this.loginRevision
     ) {
       this.appendAudit(request.username, user?.role ?? role, 'AUTH_LOGIN', user?.userId, 'ERROR')
       return { ok: false, code: 'INVALID_CREDENTIALS', status: 401 }

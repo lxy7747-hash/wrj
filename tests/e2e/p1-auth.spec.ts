@@ -9,6 +9,7 @@ const SCENARIO_PATH = '/api/v1/scenarios/SCN-001'
 
 interface ConsoleAudit {
   errors: string[]
+  errorUrls: string[]
   http404s: string[]
   nonLoopbackHosts: Set<string>
 }
@@ -52,11 +53,12 @@ const PROTECTED_WORKSPACE_PATHS = [
 ] as const
 
 function auditConsole(page: Page): ConsoleAudit {
-  const audit: ConsoleAudit = { errors: [], http404s: [], nonLoopbackHosts: new Set() }
+  const audit: ConsoleAudit = { errors: [], errorUrls: [], http404s: [], nonLoopbackHosts: new Set() }
 
   page.on('console', (message) => {
     if (message.type() === 'error') {
       audit.errors.push(message.text())
+      audit.errorUrls.push(message.location().url)
     }
   })
   page.on('pageerror', (error) => {
@@ -75,6 +77,24 @@ function auditConsole(page: Page): ConsoleAudit {
   })
 
   return audit
+}
+
+// 保存已持久化草稿后，取消自动脚本生成；不调用纯 Mock 未启用的本机 TXT 写入。
+async function saveAndCancelPreview(page: Page): Promise<void> {
+  const required = page.waitForResponse(response => response.request().method() === 'POST'
+    && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview`)
+  await page.getByTestId('save-scenario').click()
+  expect((await required).status()).toBe(428)
+  const dialog = page.getByRole('dialog', { name: '脚本预览警告', exact: true })
+  await expect(dialog).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
+  await dialog.getByRole('button', { name: '取消', exact: true }).click()
+  await expect(dialog).toBeHidden()
+  await expect(page.getByTestId('save-scenario')).toBeEnabled()
+}
+
+function expectPreviewConfirmationErrors(audit: ConsoleAudit, count: number): void {
+  expect(audit.errors).toEqual(Array(count).fill('Failed to load resource: the server responded with a status of 428 (Precondition Required)'))
+  expect(audit.errorUrls).toEqual(Array(count).fill(`${MOCK_ORIGIN}/api/v1/scripts/preview`))
 }
 
 /**
@@ -148,7 +168,8 @@ async function visitWorkspaceRoute(page: Page, route: WorkspaceRoute): Promise<v
     await expect(page.getByTestId('batch-run-table')).toBeVisible()
     await expect(page.locator('#batches-title')).toHaveCount(0)
   } else if (route.path === '/replays') {
-    await expect(page.getByTestId('replay-timeline')).toBeVisible()
+    await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。', { exact: true })).toBeVisible()
+    await expect(page.getByTestId('replay-timeline')).toHaveCount(0)
     await expect(page.locator('#replays-title')).toHaveCount(0)
   } else {
     await expect(page.getByRole(route.titleRole ?? 'heading', { name: route.title, exact: true })).toBeVisible()
@@ -193,17 +214,19 @@ test('场景列表：新建取消、复制保存、按编号编辑重载、模�
   await page.getByTestId('scene-copy-SCN-001').click()
   await page.getByTestId('scenario-name').fill('列表复制回归')
   const createdResponse = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/scenarios')
-  await page.getByTestId('save-scenario').click()
+  await saveAndCancelPreview(page)
   const created = await createdResponse
   expect(created.status()).toBe(201)
   const copied = (await created.json() as ApiSuccess<ScenarioDraft>).data
   expect(copied.config.scenario.id).not.toBe('SCN-001')
+  await page.getByTestId('back-scene-list').click()
   await expect(page.getByTestId('scene-list')).toBeVisible()
   await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(2)
   await page.getByTestId(`scene-edit-${copied.config.scenario.id}`).click()
   await expect(page.getByTestId('scenario-name')).toHaveValue('列表复制回归')
   await page.getByTestId('scenario-name').fill('列表编辑回归')
-  await page.getByTestId('save-scenario').click()
+  await saveAndCancelPreview(page)
+  await page.getByTestId('back-scene-list').click()
   await expect(page.getByTestId('scene-list')).toBeVisible()
   await page.reload()
   await page.getByTestId(`scene-edit-${copied.config.scenario.id}`).click()
@@ -223,7 +246,7 @@ test('场景列表：新建取消、复制保存、按编号编辑重载、模�
   await page.locator('.el-message-box').getByRole('button', { name: '删除', exact: true }).click()
   await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(2)
   await expect(page.getByTestId(`scene-edit-${copied.config.scenario.id}`)).toHaveCount(0)
-  expect(audit.errors).toEqual([])
+  expectPreviewConfirmationErrors(audit, 2)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -952,7 +975,7 @@ test.describe('P2-1 scenario business loop', () => {
 
     const saved = page.waitForResponse((response) => response.request().method() === 'PUT'
       && new URL(response.url()).pathname === '/api/v1/scenarios/SCN-001')
-    await page.getByTestId('save-scenario').click()
+    await saveAndCancelPreview(page)
     expect((await saved).status()).toBe(200)
     expect(putBodies).toHaveLength(1)
     expect(putBodies[0]).toMatchObject({
@@ -973,7 +996,7 @@ test.describe('P2-1 scenario business loop', () => {
     await expect(name).toHaveValue('跨海通联时区验证场景')
     await expect(startTime).toHaveValue('2026-08-07 09:30')
 
-    expect(audit.errors).toEqual([])
+    expectPreviewConfirmationErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
@@ -997,6 +1020,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await expect(page.getByTestId('platform-quantity').locator('input')).toHaveAttribute('max', '44')
     await page.getByTestId('platform-name').fill('E2E 批量集群')
     await page.getByTestId('platform-quantity').locator('input').fill('44')
+    await page.getByTestId('platform-longitude').locator('input').fill('119.5')
+    await page.getByTestId('platform-latitude').locator('input').fill('25')
     await page.getByTestId('apply-platform').click()
     const table = page.getByTestId('platform-table')
     await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
@@ -1016,7 +1041,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('platform-name').fill('E2E 神通配置')
     await page.getByTestId('apply-platform').click()
     const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT' && new URL(response.url()).pathname === SCENARIO_PATH)
-    await page.getByTestId('save-scenario').click()
+    await saveAndCancelPreview(page)
     const saved = await savedResponse
     expect(saved.status()).toBe(200)
     const snapshot = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1032,7 +1057,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByRole('tab', { name: '节点配置' }).click()
     await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
     await expect(table.getByRole('row').filter({ hasText: 'E2E 神通配置' })).toContainText('神通卫星')
-    expect(audit.errors).toEqual([])
+    expectPreviewConfirmationErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
@@ -1074,7 +1099,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
 
     const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
       && new URL(response.url()).pathname === SCENARIO_PATH)
-    await page.getByTestId('save-scenario').click()
+    await saveAndCancelPreview(page)
     const saved = await savedResponse
     expect(saved.status()).toBe(200)
     const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1106,7 +1131,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await expect(page.getByTestId('waypoint-longitude-0').locator('input')).toHaveValue('120.75')
     await expect(page.getByTestId('waypoint-arrival-0').locator('input')).toHaveValue('450')
 
-    expect(audit.errors).toEqual([])
+    expectPreviewConfirmationErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
@@ -1228,7 +1253,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
 
   const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === SCENARIO_PATH)
-  await page.getByTestId('save-scenario').click()
+  await saveAndCancelPreview(page)
   const saved = await savedResponse
   expect(saved.status()).toBe(200)
   const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1266,7 +1291,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '编辑' }).click()
   await expect(page.getByTestId('platform-link-ids')).toHaveValue(/L-CFG-001/)
 
-  expect(audit.errors).toEqual([])
+  expectPreviewConfirmationErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1345,7 +1370,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
 
   const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === SCENARIO_PATH)
-  await page.getByTestId('save-scenario').click()
+  await saveAndCancelPreview(page)
   const saved = await savedResponse
   expect(saved.status()).toBe(200)
   const savedDraft = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1386,7 +1411,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await expect(reloadedRow).toContainText('360')
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
 
-  expect(audit.errors).toEqual([])
+  expectPreviewConfirmationErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1615,7 +1640,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
 
   const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
     && new URL(response.url()).pathname === SCENARIO_PATH)
-  await page.getByTestId('save-scenario').click()
+  await saveAndCancelPreview(page)
   expect((await savedResponse).status()).toBe(200)
 
   const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1676,7 +1701,7 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
   expect((await resetResponse).status()).toBe(200)
   await expect(page.getByTestId('scenario-json-preview')).toContainText(baseline.config.output.directory)
 
-  expect(audit.errors).toEqual([])
+  expectPreviewConfirmationErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })

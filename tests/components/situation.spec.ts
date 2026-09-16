@@ -1290,6 +1290,7 @@ describe('Leaflet 控制器回归', () => {
     const setViewSpy = vi.spyOn(L.Map.prototype, 'setView')
     const removeSpy = vi.spyOn(L.Map.prototype, 'remove')
     const controller = await createController({ initialNodes: INITIAL_NODES.nodes })
+    const markers = markerSpy.mock.results.map(result => result.value as L.Marker)
     controller.focusTarget({ kind: 'node', targetId: 'A' })
     setViewSpy.mockClear()
     markerSpy.mockClear()
@@ -1297,8 +1298,9 @@ describe('Leaflet 控制器回归', () => {
       ? { ...node, longitude: -78, latitude: 31 } : node))
     expect(setViewSpy).not.toHaveBeenCalled()
     expect(removeSpy).not.toHaveBeenCalled()
-    expect(markerSpy.mock.calls.filter(([, options]) => options?.title?.startsWith('选择节点'))
-      .map(([point]) => point)).toEqual([[31, -78], [25.1026, 118.7321]])
+    expect(markerSpy).not.toHaveBeenCalled()
+    expect(markers.filter(marker => marker.options.title?.startsWith('选择节点'))
+      .map(marker => [marker.getLatLng().lat, marker.getLatLng().lng])).toEqual([[31, -78], [25.1026, 118.7321]])
     expect(container?.querySelectorAll('.situation-map-node-marker--selected')).toHaveLength(1)
     controller.focusTarget({ kind: 'node', targetId: 'A' })
     expect(setViewSpy).toHaveBeenLastCalledWith([31, -78], MAP_CONFIG.defaults.zoom, expect.objectContaining({ animate: true }))
@@ -1328,7 +1330,8 @@ describe('Leaflet 控制器回归', () => {
     controller.setLayerVisible('links', false)
     lineSpy.mockClear()
     controller.setNodes(INITIAL_NODES.nodes.map(node => node.platformId === 'A' ? { ...node, latitude: 26, longitude: 119 } : node))
-    const updated = calls()[0]?.[0] as L.LatLngTuple[]
+    expect(lineSpy).not.toHaveBeenCalled()
+    const updated = (line.getLatLngs() as L.LatLng[]).map(point => [point.lat, point.lng])
     expect([updated[0], updated.at(-1)]).toEqual([[26, 119], [25.1026, 118.7321]])
     expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
     controller.setLayerVisible('links', true)
@@ -1348,25 +1351,80 @@ describe('Leaflet 控制器回归', () => {
     const [firstLink, secondLink] = SITUATION_LINKS_F00042
     const filteredLinks = [secondLink, firstLink]
 
+    const lines = polylineSpy.mock.results.map(({ value }) => value as L.Polyline).filter(line => line.options.interactive)
+    const originalCurves = lines.slice(0, 2).map(line => line.getLatLngs())
     polylineSpy.mockClear()
     controller.setLinks([firstLink, secondLink])
-    const originalCurves = polylineSpy.mock.calls.map(([points]) => points)
-
-    polylineSpy.mockClear()
     controller.setLinks(filteredLinks)
-    const reorderedCurves = polylineSpy.mock.calls.map(([points]) => points)
-    const reorderedLines = polylineSpy.mock.results.map(({ value }) => value as L.Polyline)
+    expect(polylineSpy).not.toHaveBeenCalled()
+    expect(lines.slice(0, 2).map(line => line.getLatLngs())).toEqual(originalCurves)
+    expect(container?.querySelectorAll('.situation-map-link-keyboard-hit')).toHaveLength(2)
 
-    expect(reorderedCurves).toHaveLength(2)
-    expect(reorderedCurves[0]).toEqual(originalCurves[1])
-    expect(reorderedCurves[1]).toEqual(originalCurves[0])
-
-    reorderedLines[0]?.fire('click')
-    reorderedLines[1]?.fire('click')
+    lines[1]?.fire('click')
+    lines[0]?.fire('click')
     expect(onSelectLink).toHaveBeenNthCalledWith(1, secondLink)
     expect(onSelectLink).toHaveBeenNthCalledWith(2, firstLink)
 
     controller.destroy()
+  })
+
+  it('同身份更新复用图层和键盘焦点，刷新最新状态与回调，切换数据源移除旧图层', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const markerSpy = vi.spyOn(L, 'marker')
+    const lineSpy = vi.spyOn(L, 'polyline')
+    const circleSpy = vi.spyOn(L, 'circle')
+    const selected = vi.fn()
+    const controller = await createController({ onSelectLink: selected })
+    const linkGroup = groups.mock.results[1]!.value as L.LayerGroup
+    const nodeGroup = groups.mock.results[0]!.value as L.LayerGroup
+    const interferenceGroup = groups.mock.results[2]!.value as L.LayerGroup
+    const original = linkGroup.getLayers()
+    const line = original[0] as L.Polyline
+    const hit = original[1] as L.Marker
+    const element = hit.getElement()!
+    const frame = structuredClone(SITUATION_FRAME_F00042)
+    const links = SITUATION_LINKS_F00042.map(link => ({ ...link }))
+    links[0]!.status = 'DOWN'
+    element.focus()
+    markerSpy.mockClear(); lineSpy.mockClear(); circleSpy.mockClear()
+    controller.setFrame(frame)
+    controller.setLinks(links)
+    expect(linkGroup.getLayers()).toEqual(original)
+    expect(hit.getElement()).toBe(element)
+    expect(document.activeElement).toBe(element)
+    expect(line.options.color).toBe('#f56c6c')
+    expect(element.title).toContain('中断')
+    element.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }))
+    expect(selected).toHaveBeenLastCalledWith(links[0])
+    expect(selected.mock.calls.at(-1)?.[0]).toBe(links[0])
+    expect(line.options.weight).toBe(6)
+    controller.setSelectedNodeId('CMD-01')
+    expect(line.options.className).toBe('')
+    expect(line.getElement()?.classList.contains('situation-map-link--selected')).not.toBe(true)
+    const node = (nodeGroup.getLayers() as L.Marker[]).find(marker => marker.options.title?.includes('通信卫星'))!
+    const satellite = frame.platforms.find(platform => platform.platformId === 'SAT-01')!
+    satellite.name = '重命名卫星'
+    satellite.latitude += 0.1
+    const circle = interferenceGroup.getLayers()[0] as L.Circle
+    const station = frame.platforms.find(platform => platform.jammers.some(jammer => jammer.active))!
+    station.latitude += 0.1
+    controller.setFrame(frame)
+    expect(node.getElement()?.title).toBe('选择节点 重命名卫星（轨道示意）')
+    expect(node.getLatLng().lat).toBe(satellite.latitude)
+    expect(circle.getLatLng().lat).toBe(station.latitude)
+    expect(markerSpy).not.toHaveBeenCalled()
+    expect(lineSpy).not.toHaveBeenCalled()
+    expect(circleSpy).not.toHaveBeenCalled()
+    satellite.name = '通信卫星'
+    controller.setFrame(null)
+    expect(linkGroup.getLayers()).toHaveLength(0)
+    expect(interferenceGroup.getLayers()).toHaveLength(0)
+    expect(nodeGroup.getLayers()).toHaveLength(0)
+    controller.setFrame(frame)
+    expect(linkGroup.getLayers()).toHaveLength(links.length * 2)
+    expect(linkGroup.getLayers()[0]).not.toBe(line)
+    controller.destroy()
+    expect(linkGroup.getLayers()).toHaveLength(0)
   })
 
   it('按原型图例绘制四类链路并用红色标记异常链路', async () => {
@@ -1410,9 +1468,7 @@ describe('Leaflet 控制器回归', () => {
     currentLinkLines[0]?.line.fire('click')
     expect(onSelectLink).toHaveBeenCalledWith(SITUATION_LINKS_F00042[0])
     expect(container?.querySelector('.situation-map-node-marker--selected')).toBeNull()
-    expect(polylineSpy.mock.calls
-      .filter(([, options]) => options?.interactive === true)
-      .slice(-SITUATION_LINKS_F00042.length)[0]?.[1])
+    expect(currentLinkLines[0]?.line.options)
       .toEqual(expect.objectContaining({
         className: 'situation-map-link--selected',
         weight: 6,
@@ -1465,6 +1521,8 @@ describe('Leaflet 控制器回归', () => {
     const map = mapSpy.mock.results[0]?.value as L.Map
     const setViewSpy = vi.spyOn(map, 'setView').mockReturnValue(map)
     const fitBoundsSpy = vi.spyOn(map, 'fitBounds').mockReturnValue(map)
+    const lines = polylineSpy.mock.results.map(result => result.value as L.Polyline)
+    const circles = circleSpy.mock.results.map(result => result.value as L.Circle)
 
     controller.focusTarget({ kind: 'node', targetId: 'UAV-01' })
     expect(setViewSpy).toHaveBeenNthCalledWith(1, [24.70, 119.35], 10, {
@@ -1484,9 +1542,9 @@ describe('Leaflet 控制器回归', () => {
       animate: true,
       duration: 0.45,
     }))
-    expect(polylineSpy.mock.calls.find(([, options]) => (
-      options?.className === 'situation-map-link--selected'
-    ))?.[1]).toEqual(expect.objectContaining({ weight: 6, opacity: 1 }))
+    expect(polylineSpy).not.toHaveBeenCalled()
+    expect(lines.find(line => line.options.className === 'situation-map-link--selected')?.options)
+      .toEqual(expect.objectContaining({ weight: 6, opacity: 1 }))
     expect(container?.querySelector('.situation-map-node-marker--selected')).toBeNull()
 
     circleSpy.mockClear()
@@ -1497,8 +1555,9 @@ describe('Leaflet 控制器回归', () => {
       animate: true,
       duration: 0.45,
     }))
-    const selectedInterferenceOptions = circleSpy.mock.calls
-      .map((call) => call[1] as unknown as L.CircleMarkerOptions)
+    expect(circleSpy).not.toHaveBeenCalled()
+    const selectedInterferenceOptions = circles
+      .map(circle => circle.options)
       .find((options) => options.className === 'situation-map-interference--selected')
     expect(selectedInterferenceOptions).toEqual(expect.objectContaining({
       color: '#f5b942',
@@ -1519,9 +1578,8 @@ describe('Leaflet 控制器回归', () => {
       lng: 119.55,
     }), 10, { animate: true, duration: 0.45 })
     expect(container?.querySelector('.situation-map-node-marker--selected')?.textContent).toContain('STN-01')
-    expect(circleSpy.mock.calls.some((call) => (
-      (call[1] as unknown as L.CircleMarkerOptions).className === 'situation-map-interference--selected'
-    ))).toBe(false)
+    expect(circleSpy).not.toHaveBeenCalled()
+    expect(circles.some(circle => circle.options.className === 'situation-map-interference--selected')).toBe(false)
 
     controller.focusTarget({ kind: 'node', targetId: 'AIR-03' })
     expect(setViewSpy).toHaveBeenNthCalledWith(3, [24.43, 119.99], 10, {

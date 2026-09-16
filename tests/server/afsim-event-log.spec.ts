@@ -1,15 +1,17 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
+import * as eventParser from '../../src/features/data-exchange/afsim-event-log'
 import { isInitialNodeSnapshot } from '../../src/features/situation/initial-nodes'
 import { fileCommunicationType, selectFileCommunicationLinks } from '../../src/features/situation/file-communication-links'
+import { POSITION_HEADER } from '../../src/features/situation/position-updates'
 
 // 与已有服务端测试一致：Node 专用模块只在测试运行时加载，不纳入浏览器类型工程。
 const fsModule = 'node:fs/' + 'promises'
 const osModule = 'node:' + 'os'
 const pathModule = 'node:' + 'path'
 const eventsModule = 'node:' + 'events'
-const { mkdtemp, readFile, rm, writeFile } = await import(fsModule)
+const { mkdtemp, readFile, rm, writeFile, stat, utimes, rename } = await import(fsModule)
 const { tmpdir } = await import(osModule)
 const { join } = await import(pathModule)
 const { once } = await import(eventsModule)
@@ -38,6 +40,46 @@ const SAMPLE = [
 ].join('\n')
 
 describe('真实 AFSIM 事件日志解析', () => {
+  it('合并并发初始快照读取并隔离返回对象，文件改写、替换和失败后重新校验', async () => {
+    const readerModule = '../../server/local/' + 'afsim-log-reader.js'
+    const { readInitialNodes } = await import(readerModule)
+    const replayModule = '../../server/local/' + 'afsim-replay-reader.js'
+    const { readLocalReplay } = await import(replayModule)
+    const directory = await mkdtemp(join(tmpdir(), 'wrj-log-cache-'))
+    const source = join(directory, 'sample.csv')
+    const parse = vi.spyOn(eventParser, 'parseAfsimEventLog')
+    try {
+      await writeFile(source, SAMPLE)
+      const [first, second] = await Promise.all([readInitialNodes(source), readInitialNodes(source)])
+      expect(parse).toHaveBeenCalledOnce()
+      expect(second).toEqual(first)
+      const positions = join(directory, 'positions.csv')
+      await writeFile(positions, `${POSITION_HEADER}\n`)
+      expect((await readLocalReplay(source, positions)).initial).toEqual(second)
+      expect(parse).toHaveBeenCalledOnce()
+      first.nodes[0].name = 'changed by caller'
+      expect((await readInitialNodes(source)).nodes[0].name).toBe('A')
+      expect(parse).toHaveBeenCalledOnce()
+      const before = await stat(source)
+      await writeFile(source, SAMPLE.replace('8000 m', '9000 m'))
+      await utimes(source, before.atime, before.mtime)
+      expect((await readInitialNodes(source)).nodes[1].altitude).toBe(9000)
+      expect(parse).toHaveBeenCalledTimes(2)
+      await writeFile(join(directory, 'replacement.csv'), SAMPLE)
+      await rename(join(directory, 'replacement.csv'), source)
+      expect((await readInitialNodes(source)).nodes[1].altitude).toBe(8000)
+      expect(parse).toHaveBeenCalledTimes(3)
+      await writeFile(source, 'invalid log')
+      await expect(readInitialNodes(source)).rejects.toThrow()
+      await expect(readInitialNodes(source)).rejects.toThrow()
+      expect(parse).toHaveBeenCalledTimes(5)
+      await writeFile(source, SAMPLE)
+      expect((await readInitialNodes(source)).nodes).toHaveLength(2)
+      await rm(source)
+      await expect(readInitialNodes(source)).rejects.toThrow()
+    } finally { parse.mockRestore(); await rm(directory, { recursive: true, force: true }) }
+  })
+
   it('只读提取初始位置，不覆盖源文件、不暴露路径或虚构链路字段', async () => {
     const readerModule = '../../server/local/' + 'afsim-log-reader.js'
     const { readInitialNodes } = await import(readerModule)
