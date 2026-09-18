@@ -92,6 +92,8 @@ defineEmits<{
           <option value="HISTORICAL_REPLAY">历史回放</option>
         </select>
       </label>
+
+      <slot name="timeline" />
     </div>
 
     <div v-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">

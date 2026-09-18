@@ -5,6 +5,8 @@ import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
 import { fileConnectionTypes, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
 import { buildFileDeviceEvents } from '../../src/features/situation/file-device-events.js'
+import { buildFileMessageLinks } from '../../src/features/situation/file-message-links.js'
+import { buildFilePlatformDeletions } from '../../src/features/situation/platform-lifecycle.js'
 
 // 仅作界面显示别名；位置、事件及连接仍使用日志中的原始平台名称关联。
 const PLATFORM_DISPLAY_NAMES = new Map([
@@ -105,6 +107,7 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
     const state = node.initialState
     if (!state) throw new Error('日志中有节点缺少初始位置。')
     return { platformId: node.name, name: PLATFORM_DISPLAY_NAMES.get(node.name) ?? node.name, type: node.type,
+      side: node.side,
       longitude: state.longitude, latitude: state.latitude,
       altitude: state.altitudeMeters, speed: state.speedMetersPerSecond,
       time: state.time, sourceEventId: state.sourceEventId }
@@ -121,7 +124,10 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
     }
   }
   const deviceEvents = buildFileDeviceEvents(parsed.events, new Set(nodes.map(node => node.platformId)))
-  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections, deviceEvents }
+  // 业务链路在服务端推导：浏览器不接触原始事件，且 systems 的键与设备类型索引同形。
+  const messageLinks = buildFileMessageLinks(parsed.events, new Set(nodes.map(node => node.platformId)), systems).links
+  const platformDeletions = buildFilePlatformDeletions(parsed.events, new Set(nodes.map(node => node.platformId)))
+  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections, deviceEvents, messageLinks, platformDeletions }
   if (!isInitialNodeSnapshot(snapshot)) throw new Error('日志初始位置为空或格式不正确。')
   return snapshot
 }

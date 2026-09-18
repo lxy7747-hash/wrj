@@ -28,7 +28,9 @@ import { useSimulationStore } from '../../stores/simulation'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
-import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
+import { selectFileCommunicationLinks, FILE_COMMUNICATION_LABELS } from '../../features/situation/file-communication-links'
+import { selectFileDeviceStates } from '../../features/situation/file-device-events'
+import { selectFileMessageLinks } from '../../features/situation/file-message-links'
 import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
@@ -93,6 +95,7 @@ const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnap
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
   ? selectReplayNodes(filePlayback.localSnapshot, fileTime.value) : initialSnapshot.value?.nodes.filter(node => node.time <= 0) ?? [])
 const fileLinks = computed(() => selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [], fileTime.value))
+const fileMessageLinks = computed(() => initialSnapshot.value?.messageLinks ?? [])
 const fileStatus = computed<UiSimulationStatus>(() => !ownsFilePlayback.value || !filePlayback.localSnapshot ? 'STOPPED'
   : filePlayback.state === 'PLAYING' ? 'RUNNING' : filePlayback.state === 'COMPLETED' ? 'COMPLETED' : 'PAUSED')
 const fileSliderTime = ref(0)
@@ -209,13 +212,64 @@ watch(frame, (nextFrame) => {
 }, { immediate: true })
 
 const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
-const displayedLinks = computed(() => selectedScene.value
-  ? selectedScene.value.config.links.map(link => ({ linkId: link.id, type: link.type,
-    sourceName: selectedScene.value!.config.platforms.find(platform => platform.id === link.sourcePlatformId)!.name,
-    destinationName: selectedScene.value!.config.platforms.find(platform => platform.id === link.targetPlatformId)!.name,
-    live: null, configured: link }))
-  : situationLinks.value.map(link => ({ linkId: link.linkId, type: link.type, sourceName: link.sourceName,
-    destinationName: link.destinationName, live: link, configured: null })))
+const fileLinksForSummary = computed(() => {
+  if (sourceState.value !== 'FILE') return []
+  return fileLinks.value.map(link => {
+    const source = fileNodes.value.find(n => n.platformId === link.sourcePlatformId)
+    const target = fileNodes.value.find(n => n.platformId === link.targetPlatformId)
+    const typeLabel = FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type
+    return {
+      linkId: link.id,
+      sourceName: source?.name ?? link.sourcePlatformId,
+      destinationName: target?.name ?? link.targetPlatformId,
+      type: link.type,
+      typeLabel,
+    }
+  })
+})
+const displayedLinks = computed(() => {
+  if (selectedScene.value) {
+    return selectedScene.value.config.links.map(link => ({
+      linkId: link.id,
+      type: link.type,
+      sourceName: selectedScene.value!.config.platforms.find(platform => platform.id === link.sourcePlatformId)!.name,
+      destinationName: selectedScene.value!.config.platforms.find(platform => platform.id === link.targetPlatformId)!.name,
+      live: null,
+      configured: link,
+      file: null,
+    }))
+  }
+  if (sourceState.value === 'FILE') {
+    const visibleMsg = selectFileMessageLinks(fileMessageLinks.value, fileTime.value)
+    const activeIds = new Set(visibleMsg.map(m => m.id))
+    return fileLinks.value.map(link => {
+      const source = fileNodes.value.find(n => n.platformId === link.sourcePlatformId)
+      const target = fileNodes.value.find(n => n.platformId === link.targetPlatformId)
+      const isMsgActive = activeIds.has(link.id)
+      return {
+        linkId: link.id,
+        type: link.type,
+        sourceName: source?.name ?? link.sourcePlatformId,
+        destinationName: target?.name ?? link.targetPlatformId,
+        live: null,
+        configured: null,
+        file: {
+          ...link,
+          active: isMsgActive,
+        },
+      }
+    })
+  }
+  return situationLinks.value.map(link => ({
+    linkId: link.linkId,
+    type: link.type,
+    sourceName: link.sourceName,
+    destinationName: link.destinationName,
+    live: link,
+    configured: null,
+    file: null,
+  }))
+})
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
 const selectedConfiguredLink = computed(() => {
   const link = selectedScene.value?.config.links.find(link => link.id === selectedLinkId.value)
@@ -239,11 +293,85 @@ const displayedBusinessPlatforms = computed(() => initialSnapshot.value ? fileNo
 const supportingPlatforms = computed(() => (frame.value?.platforms ?? []).filter(
   (platform) => !BUSINESS_NODE_TYPES.has(platform.type),
 ))
-const jammers = computed(() => selectedScene.value
-  ? selectedScene.value.config.jammers.map(jammer => ({ jammerId: jammer.id, platformId: jammer.platformId,
-    power: jammer.defaultPower, frequency: jammer.frequency, bandwidth: jammer.bandwidth, active: null }))
-  : (frame.value?.platforms ?? []).flatMap((platform) => platform.jammers))
+const fileDeviceStates = computed(() => !selectedScene.value && sourceState.value === 'FILE'
+  ? selectFileDeviceStates(initialSnapshot.value?.deviceEvents ?? [], fileTime.value) : [])
+
+const fileJammers = computed(() => {
+  if (sourceState.value !== 'FILE' || !initialSnapshot.value) return []
+  const states = fileDeviceStates.value
+  const jammerNodes = initialSnapshot.value.nodes.filter(n =>
+    n.platformId.includes('jammer') || n.name.includes('干扰')
+    || initialSnapshot.value?.deviceEvents?.some(e => e.platformId === n.platformId && e.kind === 'JAMMING'),
+  )
+  return jammerNodes.map(node => {
+    const event = states.find(e => e.platformId === node.platformId && e.kind === 'JAMMING')
+    const deviceId = event?.deviceId || (node.platformId.includes('station') ? 'prophet_jammer' : 'airborne_jammer')
+    return {
+      jammerId: deviceId,
+      platformId: node.platformId,
+      platformName: node.name,
+      power: 100,
+      frequency: event?.frequencyHz ? event.frequencyHz / 1e6 : 2400,
+      bandwidth: event?.bandwidthHz ? event.bandwidthHz / 1e6 : 50,
+      active: event?.active ?? false,
+    }
+  })
+})
+
+const displayedJammers = computed(() => {
+  if (selectedScene.value) {
+    return selectedScene.value.config.jammers.map(jammer => ({
+      jammerId: jammer.id,
+      platformId: jammer.platformId,
+      platformName: selectedScene.value!.config.platforms.find(platform => platform.id === jammer.platformId)?.name ?? jammer.platformId,
+      power: jammer.defaultPower,
+      frequency: jammer.frequency,
+      bandwidth: jammer.bandwidth,
+      active: null,
+    }))
+  }
+  if (sourceState.value === 'FILE') return fileJammers.value
+  return (frame.value?.platforms ?? []).flatMap((platform) => platform.jammers.map(j => ({
+    ...j,
+    platformName: platform.name,
+  })))
+})
+
+const jammers = computed(() => displayedJammers.value)
+
+const fileTimelineEvents = computed(() => {
+  if (sourceState.value !== 'FILE' || !initialSnapshot.value?.deviceEvents) return []
+  return (initialSnapshot.value.deviceEvents ?? [])
+    .filter(e => e.time <= fileTime.value)
+    .slice(-20)
+    .reverse()
+    .map(e => {
+      const platform = fileNodes.value.find(n => n.platformId === e.platformId)
+      const platformName = platform?.name ?? e.platformId
+      const kindLabel = e.kind === 'JAMMING' ? '干扰事件' : '通信事件'
+      const actionLabel = e.active ? '启动' : '关闭'
+      const freqInfo = e.frequencyHz ? `，频率 ${(e.frequencyHz / 1e6).toFixed(0)} MHz，带宽 ${(e.bandwidthHz! / 1e6).toFixed(0)} MHz` : ''
+      return {
+        eventId: e.sourceEventId,
+        time: e.time,
+        frameId: '',
+        displayType: kindLabel,
+        description: `${platformName} ${actionLabel} ${e.deviceId}${freqInfo}`,
+      }
+    })
+})
+
 const displayedEvents = computed(() => frame.value ? events.value : [])
+const allDisplayedEvents = computed(() => {
+  if (sourceState.value === 'FILE') return fileTimelineEvents.value
+  return displayedEvents.value.map(event => ({
+    eventId: event.eventId,
+    time: event.time,
+    frameId: event.frameId,
+    displayType: event.type === 'DETECTION' ? '侦测' : '链路切换',
+    description: eventDescription(event),
+  }))
+})
 const detectionEvent = computed(() => displayedEvents.value.find(
   (event): event is DetectionEvent => event.type === 'DETECTION',
 ))
@@ -407,6 +535,21 @@ function openConfiguredLinkDetails(link: Link): void {
 }
 
 /**
+ * 点击全链路状态表格行时，打开详情或在地图中定位。
+ * @param link 链路表格行数据。
+ * @returns 无返回值。
+ */
+function handleLinkRowClick(link: typeof displayedLinks.value[number]): void {
+  if (link.live) {
+    openLinkDetails(link.live)
+  } else if (link.configured) {
+    openConfiguredLinkDetails(link.configured)
+  } else if (link.file) {
+    focusLinkOnMap(link.linkId)
+  }
+}
+
+/**
  * 打开当前固定帧的链路候选快照。
  * @returns 无返回值。
  * @sideeffect 显示链路候选集合弹框。
@@ -456,8 +599,12 @@ function focusLinkOnMap(linkId: string): void {
  */
 function focusInterferenceOnMap(jammerId: string, platformId: string): void {
   selectedNodeId.value = platformId
-  // 尚无运行证据时只定位配置所属节点，不推断干扰范围。
-  requestMapFocus(selectedScene.value ? 'node' : 'interference', selectedScene.value ? platformId : jammerId)
+  // 场景配置与本地文件模式只定位所属节点中心；在线仿真运行定位干扰范围。
+  if (selectedScene.value || sourceState.value === 'FILE') {
+    requestMapFocus('node', platformId)
+    return
+  }
+  requestMapFocus('interference', jammerId)
 }
 
 /**
@@ -472,6 +619,11 @@ function jammerTypeLabel(jammerId: string, platformId: string): string {
     const jammer = selectedScene.value.config.jammers.find(item => item.id === jammerId)!
     const platform = selectedScene.value.config.platforms.find(item => item.id === platformId)!
     return `${platform.category === 'AIR' ? '机载' : '地面'}${JAMMER_TYPE_LABELS[jammer.type]}干扰设备`
+  }
+  if (sourceState.value === 'FILE') {
+    const node = fileNodes.value.find(n => n.platformId === platformId)
+    const isAir = (node?.altitude ?? 0) > 0 || node?.platformId.includes('airborne') || (node?.name.includes('机载') ?? false)
+    return `${isAir ? '机载' : '地面'}干扰设备`
   }
   const location = frame.value?.platforms
     .find((platform) => platform.platformId === platformId)?.type === 'AIRBORNE_MISSION_CLUSTER'
@@ -498,7 +650,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   <section id="page-situation" class="situation-page" aria-labelledby="situation-title">
     <h2 id="situation-title" class="situation-page__semantic-title">态势主界面</h2>
 
-    <div>
     <SimulationToolbar
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
@@ -514,15 +665,25 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       @stop="requestStop"
       @update:speed="updateSpeed"
       @update:mode="updateMode"
-    />
-    <div v-if="sourceState === 'FILE' && filePlayback.replay" class="file-playback-progress">
-      <span>{{ fileTimeLabel(fileTime) }}</span>
-      <el-slider v-model="fileSliderTime" :min="0" :max="filePlayback.replay.durationS" :step="1"
-        :show-tooltip="false" :disabled="fileLoading || filePlayback.replay.durationS === 0" aria-label="文件播放进度"
-        @input="fileSliderDragging = true" @change="seekFileTime" />
-      <span>{{ fileTimeLabel(filePlayback.replay.durationS) }}</span>
-    </div>
-    </div>
+    >
+      <template #timeline>
+        <div v-if="sourceState === 'FILE' && filePlayback.replay" class="toolbar-timeline">
+          <span class="toolbar-timeline__time">{{ fileTimeLabel(fileTime) }}</span>
+          <el-slider
+            v-model="fileSliderTime"
+            :min="0"
+            :max="filePlayback.replay.durationS"
+            :step="1"
+            :show-tooltip="false"
+            :disabled="fileLoading || filePlayback.replay.durationS === 0"
+            aria-label="文件播放进度"
+            @input="fileSliderDragging = true"
+            @change="seekFileTime"
+          />
+          <span class="toolbar-timeline__time">{{ fileTimeLabel(filePlayback.replay.durationS) }}</span>
+        </div>
+      </template>
+    </SimulationToolbar>
 
     <div
       v-if="selectedScene || (frame && situationMetrics) || (sourceState === 'FILE' && initialSnapshot)"
@@ -560,7 +721,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             role="tab"
             :aria-selected="activeTab === tab.key"
             :class="{ active: activeTab === tab.key }"
-            :disabled="sourceState === 'FILE' && tab.key !== 'nodes'"
             @click="activeTab = tab.key"
           >{{ tab.label }}</button>
         </div>
@@ -647,7 +807,24 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </template>
 
           <div v-else-if="activeTab === 'links'" class="summary-group">
-            <ul>
+            <template v-if="sourceState === 'FILE'">
+              <ul v-if="fileLinksForSummary.length">
+                <li v-for="link in fileLinksForSummary" :key="link.linkId">
+                  <button
+                    type="button"
+                    class="summary-focus-button"
+                    :data-testid="`focus-link-${link.linkId}`"
+                    :aria-label="`在地图中定位${link.typeLabel} ${link.sourceName}至${link.destinationName}`"
+                    @click="focusLinkOnMap(link.linkId)"
+                  >
+                    <span>{{ link.sourceName }} → {{ link.destinationName }}</span>
+                    <small>{{ link.typeLabel }}</small>
+                  </button>
+                </li>
+              </ul>
+              <p v-else class="summary-empty-caption">暂无文件链路数据</p>
+            </template>
+            <ul v-else>
               <li v-for="link in situationLinks" :key="link.linkId">
                 <button
                   type="button"
@@ -663,8 +840,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
 
           <div v-else-if="activeTab === 'interference'" class="summary-group">
-            <ul>
-              <li v-for="jammer in jammers" :key="jammer.jammerId">
+            <ul v-if="displayedJammers.length">
+              <li v-for="jammer in displayedJammers" :key="jammer.jammerId">
                 <button
                   type="button"
                   class="summary-focus-button"
@@ -673,10 +850,21 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   @click="focusInterferenceOnMap(jammer.jammerId, jammer.platformId)"
                 >
                   <span>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</span>
-                  <small>{{ jammer.active ? '活动' : '待机' }} · {{ jammer.power }} W</small>
+                  <small>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }} · {{ jammer.power }} W</small>
                 </button>
               </li>
             </ul>
+            <p v-else class="summary-empty-caption">暂无干扰设备数据</p>
+          </div>
+
+          <div v-else-if="sourceState === 'FILE'" class="summary-group">
+            <h3>文件回放时序</h3>
+            <dl class="timing-list">
+              <div><dt>来源文件</dt><dd>{{ initialSnapshot?.fileName ?? '未知文件' }}</dd></div>
+              <div><dt>当前时刻</dt><dd>{{ fileTimeLabel(fileTime) }} ({{ fileTime.toFixed(1) }} s)</dd></div>
+              <div><dt>总时长</dt><dd>{{ fileTimeLabel(filePlayback.replay?.durationS ?? 0) }}</dd></div>
+              <div><dt>播放状态</dt><dd>{{ fileStatus === 'PLAYING' ? '播放中' : fileStatus === 'PAUSED' ? '已暂停' : '已就绪' }} · {{ ownsFilePlayback ? filePlayback.speed : 1 }}x</dd></div>
+            </dl>
           </div>
 
           <div v-else-if="frame" class="summary-group">
@@ -701,6 +889,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :frame="frame"
           :initial-nodes="initialSnapshot ? fileNodes : undefined"
           :file-links="fileLinks"
+          :file-message-links="fileMessageLinks"
           :file-device-events="initialSnapshot?.deviceEvents"
           :file-time="fileTime"
           :links="situationLinks"
@@ -750,14 +939,18 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   role="button"
                   :data-link-id="link.linkId"
                   :class="{ 'is-exception': link.live && link.live.status !== 'UP' }"
-                  @click="link.live ? openLinkDetails(link.live) : openConfiguredLinkDetails(link.configured!)"
-                  @keydown.enter="link.live ? openLinkDetails(link.live) : openConfiguredLinkDetails(link.configured!)"
+                  @click="handleLinkRowClick(link)"
+                  @keydown.enter="handleLinkRowClick(link)"
                 >
                   <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small>{{ link.linkId }}</small></td>
-                  <td>{{ link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '') }}</td>
-                  <td>{{ link.live ? link.live.snrDb.toFixed(2) : '暂无数据' }}</td>
-                  <td>{{ link.live ? formatBer(link.live.ber) : '暂无数据' }}</td>
-                  <td><LinkStateBadge v-if="link.live" :link="link.live" /><span v-else>暂无数据</span></td>
+                  <td>{{ link.file ? (link.type === 'DATALINK' ? '数传' : (FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type).replace('通信', '')) : (link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '')) }}</td>
+                  <td>{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
+                  <td>{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
+                  <td>
+                    <LinkStateBadge v-if="link.live" :link="link.live" />
+                    <span v-else-if="link.file" :class="link.file.active ? 'link-badge--active' : 'link-badge--registered'">{{ link.file.active ? '活动' : '登记' }}</span>
+                    <span v-else>暂无数据</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -766,12 +959,16 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--jammer">
-          <div class="panel-heading"><div><strong>干扰 / 侦测设备</strong></div><span class="panel-heading__more">{{ sourceState === 'FILE' ? '暂无数据' : `${jammers.length} 台` }}</span></div>
-          <div v-if="jammers.length" class="jammer-list">
+          <div class="panel-heading">
+            <div><strong>干扰 / 侦测设备</strong></div>
+            <span class="panel-heading__more">{{ sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
+          </div>
+          <div v-if="displayedJammers.length" class="jammer-list">
             <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
-            <article v-for="jammer in jammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
+            <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
+            <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
               <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
-              <small>搭载平台：{{ selectedScene ? selectedScene.config.platforms.find(platform => platform.id === jammer.platformId)?.name : getPlatformName(jammer.platformId, frame!) }} · {{ jammer.platformId }}</small>
+              <small>搭载平台：{{ jammer.platformName }} · {{ jammer.platformId }}</small>
               <dl>
                 <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
                 <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
@@ -787,11 +984,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
 
         <section class="telemetry-section telemetry-section--events">
-          <div class="panel-heading"><div><strong>同帧事件</strong></div><span class="panel-heading__more">累计 {{ frame ? `${displayedEvents.length} 条` : '暂无数据' }}</span></div>
-          <ol v-if="displayedEvents.length" class="event-list">
-            <li v-for="event in displayedEvents" :key="event.eventId">
-              <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.type === 'DETECTION' ? '侦测' : '链路切换' }}</strong></div>
-              <p>{{ eventDescription(event) }}</p><small>{{ event.eventId }} · {{ event.frameId }}</small>
+          <div class="panel-heading">
+            <div><strong>同帧事件</strong></div>
+            <span class="panel-heading__more">累计 {{ allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
+          </div>
+          <ol v-if="allDisplayedEvents.length" class="event-list">
+            <li v-for="event in allDisplayedEvents" :key="event.eventId">
+              <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
+              <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
             </li>
           </ol>
           <el-empty v-else class="telemetry-empty-state" description="暂无当前运行事件" :image-size="48" />
@@ -836,14 +1036,38 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 </template>
 
 <style scoped>
-.file-playback-progress {
+.toolbar-timeline {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0 1rem;
-  color: var(--console-text-muted);
+  gap: 10px;
+  min-width: 22rem;
+  max-width: 38rem;
+  width: clamp(22rem, 28vw, 38rem);
+  margin-left: 8px;
 }
-.file-playback-progress span { white-space: nowrap; }
+
+.toolbar-timeline__time {
+  color: var(--console-text-muted);
+  font-family: Consolas, "SFMono-Regular", monospace;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.toolbar-timeline :deep(.el-slider) {
+  --el-slider-main-bg-color: var(--console-cyan, #42d8ff);
+  --el-slider-runway-bg-color: #16283c;
+  --el-slider-stop-bg-color: #27435f;
+  flex: 1;
+  min-width: 12rem;
+}
+
+@media (max-width: 1400px) {
+  .toolbar-timeline {
+    min-width: 16rem;
+    max-width: 26rem;
+    width: clamp(16rem, 22vw, 26rem);
+  }
+}
 
 .situation-page {
   display: grid;
@@ -894,6 +1118,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .scene-summary__tabs button:last-child { border-right: 0; }
 .scene-summary__tabs button.active { color: var(--console-cyan); background: rgba(66,216,255,.1); }
 .scene-summary__content { min-height: 0; overflow-y: auto; padding: .5rem .6rem; }
+.summary-empty-caption { margin: 0; padding: .6rem .85rem; color: var(--console-text-muted); font-size: var(--console-font-size-min); }
 .summary-group + .summary-group { margin-top: .55rem; }
 .summary-group h3 { margin: 0 0 .3rem; color: var(--console-text-muted); font-size: var(--console-font-size-min); font-weight: 600; }
 .summary-group ul, .event-list { display: grid; gap: .28rem; margin: 0; padding: 0; list-style: none; }
@@ -931,6 +1156,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
 .link-table td strong, .link-table td small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .link-table td small { margin-top: .1rem; color: #6b8299; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; }
+.link-badge--active { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #49e49a; background: rgba(73, 228, 154, .15); font-size: 11px; }
+.link-badge--registered { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #829db3; background: rgba(130, 157, 179, .15); font-size: 11px; }
 .jammer-list { display: block; padding: 0; }
 .jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
 .jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }

@@ -87,16 +87,34 @@ export interface AfsimEventLog {
 
 interface LogBlock { timeText: string; type: string; line: number; endLine: number; headerText: string; lines: string[]; csvFields?: Record<string, string> }
 
+/**
+ * WEAPON_TURNED_ON/OFF 的 CSV 字段声明漏写了 x、y、z 三列，导致数据行比声明多 11 列且姿态列整体错位
+ * （真实数据中 heading 位置实际落在 ECI 的 x 分量 -2.47850191e+06）。这两类事件允许出现未声明的
+ * 扩展列，并且只校验 alt 及其之前的字段；heading 起的姿态字段一律不读，避免把坐标当成角度。
+ */
+const MISALIGNED_DECLARATION = new Set(['WEAPON_TURNED_ON', 'WEAPON_TURNED_OFF'])
+
 const REQUIRED_FIELDS: Record<string, string[]> = {
   PLATFORM_ADDED: ['Type', 'Side'],
+  PLATFORM_DELETED: ['Type', 'Side'],
   MOVER_TURNED_ON: ['Mover', 'Type', 'LLA', 'Heading', 'Pitch', 'Roll', 'Speed'],
   COMM_TURNED_ON: ['Comm', 'Type'],
+  COMM_TURNED_OFF: ['Comm', 'Type'],
   LINK_ADDED_TO_MANAGER: ['linked to'],
   SIMULATION_STARTING: ['Year', 'Month', 'Day', 'Hour', 'Minute', 'Second'],
   SIMULATION_COMPLETE: ['Year', 'Month', 'Day', 'Hour', 'Minute', 'Second'],
   MESSAGE_TRANSMITTED: ['System', 'Number', 'DataTag', 'Type', 'Size'],
   MESSAGE_HOP: ['System', 'Number', 'DataTag', 'Type', 'Size', 'Destination'],
   MESSAGE_RECEIVED: ['System', 'Number', 'DataTag', 'Type', 'Size'],
+  // 干扰请求只校验身份与请求数字段；频率和带宽的数值有效性由 buildFileDeviceEvents 判定。
+  JAMMING_REQUEST_INITIATED: ['weapon', 'current_mode', 'active_requests_(eM_Xmtrs)'],
+  JAMMING_REQUEST_UPDATED: ['weapon', 'current_mode', 'active_requests_(eM_Xmtrs)'],
+  JAMMING_REQUEST_CANCELED: ['weapon', 'current_mode', 'active_requests_(eM_Xmtrs)'],
+  WEAPON_MODE_ACTIVATED: ['weapon', 'mode'],
+  WEAPON_MODE_DEACTIVATED: ['weapon', 'mode'],
+  // 只登记身份字段；声明错位点之后的姿态列一律不校验、不读取。几何字段存在时由真实数据冒烟比对位置文件。
+  WEAPON_TURNED_ON: ['type', 'system_platform', 'system_type'],
+  WEAPON_TURNED_OFF: ['type', 'system_platform', 'system_type'],
 }
 
 /** 将 token 的度分秒转换为经纬度；axis 限定方向及合法范围，非法值不做纠正。 */
@@ -217,12 +235,15 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
       const extra = cells.slice(columns.length)
       if (extra.some(Boolean)) {
         fields.csvExtraColumns = JSON.stringify(extra)
-        if (Object.hasOwn(REQUIRED_FIELDS, type) || type === 'PLATFORM_INITIALIZED') throw new Error('CSV 事件含未声明的非空字段。')
+        // 已知声明缺列的事件，扩展列属于来源缺陷而不是解析错误，仍需原样保留。
+        if ((Object.hasOwn(REQUIRED_FIELDS, type) && !MISALIGNED_DECLARATION.has(type))
+          || type === 'PLATFORM_INITIALIZED') throw new Error('CSV 事件含未声明的非空字段。')
       }
       const aliases: Record<string, string> = { Type: 'type', Side: 'side', Comm: 'system', Mover: 'system',
         System: 'comm', Number: 'message_serial_number', DataTag: 'data_tag',
         Year: 'year', Month: 'month', Day: 'day', Hour: 'hour', Minute: 'minute', Second: 'second' }
-      if (type === 'COMM_TURNED_ON' || type === 'MOVER_TURNED_ON') aliases.Type = 'system_type'
+      // COMM_TURNED_ON/OFF 的 Type 列承载设备类型（system_type），Comm 列承载设备名称（system）。
+      if (type === 'COMM_TURNED_ON' || type === 'COMM_TURNED_OFF' || type === 'MOVER_TURNED_ON') aliases.Type = 'system_type'
       if (type.startsWith('MESSAGE_')) aliases.Type = 'message_type'
       if (type === 'MESSAGE_HOP') { aliases.System = 'receiver_system'; aliases.Destination = 'destination' }
       for (const [key, source] of Object.entries(aliases)) if (fields[source] !== undefined) fields[key] = fields[source]!

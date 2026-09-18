@@ -25,6 +25,8 @@
     "src/features/situation/initial-nodes.ts",
     "src/features/situation/file-communication-links.ts",
     "src/features/situation/file-device-events.ts",
+    "src/features/situation/file-message-links.ts",
+    "src/features/situation/platform-lifecycle.ts",
     "src/features/situation/position-updates.ts",
     "src/features/replays/local-replay.ts",
     "src/features/data-exchange/csv-contract.ts",

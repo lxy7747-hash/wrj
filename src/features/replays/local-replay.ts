@@ -1,4 +1,5 @@
 import { isInitialNodeSnapshot, type InitialNodeSnapshot, type SituationMapNode } from '../situation/initial-nodes'
+import { isPlatformPresentAt } from '../situation/platform-lifecycle'
 import { isPositionUpdate, type PositionUpdate } from '../situation/position-updates'
 
 /** 本机文件的只读回放快照，与 Mock 遥测帧和引擎运行编号分离。 */
@@ -34,7 +35,9 @@ export function isLocalReplaySnapshot(value: unknown): value is LocalReplaySnaps
   const ids = new Set<string>()
   let count = 0
   let duration = Math.max(0, ...snapshot.initial.nodes.map((node) => node.time), ...(snapshot.initial.connections?.map((record) => record.time) ?? []),
-    ...(snapshot.initial.deviceEvents?.map(event => event.time) ?? []))
+    ...(snapshot.initial.deviceEvents?.map(event => event.time) ?? []),
+    // 平台删除时刻必须计入总时长，否则回放游标永远到不了删除时刻，节点也就永远不会移除。
+    ...(snapshot.initial.platformDeletions?.map(deletion => deletion.time) ?? []))
   for (const track of snapshot.tracks) {
     if (!track || typeof track !== 'object') return false
     const node = initialById.get(track.platformId)
@@ -56,10 +59,14 @@ export function isLocalReplaySnapshot(value: unknown): value is LocalReplaySnaps
  * 二分查找所选时刻各节点最后一条位置；向后拖动也从初始化基线重算，不泄露未来位置。
  * @param snapshot 本次加载的只读历史快照。
  * @param seconds 回放游标秒数；记录之间保持上次位置，不补造插值轨迹。
+ * @remarks 平台删除时刻不晚于游标时，该节点从结果中移除；没有删除记录时行为与旧版本一致。
  */
 export function selectReplayNodes(snapshot: LocalReplaySnapshot, seconds: number): SituationMapNode[] {
   const tracks = new Map(snapshot.tracks.map((track) => [track.platformId, track.positions]))
-  return snapshot.initial.nodes.filter((node) => node.time <= seconds).map((node) => {
+  const deletions = snapshot.initial.platformDeletions ?? []
+  return snapshot.initial.nodes
+    .filter((node) => node.time <= seconds && isPlatformPresentAt(deletions, node.platformId, seconds))
+    .map((node) => {
     const positions = tracks.get(node.platformId) ?? []
     let low = 0
     let high = positions.length

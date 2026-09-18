@@ -58,4 +58,11 @@ export const MAP_CONFIG = {
   activeInterferenceRadiusMeters: 12000,
   /** 文件干扰节点范围圈的半径（显示约定，非 CSV 遥测、非引擎参数）：24 海里 × 1852 米/海里。 */
   fileInterferenceRadiusMeters: 24 * 1852,
+  /**
+   * 业务链路流向动画的虚线节奏，单位为 SVG 用户单位（像素）。
+   * 「实线长度 空档长度」之和即动画周期，滚动一个周期可无缝循环。
+   */
+  linkFlowDashPattern: [5, 27],
+  /** 流向动画滚动一个周期所需秒数；越小越快。 */
+  linkFlowCycleSeconds: 1.4,
 } as const

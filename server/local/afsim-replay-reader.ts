@@ -23,7 +23,9 @@ export async function readLocalReplay(initialPath: string, positionPath: string 
   let issueCount = 0
   let recordCount = 0
   let durationS = Math.max(0, ...initial.nodes.map((node) => node.time), ...(initial.connections?.map((record) => record.time) ?? []),
-    ...(initial.deviceEvents?.map(event => event.time) ?? []))
+    ...(initial.deviceEvents?.map(event => event.time) ?? []),
+    // 平台删除时刻必须与 isLocalReplaySnapshot 的口径一致，否则真实回放会被自身校验拒绝。
+    ...(initial.platformDeletions?.map(deletion => deletion.time) ?? []))
   const issues: LocalReplaySnapshot['issues'] = []
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]!.replace(/\r$/, '')

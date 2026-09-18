@@ -133,6 +133,7 @@ onBeforeUnmount(() => {
           :frame="null"
           :initial-nodes="fileNodes"
           :file-links="fileLinks"
+          :file-message-links="localSnapshot.initial.messageLinks"
           :file-device-events="localSnapshot?.initial.deviceEvents"
           :file-time="replay?.currentTimeS ?? 0"
           :links="[]"
@@ -194,7 +195,10 @@ onBeforeUnmount(() => {
           <el-button type="primary" data-testid="replay-play" :disabled="replay.durationS === 0" @click="togglePlayback">{{ state === 'PLAYING' ? '暂停' : '播放' }}</el-button>
           <el-button :disabled="replay.currentTimeS >= replay.durationS" @click="replayStore.step('forward')">前进 1 秒</el-button>
           <el-select :model-value="speed" aria-label="回放倍速" @update:model-value="changeSpeed">
-            <el-option v-for="value in [0.5, 1, 2, 4]" :key="value" :value="value" :label="`${value}×`" />
+            <el-option :value="1" label="倍速 ×1" />
+            <el-option :value="2" label="×2" />
+            <el-option :value="4" label="×4" />
+            <el-option :value="8" label="×8" />
           </el-select>
         </div>
       </section>
@@ -385,7 +389,7 @@ onBeforeUnmount(() => {
 }
 
 .replay-controls__toolbar :deep(.el-select) {
-  width: 6rem;
+  width: 6.8rem;
 }
 
 @media (max-width: 900px) {

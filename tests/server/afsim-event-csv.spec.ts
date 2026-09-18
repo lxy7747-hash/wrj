@@ -25,6 +25,27 @@ const CSV = [
   '10,SIMULATION_COMPLETE,2025,9,15,0,0,1.000000e+01',
 ].join('\n')
 
+const MESSAGE_LINK_CSV = [
+  '! PLATFORM_ADDED,time<time>,event<string>,platform<string>,side<string>,type<string>,ps<double>,lat<lat>,lon<lon>',
+  '! PLATFORM_INITIALIZED,time<time>,event<string>,platform<string>,side<string>,type<string>,lat<lat>,lon<lon>,alt<double>,heading<angle>,pitch<angle>,roll<angle>,ned_speed<double>',
+  '! MOVER_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>,lat<lat>,lon<lon>,alt<double>,heading<double>,pitch<double>,roll<double>,ned_speed<double>',
+  '! COMM_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>',
+  '! MESSAGE_TRANSMITTED,time<time>,event<string>,platform<string>,side<string>,comm<string>,message_serial_number<int>,data_tag<double>,message_type<string>,message_size<int>',
+  '! MESSAGE_RECEIVED,time<time>,event<string>,platform<string>,side<string>,comm<string>,message_serial_number<int>,data_tag<double>,message_type<string>,message_size<int>',
+  '! PLATFORM_DELETED,time<time>,event<string>,platform<string>,side<string>,type<string>,lat<lat>,lon<lon>,alt<double>',
+  '0,PLATFORM_ADDED,A,blue,AIR,',
+  '0,PLATFORM_ADDED,B,red,AIR,',
+  '0,PLATFORM_INITIALIZED,A,blue,AIR,25,119,3000,0,0,0,100',
+  '0,PLATFORM_INITIALIZED,B,red,AIR,26,120,3000,0,0,0,100',
+  '0,MOVER_TURNED_ON,A,blue,Mover,mover,WSF_AIR_MOVER,25,119,3000,0,0,0,100',
+  '0,MOVER_TURNED_ON,B,red,Mover,mover,WSF_AIR_MOVER,26,120,3000,0,0,0,100',
+  '0,COMM_TURNED_ON,A,blue,Comm,sat_link,WSF_RADIO_TRANSCEIVER',
+  '0,COMM_TURNED_ON,B,red,Comm,sat_link,WSF_RADIO_TRANSCEIVER',
+  '1,MESSAGE_TRANSMITTED,A,blue,sat_link,7,0,CMD_ORDER,512',
+  '1.0004,MESSAGE_RECEIVED,B,red,sat_link,7,0,CMD_ORDER,512',
+  '12,PLATFORM_DELETED,B,red,AIR,26,120,3000',
+].join('\n')
+
 describe('AFSIM 多事件 CSV 兼容', () => {
   it('按事件声明解析初始位置、设备与关联，保留消息精度及引用字段', () => {
     const result = parseAfsimEventLog(`\uFEFF${CSV.replaceAll('\n', '\r\n')}`)
@@ -105,6 +126,8 @@ describe('AFSIM 多事件 CSV 兼容', () => {
       await writeFile(positions, 'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n3,A,120,25,3000,100,90\n')
       const initial = await request(server.httpServer).get('/api/v1/situation/initial-nodes').set(headers).expect(200)
       expect(initial.body.data.nodes).toHaveLength(2)
+      // 阵营必须随初始节点接口一起下发，否则地图无法区分红蓝。
+      expect(initial.body.data.nodes.map((node: { side?: string }) => node.side)).toEqual(['blue', 'red'])
       expect(initial.body.data.connections).toHaveLength(1)
       expect(initial.body.data.deviceEvents).toEqual([
         expect.objectContaining({ platformId: 'A', deviceId: 'tx', kind: 'COMMUNICATION', active: true, time: 0 }),
@@ -199,6 +222,78 @@ describe('AFSIM 多事件 CSV 兼容', () => {
       expect(restored.body.data.initial.deviceEvents).toHaveLength(2)
       await writeFile(source, CSV.replace('AIR,25,119', 'AIR,,119'))
       await request(server.httpServer).get('/api/v1/replays/local-file').set(headers).expect(503)
+    } finally {
+      await server.close()
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('初始节点接口下发业务链路与平台删除记录，回放时长被删除时刻延长', async () => {
+    const fsModule = 'node:fs/' + 'promises'
+    const osModule = 'node:' + 'os'
+    const pathModule = 'node:' + 'path'
+    const readerModule = '../../server/local/' + 'afsim-log-reader.js'
+    const replayModule = '../../server/local/' + 'afsim-replay-reader.js'
+    const appModule = '../../server/' + 'app.js'
+    const supertestModule = 'super' + 'test'
+    const { mkdtemp, writeFile, rm } = await import(fsModule)
+    const { tmpdir } = await import(osModule)
+    const { join } = await import(pathModule)
+    const { readInitialNodes } = await import(readerModule)
+    const { readLocalReplay } = await import(replayModule)
+    const { createMockServer } = await import(appModule)
+    const { default: request } = await import(supertestModule)
+    const directory = await mkdtemp(join(tmpdir(), 'wrj-message-links-'))
+    const source = join(directory, 'scenario_events.csv')
+    const positions = join(directory, 'position.csv')
+    const server = createMockServer({
+      loadInitialNodes: () => readInitialNodes(source),
+      loadLocalReplay: () => readLocalReplay(source, positions),
+    })
+    const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
+    try {
+      await writeFile(source, MESSAGE_LINK_CSV)
+      await writeFile(positions, 'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n3,A,119,25,3000,100,90\n')
+      const initial = await request(server.httpServer).get('/api/v1/situation/initial-nodes').set(headers).expect(200)
+      // 业务链路必须在服务端算好后随初始快照下发，否则前端地图链路图层永远为空。
+      expect(initial.body.data.messageLinks).toHaveLength(1)
+      const [link] = initial.body.data.messageLinks
+      expect(link).toMatchObject({
+        id: JSON.stringify(['SAT', 'A', 'sat_link', 'B', 'sat_link']),
+        type: 'SAT',
+        sourcePlatformId: 'A',
+        targetPlatformId: 'B',
+        sourceDeviceId: 'sat_link',
+        targetDeviceId: 'sat_link',
+        firstTimeS: 1.0004,
+        lastTimeS: 1.0004,
+        messageCount: 1,
+        messageTypes: ['CMD_ORDER'],
+      })
+      // 时延保留原始的浮点差值，不做四舍五入后改写。
+      expect(link.medianDelayS).toBeCloseTo(0.0004, 9)
+      expect(link.records).toHaveLength(1)
+      expect(link.records[0]).toMatchObject({
+        sourceEventId: 'LOG-L17',
+        transmitEventId: 'LOG-L16',
+        time: 1.0004,
+        messageType: 'CMD_ORDER',
+        messageSizeBits: 512,
+        source: { platformName: 'A', communicationName: 'sat_link' },
+        target: { platformName: 'B', communicationName: 'sat_link' },
+      })
+      expect(link.records[0].delayS).toBeCloseTo(0.0004, 9)
+      expect(initial.body.data.platformDeletions).toEqual([
+        { sourceEventId: 'LOG-L18', platformId: 'B', time: 12 },
+      ])
+      const replay = await request(server.httpServer).get('/api/v1/replays/local-file').set(headers).expect(200)
+      expect(isLocalReplaySnapshot(replay.body.data)).toBe(true)
+      // 位置记录末刻只有 3 秒，删除时刻 12 秒必须计入总时长，否则游标到不了删除时刻。
+      expect(replay.body.data.durationS).toBe(12)
+      expect(replay.body.data.initial.messageLinks).toHaveLength(1)
+      const idsAt = (seconds: number) => selectReplayNodes(replay.body.data, seconds).map((node: { platformId: string }) => node.platformId)
+      expect(idsAt(11.9)).toEqual(['A', 'B'])
+      expect(idsAt(12)).toEqual(['A'])
     } finally {
       await server.close()
       await rm(directory, { recursive: true, force: true })
