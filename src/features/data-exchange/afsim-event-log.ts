@@ -1,3 +1,5 @@
+import { parseCsvLine } from './csv-contract'
+
 /** 事件日志的原始字段；保留单位、消息编号和 DataTag 的文本精度。 */
 export interface AfsimLogEvent {
   id: string
@@ -83,7 +85,7 @@ export interface AfsimEventLog {
   }
 }
 
-interface LogBlock { timeText: string; type: string; line: number; endLine: number; headerText: string; lines: string[] }
+interface LogBlock { timeText: string; type: string; line: number; endLine: number; headerText: string; lines: string[]; csvFields?: Record<string, string> }
 
 const REQUIRED_FIELDS: Record<string, string[]> = {
   PLATFORM_ADDED: ['Type', 'Side'],
@@ -123,8 +125,20 @@ function readUnitNumber(text: string, unit: string): number {
 }
 
 /** 从运动器开启事件提取初始状态，保留真实位置，不推算后续轨迹。 */
-function readInitialState(event: AfsimLogEvent): AfsimInitialState {
+function readInitialState(event: AfsimLogEvent, csv = false): AfsimInitialState {
   const fields = event.fields
+  if (csv) {
+    const number = (key: string, min = -Infinity, max = Infinity) => {
+      const value = Number(fields[key])
+      if (!fields[key]?.trim() || !Number.isFinite(value) || value < min || value > max) throw new Error(`字段 ${key} 必须为范围内的有限数值。`)
+      return value
+    }
+    // AFSIM 事件 CSV 的姿态为弧度，位置 CSV 的 HEADING 为度；原始字段仍原样保留。
+    return { time: event.time, sourceEventId: event.id,
+      latitude: number('lat', -90, 90), longitude: number('lon', -180, 180), altitudeMeters: number('alt'),
+      headingDegrees: number('heading') * 180 / Math.PI, pitchDegrees: number('pitch') * 180 / Math.PI,
+      rollDegrees: number('roll') * 180 / Math.PI, speedMetersPerSecond: number('ned_speed', 0) }
+  }
   const lla = fields.LLA!.split(/\s+/)
   if (lla.length !== 4) throw new Error('LLA 必须包含纬度、经度、高度及米制单位。')
   const speed = readUnitNumber(fields.Speed!.split('*')[0]!.trim(), 'm/s')
@@ -151,7 +165,7 @@ function readEndpoint(text: string): AfsimConnectionEndpoint {
 
 /**
  * 解析已完整读取的 AFSIM 事件文本。
- * @param text 日志全文（虽然扩展名可能为 CSV，内容仍按事件和续行解析）。
+ * @param text 旧版多行事件文本或包含 ! 事件字段声明的 CSV 全文。
  * @returns 节点、设备、连接登记、事件及带源行号的问题清单。
  * @remarks ponytail: 本阶段只处理完整文件快照，不负责监听、增量分帧或仿真指标推算。
  */
@@ -164,6 +178,63 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
   const connections: AfsimConnectionRecord[] = []
   let block: LogBlock | null = null
   let previousTime = -Infinity
+  const csvSchemas = new Map<string, string[]>()
+
+  /** CSV 按各事件声明取列，不按统一表头猜测；空的尾部扩展列不产生业务数据。 */
+  function readCsvRecord(line: string, lineNumber: number): void {
+    try {
+      const cells = parseCsvLine(line)?.map(cell => cell.trim())
+      if (!cells) throw new Error('CSV 引号未闭合。')
+      if (line.startsWith('!')) {
+        const type = cells[0]!.slice(1).trim()
+        const columns = cells.slice(1).map(cell => {
+          const match = /^(.+)<[^<>]+>$/.exec(cell)
+          if (!match) throw new Error('CSV 事件字段声明格式不正确。')
+          return match[1]!
+        })
+        // LINK_* 等声明省略公共 time/event 两列，但数据行始终包含这两列。
+        if (columns[0] !== 'time') columns.unshift('time', 'event')
+        if (!/^[A-Z][A-Z_0-9]*$/.test(type) || columns[1] !== 'event'
+          || (type !== 'MESSAGE_HOP' && new Set(columns).size !== columns.length)
+          || csvSchemas.has(type)) throw new Error('CSV 事件声明重复或字段不唯一。')
+        // MESSAGE_HOP 声明拼接了外层接收信息和内层消息；重复列加序号，避免覆盖外层证据。
+        const counts = new Map<string, number>()
+        columns.forEach((key, index) => {
+          const count = (counts.get(key) ?? 0) + 1
+          counts.set(key, count)
+          if (count > 1) columns[index] = `${key}#${count}`
+        })
+        csvSchemas.set(type, columns)
+        return
+      }
+      const type = cells[1] ?? ''
+      const columns = csvSchemas.get(type)
+      if (!columns) throw new Error(`CSV 事件 ${type} 缺少字段声明。`)
+      if (!cells[0]) throw new Error('仿真时间不能为空。')
+      const fields: Record<string, string> = Object.create(null)
+      columns.forEach((key, index) => { fields[key] = cells[index] ?? '' })
+      // 消息记录可能比声明多出空的可选尾列；未知非空扩展不得静默丢弃。
+      const extra = cells.slice(columns.length)
+      if (extra.some(Boolean)) {
+        fields.csvExtraColumns = JSON.stringify(extra)
+        if (Object.hasOwn(REQUIRED_FIELDS, type) || type === 'PLATFORM_INITIALIZED') throw new Error('CSV 事件含未声明的非空字段。')
+      }
+      const aliases: Record<string, string> = { Type: 'type', Side: 'side', Comm: 'system', Mover: 'system',
+        System: 'comm', Number: 'message_serial_number', DataTag: 'data_tag',
+        Year: 'year', Month: 'month', Day: 'day', Hour: 'hour', Minute: 'minute', Second: 'second' }
+      if (type === 'COMM_TURNED_ON' || type === 'MOVER_TURNED_ON') aliases.Type = 'system_type'
+      if (type.startsWith('MESSAGE_')) aliases.Type = 'message_type'
+      if (type === 'MESSAGE_HOP') { aliases.System = 'receiver_system'; aliases.Destination = 'destination' }
+      for (const [key, source] of Object.entries(aliases)) if (fields[source] !== undefined) fields[key] = fields[source]!
+      if (fields.message_size?.trim()) fields.Size = `${fields.message_size} bits`
+      block = { timeText: cells[0]!, type, line: lineNumber, endLine: lineNumber, headerText: line,
+        lines: [fields.receiver ?? fields.platform ?? fields.source_platform ?? ''], csvFields: fields }
+      finishBlock()
+    } catch (error) {
+      issues.push({ severity: 'ERROR', line: lineNumber, rawText: line,
+        message: error instanceof Error ? error.message : 'CSV 事件解析失败。' })
+    }
+  }
 
   /** 提交一个多行事件，原始事件与派生实体共享源事件标识；无效记录不得生成实体。 */
   function finishBlock(): void {
@@ -178,27 +249,32 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
     }
     const body = current.lines.map((line) => line.trim().replace(/\\$/, '').trim()).join(' ')
     const labels = [...body.matchAll(/\b(linked to|[A-Za-z_][A-Za-z0-9_]*):\s*/g)]
-    const fields: Record<string, string> = Object.create(null)
+    const fields: Record<string, string> = current.csvFields ?? Object.create(null)
     const event: AfsimLogEvent = {
       id: `LOG-L${current.line}`, time, type: current.type,
       sourceLine: current.line, endLine: current.endLine,
-      subject: body.slice(0, labels[0]?.index ?? body.length).trim(), fields,
+      subject: current.csvFields ? current.lines[0]! : body.slice(0, labels[0]?.index ?? body.length).trim(), fields,
     }
     events.push(event)
     if (time < previousTime) issues.push({ severity: 'WARNING', line: current.line, message: '事件时间倒退，结果仍保留源文件顺序。' })
     previousTime = time
     try {
-      labels.forEach((label, index) => {
+      if (!current.csvFields) labels.forEach((label, index) => {
         const key = label[1]!
         if (Object.hasOwn(fields, key)) throw new Error(`字段 ${key} 在同一事件中重复。`)
         fields[key] = body.slice(label.index! + label[0].length, labels[index + 1]?.index ?? body.length).trim()
       })
-      if (!Object.hasOwn(REQUIRED_FIELDS, event.type)) {
+      const required = current.csvFields && (event.type === 'MOVER_TURNED_ON' || event.type === 'PLATFORM_INITIALIZED')
+        ? ['lat', 'lon', 'alt', 'heading', 'pitch', 'roll', 'ned_speed']
+        : current.csvFields && event.type === 'LINK_ADDED_TO_MANAGER'
+          ? ['source_platform', 'source_comm', 'source_address', 'destination_platform', 'destination_comm', 'destination_address']
+          : REQUIRED_FIELDS[event.type]
+      if (!required) {
         event.unparsedText = rawText
         issues.push({ severity: 'WARNING', line: current.line, message: `未识别事件类型 ${event.type}，已保留原始内容。` })
         return
       }
-      for (const key of REQUIRED_FIELDS[event.type]!) {
+      for (const key of required) {
         if (!fields[key]) throw new Error(`事件缺少字段 ${key}。`)
       }
       if (!event.type.startsWith('SIMULATION_') && event.subject === '') throw new Error('事件缺少主体名称。')
@@ -218,8 +294,8 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
           name: event.subject, type: fields.Type!, side: fields.Side!,
           createdAt: time, sourceEventId: event.id, initialState: null,
         })
-      } else if (event.type === 'MOVER_TURNED_ON') {
-        const state = readInitialState(event)
+      } else if (event.type === 'MOVER_TURNED_ON' || (current.csvFields && event.type === 'PLATFORM_INITIALIZED')) {
+        const state = readInitialState(event, Boolean(current.csvFields))
         const previous = initialStates.get(event.subject)
         if (!previous || time < previous.time) initialStates.set(event.subject, state)
       } else if (event.type === 'COMM_TURNED_ON') {
@@ -230,8 +306,12 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
           platformName: event.subject, name: fields.Comm!, type: fields.Type!, enabledAt: time, sourceEventId: event.id,
         })
       } else if (event.type === 'LINK_ADDED_TO_MANAGER') {
-        const source = readEndpoint(event.subject)
-        const target = readEndpoint(fields['linked to']!)
+        const source = current.csvFields
+          ? { platformName: fields.source_platform!, communicationName: fields.source_comm!, address: fields.source_address! }
+          : readEndpoint(event.subject)
+        const target = current.csvFields
+          ? { platformName: fields.destination_platform!, communicationName: fields.destination_comm!, address: fields.destination_address! }
+          : readEndpoint(fields['linked to']!)
         connections.push({ sourceEventId: event.id, time, source, target,
           scope: source.platformName === target.platformName ? 'INTERNAL' : 'INTER_PLATFORM' })
       }
@@ -243,6 +323,11 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
 
   text.replace(/^\uFEFF/, '').split(/\r\n|\n|\r/).forEach((line, index) => {
     if (!line.trim()) return
+    if (line.trimStart().startsWith('!') || /^\s*[^,\s]+,/.test(line)) {
+      finishBlock()
+      readCsvRecord(line.trim(), index + 1)
+      return
+    }
     const header = /^(\S+)\s+([A-Z][A-Z_0-9]*)\b(?:\s+(.*))?$/.exec(line.trim())
     if (header) {
       finishBlock()

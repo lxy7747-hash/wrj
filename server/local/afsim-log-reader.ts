@@ -3,7 +3,21 @@ import { open, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
-import { fileCommunicationType, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
+import { fileConnectionTypes, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
+import { buildFileDeviceEvents } from '../../src/features/situation/file-device-events.js'
+
+// 仅作界面显示别名；位置、事件及连接仍使用日志中的原始平台名称关联。
+const PLATFORM_DISPLAY_NAMES = new Map([
+  ['rear_comm_vehicle', '后方通信车'],
+  ['command_vehicle', '指挥车'],
+  ['tiantong_sat', '天通卫星'],
+  ['shentong_sat', '神通卫星'],
+  ['mission_uav_01', '无人机01'],
+  ['mission_uav_02', '无人机02'],
+  ['mission_uav_03', '无人机03'],
+  ['jammer_station_01', '地面干扰站01'],
+  ['jammer_airborne_01', '机载干扰平台01'],
+])
 
 async function fileVersion(path: string): Promise<string> {
   const info = await stat(path, { bigint: true })
@@ -90,7 +104,7 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
   const nodes = parsed.nodes.map((node) => {
     const state = node.initialState
     if (!state) throw new Error('日志中有节点缺少初始位置。')
-    return { platformId: node.name, name: node.name, type: node.type,
+    return { platformId: node.name, name: PLATFORM_DISPLAY_NAMES.get(node.name) ?? node.name, type: node.type,
       longitude: state.longitude, latitude: state.latitude,
       altitude: state.altitudeMeters, speed: state.speedMetersPerSecond,
       time: state.time, sourceEventId: state.sourceEventId }
@@ -101,11 +115,13 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
     if (record.scope !== 'INTER_PLATFORM') continue
     const sourceType = systems.get(JSON.stringify([record.source.platformName, record.source.communicationName]))
     const targetType = systems.get(JSON.stringify([record.target.platformName, record.target.communicationName]))
-    if (sourceType && targetType && (fileCommunicationType(sourceType) || fileCommunicationType(targetType))) {
-      connections.push({ ...record, sourceType, targetType })
+    if (sourceType && targetType) {
+      const connection = { ...record, sourceType, targetType }
+      if (fileConnectionTypes(connection).length) connections.push(connection)
     }
   }
-  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections }
+  const deviceEvents = buildFileDeviceEvents(parsed.events, new Set(nodes.map(node => node.platformId)))
+  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections, deviceEvents }
   if (!isInitialNodeSnapshot(snapshot)) throw new Error('日志初始位置为空或格式不正确。')
   return snapshot
 }

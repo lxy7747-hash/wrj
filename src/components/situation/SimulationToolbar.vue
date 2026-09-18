@@ -10,6 +10,8 @@ defineProps<{
   feedback: string
   /** 只读初始位置尚未接入运行引擎，禁止调用 Mock 控制命令。 */
   readOnly?: boolean
+  /** 文件播放只推进 CSV 游标，不启动仿真引擎。 */
+  filePlayback?: boolean
 }>()
 
 defineEmits<{
@@ -40,7 +42,7 @@ defineEmits<{
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
-        {{ status === 'PAUSED' ? '继续' : '开始' }}
+        {{ status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
       </el-button>
       <el-button
         type="warning"
@@ -68,7 +70,7 @@ defineEmits<{
         <select
           :value="speed"
           aria-label="仿真倍速"
-          :disabled="readOnly || pending"
+          :disabled="readOnly || pending || (filePlayback && status === 'STOPPED')"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
@@ -81,7 +83,7 @@ defineEmits<{
         <select
           :value="mode"
           aria-label="运行模式"
-          :disabled="readOnly || pending || status === 'RUNNING' || status === 'PAUSED'"
+          :disabled="readOnly || filePlayback || pending || status === 'RUNNING' || status === 'PAUSED'"
           @change="$emit('update:mode', ($event.target as HTMLSelectElement).value as SimulationMode)"
         >
           <option value="INTERACTIVE_SINGLE">单次仿真</option>
@@ -92,7 +94,7 @@ defineEmits<{
       </label>
     </div>
 
-    <div v-if="readOnly" class="simulation-toolbar__runtime" aria-live="polite">
+    <div v-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
       <small>{{ feedback }}</small>
     </div>
     <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">

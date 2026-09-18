@@ -133,6 +133,8 @@ onBeforeUnmount(() => {
           :frame="null"
           :initial-nodes="fileNodes"
           :file-links="fileLinks"
+          :file-device-events="localSnapshot?.initial.deviceEvents"
+          :file-time="replay?.currentTimeS ?? 0"
           :links="[]"
           :selected-node-id="selectedNodeId"
           :focus-target="focusTarget"
@@ -158,7 +160,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
-          <p>按回放时刻展示位置及已登记的卫星、微波关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
+          <p>按回放时刻展示位置及已登记的通信关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />

@@ -48,12 +48,14 @@ export const MAP_CONFIG = {
   taskBounds: [[21.8, 117.0], [26.4, 123.0]],
   /** 传给 fitBounds 的 [水平, 垂直] 像素留白，避免任务区域紧贴地图边缘。 */
   fitPadding: [24, 24],
-  /** 按链路摘要顺序使用的二次贝塞尔控制点经纬度偏移，单位为度。 */
-  linkCurveOffsets: [-0.18, -0.06, 0.06, 0.18],
+  /** 同节点对多类别的控制点总分离比例；曲线最大偏离约为端点距离的 4%。 */
+  linkCurveSeparationRatio: 0.16,
   /** 每条曲线的分段数；采样循环包含两端，因此实际生成分段数加一的点。 */
   curveSampleCount: 32,
   /** 经纬网线的间隔，单位为度。 */
   gridIntervalDegrees: 0.5,
   /** 激活干扰范围传给 Leaflet circle 的半径，单位为米。 */
   activeInterferenceRadiusMeters: 12000,
+  /** 文件干扰节点范围圈的半径（显示约定，非 CSV 遥测、非引擎参数）：24 海里 × 1852 米/海里。 */
+  fileInterferenceRadiusMeters: 24 * 1852,
 } as const

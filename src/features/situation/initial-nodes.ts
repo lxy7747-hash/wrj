@@ -1,4 +1,5 @@
 import { isFileCommunicationConnection, type FileCommunicationConnection } from './file-communication-links'
+import { isFileDeviceEvent, type FileDeviceEvent } from './file-device-events'
 
 /** 地图只需要位置与标识，不要求日志提供链路质量或干扰状态。 */
 export interface SituationMapNode {
@@ -16,6 +17,7 @@ export interface InitialNodeSnapshot {
   sha256: string
   nodes: Array<SituationMapNode & { time: number; sourceEventId: string }>
   connections?: FileCommunicationConnection[]
+  deviceEvents?: FileDeviceEvent[]
 }
 
 /**
@@ -43,4 +45,7 @@ export function isInitialNodeSnapshot(value: unknown): value is InitialNodeSnaps
   return validNodes && (snapshot.connections === undefined || (Array.isArray(snapshot.connections)
     && snapshot.connections.every(record => isFileCommunicationConnection(record, ids))
     && new Set(snapshot.connections.map(record => record.sourceEventId)).size === snapshot.connections.length))
+    && (snapshot.deviceEvents === undefined || (Array.isArray(snapshot.deviceEvents)
+      && snapshot.deviceEvents.every(event => isFileDeviceEvent(event, ids))
+      && new Set(snapshot.deviceEvents.map(event => event.sourceEventId)).size === snapshot.deviceEvents.length))
 }

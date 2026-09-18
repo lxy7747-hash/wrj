@@ -5,6 +5,7 @@ import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
+import { fileJammerRadiusMeters, selectFileDeviceStates, type FileDeviceEvent } from '../../features/situation/file-device-events'
 import {
   PLATFORM_TYPE_LABELS,
   type SituationLinkView,
@@ -20,6 +21,8 @@ const props = defineProps<{
   frame: TelemetryFrame | null
   initialNodes?: SituationMapNode[]
   fileLinks?: FileCommunicationLink[]
+  fileDeviceEvents?: FileDeviceEvent[]
+  fileTime?: number
   configuredLinks?: Link[]
   links: SituationLinkView[]
   selectedNodeId: string
@@ -42,6 +45,8 @@ const selectedFileLinkId = ref('')
 const fileLinkDialogVisible = ref(false)
 const selectedFileLink = computed(() => props.fileLinks?.find(link => link.id === selectedFileLinkId.value))
 const hasFileLinks = computed(() => !props.frame && (props.fileLinks?.length ?? 0) > 0)
+const hasFileInterference = computed(() => !props.frame && !props.configuredLinks
+  && props.initialNodes?.some(node => fileJammerRadiusMeters(node.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined))
 const themeToggleLabel = computed(() => (
   theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
 ))
@@ -51,15 +56,42 @@ const basemapToggleLabel = computed(() => (
 const layers = reactive<Record<MapLayer, boolean>>({
   nodes: true,
   links: true,
-  interference: props.frame !== null,
+  interference: props.frame !== null || !!hasFileInterference.value,
   grid: MAP_CONFIG.defaults.gridVisible,
 })
 
 const nodes = computed(() => props.frame?.platforms ?? props.initialNodes ?? [])
+const fileDeviceStates = computed(() => !props.frame && !props.configuredLinks
+  ? selectFileDeviceStates(props.fileDeviceEvents ?? [], props.fileTime ?? 0) : [])
+
+function fileEndpointLabel(platformId: string): string {
+  const name = nodes.value.find(node => node.platformId === platformId)?.name
+  return name && name !== platformId ? `${name}（${platformId}）` : platformId
+}
+
 const selectedNode = computed(() => (
   nodes.value.find((platform) => platform.platformId === props.selectedNodeId)
   ?? nodes.value[0]
 ))
+const selectedNodeFileLinks = computed(() => props.fileLinks?.filter(link =>
+  link.sourcePlatformId === selectedNode.value?.platformId || link.targetPlatformId === selectedNode.value?.platformId) ?? [])
+
+function openFileLink(link: FileCommunicationLink): void {
+  selectedFileLinkId.value = link.id
+  fileLinkDialogVisible.value = true
+}
+const selectedFileInterferenceRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
+  ? fileJammerRadiusMeters(selectedNode.value.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) : undefined)
+const selectedFileDevices = computed(() => fileDeviceStates.value.filter(event => event.platformId === selectedNode.value?.platformId))
+
+function deviceStateLabel(event: FileDeviceEvent): string {
+  return event.kind === 'JAMMING' ? (event.active ? '干扰请求进行中' : '干扰已停止') : (event.active ? '已开启' : '已关闭')
+}
+
+function communicationStateLabel(platformId: string, deviceId: string): string {
+  const event = fileDeviceStates.value.find(event => event.kind === 'COMMUNICATION' && event.platformId === platformId && event.deviceId === deviceId)
+  return event ? `${deviceStateLabel(event)} · ${event.time} 秒 · ${event.sourceEventId}` : '启停未知（无对应事件）'
+}
 
 /** 返回节点原始类型或已知中文类型，不猜测日志类型与合同枚举的对应关系。 */
 const selectedNodeType = computed(() => selectedNode.value
@@ -117,6 +149,11 @@ function setLayerVisible(layer: MapLayer, visible: boolean): void {
   layers[layer] = visible
   mapController.value?.setLayerVisible(layer, visible)
 }
+
+// 首次收到范围数据时开启图层；普通位置更新不覆盖用户手动关闭的选择。
+watch(() => props.frame !== null || !!hasFileInterference.value, available => {
+  setLayerVisible('interference', available)
+})
 
 /**
  * 切换一个地图图层的可见性。
@@ -200,18 +237,17 @@ onMounted(() => {
     frame: props.frame,
     initialNodes: props.initialNodes,
     fileLinks: props.fileLinks,
+    fileDeviceStates: fileDeviceStates.value,
     configuredLinks: props.configuredLinks,
     onSelectConfiguredLink: link => emit('select-configured-link', link),
-    onSelectFileLink: link => {
-      selectedFileLinkId.value = link.id
-      fileLinkDialogVisible.value = true
-    },
+    onSelectFileLink: openFileLink,
     links: props.links,
     selectedNodeId: props.selectedNodeId,
     onSelectNode: handleSelectNode,
     onSelectLink: handleSelectLink,
     onZoomChange: handleZoomChange,
   })
+  if (!layers.interference) mapController.value.setLayerVisible('interference', false)
   if (props.focusTarget) focusTargetOnMap(props.focusTarget)
 })
 
@@ -237,6 +273,10 @@ watch(() => props.initialNodes, (nodes) => {
 
 watch(() => props.fileLinks, links => {
   mapController.value?.setFileLinks(links ?? [])
+})
+
+watch(fileDeviceStates, states => {
+  mapController.value?.setFileDeviceStates(states)
 })
 
 watch(() => props.configuredLinks, links => {
@@ -306,7 +346,7 @@ onBeforeUnmount(() => {
           type="button"
           :class="{ active: layers[layer[0]] }"
           :aria-pressed="layers[layer[0]]"
-          :disabled="!frame && (layer[0] === 'interference' || (layer[0] === 'links' && !hasFileLinks && !configuredLinks?.length))"
+          :disabled="!frame && ((layer[0] === 'interference' && !hasFileInterference) || (layer[0] === 'links' && !hasFileLinks && !configuredLinks?.length))"
           @click="toggleLayer(layer[0])"
         >{{ layer[1] }}</button>
         <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
@@ -428,7 +468,35 @@ onBeforeUnmount(() => {
           <div><dt>{{ frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ configuredLinks ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
+          <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（指定范围）</dd></div>
         </dl>
+        <template v-if="!frame && !configuredLinks">
+          <p class="selected-node-dialog__notice">设备状态截至 {{ fileTime ?? 0 }} 秒；范围圈仅表示有进行中的干扰请求，不证明实际干扰效果。</p>
+          <el-table v-if="selectedFileDevices.length" :data="selectedFileDevices" data-testid="file-device-states" max-height="260">
+            <el-table-column prop="deviceId" label="设备标识" min-width="150" />
+            <el-table-column label="事件状态" min-width="160">
+              <template #default="{ row }">
+                {{ deviceStateLabel(row) }}
+                <template v-if="row.kind === 'JAMMING' && row.frequencyHz !== undefined && row.bandwidthHz !== undefined"><br>频率 {{ row.frequencyHz / 1000000 }} MHz · 带宽 {{ row.bandwidthHz / 1000000 }} MHz</template>
+              </template>
+            </el-table-column>
+            <el-table-column label="最近事件" min-width="140">
+              <template #default="{ row }">{{ row.time }} 秒 · {{ row.sourceEventId }}</template>
+            </el-table-column>
+          </el-table>
+          <p v-else data-testid="file-device-empty" class="selected-node-dialog__notice">当前时刻无设备启停或干扰请求记录，状态未知。</p>
+          <template v-if="selectedNodeFileLinks.length">
+            <p class="selected-node-dialog__notice">登记的通信关联（含地图未绘制的关联），不表示当前正在转发。</p>
+            <el-table :data="selectedNodeFileLinks" max-height="240" data-testid="node-file-associations">
+              <el-table-column label="关联" min-width="240">
+                <template #default="{ row }">{{ FILE_COMMUNICATION_LABELS[row.type as keyof typeof FILE_COMMUNICATION_LABELS] }} · {{ fileEndpointLabel(row.sourcePlatformId) }} — {{ fileEndpointLabel(row.targetPlatformId) }}</template>
+              </el-table-column>
+              <el-table-column label="明细" width="85">
+                <template #default="{ row }"><el-button link type="primary" @click="openFileLink(row)">查看</el-button></template>
+              </el-table-column>
+            </el-table>
+          </template>
+        </template>
         <p v-if="nodeOutsideBasemap" class="selected-node-dialog__notice">
           该节点位于当前离线底图覆盖范围之外，坐标按原值显示。
         </p>
@@ -443,27 +511,28 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="fileLinkDialogVisible" title="通信关联明细" width="min(52rem, calc(100vw - 2rem))" :close-on-click-modal="false">
       <div v-if="selectedFileLink" data-testid="file-link-details">
-        <p>{{ FILE_COMMUNICATION_LABELS[selectedFileLink.type] }} · {{ selectedFileLink.sourcePlatformId }} — {{ selectedFileLink.targetPlatformId }}</p>
-        <p class="selected-node-dialog__notice">状态未知：按端点设备类型筛选登记关联，曲线仅为关联示意，不代表物理链路已接通；不提供 SNR、BER。</p>
+        <p>{{ FILE_COMMUNICATION_LABELS[selectedFileLink.type] }} · {{ fileEndpointLabel(selectedFileLink.sourcePlatformId) }} — {{ fileEndpointLabel(selectedFileLink.targetPlatformId) }}</p>
+        <p class="selected-node-dialog__notice">链路状态未知：连线仅为登记关联，不代表物理链路已接通，不表示当前正在转发；设备启停按 {{ fileTime ?? 0 }} 秒的事件显示，不提供 SNR、BER。</p>
         <el-table :data="selectedFileLink.records" max-height="340">
           <el-table-column label="登记时间（秒）" prop="time" width="125" />
           <el-table-column label="发送端" min-width="230">
-            <template #default="{ row }">{{ row.source.platformName }} / {{ row.source.communicationName }}<br>{{ row.sourceType }} · {{ row.source.address }}</template>
+            <template #default="{ row }">{{ fileEndpointLabel(row.source.platformName) }} / {{ row.source.communicationName }}<br>{{ row.sourceType }} · {{ row.source.address }}<br>{{ communicationStateLabel(row.source.platformName, row.source.communicationName) }}</template>
           </el-table-column>
           <el-table-column label="接收端" min-width="230">
-            <template #default="{ row }">{{ row.target.platformName }} / {{ row.target.communicationName }}<br>{{ row.targetType }} · {{ row.target.address }}</template>
+            <template #default="{ row }">{{ fileEndpointLabel(row.target.platformName) }} / {{ row.target.communicationName }}<br>{{ row.targetType }} · {{ row.target.address }}<br>{{ communicationStateLabel(row.target.platformName, row.target.communicationName) }}</template>
           </el-table-column>
           <el-table-column label="源记录" prop="sourceEventId" width="120" />
         </el-table>
       </div>
     </el-dialog>
 
-    <div v-if="frame || hasFileLinks" class="offline-map__legend" aria-label="链路类型图例">
+    <div class="offline-map__legend" aria-label="链路类型图例">
       <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
       <div><i class="legend-line legend-line--microwave"></i>微波链路</div>
       <div><i class="legend-line legend-line--datalink"></i>新一代数传链路</div>
       <div><i class="legend-line legend-line--laser"></i>激光链路</div>
       <div><i class="legend-line legend-line--unavailable"></i>受干扰 / 失效链路</div>
+      <div><i class="legend-line legend-line--fiber"></i>光纤链路</div>
     </div>
 
   </section>
@@ -670,6 +739,10 @@ onBeforeUnmount(() => {
 
 .legend-line--unavailable {
   border-color: #f56c6c;
+}
+
+.legend-line--fiber {
+  border-color: #20b2aa;
 }
 
 :deep(.leaflet-container) {

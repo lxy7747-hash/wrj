@@ -11,6 +11,7 @@ const mapControllerMock = vi.hoisted(() => ({
     setFrame: vi.fn(),
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
+    setFileDeviceStates: vi.fn(),
     setSelectedNodeId: vi.fn(),
     setLayerVisible: vi.fn(),
     setTheme: vi.fn(),

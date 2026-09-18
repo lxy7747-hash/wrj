@@ -7,6 +7,7 @@ import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
+import { fileJammerRadiusMeters, type FileDeviceEvent } from '../../features/situation/file-device-events'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
 import {
   LINK_TYPE_LABELS,
@@ -27,6 +28,7 @@ export interface SituationMapControllerOptions {
   /** 真实文件节点，无完整遥测帧时使用；后续位置通过 setNodes 更新。 */
   initialNodes?: SituationMapNode[]
   fileLinks?: FileCommunicationLink[]
+  fileDeviceStates?: FileDeviceEvent[]
   configuredLinks?: Link[]
   onSelectConfiguredLink?: (link: Link) => void
   onSelectFileLink?: (link: FileCommunicationLink) => void
@@ -63,6 +65,7 @@ export interface SituationMapController {
 
   /** 更新文件关联；与完整遥测链路分开，不补造质量或状态字段。 */
   setFileLinks: (links: FileCommunicationLink[]) => void
+  setFileDeviceStates: (states: FileDeviceEvent[]) => void
 
   /**
    * 更新当前选中节点。
@@ -375,6 +378,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   let currentFrame = options.frame
   let fileNodes = options.initialNodes ?? []
   let fileLinks = options.fileLinks ?? []
+  let fileDeviceStates = options.fileDeviceStates ?? []
   let configuredLinks = options.configuredLinks
   let currentNodes = currentFrame?.platforms ?? fileNodes
   let selectedNodeId = options.selectedNodeId
@@ -452,11 +456,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
       })
       renderInterference(layerGroups.interference, null, '')
     } else {
-      renderFileLinks(layerGroups.links, currentNodes, fileLinks, link => {
+      const closedDevices = new Set(fileDeviceStates
+        .filter(event => event.kind === 'COMMUNICATION' && !event.active)
+        .map(event => JSON.stringify([event.platformId, event.deviceId])))
+      // 仅过滤绘制：任一登记的两端均未明确关闭就保留合并线，完整明细不变。
+      const visibleLinks = fileLinks.filter(link => link.records.some(record =>
+        [record.source, record.target].every(endpoint =>
+          !closedDevices.has(JSON.stringify([endpoint.platformName, endpoint.communicationName])))))
+      renderFileLinks(layerGroups.links, currentNodes, visibleLinks, link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileLink?.(link)
       })
-      renderInterference(layerGroups.interference, null, '')
+      const activePlatforms = new Set(fileDeviceStates.filter(event => event.kind === 'JAMMING' && event.active).map(event => event.platformId))
+      renderInterference(layerGroups.interference, null, '', currentNodes.filter(node => activePlatforms.has(node.platformId)), fileDeviceStates)
     }
     renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
   }
@@ -563,6 +575,12 @@ export function createSituationMapController(options: SituationMapControllerOpti
       if (!currentFrame) renderBusinessLayers()
     },
 
+    setFileDeviceStates(states): void {
+      if (!map) return
+      fileDeviceStates = states
+      if (!currentFrame && !configuredLinks) renderBusinessLayers()
+    },
+
     setSelectedNodeId(platformId): void {
       if (!map || (selectedNodeId === platformId && focusedTarget === null)) return
       selectedNodeId = platformId
@@ -604,7 +622,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       if (!currentFrame) return
       if (target.kind === 'link') {
         const link = currentLinks.find((candidate) => candidate.linkId === target.targetId)
-        const points = link ? sampleLinkCurve(currentFrame, link) : []
+        const points = link ? sampleLinkCurve(currentFrame, link, currentLinks) : []
         if (points.length > 0) {
           focusedTarget = target
           renderBusinessLayers()
@@ -910,7 +928,7 @@ function resolveLinkSummaryIndex(frame: TelemetryFrame, link: SituationLinkView)
  * @returns 从源节点到目标节点的 Leaflet 折线采样点；端点缺失时返回空数组。
  * @sideeffect 无副作用，只读取固定帧。
  */
-function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView): L.LatLngTuple[] {
+function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView, links: SituationLinkView[]): L.LatLngTuple[] {
   const summaryIndex = resolveLinkSummaryIndex(frame, link)
   const summary = frame.linkSummaries[summaryIndex]
   if (!summary) return []
@@ -923,15 +941,32 @@ function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView): L.LatL
   )
   if (!source || !destination) return []
 
-  return sampleConnectionCurve(source, destination, MAP_CONFIG.linkCurveOffsets[summaryIndex] ?? 0)
+  const peers = links.flatMap(candidate => {
+    const item = frame.linkSummaries[resolveLinkSummaryIndex(frame, candidate)]
+    return item ? [{ sourcePlatformId: item.sourcePlatform, targetPlatformId: item.destPlatform, type: item.linkType }] : []
+  })
+  return sampleConnectionCurve(source, destination, connectionCurveOffset(source, destination, link.type, peers))
 }
 
-/** 共用示意曲线采样，偏移只用于区分重叠连线，不改变端点位置。 */
+/** 按无向节点对及稳定类别排序分离；同类重复/反向登记不增加弯曲，其他节点对不影响结果。 */
+function connectionCurveOffset(source: SituationMapNode, target: SituationMapNode, type: string,
+  links: Array<{ sourcePlatformId: string; targetPlatformId: string; type: string }>): number {
+  const types = [...new Set(links.filter(link => (
+    link.sourcePlatformId === source.platformId && link.targetPlatformId === target.platformId
+  ) || (
+    link.sourcePlatformId === target.platformId && link.targetPlatformId === source.platformId
+  )).map(link => link.type))].sort()
+  if (types.length < 2) return 0
+  return (types.indexOf(type) / (types.length - 1) - 0.5) * MAP_CONFIG.linkCurveSeparationRatio
+}
+
+/** 偏移按端点距离缩放且垂直于连线；方向归一保证端点反转后曲线不翻边，不改变节点位置。 */
 function sampleConnectionCurve(source: SituationMapNode, destination: SituationMapNode, offset: number): L.LatLngTuple[] {
   const [sourceLatitude, sourceLongitude] = pointForPlatform(source)
   const [destinationLatitude, destinationLongitude] = pointForPlatform(destination)
-  const controlLatitude = (sourceLatitude + destinationLatitude) / 2 + offset
-  const controlLongitude = (sourceLongitude + destinationLongitude) / 2 + offset
+  const direction = source.platformId < destination.platformId ? 1 : -1
+  const controlLatitude = (sourceLatitude + destinationLatitude) / 2 + (destinationLongitude - sourceLongitude) * offset * direction
+  const controlLongitude = (sourceLongitude + destinationLongitude) / 2 - (destinationLatitude - sourceLatitude) * offset * direction
   const samples: L.LatLngTuple[] = []
 
   for (let sampleIndex = 0; sampleIndex <= MAP_CONFIG.curveSampleCount; sampleIndex += 1) {
@@ -1025,7 +1060,7 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[]): 
 /** 运行链路保留规范/三态投影语义，仅局部刷新几何和样式。 */
 function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: SituationLinkView[], selectedLinkId: string, onSelectLink: (link: SituationLinkView) => void): void {
   renderConnections(group, links.flatMap(link => {
-    const points = sampleLinkCurve(frame, link)
+    const points = sampleLinkCurve(frame, link, links)
     if (!points.length) return []
     return [{
       id: `runtime:${link.linkId}`, points,
@@ -1039,12 +1074,12 @@ function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: Situatio
 /** 配置连线使用中性虚线，不把配置启停推断成运行通断或链路质量。 */
 function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
-  renderConnections(group, links.flatMap((link, index) => {
+  renderConnections(group, links.flatMap(link => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     return [{
-      id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0),
+      id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, links)),
       name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；暂无运行数据`,
       style: { color: '#8496a3', weight: selectedId === link.id ? 5 : 3, dashArray: '6 6', opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
       hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
@@ -1055,14 +1090,21 @@ function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], l
 /** 文件连线只表达登记关联；端点始终取本轮最新节点坐标，明细保留原始方向。 */
 function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: FileCommunicationLink[], onSelect: (link: FileCommunicationLink) => void): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
-  renderConnections(group, links.flatMap((link, index) => {
+  // 只画已登记的星地关联，不把端到端登记当直连，也不自动补出中继路径。
+  const drawableLinks = links.filter(link => {
+    if (link.type !== 'SAT') return true
+    const types = [platforms.get(link.sourcePlatformId)?.type, platforms.get(link.targetPlatformId)?.type]
+    return types.some(type => type === 'TIAN_TONG_SAT' || type === 'SHEN_TONG_SAT')
+      && types.some(type => type === 'MISSION_UAV_PLATFORM' || type === 'REAR_COMM_PLATFORM' || type === 'COMMAND_VEHICLE_PLATFORM')
+  })
+  renderConnections(group, drawableLinks.flatMap(link => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     return [{
-      id: `file:${link.id}`, points: sampleConnectionCurve(source, target, MAP_CONFIG.linkCurveOffsets[index] ?? 0),
-      name: `${FILE_COMMUNICATION_LABELS[link.type]}关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知`,
-      style: { ...LINK_TYPE_STYLES[link.type], className: 'situation-map-file-link' },
+      id: `file:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, drawableLinks)),
+      name: `${FILE_COMMUNICATION_LABELS[link.type]}关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知，不表示当前正在转发`,
+      style: { ...(link.type === 'FIBER' ? { color: '#20b2aa', weight: 3, opacity: 0.95 } : LINK_TYPE_STYLES[link.type]), className: 'situation-map-file-link' },
       hitClass: 'situation-map-file-link-hit', select: () => onSelect(link),
     }]
   }))
@@ -1070,37 +1112,37 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
 
 const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean }>>()
 
-/** 按平台复用活动干扰圈，更新位置、选中样式和标签，移除已失效的范围。 */
-function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string): void {
+/** 复用范围圈，文字说明留在详情；不由范围推断设备启停或链路质量。 */
+function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string, fileNodes: SituationMapNode[] = [], fileDeviceStates: FileDeviceEvent[] = []): void {
   const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean }>()
   interferenceLayers.set(group, entries)
-  const platforms = frame?.platforms.filter(platform => platform.jammers.some(jammer => jammer.active)) ?? []
+  const platforms = frame?.platforms.filter(platform => platform.jammers.some(jammer => jammer.active))
+    ?? fileNodes.filter(node => fileJammerRadiusMeters(node.platformId, fileDeviceStates, MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined)
   const ids = new Set(platforms.map(platform => platform.platformId))
   for (const [id, entry] of entries) {
     if (!ids.has(id)) { group.removeLayer(entry.circle); entries.delete(id) }
   }
   for (const platform of platforms) {
-    const selected = platform.jammers.some(jammer => jammer.active && jammer.jammerId === selectedJammerId)
+    const selected = frame?.platforms.find(node => node.platformId === platform.platformId)?.jammers
+      .some(jammer => jammer.active && jammer.jammerId === selectedJammerId) ?? false
+    const radius = frame ? MAP_CONFIG.activeInterferenceRadiusMeters : fileJammerRadiusMeters(platform.platformId, fileDeviceStates, MAP_CONFIG.fileInterferenceRadiusMeters)!
     let entry = entries.get(platform.platformId)
     if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform))) entry.circle.setLatLng(pointForPlatform(platform))
-    if (entry?.selected === selected) continue
+    if (entry?.selected === selected && entry.circle.getRadius() === radius) continue
     const color = selected ? '#f5b942' : '#ff526d'
-    const label = document.createElement('span')
-    label.textContent = selected ? '已选：活动干扰范围（示意）' : '活动干扰范围（示意）'
     const style: L.CircleMarkerOptions = {
       color, weight: selected ? 4 : 1.5, opacity: selected ? 1 : 0.9, dashArray: '8 6',
       fill: true, fillColor: color, fillOpacity: selected ? 0.2 : 0.09,
       className: selected ? 'situation-map-interference--selected' : '', interactive: true,
     }
     if (!entry) {
-      const circle = L.circle(pointForPlatform(platform), { ...style, radius: MAP_CONFIG.activeInterferenceRadiusMeters })
-        .bindTooltip(label, { permanent: true, direction: 'top', className: 'situation-map-interference-label' }).addTo(group)
+      const circle = L.circle(pointForPlatform(platform), { ...style, radius }).addTo(group)
       entry = { circle, selected }
       entries.set(platform.platformId, entry)
     } else {
+      entry.circle.setRadius(radius)
       entry.circle.setStyle(style)
       entry.circle.getElement()?.classList.toggle('situation-map-interference--selected', selected)
-      entry.circle.setTooltipContent(label)
       entry.selected = selected
     }
   }

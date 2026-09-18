@@ -3,7 +3,7 @@ import { apiFetch } from '../../features/shared/api-fetch'
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import type { DetectionEvent, Link, SimulationMode, SwitchEvent } from '../../contracts/domain-models'
+import type { DetectionEvent, Link, SimulationMode, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkCandidatePanel from '../../components/situation/LinkCandidatePanel.vue'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
@@ -28,8 +28,9 @@ import { useSimulationStore } from '../../stores/simulation'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
-import { isPositionSnapshot, mergePositionNodes, type PositionSnapshot } from '../../features/situation/position-updates'
 import { selectFileCommunicationLinks } from '../../features/situation/file-communication-links'
+import { selectReplayNodes } from '../../features/replays/local-replay'
+import { useReplayStore } from '../../stores/replay'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
@@ -47,6 +48,9 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 
 const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
+const filePlayback = useReplayStore()
+const fileLoading = ref(false)
+const ownsFilePlayback = ref(false)
 const selectedScene = computed(() => sourceState.value === 'SCENE' ? simulationStore.selectedScene : null)
 const savedNodeGroups = computed(() => [
   { title: '信息节点', platforms: selectedScene.value?.config.platforms.filter(platform => BUSINESS_NODE_TYPES.has(platform.type)) ?? [] },
@@ -84,72 +88,39 @@ const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'ERROR'>('LOADIN
 let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
-const positionSnapshot = ref<PositionSnapshot | null>(null)
-const fileNodes = computed(() => initialSnapshot.value
-  ? mergePositionNodes(initialSnapshot.value, positionSnapshot.value) : [])
-const fileLinks = computed(() => selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [],
-  Math.max(0, ...(initialSnapshot.value?.nodes.map(node => node.time) ?? []),
-    ...(positionSnapshot.value?.nodes.map(node => node.time) ?? []))))
-let positionTimer: ReturnType<typeof setTimeout> | undefined
-let positionRequest: AbortController | null = null
+// 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
+const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
+const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
+  ? selectReplayNodes(filePlayback.localSnapshot, fileTime.value) : initialSnapshot.value?.nodes.filter(node => node.time <= 0) ?? [])
+const fileLinks = computed(() => selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [], fileTime.value))
+const fileStatus = computed<UiSimulationStatus>(() => !ownsFilePlayback.value || !filePlayback.localSnapshot ? 'STOPPED'
+  : filePlayback.state === 'PLAYING' ? 'RUNNING' : filePlayback.state === 'COMPLETED' ? 'COMPLETED' : 'PAUSED')
+const fileSliderTime = ref(0)
+const fileSliderDragging = ref(false)
+watch(fileTime, time => { if (!fileSliderDragging.value) fileSliderTime.value = time })
+function fileTimeLabel(time: number): string {
+  return `${Math.floor(time / 60)}分${Math.floor(time % 60)}秒`
+}
+async function seekFileTime(time: number | number[]): Promise<void> {
+  if (typeof time === 'number') await filePlayback.seek(time)
+  fileSliderDragging.value = false
+  fileSliderTime.value = fileTime.value
+}
 const sourceMessage = ref('正在读取初始节点位置。')
 // 同一时刻只使用一种数据源，不把文件坐标与 Mock 链路、事件混合。
 const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
 
-/** 离开页面或重载来源时终止位置请求及后续轮询，不影响其他数据源。 */
-function stopPositionPolling(): void {
-  clearTimeout(positionTimer)
-  positionRequest?.abort()
-  positionRequest = null
-}
-
-/** 轮询本机追加位置快照；等待本次请求结束再安排下一次，失败保留最后位置并重试。 */
-async function pollPositions(): Promise<void> {
-  const request = new AbortController()
-  positionRequest = request
-  const timeout = setTimeout(() => request.abort(), 10_000)
-  let configured = true
-  try {
-    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/situation/positions`, {
-      headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
-    })
-    const body = await response.json()
-    if (unmounted || positionRequest !== request) return
-    if (!response.ok || body.ok !== true || !isPositionSnapshot(body.data)) throw new Error('追加位置响应不可用')
-    const snapshot: PositionSnapshot | null = body.data
-    if (snapshot === null) {
-      configured = false
-      sourceMessage.value = `${initialSnapshot.value?.fileName} · 初始位置，未配置追加位置文件`
-      return
-    }
-    if (positionSnapshot.value?.generation !== snapshot.generation
-      || JSON.stringify(positionSnapshot.value?.nodes) !== JSON.stringify(snapshot.nodes)) positionSnapshot.value = snapshot
-    const knownIds = new Set(initialSnapshot.value?.nodes.map((node) => node.platformId))
-    const unknownCount = snapshot.nodes.filter((node) => !knownIds.has(node.platformId)).length
-    const lastIssue = snapshot.issues.at(-1)
-    sourceMessage.value = `${snapshot.fileName} · ${snapshot.hasMore ? '正在读取已有记录' : '位置已同步，等待追加'}`
-      + (snapshot.waitingForLine ? '；等待行末换行' : '')
-      + (lastIssue ? `；已跳过 ${snapshot.issueCount} 条异常记录，最近第 ${lastIssue.line} 行：${lastIssue.message}` : '')
-      + (unknownCount ? `；${unknownCount} 个未初始化节点未显示` : '')
-  } catch {
-    if (unmounted || positionRequest !== request) return
-    sourceMessage.value = '追加位置读取失败，保留最后位置，正在重试；请检查本机位置文件、表头及编码。'
-  } finally {
-    clearTimeout(timeout)
-    if (!unmounted && positionRequest === request && configured) {
-      positionTimer = setTimeout(() => { void pollPositions() }, 1000)
-    }
-  }
-}
-
 /** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
   const epoch = ++sourceEpoch
+  if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
+  ownsFilePlayback.value = false
+  fileLoading.value = false
+  fileSliderDragging.value = false
+  fileSliderTime.value = 0
   sourceRequest?.abort()
   const request = new AbortController()
   sourceRequest = request
-  stopPositionPolling()
-  positionSnapshot.value = null
   const sceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
   if (sceneId) {
     initialSnapshot.value = null
@@ -182,9 +153,8 @@ async function initializeSituation(): Promise<void> {
       telemetryStore.disconnectAndReset()
       initialSnapshot.value = body.data
       sourceState.value = 'FILE'
-      selectedNodeId.value = body.data.nodes[0]?.platformId ?? ''
-      sourceMessage.value = `${body.data.fileName} · 初始位置，正在读取追加位置文件`
-      void pollPositions()
+      selectedNodeId.value = fileNodes.value[0]?.platformId ?? ''
+      sourceMessage.value = `${body.data.fileName} · 0分0秒初始位置`
       return
     }
     initialSnapshot.value = null
@@ -207,10 +177,23 @@ async function initializeSituation(): Promise<void> {
 
 onMounted(initializeSituation)
 
+// 登出请求完成或路由卸载前就停止文件播放，并使在途加载失效。
+watch(() => useAuthStore().principal?.userId, () => {
+  if (!ownsFilePlayback.value) return
+  sourceEpoch += 1
+  sourceRequest?.abort()
+  filePlayback.resetToSafeEmpty()
+  ownsFilePlayback.value = false
+  fileLoading.value = false
+  initialSnapshot.value = null
+  sourceState.value = 'ERROR'
+  sourceMessage.value = '会话已改变，请重新登录后加载文件。'
+}, { flush: 'sync' })
+
 onBeforeUnmount(() => {
   unmounted = true
   sourceRequest?.abort()
-  stopPositionPolling()
+  if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
   telemetryStore.disconnectAndReset()
 })
 
@@ -305,38 +288,72 @@ function toggleTelemetryPanel(): void {
 }
 
 /**
- * 创建并开始仿真，或继续当前暂停运行。
+ * 文件来源启动本地时间轴；其他来源创建并开始仿真，或继续暂停运行。
  * @returns 操作完成后兑现且不返回值的 Promise。
- * @sideeffect 通过 simulationStore 调用 Mock API，并同步运行状态和场景配置锁。
+ * @sideeffect 文件播放不调用引擎；仿真交由 simulationStore 同步运行状态和场景配置锁。
  */
 async function startSimulation(): Promise<void> {
+  if (sourceState.value === 'FILE') {
+    if (fileLoading.value) return
+    const epoch = sourceEpoch
+    const firstLoad = !ownsFilePlayback.value
+    ownsFilePlayback.value = true
+    if (firstLoad || !filePlayback.localSnapshot) {
+      fileLoading.value = true
+      const loaded = await filePlayback.loadLocalFile()
+      if (unmounted || epoch !== sourceEpoch) return
+      fileLoading.value = false
+      if (!loaded || !filePlayback.localSnapshot) {
+        initialSnapshot.value = null
+        sourceState.value = 'ERROR'
+        sourceMessage.value = filePlayback.resultMessage || '文件播放数据加载失败，请重新加载。'
+        return
+      }
+      initialSnapshot.value = filePlayback.localSnapshot.initial
+      if (!fileNodes.value.some(node => node.platformId === selectedNodeId.value)) selectedNodeId.value = fileNodes.value[0]?.platformId ?? ''
+    }
+    await filePlayback.play()
+    return
+  }
   await simulationStore.start()
 }
 
 /**
- * 暂停当前仿真运行。
+ * 暂停文件播放或当前仿真运行。
  * @returns 操作完成后兑现且不返回值的 Promise。
  * @sideeffect 通过 simulationStore 发送 PAUSE 命令并更新运行投影。
  */
 async function pauseSimulation(): Promise<void> {
+  if (sourceState.value === 'FILE') {
+    await filePlayback.pause()
+    return
+  }
   await simulationStore.pause()
 }
 
 /**
- * 对暂停运行执行一个场景时间步。
+ * 文件播放前进一秒；仿真执行一个场景时间步。
  * @returns 操作完成后兑现且不返回值的 Promise。
  * @sideeffect 通过 simulationStore 发送 STEP 命令并更新规范仿真时刻。
  */
 async function stepSimulation(): Promise<void> {
+  if (sourceState.value === 'FILE') {
+    await filePlayback.step('forward')
+    return
+  }
   await simulationStore.step()
 }
 
 /**
- * 打开停止操作确认框。
+ * 文件播放停止并归零；仿真打开停止操作确认框。
  * @returns 无返回值。
  * @sideeffect 修改停止确认框的可见状态。
  */
 function requestStop(): void {
+  if (sourceState.value === 'FILE') {
+    filePlayback.resetToSafeEmpty()
+    return
+  }
   if (simulationStatus.value === 'RUNNING' || simulationStatus.value === 'PAUSED') stopDialogVisible.value = true
 }
 
@@ -356,6 +373,10 @@ async function confirmStop(): Promise<void> {
  * @sideeffect 调用 simulationStore 更新本地选择或发送 SET_SPEED 命令。
  */
 async function updateSpeed(speed: number): Promise<void> {
+  if (sourceState.value === 'FILE') {
+    await filePlayback.setSpeed(speed)
+    return
+  }
   await simulationStore.setSpeed(speed)
 }
 
@@ -479,13 +500,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
     <div>
     <SimulationToolbar
-      :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE'"
-      :status="otherSceneRun ? 'STOPPED' : simulationStatus"
-      :speed="simulationSpeed"
-      :mode="simulationMode"
+      :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
+      :file-playback="sourceState === 'FILE'"
+      :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
+      :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
+      :mode="sourceState === 'FILE' ? 'HISTORICAL_REPLAY' : simulationMode"
       :capability-state="simulationCapabilityState"
-      :pending="simulationPending || simulationStore.selectingScene"
-      :feedback="sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
+      :pending="sourceState === 'FILE' ? fileLoading : simulationPending || simulationStore.selectingScene"
+      :feedback="sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @step="stepSimulation"
@@ -493,6 +515,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       @update:speed="updateSpeed"
       @update:mode="updateMode"
     />
+    <div v-if="sourceState === 'FILE' && filePlayback.replay" class="file-playback-progress">
+      <span>{{ fileTimeLabel(fileTime) }}</span>
+      <el-slider v-model="fileSliderTime" :min="0" :max="filePlayback.replay.durationS" :step="1"
+        :show-tooltip="false" :disabled="fileLoading || filePlayback.replay.durationS === 0" aria-label="文件播放进度"
+        @input="fileSliderDragging = true" @change="seekFileTime" />
+      <span>{{ fileTimeLabel(filePlayback.replay.durationS) }}</span>
+    </div>
     </div>
 
     <div
@@ -509,7 +538,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         aria-label="场景配置"
         :data-collapsed="sceneSummaryCollapsed"
       >
-      <strong class="node-jammer-count">{{ selectedScene ? `${savedNodeGroups[0]!.platforms.length} / ${BUSINESS_NODE_CAPACITY}` : initialSnapshot ? `${initialSnapshot.nodes.length} 个` : `${situationMetrics?.businessNodeCount} / ${BUSINESS_NODE_CAPACITY}` }}</strong>
+      <strong class="node-jammer-count">{{ selectedScene ? `${savedNodeGroups[0]!.platforms.length} / ${BUSINESS_NODE_CAPACITY}` : initialSnapshot ? `${fileNodes.length} 个` : `${situationMetrics?.businessNodeCount} / ${BUSINESS_NODE_CAPACITY}` }}</strong>
         <button
           type="button"
           class="floating-panel__toggle floating-panel__toggle--left"
@@ -594,7 +623,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                     :aria-pressed="selectedNodeId === platform.platformId"
                     @click="focusNodeOnMap(platform.platformId)"
                   >
-                    <span>{{ platform.platformId }}</span><small>{{ initialSnapshot ? platform.type : platform.name }}</small>
+                    <span>{{ initialSnapshot ? platform.name : platform.platformId }}</span><small>{{ initialSnapshot ? platform.type : platform.name }}</small>
                   </button>
                 </li>
               </ul>
@@ -672,6 +701,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :frame="frame"
           :initial-nodes="initialSnapshot ? fileNodes : undefined"
           :file-links="fileLinks"
+          :file-device-events="initialSnapshot?.deviceEvents"
+          :file-time="fileTime"
           :links="situationLinks"
           :selected-node-id="selectedNodeId"
           :focus-target="mapFocusTarget"
@@ -749,7 +780,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
             </article>
           </div>
-          <el-empty v-else class="telemetry-empty-state" description="暂无干扰 / 侦测设备运行数据" :image-size="48" />
+          <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无干扰 / 侦测设备运行数据'" :image-size="48" />
           <p v-if="detectionEvent" class="detection-state">
             {{ detectionEvent.sensorId }} 已发现 {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
           </p>
@@ -782,7 +813,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </footer>
     <footer v-else-if="!selectedScene && sourceState === 'FILE' && initialSnapshot" class="situation-footer">
       <span>来源：{{ initialSnapshot.fileName }}</span>
-      <span>初始节点 {{ initialSnapshot.nodes.length }} 个 · 点击左侧节点可定位</span>
+      <span>{{ fileTimeLabel(fileTime) }} · 节点 {{ fileNodes.length }} 个 · 点击左侧节点可定位</span>
     </footer>
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" />
@@ -805,6 +836,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 </template>
 
 <style scoped>
+.file-playback-progress {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0 1rem;
+  color: var(--console-text-muted);
+}
+.file-playback-progress span { white-space: nowrap; }
+
 .situation-page {
   display: grid;
   width: 100%;

@@ -9,8 +9,9 @@ import { MAP_CONFIG } from '../../src/config/map.config'
 import type { ConfirmationContext, Link, Principal, SimulationRun } from '../../src/contracts/domain-models'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import type { InitialNodeSnapshot, SituationMapNode } from '../../src/features/situation/initial-nodes'
-import type { PositionSnapshot } from '../../src/features/situation/position-updates'
 import { selectFileCommunicationLinks, type FileCommunicationConnection, type FileCommunicationLink } from '../../src/features/situation/file-communication-links'
+import { buildFileDeviceEvents, selectFileDeviceStates, type FileDeviceEvent } from '../../src/features/situation/file-device-events'
+import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
 import {
   SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
@@ -19,12 +20,15 @@ import {
 import { useAuthStore } from '../../src/stores/auth'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 import { useSimulationStore } from '../../src/stores/simulation'
+import { useReplayStore } from '../../src/stores/replay'
+import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 
 type SituationMapControllerOptions = {
   frame: unknown
   initialNodes?: SituationMapNode[]
   fileLinks?: FileCommunicationLink[]
+  fileDeviceStates?: FileDeviceEvent[]
   configuredLinks?: Link[]
   onSelectConfiguredLink?: (link: Link) => void
   onSelectFileLink?: (link: FileCommunicationLink) => void
@@ -38,6 +42,7 @@ const mapControllerMock = vi.hoisted(() => {
     setNodes: vi.fn(),
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
+    setFileDeviceStates: vi.fn(),
     setConfiguredLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
@@ -80,6 +85,7 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 }))
 
 import SituationPage from '../../src/pages/situation/situation.vue'
+import OfflineSituationMap from '../../src/components/situation/OfflineSituationMap.vue'
 import ScenarioWorkspace from '../../src/pages/scenarios/ScenarioWorkspace.vue'
 
 const OPERATOR: Principal = {
@@ -107,6 +113,9 @@ const FILE_CONNECTIONS: FileCommunicationConnection[] = [
     source: { platformName: 'B', communicationName: 'mw-b', address: '0.1.0.3' },
     target: { platformName: 'A', communicationName: 'c-a', address: '0.1.0.4' } },
 ]
+const SATELLITE_FILE_NODES = INITIAL_NODES.nodes.map((node, index) => ({
+  ...node, type: index === 0 ? 'SHEN_TONG_SAT' : 'MISSION_UAV_PLATFORM',
+}))
 
 /** 创建组件测试使用的仿真运行投影。 */
 function simulationRun(uiStatus: SimulationRun['uiStatus'], configLocked: boolean): SimulationRun {
@@ -293,21 +302,18 @@ describe('态势主界面', () => {
     expect(useSimulationStore().readSelectedSceneId()).toBe(action === '离页' ? 'SCN-B' : null)
   })
 
-  it('选用场景请求跨页迟到时维持完整文件模式，离页后不残留轮询', async () => {
+  it('选用场景请求跨页迟到时维持初始文件模式，不轮询末帧位置', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scenes = new ScenarioProjection()
     const scene = scenes.list()[0]!
     scene.config.scenario.id = 'SCN-B'
     let finish!: (response: Response) => void
-    const positions: PositionSnapshot = { fileName: 'positions.csv', generation: 1, recordCount: 0, issueCount: 0,
-      issues: [], waitingForLine: false, hasMore: false, nodes: [] }
     const fetcher = vi.fn((url: string, _init?: RequestInit): Promise<Response> => {
       if (url.endsWith('/scenarios')) return Promise.resolve(successResponse([scene]))
       if (url.endsWith('/simulations')) return Promise.resolve(successResponse([fixtureSource.run]))
       if (url.endsWith('/scenarios/SCN-B')) return new Promise(resolve => { finish = resolve })
       if (url.endsWith('/initial-nodes')) return Promise.resolve(successResponse(INITIAL_NODES))
-      if (url.endsWith('/positions')) return Promise.resolve(successResponse(positions))
       throw new Error(`Unexpected request ${url}`)
     })
     vi.stubGlobal('fetch', fetcher)
@@ -336,17 +342,18 @@ describe('态势主界面', () => {
     expect(router.currentRoute.value.path).toBe('/situation')
     expect(useSimulationStore().selectedScene).toBeNull()
     expect(wrapper.find('[data-testid="saved-scene-preview"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(mapControllerMock.latestOptions?.initialNodes?.map(node => node.platformId)).toEqual(['A', 'B'])
     expect(socket).not.toHaveBeenCalled()
     const polls = () => fetcher.mock.calls.filter(([url]) => url.endsWith('/positions')).length
-    expect(polls()).toBe(1)
+    expect(polls()).toBe(0)
     await vi.advanceTimersByTimeAsync(1000)
-    expect(polls()).toBe(2)
+    expect(polls()).toBe(0)
     await router.push('/other')
     await flushPromises()
     await vi.advanceTimersByTimeAsync(3000)
-    expect(polls()).toBe(2)
+    expect(polls()).toBe(0)
   })
 
   it('呈现原型要求的关键区域并只读取运行快照', async () => {
@@ -381,7 +388,7 @@ describe('态势主界面', () => {
     expect(wrapper.get('.node-jammer-count').text()).toBe('6 / 50')
     expect(wrapper.findAll('[data-testid^="focus-node-"]')).toHaveLength(8)
     expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
-      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路',
+      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路光纤链路',
     )
     expect(wrapper.text()).toContain('4 类业务信息节点')
     expect(wrapper.text()).toContain('4 类链路')
@@ -400,13 +407,15 @@ describe('态势主界面', () => {
   })
 
   it('真实初始节点共享列表与地图数据，不请求 Mock 帧或启动模拟引擎', async () => {
-    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(INITIAL_NODES))
+    const initial = structuredClone(INITIAL_NODES)
+    initial.nodes[0]!.name = '高空中继节点'
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(initial))
       .mockResolvedValue(successResponse(null))
     const webSocketSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
     vi.stubGlobal('WebSocket', webSocketSpy)
     const wrapper = await mountSituationPage()
-    expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(webSocketSpy).not.toHaveBeenCalled()
     expect(useTelemetryStore().frame).toBeNull()
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
@@ -428,53 +437,293 @@ describe('态势主界面', () => {
     expect(panel.attributes('data-collapsed')).toBe('false')
     expect(wrapper.get('.situation-page__workspace').classes()).not.toContain('situation-page__workspace--telemetry-collapsed')
     expect(wrapper.find('.metric-panel').exists()).toBe(false)
-    expect(wrapper.find('.offline-map__legend').exists()).toBe(false)
-    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: INITIAL_NODES.nodes })
+    expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
+      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路光纤链路',
+    )
+    expect(wrapper.find('[data-testid="file-message-selector"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('选择消息查看实际路径')
+    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: initial.nodes })
+    expect(wrapper.get('[data-testid="focus-node-A"]').text()).toContain('高空中继节点')
     await wrapper.get('[data-testid="focus-node-A"]').trigger('click')
     expect(mapControllerMock.controller.focusTarget).toHaveBeenCalledWith({ kind: 'node', targetId: 'A' })
     mapControllerMock.latestOptions?.onSelectNode('A')
     await flushPromises()
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('高空中继节点')
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('HIGH_ALT_COMMS_PLATFORM')
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('离线底图覆盖范围之外')
-    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('主界面文件播放共用同一游标，位置、关联与设备按流程同步，控制不调用 mission 或 Mock', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.initial.connections = FILE_CONNECTIONS
+    snapshot.initial.deviceEvents = [
+      { sourceEventId: 'OFF-1', time: 1.439932, platformId: 'A', deviceId: 'microwave_link', kind: 'COMMUNICATION', active: false },
+      { sourceEventId: 'JAM-ON', time: 1666.178, platformId: 'B', deviceId: 'prophet_jammer', kind: 'JAMMING', active: true, frequencyHz: 2.4e9, bandwidthHz: 5e7 },
+      { sourceEventId: 'ON-1', time: 2300, platformId: 'A', deviceId: 'microwave_link', kind: 'COMMUNICATION', active: true },
+      { sourceEventId: 'OFF-2', time: 2302.44, platformId: 'A', deviceId: 'microwave_link', kind: 'COMMUNICATION', active: false },
+      { sourceEventId: 'JAM-OFF', time: 2806.178, platformId: 'B', deviceId: 'prophet_jammer', kind: 'JAMMING', active: false },
+      { sourceEventId: 'ON-2', time: 2806.44, platformId: 'A', deviceId: 'microwave_link', kind: 'COMMUNICATION', active: true },
+    ]
+    snapshot.tracks[1]!.positions.push({ ...snapshot.tracks[1]!.positions[1]!, time: 5400 })
+    snapshot.recordCount += 1
+    snapshot.durationS = 5400
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(snapshot.initial)).mockResolvedValue(successResponse(snapshot))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    const playback = useReplayStore()
+    expect(playback.state).toBe('PLAYING')
+    expect(wrapper.get('[aria-label="运行模式"]').attributes('disabled')).toBeDefined()
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(playback.replay?.currentTimeS).toBe(1)
+    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ platformId: 'A', longitude: -78 })]))
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(playback.replay?.currentTimeS).toBe(1)
+    await wrapper.get('[data-testid="simulation-step"]').trigger('click')
+    await flushPromises()
+    expect(playback.replay?.currentTimeS).toBe(2)
+    expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith([expect.objectContaining({ active: false, deviceId: 'microwave_link' })])
+    for (const [time, jammerActive, microwaveActive] of [[1666.178, true, false], [2300, true, true], [2302.44, true, false], [2806.178, false, false], [2806.44, false, true]] as const) {
+      wrapper.findComponent({ name: 'ElSlider' }).vm.$emit('change', time)
+      await flushPromises()
+      expect(wrapper.findComponent(OfflineSituationMap).props()).toMatchObject({ fileTime: time })
+      expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith(expect.arrayContaining([
+        expect.objectContaining({ deviceId: 'prophet_jammer', active: jammerActive }),
+        expect.objectContaining({ deviceId: 'microwave_link', active: microwaveActive }),
+      ]))
+      expect(mapControllerMock.controller.setFileLinks).toHaveBeenLastCalledWith(selectFileCommunicationLinks(FILE_CONNECTIONS, time))
+    }
+    expect(wrapper.text()).toContain('46分46秒')
+    wrapper.findComponent({ name: 'ElSlider' }).vm.$emit('change', 0)
+    await flushPromises()
+    expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith([])
+    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith(expect.arrayContaining([expect.objectContaining({ platformId: 'A', longitude: -77 })]))
+    await wrapper.get('[aria-label="仿真倍速"]').setValue('4')
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay?.currentTimeS).toBe(4)
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    expect(playback.localSnapshot).toBeNull()
+    expect(wrapper.findComponent(OfflineSituationMap).props()).toMatchObject({ fileTime: 0 })
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(playback.state).toBe('PLAYING')
+    useAuthStore().resetToSafeEmpty()
+    await flushPromises()
+    expect(playback.localSnapshot).toBeNull()
+    expect(vi.getTimerCount()).toBe(0)
+    expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
+      'http://127.0.0.1:4173/api/v1/situation/initial-nodes',
+      'http://127.0.0.1:4173/api/v1/replays/local-file',
+      'http://127.0.0.1:4173/api/v1/replays/local-file',
+    ])
+  })
+
+  it.each(['离页', '登出'])('文件播放加载在途%s，迟到响应不得启动播放或恢复数据', async reason => {
+    let finish!: (response: Response) => void
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(LOCAL_REPLAY.initial))
+      .mockImplementationOnce(() => new Promise<Response>(resolve => { finish = resolve }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    const signal = fetchSpy.mock.calls[1]![1].signal as AbortSignal
+    if (reason === '离页') { wrapper.unmount(); mountedWrapper = null }
+    else useAuthStore().resetToSafeEmpty()
+    expect(signal.aborted).toBe(true)
+    finish(successResponse(LOCAL_REPLAY))
+    await flushPromises()
+    expect(useReplayStore().localSnapshot).toBeNull()
+    expect(useReplayStore().state).toBe('EMPTY')
     expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
-  it('真实通信关联按登记时间展示，随位置更新后显示微波，详情不伪造链路状态', async () => {
+  it('文件播放快照加载失败显示错误，不继续显示旧位置或启动引擎', async () => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(LOCAL_REPLAY.initial)).mockRejectedValue(new Error('位置文件读取失败'))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('位置文件读取失败')
+    expect(wrapper.findComponent(OfflineSituationMap).exists()).toBe(false)
+    expect(useReplayStore().localSnapshot).toBeNull()
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('文件干扰节点晚于地图加载时开启图层，位置刷新保留用户关闭选择', async () => {
+    mountedWrapper = mount(OfflineSituationMap, {
+      props: { frame: null, initialNodes: [], links: [], selectedNodeId: '', focusTarget: null,
+        fileDeviceEvents: [{ sourceEventId: 'JAM-1', platformId: 'jammer_station_01', deviceId: 'prophet_jammer', kind: 'JAMMING', time: 0, active: true, frequencyHz: 2.4e9, bandwidthHz: 5e7 }] },
+      global: { plugins: [ElementPlus] },
+    })
+    const wrapper = mountedWrapper
+    const button = wrapper.get('[aria-label="态势图层"] button:nth-child(3)')
+    expect(button.attributes('disabled')).toBeDefined()
+    const nodes = [{ ...INITIAL_NODES.nodes[0]!, platformId: 'jammer_station_01', name: '地面干扰站01' }]
+    await wrapper.setProps({ initialNodes: nodes })
+    expect(button.attributes('disabled')).toBeUndefined()
+    expect(button.attributes('aria-pressed')).toBe('true')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('interference', true)
+    await button.trigger('click')
+    await wrapper.setProps({ initialNodes: nodes.map(node => ({ ...node, latitude: 25.1 })) })
+    expect(button.attributes('aria-pressed')).toBe('false')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('interference', false)
+    await wrapper.setProps({ initialNodes: [] })
+    await wrapper.setProps({ initialNodes: nodes })
+    expect(button.attributes('aria-pressed')).toBe('true')
+  })
+
+
+  it.each([
+    ['jammer_station_01', '地面干扰站01', true],
+    ['jammer_airborne_01', '机载干扰平台01', true],
+    ['UNKNOWN', '地面干扰站01', false],
+  ] as const)('文件节点 %s 按原始身份显示指定干扰范围，公里标注不伪造运行状态', async (id, name, hasRange) => {
+    const initial = structuredClone(INITIAL_NODES)
+    initial.nodes[0] = { ...initial.nodes[0]!, platformId: id, name }
+    if (hasRange) initial.deviceEvents = [{ sourceEventId: 'JAM-1', platformId: id, deviceId: 'prophet_jammer', kind: 'JAMMING', time: 0, active: true, frequencyHz: 2.4e9, bandwidthHz: 5e7 }]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(initial)))
+    const wrapper = await mountSituationPage()
+    const button = wrapper.get('[aria-label="态势图层"] button:nth-child(3)')
+    expect(button.attributes('disabled') !== undefined).toBe(!hasRange)
+    expect(button.attributes('aria-pressed')).toBe(String(hasRange))
+    mapControllerMock.latestOptions?.onSelectNode(id)
+    await flushPromises()
+    const detail = document.querySelector('[data-testid="selected-node-dialog"]')?.textContent ?? ''
+    expect(detail.includes('44.448 公里（指定范围）')).toBe(hasRange)
+    expect(detail).not.toContain('活动干扰')
+    if (hasRange) {
+      await button.trigger('click')
+      expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('interference', false)
+    }
+  })
+
+  it('地图详情消费当前时刻的设备事件，回退与重载移除旧状态，通信关闭不改变登记关联', async () => {
+    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 0)
+    const events: FileDeviceEvent[] = [
+      { sourceEventId: 'LOG-L1', platformId: 'A', deviceId: 'sat-a', kind: 'COMMUNICATION', time: 0, active: true },
+      { sourceEventId: 'LOG-L2', platformId: 'A', deviceId: 'sat-a', kind: 'COMMUNICATION', time: 2301.17, active: false },
+      { sourceEventId: 'LOG-L3', platformId: 'A', deviceId: 'prophet_jammer', kind: 'JAMMING', time: 1666.44, active: true, frequencyHz: 2.4e9, bandwidthHz: 5e7 },
+    ]
+    mountedWrapper = mount(OfflineSituationMap, {
+      props: { frame: null, initialNodes: INITIAL_NODES.nodes, fileLinks: links, fileDeviceEvents: events, fileTime: 0, links: [], selectedNodeId: 'A', focusTarget: null },
+      global: { plugins: [ElementPlus] }, attachTo: document.body,
+    })
+    const wrapper = mountedWrapper
+    mapControllerMock.latestOptions?.onSelectNode('A')
+    await flushPromises()
+    const list = document.querySelector('[data-testid="node-file-associations"]')!
+    expect(list.textContent).toContain('卫星通信')
+    const viewButton = list.querySelector('button') as HTMLButtonElement
+    viewButton.click()
+    await flushPromises()
+    const details = () => document.querySelector('[data-testid="selected-node-dialog"]')?.textContent ?? ''
+    const association = () => document.querySelector('[data-testid="file-link-details"]')?.textContent ?? ''
+    expect(details()).toContain('已开启')
+    expect(details()).not.toContain('干扰请求进行中')
+    await wrapper.setProps({ fileTime: 1666.44 })
+    await flushPromises()
+    expect(details()).toContain('干扰请求进行中')
+    expect(details()).toContain('2400 MHz')
+    expect(details()).toContain('50 MHz')
+    expect(details()).toContain('LOG-L3')
+    await wrapper.setProps({ fileTime: 2301.17 })
+    await flushPromises()
+    expect(details()).toContain('已关闭')
+    expect(association()).toContain('已关闭 · 2301.17 秒 · LOG-L2')
+    expect(association()).toContain('启停未知（无对应事件）')
+    expect(association()).toContain('LOG-L20')
+    expect(association()).toContain('不表示当前正在转发')
+    expect(association()).not.toMatch(/正常|劣化|中断/)
+    expect(mapControllerMock.latestOptions?.fileLinks).toEqual(links)
+    expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith(selectFileDeviceStates(events, 2301.17))
+    const stopped = buildFileDeviceEvents(parseAfsimEventLog([
+      '! WEAPON_TURNED_OFF,time<time>,event<string>,platform<string>,side<string>,type<string>,system_platform<string>,system_type<string>',
+      '2806.178,WEAPON_TURNED_OFF,A,red,Weapon,prophet_jammer,WSF_RF_JAMMER',
+    ].join('\n')).events, new Set(['A', 'B']))
+    await wrapper.setProps({ fileDeviceEvents: [...events, ...stopped], fileTime: 2806.178 })
+    await flushPromises()
+    expect(details()).toContain('干扰已停止')
+    expect(details()).not.toContain('NaN')
+    expect(details()).not.toContain('2400 MHz')
+    await wrapper.setProps({ fileTime: 0 })
+    await flushPromises()
+    expect(details()).toContain('已开启')
+    expect(details()).not.toContain('已关闭')
+    expect(details()).not.toContain('干扰请求进行中')
+    await wrapper.setProps({ fileDeviceEvents: [] })
+    await flushPromises()
+    expect(details()).toContain('当前时刻无设备启停或干扰请求记录，状态未知')
+    expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith([])
+  })
+
+  it('态势页通过正式初始快照加载设备事件，仅投影零秒而不泄露未来干扰请求', async () => {
+    const initial = structuredClone(INITIAL_NODES)
+    initial.nodes[0]!.platformId = 'jammer_airborne_01'
+    initial.nodes[1]!.platformId = 'jammer_station_01'
+    initial.deviceEvents = initial.nodes.map((node, index) => ({
+      sourceEventId: `LOG-L${index + 1}`, platformId: node.platformId, deviceId: `jammer-${index}`,
+      kind: 'JAMMING', time: index === 0 ? 0 : 1666.44, active: true, frequencyHz: 2.4e9, bandwidthHz: 2e7,
+    }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(initial)))
+    const wrapper = await mountSituationPage()
+    expect(mapControllerMock.latestOptions?.fileDeviceStates).toEqual([initial.deviceEvents[0]])
+    expect(wrapper.get('.telemetry-panel').text()).toContain('文件设备启停与干扰请求请在地图节点详情查看')
+    mapControllerMock.latestOptions?.onSelectNode('jammer_airborne_01')
+    await flushPromises()
+    expect(document.querySelector('[data-testid="selected-node-dialog"]')?.textContent).toContain('干扰请求进行中')
+    expect(document.querySelector('[data-testid="selected-node-dialog"]')?.textContent).not.toContain('1666.44')
+  })
+
+  it.each([['无人机01', '无人机02'], ['A', 'B']])('真实通信关联只展示零秒登记，端点复用节点名称 %s/%s 并保留原始标识', async (sourceName, targetName) => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const snapshot: PositionSnapshot = { fileName: 'positions.csv', generation: 1, recordCount: 1, issueCount: 0,
-      issues: [], waitingForLine: false, hasMore: false,
-      nodes: [{ platformId: 'A', time: 5, longitude: 118, latitude: 25, altitude: 0, speed: 1, heading: 0 }] }
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse({ ...INITIAL_NODES, connections: FILE_CONNECTIONS }))
-      .mockResolvedValueOnce(successResponse({ ...snapshot, nodes: [] }))
-      .mockResolvedValueOnce(successResponse(snapshot))
-      .mockResolvedValue(successResponse({ ...snapshot, generation: 2, nodes: [] })))
+    const initial = structuredClone(INITIAL_NODES)
+    initial.nodes[0]!.name = sourceName
+    initial.nodes[1]!.name = targetName
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse({ ...initial, connections: FILE_CONNECTIONS }))
+    vi.stubGlobal('fetch', fetchSpy)
     const wrapper = await mountSituationPage()
     expect(wrapper.get('[aria-label="链路类型图例"]').text()).toBe(
-      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路',
+      '卫星链路微波链路新一代数传链路激光链路受干扰 / 失效链路光纤链路',
     )
     expect(wrapper.find('[aria-label="通信关联图例"]').exists()).toBe(false)
     expect(mapControllerMock.latestOptions?.fileLinks?.map(link => link.type)).toEqual(['SAT'])
     expect(wrapper.get('[aria-label="态势图层"] button:nth-child(2)').attributes('disabled')).toBeUndefined()
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
-    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
-    expect(mapControllerMock.controller.setFileLinks).toHaveBeenLastCalledWith(links)
-    expect(wrapper.get('[aria-label="链路类型图例"]').findAll('i')).toHaveLength(5)
-    mapControllerMock.latestOptions?.onSelectFileLink?.(links[1]!)
+    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 0)
+    expect(mapControllerMock.latestOptions?.fileLinks).toEqual(links)
+    expect(wrapper.get('[aria-label="链路类型图例"]').findAll('i')).toHaveLength(6)
+    mapControllerMock.latestOptions?.onSelectFileLink?.(links[0]!)
     await flushPromises()
     const details = document.querySelector('[data-testid="file-link-details"]')
-    expect(details?.textContent).toContain('微波通信')
+    const sourceLabel = sourceName === 'A' ? 'A' : `${sourceName}（A）`
+    const targetLabel = targetName === 'B' ? 'B' : `${targetName}（B）`
+    expect(details?.querySelector('p')?.textContent).toContain(`${sourceLabel} — ${targetLabel}`)
+    const row = details?.querySelector('.el-table__body tbody tr')
+    expect(row?.textContent).toContain(`${sourceLabel} / sat-a`)
+    expect(row?.textContent).toContain(`${targetLabel} / sat-b`)
+    expect(row?.textContent).toContain('0.1.0.1')
+    expect(row?.textContent).toContain('0.1.0.2')
+    expect(initial.nodes.map(node => node.platformId)).toEqual(['A', 'B'])
+    expect(details?.textContent).toContain('卫星通信')
     expect(details?.textContent).toContain('状态未知')
-    expect(details?.textContent).toContain('c_band_relay_down')
-    expect(details?.textContent).toContain('LOG-L21')
+    expect(details?.textContent).toContain('satcom_1')
+    expect(details?.textContent).toContain('LOG-L20')
     expect(details?.textContent).not.toMatch(/正常|劣化|中断/)
     expect(wrapper.find('.metric-panel').exists()).toBe(false)
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
-    expect(document.querySelector('[data-testid="file-link-details"]')).toBeNull()
+    expect(mapControllerMock.latestOptions?.fileLinks).toEqual(links)
+    expect(fetchSpy).toHaveBeenCalledOnce()
   })
 
   it('进入已选场景后展示配置节点、使用该编号开始 Mock，移除页内选择入口且不混入固定遥测', async () => {
@@ -638,40 +887,35 @@ describe('态势主界面', () => {
     await wrapper.get('.telemetry-empty button').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
-    expect(fetchSpy).toHaveBeenCalledTimes(3)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
 
-  it('追加位置持续同步地图与详情，失败保留位置，换代复位，卸载后停止轮询', async () => {
+  it('文件含末帧位置时仍停留零秒，未来节点不显示，重新进入仍从初始位置显示', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const snapshot: PositionSnapshot = {
+    const snapshot = {
       fileName: 'positions.csv', generation: 1, recordCount: 1, issueCount: 0, issues: [],
       waitingForLine: false, hasMore: false,
-      nodes: [{ platformId: 'A', time: 1, longitude: -78, latitude: 31, altitude: 10, speed: 220, heading: -1 }],
+      nodes: [{ platformId: 'A', time: 5400, longitude: -78, latitude: 31, altitude: 10, speed: 220, heading: -1 }],
     }
-    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(INITIAL_NODES))
-      .mockResolvedValueOnce(successResponse(snapshot))
-      .mockRejectedValueOnce(new Error('临时读取失败'))
-      .mockResolvedValueOnce(successResponse({ ...snapshot, generation: 2, recordCount: 0, nodes: [] }))
-      .mockResolvedValue(successResponse(null))
+    const initial = structuredClone(INITIAL_NODES)
+    initial.nodes.push({ ...initial.nodes[0]!, platformId: 'FUTURE', name: '未来节点', time: 5 })
+    const fetchSpy = vi.fn((url: string) => Promise.resolve(successResponse(
+      url.endsWith('/positions') ? snapshot : initial,
+    )))
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = await mountSituationPage()
-    expect(wrapper.text()).toContain('位置已同步，等待追加')
+    expect(wrapper.text()).toContain('0分0秒 · 节点 2 个')
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
-    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith([
-      expect.objectContaining({ platformId: 'A', longitude: -78, latitude: 31 }), INITIAL_NODES.nodes[1],
-    ])
+    expect(mapControllerMock.latestOptions?.initialNodes).toEqual(INITIAL_NODES.nodes)
     mapControllerMock.latestOptions?.onSelectNode('A')
     await flushPromises()
-    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('78°W / 31°N')
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
     const updates = mapControllerMock.controller.setNodes.mock.calls.length
-    await vi.advanceTimersByTimeAsync(1000)
+    await vi.advanceTimersByTimeAsync(5000)
     await flushPromises()
-    expect(wrapper.text()).toContain('保留最后位置')
     expect(mapControllerMock.controller.setNodes).toHaveBeenCalledTimes(updates)
-    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('78°W / 31°N')
-    await vi.advanceTimersByTimeAsync(1000)
-    await flushPromises()
-    expect(mapControllerMock.controller.setNodes).toHaveBeenLastCalledWith(INITIAL_NODES.nodes)
+    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
+    expect(fetchSpy.mock.calls.some(([url]) => url.endsWith('/positions'))).toBe(false)
     expect(wrapper.get('[data-testid="focus-node-A"]').attributes('aria-pressed')).toBe('true')
     expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
     wrapper.unmount()
@@ -679,6 +923,9 @@ describe('态势主界面', () => {
     const requests = fetchSpy.mock.calls.length
     await vi.advanceTimersByTimeAsync(5000)
     expect(fetchSpy).toHaveBeenCalledTimes(requests)
+    await mountSituationPage()
+    expect(mapControllerMock.latestOptions?.initialNodes).toEqual(INITIAL_NODES.nodes)
+    expect(fetchSpy).toHaveBeenCalledTimes(requests + 1)
   })
 
   it('支持开始、暂停并在确认后停止', async () => {
@@ -1156,6 +1403,7 @@ describe('Leaflet 控制器回归', () => {
 
   async function createController(options: {
     initialNodes?: SituationMapNode[]
+    fileDeviceStates?: FileDeviceEvent[]
     configuredLinks?: Link[]
     onSelectConfiguredLink?: (link: Link) => void
     fileLinks?: FileCommunicationLink[]
@@ -1177,6 +1425,7 @@ describe('Leaflet 控制器回归', () => {
       container,
       frame: options.initialNodes ? null : reactive(structuredClone(SITUATION_FRAME_F00042)),
       initialNodes: options.initialNodes,
+      fileDeviceStates: options.fileDeviceStates,
       configuredLinks: options.configuredLinks,
       onSelectConfiguredLink: options.onSelectConfiguredLink,
       fileLinks: options.fileLinks,
@@ -1190,6 +1439,61 @@ describe('Leaflet 控制器回归', () => {
     activeControllers.add(controller)
     return controller
   }
+
+
+  it('文件范围按干扰事件启停并随回放移动，回退和重载清除未来范围，不推断通信关联通断', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const circles = vi.spyOn(L, 'circle')
+    const nodes: SituationMapNode[] = [
+      { ...INITIAL_NODES.nodes[0]!, platformId: 'jammer_station_01', name: '地面干扰站01' },
+      { ...INITIAL_NODES.nodes[1]!, platformId: 'jammer_airborne_01', name: '机载干扰平台01' },
+      { ...INITIAL_NODES.nodes[1]!, platformId: 'UNKNOWN', name: '地面干扰站01' },
+    ]
+    const controller = await createController({ initialNodes: nodes })
+    const interferenceGroup = groups.mock.results[2]!.value as L.LayerGroup
+    expect(circles).not.toHaveBeenCalled()
+    const events: FileDeviceEvent[] = nodes.slice(0, 2).map((node, index) => ({
+      platformId: node.platformId, deviceId: `jammer-${index}`, kind: 'JAMMING', active: true,
+      sourceEventId: `LOG-L${index + 1}`, time: index === 0 ? 1666.44 : 0, frequencyHz: 2.4e9, bandwidthHz: 2e7,
+    }))
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 0))
+    expect(interferenceGroup.getLayers()).toHaveLength(1)
+    expect(circles.mock.results[0]!.value.getLatLng()).toEqual(L.latLng(nodes[1]!.latitude, nodes[1]!.longitude))
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 1666.439))
+    expect(interferenceGroup.getLayers()).toHaveLength(1)
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 1666.44))
+    expect(circles).toHaveBeenCalledTimes(2)
+    const ranges = circles.mock.results.map(result => result.value as L.Circle)
+    ranges.forEach((circle, index) => {
+      expect(circle.getRadius()).toBe(44448)
+      expect(circle.getLatLng()).toEqual(L.latLng(nodes[1 - index]!.latitude, nodes[1 - index]!.longitude))
+      expect(circle.getTooltip()).toBeUndefined()
+    })
+    const off = buildFileDeviceEvents(parseAfsimEventLog([
+      '! WEAPON_TURNED_OFF,time<time>,event<string>,platform<string>,side<string>,type<string>,system_platform<string>,system_type<string>',
+      '2806.178,WEAPON_TURNED_OFF,jammer_station_01,red,Weapon,jammer-0,WSF_RF_JAMMER',
+    ].join('\n')).events, new Set(nodes.map(node => node.platformId)))
+    controller.setFileDeviceStates(selectFileDeviceStates([...events, ...off], 2806.178))
+    expect(interferenceGroup.getLayers()).toEqual([ranges[0]])
+    controller.setFileDeviceStates(selectFileDeviceStates([...events, ...off], 2806.177))
+    expect(interferenceGroup.getLayers()).toHaveLength(2)
+    expect(interferenceGroup.getLayers()).toContain(ranges[0])
+    circles.mockClear()
+    controller.setNodes(nodes.map(node => ({ ...node, latitude: node.latitude + 0.1 })))
+    expect(circles).not.toHaveBeenCalled()
+    expect(ranges[0]!.getLatLng().lat).toBe(nodes[1]!.latitude + 0.1)
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 0))
+    expect(interferenceGroup.getLayers()).toEqual([ranges[0]])
+    controller.setFileDeviceStates(selectFileDeviceStates([...events, { ...events[1]!, sourceEventId: 'LOG-L3', time: 1700, active: false }], 1700))
+    expect(interferenceGroup.getLayers()).toHaveLength(1)
+    expect(interferenceGroup.getLayers()).not.toContain(ranges[0])
+    controller.setFileDeviceStates([])
+    expect(interferenceGroup.getLayers()).toHaveLength(0)
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 1666.44))
+    controller.setNodes([])
+    expect(interferenceGroup.getLayers()).toHaveLength(0)
+    controller.destroy()
+  })
 
   beforeEach(() => {
     leaflet.canvas.tile = {}
@@ -1311,7 +1615,7 @@ describe('Leaflet 控制器回归', () => {
     const markerSpy = vi.spyOn(L, 'marker')
     const onSelectFileLink = vi.fn()
     const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
-    const controller = await createController({ initialNodes: INITIAL_NODES.nodes, fileLinks: links, onSelectFileLink })
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileLinks: links, onSelectFileLink })
     const calls = () => lineSpy.mock.calls.filter(([, options]) => options?.className === 'situation-map-file-link')
     expect(calls()).toHaveLength(2)
     const points = calls()[0]?.[0] as L.LatLngTuple[]
@@ -1319,6 +1623,7 @@ describe('Leaflet 控制器回归', () => {
     expect(calls()[0]?.[0]).not.toEqual(calls()[1]?.[0])
     expect(calls().map(([, options]) => options?.color)).toEqual(['#67c23a', '#409eff'])
     expect(calls().map(([, options]) => options?.dashArray)).toEqual([undefined, '8 5'])
+    expect(calls().every(([, options]) => options?.opacity === 0.95 && options?.weight === 3)).toBe(true)
     const index = lineSpy.mock.calls.findIndex(([, options]) => options?.className === 'situation-map-file-link')
     const line = lineSpy.mock.results[index]?.value as L.Polyline
     expect((line.getTooltip()?.getContent() as HTMLElement).textContent).toContain('状态未知')
@@ -1329,7 +1634,7 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectFileLink).toHaveBeenCalledTimes(2)
     controller.setLayerVisible('links', false)
     lineSpy.mockClear()
-    controller.setNodes(INITIAL_NODES.nodes.map(node => node.platformId === 'A' ? { ...node, latitude: 26, longitude: 119 } : node))
+    controller.setNodes(SATELLITE_FILE_NODES.map(node => node.platformId === 'A' ? { ...node, latitude: 26, longitude: 119 } : node))
     expect(lineSpy).not.toHaveBeenCalled()
     const updated = (line.getLatLngs() as L.LatLng[]).map(point => [point.lat, point.lng])
     expect([updated[0], updated.at(-1)]).toEqual([[26, 119], [25.1026, 118.7321]])
@@ -1342,6 +1647,181 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
     expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
     expect(markerSpy).toHaveBeenCalled()
+  })
+
+  it('卫星只绘制已有的星地登记，端到端、星间、未知类型不画，其他类别与原始明细不变', async () => {
+    const types = ['MISSION_UAV_PLATFORM', 'REAR_COMM_PLATFORM', 'SHEN_TONG_SAT', 'TIAN_TONG_SAT', 'UNKNOWN']
+    const nodes = types.map((type, index) => ({ ...INITIAL_NODES.nodes[0]!, platformId: `N${index}`, name: `节点${index}`, type }))
+    const records: FileCommunicationConnection[] = [[0, 1], [0, 2], [2, 1], [3, 0], [1, 3], [2, 3], [4, 2]].map(([source, target], index) => ({
+      ...FILE_CONNECTIONS[0]!, sourceEventId: `REG-${index}`, sourceType: 'WSF_RADIO_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER',
+      source: { platformName: `N${source}`, communicationName: 'sat_link', address: `0.1.0.${source}` },
+      target: { platformName: `N${target}`, communicationName: 'sat_link', address: `0.1.0.${target}` },
+    }))
+    const links = selectFileCommunicationLinks(records, 0)
+    const original = structuredClone(links)
+    const otherLinks: FileCommunicationLink[] = ['MICROWAVE', 'DATALINK', 'FIBER'].map(type => ({
+      ...links[0]!, id: type, type: type as FileCommunicationLink['type'],
+    }))
+    const onSelectFileLink = vi.fn()
+    const controller = await createController({ initialNodes: nodes, fileLinks: [...links, ...otherLinks], onSelectFileLink })
+    const visible = () => container!.querySelectorAll<HTMLElement>('.situation-map-file-link-hit')
+    expect(visible()).toHaveLength(7)
+    for (const element of visible()) element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSelectFileLink.mock.calls.map(([link]) => link.id)).toEqual([...links.slice(1, 5), ...otherLinks].map(link => link.id))
+    expect(container?.textContent).toContain('不表示当前正在转发')
+    controller.setFileLinks([links[0]!])
+    expect(visible()).toHaveLength(0)
+    // 即使已知卫星节点存在，也不能根据端到端关联自行补两跳。
+    expect(links).toEqual(original)
+    controller.setFileLinks([links[1]!])
+    expect(visible()).toHaveLength(1)
+    controller.setFileDeviceStates([{ sourceEventId: 'OFF', platformId: 'N2', deviceId: 'sat_link', kind: 'COMMUNICATION', time: 1, active: false }])
+    expect(visible()).toHaveLength(0)
+    controller.setFileDeviceStates([])
+    expect(visible()).toHaveLength(1)
+  })
+
+  it('当前 CSV 的卫星和微波设备映射为连线，并按实际启停时刻隐藏及恢复', async () => {
+    const nodes = ['rear_comm_vehicle', 'mission_uav_02', 'mission_uav_03', 'shentong_sat'].map((platformId, index) => ({
+      ...INITIAL_NODES.nodes[0]!, platformId, name: platformId, latitude: 25 + index * 0.1,
+      type: index === 0 ? 'REAR_COMM_PLATFORM' : index === 3 ? 'SHEN_TONG_SAT' : 'MISSION_UAV_PLATFORM',
+    }))
+    const records: FileCommunicationConnection[] = [
+      ['mission_uav_03', 'microwave_link', 'rear_comm_vehicle', 'microwave_link'],
+      ['mission_uav_02', 'sat_link', 'shentong_sat', 'sat_link'],
+      ['mission_uav_02', 'c_band_downlink', 'mission_uav_03', 'c_band_downlink'],
+    ].map(([source, sourceComm, target, targetComm], index) => ({
+      sourceEventId: `REG-${index}`, time: 0, scope: 'INTER_PLATFORM',
+      sourceType: 'WSF_RADIO_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER',
+      source: { platformName: source!, communicationName: sourceComm!, address: `0.1.0.${index * 2 + 1}` },
+      target: { platformName: target!, communicationName: targetComm!, address: `0.1.0.${index * 2 + 2}` },
+    }))
+    const events: FileDeviceEvent[] = [
+      { sourceEventId: 'LOG-L806', platformId: 'mission_uav_03', deviceId: 'microwave_link', kind: 'COMMUNICATION', time: 2.436506, active: false },
+      { sourceEventId: 'LOG-L5361', platformId: 'mission_uav_03', deviceId: 'microwave_link', kind: 'COMMUNICATION', time: 2300, active: true },
+      { sourceEventId: 'LOG-L5362', platformId: 'mission_uav_03', deviceId: 'microwave_link', kind: 'COMMUNICATION', time: 2300.437, active: false },
+      { sourceEventId: 'LOG-L5363', platformId: 'mission_uav_02', deviceId: 'sat_link', kind: 'COMMUNICATION', time: 2301.17, active: false },
+    ]
+    const links = selectFileCommunicationLinks(records, 0)
+    expect(links.map(link => link.type)).toEqual(['MICROWAVE', 'SAT', 'DATALINK'])
+    const onSelectFileLink = vi.fn()
+    const controller = await createController({ initialNodes: nodes, fileLinks: links, onSelectFileLink })
+    const visible = () => container!.querySelectorAll<HTMLElement>('.situation-map-file-link-hit')
+    for (const [time, count] of [[0, 3], [2.436506, 2], [2300, 3], [2300.437, 2], [2301.17, 1]]) {
+      controller.setFileDeviceStates(selectFileDeviceStates(events, time!))
+      expect(visible()).toHaveLength(count!)
+    }
+    visible()[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSelectFileLink).toHaveBeenLastCalledWith(links[2])
+    controller.setFileDeviceStates(selectFileDeviceStates(events, 0))
+    expect(visible()).toHaveLength(3)
+    expect(links.flatMap(link => link.records)).toEqual(records)
+  })
+
+  it('设备关闭仅隐藏全部关联不可用的合并连线，开启、倒退及重载恢复且不删除登记明细', async () => {
+    const alternate = structuredClone(FILE_CONNECTIONS[0]!)
+    alternate.sourceEventId = 'LOG-ALTERNATE'
+    alternate.source.communicationName = 'sat-a-2'
+    alternate.target.communicationName = 'sat-b-2'
+    const links = selectFileCommunicationLinks([...FILE_CONNECTIONS, alternate], 5)
+    const original = structuredClone(links)
+    const onSelectFileLink = vi.fn()
+    const events: FileDeviceEvent[] = [
+      { sourceEventId: 'OFF-A', platformId: 'A', deviceId: 'sat-a', kind: 'COMMUNICATION', time: 10, active: false },
+      { sourceEventId: 'OFF-B2', platformId: 'B', deviceId: 'sat-b-2', kind: 'COMMUNICATION', time: 20, active: false },
+      { sourceEventId: 'ON-A', platformId: 'A', deviceId: 'sat-a', kind: 'COMMUNICATION', time: 30, active: true },
+      { sourceEventId: 'OFF-B', platformId: 'B', deviceId: 'sat-b', kind: 'COMMUNICATION', time: 40, active: false },
+      // 同名但不同节点，以及干扰设备的事件，都不能关闭通信设备。
+      { sourceEventId: 'OTHER', platformId: 'B', deviceId: 'c-a', kind: 'COMMUNICATION', time: 0, active: false },
+      { sourceEventId: 'JAMMER', platformId: 'A', deviceId: 'c-a', kind: 'JAMMING', time: 0, active: false, frequencyHz: 1, bandwidthHz: 1 },
+    ]
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileLinks: links, onSelectFileLink })
+    const visible = () => container!.querySelectorAll<HTMLElement>('.situation-map-file-link-hit')
+    const seek = (time: number) => controller.setFileDeviceStates(selectFileDeviceStates(events, time))
+    expect(visible()).toHaveLength(2)
+    seek(10)
+    expect(visible()).toHaveLength(2)
+    seek(20)
+    expect(visible()).toHaveLength(1)
+    visible()[0]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSelectFileLink).toHaveBeenLastCalledWith(links.find(link => link.type === 'MICROWAVE'))
+    seek(30)
+    expect(visible()).toHaveLength(2)
+    visible()[1]!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    expect(onSelectFileLink).toHaveBeenLastCalledWith(links.find(link => link.type === 'SAT'))
+    expect(links.find(link => link.type === 'SAT')?.records).toHaveLength(2)
+    seek(40)
+    expect(visible()).toHaveLength(1)
+    seek(10)
+    expect(visible()).toHaveLength(2)
+    seek(20)
+    controller.setLayerVisible('links', false)
+    seek(30)
+    expect(visible()).toHaveLength(0)
+    controller.setLayerVisible('links', true)
+    expect(visible()).toHaveLength(2)
+    seek(40)
+    controller.setFileDeviceStates([])
+    expect(visible()).toHaveLength(2)
+    expect(links).toEqual(original)
+  })
+
+  it('文件连线按节点对区分类别：单类直线，多类小幅分离，重排反向与无关节点不影响几何', async () => {
+    const lineSpy = vi.spyOn(L, 'polyline')
+    const nodes = SATELLITE_FILE_NODES.map((node, index) => ({ ...node, latitude: 25 + index * 0.01, longitude: 119 + index * 0.01 }))
+    nodes.push({ ...nodes[1]!, platformId: 'C', longitude: 119.02 })
+    const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
+    const other = { ...links[0]!, id: 'other', targetPlatformId: 'C' }
+    const controller = await createController({ initialNodes: nodes, fileLinks: [links[0]!, other] })
+    const lines = lineSpy.mock.results.map(result => result.value as L.Polyline)
+      .filter(line => line.options.className === 'situation-map-file-link')
+    const points = (line: L.Polyline) => (line.getLatLngs() as L.LatLng[]).map(point => [point.lat, point.lng])
+    const straight = points(lines[0]!)
+    straight.forEach(([lat, lon], index) => {
+      expect(lat).toBeCloseTo(25 + 0.01 * index / 32)
+      expect(lon).toBeCloseTo(119 + 0.01 * index / 32)
+    })
+    controller.setFileLinks([...links, other])
+    const curved = points(lines[0]!)
+    const delta = Math.hypot(curved[16]![0]! - 25.005, curved[16]![1]! - 119.005)
+    expect(delta).toBeGreaterThan(0)
+    expect(delta).toBeCloseTo(Math.hypot(0.01, 0.01) * 0.04)
+    expect(curved[0]).toEqual(straight[0])
+    expect(curved.at(-1)).toEqual(straight.at(-1))
+    controller.setFileLinks([other, links[1]!, links[0]!])
+    expect(points(lines[0]!)).toEqual(curved)
+    controller.setFileLinks(links.map(link => ({ ...link, sourcePlatformId: link.targetPlatformId, targetPlatformId: link.sourcePlatformId })))
+    points(lines[0]!).reverse().forEach((point, index) => {
+      expect(point[0]).toBeCloseTo(curved[index]![0]!)
+      expect(point[1]).toBeCloseTo(curved[index]![1]!)
+    })
+    controller.setFileLinks([links[0]!, { ...links[0]!, id: 'same-type' }])
+    expect(points(lines[0]!)).toEqual(straight)
+    controller.setFileLinks([links[0]!])
+    expect(points(lines[0]!)).toEqual(straight)
+    controller.destroy()
+  })
+
+  it('C/L 波段复用数传线型，光纤使用独立颜色，两者均只展示登记关联', async () => {
+    const lineSpy = vi.spyOn(L, 'polyline')
+    const records = [
+      ['c_band_uplink', 'l_band_downlink', 'WSF_RADIO_TRANSCEIVER'],
+      ['fiber_link', 'fiber_link', 'WSF_COMM_TRANSCEIVER'],
+    ].map(([sourceName, targetName, type], index) => ({
+      ...FILE_CONNECTIONS[0]!, sourceEventId: `LOG-L${30 + index}`, sourceType: type!, targetType: type!,
+      source: { ...FILE_CONNECTIONS[0]!.source, communicationName: sourceName! },
+      target: { ...FILE_CONNECTIONS[0]!.target, communicationName: targetName! },
+    }))
+    const links = selectFileCommunicationLinks(records, 0)
+    expect(links.map(link => link.type)).toEqual(['DATALINK', 'FIBER'])
+    await createController({ initialNodes: INITIAL_NODES.nodes, fileLinks: links })
+    const drawings = lineSpy.mock.calls.filter(([, options]) => options?.className === 'situation-map-file-link')
+    expect(drawings.map(([, options]) => [options?.color, options?.dashArray])).toEqual([
+      ['#e6a23c', '2 5'], ['#20b2aa', undefined],
+    ])
+    expect(container?.textContent).toContain('新一代数传链路关联')
+    expect(container?.textContent).toContain('光纤链路关联')
+    expect(container?.textContent).toContain('状态未知')
   })
 
   it('链路 props 筛选和重排后保持几何与交互绑定', async () => {
@@ -1894,8 +2374,7 @@ describe('Leaflet 控制器回归', () => {
     const linkKeyboardCalls = markerSpy.mock.calls.filter(([, options]) => (
       typeof options?.title === 'string' && !options.title.startsWith('选择节点 ')
     ))
-    const controlOffsets = [-0.18, -0.06, 0.06, 0.18] as const
-    expect(MAP_CONFIG.linkCurveOffsets).toEqual(controlOffsets)
+    expect(MAP_CONFIG.linkCurveSeparationRatio).toBe(0.16)
     expect(MAP_CONFIG.curveSampleCount).toBe(32)
     expect(linkCurves).toHaveLength(SITUATION_FRAME_F00042.linkSummaries.length)
     expect(linkKeyboardCalls).toHaveLength(SITUATION_FRAME_F00042.linkSummaries.length)
@@ -1906,9 +2385,15 @@ describe('Leaflet 控制器回归', () => {
       expect(curve[0]).toEqual(source)
       expect(curve[curve.length - 1]).toEqual(destination)
       expect(linkKeyboardCalls[index]?.[0]).toEqual(curve[16])
-      const offset = controlOffsets[index] ?? 0
-      expect(curve[16]?.[0]).toBeCloseTo((source[0] + destination[0]) / 2 + offset / 2)
-      expect(curve[16]?.[1]).toBeCloseTo((source[1] + destination[1]) / 2 + offset / 2)
+      const middle = [(source[0] + destination[0]) / 2, (source[1] + destination[1]) / 2]
+      if (index > 1) {
+        expect(curve[16]?.[0]).toBeCloseTo(middle[0]!)
+        expect(curve[16]?.[1]).toBeCloseTo(middle[1]!)
+      } else {
+        const deviation = Math.hypot(curve[16]![0] - middle[0]!, curve[16]![1] - middle[1]!)
+        expect(deviation).toBeGreaterThan(0)
+        expect(deviation).toBeCloseTo(Math.hypot(destination[0] - source[0], destination[1] - source[1]) * 0.04)
+      }
     })
 
     const activePlatforms = SITUATION_FRAME_F00042.platforms

@@ -7,7 +7,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { Batch, Principal } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
-  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
+  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'fileDeviceEvents', 'fileTime', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
 }))
 
 import BatchesPage from '../../src/pages/batches/batches.vue'
@@ -143,6 +143,30 @@ describe('P6 批量仿真与历史回放页面', () => {
       wrapper.unmount()
     }
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('真实文件设备事件传入地图，游标前进和后退同步时刻，重载不保留前一份事件', async () => {
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.initial.deviceEvents = [
+      { sourceEventId: 'LOG-L10', platformId: 'A', deviceId: 'tx', kind: 'COMMUNICATION', time: 0, active: true },
+      { sourceEventId: 'LOG-L11', platformId: 'A', deviceId: 'tx', kind: 'COMMUNICATION', time: 3, active: false },
+    ]
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(success(snapshot)).mockResolvedValueOnce(success(structuredClone(LOCAL_REPLAY))))
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    try {
+      const map = wrapper.getComponent({ name: 'OfflineSituationMap' })
+      expect(map.props('fileDeviceEvents')).toEqual(snapshot.initial.deviceEvents)
+      expect(map.props('fileTime')).toBe(0)
+      await wrapper.get('[role="slider"]').trigger('keydown', { key: 'End', code: 'End' })
+      await flushPromises()
+      expect(map.props('fileTime')).toBe(3)
+      await wrapper.get('[role="slider"]').trigger('keydown', { key: 'Home', code: 'Home' })
+      await flushPromises()
+      expect(map.props('fileTime')).toBe(0)
+      await wrapper.get('.replays-page__header button').trigger('click')
+      await flushPromises()
+      expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileDeviceEvents')).toBeUndefined()
+    } finally { wrapper.unmount() }
   })
 
   it('末条位置在3秒、关联在10秒时可回放到登记时刻，回退隐藏关联且保持末条位置', async () => {
