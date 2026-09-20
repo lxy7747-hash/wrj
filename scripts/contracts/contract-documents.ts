@@ -157,8 +157,14 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'post', path: '/api/v1/reset', operationId: 'postapiV1Reset' },
   { method: 'get', path: '/ws/v1', operationId: 'getwsV1' },
   { method: 'post', path: '/api/v1/admin/config/export', operationId: 'postapiV1AdminConfigExport' },
+  { method: 'get', path: '/api/v1/admin/equipment', operationId: 'getapiV1AdminEquipment' },
+  { method: 'post', path: '/api/v1/admin/equipment', operationId: 'postapiV1AdminEquipment' },
+  { method: 'put', path: '/api/v1/admin/equipment/{equipmentId}', operationId: 'putapiV1AdminEquipmentEquipmentId' },
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
+  getapiV1AdminEquipment: operationSchemaBinding(null, '200', '#/components/schemas/EquipmentParameterList'),
+  postapiV1AdminEquipment: operationSchemaBinding('#/components/schemas/EquipmentCreateRequest', '201', '#/components/schemas/EquipmentParameter'),
+  putapiV1AdminEquipmentEquipmentId: operationSchemaBinding('#/components/schemas/EquipmentUpdateRequest', '200', '#/components/schemas/EquipmentParameter'),
   postapiV1AuthLogin: operationSchemaBinding('#/components/schemas/LoginRequest', '200', '#/components/schemas/AuthResult'),
   getapiV1AuthSession: operationSchemaBinding(null, '200', '#/components/schemas/AuthResult'),
   postapiV1AuthLogout: operationSchemaBinding('#/components/schemas/LogoutRequest', '200', '#/components/schemas/AuthResult'),
@@ -228,6 +234,9 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  getapiV1AdminEquipment: ['401', '403', '503'],
+  postapiV1AdminEquipment: ['401', '403', '409', '422', '503'],
+  putapiV1AdminEquipmentEquipmentId: ['401', '403', '404', '409', '422', '503'],
   postapiV1AuthLogin: ['401', '423', '429'],
   getapiV1AuthSession: ['403'],
   postapiV1AuthLogout: ['400', '403'],
@@ -297,6 +306,12 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/readOnly/const', false],
+  ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/version/const', 1],
+  ['#/components/schemas/EquipmentUpdateRequest/allOf/1/properties/readOnly/const', false],
+  ['#/components/schemas/GetapiV1AdminEquipmentResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1AdminEquipmentResponse/properties/ok/const', true],
+  ['#/components/schemas/PutapiV1AdminEquipmentEquipmentIdResponse/properties/ok/const', true],
   ['#/components/schemas/Platform/allOf/0/if/properties/type/const','REAR_COMMAND_NODE'],
   ['#/components/schemas/Platform/allOf/0/then/properties/category/const','ground'],
   ['#/components/schemas/Platform/allOf/1/if/properties/type/const','FORWARD_RELAY_NODE'],
@@ -1461,12 +1476,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 67) {
+  if (operationCount !== 70) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 67 operations, found ${operationCount}`,
+      `Expected exactly 70 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1485,12 +1500,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 33 || requestSchemaOwners.size !== 33) {
+  if (writeCount !== 35 || requestSchemaOwners.size !== 35) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 33 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 35 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

@@ -114,7 +114,7 @@ test('P6 本地回放离页清理，重复进入重新加载后播放与暂停�
     await play.click()
     await expect(play).toHaveText('暂停')
     await expect(cursor).not.toHaveText('00:00:00', { timeout: 4_000 })
-    await page.getByRole('link', { name: '报表中心', exact: true }).click()
+    await page.getByRole('link', { name: '场景配置', exact: true }).click()
     const requestsAfterLeaving = replayRequests.length
     await page.waitForTimeout(1_100)
     expect(replayRequests).toHaveLength(requestsAfterLeaving)

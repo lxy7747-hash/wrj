@@ -35,7 +35,7 @@ import { TemplateProjection, type TemplateStorage } from './templates/projection
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
-import { AdminProjection, type AdminResult, type BackupStorage } from './admin/projection.js'
+import { AdminProjection, type AdminResult, type BackupStorage, type EquipmentStorage } from './admin/projection.js'
 import { isAdminText } from '../src/features/admin/admin-contract.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
 import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-monitor.js'
@@ -58,6 +58,7 @@ export interface MockServerOptions {
   templateStorage?: TemplateStorage
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
+  equipmentStorage?: EquipmentStorage
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
   writeScriptText?: (script: ScriptContract, revision: number) => Promise<string>
@@ -557,7 +558,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
-  const admin = new AdminProjection(options.backupStorage)
+  const admin = new AdminProjection(options.backupStorage, options.equipmentStorage)
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -1742,6 +1743,23 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (result.ok) return true
     finishAdmin(res, action, result, objectId)
     return false
+  }
+
+  /** 装备参数为空库起步；权限由服务端独立校验。 */
+  app.get('/api/v1/admin/equipment', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_EQUIPMENT_LIST')) return
+    try { finishAdmin(res, 'MASTER_DATA_EQUIPMENT_LIST', { ok: true, data: admin.listEquipment() }) }
+    catch { finishAdmin(res, 'MASTER_DATA_EQUIPMENT_LIST', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备参数读取失败，未回退到演示数据。' }) }
+  })
+
+  for (const method of ['post', 'put'] as const) {
+    app[method](`/api/v1/admin/equipment${method === 'put' ? '/:equipmentId' : ''}`, (req, res) => {
+      const id = 'equipmentId' in req.params ? req.params.equipmentId : undefined
+      const action = method === 'post' ? 'MASTER_DATA_EQUIPMENT_CREATE' : 'MASTER_DATA_EQUIPMENT_UPDATE'
+      if (!requireAdmin(req, res, auth, action, id)) return
+      try { finishAdmin(res, action, admin.saveEquipment(req.body, id), id ?? (isAdminText(req.body?.equipmentId) ? req.body.equipmentId : undefined), method === 'post' ? 201 : 200) }
+      catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备参数保存失败，请稍后重试。' }, id) }
+    })
   }
 
   /** 读取主数据；权限由服务端独立校验。 */

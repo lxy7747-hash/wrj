@@ -40,7 +40,7 @@ export function validateContracts(): void {
     throw new Error(`Fixture closure audit failed:\n${formatFindings(closureFindings)}`)
   }
 
-  console.log('PASS OpenAPI: 67 unique operations; 33 typed POST/PUT/PATCH writes; DemoRole, path, envelope, and error audits')
+  console.log('PASS OpenAPI: 70 unique operations; 35 typed POST/PUT/PATCH writes; DemoRole, path, envelope, and error audits')
   console.log('PASS fixture schema: Ajv 2020-12 validated DeterministicFixtures')
   console.log('PASS fixture closure: all IDs closed; BATCH-001 has 12 ordered run/report pairs; effective time=42')
   console.log('PASS CSV: link_quality.csv, events.csv, and link_switch.csv constants/order')

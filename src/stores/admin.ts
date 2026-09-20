@@ -14,6 +14,7 @@ import type {
   ExportStatus,
   PageMeta,
   MasterData,
+  EquipmentParameter,
   RestoreResult,
   SystemHealth,
   Role,
@@ -22,13 +23,14 @@ import type {
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { isArchiveRecord, isBackupRecord, isMasterData, isRestoreResult, isSystemHealth } from '../features/admin/admin-contract'
+import { equipmentIssue, isEquipmentParameter } from '../features/admin/equipment-contract'
 
-type MaintenanceSection = 'master' | 'backup' | 'archive' | 'health' | 'export'
+type MaintenanceSection = 'master' | 'equipment' | 'backup' | 'archive' | 'health' | 'export'
 export type MaintenanceAction = 'DELETE' | 'BACKUP' | 'RESTORE' | 'EXPORT'
 
 /** 为各维护面板创建互不干扰的状态和反馈。 */
 function maintenanceFeedback(): Record<MaintenanceSection, { state: CapabilityState; message: string; fieldPath: string }> {
-  return Object.fromEntries(['master', 'backup', 'archive', 'health', 'export'].map((key) => [key, { state: 'EMPTY', message: '尚未加载数据。', fieldPath: '' }])) as Record<MaintenanceSection, { state: CapabilityState; message: string; fieldPath: string }>
+  return Object.fromEntries(['master', 'equipment', 'backup', 'archive', 'health', 'export'].map((key) => [key, { state: 'EMPTY', message: '尚未加载数据。', fieldPath: '' }])) as Record<MaintenanceSection, { state: CapabilityState; message: string; fieldPath: string }>
 }
 
 /** 请求管理员接口并验证既有信封，调用者负责校验具体业务数据。 */
@@ -322,6 +324,7 @@ export const useAdminStore = defineStore('admin', {
     auditExportFilters: {} as AuditFilters,
     auditExportStatus: null as AuditExportResult | null,
     masterData: [] as MasterData[],
+    equipment: [] as EquipmentParameter[],
     backups: [] as BackupRecord[],
     archives: [] as ArchiveRecord[],
     health: null as SystemHealth | null,
@@ -364,7 +367,7 @@ export const useAdminStore = defineStore('admin', {
     async loadMaintenance(section: Exclude<MaintenanceSection, 'export'>): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance[section].state)) return false
       const epoch = this.maintenanceEpoch
-      const path = { master: 'master-data', backup: 'backups', archive: 'archives', health: 'health' }[section]
+      const path = { master: 'master-data', equipment: 'equipment', backup: 'backups', archive: 'archives', health: 'health' }[section]
       this.maintenance[section] = { state: 'LOADING', message: '正在加载数据。', fieldPath: '' }
       try {
         const payload = await requestMaintenance(`admin/${path}`)
@@ -376,11 +379,12 @@ export const useAdminStore = defineStore('admin', {
           if (!isSystemHealth(data)) throw new Error('系统健康状态格式不正确。')
           this.health = data
         } else {
-          const validators = { master: isMasterData, backup: isBackupRecord, archive: isArchiveRecord }
+          const validators = { master: isMasterData, equipment: isEquipmentParameter, backup: isBackupRecord, archive: isArchiveRecord }
           if (!Array.isArray(data) || !data.every(validators[section])) throw new Error('系统管理列表格式不正确。')
-          const key = { master: 'dataId', backup: 'backupId', archive: 'archiveId' }[section]
+          const key = { master: 'dataId', equipment: 'equipmentId', backup: 'backupId', archive: 'archiveId' }[section]
           if (new Set(data.map((item) => item[key])).size !== data.length) throw new Error('列表包含重复编号。')
           if (section === 'master') this.masterData = data
+          else if (section === 'equipment') this.equipment = data
           else if (section === 'backup') this.backups = data
           else this.archives = data
           empty = data.length === 0
@@ -390,10 +394,43 @@ export const useAdminStore = defineStore('admin', {
       } catch (error) {
         if (epoch !== this.maintenanceEpoch) return false
         if (section === 'master') this.masterData = []
+        if (section === 'equipment') this.equipment = []
         if (section === 'backup') this.backups = []
         if (section === 'archive') this.archives = []
         if (section === 'health') this.health = null
         this.showMaintenanceError(section, error)
+        return false
+      }
+    },
+
+    /** 保存独立装备副本；等待期间登出或离页后不再回写。 */
+    async saveEquipment(record: EquipmentParameter, create: boolean): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.equipment.state)) return false
+      const data = { ...record }
+      const issue = equipmentIssue(data)
+      if (issue || data.readOnly) {
+        this.maintenance.equipment = { state: 'ERROR', ...(issue ?? { message: '只读装备不可编辑。', fieldPath: 'readOnly' }) }
+        return false
+      }
+      const epoch = this.maintenanceEpoch
+      this.maintenance.equipment = { state: 'EXECUTING', message: '正在保存装备参数。', fieldPath: '' }
+      try {
+        const payload = await requestMaintenance(`admin/equipment${create ? '' : `/${encodeURIComponent(data.equipmentId)}`}`, {
+          method: create ? 'POST' : 'PUT', body: JSON.stringify(data),
+        })
+        if (epoch !== this.maintenanceEpoch) return false
+        const saved = readStrictData(payload)
+        if (!isEquipmentParameter(saved) || saved.version !== (create ? 1 : data.version + 1)
+          || (Object.keys(data) as Array<keyof EquipmentParameter>).some(key => key !== 'version' && saved[key] !== data[key])) {
+          this.equipment = []
+          throw new Error('装备保存响应与提交参数不一致，请重新加载核实。')
+        }
+        this.equipment = [...this.equipment.filter(item => item.equipmentId !== saved.equipmentId), saved]
+        this.maintenance.equipment = { state: 'SUCCESS', message: `装备参数已保存，当前版本 ${saved.version}。`, fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        this.showMaintenanceError('equipment', error)
         return false
       }
     },
@@ -521,6 +558,7 @@ export const useAdminStore = defineStore('admin', {
       this.maintenanceEpoch += 1
       this.maintenanceConfirmation = null
       this.masterData = []
+      this.equipment = []
       this.backups = []
       this.archives = []
       this.health = null

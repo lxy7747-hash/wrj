@@ -69,6 +69,14 @@ topics 固定为需求基线规定的五项：`simulation.frame`, `runtime.state
 3. `GET /api/v1/simulations/RUN-001/frames/F-00042` → L-MW-01 与 L-DL-03、DET-042、SW-003。
 4. 再次执行 1–3，响应业务 data 必须深相等；仅传输层连接对象不参与比较。
 
+## 装备参数库补充（2026-09-20，OpenAPI 1.3.0）
+
+新增 `GET /api/v1/admin/equipment`、`POST /api/v1/admin/equipment`、`PUT /api/v1/admin/equipment/{equipmentId}`，操作总数为 70，POST/PUT/PATCH 共 35。复用 ADMIN 权限、成功/错误信封与审计；本机使用 SessionCookie，测试纯 Mock 才使用演示角色。
+
+请求为闭合的 `EquipmentParameter`；新建限定 `readOnly=false, version=1`，更新限定 `readOnly=false` 并核对当前版本。响应包含服务器保存后的完整参数与版本。频段成对与大小关系由共享校验器检查。重复编号/版本冲突返回 409，非法字段返回 422，只读或角色拒绝返回 403，不存在返回 404，存储失败返回 503；不回退演示数据。
+
+本机注入独立 `equipment.db` 存储；纯 Mock 的装备集合从空数组开始，不修改确定性夹具。既有主库备份不包含装备库，需单独保留。参数包导入、删除和自动应用到场景均不在本次接口范围。
+
 ## Fixture schema linkage
 
 `deterministic-fixtures.json.validation` 指向 OpenAPI `#/components/schemas/DeterministicFixtures` 和 TypeScript `DeterministicFixtureSet`；OpenAPI 根部 `x-fixture-validation` 反向指向同一 JSON/TS 合同。schema 为 strict object，并通过 `x-fixture-path` 标出 ScenarioConfig、SimulationRun、TelemetryFrame 和事件证据位置。

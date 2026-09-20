@@ -3,6 +3,7 @@ import { computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { useRouter } from 'vue-router'
 import BrandIcon from './components/BrandIcon.vue'
+import { APP_CONFIG } from './config/app.config'
 import { useAuthStore } from './stores/auth'
 import { useUiStore } from './stores/ui'
 
@@ -72,9 +73,9 @@ async function logout(): Promise<void> {
           <router-link to="/situation">态势主界面</router-link>
           <router-link to="/scenarios">场景配置</router-link>
           <!-- <router-link to="/batches">批量仿真</router-link> -->
-          <router-link to="/reports">报表中心</router-link>
+          <router-link v-if="APP_CONFIG.showReports" to="/reports">报表中心</router-link>
           <router-link to="/replays">历史回放</router-link>
-          <router-link :to="systemManagementPath">系统管理</router-link>
+          <router-link v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" :to="systemManagementPath">系统管理</router-link>
           <!-- <router-link
             to="/blueprint"
             :class="{ 'router-link-active': ['/traceability', '/interactions'].includes($route.path) }"
@@ -104,10 +105,10 @@ async function logout(): Promise<void> {
         aria-label="系统管理"
       >
         <div class="system-management__body">
-          <aside class="system-management__sidebar" aria-label="系统管理导航">
+          <aside v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="$route.fullPath">
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="模型与参数">
-                <el-menu-item index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
                 <el-menu-item
                   index="/admin?section=equipment-library"
                   :disabled="auth.principal?.role !== 'ADMIN'"
@@ -124,13 +125,13 @@ async function logout(): Promise<void> {
                   操作审计日志
                 </el-menu-item>
                 <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
-                <el-menu-item index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showDatabaseBackup" index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="数据与运行">
-                <el-menu-item index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
-                <el-menu-item index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
+              <el-menu-item-group v-if="auth.principal?.role === 'ADMIN' && (APP_CONFIG.systemManagement.showSimulationData || APP_CONFIG.systemManagement.showRuntimeStatus)" title="数据与运行">
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showSimulationData" index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showRuntimeStatus" index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group title="数据交换">
+              <el-menu-item-group v-if="APP_CONFIG.systemManagement.showDataExchange" title="数据交换">
                 <el-menu-item index="/admin/data-exchange">
                   <span>数据交换与接口</span>
                 </el-menu-item>

@@ -1,186 +1,95 @@
-<template>
-  <div class="param-db-card" data-testid="equipment-library">
-    <!-- 头部 -->
-    <div class="card-header">
-      <h3 class="card-title">装备基础参数库（内置主数据）</h3>
-      <el-button class="import-btn">
-        导入参数包
-        <span class="tag-label">仅管理员</span>
-      </el-button>
-    </div>
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
+import type { EquipmentParameter } from '../../contracts/domain-models'
+import { useAdminStore } from '../../stores/admin'
 
-    <!-- 表格 -->
-    <el-table :data="tableData" border style="width:100%">
-      <el-table-column prop="code" label="编号" />
-      <el-table-column prop="type" label="类型" />
-      <el-table-column prop="freqBand" label="默认频段" />
-      <el-table-column prop="modulate" label="默认调制" />
-      <el-table-column prop="failThreshold" label="失效阈值" />
-      <el-table-column prop="readOnly" label="只读" />
-      <el-table-column label="操作" width="120">
-        <template #default="{ row }">
-          <el-button link @click="openView(row)">查看</el-button>
-          <el-button link @click="openEdit(row)">编辑</el-button>
-        </template>
-      </el-table-column>
-    </el-table>
+const store = useAdminStore()
+const feedback = computed(() => store.maintenance.equipment)
+const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(feedback.value.state))
+const editor = ref<EquipmentParameter | null>(null)
+const viewing = ref<EquipmentParameter | null>(null)
+const creating = ref(false)
 
-    <!-- 底部状态提示栏 -->
-    <div class="status-bar">
-      SUCCESS：参数包导入校验夹具已完成；未读取文件。
-    </div>
-
-    <!-- 查看弹窗（只读） -->
-    <el-dialog
-        v-model="viewVisible"
-        title="查看参数详情"
-        width="500px"
-        :close-on-click-modal="false"
-    >
-      <el-descriptions :column="1" border>
-        <el-descriptions-item label="编号">{{ viewForm.code }}</el-descriptions-item>
-        <el-descriptions-item label="类型">{{ viewForm.type }}</el-descriptions-item>
-        <el-descriptions-item label="默认频段">{{ viewForm.freqBand }}</el-descriptions-item>
-        <el-descriptions-item label="默认调制">{{ viewForm.modulate }}</el-descriptions-item>
-        <el-descriptions-item label="失效阈值">{{ viewForm.failThreshold }}</el-descriptions-item>
-        <el-descriptions-item label="只读">{{ viewForm.readOnly }}</el-descriptions-item>
-      </el-descriptions>
-      <template #footer>
-        <el-button @click="viewVisible = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 编辑弹窗 -->
-    <el-dialog
-        v-model="editVisible"
-        title="编辑参数"
-        width="500px"
-        :close-on-click-modal="false"
-    >
-      <el-form :model="editForm" label-width="100px">
-        <el-form-item label="编号">
-          <el-input v-model="editForm.code" disabled />
-        </el-form-item>
-        <el-form-item label="类型">
-          <el-input v-model="editForm.type" />
-        </el-form-item>
-        <el-form-item label="默认频段">
-          <el-input v-model="editForm.freqBand" />
-        </el-form-item>
-        <el-form-item label="默认调制">
-          <el-input v-model="editForm.modulate" />
-        </el-form-item>
-        <el-form-item label="失效阈值">
-          <el-input v-model="editForm.failThreshold" />
-        </el-form-item>
-        <el-form-item label="只读">
-          <el-switch
-              v-model="editForm.readOnlyBool"
-              active-text="是"
-              inactive-text="否"
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="editVisible = false">取消</el-button>
-        <el-button type="primary" @click="saveEdit">保存</el-button>
-      </template>
-    </el-dialog>
-  </div>
-</template>
-
-<script setup>
-import { ref, reactive } from 'vue'
-
-const tableData = ref([
-  { code: "UAV-STD", type: "高空前出中继节点", freqBand: "-", modulate: "-", failThreshold: "-", readOnly: "是" },
-  { code: "SAT-COMM", type: "卫星链路", freqBand: "12 GHz", modulate: "QPSK", failThreshold: "1e-5", readOnly: "是" },
-  { code: "MW-COMM", type: "微波链路", freqBand: "8 GHz", modulate: "QPSK", failThreshold: "1e-5", readOnly: "是" },
-  { code: "DL-COMM", type: "新一代数传链路", freqBand: "1.2 GHz", modulate: "BPSK", failThreshold: "1e-5", readOnly: "是" },
-  { code: "LASER-COMM", type: "激光链路", freqBand: "光载波", modulate: "-", failThreshold: "1e-5", readOnly: "是" },
-  { code: "JAM-WB", type: "宽带压制干扰", freqBand: "0.1-20 GHz", modulate: "-", failThreshold: "-", readOnly: "否" },
-  { code: "JAM-SPOT", type: "瞄准式干扰", freqBand: "可配置", modulate: "-", failThreshold: "-", readOnly: "否" }
-])
-
-// ========== 查看弹窗 ==========
-const viewVisible = ref(false)
-const viewForm = reactive({
-  code: '', type: '', freqBand: '', modulate: '', failThreshold: '', readOnly: ''
-})
-const openView = (row) => {
-  Object.assign(viewForm, row)
-  viewVisible.value = true
+function edit(row?: EquipmentParameter): void {
+  if (row?.readOnly) return
+  creating.value = !row
+  editor.value = row ? { ...row } : { equipmentId: '', type: '', frequencyMinMHz: null,
+    frequencyMaxMHz: null, modulation: null, berThreshold: null, readOnly: false, version: 1 }
+  store.maintenance.equipment.message = ''
+  store.maintenance.equipment.fieldPath = ''
 }
 
-// ========== 编辑弹窗 ==========
-const editVisible = ref(false)
-const editForm = reactive({
-  code: '', type: '', freqBand: '', modulate: '', failThreshold: '',
-  readOnlyBool: false,  // 开关用布尔
-  _index: -1             // 记录原行索引
-})
-const openEdit = (row) => {
-  const idx = tableData.value.findIndex(item => item.code === row.code)
-  editForm.code = row.code
-  editForm.type = row.type
-  editForm.freqBand = row.freqBand
-  editForm.modulate = row.modulate
-  editForm.failThreshold = row.failThreshold
-  editForm.readOnlyBool = row.readOnly === '是'
-  editForm._index = idx
-  editVisible.value = true
-}
-const saveEdit = () => {
-  const idx = editForm._index
-  if (idx > -1) {
-    tableData.value[idx] = {
-      code: editForm.code,
-      type: editForm.type,
-      freqBand: editForm.freqBand,
-      modulate: editForm.modulate,
-      failThreshold: editForm.failThreshold,
-      readOnly: editForm.readOnlyBool ? '是' : '否'
-    }
+async function save(): Promise<void> {
+  if (!editor.value) return
+  const record = { ...editor.value, modulation: editor.value.modulation?.trim() || null }
+  if (await store.saveEquipment(record, creating.value)) {
+    editor.value = null
+    ElMessage.success(feedback.value.message)
+    store.maintenance.equipment.message = ''
   }
-  editVisible.value = false
 }
+
+function band(row: EquipmentParameter): string {
+  return row.frequencyMinMHz === null ? '未配置' : `${row.frequencyMinMHz}～${row.frequencyMaxMHz} MHz`
+}
+
+onMounted(() => { void store.loadMaintenance('equipment') })
+onBeforeUnmount(() => store.resetMaintenance())
 </script>
 
+<template>
+  <section class="param-db-card" data-testid="equipment-library" aria-label="装备参数库">
+    <header class="card-header">
+      <h3>装备基础参数库</h3>
+      <el-button :disabled="pending" @click="store.loadMaintenance('equipment')">刷新</el-button>
+      <el-button type="primary" :disabled="pending" data-testid="equipment-create" @click="edit()">新增装备</el-button>
+    </header>
+    <el-alert v-if="feedback.message && editor === null" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="equipment-feedback" />
+    <el-table v-loading="pending" :data="store.equipment" row-key="equipmentId" border empty-text="暂无装备参数，请由管理员新增。" data-testid="equipment-table">
+      <el-table-column prop="equipmentId" label="编号" min-width="130" />
+      <el-table-column prop="type" label="类型" min-width="130" />
+      <el-table-column label="默认频段" min-width="150"><template #default="{ row }">{{ band(row) }}</template></el-table-column>
+      <el-table-column label="默认调制"><template #default="{ row }">{{ row.modulation ?? '未配置' }}</template></el-table-column>
+      <el-table-column label="失效阈值（BER）" min-width="140"><template #default="{ row }">{{ row.berThreshold ?? '未配置' }}</template></el-table-column>
+      <el-table-column prop="version" label="版本" width="75" />
+      <el-table-column label="只读" width="75"><template #default="{ row }">{{ row.readOnly ? '是' : '否' }}</template></el-table-column>
+      <el-table-column label="操作" width="120"><template #default="{ row }">
+        <el-button link @click="viewing = { ...row }">查看</el-button>
+        <el-button link :disabled="pending || row.readOnly" @click="edit(row)">编辑</el-button>
+      </template></el-table-column>
+    </el-table>
+    <p class="equipment-note">保存默认参数，不自动修改已创建场景。未配置的频段、调制或阈值请留空。</p>
+    <el-dialog :model-value="viewing !== null" title="查看参数详情" width="520px" @close="viewing = null">
+      <el-descriptions v-if="viewing" :column="1" border>
+        <el-descriptions-item label="编号">{{ viewing.equipmentId }}</el-descriptions-item>
+        <el-descriptions-item label="类型">{{ viewing.type }}</el-descriptions-item>
+        <el-descriptions-item label="默认频段">{{ band(viewing) }}</el-descriptions-item>
+        <el-descriptions-item label="默认调制">{{ viewing.modulation ?? '未配置' }}</el-descriptions-item>
+        <el-descriptions-item label="失效阈值（BER）">{{ viewing.berThreshold ?? '未配置' }}</el-descriptions-item>
+        <el-descriptions-item label="版本">{{ viewing.version }}</el-descriptions-item>
+        <el-descriptions-item label="只读">{{ viewing.readOnly ? '是' : '否' }}</el-descriptions-item>
+      </el-descriptions>
+      <template #footer><el-button @click="viewing = null">关闭</el-button></template>
+    </el-dialog>
+    <el-dialog :model-value="editor !== null" :title="creating ? '新增装备参数' : '编辑装备参数'" width="560px" :close-on-click-modal="false" :close-on-press-escape="!pending" :show-close="!pending" @close="editor = null">
+      <el-form v-if="editor" label-position="top" @submit.prevent="save">
+        <el-form-item label="编号" required><el-input v-model="editor.equipmentId" :disabled="!creating || pending" data-testid="equipment-id" maxlength="64" /></el-form-item>
+        <el-form-item label="类型" required><el-input v-model="editor.type" :disabled="pending" data-testid="equipment-type" maxlength="100" /></el-form-item>
+        <el-form-item label="频率下限（MHz）"><el-input-number :model-value="editor.frequencyMinMHz" :disabled="pending" data-testid="equipment-frequency-min" @update:model-value="editor.frequencyMinMHz = $event ?? null" /></el-form-item>
+        <el-form-item label="频率上限（MHz）"><el-input-number :model-value="editor.frequencyMaxMHz" :disabled="pending" data-testid="equipment-frequency-max" @update:model-value="editor.frequencyMaxMHz = $event ?? null" /></el-form-item>
+        <el-form-item label="默认调制"><el-input v-model="editor.modulation" :disabled="pending" clearable data-testid="equipment-modulation" maxlength="32" /></el-form-item>
+        <el-form-item label="失效阈值（BER）"><el-input-number :model-value="editor.berThreshold" :disabled="pending" :min="0" :max="1" :step="0.00001" data-testid="equipment-threshold" @update:model-value="editor.berThreshold = $event ?? null" /></el-form-item>
+        <el-alert v-if="feedback.state === 'ERROR' && feedback.message" :title="`${feedback.message}${feedback.fieldPath ? `（${feedback.fieldPath}）` : ''}`" type="error" :closable="false" />
+      </el-form>
+      <template #footer><el-button :disabled="pending" @click="editor = null">取消</el-button><el-button type="primary" :loading="pending" data-testid="equipment-save" @click="save">保存</el-button></template>
+    </el-dialog>
+  </section>
+</template>
+
 <style scoped>
-.param-db-card {
-  border: 1px solid var(--el-border-color);
-  border-radius: 8px;
-  padding: 16px;
-}
-.card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 16px;
-}
-.card-title {
-  margin: 0;
-  font-size: 18px;
-  font-weight: 500;
-}
-.import-btn {
-  color: var(--el-color-primary) !important;
-  background-color: #fff !important;
-}
-.tag-label {
-  background: #fef0d9;
-  color: #e6a23c;
-  font-size: 13px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  margin-left: 6px;
-}
-.status-bar {
-  margin-top: 12px;
-  background-color: var(--el-fill-color-light);
-  border-left: 4px solid var(--el-color-primary);
-  padding: 10px 14px;
-  font-size: 15px;
-  color: var(--el-text-color-primary);
-}
+.param-db-card { border: 1px solid var(--el-border-color); border-radius: 8px; padding: 16px; }
+.card-header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.card-header h3 { margin: 0 auto 0 0; font-size: 18px; font-weight: 500; }
+.equipment-note { color: var(--el-text-color-secondary); font-size: 13px; }
 </style>

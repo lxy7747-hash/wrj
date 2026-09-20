@@ -61,6 +61,12 @@
 | DEC-007 | 报告权限/分级 | operator 普通 Level II；批次比较固定 Level III，仅 ADMIN+二次确认 | RBAC 组合测试与 generated:false |
 | DEC-008 | SRS 五接口 vs 详细设计稀疏接口 | SRS Tables 23–28 为 canonical superset；稀疏数据仅 read adapter；聚合另列扩展 | 类型 shape/adapter/aggregate 分离测试 |
 
+## 装备参数维护补项（2026-09-20）
+
+T-XQ-026 系统维护范围新增实际装备参数子链，不改变 29 项能力编号或原能力状态口径：`/admin` → `EquipmentLibrary.vue` → `adminStore.loadMaintenance('equipment') / saveEquipment()` → `EquipmentParameter` → `/api/v1/admin/equipment` GET/POST、`/{equipmentId}` PUT → 本机 `equipment.db`。纯 Mock 使用独立空内存集合，无默认演示参数。
+
+验证落点为 `tests/components/equipment-library.spec.ts`、`tests/stores/equipment.spec.ts`、`tests/server/equipment-sqlite.spec.ts`、`tests/contracts/equipment-contract.spec.ts`。加载/校验、实际保存请求执行、成功/空态/错误复用现有维护状态；只读、权限、版本冲突和离页/会话失效均不得伪造保存成功。参数包导入隐藏，不声明已接入导入、删除或场景参数自动套用。
+
 ## 完整性门禁
 
 实现评审逐行确认 route、component、store、type、API/topic、fixture 和 test 均真实存在；锚点必须从 `/traceability` 导航到目标组件并聚焦能力卡。任何空 implementation destination、重复 requirement/interface ID、缺少已声明状态测试或 fixture orphan 都阻断合并。

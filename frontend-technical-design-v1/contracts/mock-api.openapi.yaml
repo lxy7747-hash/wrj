@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.2.0",
+    "version": "1.3.0",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; other simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -53,6 +53,266 @@
     }
   ],
   "paths": {
+    "/api/v1/admin/equipment": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "加载装备参数（空库不预置示例）",
+        "x-rbac": "MASTER_DATA_MAINTAIN",
+        "responses": {
+          "200": {
+            "description": "Typed deterministic success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GetapiV1AdminEquipmentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Typed deterministic error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "装备存储不可用，不回退演示数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getapiV1AdminEquipment",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "校验并持久化装备参数（管理员、乐观版本控制）",
+        "x-rbac": "MASTER_DATA_MAINTAIN",
+        "responses": {
+          "201": {
+            "description": "Typed deterministic success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostapiV1AdminEquipmentResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "装备存储不可用，不回退演示数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postapiV1AdminEquipment",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PostapiV1AdminEquipmentRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v1/admin/equipment/{equipmentId}": {
+      "put": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "校验并持久化装备参数（管理员、乐观版本控制）",
+        "x-rbac": "MASTER_DATA_MAINTAIN",
+        "responses": {
+          "200": {
+            "description": "Typed deterministic success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PutapiV1AdminEquipmentEquipmentIdResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Typed authentication result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "受控操作失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "装备存储不可用，不回退演示数据",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putapiV1AdminEquipmentEquipmentId",
+        "parameters": [
+          {
+            "name": "equipmentId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$" }
+          },
+          {
+            "$ref": "#/components/parameters/DemoRole"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutapiV1AdminEquipmentEquipmentIdRequest"
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "SessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v1/auth/login": {
       "post": {
         "tags": [
@@ -4764,6 +5024,174 @@
       }
     },
     "schemas": {
+      "EquipmentCreateRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EquipmentParameter"
+          },
+          {
+            "properties": {
+              "readOnly": {
+                "const": false
+              },
+              "version": {
+                "const": 1
+              }
+            }
+          }
+        ]
+      },
+      "EquipmentUpdateRequest": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EquipmentParameter"
+          },
+          {
+            "properties": {
+              "readOnly": {
+                "const": false
+              }
+            }
+          }
+        ]
+      },
+      "EquipmentParameter": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "equipmentId",
+          "type",
+          "frequencyMinMHz",
+          "frequencyMaxMHz",
+          "modulation",
+          "berThreshold",
+          "readOnly",
+          "version"
+        ],
+        "properties": {
+          "equipmentId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "pattern": "\\S"
+          },
+          "frequencyMinMHz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0
+          },
+          "frequencyMaxMHz": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0
+          },
+          "modulation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 32,
+            "pattern": "\\S"
+          },
+          "berThreshold": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "readOnly": {
+            "type": "boolean"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。"
+      },
+      "EquipmentParameterList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EquipmentParameter"
+        }
+      },
+      "GetapiV1AdminEquipmentResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/EquipmentParameterList"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PostapiV1AdminEquipmentResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/EquipmentParameter"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PostapiV1AdminEquipmentRequest": {
+        "$ref": "#/components/schemas/EquipmentCreateRequest"
+      },
+      "PutapiV1AdminEquipmentEquipmentIdResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "ok",
+          "data",
+          "meta"
+        ],
+        "properties": {
+          "ok": {
+            "const": true
+          },
+          "data": {
+            "$ref": "#/components/schemas/EquipmentParameter"
+          },
+          "meta": {
+            "$ref": "#/components/schemas/Meta"
+          }
+        }
+      },
+      "PutapiV1AdminEquipmentEquipmentIdRequest": {
+        "$ref": "#/components/schemas/EquipmentUpdateRequest"
+      },
       "Position": {
         "type": "object",
         "additionalProperties": false,

@@ -28,6 +28,7 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 }))
 
 import App from '../../src/App.vue'
+import { APP_CONFIG } from '../../src/config/app.config'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useBatchStore } from '../../src/stores/batch'
@@ -69,7 +70,78 @@ function scenarioResponse(draft: ScenarioDraft): Response {
 
 describe('App shell', () => {
   afterEach(() => {
+    APP_CONFIG.showReports = false
+    for (const key of Object.keys(APP_CONFIG.systemManagement) as Array<keyof typeof APP_CONFIG.systemManagement>) {
+      APP_CONFIG.systemManagement[key] = false
+    }
     vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['ADMIN', false], ['ADMIN', true], ['OPERATOR', false], ['OPERATOR', true],
+  ] as const)('报表入口按配置显隐，保留路由（%s，显示=%s）', async (role, visible) => {
+    APP_CONFIG.showReports = visible
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({
+      principal: { userId: `USR-${role}`, username: role, role, permissions: ['BUSINESS_READ'] },
+      role,
+      permissions: ['BUSINESS_READ'],
+    })
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/reports')
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus], stubs: { RouterView: true } } })
+    try {
+      expect(router.currentRoute.value.path).toBe('/reports')
+      expect(wrapper.find('nav a[href="/reports"]').exists()).toBe(visible)
+      if (visible) expect(wrapper.get('nav a[href="/reports"]').text()).toBe('报表中心')
+      expect(wrapper.find('nav a[href="/replays"]').exists()).toBe(true)
+      expect(wrapper.find('nav a[href="/scenarios"]').exists()).toBe(true)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it.each([
+    ['showMasterData', '主数据管理'],
+    ['showDatabaseBackup', '数据库备份 / 恢复'],
+    ['showSimulationData', '仿真数据管理'],
+    ['showRuntimeStatus', '系统运行状态'],
+    ['showDataExchange', '数据交换与接口'],
+  ] as const)('单独恢复 %s 入口，不改变其他显隐或角色权限', async (key, label) => {
+    APP_CONFIG.systemManagement[key] = true
+    for (const role of ['ADMIN', 'OPERATOR'] as const) {
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      useAuthStore(pinia).$patch({
+        principal: { userId: `USR-${role}`, username: role, role, permissions: ['BUSINESS_READ'] },
+        role,
+        permissions: ['BUSINESS_READ'],
+      })
+      const router = createAppRouter(createMemoryHistory(), pinia)
+      await router.push(role === 'ADMIN' ? '/admin' : '/admin/data-exchange')
+      await router.isReady()
+      const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus], stubs: { RouterView: true } } })
+      try {
+        const items = wrapper.findAll('[aria-label="系统管理导航"] .el-menu-item').map(item => item.text())
+        const hasEntry = role === 'ADMIN' || key === 'showDataExchange'
+        expect(wrapper.find('nav a[href^="/admin"]').exists()).toBe(hasEntry)
+        if (role === 'ADMIN') {
+          expect(items).toHaveLength(5)
+          expect(items).toEqual(expect.arrayContaining(['装备参数库', '场景模板维护', '操作审计日志', '账号管理', label]))
+          expect(wrapper.get('nav a[href="/admin"]').text()).toBe('系统管理')
+        } else {
+          expect(items).toEqual(hasEntry ? ['数据交换与接口'] : [])
+          if (hasEntry) expect(wrapper.get('nav a[href="/admin/data-exchange"]').text()).toBe('系统管理')
+        }
+        const titles = wrapper.findAll('.el-menu-item-group__title').map(item => item.text())
+        expect(titles.includes('数据与运行')).toBe(role === 'ADMIN' && ['showSimulationData', 'showRuntimeStatus'].includes(key))
+        expect(titles.includes('数据交换')).toBe(key === 'showDataExchange')
+      } finally {
+        wrapper.unmount()
+      }
+    }
   })
 
   it('renders login independently and protected routes in the product shell', async () => {
@@ -179,12 +251,10 @@ describe('App shell', () => {
     expect(operatorWrapper.findAll('nav a').map((link) => link.text())).toEqual([
       '态势主界面',
       '场景配置',
-      '报表中心',
       '历史回放',
-      '系统管理',
     ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
-    expect(operatorWrapper.get('a[href="/admin/data-exchange"]').text()).toBe('系统管理')
+    expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
     expect(operatorWrapper.find('nav a[href="/batches"]').exists()).toBe(false)
     expect(operatorWrapper.find('nav a[href="/blueprint"]').exists()).toBe(false)
     expect(operatorWrapper.get('nav').text()).not.toMatch(/需求追踪矩阵|弹窗交互|登录页|可追溯性|交互管理/)
@@ -195,9 +265,7 @@ describe('App shell', () => {
 
     await router.push('/admin/data-exchange')
     await flushPromises()
-    const operatorManagementNavigation = operatorWrapper.get('[aria-label="系统管理导航"]')
-    expect(operatorManagementNavigation.findAll('.el-menu-item').map(item => item.text())).toEqual(['数据交换与接口'])
-    expect(operatorManagementNavigation.text()).not.toMatch(/模型与参数|账号与维护|数据与运行/)
+    expect(operatorWrapper.find('[aria-label="系统管理导航"]').exists()).toBe(false)
 
     await router.push('/blueprint')
     await flushPromises()
@@ -235,7 +303,7 @@ describe('App shell', () => {
 
     const adminWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
     expect(adminWrapper.findAll('nav a').map((link) => link.text())).toEqual([
-      '态势主界面', '场景配置', '报表中心', '历史回放', '系统管理',
+      '态势主界面', '场景配置', '历史回放', '系统管理',
     ])
     expect(adminWrapper.get('a[href="/admin"]').text()).toBe('系统管理')
     expect(adminWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
@@ -249,16 +317,9 @@ describe('App shell', () => {
     expect(adminWrapper.get('.system-management-page').attributes('aria-label')).toBe('系统管理')
     expect(adminWrapper.get('.system-management-page').attributes('aria-labelledby')).toBeUndefined()
     const systemManagementNavigation = adminWrapper.get('[aria-label="系统管理导航"]')
-    expect(systemManagementNavigation.findAll('.el-menu-item')).toHaveLength(9)
-    expect(systemManagementNavigation.text()).toContain('主数据管理')
-    expect(systemManagementNavigation.text()).toContain('装备参数库')
-    expect(systemManagementNavigation.text()).toContain('场景模板维护')
-    expect(systemManagementNavigation.text()).toContain('操作审计日志')
-    expect(systemManagementNavigation.text()).toContain('账号管理')
-    expect(systemManagementNavigation.text()).toContain('数据库备份 / 恢复')
-    expect(systemManagementNavigation.text()).toContain('仿真数据管理')
-    expect(systemManagementNavigation.text()).toContain('系统运行状态')
-    expect(systemManagementNavigation.text()).toContain('数据交换与接口')
+    expect(systemManagementNavigation.findAll('.el-menu-item').map(item => item.text()))
+      .toEqual(['装备参数库', '场景模板维护', '操作审计日志', '账号管理'])
+    expect(systemManagementNavigation.text()).not.toMatch(/数据与运行|数据交换/)
     expect(systemManagementNavigation.find('small').exists()).toBe(false)
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 

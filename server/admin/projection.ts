@@ -1,6 +1,13 @@
 import type { ApiErrorCode, BackupRecord, DeleteResult, MasterData, RestoreResult } from '../../src/contracts/domain-models.js'
 import { isAdminObject, isAdminText, isMasterData } from '../../src/features/admin/admin-contract.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
+import type { EquipmentParameter } from '../../src/contracts/domain-models.js'
+import { equipmentIssue } from '../../src/features/admin/equipment-contract.js'
+
+export interface EquipmentStorage {
+  load(): EquipmentParameter[]
+  save(record: EquipmentParameter, expectedVersion?: number): boolean
+}
 
 export type AdminResult<T> = { ok: true; data: T } | { ok: false; code: ApiErrorCode; status: number; message: string; fieldPath?: string }
 
@@ -10,13 +17,38 @@ export interface BackupStorage {
   restore(backupId: string): AdminResult<RestoreResult>
 }
 
-/** 系统维护内存数据的唯一所有者；不访问文件、数据库或操作系统进程。 */
+/** 纯 Mock 使用内存；本机备份与装备参数通过注入的存储维护。 */
 export class AdminProjection {
   private masterData = loadFixtureProjection().masterData
   private backups = loadFixtureProjection().backups
   private nextBackup = 1
 
-  constructor(private readonly backupStorage?: BackupStorage) {}
+  private equipment: EquipmentParameter[] = []
+
+  constructor(private readonly backupStorage?: BackupStorage, private readonly equipmentStorage?: EquipmentStorage) {}
+
+  listEquipment(): EquipmentParameter[] {
+    return this.equipmentStorage ? this.equipmentStorage.load() : structuredClone(this.equipment)
+  }
+
+  saveEquipment(value: unknown, equipmentId?: string): AdminResult<EquipmentParameter> {
+    const issue = equipmentIssue(value)
+    if (issue) return { ok: false, code: 'VALIDATION_FAILED', status: 422, ...issue }
+    const record = value as EquipmentParameter
+    if (equipmentId !== undefined && record.equipmentId !== equipmentId) return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'equipmentId', message: '编号与请求路径不一致。' }
+    const existing = this.listEquipment().find(item => item.equipmentId === record.equipmentId)
+    if (equipmentId === undefined && existing) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'equipmentId', message: '装备编号已存在。' }
+    if (equipmentId !== undefined && !existing) return { ok: false, code: 'NOT_FOUND', status: 404, message: '装备参数不存在。' }
+    if (record.readOnly || existing?.readOnly) return { ok: false, code: 'PERMISSION_DENIED', status: 403, fieldPath: 'readOnly', message: '只读装备不可编辑，只读标记不可由表单修改。' }
+    if (record.version !== (existing?.version ?? 1)) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: '版本不一致，请刷新后重新编辑；新增版本须为 1。' }
+    const saved = { ...record, version: (existing?.version ?? 0) + 1 }
+    if (this.equipmentStorage) {
+      if (!this.equipmentStorage.save(saved, existing?.version)) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: '装备参数已被其他用户修改，请刷新后重试。' }
+    } else {
+      this.equipment = [...this.equipment.filter(item => item.equipmentId !== saved.equipmentId), structuredClone(saved)]
+    }
+    return { ok: true, data: saved }
+  }
 
   /** 返回可独立修改的主数据快照。 */
   listMasterData(): MasterData[] { return structuredClone(this.masterData) }
@@ -88,6 +120,7 @@ export class AdminProjection {
 
   /** 重置本阶段内存变更，恢复权威夹具。 */
   reset(): void {
+    this.equipment = []
     this.masterData = loadFixtureProjection().masterData
     this.backups = loadFixtureProjection().backups
     this.nextBackup = 1

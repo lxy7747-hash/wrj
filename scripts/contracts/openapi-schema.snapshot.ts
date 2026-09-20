@@ -1,5 +1,173 @@
 export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object.freeze(
 {
+  "EquipmentCreateRequest": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      {
+        "properties": {
+          "readOnly": {
+            "const": false
+          },
+          "version": {
+            "const": 1
+          }
+        }
+      }
+    ]
+  },
+  "EquipmentUpdateRequest": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      {
+        "properties": {
+          "readOnly": {
+            "const": false
+          }
+        }
+      }
+    ]
+  },
+  "EquipmentParameter": {
+    "additionalProperties": false,
+    "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。",
+    "properties": {
+      "berThreshold": {
+        "maximum": 1,
+        "minimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "equipmentId": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+        "type": "string"
+      },
+      "frequencyMaxMHz": {
+        "exclusiveMinimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "frequencyMinMHz": {
+        "exclusiveMinimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "modulation": {
+        "maxLength": 32,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "readOnly": {
+        "type": "boolean"
+      },
+      "type": {
+        "maxLength": 100,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "version": {
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "equipmentId",
+      "type",
+      "frequencyMinMHz",
+      "frequencyMaxMHz",
+      "modulation",
+      "berThreshold",
+      "readOnly",
+      "version"
+    ],
+    "type": "object"
+  },
+  "EquipmentParameterList": {
+    "items": {
+      "$ref": "#/components/schemas/EquipmentParameter"
+    },
+    "type": "array"
+  },
+  "GetapiV1AdminEquipmentResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameterList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "PostapiV1AdminEquipmentRequest": {
+    "$ref": "#/components/schemas/EquipmentCreateRequest"
+  },
+  "PostapiV1AdminEquipmentResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdRequest": {
+    "$ref": "#/components/schemas/EquipmentUpdateRequest"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
   'AntennaGain': {
     'additionalProperties': false,
     'properties': {

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { APP_CONFIG } from '../../src/config/app.config'
 import type { ApiSuccess, ConfirmationContext, DetectionEvent, ScenarioConfig, ScenarioDraft, ScenarioTemplate, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
@@ -26,7 +27,7 @@ const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
   { path: '/scenarios', navLabel: '场景配置', title: '场景配置', titleRole: 'region' },
   { path: '/batches', navLabel: '批量仿真', title: '批量仿真', hidden: true },
-  { path: '/reports', navLabel: '报表中心', title: '报告分析', titleRole: 'region' },
+  { path: '/reports', navLabel: '报表中心', title: '报告分析', titleRole: 'region', hidden: !APP_CONFIG.showReports },
   { path: '/replays', navLabel: '历史回放', title: '历史回放' },
   { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图', hidden: true },
 ]
@@ -42,6 +43,7 @@ const OPERATOR_SYSTEM_ROUTE: WorkspaceRoute = {
   path: '/admin/data-exchange',
   navLabel: '系统管理',
   title: '数据交换与接口',
+  hidden: !APP_CONFIG.systemManagement.showDataExchange,
 }
 
 const PROTECTED_WORKSPACE_PATHS = [
@@ -306,13 +308,19 @@ test('管理员可使用当前菜单并直接访问隐藏页面', async ({ page 
   const audit = auditConsole(page)
 
   await loginAs(page, 'admin')
-  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(5)
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(4 + Number(APP_CONFIG.showReports))
   for (const route of [...SHARED_WORKSPACE_ROUTES, ADMIN_WORKSPACE_ROUTE]) {
     await visitWorkspaceRoute(page, route)
   }
 
-  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('主数据管理')
-  await expect(page.getByRole('complementary', { name: '系统管理导航' })).toContainText('数据交换与接口')
+  await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem')).toHaveText([
+    ...(APP_CONFIG.systemManagement.showMasterData ? ['主数据管理'] : []),
+    '装备参数库', '场景模板维护', '操作审计日志', '账号管理',
+    ...(APP_CONFIG.systemManagement.showDatabaseBackup ? ['数据库备份 / 恢复'] : []),
+    ...(APP_CONFIG.systemManagement.showSimulationData ? ['仿真数据管理'] : []),
+    ...(APP_CONFIG.systemManagement.showRuntimeStatus ? ['系统运行状态'] : []),
+    ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : []),
+  ])
   await expect(page.getByTestId('user-role-panel')).toBeVisible()
   await expect(page.getByTestId('role-permission-map')).toContainText('BUSINESS_READ')
 
@@ -325,7 +333,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   const audit = auditConsole(page)
   await loginAs(page, 'admin')
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
-  await page.getByRole('menuitem', { name: '主数据管理', exact: true }).click()
+  await page.goto('/admin?section=master-data')
   const panel = page.getByTestId('master-data-panel')
   await expect(panel.getByTestId('master-table')).toContainText('MW-COMM')
   await panel.getByTestId('master-create').click()
@@ -373,7 +381,7 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
   const audit = auditConsole(page)
   await loginAs(page, 'admin')
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
-  await page.getByRole('menuitem', { name: '数据库备份 / 恢复', exact: true }).click()
+  await page.goto('/admin?section=database-backup')
   const panel = page.getByTestId('backup-panel')
   await expect(panel.getByTestId('backup-table')).toContainText('PREBACKUP-002')
   await panel.getByTestId('backup-create').click()
@@ -423,7 +431,7 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
   await expect(exportPanel.getByTestId('full-config-result')).toContainText('2026-08-06 16:00:00')
 
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
-  await page.getByRole('menuitem', { name: '仿真数据管理', exact: true }).click()
+  await page.goto('/admin?section=simulation-data')
   const archive = page.getByTestId('archive-panel')
   await archive.getByRole('textbox', { name: '归档检索' }).fill('RPT-001')
   await archive.getByTestId('archive-table').getByRole('button', { name: '详情', exact: true }).click()
@@ -537,15 +545,18 @@ test('操作员可使用当前菜单和隐藏页面且禁止越权访问', async
   const audit = auditConsole(page)
 
   await loginAs(page, 'operator')
-  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(5)
+  await expect(page.getByRole('navigation', { name: '主导航' }).getByRole('link')).toHaveCount(3 + Number(APP_CONFIG.showReports) + Number(APP_CONFIG.systemManagement.showDataExchange))
   await expect(page.getByRole('link', { name: '需求追踪矩阵', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '弹窗交互', exact: true })).toHaveCount(0)
   await expect(page.getByRole('link', { name: '登录页', exact: true })).toHaveCount(0)
   for (const route of [...SHARED_WORKSPACE_ROUTES, OPERATOR_SYSTEM_ROUTE]) {
     await visitWorkspaceRoute(page, route)
   }
-  await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem')).toHaveText(['数据交换与接口'])
-  await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem', { name: '数据交换与接口', exact: true })).toBeVisible()
+  if (APP_CONFIG.systemManagement.showDataExchange) {
+    await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem')).toHaveText(['数据交换与接口'])
+  } else {
+    await expect(page.getByRole('complementary', { name: '系统管理导航' })).toHaveCount(0)
+  }
 
   await page.evaluate(() => {
     window.history.pushState({}, '', '/admin')
@@ -563,7 +574,7 @@ test('操作员可使用当前菜单和隐藏页面且禁止越权访问', async
 test('P5 OPERATOR validates data exchange and seven interface contracts', async ({ page }) => {
   const audit = auditConsole(page)
   await loginAs(page, 'operator')
-  await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
+  await page.goto('/admin/data-exchange')
   await page.waitForURL('**/admin/data-exchange')
 
   await expect(page.getByTestId('exchange-monitor')).toBeVisible()
@@ -880,7 +891,7 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   const audit = auditConsole(page)
   await loginAs(page, 'operator')
   const reportList = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports')
-  await page.getByRole('link', { name: '报表中心', exact: true }).click()
+  await page.goto('/reports')
   expect((await reportList).status()).toBe(200)
   await expect(page.getByRole('region', { name: '报告分析', exact: true })).toBeVisible()
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
@@ -910,7 +921,7 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   const adminPage = await page.context().newPage()
   const adminAudit = auditConsole(adminPage)
   await loginAs(adminPage, 'admin')
-  await adminPage.getByRole('link', { name: '报表中心', exact: true }).click()
+  await adminPage.goto('/reports')
   await adminPage.getByTestId('report-tabs').waitFor()
   await adminPage.getByTestId('report-source').click()
   await adminPage.getByRole('option', { name: /RPT-BATCH-001/ }).click()

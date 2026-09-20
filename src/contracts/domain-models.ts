@@ -312,6 +312,17 @@ export interface ConfirmationContext { confirmationId: Identifier; state: Confir
 
 export interface User { userId: Identifier; username: string; role: Role; status: 'ACTIVE' | 'DISABLED' | 'LOCKED'; lastLoginAt?: Iso8601Utc; }
 export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; }
+/** 管理员维护的装备默认参数；空值表示未配置，不代表零。频率单位 MHz，阈值为 BER。 */
+export interface EquipmentParameter {
+  equipmentId: string
+  type: string
+  frequencyMinMHz: number | null
+  frequencyMaxMHz: number | null
+  modulation: string | null
+  berThreshold: number | null
+  readOnly: boolean
+  version: number
+}
 export interface MasterDataRequest { operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: MasterData; confirmationId?: Identifier; }
 export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
 export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; }
