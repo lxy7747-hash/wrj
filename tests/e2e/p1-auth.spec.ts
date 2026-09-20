@@ -1830,8 +1830,10 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await expect(telemetryPanel).toContainText('DET-042 · F-00042')
   await expect(telemetryPanel).toContainText('SW-003 · F-00042')
   const degradedLink = telemetryPanel.locator('tr[data-link-id="L-DL-03"]')
-  await expect(degradedLink).toContainText('7.10')
-  await expect(degradedLink).toContainText('2.4e-4')
+  await expect(telemetryPanel.getByRole('columnheader', { name: 'SNR', exact: true })).toHaveCount(0)
+  await expect(telemetryPanel.getByRole('columnheader', { name: 'BER', exact: true })).toHaveCount(0)
+  await expect(degradedLink).not.toContainText('7.10')
+  await expect(degradedLink).not.toContainText('2.4e-4')
   await expect(page.getByLabel('当前帧指标').locator('select')).toHaveCount(0)
   await expect(telemetryPanel.locator('tr[data-link-id]')).toHaveCount(10)
   await expect(page.getByLabel('当前帧指标').locator('.metric-panel__item span')).toHaveText([

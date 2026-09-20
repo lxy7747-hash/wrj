@@ -1,4 +1,5 @@
 import type { AfsimLogEvent } from '../data-exchange/afsim-event-log'
+import type { FileCommunicationLink } from './file-communication-links'
 
 /** 文件设备事件只证明启停或请求状态，不证明物理链路通断和干扰效果。 */
 export interface FileDeviceEvent {
@@ -65,6 +66,20 @@ export function selectFileDeviceStates(events: FileDeviceEvent[], time: number):
     if (!previous || event.time >= previous.time) states.set(key, event)
   }
   return [...states.values()]
+}
+
+/** 消费当前时刻的设备状态，不用消息投递或干扰请求推断链路质量。 */
+export function fileLinkDeviceStatus(link: FileCommunicationLink, states: readonly FileDeviceEvent[]): '开启' | '关闭' | '未知' {
+  const associations = link.records.map(record => {
+    const endpoints = [record.source, record.target].map(endpoint => states.find(state =>
+      state.kind === 'COMMUNICATION' && state.platformId === endpoint.platformName
+      && state.deviceId === endpoint.communicationName)?.active)
+    if (endpoints.some(active => active === false)) return '关闭'
+    return endpoints.every(active => active === true) ? '开启' : '未知'
+  })
+  // 合并线只要还有一组两端明确开启就显示开启；证据缺失不能当成关闭或开启。
+  if (associations.includes('开启')) return '开启'
+  return associations.length > 0 && associations.every(status => status === '关闭') ? '关闭' : '未知'
 }
 
 /**

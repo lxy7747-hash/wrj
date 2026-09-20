@@ -2,12 +2,12 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.vectorgrid'
 
-import { MAP_CONFIG } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink, type FileCommunicationType } from '../../features/situation/file-communication-links'
-import { fileJammerRadiusMeters, type FileDeviceEvent } from '../../features/situation/file-device-events'
+import { fileJammerRadiusMeters, fileLinkDeviceStatus, type FileDeviceEvent } from '../../features/situation/file-device-events'
 import type { FileMessageLink } from '../../features/situation/file-message-links'
 import { FILE_MESSAGE_DIRECTION_LABELS, FILE_MESSAGE_DIRECTION_MARKS } from '../../features/situation/file-message-links'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
@@ -380,17 +380,18 @@ const FILE_LINK_TYPE_STYLES: Record<FileCommunicationType, L.PathOptions> = {
   FIBER: { color: '#20b2aa', weight: 3, opacity: 0.95 },
 }
 
-/**
- * 流向动画叠加线的样式。虚线周期与 CSS 动画滚动距离必须相等才能无缝循环，
- * 因此周期由 MAP_CONFIG.linkFlowDashPattern 求和得出，动画时长由 linkFlowCycleSeconds 给出。
- */
-const LINK_FLOW_PERIOD = MAP_CONFIG.linkFlowDashPattern[0] + MAP_CONFIG.linkFlowDashPattern[1]
+// SVG pathLength 归一化整条路径；重复间距大于路径加尾迹，任何缩放下都只有一颗流星。
+const LINK_FLOW_PATH_LENGTH = 1000
+const LINK_FLOW_TRAIL_LENGTH = LINK_FLOW_PATH_LENGTH * MAP_CONFIG.linkFlowTrailRatio
+const LINK_FLOW_TRAVEL = LINK_FLOW_PATH_LENGTH + LINK_FLOW_TRAIL_LENGTH
+const LINK_FLOW_PERIOD = 2 * LINK_FLOW_TRAVEL
+const LINK_FLOW_BRIGHTNESS = [0.12, 0.3, 0.6, 1] as const
 const LINK_FLOW_STYLE: L.PathOptions = {
   weight: 2.5,
   opacity: 0.95,
-  dashArray: MAP_CONFIG.linkFlowDashPattern.join(' '),
-  lineCap: 'round',
+  lineCap: 'butt',
   className: 'situation-map-link-flow',
+  pane: 'linkFlowPane',
 }
 
 const LINK_STATUS_LABELS: Record<SituationLinkView['status'], string> = {
@@ -424,6 +425,10 @@ export function createSituationMapController(options: SituationMapControllerOpti
     zoomSnap: MAP_CONFIG.zoom.snap,
     preferCanvas: false,
   })
+  // 脉冲在底线之上、节点之下；开关底线图层不会遮住尾迹，也不抢占点击。
+  const flowPane = map.createPane('linkFlowPane')
+  flowPane.style.zIndex = '450'
+  flowPane.style.pointerEvents = 'none'
   let currentLinks = [...options.links]
   let currentFrame = options.frame
   let fileNodes = options.initialNodes ?? []
@@ -513,24 +518,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
       })
       renderInterference(layerGroups.interference, null, '')
     } else {
-      const closedDevices = new Set(fileDeviceStates
-        .filter(event => event.kind === 'COMMUNICATION' && !event.active)
-        .map(event => JSON.stringify([event.platformId, event.deviceId])))
       // 业务链路只陈述已发生的投递，不因设备启停被隐藏；设备状态在详情中单独呈现。
       renderMessageLinks(layerGroups.links, currentNodes, fileMessageLinks, focusedTarget?.targetId ?? '', link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileMessageLink?.(link)
       }, layerGroups.flow)
       // 仅过滤绘制：任一登记的两端均未明确关闭就保留合并线，完整明细不变。
-      const visibleLinks = fileLinks.filter(link => link.records.some(record =>
-        [record.source, record.target].every(endpoint =>
-          !closedDevices.has(JSON.stringify([endpoint.platformName, endpoint.communicationName])))))
+      const visibleLinks = fileLinks.filter(link => link.records.length > 0 && fileLinkDeviceStatus(link, fileDeviceStates) !== '关闭')
       renderFileLinks(layerGroups.potential, currentNodes, visibleLinks, link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileLink?.(link)
       })
       const activePlatforms = new Set(fileDeviceStates.filter(event => event.kind === 'JAMMING' && event.active).map(event => event.platformId))
-      renderInterference(layerGroups.interference, null, '', currentNodes.filter(node => activePlatforms.has(node.platformId)), fileDeviceStates)
+      renderInterference(layerGroups.interference, null, '', currentNodes.filter(node => activePlatforms.has(node.platformId)), fileDeviceStates, currentNodes)
     }
     renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
   }
@@ -669,7 +669,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
           selectedNodeId = platform.platformId
           focusedTarget = target
           renderBusinessLayers()
-          map.setView(pointForPlatform(platform), focusZoom, animation)
+          map.setView(pointForPlatform(platform, currentNodes), focusZoom, animation)
         }
         return
       }
@@ -682,7 +682,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         if (source && destination) {
           focusedTarget = target
           renderBusinessLayers()
-          map.fitBounds(L.latLngBounds(sampleConnectionCurve(source, destination, 0)), {
+          map.fitBounds(L.latLngBounds(sampleConnectionCurve(source, destination, 0, currentNodes)), {
             padding: [...MAP_CONFIG.fitPadding], maxZoom: focusZoom, ...animation,
           })
         }
@@ -713,7 +713,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       selectedNodeId = platform.platformId
       focusedTarget = target
       renderBusinessLayers()
-      const center = L.latLng(pointForPlatform(platform))
+      const center = L.latLng(pointForPlatform(platform, currentNodes))
       if (jammer.active) {
         map.fitBounds(center.toBounds(MAP_CONFIG.activeInterferenceRadiusMeters * 2), {
           padding: [...MAP_CONFIG.fitPadding],
@@ -809,10 +809,11 @@ export function createSituationMapController(options: SituationMapControllerOpti
  * 将 API 平台经纬度转换为 Leaflet 坐标顺序。
  * @param platform 固定帧中的平台状态。
  * @returns Leaflet 使用的 [纬度, 经度] 坐标。
- * @sideeffect 无副作用；仅调整 API 经度、纬度的排列顺序。
+ * @sideeffect 无副作用；解析展示坐标后调整经纬度排列顺序，不改写原始节点。
  */
-function pointForPlatform(platform: SituationPlatform): L.LatLngTuple {
-  return [platform.latitude, platform.longitude]
+function pointForPlatform(platform: SituationPlatform, nodes: readonly SituationMapNode[]): L.LatLngTuple {
+  const coords = resolvePlatformCoordinates(platform, nodes)
+  return [coords.latitude, coords.longitude]
 }
 
 /**
@@ -853,6 +854,7 @@ function bindMarkerKeyboardSelection(marker: L.Marker, onSelect: () => void): vo
  */
 function createNodeIconContent(platform: SituationPlatform, selected: boolean): HTMLElement {
   const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
+  const isSat = isSatellitePlatform(platform)
   const root = document.createElement('div')
   root.className = 'situation-map-node'
   root.style.display = 'flex'
@@ -863,14 +865,14 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const glyph = document.createElement('span')
   glyph.className = 'situation-map-node__glyph'
-  glyph.textContent = platform.type === 'COMMUNICATION_SATELLITE' ? '▲' : '●'
+  glyph.textContent = isSat ? '▲' : '●'
   glyph.style.fontSize = selected ? '24px' : '20px'
   glyph.style.lineHeight = '20px'
   glyph.style.webkitTextStroke = '1px #06111d'
 
   const name = document.createElement('span')
   name.className = 'situation-map-node__name'
-  name.textContent = platform.type === 'COMMUNICATION_SATELLITE'
+  name.textContent = isSat
     ? `${platform.name}（轨道示意）`
     : platform.name
   name.style.display = compact ? 'none' : 'block'
@@ -916,8 +918,9 @@ function renderNodes(
     const appearance = JSON.stringify([platform.name, platform.type, platform.side, selected])
     let entry = entries.get(platform.platformId)
     if (!entry) {
-      const marker = L.marker(pointForPlatform(platform), {
-        title: `选择节点 ${platform.name}${platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''}`,
+      const isSat = isSatellitePlatform(platform)
+      const marker = L.marker(pointForPlatform(platform, nodes), {
+        title: `选择节点 ${platform.name}${isSat ? '（轨道示意）' : ''}`,
         keyboard: true, riseOnHover: true, riseOffset: 500, bubblingMouseEvents: false,
       })
       marker.on('click', () => onSelectNode(platform.platformId))
@@ -926,10 +929,11 @@ function renderNodes(
       entries.set(platform.platformId, entry)
     }
     const { marker } = entry
-    if (!marker.getLatLng().equals(pointForPlatform(platform))) marker.setLatLng(pointForPlatform(platform))
+    if (!marker.getLatLng().equals(pointForPlatform(platform, nodes))) marker.setLatLng(pointForPlatform(platform, nodes))
     if (entry.appearance !== appearance) {
+      const isSat = isSatellitePlatform(platform)
       const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
-      const orbitSuffix = platform.type === 'COMMUNICATION_SATELLITE' ? '（轨道示意）' : ''
+      const orbitSuffix = isSat ? '（轨道示意）' : ''
       const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
       marker.options.title = accessibleName
       marker.setIcon(L.divIcon({
@@ -1018,7 +1022,7 @@ function sampleLinkCurve(frame: TelemetryFrame, link: SituationLinkView, links: 
     const item = frame.linkSummaries[resolveLinkSummaryIndex(frame, candidate)]
     return item ? [{ sourcePlatformId: item.sourcePlatform, targetPlatformId: item.destPlatform, type: item.linkType }] : []
   })
-  return sampleConnectionCurve(source, destination, connectionCurveOffset(source, destination, link.type, peers))
+  return sampleConnectionCurve(source, destination, connectionCurveOffset(source, destination, link.type, peers), frame.platforms)
 }
 
 /** 按无向节点对及稳定类别排序分离；同类重复/反向登记不增加弯曲，其他节点对不影响结果。 */
@@ -1065,9 +1069,9 @@ function messageLinkCurveOffset(
  * @remarks 方向归一之后，两个方向的控制点偏移方向相同，因此给不同车道分配**符号相反**的偏移
  * 即可把两个方向分到连线两侧；若去掉归一，反向遍历本身会把偏移翻向同侧，反而无法分离。
  */
-function sampleConnectionCurve(source: SituationMapNode, destination: SituationMapNode, offset: number): L.LatLngTuple[] {
-  const [sourceLatitude, sourceLongitude] = pointForPlatform(source)
-  const [destinationLatitude, destinationLongitude] = pointForPlatform(destination)
+function sampleConnectionCurve(source: SituationMapNode, destination: SituationMapNode, offset: number, nodes: readonly SituationMapNode[]): L.LatLngTuple[] {
+  const [sourceLatitude, sourceLongitude] = pointForPlatform(source, nodes)
+  const [destinationLatitude, destinationLongitude] = pointForPlatform(destination, nodes)
   const direction = source.platformId < destination.platformId ? 1 : -1
   const controlLatitude = (sourceLatitude + destinationLatitude) / 2 + (destinationLongitude - sourceLongitude) * offset * direction
   const controlLongitude = (sourceLongitude + destinationLongitude) / 2 - (destinationLatitude - sourceLatitude) * offset * direction
@@ -1100,7 +1104,7 @@ interface ConnectionDrawing {
   arrow?: { position: L.LatLngTuple; rotation: number }
   /** 业务方向单字标记（前/返）；与物理方向无关，未判定方向时不设置。 */
   directionMark?: { position: L.LatLngTuple; text: string }
-  /** 流向动画叠加线的样式；设置后在独立图层组中绘制一条同几何的滚动虚线。 */
+  /** 射线脉冲的样式；在独立图层组中沿主线几何绘制渐亮光束。 */
   flow?: L.PathOptions
 }
 interface ConnectionLayer {
@@ -1115,8 +1119,13 @@ interface ConnectionLayer {
   directionMarkAppearance?: string
 }
 const connectionLayers = new WeakMap<L.LayerGroup, Map<string, ConnectionLayer>>()
+interface FlowLayer {
+  lines: L.Polyline[]
+  geometry: string
+  appearance: string
+}
 /** 流向叠加载独立图层组管理，与主连线几何完全一致。 */
-const flowLayers = new WeakMap<L.LayerGroup, Map<string, { line: L.Polyline; geometry: string; appearance: string }>>()
+const flowLayers = new WeakMap<L.LayerGroup, Map<string, FlowLayer>>()
 
 /** 由曲线采样点生成方向箭头；取偏后位置避免与节点图标和端点重合。 */function curveArrow(points: L.LatLngTuple[]): { position: L.LatLngTuple; rotation: number } | undefined {
   if (points.length < 4) return undefined
@@ -1157,12 +1166,15 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
       entries.delete(id)
     }
   }
-  const flows = flowGroup ? flowLayers.get(flowGroup) ?? new Map<string, { line: L.Polyline; geometry: string; appearance: string }>() : null
+  const flows = flowGroup ? flowLayers.get(flowGroup) ?? new Map<string, FlowLayer>() : null
   if (flowGroup && flows) flowLayers.set(flowGroup, flows)
   const flowIds = new Set(drawings.filter(drawing => drawing.flow).map(drawing => drawing.id))
   if (flowGroup && flows) {
     for (const [id, entry] of flows) {
-      if (!flowIds.has(id)) { flowGroup.removeLayer(entry.line); flows.delete(id) }
+      if (!flowIds.has(id)) {
+        entry.lines.forEach(line => flowGroup.removeLayer(line))
+        flows.delete(id)
+      }
     }
   }
   for (const drawing of drawings) {
@@ -1251,39 +1263,62 @@ function syncDirectionMark(group: L.LayerGroup, entry: ConnectionLayer, drawing:
 /** 按需创建、更新或移除流向叠加线；几何始终与主连线一致。 */
 function syncFlowLine(
   flowGroup: L.LayerGroup | undefined,
-  flows: Map<string, { line: L.Polyline; geometry: string; appearance: string }> | null,
+  flows: Map<string, FlowLayer> | null,
   drawing: ConnectionDrawing,
 ): void {
   if (!flowGroup || !flows || !drawing.flow) return
   const geometry = JSON.stringify(drawing.points)
   const appearance = JSON.stringify(drawing.flow)
   const entry = flows.get(drawing.id)
+  // 四段拼成一颗流星，亮头从起点进入，暗尾完全离开终点后才开始下一轮。
+  const segmentLength = LINK_FLOW_TRAIL_LENGTH / LINK_FLOW_BRIGHTNESS.length
+  const segmentStyle = (index: number): L.PathOptions => ({
+    ...drawing.flow,
+    color: '#e8fcff',
+    dashArray: `${segmentLength} ${LINK_FLOW_PERIOD - segmentLength}`,
+    dashOffset: `${LINK_FLOW_TRAIL_LENGTH - index * segmentLength}`,
+    weight: 1.5 + index * 0.7,
+    opacity: (drawing.flow!.opacity ?? 1) * LINK_FLOW_BRIGHTNESS[index]!,
+    interactive: false,
+    bubblingMouseEvents: false,
+  })
   if (!entry) {
-    const line = L.polyline(drawing.points, { ...drawing.flow, interactive: false, bubblingMouseEvents: false })
-    // 元素只在图层位于地图上时才存在，因此挂载后还要再应用一次动画参数。
-    line.on('add', () => applyFlowAnimation(line))
-    line.addTo(flowGroup)
-    applyFlowAnimation(line)
-    flows.set(drawing.id, { line, geometry, appearance })
+    const lines = LINK_FLOW_BRIGHTNESS.map((_, index) => {
+      const line = L.polyline(drawing.points, segmentStyle(index))
+      // 图层重开后 SVG 元素会重建，需恢复同一组脉冲相位。
+      line.on('add', () => applyFlowAnimation(line))
+      line.addTo(flowGroup)
+      applyFlowAnimation(line)
+      return line
+    })
+    flows.set(drawing.id, { lines, geometry, appearance })
     return
   }
-  if (entry.geometry !== geometry) { entry.line.setLatLngs(drawing.points); entry.geometry = geometry }
+  if (entry.geometry !== geometry) {
+    entry.lines.forEach(line => line.setLatLngs(drawing.points))
+    entry.geometry = geometry
+  }
   if (entry.appearance !== appearance) {
-    entry.line.setStyle({ dashArray: undefined, ...drawing.flow })
+    entry.lines.forEach((line, index) => {
+      line.setStyle(segmentStyle(index))
+      applyFlowAnimation(line)
+    })
     entry.appearance = appearance
-    applyFlowAnimation(entry.line)
   }
 }
 
 /**
- * 给流向叠加线写入动画参数：滚动距离必须恰好等于虚线周期，动画才会无缝循环。
- * 周期和时长都来自 MAP_CONFIG；动画名由组件 scoped 样式提供，行内只覆盖时长，
+ * 给流星写入归一化路径与行程：循环首尾整颗流星均位于路径外，不会多颗并排或跳闪。
+ * 尾迹比例和时长来自 MAP_CONFIG；动画名由组件 scoped 样式提供，行内只覆盖参数，
  * 避免 Vue 的局部 @keyframes 哈希重命名与行内名字失配。
  */
 function applyFlowAnimation(line: L.Polyline): void {
   const element = line.getElement() as SVGPathElement | null
   if (!element) return
-  element.style.setProperty('--situation-link-flow-shift', `-${LINK_FLOW_PERIOD}`)
+  element.setAttribute('pathLength', `${LINK_FLOW_PATH_LENGTH}`)
+  const offset = Number(line.options.dashOffset ?? 0)
+  element.style.setProperty('--situation-link-flow-start', `${offset}`)
+  element.style.setProperty('--situation-link-flow-shift', `${offset - LINK_FLOW_TRAVEL}`)
   element.style.animationDuration = `${MAP_CONFIG.linkFlowCycleSeconds}s`
 }
 
@@ -1341,7 +1376,7 @@ function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], l
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     return [{
-      id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, links)),
+      id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, links), nodes),
       name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；暂无运行数据`,
       style: { color: '#8496a3', weight: selectedId === link.id ? 5 : 3, dashArray: '6 6', opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
       hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
@@ -1361,7 +1396,7 @@ function renderMessageLinks(group: L.LayerGroup, nodes: SituationMapNode[], link
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
-    const points = sampleConnectionCurve(source, target, messageLinkCurveOffset(link, links))
+    const points = sampleConnectionCurve(source, target, messageLinkCurveOffset(link, links), nodes)
     const midpoint = curveMidpoint(points)
     const directionLabel = link.direction ? FILE_MESSAGE_DIRECTION_LABELS[link.direction] : ''
     return [{
@@ -1398,7 +1433,7 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     return [{
-      id: `file:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, drawableLinks)),
+      id: `file:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, drawableLinks), nodes),
       name: `${FILE_COMMUNICATION_LABELS[link.type]}登记关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知，不表示当前正在转发`,
       // 登记关联统一降级为半透明点线，与业务链路的实线明显区分。
       style: {
@@ -1416,7 +1451,7 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
 const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean }>>()
 
 /** 复用范围圈，文字说明留在详情；不由范围推断设备启停或链路质量。 */
-function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string, fileNodes: SituationMapNode[] = [], fileDeviceStates: FileDeviceEvent[] = []): void {
+function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string, fileNodes: SituationMapNode[] = [], fileDeviceStates: FileDeviceEvent[] = [], nodes = frame?.platforms ?? fileNodes): void {
   const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean }>()
   interferenceLayers.set(group, entries)
   const platforms = frame?.platforms.filter(platform => platform.jammers.some(jammer => jammer.active))
@@ -1430,7 +1465,7 @@ function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, s
       .some(jammer => jammer.active && jammer.jammerId === selectedJammerId) ?? false
     const radius = frame ? MAP_CONFIG.activeInterferenceRadiusMeters : fileJammerRadiusMeters(platform.platformId, fileDeviceStates, MAP_CONFIG.fileInterferenceRadiusMeters)!
     let entry = entries.get(platform.platformId)
-    if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform))) entry.circle.setLatLng(pointForPlatform(platform))
+    if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform, nodes))) entry.circle.setLatLng(pointForPlatform(platform, nodes))
     if (entry?.selected === selected && entry.circle.getRadius() === radius) continue
     const color = selected ? '#f5b942' : '#ff526d'
     const style: L.CircleMarkerOptions = {
@@ -1439,7 +1474,7 @@ function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, s
       className: selected ? 'situation-map-interference--selected' : '', interactive: true,
     }
     if (!entry) {
-      const circle = L.circle(pointForPlatform(platform), { ...style, radius }).addTo(group)
+      const circle = L.circle(pointForPlatform(platform, nodes), { ...style, radius }).addTo(group)
       entry = { circle, selected }
       entries.set(platform.platformId, entry)
     } else {

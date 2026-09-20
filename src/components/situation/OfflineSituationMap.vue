@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MAP_CONFIG } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
@@ -143,11 +143,18 @@ const selectedNodeType = computed(() => selectedNode.value
   ? PLATFORM_TYPE_LABELS[selectedNode.value.type as keyof typeof PLATFORM_TYPE_LABELS] ?? selectedNode.value.type
   : '')
 
-/** 使用当前底图包的覆盖范围提示真实坐标越界，不改写或裁剪节点位置。 */
+/** 根据地图开关解析选中节点在界面展示的有效经纬度坐标。 */
+const selectedNodePosition = computed(() => {
+  if (!selectedNode.value) return { longitude: 0, latitude: 0 }
+  return resolvePlatformCoordinates(selectedNode.value, nodes.value)
+})
+const usesTemporarySatellitePosition = computed(() => isSatellitePlatform(selectedNode.value) && !MAP_CONFIG.useSatelliteDataPosition)
+
+/** 使用当前底图包的覆盖范围提示坐标越界，不改写或裁剪节点位置。 */
 const nodeOutsideBasemap = computed(() => {
   if (!selectedNode.value) return false
   const [[south, west], [north, east]] = MAP_CONFIG.resources[basemap.value].bounds
-  const { longitude, latitude } = selectedNode.value
+  const { longitude, latitude } = selectedNodePosition.value
   return longitude < west || longitude > east || latitude < south || latitude > north
 })
 
@@ -530,6 +537,7 @@ onBeforeUnmount(() => {
         <dl class="selected-node-dialog__grid">
           <div><dt>类型</dt><dd>{{ selectedNodeType }}</dd></div>
           <div><dt>{{ frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
+          <div v-if="usesTemporarySatellitePosition"><dt>地图临时示意位置</dt><dd>{{ Math.abs(selectedNodePosition.longitude) }}°{{ selectedNodePosition.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNodePosition.latitude) }}°{{ selectedNodePosition.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ configuredLinks ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
           <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（指定范围）</dd></div>
@@ -579,10 +587,10 @@ onBeforeUnmount(() => {
           该节点位于当前离线底图覆盖范围之外，坐标按原值显示。
         </p>
         <p
-          v-if="selectedNode.type === 'COMMUNICATION_SATELLITE'"
+          v-if="isSatellitePlatform(selectedNode)"
           class="selected-node-dialog__notice"
         >
-          {{ configuredLinks ? '二维地图按卫星配置经纬度显示，高度不按地图比例呈现。' : '二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。' }}
+          {{ usesTemporarySatellitePosition ? '地图临时示意位置仅用于展示，不是遥测或配置原值；高度不按地图比例呈现。' : configuredLinks ? '二维地图按卫星配置经纬度显示，高度不按地图比例呈现。' : '二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。' }}
         </p>
       </div>
     </el-dialog>
@@ -894,19 +902,19 @@ onBeforeUnmount(() => {
 }
 
 /**
- * 流向动画：滚动一个虚线周期即可无缝循环。
+ * 单颗流星：暗尾到亮头共用相同速度，尾迹离开终点后再从起点发出。
  * 动画名必须写在 scoped 样式里 —— Vue 会给局部 @keyframes 加哈希重命名，
  * 只有在同一 scoped 块内引用才会被同步改写；行内样式里的名字不会被改写，会指向不存在的关键帧。
- * 位移量由控制器按 MAP_CONFIG.linkFlowDashPattern 写入 --situation-link-flow-shift，
+ * 位移量由控制器按归一化路径和尾迹比例写入 --situation-link-flow-shift，
  * 时长由 MAP_CONFIG.linkFlowCycleSeconds 以行内 animation-duration 覆盖。
  */
 @keyframes situation-map-link-flow {
   from {
-    stroke-dashoffset: 0;
+    stroke-dashoffset: var(--situation-link-flow-start);
   }
 
   to {
-    stroke-dashoffset: var(--situation-link-flow-shift, -32);
+    stroke-dashoffset: var(--situation-link-flow-shift);
   }
 }
 
@@ -916,6 +924,7 @@ onBeforeUnmount(() => {
   animation-iteration-count: infinite;
   animation-duration: 1.4s;
   pointer-events: none;
+  filter: drop-shadow(0 0 1.5px rgba(160, 225, 255, .5));
 }
 
 /* 尊重系统的减少动态效果设置：保留链路与箭头，只停掉滚动。 */

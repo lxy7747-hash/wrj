@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { reactive } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MAP_CONFIG } from '../../src/config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../src/config/map.config'
 import type { ConfirmationContext, Link, Principal, SimulationRun } from '../../src/contracts/domain-models'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import type { InitialNodeSnapshot, SituationMapNode } from '../../src/features/situation/initial-nodes'
@@ -228,6 +228,7 @@ describe('态势主界面', () => {
   }
 
   beforeEach(() => {
+    ;(MAP_CONFIG as { showLinkQualityColumns: boolean }).showLinkQualityColumns = false
     sessionStorage.clear()
     mapControllerMock.latestOptions = null
     vi.clearAllMocks()
@@ -236,6 +237,8 @@ describe('态势主界面', () => {
   })
 
   afterEach(() => {
+    ;(MAP_CONFIG as { useSatelliteDataPosition: boolean }).useSatelliteDataPosition = false
+    ;(MAP_CONFIG as { showLinkQualityColumns: boolean }).showLinkQualityColumns = false
     mountedWrapper?.unmount()
     mountedWrapper = null
     document.body.innerHTML = ''
@@ -392,6 +395,58 @@ describe('态势主界面', () => {
     expect(polls()).toBe(0)
   })
 
+  it.each([false, true])('全链路状态质量列开关为 %s，名称完整且不再显示编号小字', async show => {
+    ;(MAP_CONFIG as { showLinkQualityColumns: boolean }).showLinkQualityColumns = show
+    const wrapper = await mountSituationPage()
+    expect(wrapper.findAll('.link-table th').map(item => item.text())).toEqual(show
+      ? ['链路', '体制', 'SNR', 'BER', '状态'] : ['链路', '体制', '状态'])
+    const row = wrapper.get('tr[data-link-id="L-MW-01"]')
+    const link = SITUATION_LINKS_F00042.find(item => item.linkId === 'L-MW-01')!
+    expect(row.get('td strong').text()).toBe(`${link.sourceName}→${link.destinationName}`)
+    expect(row.find('small').exists()).toBe(false)
+    expect(row.findAll('td')).toHaveLength(show ? 5 : 3)
+    if (show) expect(row.findAll('td')[2]!.text()).toBe(link.snrDb.toFixed(2))
+  })
+
+  it('全链路状态按 CSV 设备启停变化，单端关闭、恢复、倒退及重载不残留未来状态', async () => {
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.initial.connections = structuredClone(FILE_CONNECTIONS.slice(0, 1))
+    const csv = [
+      '! COMM_TURNED_ON,time<time>,event<string>,platform<string>,system<string>',
+      '! COMM_TURNED_OFF,time<time>,event<string>,platform<string>,system<string>',
+      '0,COMM_TURNED_ON,A,sat-a',
+      '1,COMM_TURNED_ON,B,sat-b',
+      '2,COMM_TURNED_OFF,A,sat-a',
+      '3,COMM_TURNED_ON,A,sat-a',
+    ].join('\n')
+    snapshot.initial.deviceEvents = buildFileDeviceEvents(parseAfsimEventLog(csv).events, new Set(['A', 'B']))
+    const fetchSpy = vi.fn().mockResolvedValueOnce(successResponse(snapshot.initial))
+      .mockImplementation(() => Promise.resolve(successResponse(snapshot)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    const badge = () => wrapper.get('.link-table .link-device-status').text()
+    expect(badge()).toBe('干扰')
+    expect(wrapper.get('.link-table .link-device-status').attributes('title')).toContain('设备启停证据：未知')
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    const playback = useReplayStore()
+    await playback.pause()
+    for (const [time, status, evidence] of [[1, '正常', '开启'], [2, '切换', '关闭'], [3, '正常', '开启'], [2, '切换', '关闭'], [0, '干扰', '未知']] as const) {
+      expect(await playback.seek(time)).toBe(true)
+      await flushPromises()
+      expect(badge()).toBe(status)
+      expect(wrapper.get('.link-table .link-device-status').attributes('data-status')).toBe(evidence)
+      expect(wrapper.findAll('.link-table tbody tr')).toHaveLength(1)
+    }
+    await playback.seek(2)
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    expect(badge()).toBe('干扰')
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(badge()).toBe('干扰')
+    expect(fetchSpy).toHaveBeenCalledTimes(3)
+  })
+
   it('呈现原型要求的关键区域并只读取运行快照', async () => {
     const fetchSpy = situationFetch()
     const webSocketSpy = vi.fn(function WebSocketMock() { return new SilentWebSocket() })
@@ -411,7 +466,7 @@ describe('态势主界面', () => {
     expect(wrapper.get('.offline-map').text()).not.toContain('数据时刻')
     expect(wrapper.get('[aria-label="链路、干扰与事件"]')).toBeTruthy()
     expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(10)
-    expect(wrapper.get('.link-table thead').text()).toBe('链路体制SNRBER状态')
+    expect(wrapper.get('.link-table thead').text()).toBe('链路体制状态')
     expect(wrapper.get('tr[data-link-id="L-DL-03"] td:nth-child(2)').text()).toBe('数传')
     expect(wrapper.findAll('.link-table tbody tr.is-exception')).toHaveLength(1)
     expect(wrapper.findAll('[data-frame-id="F-00042"]').length).toBeGreaterThanOrEqual(3)
@@ -458,7 +513,7 @@ describe('态势主界面', () => {
     expect(wrapper.get('.node-jammer-count').text()).toBe('2 个')
     const panel = wrapper.get('.telemetry-panel')
     expect(panel.findAll('.panel-heading strong').map(item => item.text())).toEqual(['全链路状态', '干扰 / 侦测设备', '同帧事件'])
-    expect(panel.text()).toContain('当前文件未提供链路质量数据')
+    expect(panel.text()).toContain('当前时刻暂无通信关联')
     expect(panel.text()).toContain('暂无干扰 / 侦测设备运行数据')
     expect(panel.text()).toContain('暂无当前运行事件')
     expect(panel.findAll('.telemetry-empty-state.el-empty')).toHaveLength(2)
@@ -625,7 +680,7 @@ describe('态势主界面', () => {
     const panel = wrapper.get('.telemetry-panel')
     expect(panel.findAll('tr[data-link-id]')).toHaveLength(1)
     expect(panel.text()).toContain('指挥节点A→干扰平台B')
-    expect(panel.find('.link-badge--registered').exists()).toBe(true)
+    expect(panel.get('.link-device-status').text()).toBe('干扰')
 
     // 点击表格行定位链路
     await panel.find('tr[data-link-id]').trigger('click')
@@ -772,8 +827,9 @@ describe('态势主界面', () => {
     // 行内只允许覆盖时长与滚动位移量。
     expect(controller).toMatch(/style\.animationDuration/)
     expect(controller).toMatch(/setProperty\('--situation-link-flow-shift'/)
-    // 滚动距离必须恰好等于虚线周期，否则循环处会跳变。
-    expect(controller).toMatch(/LINK_FLOW_PERIOD = MAP_CONFIG\.linkFlowDashPattern\[0\] \+ MAP_CONFIG\.linkFlowDashPattern\[1\]/)
+    // 路径归一化保证长短链路和缩放后都只有一颗流星。
+    expect(controller).toMatch(/setAttribute\('pathLength'/)
+    expect(controller).toContain('MAP_CONFIG.linkFlowTrailRatio')
   })
 
   it('业务链路详情展示业务类型、活跃窗口与投递时延，并在游标早于首次投递时不显示', async () => {
@@ -1062,10 +1118,10 @@ describe('态势主界面', () => {
     expect(detail?.textContent).not.toMatch(/固定帧|正常|劣化|中断/)
     const telemetryPanel = wrapper.get('.telemetry-panel')
     expect(telemetryPanel.findAll('.panel-heading strong').map(item => item.text())).toEqual(['全链路状态', '干扰 / 侦测设备', '同帧事件'])
-    expect(telemetryPanel.findAll('th').map(item => item.text())).toEqual(['链路', '体制', 'SNR', 'BER', '状态'])
+    expect(telemetryPanel.findAll('th').map(item => item.text())).toEqual(['链路', '体制', '状态'])
     expect(telemetryPanel.findAll('tr[data-link-id]')).toHaveLength(config.links.length)
     const linkRow = telemetryPanel.get('tr[data-link-id="L-MW-01"]')
-    expect(linkRow.findAll('td').slice(2).map(item => item.text())).toEqual(['暂无数据', '暂无数据', '暂无数据'])
+    expect(linkRow.findAll('td').slice(2).map(item => item.text())).toEqual(['暂无数据'])
     expect(telemetryPanel.find('.link-state-badge').exists()).toBe(false)
     expect(telemetryPanel.get('[data-testid="open-link-candidates"]').attributes('disabled')).toBeDefined()
     await linkRow.trigger('click')
@@ -1262,10 +1318,10 @@ describe('态势主界面', () => {
     ])
     expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('劣化链路1')
     expect(wrapper.get('[aria-label="当前帧指标"]').text()).toContain('正常链路9')
-    expect(wrapper.get('tr[data-link-id="L-DL-03"]').text()).toContain('7.10')
+    expect(wrapper.get('tr[data-link-id="L-DL-03"]').text()).not.toContain('7.10')
     const mapLinks = mapControllerMock.controller.setLinks.mock.lastCall?.[0]
     expect(mapLinks).toHaveLength(10)
-    expect(mapLinks).toEqual(expect.arrayContaining([expect.objectContaining({ linkId: 'L-DL-03' })]))
+    expect(mapLinks).toEqual(expect.arrayContaining([expect.objectContaining({ linkId: 'L-DL-03', snrDb: 7.1 })]))
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
@@ -1522,6 +1578,38 @@ describe('态势主界面', () => {
     expect(document.body.textContent).not.toContain('接收功率-91.6 dBm')
   })
 
+  it.each([
+    [false, false], [true, false], [false, true], [true, true],
+  ])('卫星详情区分原始与示意坐标（真实模式=%s，配置来源=%s）', async (realPosition, configured) => {
+    ;(MAP_CONFIG as { useSatelliteDataPosition: boolean }).useSatelliteDataPosition = realPosition
+    const frame = structuredClone(SITUATION_FRAME_F00042)
+    const satellite = frame.platforms.find(node => node.platformId === 'SAT-01')!
+    satellite.longitude = 120.5
+    satellite.latitude = 25.5
+    const original = JSON.stringify(frame)
+    mountedWrapper = mount(OfflineSituationMap, {
+      attachTo: document.body,
+      props: { frame: configured ? null : frame, initialNodes: configured ? frame.platforms : undefined,
+        configuredLinks: configured ? [] : undefined, links: [], selectedNodeId: 'SAT-01', focusTarget: null },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    mapControllerMock.latestOptions!.onSelectNode('SAT-01')
+    await flushPromises()
+    const text = document.querySelector('[data-testid="selected-node-dialog"]')!.textContent!
+    expect(text).toContain(`${configured ? '节点位置' : '遥测位置'}120.5°E / 25.5°N`)
+    if (realPosition) {
+      expect(text).not.toContain('地图临时示意位置')
+      expect(text).not.toContain('120.82767°E / 26.018571°N')
+      expect(text).toContain(`二维地图按卫星${configured ? '配置' : '遥测'}经纬度显示`)
+    } else {
+      expect(text).toContain('地图临时示意位置120.82767°E / 26.018571°N')
+      expect(text).toContain('不是遥测或配置原值')
+      expect(text).not.toContain('二维地图按卫星')
+    }
+    expect(JSON.stringify(frame)).toBe(original)
+  })
+
   it('通过 Leaflet 控制器同步图层、视图、选择和销毁', async () => {
     const wrapper = await mountSituationPage()
     const options = mapControllerMock.latestOptions
@@ -1623,10 +1711,12 @@ describe('态势主界面', () => {
     expect(satelliteDialog?.textContent).toContain('节点详情')
     expect(satelliteDialog?.textContent).toContain('通信卫星')
     expect(satelliteDialog?.textContent).toContain('类型通信卫星')
-    expect(satelliteDialog?.textContent).toContain('遥测位置121.25°E / 25.75°N')
+    const originalSatellite = SITUATION_FRAME_F00042.platforms.find(node => node.platformId === 'SAT-01')!
+    expect(satelliteDialog?.textContent).toContain(`遥测位置${originalSatellite.longitude}°E / ${originalSatellite.latitude}°N`)
+    expect(satelliteDialog?.textContent).toContain('地图临时示意位置120.82767°E / 26.018571°N')
     expect(satelliteDialog?.textContent).toContain('高度35786000 m')
     expect(satelliteDialog?.textContent).toContain('速度0 m/s')
-    expect(satelliteDialog?.textContent).toContain('二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。')
+    expect(satelliteDialog?.textContent).toContain('地图临时示意位置仅用于展示，不是遥测或配置原值；高度不按地图比例呈现。')
 
     document.querySelector<HTMLElement>('.selected-node-dialog .el-dialog__headerbtn')?.click()
     await flushPromises()
@@ -1674,9 +1764,14 @@ describe('Leaflet 控制器回归', () => {
     onSelectNode?: (platformId: string) => void
     onSelectLink?: (link: SituationLinkView) => void
     onZoomChange?: (zoom: number) => void
+    useSatelliteDataPosition?: boolean
   } = {}) {
     vi.resetModules()
     vi.doUnmock('../../src/components/situation/situation-map-controller')
+    const { MAP_CONFIG: activeConfig } = await import('../../src/config/map.config')
+    if (options.useSatelliteDataPosition !== undefined) {
+      ;(activeConfig as any).useSatelliteDataPosition = options.useSatelliteDataPosition
+    }
     const { createSituationMapController } = await import('../../src/components/situation/situation-map-controller')
 
     container = document.createElement('div')
@@ -1786,14 +1881,104 @@ describe('Leaflet 控制器回归', () => {
     })
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     activeControllers.forEach((controller) => controller.destroy())
     activeControllers.clear()
     container?.remove()
     container = null
     vectorGridLayer = null
+    ;(MAP_CONFIG as any).useSatelliteDataPosition = false
+    const { MAP_CONFIG: activeConfig } = await import('../../src/config/map.config')
+    ;(activeConfig as any).useSatelliteDataPosition = false
     vi.restoreAllMocks()
     vi.unstubAllGlobals()
+  })
+
+  it('卫星识别以明确类型为准，仅缺少类型时兼容已知 ID', () => {
+    for (const type of ['COMMUNICATION_SATELLITE', 'TIAN_TONG_SAT', 'SHEN_TONG_SAT']) {
+      expect(isSatellitePlatform({ type, id: 'OTHER', name: '普通名称' })).toBe(true)
+    }
+    for (const id of ['tiantong_sat', 'shentong_sat']) {
+      expect(isSatellitePlatform({ id })).toBe(true)
+      expect(isSatellitePlatform({ platformId: id })).toBe(true)
+      expect(isSatellitePlatform({ type: 'REAR_COMMAND_NODE', id })).toBe(false)
+      expect(isSatellitePlatform({ type: 'UNKNOWN', id })).toBe(false)
+    }
+    expect(isSatellitePlatform({ name: '卫星地面站' })).toBe(false)
+    expect(isSatellitePlatform({ id: 'SATCOM-01' })).toBe(false)
+    expect(isSatellitePlatform(null)).toBe(false)
+  })
+
+  it('地面节点名称含卫星或使用卫星 ID 时仍保持原坐标与普通图标', async () => {
+    const nodes = ['SATCOM-01', 'tiantong_sat'].map(platformId => ({
+      ...INITIAL_NODES.nodes[1]!, platformId, name: '卫星地面站', type: 'REAR_COMMAND_NODE',
+    }))
+    const original = JSON.stringify(nodes)
+    const markers = vi.spyOn(L, 'marker')
+    await createController({ initialNodes: nodes })
+    expect(markers.mock.calls.filter(([, options]) => options?.title?.startsWith('选择节点')).map(([point]) => point))
+      .toEqual(nodes.map(node => [node.latitude, node.longitude]))
+    expect([...container!.querySelectorAll('.situation-map-node__glyph')].map(glyph => glyph.textContent)).toEqual(['●', '●'])
+    expect(container!.textContent).not.toContain('轨道示意')
+    expect(JSON.stringify(nodes)).toBe(original)
+  })
+
+  it('临时模式下单卫星居中，多卫星等距环绕且不受输入顺序影响，真实模式保留原值', async () => {
+    const satellites = ['D', 'B', 'A', 'C'].map(platformId => ({
+      ...SATELLITE_FILE_NODES[0]!, platformId,
+    }))
+    const ground = SATELLITE_FILE_NODES[1]!
+    const original = JSON.stringify(satellites)
+    const center = MAP_CONFIG.temporarySatellitePosition
+    expect(center).toEqual({ longitude: 120.827670, latitude: 26.018571 })
+    expect(resolvePlatformCoordinates(satellites[0]!, [satellites[0]!, ground])).toEqual(center)
+    expect(resolvePlatformCoordinates(ground, satellites)).toEqual({ longitude: ground.longitude, latitude: ground.latitude })
+    for (const count of [2, 3, 4]) {
+      const nodes = satellites.slice(0, count)
+      const points = nodes.map(node => resolvePlatformCoordinates(node, nodes))
+      expect(new Set(points.map(point => JSON.stringify(point))).size).toBe(count)
+      expect(points.reduce((sum, point) => sum + point.longitude, 0) / count).toBeCloseTo(center.longitude, 10)
+      expect(points.reduce((sum, point) => sum + point.latitude, 0) / count).toBeCloseTo(center.latitude, 10)
+      points.forEach((point, index) => {
+        const x = (point.longitude - center.longitude) * Math.cos(center.latitude * Math.PI / 180)
+        const y = point.latitude - center.latitude
+        expect(Math.hypot(x, y)).toBeCloseTo(0.05, 10)
+        expect(resolvePlatformCoordinates(nodes[index]!, [...nodes].reverse())).toEqual(point)
+      })
+    }
+    ;(MAP_CONFIG as any).useSatelliteDataPosition = true
+    satellites.forEach(node => expect(resolvePlatformCoordinates(node, satellites)).toEqual({ longitude: node.longitude, latitude: node.latitude }))
+    expect(JSON.stringify(satellites)).toBe(original)
+  })
+
+  it('多卫星的节点、配置连线和定位使用同一示意坐标，减为单卫星后回到中心', async () => {
+    const markers = vi.spyOn(L, 'marker')
+    const lines = vi.spyOn(L, 'polyline')
+    const setView = vi.spyOn(L.Map.prototype, 'setView')
+    const select = vi.fn()
+    const nodes = [...structuredClone(SATELLITE_FILE_NODES), { ...SATELLITE_FILE_NODES[0]!, platformId: 'C', name: '天通卫星' }]
+    const original = JSON.stringify(nodes)
+    const links = ['A', 'C'].map(id => ({ ...fixtureSource.scenario.links[0]!, id: `link-${id}`, sourcePlatformId: id, targetPlatformId: 'B' })) as Link[]
+    const controller = await createController({ initialNodes: nodes, configuredLinks: links, onSelectNode: select })
+    const nodeMarkers = markers.mock.results.map(result => result.value as L.Marker).filter(marker => marker.options.title?.startsWith('选择节点'))
+    const connectionLines = lines.mock.results.map(result => result.value as L.Polyline).filter(line => line.options.className === 'situation-map-configured-link')
+    for (const [index, id] of ['A', 'C'].entries()) {
+      const nodeIndex = nodes.findIndex(node => node.platformId === id)
+      const point = resolvePlatformCoordinates(nodes[nodeIndex]!, nodes)
+      const expected = L.latLng(point.latitude, point.longitude)
+      expect(nodeMarkers[nodeIndex]!.getLatLng()).toEqual(expected)
+      expect((connectionLines[index]!.getLatLngs() as L.LatLng[])[0]).toEqual(expected)
+      nodeMarkers[nodeIndex]!.fire('click')
+      expect(select).toHaveBeenLastCalledWith(id)
+      controller.focusTarget({ kind: 'node', targetId: id })
+      expect(setView).toHaveBeenLastCalledWith([point.latitude, point.longitude], MAP_CONFIG.defaults.zoom, expect.any(Object))
+    }
+    controller.setNodes([...nodes].reverse())
+    expect(nodeMarkers[0]!.getLatLng()).not.toEqual(nodeMarkers[2]!.getLatLng())
+    controller.setNodes(nodes.slice(0, 2))
+    expect(nodeMarkers[0]!.getLatLng()).toEqual(L.latLng(MAP_CONFIG.temporarySatellitePosition.latitude, MAP_CONFIG.temporarySatellitePosition.longitude))
+    expect((connectionLines[0]!.getLatLngs() as L.LatLng[])[0]).toEqual(nodeMarkers[0]!.getLatLng())
+    expect(JSON.stringify(nodes)).toBe(original)
   })
 
   it('所选场景配置链路可点击和定位，不生成状态、质量或干扰圈，切换配置清除旧线', async () => {
@@ -1884,7 +2069,7 @@ describe('Leaflet 控制器回归', () => {
     const calls = () => lineSpy.mock.calls.filter(([, options]) => options?.className === 'situation-map-file-link')
     expect(calls()).toHaveLength(2)
     const points = calls()[0]?.[0] as L.LatLngTuple[]
-    expect([points[0], points.at(-1)]).toEqual([[30.0024, -77.9617], [25.1026, 118.7321]])
+    expect([points[0], points.at(-1)]).toEqual([[26.018571, 120.827670], [25.1026, 118.7321]])
     expect(calls()[0]?.[0]).not.toEqual(calls()[1]?.[0])
     expect(calls().map(([, options]) => options?.color)).toEqual(['#67c23a', '#409eff'])
     // 登记关联统一降级为半透明点线，与业务链路的实线区分。
@@ -1900,10 +2085,10 @@ describe('Leaflet 控制器回归', () => {
     expect(onSelectFileLink).toHaveBeenCalledTimes(2)
     controller.setLayerVisible('potential', false)
     lineSpy.mockClear()
-    controller.setNodes(SATELLITE_FILE_NODES.map(node => node.platformId === 'A' ? { ...node, latitude: 26, longitude: 119 } : node))
+    controller.setNodes(SATELLITE_FILE_NODES.map(node => node.platformId === 'B' ? { ...node, latitude: 26, longitude: 119 } : node))
     expect(lineSpy).not.toHaveBeenCalled()
     const updated = (line.getLatLngs() as L.LatLng[]).map(point => [point.lat, point.lng])
-    expect([updated[0], updated.at(-1)]).toEqual([[26, 119], [25.1026, 118.7321]])
+    expect([updated[0], updated.at(-1)]).toEqual([[26.018571, 120.827670], [26, 119]])
     expect(container?.querySelector('.situation-map-file-link-hit')).toBeNull()
     controller.setLayerVisible('potential', true)
     expect(container?.querySelectorAll('.situation-map-file-link-hit')).toHaveLength(2)
@@ -2038,7 +2223,7 @@ describe('Leaflet 控制器回归', () => {
     nodes.push({ ...nodes[1]!, platformId: 'C', longitude: 119.02 })
     const links = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
     const other = { ...links[0]!, id: 'other', targetPlatformId: 'C' }
-    const controller = await createController({ initialNodes: nodes, fileLinks: [links[0]!, other] })
+    const controller = await createController({ initialNodes: nodes, fileLinks: [links[0]!, other], useSatelliteDataPosition: true })
     const lines = lineSpy.mock.results.map(result => result.value as L.Polyline)
       .filter(line => line.options.className === 'situation-map-file-link')
     const points = (line: L.Polyline) => (line.getLatLngs() as L.LatLng[]).map(point => [point.lat, point.lng])
@@ -2184,7 +2369,7 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
   })
 
-  it('流向动画叠加线与主连线同几何，随图层与链路增删，并按配置写入动画参数', async () => {
+  it('单颗流星沿主线移动，亮头暗尾首尾不重叠，几何更新与图层开关不残留', async () => {
     const lineSpy = vi.spyOn(L, 'polyline')
     const groups = vi.spyOn(L, 'layerGroup')
     const nodes = SATELLITE_FILE_NODES
@@ -2193,29 +2378,80 @@ describe('Leaflet 控制器回归', () => {
     const flowGroup = groups.mock.results[2]!.value as L.LayerGroup
     const flowLines = () => lineSpy.mock.results.map(result => result.value as L.Polyline)
       .filter(line => line.options.className === 'situation-map-link-flow')
-    expect(flowLines()).toHaveLength(1)
-    expect(flowGroup.getLayers()).toHaveLength(1)
-    expect(flowLines()[0]!.options).toMatchObject({
-      dashArray: MAP_CONFIG.linkFlowDashPattern.join(' '),
-      interactive: false,
+    expect(flowLines()).toHaveLength(4)
+    expect(flowGroup.getLayers()).toHaveLength(4)
+    const pathLength = 1000
+    const trailLength = pathLength * MAP_CONFIG.linkFlowTrailRatio
+    const travel = pathLength + trailLength
+    const period = 2 * travel
+    const length = trailLength / 4
+    flowLines().forEach((line, index) => {
+      expect(line.options).toMatchObject({ dashArray: `${length} ${period - length}`, interactive: false, lineCap: 'butt', pane: 'linkFlowPane', color: '#e8fcff' })
+      const path = line.getElement() as SVGPathElement
+      expect(path.getAttribute('pathLength')).toBe(`${pathLength}`)
+      const start = Number(path.style.getPropertyValue('--situation-link-flow-start'))
+      const end = Number(path.style.getPropertyValue('--situation-link-flow-shift'))
+      expect(start).toBe(trailLength - index * length)
+      expect(end - start).toBe(-travel)
+      expect(path.style.animationDuration).toBe(`${MAP_CONFIG.linkFlowCycleSeconds}s`)
+      if (index > 0) {
+        expect(line.options.opacity!).toBeGreaterThan(flowLines()[index - 1]!.options.opacity!)
+        expect(line.options.weight!).toBeGreaterThan(flowLines()[index - 1]!.options.weight!)
+      }
     })
-    // 滚动距离必须等于虚线周期，否则动画会跳变；两者都来自 MAP_CONFIG。
+    // 一个循环的起止均完全在路径外，途中只允许一组连续尾迹，不出现第二颗流星。
+    for (const progress of [0, 0.01, 0.1, 0.5, 0.9, 0.99, 1]) {
+      const visible = flowLines().flatMap(line => {
+        const path = line.getElement() as SVGPathElement
+        const start = Number(path.style.getPropertyValue('--situation-link-flow-start'))
+        const end = Number(path.style.getPropertyValue('--situation-link-flow-shift'))
+        const offset = start + (end - start) * progress
+        return [-1, 0, 1].map(repeat => [Math.max(0, repeat * period - offset), Math.min(pathLength, repeat * period - offset + length)])
+          .filter(([from, to]) => to! > from!)
+      }).sort((a, b) => a[0]! - b[0]!)
+      if (progress === 0 || progress === 1) expect(visible).toHaveLength(0)
+      else {
+        expect(visible.length).toBeGreaterThan(0)
+        expect(visible.length).toBeLessThanOrEqual(4)
+        visible.slice(1).forEach((part, index) => expect(part[0]).toBeCloseTo(visible[index]![1]!, 8))
+        expect(visible.at(-1)![1]! - visible[0]![0]!).toBeLessThanOrEqual(trailLength)
+      }
+    }
     const flowElement = flowLines()[0]!.getElement() as SVGPathElement
     expect(flowElement.style.getPropertyValue('--situation-link-flow-shift'))
-      .toBe(`-${MAP_CONFIG.linkFlowDashPattern[0]! + MAP_CONFIG.linkFlowDashPattern[1]!}`)
+      .toBe(`-${pathLength}`)
     // 动画名由组件 scoped 样式提供（jsdom 不加载 SFC 样式），此处只断言行内覆盖的时长与类名。
     expect(flowElement.style.animationDuration).toBe(`${MAP_CONFIG.linkFlowCycleSeconds}s`)
     expect(flowLines()[0]!.options.className).toBe('situation-map-link-flow')
+    const pane = flowLines()[0]!.getPane()!
+    expect(pane.style.zIndex).toBe('450')
+    expect(pane.style.pointerEvents).toBe('none')
     // 叠加线与主连线几何完全一致。
     const mainLine = lineSpy.mock.results.map(result => result.value as L.Polyline)
       .find(line => line.options.opacity === 0.95 && line.options.className === undefined)!
-    expect(JSON.stringify(flowLines()[0]!.getLatLngs())).toBe(JSON.stringify(mainLine.getLatLngs()))
+    flowLines().forEach(line => expect(line.getLatLngs()).toEqual(mainLine.getLatLngs()))
 
     // 图层关闭只影响挂载，叠加线本身保留。
     controller.setLayerVisible('flow', false)
     expect(container?.querySelectorAll('.situation-map-link-flow')).toHaveLength(0)
     controller.setLayerVisible('flow', true)
-    expect(container?.querySelectorAll('.situation-map-link-flow')).toHaveLength(1)
+    expect(container?.querySelectorAll('.situation-map-link-flow')).toHaveLength(4)
+    controller.setLayerVisible('links', false)
+    controller.setLayerVisible('links', true)
+    expect(pane.querySelectorAll('.situation-map-link-flow')).toHaveLength(4)
+
+    // 节点移动复用整束路径；反向投递从新发送端出发，换体制只更新样式。
+    controller.setNodes(nodes.map(node => ({ ...node, latitude: node.latitude + 0.1 })))
+    expect(flowLines()).toHaveLength(4)
+    flowLines().forEach(line => expect(line.getLatLngs()).toEqual(mainLine.getLatLngs()))
+    controller.setFileMessageLinks([{ ...link, sourcePlatformId: link.targetPlatformId, targetPlatformId: link.sourcePlatformId, type: 'MICROWAVE' }])
+    expect(flowLines()).toHaveLength(4)
+    flowLines().forEach(line => {
+      expect(line.getLatLngs()).toEqual(mainLine.getLatLngs())
+      expect(line.options.color).toBe('#e8fcff')
+      expect((line.getLatLngs() as L.LatLng[])[0]!.lat).toBeCloseTo(nodes[1]!.latitude + 0.1)
+    })
+    expect(mainLine.options.color).toBe('#409eff')
 
     // 链路消失后叠加线一并移除，不留残留。
     controller.setFileMessageLinks([])
@@ -2320,7 +2556,16 @@ describe('Leaflet 控制器回归', () => {
     station.latitude += 0.1
     controller.setFrame(frame)
     expect(node.getElement()?.title).toBe('选择节点 重命名卫星（轨道示意）')
-    expect(node.getLatLng().lat).toBe(satellite.latitude)
+    expect(node.getLatLng().lat).toBe(MAP_CONFIG.temporarySatellitePosition.latitude)
+    const { MAP_CONFIG: activeMapConfig } = await import('../../src/config/map.config')
+    ;(activeMapConfig as any).useSatelliteDataPosition = true
+    try {
+      controller.setFrame({ ...frame, frameId: 'F-MUTATED-DATA' })
+      expect(node.getLatLng().lat).toBe(satellite.latitude)
+    } finally {
+      ;(activeMapConfig as any).useSatelliteDataPosition = false
+      controller.setFrame(frame)
+    }
     expect(circle.getLatLng().lat).toBe(station.latitude)
     expect(markerSpy).not.toHaveBeenCalled()
     expect(lineSpy).not.toHaveBeenCalled()
@@ -2778,7 +3023,7 @@ describe('Leaflet 控制器回归', () => {
     const markerSpy = vi.spyOn(L, 'marker')
     const polylineSpy = vi.spyOn(L, 'polyline')
     const circleSpy = vi.spyOn(L, 'circle')
-    const controller = await createController()
+    const controller = await createController({ useSatelliteDataPosition: true })
     const expectedPoints = Object.fromEntries(
       SITUATION_FRAME_F00042.platforms.map((platform) => [
         platform.platformId,

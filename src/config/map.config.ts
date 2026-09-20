@@ -58,11 +58,71 @@ export const MAP_CONFIG = {
   activeInterferenceRadiusMeters: 12000,
   /** 文件干扰节点范围圈的半径（显示约定，非 CSV 遥测、非引擎参数）：24 海里 × 1852 米/海里。 */
   fileInterferenceRadiusMeters: 24 * 1852,
-  /**
-   * 业务链路流向动画的虚线节奏，单位为 SVG 用户单位（像素）。
-   * 「实线长度 空档长度」之和即动画周期，滚动一个周期可无缝循环。
-   */
-  linkFlowDashPattern: [5, 27],
-  /** 流向动画滚动一个周期所需秒数；越小越快。 */
+  /** 单颗流星的尾迹占链路长度的比例，不随缩放增加流星数量。 */
+  linkFlowTrailRatio: 0.12,
+  /** 单颗流星从起点进入到尾迹离开终点所需秒数；越小越快。 */
   linkFlowCycleSeconds: 1.4,
+  /**
+   * 卫星位置来源开关：
+   * true：用数据位置；
+   * false：单卫星使用临时中心，多卫星按稳定 ID 等角度环绕中心。
+   */
+  useSatelliteDataPosition: false as boolean,
+  /** 卫星临时位置（经度 120.827670° · 纬度 26.018571°） */
+  temporarySatellitePosition: {
+    longitude: 120.827670,
+    latitude: 26.018571,
+  },
+  /** 临时卫星分布半径，以纬度度数表示；经度按中心纬度修正。仅用于示意。 */
+  temporarySatelliteSpreadRadiusDegrees: 0.05,
+  /** 右侧全链路状态表的 SNR / BER 列；只控制展示，不删除质量数据。 */
+  showLinkQualityColumns: false as boolean,
 } as const
+
+/**
+ * 判断指定平台或节点是否为卫星。
+ * 明确类型优先；仅在缺少类型时兼容已知日志 ID，不按名称或 ID 前缀猜测。
+ */
+export function isSatellitePlatform(platform?: {
+  type?: string
+  platformId?: string
+  id?: string
+  name?: string
+} | null): boolean {
+  if (!platform) return false
+  if (platform.type) return ['COMMUNICATION_SATELLITE', 'TIAN_TONG_SAT', 'SHEN_TONG_SAT'].includes(platform.type)
+  const id = platform.platformId ?? platform.id ?? ''
+  return id === 'tiantong_sat' || id === 'shentong_sat'
+}
+
+/**
+ * 根据 MAP_CONFIG 中的开关获取平台在地图展示时的有效经纬度坐标。
+ * 开关为 false 时，单卫星居中，多卫星按稳定 ID 等角度环绕临时中心；
+ * 开关为 true 时，卫星使用真实数据位置。非卫星平台始终使用自身数据位置。
+ */
+export function resolvePlatformCoordinates(
+  platform: { longitude: number; latitude: number; type?: string; platformId?: string; id?: string; name?: string },
+  platforms: readonly { type?: string; platformId?: string; id?: string; name?: string }[] = [platform],
+): { longitude: number; latitude: number } {
+  if (isSatellitePlatform(platform) && !MAP_CONFIG.useSatelliteDataPosition) {
+    const center = MAP_CONFIG.temporarySatellitePosition
+    const ids = [...new Set(platforms.filter(isSatellitePlatform).map(node => node.platformId ?? node.id ?? ''))].sort()
+    const index = ids.indexOf(platform.platformId ?? platform.id ?? '')
+    if (ids.length > 1 && index >= 0) {
+      const angle = index * 2 * Math.PI / ids.length
+      const radius = MAP_CONFIG.temporarySatelliteSpreadRadiusDegrees
+      return {
+        longitude: center.longitude + radius * Math.cos(angle) / Math.cos(center.latitude * Math.PI / 180),
+        latitude: center.latitude + radius * Math.sin(angle),
+      }
+    }
+    return {
+      longitude: center.longitude,
+      latitude: center.latitude,
+    }
+  }
+  return {
+    longitude: platform.longitude,
+    latitude: platform.latitude,
+  }
+}

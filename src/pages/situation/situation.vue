@@ -3,6 +3,7 @@ import { apiFetch } from '../../features/shared/api-fetch'
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { MAP_CONFIG } from '../../config/map.config'
 import type { DetectionEvent, Link, SimulationMode, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkCandidatePanel from '../../components/situation/LinkCandidatePanel.vue'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
@@ -29,8 +30,7 @@ import { useTelemetryStore } from '../../stores/telemetry'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { selectFileCommunicationLinks, FILE_COMMUNICATION_LABELS } from '../../features/situation/file-communication-links'
-import { selectFileDeviceStates } from '../../features/situation/file-device-events'
-import { selectFileMessageLinks } from '../../features/situation/file-message-links'
+import { fileLinkDeviceStatus, selectFileDeviceStates } from '../../features/situation/file-device-events'
 import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
@@ -38,6 +38,8 @@ import { readLinkEnabled } from '../../features/scenarios/link-settings'
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
 const BUSINESS_NODE_CAPACITY = 50
+// 用户约定的展示名称；底层仍保留设备证据，不据此推断切换或干扰。
+const FILE_LINK_STATUS_LABELS = { 开启: '正常', 关闭: '切换', 未知: '干扰' } as const
 const BUSINESS_NODE_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'AIRBORNE_MISSION_CLUSTER',
 ])
@@ -240,12 +242,9 @@ const displayedLinks = computed(() => {
     }))
   }
   if (sourceState.value === 'FILE') {
-    const visibleMsg = selectFileMessageLinks(fileMessageLinks.value, fileTime.value)
-    const activeIds = new Set(visibleMsg.map(m => m.id))
     return fileLinks.value.map(link => {
       const source = fileNodes.value.find(n => n.platformId === link.sourcePlatformId)
       const target = fileNodes.value.find(n => n.platformId === link.targetPlatformId)
-      const isMsgActive = activeIds.has(link.id)
       return {
         linkId: link.id,
         type: link.type,
@@ -255,7 +254,7 @@ const displayedLinks = computed(() => {
         configured: null,
         file: {
           ...link,
-          active: isMsgActive,
+          status: fileLinkDeviceStatus(link, fileDeviceStates.value),
         },
       }
     })
@@ -929,8 +928,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             </div>
           </div>
           <div class="link-table-wrap">
-            <table class="link-table">
-              <thead><tr><th>链路</th><th>体制</th><th>SNR</th><th>BER</th><th>状态</th></tr></thead>
+            <table class="link-table" :class="{ 'link-table--quality': MAP_CONFIG.showLinkQualityColumns }">
+              <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">BER</th><th :title="sourceState === 'FILE' ? '展示约定：开启→正常，关闭→切换，未知→干扰；不代表实际质量、切换或干扰判定' : undefined">状态</th></tr></thead>
               <tbody>
                 <tr
                   v-for="link in displayedLinks"
@@ -942,19 +941,19 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   @click="handleLinkRowClick(link)"
                   @keydown.enter="handleLinkRowClick(link)"
                 >
-                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small>{{ link.linkId }}</small></td>
+                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong></td>
                   <td>{{ link.file ? (link.type === 'DATALINK' ? '数传' : (FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type).replace('通信', '')) : (link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '')) }}</td>
-                  <td>{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
-                  <td>{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
+                  <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
+                  <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
                   <td>
                     <LinkStateBadge v-if="link.live" :link="link.live" />
-                    <span v-else-if="link.file" :class="link.file.active ? 'link-badge--active' : 'link-badge--registered'">{{ link.file.active ? '活动' : '登记' }}</span>
+                    <span v-else-if="link.file" class="link-device-status" :data-status="link.file.status" :title="`设备启停证据：${link.file.status}；名称为展示约定，不代表实际质量、切换或干扰判定`">{{ FILE_LINK_STATUS_LABELS[link.file.status] }}</span>
                     <span v-else>暂无数据</span>
                   </td>
                 </tr>
               </tbody>
             </table>
-            <el-empty v-if="displayedLinks.length === 0" :description="sourceState === 'FILE' ? '当前文件未提供链路质量数据' : '暂无链路数据'" :image-size="48" />
+            <el-empty v-if="displayedLinks.length === 0" :description="sourceState === 'FILE' ? '当前时刻暂无通信关联' : '暂无链路数据'" :image-size="48" />
           </div>
         </section>
 
@@ -1145,19 +1144,21 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table-wrap, .event-list, .jammer-list { min-height: 0; overflow-y: auto; }
 .link-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .link-table th { position: sticky; z-index: 1; top: 0; padding: .45rem .5rem; color: #8fb6d9; background: #102a40; font-size: 12px; font-weight: 600; text-align: left; }
-.link-table th:nth-child(1) { width: 28%; }
-.link-table th:nth-child(2) { width: 17%; }
-.link-table th:nth-child(3) { width: 14%; }
-.link-table th:nth-child(4) { width: 17%; }
-.link-table th:nth-child(5) { width: 24%; }
+.link-table th:nth-child(1) { width: 58%; }
+.link-table th:nth-child(2) { width: 20%; }
+.link-table th:last-child { width: 22%; }
+.link-table--quality th:nth-child(1) { width: 36%; }
+.link-table--quality th:nth-child(2) { width: 16%; }
+.link-table--quality th:nth-child(3), .link-table--quality th:nth-child(4) { width: 14%; }
+.link-table--quality th:last-child { width: 20%; }
 .link-table td { padding: .4rem .5rem; border-bottom: 1px solid #16283c; color: #a8bfd4; font-family: Consolas,"Microsoft YaHei",monospace; font-size: 12px; cursor: pointer; }
 .link-table tr.is-exception td { color: #ff7b7b; background: #3a1620; }
 .link-table tr:hover td, .link-table tr:focus td { background: #16283c; }
 .link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
-.link-table td strong, .link-table td small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.link-table td small { margin-top: .1rem; color: #6b8299; font-family: "Microsoft YaHei",sans-serif; font-size: 12px; }
-.link-badge--active { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #49e49a; background: rgba(73, 228, 154, .15); font-size: 11px; }
-.link-badge--registered { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #829db3; background: rgba(130, 157, 179, .15); font-size: 11px; }
+.link-table td strong { display: block; white-space: normal; overflow-wrap: anywhere; }
+.link-device-status { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #829db3; background: rgba(130, 157, 179, .15); font-size: 11px; white-space: nowrap; }
+.link-device-status[data-status="开启"] { color: #49e49a; background: rgba(73, 228, 154, .15); }
+.link-device-status[data-status="关闭"] { color: #ff7b7b; background: rgba(255, 123, 123, .15); }
 .jammer-list { display: block; padding: 0; }
 .jammer-list article { padding: .6rem .85rem; border-bottom: 1px solid #1e3448; color: #a8bfd4; background: transparent; }
 .jammer-list article>div:first-child { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: .45rem; }

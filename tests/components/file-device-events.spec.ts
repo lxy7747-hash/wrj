@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
-import { buildFileDeviceEvents, isFileDeviceEvent, selectFileDeviceStates, type FileDeviceEvent } from '../../src/features/situation/file-device-events'
+import { buildFileDeviceEvents, fileLinkDeviceStatus, isFileDeviceEvent, selectFileDeviceStates, type FileDeviceEvent } from '../../src/features/situation/file-device-events'
+import type { FileCommunicationLink } from '../../src/features/situation/file-communication-links'
 import { isInitialNodeSnapshot } from '../../src/features/situation/initial-nodes'
 import { isLocalReplaySnapshot } from '../../src/features/replays/local-replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
@@ -21,6 +22,33 @@ const CSV = [
 const read = (text = CSV) => buildFileDeviceEvents(parseAfsimEventLog(text).events, new Set(['A', 'B']))
 
 describe('文件设备事件投影', () => {
+  it('关联按两端设备证据判定开启、关闭、未知，合并线保留仍开启的关联', () => {
+    const link: FileCommunicationLink = {
+      id: 'SAT-A-B', type: 'SAT', sourcePlatformId: 'A', targetPlatformId: 'B', records: [{
+        sourceEventId: 'LINK-1', time: 0, scope: 'INTER_PLATFORM', sourceType: 'WSF_RADIO_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER',
+        source: { platformName: 'A', communicationName: 'sat_link', address: '1' },
+        target: { platformName: 'B', communicationName: 'sat_link', address: '2' },
+      }],
+    }
+    const a: FileDeviceEvent = { sourceEventId: 'ON-A', time: 0, platformId: 'A', deviceId: 'sat_link', kind: 'COMMUNICATION', active: true }
+    const b: FileDeviceEvent = { ...a, sourceEventId: 'ON-B', platformId: 'B' }
+    expect(fileLinkDeviceStatus(link, [])).toBe('未知')
+    expect(fileLinkDeviceStatus(link, [a])).toBe('未知')
+    expect(fileLinkDeviceStatus(link, [a, b])).toBe('开启')
+    expect(fileLinkDeviceStatus(link, [a, { ...b, active: false }])).toBe('关闭')
+    expect(fileLinkDeviceStatus(link, [{ ...a, active: false }])).toBe('关闭')
+    expect(fileLinkDeviceStatus(link, [{ ...a, kind: 'JAMMING' }, b])).toBe('未知')
+    expect(fileLinkDeviceStatus(link, [{ ...a, platformId: 'OTHER' }, b])).toBe('未知')
+    expect(fileLinkDeviceStatus(link, [{ ...a, deviceId: 'microwave_link' }, b])).toBe('未知')
+    const second = { ...link.records[0]!, source: { ...link.records[0]!.source, communicationName: 'sat_link_b' } }
+    const merged = { ...link, records: [...link.records, second] }
+    const off = { ...a, active: false }
+    expect(fileLinkDeviceStatus(merged, [off, b])).toBe('未知')
+    expect(fileLinkDeviceStatus(merged, [off, b, { ...a, deviceId: 'sat_link_b' }])).toBe('开启')
+    expect(fileLinkDeviceStatus(merged, [off, b, { ...off, deviceId: 'sat_link_b' }])).toBe('关闭')
+    expect(fileLinkDeviceStatus({ ...link, records: [] }, [])).toBe('未知')
+  })
+
   it('解析射频干扰设备关闭，保留原始时刻和身份，不补造参数，不影响另一设备', () => {
     const csv = [
       '! JAMMING_REQUEST_INITIATED,time<time>,event<string>,platform<string>,weapon<string>,current_mode<string>,active_requests_(eM_Xmtrs)<int>,frequency<double>,bandwidth<double>,target_platform<string>',
