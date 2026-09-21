@@ -26,7 +26,7 @@ export default defineConfig({
         'form', 'form-item', 'input', 'input-number', 'loading', 'main', 'menu',
         'menu-item', 'menu-item-group', 'message', 'message-box', 'option', 'option-group',
         'popconfirm', 'progress', 'radio-button', 'radio-group', 'result', 'select',
-        'skeleton', 'slider', 'step', 'steps', 'switch', 'tab-pane', 'table',
+        'select-v2', 'skeleton', 'slider', 'step', 'steps', 'switch', 'tab-pane', 'table',
         'table-column', 'tabs', 'tag', 'tooltip',
       ].map((component) => `element-plus/es/components/${component}/style/css`),
     ],

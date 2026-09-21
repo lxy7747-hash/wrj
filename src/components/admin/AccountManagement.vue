@@ -5,8 +5,10 @@ import { ElMessage } from 'element-plus'
 import type { Role, User } from '../../contracts/domain-models'
 import { useAdminStore } from '../../stores/admin'
 import { useAuthStore } from '../../stores/auth'
+import RoleProfiles from './RoleProfiles.vue'
 
 const admin = useAdminStore()
+const showRoleProfiles = ref(false)
 const auth = useAuthStore()
 onMounted(() => { void admin.refreshUsers() })
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
@@ -193,6 +195,7 @@ async function confirmDelete(): Promise<void> {
             <span class="console-chip summary-chip--active"><b>{{ userSummary.active }}</b> 已启用</span>
           </div>
           <div class="panel-toolbar">
+            <el-button @click="showRoleProfiles = true">角色权限配置</el-button>
             <el-button type="primary" :disabled="pending" data-testid="open-create-user" @click="createDialogVisible = true">创建用户</el-button>
           </div>
         </div>
@@ -294,6 +297,18 @@ async function confirmDelete(): Promise<void> {
       </div>
     </section>
 
+    <el-dialog
+      v-model="showRoleProfiles"
+      title="角色权限配置"
+      width="min(1100px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+      destroy-on-close
+    >
+      <RoleProfiles v-if="showRoleProfiles" :users="users" />
+      <template #footer>
+        <el-button @click="showRoleProfiles = false">关闭</el-button>
+      </template>
+    </el-dialog>
     <section v-if="panelState === 'ERROR'" class="result-section" aria-label="操作结果">
       <div class="result-section__label">最近操作结果</div>
       <el-alert

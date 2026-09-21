@@ -10,6 +10,8 @@ import { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { BackupSqliteStorage } from './local/backup-sqlite.js'
 import { LocalExchangeMonitor } from './local/exchange-monitor.js'
 import { EquipmentSqliteStorage } from './local/equipment-sqlite.js'
+import { AccessControlSqliteStorage } from './local/access-control-sqlite.js'
+import { readLocalReport, exportLocalReport } from './local/report-file.js'
 
 // 本机文件配置与纯 Mock 入口分离；路径只存于忽略的 .env.local，不写入共享代码。
 try {
@@ -41,6 +43,7 @@ try {
 const backupStorage = new BackupSqliteStorage(scenarioDbPath)
 // 主库备份严格冻结表结构；独立装备库不参与主库恢复，也不植入默认参数。
 const equipmentStorage = new EquipmentSqliteStorage(join(dirname(scenarioDbPath), 'equipment.db'))
+const accessControlStorage = new AccessControlSqliteStorage(join(dirname(scenarioDbPath), 'access-control.db'))
 const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
 const positionReader = logPath && positionPath ? createPositionReader(positionPath) : undefined
 const server = createMockServer({
@@ -50,16 +53,20 @@ const server = createMockServer({
   loadPositions: positionReader && positionPath ? () => exchangeMonitor.read('POSITIONS', positionPath, positionReader, value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
   loadLocalReplay: logPath ? () => exchangeMonitor.read('LOCAL_REPLAY', positionPath ?? logPath, () => readLocalReplay(logPath, positionPath), value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
   loadExchangeMonitor: () => exchangeMonitor.snapshot(),
+  loadLocalReport: () => readLocalReport(logPath, positionPath),
+  exportLocalReport: (report, format, actor) => exportLocalReport(fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor),
   scenarioStorage,
   templateStorage,
   authStorage,
   backupStorage,
   equipmentStorage,
+  accessControlStorage,
 })
 function closeStorage(): void {
   exchangeMonitor.close()
   backupStorage.close()
   equipmentStorage.close()
+  accessControlStorage.close()
   authStorage.close()
   scenarioStorage?.close()
   templateStorage?.close()

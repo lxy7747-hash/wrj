@@ -2,18 +2,45 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 装备参数合同增量冻结（2026-09-20）
+## 前端能力兼容扩展冻结（2026-09-21，当前值）
 
-用户授权空库起步、新增装备模型/读写接口/SQLite 表并重新冻结。OpenAPI 升级至 **1.3.0（70 操作 / 35 个 POST、PUT、PATCH）**；新增内容见 `04-mock-api.md`。本机装备库独立于主库，既有备份恢复不包含它；纯 Mock 不持久化，也不植入演示装备。本文历史纯 Mock 非目标不否定本次显式授权的本机扩展。
+用户授权补齐前端模块并兼容扩展接口与 SQLite。OpenAPI **1.5.0，75 操作 / 37 个 POST、PUT、PATCH**。新增装备可选带宽/功率/速率、真实保存版本与引用登记，以及自定义角色/菜单分配。旧装备字段可缺省；未分配账号维持原权限。没有真实质量、阶段或批次数据的视图统一显示“暂无数据”，不植入结果。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致） | `F02A30F6ECEA593C2302091CF82DD7D7700C6668F352134FED3A376596900BEF` |
+| `contracts/mock-api.openapi.yaml` | `6483030100B9CCC6C968C40665F0A08198F7A3F6C516F7AFFEFB27D1107F078C` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `BF1671EAF761222B35B84632A1232615CFB38E2911313DD45BB0DFB1D5982BD9` |
+| `contracts/deterministic-fixtures.json`（本次未修改） | `2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.43） | `FE4032819DD74588F0DF33020E7C7F9CE4982B79BADC5BF67808B18C0C4B9F21` |
+
+迁移为启动时按需建表：equipment.db 新增历史/引用表，独立 access-control.db 保存空初始配置，不 ALTER 账号/场景表、不自动分配角色或更新场景。两库均不纳入原主库备份，部署前须分别保留。兼容指新程序读取旧数据；写入新参数后不保证旧程序能读取扩展 JSON。回滚须恢复配套版本与扩展前备份，已启用角色限制时不可直接回滚为旧权限实现。
+
+PDF 入口为浏览器“打印当前视图／另存 PDF”，不是 Node 生成 PDF，也不返回 generated:true；Node 仍仅生成受控 HTML/CSV。验证范围和未通过项以推进表最新记录为准。
+
+## 本地报告合同增量冻结（2026-09-20，历史记录）
+
+用户要求本地运行数据统计及真实导出。按兼容增量扩展 Report/导出响应，OpenAPI **1.4.0，71 操作 / 35 个 POST、PUT、PATCH**。本机入口只用两份真实 CSV；纯 Mock 保持原有报告与无文件验证。本地 HTML/CSV 已实现，PDF、历史归档和缺少数据支撑的质量指标不作为已完成能力。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致） | `AF62C23E4BD4244B63F0B519845F3757940D1FE68C18CB9D10A4FFEE13AF75AC` |
+| `contracts/mock-api.openapi.yaml` | `A4EAC298D96C583067BD6E294F281689F7D07FD1867C6D72DAE2D15108420B14` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `339DAFCB68E0FE3EC5B2292BB49FC985A9D4EF885CA980E69053975E8CDAE2F0` |
+| `contracts/deterministic-fixtures.json`（未修改） | `2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84` |
+
+## 装备参数合同增量冻结（2026-09-20，历史记录）
+
+用户授权空库起步、新增装备模型/读写接口/SQLite 表，随后确认补充管理员二次确认删除。OpenAPI 升级至 **1.3.1（71 操作 / 35 个 POST、PUT、PATCH）**；新增内容见 `04-mock-api.md`。本机装备库独立于主库，既有备份恢复不包含它；纯 Mock 不持久化，也不植入演示装备。本文历史纯 Mock 非目标不否定本次显式授权的本机扩展。
 
 | 文件 | 本次 SHA-256 |
 |---|---|
 | `contracts/domain-models.ts`（与 src 副本一致） | `8ED1C53B979C0DF3840C23EA6D786017189F5359EAA05EE9D6CECA322AA6C05F` |
-| `contracts/mock-api.openapi.yaml` | `D661FA09AEA7EFF178603FD601B36FADF1EB83CDDFD519803FE3A8E449AD4536` |
-| `../scripts/contracts/openapi-schema.snapshot.ts` | `A05A3F8682507413D39D923DBC4DB30EABD549EB49428052CF34B0151050129D` |
+| `contracts/mock-api.openapi.yaml` | `9B74E85E0B7392D274A463A2E0D2CBCC381EDFB331C5FAF09B1C4911CDC95C84` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `BBA3A3D467D0708E2BD07FD211E25546DC81AB907F49AF56A84C5AC65A10F9DA` |
 | `contracts/deterministic-fixtures.json`（本次未修改） | `2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84` |
 
-以上是本次增量冻结值，历史归档哈希保留作为历史证据，不作为当前合同值。
+以上增量值保留作为历史证据；当前合同采用本文最上方前端能力兼容扩展冻结值。
 
 ## 使用顺序
 
@@ -31,7 +58,7 @@
 |---:|---|---|---|
 | 1 | `多手段无人集群通联技术软件需求规格说明-lxy - 副本.docx` | `7F8F252BDD5763E564D2DA460DCE3E5C1885F082FF863ABB29A4994E9A159253` | 产品范围、29 项 canonical 需求、7 类接口、容量、角色、单位及验收目标 |
 | 2 | `多手段无人集群通联技术软件详细设计说明-lxy - 副本.docx` | `21DBD43D74B29F57E7F508A5D83A87219B6CBEA957A2D68CFB949DA5820CB05D` | 分层架构、数据结构、流程、异常、安全和测试设计；不得缩减需求规格 |
-| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.40，补充已授权的装备参数持久化；其他待验收项保留） | `67D416F7769B8B57254D8C4D2D70211F1237354AF8619B8BE4514681A49CC2CF` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
+| 3 | `多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.42，补充本地报告及真实 HTML/CSV 导出；其他待验收项保留） | `61B2E26996D80BBB90ADD0B89042CC76929DF130AE64236D8AC4B523F0EDBD46` | 面向前端/Node.js Mock 的需求解释、来源决策、需求/测试 ID 和实施门禁 |
 | 4 | `多手段集群通联仿真软件-UI原型设计稿V1.2.html` | `83E431388C0FBC7C4771088DCA1E4AB01376C085037019C7E0F696ED329A3C0C` | 页面布局、中文文案和交互演示；只作表现参考，不替代需求或技术合同 |
 
 冲突处理固定为：先按需求规格说明确定产品需求，再由详细设计补充流程、数据和异常；评审通过的前端需求基线负责记录面向本阶段的采用决策；HTML 不得反向覆盖前三者。任何来源变更都必须重新计算哈希、复核八项决策并更新全部追踪目的地。源文件始终只读。

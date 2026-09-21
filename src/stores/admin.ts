@@ -435,6 +435,38 @@ export const useAdminStore = defineStore('admin', {
       }
     },
 
+    async deleteEquipment(record: EquipmentParameter): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.equipment.state)) return false
+      const data = { ...record }
+      if (equipmentIssue(data) || data.readOnly) {
+        this.showMaintenanceError('equipment', new Error('只读或无效装备不可删除。'))
+        return false
+      }
+      const epoch = this.maintenanceEpoch
+      this.maintenance.equipment = { state: 'EXECUTING', message: '正在删除装备参数。', fieldPath: '' }
+      try {
+        const payload = await requestMaintenance('confirmations', { method: 'POST', body: JSON.stringify({ action: 'MASTER_DATA_DELETE', objectId: `EQUIPMENT:${data.equipmentId}:${data.version}` }) })
+        if (epoch !== this.maintenanceEpoch) return false
+        const created = readConfirmation(payload, 'AWAITING_CONFIRMATION')
+        if (!created) throw new Error('删除确认响应不正确。')
+        const confirmedPayload = await requestMaintenance(`confirmations/${encodeURIComponent(created.confirmationId)}`, { method: 'POST', body: JSON.stringify({ confirm: true }) })
+        if (epoch !== this.maintenanceEpoch) return false
+        const confirmed = readConfirmation(confirmedPayload, 'CONFIRMED')
+        if (!confirmed || confirmed.confirmationId !== created.confirmationId) throw new Error('删除确认结果不匹配。')
+        const result = await requestMaintenance(`admin/equipment/${encodeURIComponent(data.equipmentId)}?expectedVersion=${data.version}`, { method: 'DELETE', headers: { 'X-Confirmation-Id': confirmed.confirmationId } })
+        if (epoch !== this.maintenanceEpoch) return false
+        const deleted = readDeleteResult(result)
+        if (!deleted?.deleted || deleted.objectId !== data.equipmentId) throw new Error('删除响应与当前装备不一致，请刷新后核实。')
+        this.equipment = this.equipment.filter(item => item.equipmentId !== data.equipmentId)
+        this.maintenance.equipment = { state: 'SUCCESS', message: '装备参数已删除。', fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        this.showMaintenanceError('equipment', error)
+        return false
+      }
+    },
+
     /**
      * 保存主数据编辑副本；成功后用服务端版本替换列表对应行。
      * @param data 包含当前版本和只读引用数量的完整数据。

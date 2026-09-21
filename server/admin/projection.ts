@@ -1,12 +1,15 @@
 import type { ApiErrorCode, BackupRecord, DeleteResult, MasterData, RestoreResult } from '../../src/contracts/domain-models.js'
 import { isAdminObject, isAdminText, isMasterData } from '../../src/features/admin/admin-contract.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
-import type { EquipmentParameter } from '../../src/contracts/domain-models.js'
+import type { EquipmentDetails, EquipmentParameter, EquipmentReference } from '../../src/contracts/domain-models.js'
 import { equipmentIssue } from '../../src/features/admin/equipment-contract.js'
 
 export interface EquipmentStorage {
   load(): EquipmentParameter[]
   save(record: EquipmentParameter, expectedVersion?: number): boolean
+  delete(equipmentId: string, expectedVersion: number): boolean
+  details(equipmentId: string): EquipmentDetails
+  setReference(reference: EquipmentReference, remove: boolean): void
 }
 
 export type AdminResult<T> = { ok: true; data: T } | { ok: false; code: ApiErrorCode; status: number; message: string; fieldPath?: string }
@@ -24,11 +27,28 @@ export class AdminProjection {
   private nextBackup = 1
 
   private equipment: EquipmentParameter[] = []
+  private equipmentHistory: EquipmentParameter[] = []
+  private equipmentReferences: EquipmentReference[] = []
 
   constructor(private readonly backupStorage?: BackupStorage, private readonly equipmentStorage?: EquipmentStorage) {}
 
   listEquipment(): EquipmentParameter[] {
     return this.equipmentStorage ? this.equipmentStorage.load() : structuredClone(this.equipment)
+  }
+
+  equipmentDetails(equipmentId: string): EquipmentDetails {
+    return this.equipmentStorage ? this.equipmentStorage.details(equipmentId) : structuredClone({
+      history: this.equipmentHistory.filter(row => row.equipmentId === equipmentId),
+      references: this.equipmentReferences.filter(row => row.equipmentId === equipmentId),
+    })
+  }
+
+  setEquipmentReference(reference: EquipmentReference, remove: boolean): void {
+    if (this.equipmentStorage) this.equipmentStorage.setReference(reference, remove)
+    else {
+      this.equipmentReferences = this.equipmentReferences.filter(row => row.scenarioId !== reference.scenarioId || row.linkId !== reference.linkId || (remove && row.equipmentId !== reference.equipmentId))
+      if (!remove) this.equipmentReferences.push(structuredClone(reference))
+    }
   }
 
   saveEquipment(value: unknown, equipmentId?: string): AdminResult<EquipmentParameter> {
@@ -46,8 +66,21 @@ export class AdminProjection {
       if (!this.equipmentStorage.save(saved, existing?.version)) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: '装备参数已被其他用户修改，请刷新后重试。' }
     } else {
       this.equipment = [...this.equipment.filter(item => item.equipmentId !== saved.equipmentId), structuredClone(saved)]
+      this.equipmentHistory.push(structuredClone(saved))
     }
     return { ok: true, data: saved }
+  }
+
+  deleteEquipment(equipmentId: string, expectedVersion: number): AdminResult<DeleteResult> {
+    const existing = this.listEquipment().find(item => item.equipmentId === equipmentId)
+    if (!existing) return { ok: false, code: 'NOT_FOUND', status: 404, message: '装备参数不存在。' }
+    if (this.equipmentDetails(equipmentId).references.length) return { ok: false, code: 'CONFLICT', status: 409, message: '装备仍有场景引用，请先解除引用后再删除。' }
+    if (existing.readOnly) return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '只读装备不可删除。' }
+    if (existing.version !== expectedVersion || (this.equipmentStorage && !this.equipmentStorage.delete(equipmentId, expectedVersion))) {
+      return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '装备参数已变更，请刷新后重新确认删除。', fieldPath: 'expectedVersion' }
+    }
+    this.equipment = this.equipment.filter(item => item.equipmentId !== equipmentId)
+    return { ok: true, data: { objectId: equipmentId, deleted: true } }
   }
 
   /** 返回可独立修改的主数据快照。 */
@@ -121,6 +154,8 @@ export class AdminProjection {
   /** 重置本阶段内存变更，恢复权威夹具。 */
   reset(): void {
     this.equipment = []
+    this.equipmentHistory = []
+    this.equipmentReferences = []
     this.masterData = loadFixtureProjection().masterData
     this.backups = loadFixtureProjection().backups
     this.nextBackup = 1

@@ -1,5 +1,6 @@
 import { apiFetch, invalidateSessionRequests } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
+import { validMenuPaths } from '../features/admin/access-control'
 import type {
   ApiFailure,
   ApiResult,
@@ -26,6 +27,7 @@ type AuthFeedbackCode =
 interface PermissionSet {
   role: Role
   permissions: Permission[]
+  menuPaths?: string[]
 }
 
 /** Credentials accepted by the application-facing authentication API. */
@@ -74,6 +76,7 @@ function isPrincipal(value: unknown): value is Principal {
     && (candidate.role === 'ADMIN' || candidate.role === 'OPERATOR')
     && Array.isArray(candidate.permissions)
     && candidate.permissions.every(isPermission)
+    && (candidate.menuPaths === undefined || validMenuPaths(candidate.menuPaths))
 }
 
 /**
@@ -86,8 +89,7 @@ function isPrincipal(value: unknown): value is Principal {
 function isStoredPrincipal(value: unknown): value is Principal {
   if (!isPrincipal(value)) return false
   const keys = Object.keys(value)
-  return keys.length === 4
-    && keys.every((key) => ['userId', 'username', 'role', 'permissions'].includes(key))
+  return keys.every((key) => ['userId', 'username', 'role', 'permissions', 'menuPaths'].includes(key))
 }
 
 /**
@@ -109,7 +111,7 @@ function clearStoredPrincipal(): void {
  *
  * @param principal - 登录或权限刷新成功后得到的主体。
  * @returns 无返回值。
- * @remarks 仅写入 userId、username、role、permissions；主体无效或存储抛错时会尽力清除旧值，且不修改 Store 状态。
+ * @remarks 仅保存身份、权限及可选菜单投影；启动时仍须服务端验证，不能把缓存作为授权依据。
  */
 function storePrincipal(principal: unknown): void {
   if (!isPrincipal(principal)) {
@@ -122,6 +124,7 @@ function storePrincipal(principal: unknown): void {
     username: principal.username,
     role: principal.role,
     permissions: [...principal.permissions],
+    ...(principal.menuPaths ? { menuPaths: [...principal.menuPaths] } : {}),
   }
   try {
     if (typeof window !== 'undefined') {
@@ -153,6 +156,7 @@ function restoreStoredPrincipal(): Principal | null {
       username: candidate.username,
       role: candidate.role,
       permissions: [...candidate.permissions],
+      ...(candidate.menuPaths ? { menuPaths: [...candidate.menuPaths] } : {}),
     }
   } catch {
     clearStoredPrincipal()
@@ -262,16 +266,18 @@ function readPermissionSet(value: unknown): PermissionSet | undefined {
     : value
 
   if (typeof data !== 'object' || data === null) return undefined
-  const candidate = data as { role?: unknown; permissions?: unknown }
+  const candidate = data as { role?: unknown; permissions?: unknown; menuPaths?: unknown }
   if ((candidate.role !== 'ADMIN' && candidate.role !== 'OPERATOR')
     || !Array.isArray(candidate.permissions)
-    || !candidate.permissions.every(isPermission)) {
+    || !candidate.permissions.every(isPermission)
+    || (candidate.menuPaths !== undefined && !validMenuPaths(candidate.menuPaths))) {
     return undefined
   }
 
   return {
     role: candidate.role,
     permissions: [...candidate.permissions],
+    ...(candidate.menuPaths === undefined ? {} : { menuPaths: candidate.menuPaths }),
   }
 }
 
@@ -514,7 +520,7 @@ export const useAuthStore = defineStore('auth', {
         }
 
         this.permissions = [...permissionSet.permissions]
-        this.principal = { ...this.principal, role: permissionSet.role, permissions: this.permissions }
+        this.principal = { ...this.principal, role: permissionSet.role, permissions: this.permissions, menuPaths: permissionSet.menuPaths }
         this.authState = 'SUCCESS'
         this.lastCode = 'SUCCESS'
         this.lastMessage = '权限已更新。'

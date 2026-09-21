@@ -32,7 +32,7 @@ export type Permission =
   | 'MASTER_DATA_MAINTAIN' | 'USER_ROLE_MAINTAIN'
   | 'BACKUP_RESTORE' | 'AUDIT_READ' | 'FULL_CONFIG_EXPORT'
   | 'BATCH_LEVEL_III_EXPORT';
-export interface Principal { userId: Identifier; username: string; role: Role; permissions: readonly Permission[]; }
+export interface Principal { userId: Identifier; username: string; role: Role; permissions: readonly Permission[]; menuPaths?: string[]; }
 export interface RbacDecision { allowed: boolean; permission: Permission; reason?: 'PERMISSION_DENIED' | 'LAST_ADMIN_GUARD' | 'CONFIRMATION_REQUIRED'; }
 export interface LoginRequest { username: string; passwordFixture: string; }
 export interface AuthResult { authenticated: boolean; principal?: Principal; reason?: 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED'; sessionCreated: boolean; }
@@ -299,7 +299,33 @@ export interface ReportTimeSeriesPoint { time: Seconds; snrDb: Decibels; ber: Ra
 export interface ReportTimeSeries {
   linkId: Identifier; sourcePlatformId: Identifier; targetPlatformId: Identifier; points: ReportTimeSeriesPoint[];
 }
-export interface Report { reportId: ReportId; runId?: RunId; batchId?: Identifier; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; }
+export interface LocalReportEvidence {
+  eventFile: { fileName: string; sha256: string }
+  positionFile: { fileName: string; sha256: string }
+  startTimeS: number
+  endTimeS: number
+  simulationComplete: boolean
+  positionCount: number
+  positionIssueCount: number
+  waitingForPositionLine: boolean
+  eventCount: number
+  eventWarningCount: number
+  nodes: Array<{ platformId: string; name: string; type: string; side: string; positionCount: number; firstTimeS: number; lastTimeS: number }>
+  eventCounts: Array<{ type: string; count: number }>
+  connections: Array<{ eventId: string; time: number; scope: 'INTERNAL' | 'INTER_PLATFORM'; sourcePlatformId: string; sourceDeviceId: string; targetPlatformId: string; targetDeviceId: string }>
+  deviceEvents: Array<{ eventId: string; type: string; time: number; platformId: string; deviceId: string }>
+}
+export interface LocalReportExportResult {
+  reportId: ReportId
+  generated: true
+  status: 'SUCCESS'
+  format: 'HTML' | 'CSV'
+  watermark: string
+  verifiedAt: Iso8601Utc
+  filePath: string
+  sha256: string
+}
+export interface Report { reportId: ReportId; runId?: RunId; batchId?: Identifier; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; localEvidence?: LocalReportEvidence; }
 export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; }
 export interface ReportExportResult { reportId: ReportId; generated: false; status: 'FIXTURE_SUCCESS'; watermark: string; verifiedAt: Iso8601Utc; }
 export interface Replay { replayId: ReplayId; runId: RunId; state: ReplayState; durationS: Seconds; currentTimeS: Seconds; eventIds: Identifier[]; }
@@ -320,10 +346,18 @@ export interface EquipmentParameter {
   frequencyMaxMHz: number | null
   modulation: string | null
   berThreshold: number | null
+  bandwidthMHz?: number | null
+  txPowerW?: number | null
+  dataRateMbps?: number | null
   readOnly: boolean
   version: number
 }
 export interface MasterDataRequest { operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: MasterData; confirmationId?: Identifier; }
+export interface EquipmentReference { equipmentId: string; scenarioId: string; linkId: string; equipmentVersion: number; }
+export interface EquipmentDetails { history: EquipmentParameter[]; references: EquipmentReference[]; }
+export interface RoleProfile { profileId: string; name: string; baseRole: Role; permissions: Permission[]; menuPaths: string[]; }
+export interface RoleAssignment { userId: string; profileId: string; }
+export interface AccessControlConfig { version: number; profiles: RoleProfile[]; assignments: RoleAssignment[]; }
 export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
 export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; }
 export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; confirmationId: Identifier; }

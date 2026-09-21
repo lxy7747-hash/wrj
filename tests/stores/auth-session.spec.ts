@@ -10,6 +10,25 @@ const session = () => success({ authenticated: true, sessionCreated: true, princ
 beforeEach(() => { sessionStorage.clear(); setActivePinia(createPinia()) })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); onSessionExpired(() => {}); sessionStorage.clear() })
 
+it('server-verified menu restrictions survive session projection and block direct navigation', async () => {
+  const limited = { ...principal, menuPaths: ['/reports', '/admin'] }
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => success({ authenticated: true, sessionCreated: true, principal: limited })))
+  const auth = useAuthStore()
+  await auth.restoreSession()
+  expect(auth.principal?.menuPaths).toEqual(limited.menuPaths)
+  expect(JSON.parse(sessionStorage.getItem('wrj.auth.principal')!).menuPaths).toEqual(limited.menuPaths)
+  const { createAppRouter } = await import('../../src/router')
+  const { createMemoryHistory } = await import('vue-router')
+  const router = createAppRouter(createMemoryHistory())
+  await router.push('/scenarios')
+  expect(router.currentRoute.value.path).toBe('/reports')
+  expect(auth.lastCode).toBe('PERMISSION_DENIED')
+  await router.push('/admin?section=equipment-library')
+  expect(router.currentRoute.value.path).toBe('/reports')
+  await router.push('/admin')
+  expect(router.currentRoute.value.path).toBe('/admin')
+})
+
 it.each(['request', 'body'] as const)('bounds startup while %s hangs and ignores its late success', async phase => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
   sessionStorage.setItem('wrj.auth.principal', JSON.stringify(principal))

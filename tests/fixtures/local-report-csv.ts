@@ -1,0 +1,18 @@
+export const REPORT_EVENT_CSV = [
+  '! PLATFORM_ADDED,time<time>,event<string>,platform<string>,side<string>,type<string>,ps<double>,lat<lat>,lon<lon>',
+  '! PLATFORM_INITIALIZED,time<time>,event<string>,platform<string>,side<string>,type<string>,lat<lat>,lon<lon>,alt<double>,heading<angle>,pitch<angle>,roll<angle>,ned_speed<double>',
+  '! MOVER_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>,lat<lat>,lon<lon>,alt<double>,heading<double>,pitch<double>,roll<double>,ned_speed<double>',
+  '! COMM_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>',
+  '! LINK_ADDED_TO_MANAGER,source_platform<string>,source_comm<string>,source_address<string>,destination_platform<string>,destination_comm<string>,destination_address<string>',
+  '! MESSAGE_RECEIVED,time<time>,event<string>,platform<string>,side<string>,comm<string>,message_serial_number<int>,data_tag<double>,message_type<string>,message_size<int>,comment<string>',
+  '! SIMULATION_COMPLETE,time<time>,event<string>,year<int>,month<int>,day<int>,hour<int>,minute<int>,second<int>',
+  '0,PLATFORM_ADDED,A,blue,AIR,',
+  '0,PLATFORM_ADDED,B,red,GROUND,',
+  '0,PLATFORM_INITIALIZED,A,blue,AIR,25,119,3000,1.5707963267948966,0,0,100',
+  '0,MOVER_TURNED_ON,B,red,Mover,mover,WSF_GROUND_MOVER,26,120,0,0,0,0,0',
+  '0,COMM_TURNED_ON,A,blue,Comm,tx,satcom_1',
+  '0,COMM_TURNED_ON,B,red,Comm,rx,satcom_2',
+  '5,LINK_ADDED_TO_MANAGER,A,tx,0.1.0.1,B,rx,0.1.0.2',
+  '5,MESSAGE_RECEIVED,B,red,rx,9007199254740993,0.000000000000000001,CMD_ORDER,512,"含逗号,及""引号""",,,,',
+  '10,SIMULATION_COMPLETE,2025,9,15,0,0,1.000000e+01',
+].join('\n')

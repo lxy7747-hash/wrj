@@ -10,6 +10,7 @@ import {
 import LoginPage from '../pages/login/login.vue'
 import { useAuthStore } from '../stores/auth'
 import { useUiStore } from '../stores/ui'
+import { canVisitMenu } from '../features/admin/access-control'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -91,7 +92,7 @@ export const routeRecords: RouteRecordRaw[] = [
     name: 'reports',
     component: () => import('../pages/reports/reports.vue'),
     beforeEnter: requirePrincipal,
-    meta: { title: '报告分析', guard: 'principal', layout: 'workspace' },
+    meta: { title: '评估报表', guard: 'principal', layout: 'workspace' },
   },
   {
     path: '/replays',
@@ -159,6 +160,15 @@ export function createAppRouter(history: RouterHistory = createWebHistory(), pin
   router.beforeEach((to) => {
     // 重置期间不切换业务页面，避免新页面加载与全局投影重建交叉；退出登录仍可达。
     if (useUiStore(pinia).resetState === 'EXECUTING' && to.path !== '/login') return false
+    const principal = authFor(pinia).principal
+    if (to.path !== '/login' && principal?.menuPaths) {
+      const menuPath = to.path === '/admin' && typeof to.query.section === 'string' ? `/admin?section=${to.query.section}` : to.path
+      if (!canVisitMenu(principal, menuPath)) {
+        authFor(pinia).lastCode = 'PERMISSION_DENIED'
+        authFor(pinia).lastMessage = '当前角色没有此菜单的访问权限。'
+        return principal.menuPaths[0] ?? '/login'
+      }
+    }
     // 显式注入 Pinia，使路由单元测试不依赖应用插件的安装顺序。
     if (pinia !== undefined) {
       const auth = authFor(pinia)

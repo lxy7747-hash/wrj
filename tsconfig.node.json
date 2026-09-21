@@ -29,6 +29,7 @@
     "src/features/situation/platform-lifecycle.ts",
     "src/features/situation/position-updates.ts",
     "src/features/replays/local-replay.ts",
+    "src/features/reports/local-report.ts",
     "src/features/data-exchange/csv-contract.ts",
     "src/features/scenarios/scenario-validation.ts",
     "src/features/scenarios/platform-position-rules.ts",
@@ -37,6 +38,7 @@
     "src/features/scenarios/jammer-settings.ts",
     "src/features/admin/admin-contract.ts",
     "src/features/admin/equipment-contract.ts",
+    "src/features/admin/access-control.ts",
     "src/features/admin/audit-labels.ts",
     "src/features/shared/date-time.ts"
   ]

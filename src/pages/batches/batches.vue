@@ -54,7 +54,7 @@ async function cancelBatch(): Promise<void> {
   await batchStore.command('CANCEL')
 }
 
-/** 跳转报表中心并选择当前批次的三级聚合报告。 */
+/** 跳转评估报表并选择当前批次的三级聚合报告。 */
 async function openAggregateReport(): Promise<void> {
   if (aggregateReport.value === null) return
   await router.push({ path: '/reports', query: { reportId: aggregateReport.value.reportId } })

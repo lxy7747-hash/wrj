@@ -69,13 +69,31 @@ topics 固定为需求基线规定的五项：`simulation.frame`, `runtime.state
 3. `GET /api/v1/simulations/RUN-001/frames/F-00042` → L-MW-01 与 L-DL-03、DET-042、SW-003。
 4. 再次执行 1–3，响应业务 data 必须深相等；仅传输层连接对象不参与比较。
 
-## 装备参数库补充（2026-09-20，OpenAPI 1.3.0）
+## 装备参数库补充（2026-09-20，OpenAPI 1.3.1）
 
-新增 `GET /api/v1/admin/equipment`、`POST /api/v1/admin/equipment`、`PUT /api/v1/admin/equipment/{equipmentId}`，操作总数为 70，POST/PUT/PATCH 共 35。复用 ADMIN 权限、成功/错误信封与审计；本机使用 SessionCookie，测试纯 Mock 才使用演示角色。
+新增 `GET /api/v1/admin/equipment`、`POST /api/v1/admin/equipment`、`PUT /api/v1/admin/equipment/{equipmentId}`，后续授权补充同编号路径的 DELETE，操作总数为 71，POST/PUT/PATCH 共 35。复用 ADMIN 权限、成功/错误信封与审计；本机使用 SessionCookie，测试纯 Mock 才使用演示角色。
 
 请求为闭合的 `EquipmentParameter`；新建限定 `readOnly=false, version=1`，更新限定 `readOnly=false` 并核对当前版本。响应包含服务器保存后的完整参数与版本。频段成对与大小关系由共享校验器检查。重复编号/版本冲突返回 409，非法字段返回 422，只读或角色拒绝返回 403，不存在返回 404，存储失败返回 503；不回退演示数据。
 
-本机注入独立 `equipment.db` 存储；纯 Mock 的装备集合从空数组开始，不修改确定性夹具。既有主库备份不包含装备库，需单独保留。参数包导入、删除和自动应用到场景均不在本次接口范围。
+DELETE 使用 query `expectedVersion` 与 `X-Confirmation-Id`，确认动作复用 MASTER_DATA_DELETE，对象为 `EQUIPMENT:{equipmentId}:{expectedVersion}`，避免主数据确认交叉使用。缺确认 428、失效/版本冲突 409、只读/权限 403、缺失 404、非法版本 422、存储失败 503，成功返回 DeleteResult；SQLite 条件删除原子校验版本及只读标记。
+
+本机注入独立 `equipment.db` 存储；纯 Mock 的装备集合从空数组开始，不修改确定性夹具。既有主库备份不包含装备库，需单独保留。参数包导入和自动应用到场景不在本次接口范围。
+
+## 本机报告增量（OpenAPI 1.4.0，2026-09-20）
+
+复用 GET /reports、GET /reports/{reportId} 和 POST /reports/{reportId}/export，不增加操作数量（71 操作 / 35 个 POST、PUT、PATCH）。Report 新增可选 LocalReportEvidence；具有该字段的报告只能为 LEVEL_II，不能携带 Mock runId/batchId/kpis/timeSeries，报告编号绑定源文件内容摘要。纯 Mock 原有 Report 保持兼容。
+
+本机入口仅返回当前配置的两份真实文件统计；未配置返回空目录，读取/解析失败 503，来源编号不匹配 409，不回退夹具。导出成功 data 为 LocalReportExportResult（generated:true、HTML/CSV、路径、摘要、水印、verifiedAt）；未注入本机入口的纯 Mock 仍返回 ReportExportResult（generated:false）。统一响应引用 ReportExportOutcome。真实 PDF 未实现，422 拒绝；源变化 409、写入/读取失败 503。文件仅写入服务端受控 output/reports/ 独占目录，不接受客户端文件路径或正文。
+
+设备启停、登记关联及消息记录只按文件证据统计；不计算文件未提供的 SNR/BER、连通率或干扰效果。新能力测试使用临时文件，不能读取或修改用户账号/场景数据库。
+
+## 前端能力兼容扩展（OpenAPI 1.5.0，2026-09-21）
+
+- `EquipmentParameter` 可选 `bandwidthMHz`、`txPowerW`、`dataRateMbps`，缺省或 null 表示暂无数据，带宽/速率须正数，功率须非负数；不把空值转成 0。
+- GET `/admin/equipment/{equipmentId}/details` 返回实际保存的 `history` 和显式登记的 `references`；PUT `/admin/equipment/{equipmentId}/reference` 接受 `{ reference, remove }`。登记核验装备版本、场景和链路存在且场景未锁；解除引用不修改场景。存在引用时装备删除 409。历史按版本倒序，从真实记录开始，旧版本缺口不补造；删除后同编号新建视为新生命周期。
+- GET/PUT `/admin/access-control` 返回/保存 `AccessControlConfig`；PUT 携带当前 version，成功递增。只允许 ADMIN + USER_ROLE_MAINTAIN；角色只收窄基础角色权限，菜单必须在冻结白名单，分配必须匹配账号基础身份。禁止修改自身分配/自身角色，冲突 409、非法 422、权限 403、存储失败 503。SQLite 入口逐请求校验并撤销受影响会话；未分配用户不受影响。
+- 本机 access-control.db 独立持久化；纯 Mock 只提供内存配置表单验证，真实身份授权验证使用临时 SQLite 会话测试，不把 DemoRole 请求头当作生产认证。
+- 两新增组件请求只保存明确提交的内容，不自动应用装备参数或给现有账号分配自定义角色。主库既有备份不包含独立装备与权限库。
 
 ## Fixture schema linkage
 

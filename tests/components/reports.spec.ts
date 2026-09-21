@@ -45,11 +45,11 @@ describe('P3 报表内容', () => {
       },
       global: { plugins: [ElementPlus] },
     })
-    expect(wrapper.text()).toContain('RUN-001 · T+0～7200 s')
+    expect(wrapper.text()).toContain('RUN-001 · 0分0秒～0分42秒')
     expect(wrapper.text()).toContain('2026-08-06 18:06:30')
     expect(wrapper.text()).toContain('单位：dB')
     expect(wrapper.findAll('.el-tabs__item').map((tab) => tab.text())).toEqual([
-      '汇总', '分链路', '干扰影响', '切换事件', '批量对比', '时序曲线',
+      '汇总', '分链路', '干扰影响', '切换事件', '批量对比', '时序曲线', '柱状图', '雷达图', '事件时间线',
     ])
 
     await wrapper.findAll('.el-tabs__item')[1]!.trigger('click')
@@ -63,7 +63,7 @@ describe('P3 报表内容', () => {
     expect(wrapper.text()).toContain('SW-003')
     await wrapper.findAll('.el-tabs__item')[4]!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('当前为单次仿真报告，无批量参数组合')
+    expect(wrapper.text()).toContain('暂无数据')
     expect(wrapper.text()).not.toContain('RUN-B01')
     await wrapper.findAll('.el-tabs__item')[5]!.trigger('click')
     await flushPromises()
@@ -83,13 +83,13 @@ describe('P3 报表内容', () => {
       },
       global: { plugins: [ElementPlus] },
     })
-    expect(wrapper.text()).toContain('BATCH-001 · 12 次确定性运行')
+    expect(wrapper.text()).toContain('BATCH-001 · 12 次已加载运行')
     expect(wrapper.text()).toContain('批量聚合报告')
     expect(wrapper.text()).not.toContain('87.3%')
 
     await wrapper.findAll('.el-tabs__item')[1]!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('批量聚合报告不包含单链路明细')
+    expect(wrapper.text()).toContain('暂无数据')
     await wrapper.findAll('.el-tabs__item')[4]!.trigger('click')
     await flushPromises()
     expect(wrapper.find('[data-testid="batch-report-table"]')).toBeTruthy()
@@ -98,7 +98,7 @@ describe('P3 报表内容', () => {
     expect(wrapper.text()).not.toContain('RUN-001 · T+0')
     await wrapper.findAll('.el-tabs__item')[5]!.trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('当前报告没有时序曲线数据')
+    expect(wrapper.text()).toContain('暂无数据')
   })
 
   it('按不等间隔采样时刻定位曲线横坐标', async () => {
@@ -138,7 +138,7 @@ describe('P3 报表内容', () => {
     const wrapper = mount(ReportsPage, { attachTo: document.body, global: { plugins: [pinia, router, ElementPlus] } })
     await flushPromises()
 
-    expect(wrapper.attributes('aria-label')).toBe('报告分析')
+    expect(wrapper.attributes('aria-label')).toBe('评估报表')
     expect(wrapper.get('[data-testid="report-tabs"]').attributes('data-report-id')).toBe('RPT-001')
     await wrapper.get('[data-testid="report-export"]').trigger('click')
     await flushPromises()

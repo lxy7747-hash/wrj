@@ -1,8 +1,8 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElSelect } from 'element-plus'
 import L from 'leaflet'
 import { createPinia, setActivePinia } from 'pinia'
-import { reactive } from 'vue'
+import { h, reactive } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../src/config/map.config'
@@ -18,6 +18,7 @@ import {
   SITUATION_EVENTS_F00042,
   SITUATION_FRAME_F00042,
   SITUATION_LINKS_F00042,
+  selectSituationLinks,
 } from '../../src/features/situation/situation-model'
 import { useAuthStore } from '../../src/stores/auth'
 import { useTelemetryStore } from '../../src/stores/telemetry'
@@ -118,6 +119,7 @@ vi.mock('../../src/components/situation/situation-map-controller', () => ({
 }))
 
 import SituationPage from '../../src/pages/situation/situation.vue'
+import LinkCandidatePanel from '../../src/components/situation/LinkCandidatePanel.vue'
 import OfflineSituationMap from '../../src/components/situation/OfflineSituationMap.vue'
 import ScenarioWorkspace from '../../src/pages/scenarios/ScenarioWorkspace.vue'
 
@@ -245,6 +247,33 @@ describe('态势主界面', () => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
     sessionStorage.clear()
+  })
+
+  it('质量指标位于右侧页签而非弹框，联动选中链路且来回切换保留筛选', async () => {
+    const wrapper = await mountSituationPage()
+    const panel = wrapper.get('.telemetry-panel')
+    const tabs = panel.findAll('[role="tab"]')
+    expect(tabs.map(tab => tab.text())).toEqual(['链路状态', '质量指标'])
+    expect(tabs[0]!.attributes('aria-selected')).toBe('true')
+    mapControllerMock.latestOptions!.onSelectLink(SITUATION_LINKS_F00042[0]!)
+    await flushPromises()
+    // 关闭既有链路详情；质量页签本身不得创建遮挡地图的弹框。
+    const close = document.querySelector<HTMLButtonElement>('.link-quality-dialog .el-dialog__headerbtn')
+    close?.click()
+    await tabs[1]!.trigger('click')
+    await flushPromises()
+    const quality = panel.get('[data-testid="quality-metric-panel"]')
+    expect(quality.isVisible()).toBe(true)
+    expect(document.querySelector('[role="dialog"][aria-label="实时质量指标"]')).toBeNull()
+    expect(quality.findAllComponents(ElSelect)[1]!.props('modelValue')).toBe(SITUATION_LINKS_F00042[0]!.linkId)
+    quality.findAllComponents(ElSelect)[2]!.vm.$emit('update:modelValue', 5000)
+    await tabs[0]!.trigger('click')
+    expect(panel.get('.telemetry-section--links').isVisible()).toBe(true)
+    await tabs[1]!.trigger('click')
+    expect(quality.findAllComponents(ElSelect)[2]!.props('modelValue')).toBe(5000)
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
+    expect(tabs[1]!.attributes('aria-selected')).toBe('true')
   })
 
   it.each(['SCN-001', 'SCN-B'])('刷新恢复 %s 的地图、两行节点和右侧抽屉，不切回本机文件', async id => {
@@ -520,7 +549,8 @@ describe('态势主界面', () => {
     expect(panel.find('.jammer-list').exists()).toBe(false)
     expect(panel.find('.event-list').exists()).toBe(false)
     expect(panel.findAll('tr[data-link-id]')).toHaveLength(0)
-    expect(panel.get('[data-testid="open-link-candidates"]').attributes('disabled')).toBeDefined()
+    expect(panel.find('[data-testid="open-link-candidates"]').exists()).toBe(false)
+    expect(panel.get('.telemetry-section--links .panel-heading').text()).toBe('全链路状态')
     expect(wrapper.get('.situation-page__workspace').classes()).not.toContain('situation-page__workspace--telemetry-collapsed')
     await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
     expect(panel.attributes('data-collapsed')).toBe('true')
@@ -1123,7 +1153,8 @@ describe('态势主界面', () => {
     const linkRow = telemetryPanel.get('tr[data-link-id="L-MW-01"]')
     expect(linkRow.findAll('td').slice(2).map(item => item.text())).toEqual(['暂无数据'])
     expect(telemetryPanel.find('.link-state-badge').exists()).toBe(false)
-    expect(telemetryPanel.get('[data-testid="open-link-candidates"]').attributes('disabled')).toBeDefined()
+    expect(telemetryPanel.find('[data-testid="open-link-candidates"]').exists()).toBe(false)
+    expect(telemetryPanel.get('.telemetry-section--links .panel-heading').text()).toBe('全链路状态')
     await linkRow.trigger('click')
     await flushPromises()
     expect(document.querySelector('[data-testid="link-detail-configured"]')).not.toBeNull()
@@ -1446,11 +1477,19 @@ describe('态势主界面', () => {
   })
 
   it('展示同帧候选快照并识别空集合和过期结果', async () => {
-    const wrapper = await mountSituationPage()
-    await flushPromises()
+    const pinia = createPinia()
+    setActivePinia(pinia)
     const telemetry = useTelemetryStore()
-
-    await wrapper.get('[data-testid="open-link-candidates"]').trigger('click')
+    expect(await telemetry.loadFrame()).toBe(true)
+    // 页面入口已移除，保留候选组件自身的数据与错误呈现回归。
+    mountedWrapper = mount({ render: () => h(LinkCandidatePanel, {
+      modelValue: true,
+      frame: telemetry.frame,
+      links: telemetry.frame ? selectSituationLinks(telemetry.frame) : [],
+      capabilityState: telemetry.capabilityState,
+      feedback: telemetry.resultMessage,
+      onReload: () => { void telemetry.loadFrame() },
+    }) }, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
     expect(document.querySelectorAll('[data-candidate-id]')).toHaveLength(4)
     expect(document.body.textContent).toContain('TASK-001 · F-00042 · 42 s')

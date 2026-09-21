@@ -13,6 +13,53 @@ beforeEach(() => { setActivePinia(createPinia()); useAuthStore().$patch({ role: 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('装备参数正式 Store 入口', () => {
+  const context = { confirmationId: 'CONF-EQ', actor: 'admin', role: 'ADMIN', createdAt: '2026-08-06T08:00:00Z', expiresAt: '2026-08-06T08:05:00Z' }
+  it.each([0, 1, 2])('删除第 %i 阶段失效后迟到响应不回写或继续请求', async stage => {
+    let resolve!: (response: Response) => void
+    const results = [{ ...context, state: 'AWAITING_CONFIRMATION' }, { ...context, state: 'CONFIRMED' }, { deleted: true, objectId: EQUIPMENT.equipmentId }]
+    const fetcher = vi.fn()
+    results.forEach((data, index) => {
+      if (index === stage) fetcher.mockImplementationOnce(() => new Promise<Response>(done => { resolve = done }))
+      else fetcher.mockResolvedValueOnce(equipmentResponse(data))
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const store = useAdminStore()
+    const pending = store.deleteEquipment(EQUIPMENT)
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(stage + 1))
+    expect(await store.deleteEquipment(EQUIPMENT)).toBe(false)
+    store.resetToSafeEmpty()
+    resolve(equipmentResponse(results[stage]))
+    expect(await pending).toBe(false)
+    expect(fetcher).toHaveBeenCalledTimes(stage + 1)
+    expect(store.maintenance.equipment.state).toBe('EMPTY')
+    expect(store.equipment).toEqual([])
+  })
+
+  it.each(['create', 'confirm', 'delete', 'network'])('删除 %s 异常不会显示成功或移除旧记录', async stage => {
+    const store = useAdminStore()
+    const fetcher = vi.fn().mockResolvedValueOnce(equipmentResponse([EQUIPMENT]))
+      .mockResolvedValueOnce(equipmentResponse(stage === 'create' ? {} : { ...context, state: 'AWAITING_CONFIRMATION' }))
+      .mockResolvedValueOnce(equipmentResponse({ ...context, confirmationId: stage === 'confirm' ? 'OTHER' : context.confirmationId, state: 'CONFIRMED' }))
+    if (stage === 'network') fetcher.mockRejectedValueOnce(new Error('offline'))
+    else fetcher.mockResolvedValueOnce(equipmentResponse({ deleted: true, objectId: 'OTHER' }))
+    vi.stubGlobal('fetch', fetcher)
+    await store.loadMaintenance('equipment')
+    expect(await store.deleteEquipment(EQUIPMENT)).toBe(false)
+    expect(store.maintenance.equipment.state).toBe('ERROR')
+    expect(store.equipment).toEqual([EQUIPMENT])
+  })
+
+  it('只读、非法参数及 OPERATOR 删除不发送请求', async () => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    const store = useAdminStore()
+    expect(await store.deleteEquipment({ ...EQUIPMENT, readOnly: true })).toBe(false)
+    expect(await store.deleteEquipment({ ...EQUIPMENT, equipmentId: '..' })).toBe(false)
+    useAuthStore().role = 'OPERATOR'
+    expect(await store.deleteEquipment(EQUIPMENT)).toBe(false)
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
   it('加载空库、新增、编辑后重载并保留数值和 null', async () => {
     const store = useAdminStore()
     const edited = { ...EQUIPMENT, modulation: null, version: 2 }

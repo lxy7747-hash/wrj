@@ -27,7 +27,7 @@ const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
   { path: '/scenarios', navLabel: '场景配置', title: '场景配置', titleRole: 'region' },
   { path: '/batches', navLabel: '批量仿真', title: '批量仿真', hidden: true },
-  { path: '/reports', navLabel: '报表中心', title: '报告分析', titleRole: 'region', hidden: !APP_CONFIG.showReports },
+  { path: '/reports', navLabel: '评估报表', title: '评估报表', titleRole: 'region', hidden: !APP_CONFIG.showReports },
   { path: '/replays', navLabel: '历史回放', title: '历史回放' },
   { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图', hidden: true },
 ]
@@ -815,73 +815,14 @@ test('P3-6 OPERATOR reads the controlled L-DL-03 state evidence', async ({ page 
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P3-7 OPERATOR reads the fixed link candidate snapshot and empty state', async ({ page }) => {
+test('态势链路标题不再展示异常数量和候选入口', async ({ page }) => {
   const audit = auditConsole(page)
-  await page.routeWebSocket(/\/ws\/v1(?:\?|$)/, () => {})
-  const frameResponse = page.waitForResponse((response) => (
-    response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
-  ))
-  const eventsResponse = page.waitForResponse((response) => (
-    response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events'
-  ))
-
   await loginAs(page, 'operator')
-  expect((await frameResponse).status()).toBe(200)
-  const eventsPayload = await (await eventsResponse).json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
-  const switchEventIds = new Set(eventsPayload.data
-    .filter((event) => event.type === 'LINK_SWITCH')
-    .map((event) => event.eventId))
-  await page.getByTestId('open-link-candidates').click()
-
-  const dialog = page.locator('.link-candidate-dialog')
-  await expect(dialog).toBeVisible()
-  await expect(dialog).toContainText('TASK-001')
-  await expect(dialog).toContainText('F-00042')
-  await expect(dialog).toContainText('42 s')
-  await expect(dialog).toContainText('候选数量4 条')
-  await expect(dialog.locator('[data-candidate-id]')).toHaveCount(4)
-  const microwave = dialog.locator('[data-candidate-id="L-MW-01"]')
-  await expect(microwave).toContainText('前向')
-  await expect(microwave).toContainText('正常')
-  await expect(microwave).toContainText('可用')
-  await expect(microwave).toContainText('3.2e-7')
-  await expect(microwave).toContainText('1.38 dB')
-  await expect(microwave).toContainText('连续 5 帧')
-
-  await page.route('**/api/v1/simulations/RUN-001/frames/F-00042', async (route) => {
-    const response = await route.fetch()
-    const body = await response.json() as ApiSuccess<TelemetryFrame>
-    body.data.evidence.routeCandidates = []
-    body.data.evidence.routeDecisions = []
-    body.data.eventIds = body.data.eventIds.filter((eventId) => !switchEventIds.has(eventId))
-    await route.fulfill({ response, json: body })
-  })
-  await page.route('**/api/v1/simulations/RUN-001/events', async (route) => {
-    const response = await route.fetch()
-    const body = await response.json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
-    body.data = body.data.filter((event) => event.type !== 'LINK_SWITCH')
-    await route.fulfill({ response, json: body })
-  })
-  const emptyFrameResponse = page.waitForResponse((response) => (
-    response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/frames/F-00042'
-  ))
-  const emptyEventsResponse = page.waitForResponse((response) => (
-    response.request().method() === 'GET'
-      && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/events'
-  ))
-  await page.reload()
-  const emptyPayload = await (await emptyFrameResponse).json() as ApiSuccess<TelemetryFrame>
-  const emptyEventsPayload = await (await emptyEventsResponse).json() as ApiSuccess<Array<DetectionEvent | SwitchEvent>>
-  expect(emptyPayload.data.evidence.routeCandidates).toHaveLength(0)
-  expect(emptyPayload.data.eventIds.some((eventId) => switchEventIds.has(eventId))).toBe(false)
-  expect(emptyEventsPayload.data.some((event) => event.type === 'LINK_SWITCH')).toBe(false)
-  await page.getByTestId('open-link-candidates').click()
-  await expect(page.locator('.link-candidate-dialog')).toContainText('当前帧没有候选链路')
-  await expect(page.locator('.link-candidate-dialog [data-candidate-id]')).toHaveCount(0)
-
+  const panel = page.locator('.telemetry-panel')
+  await expect(panel.locator('.telemetry-section--links .panel-heading')).toHaveText('全链路状态')
+  await expect(page.getByTestId('open-link-candidates')).toHaveCount(0)
+  await expect(page.locator('.link-candidate-dialog')).toHaveCount(0)
+  await expect(panel.locator('.link-table tbody tr').first()).toBeVisible()
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
@@ -893,9 +834,9 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   const reportList = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports')
   await page.goto('/reports')
   expect((await reportList).status()).toBe(200)
-  await expect(page.getByRole('region', { name: '报告分析', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: '评估报表', exact: true })).toBeVisible()
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
-  await expect(page.getByTestId('report-tabs')).toContainText('RUN-001 · T+0～7200 s')
+  await expect(page.getByTestId('report-tabs')).toContainText('RUN-001 · 0分0秒～0分42秒')
   await page.getByRole('tab', { name: '时序曲线', exact: true }).click()
   await expect(page.getByRole('img', { name: 'L-MW-01 snrDb 时序曲线', exact: true })).toBeVisible()
   await expect(page.getByTestId('report-time-series-table').locator('.el-table__row')).toHaveCount(3)
@@ -905,7 +846,7 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   await page.getByRole('option', { name: /RPT-BATCH-001/ }).click()
   expect((await batchLoaded).status()).toBe(200)
   await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
-  await expect(page.getByTestId('report-tabs')).toContainText('BATCH-001 · 12 次确定性运行')
+  await expect(page.getByTestId('report-tabs')).toContainText('BATCH-001 · 12 次已加载运行')
   await page.getByTestId('report-export').click()
   await expect(page.getByText('当前账号没有三级批量报告导出权限。', { exact: true })).toBeVisible()
 

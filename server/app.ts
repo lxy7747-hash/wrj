@@ -3,6 +3,9 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import type {
   AuditRequest,
   AuditRecord,
+  AccessControlConfig,
+  Principal,
+  Permission,
   ConfirmationAction,
   ExportStatus,
   LoginRequest,
@@ -37,10 +40,14 @@ import { inspectScenarioConfig } from '../src/features/scenarios/scenario-valida
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
 import { AdminProjection, type AdminResult, type BackupStorage, type EquipmentStorage } from './admin/projection.js'
 import { isAdminText } from '../src/features/admin/admin-contract.js'
+import { isEquipmentReference } from '../src/features/admin/equipment-contract.js'
+import { isAccessControlConfig } from '../src/features/admin/access-control.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
 import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-monitor.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
+import type { LocalReportExportResult } from '../src/contracts/domain-models.js'
+import { isLocalReport, isLocalReportExport } from '../src/features/reports/local-report.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
 
@@ -53,12 +60,16 @@ export interface MockServerOptions {
   loadPositions?: () => Promise<PositionSnapshot>
   /** 读取本机真实文件回放快照，与 Mock 回放及实时位置游标隔离。 */
   loadLocalReplay?: () => Promise<LocalReplaySnapshot>
+  /** 存在此入口即为真实报告模式；无文件或失败不能回退 Mock。 */
+  loadLocalReport?: () => Promise<Report | null>
+  exportLocalReport?: (report: Report, format: 'HTML' | 'CSV', actor: string) => Promise<LocalReportExportResult>
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
   templateStorage?: TemplateStorage
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
   equipmentStorage?: EquipmentStorage
+  accessControlStorage?: { load(): AccessControlConfig; save(config: AccessControlConfig, expected: number): boolean }
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
   writeScriptText?: (script: ScriptContract, revision: number) => Promise<string>
@@ -559,6 +570,17 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
   const admin = new AdminProjection(options.backupStorage, options.equipmentStorage)
+  let accessControl: AccessControlConfig = { version: 1, profiles: [], assignments: [] }
+  const readAccessControl = () => options.accessControlStorage?.load() ?? structuredClone(accessControl)
+  const principalForUser = (user: Pick<User, 'userId' | 'username' | 'role'>): Principal => {
+    const config = readAccessControl()
+    const assignment = config.assignments.find(row => row.userId === user.userId)
+    const profile = config.profiles.find(row => row.profileId === assignment?.profileId)
+    const base = { userId: user.userId, username: user.username, role: user.role, permissions: auth.permissionSet(user.role).permissions }
+    if (!assignment) return base
+    if (!profile || profile.baseRole !== user.role) throw new Error('角色配置与账号身份不一致，请管理员重新分配。')
+    return { ...base, permissions: profile.permissions.filter(permission => base.permissions.includes(permission)), menuPaths: [...profile.menuPaths] }
+  }
   const app = express()
   app.disable('x-powered-by')
   app.set('strict routing', true)
@@ -646,6 +668,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   // A 50-node full-scale scenario is approximately 17KB, exceeding 16KB but within this P0 local bound.
   app.use(express.json({ strict: true, limit: '256kb' }))
 
+  // 自定义角色只能收窄基础角色；服务端逐请求重新读取，不依赖前端隐藏按钮授权。
+  app.use('/api/v1', (req, res, next) => {
+    const user = authenticatedUsers.get(req)
+    if (!user) { next(); return }
+    try {
+      const principal = principalForUser(user)
+      if (!principal.menuPaths || req.path.startsWith('/auth/')) { next(); return }
+      const path = req.path
+      let permission: Permission = 'BUSINESS_READ'
+      let menu: string | undefined
+      if (path.startsWith('/admin/')) {
+        permission = path.startsWith('/admin/equipment') || path.startsWith('/admin/master-data') ? 'MASTER_DATA_MAINTAIN'
+          : path.startsWith('/admin/audit') ? 'AUDIT_READ'
+            : /\/admin\/(?:backup|restore)/.test(path) ? 'BACKUP_RESTORE'
+              : path.startsWith('/admin/config') ? 'FULL_CONFIG_EXPORT' : 'USER_ROLE_MAINTAIN'
+        menu = path.startsWith('/admin/equipment') ? '/admin?section=equipment-library'
+          : path.startsWith('/admin/audit') ? '/admin?section=audit-logs'
+            : path.startsWith('/admin/master-data') ? '/admin?section=master-data'
+              : /\/admin\/(?:backup|restore)/.test(path) ? '/admin?section=database-backup' : '/admin'
+      } else if (path.startsWith('/reports')) {
+        menu = '/reports'
+        if (req.method !== 'GET') permission = req.body?.classification === 'LEVEL_III' ? 'BATCH_LEVEL_III_EXPORT' : 'ORDINARY_REPORT_EXPORT'
+      } else if (req.method !== 'GET') {
+        if (/^\/(?:scenarios|scripts)/.test(path)) { permission = 'SCENARIO_DRAFT_WRITE'; menu = '/scenarios' }
+        if (path.startsWith('/templates')) { permission = 'OFFICIAL_TEMPLATE_MAINTAIN'; menu = '/admin?section=scenario-templates' }
+        if (/^\/(?:simulations|tasks|batches)/.test(path)) permission = 'SIMULATION_CONTROL'
+        if (path.startsWith('/confirmations') && req.body?.action) {
+          const byAction: Partial<Record<ConfirmationAction, Permission>> = {
+            SCENARIO_WARNING_CONTINUE: 'SCENARIO_DRAFT_WRITE', SIMULATION_STOP: 'SIMULATION_CONTROL', OFFICIAL_TEMPLATE_DELETE: 'OFFICIAL_TEMPLATE_MAINTAIN',
+            MASTER_DATA_DELETE: 'MASTER_DATA_MAINTAIN', BACKUP_RESTORE: 'BACKUP_RESTORE', FULL_CONFIG_EXPORT: 'FULL_CONFIG_EXPORT', AUDIT_EXPORT: 'AUDIT_READ', BATCH_LEVEL_III_EXPORT: 'BATCH_LEVEL_III_EXPORT',
+          }
+          permission = byAction[req.body.action as ConfirmationAction] ?? 'BUSINESS_READ'
+        }
+        if (path === '/reset') permission = 'USER_ROLE_MAINTAIN'
+      }
+      if (!principal.permissions.includes(permission) || (menu && !principal.menuPaths.includes(menu))) {
+        auth.recordDenied(user.username, user.role, 'AUTH_PROFILE_DENIED')
+        res.status(403).json(failure('PERMISSION_DENIED', 403, { message: '当前角色没有此操作或菜单权限。' })); return
+      }
+      next()
+    } catch { res.status(403).json(failure('PERMISSION_DENIED', 403, { message: '角色配置不可用，请联系管理员。' })) }
+  })
+
   /**
    * Validates login input and delegates authentication to the projection.
    *
@@ -686,6 +751,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     if (options.authStorage && result.data.principal) {
+      result.data.principal = principalForUser(result.data.principal)
       const token = options.authStorage.issueSession(result.data.principal.userId)
       res.setHeader('Set-Cookie', `wrj_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`)
       result.data.sessionCreated = true
@@ -697,7 +763,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const user = options.authStorage?.currentUser(req.headers.cookie)
     res.setHeader('X-Auth-Mode', options.authStorage ? 'sqlite' : 'mock')
     res.setHeader('Access-Control-Expose-Headers', 'X-Auth-Mode')
-    const data = user ? { authenticated: true, sessionCreated: true, principal: { userId: user.userId, username: user.username, role: user.role, permissions: auth.permissionSet(user.role).permissions } }
+    const data = user ? { authenticated: true, sessionCreated: true, principal: principalForUser(user) }
       : { authenticated: false, sessionCreated: false }
     res.status(200).json(success(data, pageMeta('REQ-AUTH-SESSION')))
   })
@@ -735,7 +801,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     auth.recordSuccess(role === 'ADMIN' ? 'admin' : 'operator', role, 'AUTH_PERMISSIONS')
-    res.status(200).json(success(auth.permissionSet(role), pageMeta(requestId)))
+    const user = authenticatedUsers.get(req)
+    const principal = user ? principalForUser(user) : undefined
+    res.status(200).json(success(principal ? { role, permissions: principal.permissions, ...(principal.menuPaths ? { menuPaths: principal.menuPaths } : {}) } : auth.permissionSet(role), pageMeta(requestId)))
   })
 
   /** 返回既有合同声明的能力、决策和路由目录，不执行业务操作。 */
@@ -1520,19 +1588,44 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /** 返回单次仿真报告和批量聚合报告目录。 */
-  app.get('/api/v1/reports', (req, res) => {
+  app.get('/api/v1/reports', async (req, res) => {
     const requestId = 'REQ-P3-REPORT-LIST'
     if (requireDemoRole(req, res, auth, 'REPORT_LIST') === undefined) return
+    if (options.loadLocalReport) {
+      try {
+        const report = await options.loadLocalReport()
+        if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
+        const reports = report ? [report] : []
+        res.status(200).json(success(reports, pageMeta(requestId, reports.length, reports.length)))
+      } catch {
+        res.status(503).json(failure('START_FAILED', 503, { message: '本地报告读取失败，请检查事件和位置文件的路径、格式及写入状态后重试。', retryable: true }))
+      }
+      return
+    }
     const snapshot = projection.snapshot()
     const reports: Report[] = [snapshot.report, snapshot.batchAggregateReport]
     res.status(200).json(success(reports, pageMeta(requestId, reports.length, reports.length)))
   })
 
   /** 返回指定的确定性报告，不把另一个来源的数据混入当前报告。 */
-  app.get('/api/v1/reports/:reportId', (req, res) => {
+  app.get('/api/v1/reports/:reportId', async (req, res) => {
     const reportId = req.params.reportId
     const requestId = 'REQ-P3-REPORT-GET'
     if (requireDemoRole(req, res, auth, 'REPORT_READ', reportId) === undefined) return
+    if (options.loadLocalReport) {
+      try {
+        const report = await options.loadLocalReport()
+        if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
+        if (!report || report.reportId !== reportId) {
+          res.status(409).json(failure('CONFLICT', 409, { message: '来源文件已变化或当前报告不可用，请重新加载报告目录。', retryable: true }))
+          return
+        }
+        res.status(200).json(success(report, pageMeta(requestId)))
+      } catch {
+        res.status(503).json(failure('START_FAILED', 503, { message: '本地报告读取失败，不使用演示报告代替。', retryable: true }))
+      }
+      return
+    }
     const snapshot = projection.snapshot()
     const report = [snapshot.report, snapshot.batchAggregateReport]
       .find((candidate) => candidate.reportId === reportId)
@@ -1544,10 +1637,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /**
-   * 校验报表导出权限并返回“未生成文件”的固定结果。
-   * @remarks 三级批量报告仅允许管理员在消费一次性确认后验证；本接口不写文件。
+   * 本机入口导出真实文件；未注入本机能力的纯 Mock 保持无文件验证。
+   * @remarks 三级批量报告仅允许管理员在消费一次性确认后验证。
    */
-  app.post('/api/v1/reports/:reportId/export', (req, res) => {
+  app.post('/api/v1/reports/:reportId/export', async (req, res) => {
     const reportId = req.params.reportId
     const requestId = 'REQ-P3-REPORT-EXPORT'
     const role = requireDemoRole(req, res, auth, 'REPORT_EXPORT', reportId)
@@ -1561,6 +1654,33 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
+    if (options.loadLocalReport) {
+      if (!auth.permissionSet(role).permissions.includes('ORDINARY_REPORT_EXPORT')) {
+        res.status(403).json(failure('PERMISSION_DENIED', 403))
+        return
+      }
+      if (req.body.format !== 'HTML' && req.body.format !== 'CSV') {
+        res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '本地报告当前仅支持 HTML、CSV 真实导出。', fieldPath: 'format' }))
+        return
+      }
+      try {
+        const report = await options.loadLocalReport()
+        if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
+        if (!report || report.reportId !== reportId) {
+          res.status(409).json(failure('CONFLICT', 409, { message: '来源文件已变化，请重新加载后导出，避免导出与页面不一致。', retryable: true }))
+          return
+        }
+        if (!options.exportLocalReport) throw new Error('export unavailable')
+        const result = await options.exportLocalReport(report, req.body.format, actorForRequest(req, role))
+        if (!isLocalReportExport(result) || result.reportId !== reportId || result.format !== req.body.format) throw new Error('invalid export')
+        auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_EXPORT', reportId)
+        res.status(200).json(success(result, pageMeta(requestId)))
+      } catch {
+        auth.recordError(actorForRequest(req, role), role, 'REPORT_EXPORT', reportId)
+        res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { message: '报告生成或落盘失败，未报告导出成功，请检查文件及输出目录后重试。', retryable: true }))
+      }
+      return
+    }
     const snapshot = projection.snapshot()
     const report = [snapshot.report, snapshot.batchAggregateReport]
       .find((candidate) => candidate.reportId === reportId)
@@ -1570,7 +1690,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     if (report.classification === 'LEVEL_III') {
-      if (role !== 'ADMIN' || !auth.permissionSet(role).permissions.includes('BATCH_LEVEL_III_EXPORT')) {
+      const user = authenticatedUsers.get(req)
+      const permissions = user ? principalForUser(user).permissions : auth.permissionSet(role).permissions
+      if (role !== 'ADMIN' || !permissions.includes('BATCH_LEVEL_III_EXPORT')) {
         auth.recordDenied('operator', role, 'REPORT_EXPORT', reportId)
         res.status(403).json(failure('PERMISSION_DENIED', 403, { requestId, generatedAt: P1_GENERATED_AT }))
         return
@@ -1746,6 +1868,77 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   }
 
   /** 装备参数为空库起步；权限由服务端独立校验。 */
+  app.get('/api/v1/admin/access-control', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'USER_ROLE_CONFIG_READ')) return
+    try { finishAdmin(res, 'USER_ROLE_CONFIG_READ', { ok: true, data: readAccessControl() }) }
+    catch { finishAdmin(res, 'USER_ROLE_CONFIG_READ', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '角色配置读取失败。' }) }
+  })
+  app.put('/api/v1/admin/access-control', (req, res) => {
+    const action = 'USER_ROLE_CONFIG_SAVE'
+    if (!requireAdmin(req, res, auth, action)) return
+    if (!isAccessControlConfig(req.body)) { finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '角色、权限、菜单或分配关系不正确。', fieldPath: 'accessControl' }); return }
+    try {
+      const users = auth.usersSnapshot()
+      const old = readAccessControl()
+      const input = req.body
+      const actorId = authenticatedUsers.get(req)?.userId ?? 'USR-ADMIN'
+      const oldOwn = old.assignments.find(row => row.userId === actorId)
+      const newOwn = input.assignments.find(row => row.userId === actorId)
+      if (JSON.stringify(oldOwn) !== JSON.stringify(newOwn)
+        || (oldOwn && JSON.stringify(old.profiles.find(row => row.profileId === oldOwn.profileId)) !== JSON.stringify(input.profiles.find(row => row.profileId === oldOwn.profileId)))) {
+        finishAdmin(res, action, { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '不能修改当前登录管理员自身的角色配置。' }); return
+      }
+      if (input.assignments.some(row => users.find(user => user.userId === row.userId)?.role !== input.profiles.find(profile => profile.profileId === row.profileId)?.baseRole)) {
+        finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '角色基础身份必须与被分配账号一致。', fieldPath: 'assignments' }); return
+      }
+      const saved = { ...input, version: input.version + 1 }
+      if (input.version !== old.version || (options.accessControlStorage && !options.accessControlStorage.save(saved, old.version))) {
+        finishAdmin(res, action, { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '角色配置已变化，请重新加载。' }); return
+      }
+      accessControl = structuredClone(saved)
+      // 只撤销权限实际变化的账号会话，未分配账号保持原有行为。
+      for (const user of users) {
+        const profile = (config: AccessControlConfig) => config.profiles.find(p => p.profileId === config.assignments.find(a => a.userId === user.userId)?.profileId)
+        if (JSON.stringify(profile(old)) !== JSON.stringify(profile(saved))) options.authStorage?.revokeUser(user.userId)
+      }
+      realtime?.revalidateSessions()
+      finishAdmin(res, action, { ok: true, data: saved })
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '角色配置保存未确认，请重新加载核实。' }) }
+  })
+
+  app.get('/api/v1/admin/equipment/:equipmentId/details', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MASTER_DATA_EQUIPMENT_DETAILS')) return
+    try { finishAdmin(res, 'MASTER_DATA_EQUIPMENT_DETAILS', { ok: true, data: admin.equipmentDetails(req.params.equipmentId) }) }
+    catch { finishAdmin(res, 'MASTER_DATA_EQUIPMENT_DETAILS', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备引用与版本读取失败。' }) }
+  })
+
+  app.put('/api/v1/admin/equipment/:equipmentId/reference', (req, res) => {
+    const action = 'MASTER_DATA_EQUIPMENT_REFERENCE'
+    if (!requireAdmin(req, res, auth, action)) return
+    if (!isStrictObject(req.body, ['reference', 'remove']) || typeof req.body.remove !== 'boolean'
+      || !isEquipmentReference(req.body.reference) || req.body.reference.equipmentId !== req.params.equipmentId) {
+      finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '引用参数不正确。', fieldPath: 'reference' }); return
+    }
+    const reference = req.body.reference
+    try {
+      if (!req.body.remove) {
+        const equipment = admin.listEquipment().find(row => row.equipmentId === reference.equipmentId)
+        const scene = scenarios.get(reference.scenarioId)
+        if (!equipment || !scene.ok || !scene.data.config.links.some(link => link.id === reference.linkId)) {
+          finishAdmin(res, action, { ok: false, code: 'NOT_FOUND', status: 404, message: '装备、场景或链路不存在。' }); return
+        }
+        if (equipment.version !== reference.equipmentVersion || scene.data.locked) {
+          finishAdmin(res, action, { ok: false, code: 'CONFLICT', status: 409, message: '装备版本已变化或场景已锁定，请刷新后重试。' }); return
+        }
+      } else {
+        const scene = scenarios.get(reference.scenarioId)
+        if (scene.ok && scene.data.locked) { finishAdmin(res, action, { ok: false, code: 'CONFIG_LOCKED', status: 409, message: '场景已锁定，不能解除引用。' }); return }
+      }
+      admin.setEquipmentReference(reference, req.body.remove)
+      finishAdmin(res, action, { ok: true, data: admin.equipmentDetails(reference.equipmentId) }, reference.equipmentId)
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备引用保存失败，请重新加载。' }) }
+  })
+
   app.get('/api/v1/admin/equipment', (req, res) => {
     if (!requireAdmin(req, res, auth, 'MASTER_DATA_EQUIPMENT_LIST')) return
     try { finishAdmin(res, 'MASTER_DATA_EQUIPMENT_LIST', { ok: true, data: admin.listEquipment() }) }
@@ -1761,6 +1954,21 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备参数保存失败，请稍后重试。' }, id) }
     })
   }
+
+  app.delete('/api/v1/admin/equipment/:equipmentId', (req, res) => {
+    const id = req.params.equipmentId
+    const action = 'MASTER_DATA_EQUIPMENT_DELETE'
+    if (!requireAdmin(req, res, auth, action, id)) return
+    const version = req.query.expectedVersion
+    if (typeof version !== 'string' || !/^[1-9]\d*$/.test(version) || !Number.isSafeInteger(Number(version)) || Object.keys(req.query).length !== 1) {
+      finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '删除须携带有效的当前版本。', fieldPath: 'expectedVersion' }, id)
+      return
+    }
+    // 使用独立对象命名空间，主数据删除确认不能用于装备删除。
+    if (!confirmAdmin(res, req.get('X-Confirmation-Id'), 'MASTER_DATA_DELETE', `EQUIPMENT:${id}:${version}`)) return
+    try { finishAdmin(res, action, admin.deleteEquipment(id, Number(version)), id) }
+    catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备参数删除失败，请刷新后核实。' }, id) }
+  })
 
   /** 读取主数据；权限由服务端独立校验。 */
   app.get('/api/v1/admin/master-data', (req, res) => {

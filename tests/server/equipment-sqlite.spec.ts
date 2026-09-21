@@ -35,6 +35,92 @@ afterEach(async () => {
 })
 
 describe('装备参数正式存储与接口', () => {
+  it('可选完整参数兼容旧数据，真实历史和引用持久化且不改写场景', async () => {
+    const first = await start()
+    await first.api.post(path).set(headers).send(EQUIPMENT).expect(201)
+    const before = (await first.api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
+    const linkId = before.config.links[0].id
+    const edited = { ...EQUIPMENT, bandwidthMHz: 0.5, txPowerW: 0, dataRateMbps: 2 }
+    await first.api.put(`${path}/TEST-RADIO`).set(headers).send(edited).expect(200)
+    const reference = { equipmentId: 'TEST-RADIO', equipmentVersion: 2, scenarioId: 'SCN-001', linkId }
+    const bind = (change = {}, remove = false) => first.api.put(`${path}/TEST-RADIO/reference`).set(headers).send({ reference: { ...reference, ...change }, remove })
+    await bind({ equipmentVersion: 1 }).expect(409)
+    await bind({ linkId: 'MISSING' }).expect(404)
+    await bind({ equipmentId: 'OTHER' }).expect(422)
+    await first.api.put(`${path}/TEST-RADIO/reference`).set({ ...headers, 'X-Demo-Role': 'OPERATOR' }).send({ reference, remove: false }).expect(403)
+    await bind().expect(200)
+    const details = (await first.api.get(`${path}/TEST-RADIO/details`).set(headers)).body.data
+    expect(details.references).toEqual([reference])
+    expect(details.history).toEqual([{ ...edited, version: 2 }, EQUIPMENT])
+    expect((await first.api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data).toEqual(before)
+    expect(first.storage.delete('TEST-RADIO', 2)).toBe(false)
+    await first.close()
+    const second = await start(first.file)
+    expect(second.storage.details('TEST-RADIO')).toEqual(details)
+    await second.api.put(`${path}/TEST-RADIO/reference`).set(headers).send({ reference, remove: true }).expect(200)
+    expect(second.storage.details('TEST-RADIO').references).toEqual([])
+    expect(second.storage.delete('TEST-RADIO', 2)).toBe(true)
+    expect(second.storage.save(EQUIPMENT)).toBe(true)
+    expect(second.storage.details('TEST-RADIO').history).toEqual([EQUIPMENT])
+  })
+
+  it.each([{ bandwidthMHz: 0 }, { bandwidthMHz: -1 }, { txPowerW: -1 }, { dataRateMbps: 0 }, { dataRateMbps: '2' }])('完整参数拒绝非法数值 %j', async change => {
+    const { api, storage } = await start()
+    await api.post(path).set(headers).send({ ...EQUIPMENT, ...change }).expect(422)
+    expect(storage.load()).toEqual([])
+  })
+
+  it('确认删除、重开不再存在；确认不可复用且权限独立保护', async () => {
+    const first = await start()
+    await first.api.post(path).set(headers).send(EQUIPMENT)
+    const url = `${path}/TEST-RADIO?expectedVersion=1`
+    expect((await first.api.delete(url).set(headers)).status).toBe(428)
+    for (const role of ['OPERATOR', 'INVALID']) {
+      expect([401, 403]).toContain((await first.api.delete(url).set({ ...headers, 'X-Demo-Role': role })).status)
+    }
+    const created = await first.api.post('/api/v1/confirmations').set(headers).send({ action: 'MASTER_DATA_DELETE', objectId: 'EQUIPMENT:TEST-RADIO:1' })
+    const id = created.body.data.confirmationId
+    await first.api.post(`/api/v1/confirmations/${id}`).set(headers).send({ confirm: true })
+    const confirmedHeaders = { ...headers, 'X-Confirmation-Id': id }
+    const result = await first.api.delete(url).set(confirmedHeaders)
+    expect(result.status).toBe(200)
+    expect(result.body.data).toEqual({ objectId: 'TEST-RADIO', deleted: true })
+    expect((await first.api.delete(url).set(confirmedHeaders)).status).toBe(409)
+    expect(first.server.auditSnapshot().some((row: { action: string }) => row.action === 'MASTER_DATA_EQUIPMENT_DELETE')).toBe(true)
+    await first.close()
+    expect((await (await start(first.file)).api.get(path).set(headers)).body.data).toEqual([])
+  })
+
+  it('删除拒绝错误版本、只读、缺失、错对象确认、非法版本及存储锁，不丢原数据', async () => {
+    const { api, storage, file } = await start()
+    await api.post(path).set(headers).send(EQUIPMENT)
+    const confirm = async (objectId = 'EQUIPMENT:TEST-RADIO:1') => {
+      const response = await api.post('/api/v1/confirmations').set(headers).send({ action: 'MASTER_DATA_DELETE', objectId })
+      const id = response.body.data.confirmationId
+      await api.post(`/api/v1/confirmations/${id}`).set(headers).send({ confirm: true })
+      return { ...headers, 'X-Confirmation-Id': id }
+    }
+    expect((await api.delete(`${path}/TEST-RADIO?expectedVersion=1`).set(await confirm('TEST-RADIO'))).status).toBe(409)
+    for (const suffix of ['', '?expectedVersion=0', '?expectedVersion=1.5', '?expectedVersion=1&extra=1']) {
+      expect((await api.delete(`${path}/TEST-RADIO${suffix}`).set(headers)).status).toBe(422)
+    }
+    expect((await api.delete(`${path}/MISSING?expectedVersion=1`).set(await confirm('EQUIPMENT:MISSING:1'))).status).toBe(404)
+    const stale = await confirm()
+    await api.put(`${path}/TEST-RADIO`).set(headers).send(EQUIPMENT)
+    expect((await api.delete(`${path}/TEST-RADIO?expectedVersion=1`).set(stale)).status).toBe(409)
+    const db = new DatabaseSync(file)
+    cleanups.push(() => db.close())
+    const lockedConfirmation = await confirm('EQUIPMENT:TEST-RADIO:2')
+    db.exec('BEGIN EXCLUSIVE')
+    try { expect((await api.delete(`${path}/TEST-RADIO?expectedVersion=2`).set(lockedConfirmation)).status).toBe(503) }
+    finally { db.exec('ROLLBACK') }
+    expect(storage.delete('TEST-RADIO', 1)).toBe(false)
+    db.prepare('UPDATE equipment_parameters SET parameters_json = ?').run(JSON.stringify({ ...EQUIPMENT, version: 2, readOnly: true }))
+    expect(storage.delete('TEST-RADIO', 2)).toBe(false)
+    expect((await api.delete(`${path}/TEST-RADIO?expectedVersion=2`).set(await confirm('EQUIPMENT:TEST-RADIO:2'))).status).toBe(403)
+    expect(storage.load()).toHaveLength(1)
+  })
+
   it('空库新增、编辑、重启重载保持参数与版本，记录审计且不植入演示', async () => {
     const first = await start()
     expect((await first.api.get(path).set(headers)).body.data).toEqual([])

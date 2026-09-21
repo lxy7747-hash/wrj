@@ -142,7 +142,7 @@ describe('P1 authentication and routing', () => {
       { name: 'situation', path: '/situation', beforeEnter: requirePrincipal, meta: { title: '态势展示', guard: 'principal', layout: 'workspace' } },
       { name: 'scenarios', path: '/scenarios', beforeEnter: requirePrincipal, meta: { title: '场景管理', guard: 'principal', layout: 'workspace' } },
       { name: 'batches', path: '/batches', beforeEnter: requirePrincipal, meta: { title: '批量仿真', guard: 'principal', layout: 'workspace' } },
-      { name: 'reports', path: '/reports', beforeEnter: requirePrincipal, meta: { title: '报告分析', guard: 'principal', layout: 'workspace' } },
+      { name: 'reports', path: '/reports', beforeEnter: requirePrincipal, meta: { title: '评估报表', guard: 'principal', layout: 'workspace' } },
       { name: 'replays', path: '/replays', beforeEnter: requirePrincipal, meta: { title: '历史回放', guard: 'principal', layout: 'workspace' } },
       { name: 'admin', path: '/admin', beforeEnter: requireAdmin, meta: { title: '用户与角色', guard: 'admin', layout: 'workspace' } },
       { name: 'blueprint', path: '/blueprint', beforeEnter: requirePrincipal, meta: { title: '能力蓝图', guard: 'principal', layout: 'workspace' } },

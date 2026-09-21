@@ -9,7 +9,7 @@
 | DSDWRJQTLJS-XQ-QDZS-STXR | SRS 3.2.1.1/3.3.1.1; DD 4.1.1/4.2.1.1/5.1.2.1; HTML cap-stxr | `/situation` | `SituationPage/OfflineSituationMap` | `telemetryStore` | `TelemetryFrame`, `PlatformStatus` | `GET .../frames/{frameId}`; `simulation.frame` | F-00042, CMD-01, UAV-01 | 六态+同 frame 图层 | T-XQ-001 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-QDZS-ZBJK | SRS 3.2.1.1/3.3.1.2; DD 4.1.1/4.2.1.2/5.1.2.2; HTML cap-zbjk | `/situation` | `SituationPage/MetricPanel` | `telemetryStore` | `LinkStatusAggregateExtension` | `link.metric`, `runtime.state` | F-00042, RUN-001 | 六态+单位/时刻 | T-XQ-002 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-QDZS-LLTC | SRS 3.2.1.1/3.3.1.3; DD 4.1.1/4.2.1.3/5.1.2.3; HTML cap-lltc | `/situation` | `SituationPage/LinkQualityDialog` | `telemetryStore` | `LinkQualityData`, `UiLinkProjection` | `link.metric` | L-MW-01, L-DL-03 | 六态+新鲜/过期/缺失 | T-XQ-003 | INTERACTIVE_UI |
-| DSDWRJQTLJS-XQ-QDZS-BBKSH | SRS 3.2.1.1/3.3.1.4; DD 4.1.1/4.2.1.4/5.1.2.4; HTML cap-bbksh | `/reports` | `ReportsPage/ReportTabs` | `reportStore`, `batchStore`, `telemetryStore` | `Report`, `ReportTimeSeries`, `BatchRunResult` | `GET /api/v1/reports/{reportId}` | RPT-001 时序点, RPT-BATCH-001 | 六态+六 tab/范围单位/正式时序曲线 | T-XQ-004 | INTERACTIVE_UI |
+| DSDWRJQTLJS-XQ-QDZS-BBKSH | SRS 3.2.1.1/3.3.1.4; DD 4.1.1/4.2.1.4/5.1.2.4; HTML cap-bbksh | `/reports` | `ReportsPage/ReportTabs/LocalReportTabs` | `reportStore`, `batchStore`, `telemetryStore` | `Report`, `ReportTimeSeries`, `BatchRunResult`, `LocalReportEvidence` | `GET /api/v1/reports/{reportId}`、`POST /api/v1/reports/{reportId}/export` | 纯 Mock：RPT-001/RPT-BATCH-001；本机：事件与位置 CSV 摘要绑定 | 保留原测试合同；本机统计不回退夹具，HTML/CSV 真实导出，缺失质量指标/曲线明确无数据 | T-XQ-004 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-CJPZYJBSC-CJKSH | SRS 1.2.2/3.2.1.2/3.3.2.1; DD 4.1.2/4.2.2.1/5.2.2.1; 基线 6.1–6.4; HTML cap-cjksh | `/scenarios` | `ScenariosPage/ScenarioEditor` | `scenarioStore` | `ScenarioConfig`, `ScenarioDraft`, `ScenarioUiExtensions` | `GET/PUT /api/v1/scenarios/{scenarioId}` | SCN-001, `scenarioCoverage` | 六态+四类业务节点/三类支撑实体/50 边界/四类链路/两类干扰/全数据域 | T-XQ-005 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-CJPZYJBSC-CSJY | SRS 3.2.1.2/3.3.2.2; DD 4.1.2/4.2.2.2/5.2.2.2; 基线 6.1/6.3; HTML cap-csjy | `/scenarios` | `ScenariosPage/ValidationPanel` | `scenarioStore` | `ValidationResult`, `ConfirmationContext` | `POST .../scenarios/{scenarioId}/validate`; confirmations | SCN-001 valid/negative txPower/warning | 六态+fieldPath+ERROR 阻断+WARNING 确认 | T-XQ-006 | INTERACTIVE_UI |
 | DSDWRJQTLJS-XQ-CJPZYJBSC-CJMB | SRS 3.2.1.2/3.3.2.3; DD 4.1.2/4.2.2.3/5.2.2.3; HTML cap-cjmb | `/scenarios` | `ScenariosPage/TemplateLibrary` | `scenarioStore`, `authStore` | `ScenarioTemplate`, `ConfirmationState` | `/api/v1/templates*` | SCN-001 template, referenceCount=2 | 六态+七动作/RBAC/引用拒绝 | T-XQ-007 | INTERACTIVE_UI |
@@ -63,9 +63,20 @@
 
 ## 装备参数维护补项（2026-09-20）
 
-T-XQ-026 系统维护范围新增实际装备参数子链，不改变 29 项能力编号或原能力状态口径：`/admin` → `EquipmentLibrary.vue` → `adminStore.loadMaintenance('equipment') / saveEquipment()` → `EquipmentParameter` → `/api/v1/admin/equipment` GET/POST、`/{equipmentId}` PUT → 本机 `equipment.db`。纯 Mock 使用独立空内存集合，无默认演示参数。
+T-XQ-026 系统维护范围新增实际装备参数子链，不改变 29 项能力编号或原能力状态口径：`/admin` → `EquipmentLibrary.vue` → `adminStore.loadMaintenance('equipment') / saveEquipment() / deleteEquipment()` → `EquipmentParameter / DeleteResult` → `/api/v1/admin/equipment` GET/POST、`/{equipmentId}` PUT/DELETE → 本机 `equipment.db`。删除复用确认接口并绑定编号和版本。纯 Mock 使用独立空内存集合，无默认演示参数。
 
-验证落点为 `tests/components/equipment-library.spec.ts`、`tests/stores/equipment.spec.ts`、`tests/server/equipment-sqlite.spec.ts`、`tests/contracts/equipment-contract.spec.ts`。加载/校验、实际保存请求执行、成功/空态/错误复用现有维护状态；只读、权限、版本冲突和离页/会话失效均不得伪造保存成功。参数包导入隐藏，不声明已接入导入、删除或场景参数自动套用。
+验证落点为 `tests/components/equipment-library.spec.ts`、`tests/stores/equipment.spec.ts`、`tests/server/equipment-sqlite.spec.ts`、`tests/contracts/equipment-contract.spec.ts`。加载/校验、实际保存/删除请求执行、成功/空态/错误复用现有维护状态；只读、权限、版本冲突和离页/会话失效均不得伪造操作成功。参数包导入隐藏，不声明已接入导入或场景参数自动套用。
+
+## 前端模块补齐（2026-09-21，兼容扩展，待整体交付验收）
+
+| 模块 | 实现与来源 | 验证落点 |
+|---|---|---|
+| 评估报表 | LocalReportTabs 文件明细筛选/事件柱状图/登记与设备时间线；ReportTabs 消费正式时序和批次数据绘图；缺失质量、阶段和批次为“暂无数据”。浏览器打印当前视图另存 PDF，不冒称服务端生成。 | frontend-capabilities 组件/E2E；local-report/reports 既有测试 |
+| 装备完整参数及过滤 | EquipmentLibrary → adminStore → 装备 API/SQLite；新增带宽、功率、速率可空；关键字、类型、频段包含筛选。 | equipment-library、equipment-sqlite、frontend-capabilities 合同 |
+| 装备引用/历史 | EquipmentRelations → details/reference 接口；只记录真实保存版本及显式引用，不改既有场景参数。 | frontend-capabilities 组件、equipment-sqlite |
+| 自定义角色/菜单 | AccountManagement 按钮展开 RoleProfiles → access-control API/SQLite → auth/路由/导航/服务端限制；不修改基础身份与默认权限。 | access-control 服务端、auth-session、frontend-capabilities 组件/合同/E2E |
+| 实时质量面板 | QualityMetricPanel 只筛选当前 SituationLinkView 测量；文件/配置无质量数据时为空，不生成历史样本，不把 SNR 当干信比。 | frontend-capabilities 组件、situation 回归 |
+| 链路详情 | LinkQualityDialog 区分测量、所选配置、本地关联；已有测量按证据显示，其他指标“暂无数据”，保持原 UI 三态和 canonical 映射。 | situation、frontend-capabilities 组件 |
 
 ## 完整性门禁
 

@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
+import ReportChart from './ReportChart.vue'
+import { reportTime } from '../../features/reports/local-report'
 import type {
   BatchRunResult,
   DetectionEvent,
@@ -22,9 +24,24 @@ const props = withDefaults(defineProps<{
 const isBatch = computed(() => props.report.batchId !== undefined)
 const batchRuns = computed(() => isBatch.value ? props.batchRuns : [])
 const ordinaryFrame = computed(() => isBatch.value ? null : props.frame)
+const node = ref('')
+const linkId = ref('')
+const from = ref<number | null>(null)
+const to = ref<number | null>(null)
+const nodes = computed(() => [...new Set((props.report.timeSeries ?? []).flatMap(row => [row.sourcePlatformId, row.targetPlatformId]).concat(ordinaryFrame.value?.platforms.map(row => row.platformId) ?? []))])
+const rangeError = computed(() => from.value !== null && to.value !== null && from.value > to.value)
+const inRange = (time: number) => !rangeError.value && (from.value === null || time >= from.value) && (to.value === null || time <= to.value)
+const series = computed(() => (props.report.timeSeries ?? []).filter(row => (!node.value || [row.sourcePlatformId, row.targetPlatformId].includes(node.value)) && (!linkId.value || row.linkId === linkId.value))
+  .map(row => ({ ...row, points: row.points.filter(point => inRange(point.time)) })).filter(row => row.points.length))
+const summaries = computed(() => (ordinaryFrame.value?.linkSummaries ?? []).filter(row => (!node.value || [row.sourcePlatform, row.destPlatform].includes(node.value)) && inRange(row.updatedAt)
+  && (!linkId.value || (props.report.timeSeries ?? []).some(link => link.linkId === linkId.value && link.sourcePlatformId === row.sourcePlatform && link.targetPlatformId === row.destPlatform))))
+function clearFilters(): void { node.value = ''; linkId.value = ''; from.value = null; to.value = null }
+watch(() => props.report.reportId, clearFilters)
 const ordinarySwitchEvents = computed(() => isBatch.value
   ? []
-  : props.events.filter((event): event is SwitchEvent => event.type === 'LINK_SWITCH'))
+  : props.events.filter((event): event is SwitchEvent => event.type === 'LINK_SWITCH' && inRange(event.time)
+    && (!node.value || (props.report.timeSeries ?? []).some(link => [event.newLinkId, event.oldLinkId].includes(link.linkId) && [link.sourcePlatformId, link.targetPlatformId].includes(node.value)))
+    && (!linkId.value || event.newLinkId === linkId.value || event.oldLinkId === linkId.value)))
 
 /** 计算一组数值的平均值，并在空集合时返回 0。 */
 function average(values: number[]): number {
@@ -48,9 +65,12 @@ const kpis = computed<ReportKpis | null>(() => {
   }
 })
 
-const sourceRange = computed(() => isBatch.value
-  ? `${props.report.batchId} · ${batchRuns.value.length} 次确定性运行`
-  : `${props.report.runId} · T+0～7200 s`)
+const sourceRange = computed(() => {
+  if (isBatch.value) return `${props.report.batchId} · ${batchRuns.value.length} 次已加载运行`
+  const times = (props.report.timeSeries ?? []).flatMap(row => row.points.map(point => point.time))
+  if (times.length) return `${props.report.runId} · ${reportTime(Math.min(...times))}～${reportTime(Math.max(...times))}`
+  return ordinaryFrame.value ? `${props.report.runId} · ${reportTime(ordinaryFrame.value.simulationTime)}` : '暂无数据'
+})
 
 type CurveMetric = 'snrDb' | 'ber' | 'interferencePowerDbm'
 const CURVE_METRICS: readonly CurveMetric[] = ['snrDb', 'ber', 'interferencePowerDbm']
@@ -73,12 +93,19 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
 <template>
   <section class="report-tabs" data-testid="report-tabs" :data-report-id="report.reportId">
     <header class="report-tabs__meta">
-      <div><span>统计范围</span><strong>{{ sourceRange }}</strong></div>
+      <div><span>可用证据范围</span><strong>{{ sourceRange }}</strong></div>
       <div><span>数据来源</span><strong>{{ isBatch ? '批量聚合报告' : '单次仿真报告' }}</strong></div>
       <div><span>生成时刻</span><strong>{{ formatDateTime(report.generatedTime) }}</strong></div>
       <div><span>数据分级</span><strong>{{ report.classification === 'LEVEL_III' ? '三级' : '二级' }}</strong></div>
     </header>
 
+    <el-form inline aria-label="质量报告筛选">
+      <el-form-item label="节点"><el-select v-model="node" clearable style="width: 150px" placeholder="全部节点"><el-option v-for="id in nodes" :key="id" :value="id" :label="id" /></el-select></el-form-item>
+      <el-form-item label="链路"><el-select v-model="linkId" clearable style="width: 150px" placeholder="全部链路"><el-option v-for="link in report.timeSeries ?? []" :key="link.linkId" :value="link.linkId" :label="link.linkId" /></el-select></el-form-item>
+      <el-form-item label="起始时刻（秒）"><el-input-number v-model="from" :min="0" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="to" :min="0" /></el-form-item>
+      <el-form-item label="任务阶段"><el-select disabled placeholder="暂无数据" style="width: 140px" /></el-form-item><el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
+    </el-form>
+    <el-alert v-if="rangeError" title="开始时刻不得晚于结束时刻。" type="error" :closable="false" />
     <el-tabs class="report-tabs__body" data-testid="report-content-tabs">
       <el-tab-pane label="汇总" name="summary">
         <div v-if="kpis" class="report-kpis">
@@ -89,11 +116,11 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           <article><span>干扰持续时间</span><strong>{{ kpis.interferenceDurationS }}</strong><small>单位：s</small></article>
           <article><span>平均连通时长</span><strong>{{ kpis.avgConnectivityDurationS }}</strong><small>单位：s</small></article>
         </div>
-        <el-empty v-else description="当前报告没有汇总指标" :image-size="72" />
+        <el-empty v-else description="暂无数据" :image-size="72" />
       </el-tab-pane>
 
-      <el-tab-pane label="分链路" name="links">
-        <el-table v-if="ordinaryFrame" :data="ordinaryFrame.linkSummaries" height="350" stripe>
+      <el-tab-pane label="分链路" name="links" class="report-table-pane">
+        <el-table v-if="ordinaryFrame" :data="summaries" height="100%" stripe empty-text="暂无数据">
           <el-table-column prop="linkKey" label="链路" min-width="120" />
           <el-table-column prop="sourcePlatform" label="源节点" min-width="118" />
           <el-table-column prop="destPlatform" label="目标节点" min-width="118" />
@@ -106,10 +133,10 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           </el-table-column>
           <el-table-column prop="updatedAt" label="源时刻（s）" width="110" />
         </el-table>
-        <el-empty v-else description="批量聚合报告不包含单链路明细" :image-size="72" />
+        <el-empty v-else description="暂无数据" :image-size="72" />
       </el-tab-pane>
 
-      <el-tab-pane label="干扰影响" name="interference">
+      <el-tab-pane label="干扰影响" name="interference" :class="{ 'report-table-pane': isBatch }">
         <el-descriptions v-if="ordinaryFrame" :column="3" border>
           <el-descriptions-item label="干扰设备">{{ ordinaryFrame.evidence.jammerExecution.jammerId }}</el-descriptions-item>
           <el-descriptions-item label="目标节点">{{ ordinaryFrame.evidence.jammerExecution.targetPlatformId }}</el-descriptions-item>
@@ -118,7 +145,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           <el-descriptions-item label="带宽">{{ ordinaryFrame.evidence.jammerExecution.bandwidth }} MHz</el-descriptions-item>
           <el-descriptions-item label="持续时间">{{ ordinaryFrame.evidence.jammerExecution.duration }} s</el-descriptions-item>
         </el-descriptions>
-        <el-table v-else :data="batchRuns" height="350" stripe>
+        <el-table v-else :data="batchRuns" height="100%" stripe empty-text="暂无数据">
           <el-table-column prop="runId" label="运行" min-width="110" />
           <el-table-column prop="powerW" label="功率（W）" width="110" />
           <el-table-column prop="distanceKm" label="距离（km）" width="120" />
@@ -127,8 +154,8 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="切换事件" name="switches">
-        <el-table v-if="ordinaryFrame" :data="ordinarySwitchEvents" height="350" stripe>
+      <el-tab-pane label="切换事件" name="switches" class="report-table-pane">
+        <el-table v-if="ordinaryFrame" :data="ordinarySwitchEvents" height="100%" stripe empty-text="暂无数据">
           <el-table-column prop="eventId" label="事件" min-width="110" />
           <el-table-column prop="oldLinkId" label="原链路" min-width="110" />
           <el-table-column prop="newLinkId" label="新链路" min-width="110" />
@@ -136,7 +163,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           <el-table-column prop="reason" label="原因" min-width="180" />
           <el-table-column prop="time" label="源时刻（s）" width="110" />
         </el-table>
-        <el-table v-else :data="batchRuns" height="350" stripe>
+        <el-table v-else :data="batchRuns" height="100%" stripe empty-text="暂无数据">
           <el-table-column prop="runId" label="运行" min-width="110" />
           <el-table-column prop="powerW" label="功率（W）" width="110" />
           <el-table-column prop="distanceKm" label="距离（km）" width="120" />
@@ -145,8 +172,8 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
         </el-table>
       </el-tab-pane>
 
-      <el-tab-pane label="批量对比" name="batch">
-        <el-table v-if="isBatch" :data="batchRuns" height="350" stripe data-testid="batch-report-table">
+      <el-tab-pane label="批量对比" name="batch" class="report-table-pane">
+        <el-table v-if="isBatch" :data="batchRuns" height="100%" stripe empty-text="暂无数据" data-testid="batch-report-table">
           <el-table-column prop="runId" label="运行" min-width="105" />
           <el-table-column prop="reportId" label="报告" min-width="105" />
           <el-table-column prop="powerW" label="功率（W）" width="100" />
@@ -155,12 +182,12 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           <el-table-column label="平均 BER" width="115"><template #default="scope">{{ formatBer(scope.row.avgBer) }}</template></el-table-column>
           <el-table-column prop="avgSnrDb" label="平均 SNR（dB）" min-width="130" />
         </el-table>
-        <el-empty v-else description="当前为单次仿真报告，无批量参数组合" :image-size="72" />
+        <el-empty v-else description="暂无数据" :image-size="72" />
       </el-tab-pane>
 
       <el-tab-pane label="时序曲线" name="timeline">
-        <div v-if="report.timeSeries" class="report-series">
-          <article v-for="series in report.timeSeries" :key="series.linkId" data-testid="report-time-series">
+        <div v-if="series.length" class="report-series">
+          <article v-for="series in series" :key="series.linkId" data-testid="report-time-series">
             <h4>{{ series.linkId }} · {{ series.sourcePlatformId }} → {{ series.targetPlatformId }}</h4>
             <div class="report-curves">
               <figure v-for="metric in CURVE_METRICS" :key="metric">
@@ -180,7 +207,13 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
             </el-table>
           </article>
         </div>
-        <el-empty v-else description="当前报告没有时序曲线数据" :image-size="72" />
+        <el-empty v-else description="暂无数据" :image-size="72" />
+      </el-tab-pane>
+      <el-tab-pane label="柱状图" lazy><ReportChart title="批次切换次数" unit="次" :rows="batchRuns.map(row => ({ label: row.runId, value: row.switchCount }))" /></el-tab-pane>
+      <el-tab-pane label="雷达图" lazy><ReportChart title="批次连通率对比" unit="%" :rows="batchRuns.map(row => ({ label: row.runId, value: row.connectivityRate }))" radar /></el-tab-pane>
+      <el-tab-pane label="事件时间线" lazy>
+        <el-timeline v-if="ordinarySwitchEvents.length"><el-timeline-item v-for="event in ordinarySwitchEvents" :key="event.eventId" :timestamp="reportTime(event.time)">{{ event.oldLinkId }} → {{ event.newLinkId }} · {{ event.reason }} · {{ event.decision }}</el-timeline-item></el-timeline>
+        <el-empty v-else description="暂无数据" />
       </el-tab-pane>
     </el-tabs>
   </section>

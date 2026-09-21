@@ -95,7 +95,7 @@ describe('App shell', () => {
     try {
       expect(router.currentRoute.value.path).toBe('/reports')
       expect(wrapper.find('nav a[href="/reports"]').exists()).toBe(visible)
-      if (visible) expect(wrapper.get('nav a[href="/reports"]').text()).toBe('报表中心')
+      if (visible) expect(wrapper.get('nav a[href="/reports"]').text()).toBe('评估报表')
       expect(wrapper.find('nav a[href="/replays"]').exists()).toBe(true)
       expect(wrapper.find('nav a[href="/scenarios"]').exists()).toBe(true)
     } finally {
@@ -326,12 +326,12 @@ describe('App shell', () => {
     await router.push('/admin?section=equipment-library')
     await flushPromises()
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('装备参数库')
-    expect(adminWrapper.get('[data-testid="equipment-library"]').text()).toContain('装备基础参数库')
+    expect(adminWrapper.get('[data-testid="equipment-library"]').attributes('aria-label')).toBe('装备参数库')
 
     await router.push('/admin?section=audit-logs')
     await flushPromises()
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('操作审计日志')
-    expect(adminWrapper.get('#audit-logs-title').text()).toBe('操作审计日志')
+    expect(adminWrapper.find('[aria-label="操作审计日志"] [data-testid="audit-log-panel"]').exists()).toBe(true)
     expect(adminWrapper.get('.audit-log-card .el-table').text()).toContain('修改阈值')
 
     const scenario = useScenarioStore(pinia)

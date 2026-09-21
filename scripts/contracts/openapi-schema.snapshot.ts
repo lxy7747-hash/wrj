@@ -1,5 +1,662 @@
 export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object.freeze(
 {
+  "EquipmentReference": {
+    "additionalProperties": false,
+    "properties": {
+      "equipmentId": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "equipmentVersion": {
+        "minimum": 1,
+        "type": "integer"
+      },
+      "linkId": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "scenarioId": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "equipmentId",
+      "scenarioId",
+      "linkId",
+      "equipmentVersion"
+    ],
+    "type": "object"
+  },
+  "EquipmentDetails": {
+    "additionalProperties": false,
+    "properties": {
+      "history": {
+        "items": {
+          "$ref": "#/components/schemas/EquipmentParameter"
+        },
+        "type": "array"
+      },
+      "references": {
+        "items": {
+          "$ref": "#/components/schemas/EquipmentReference"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "history",
+      "references"
+    ],
+    "type": "object"
+  },
+  "EquipmentReferenceRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "reference": {
+        "$ref": "#/components/schemas/EquipmentReference"
+      },
+      "remove": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "reference",
+      "remove"
+    ],
+    "type": "object"
+  },
+  "MenuPaths": {
+    "items": {
+      "enum": [
+        "/situation",
+        "/scenarios",
+        "/reports",
+        "/replays",
+        "/batches",
+        "/blueprint",
+        "/interactions",
+        "/traceability",
+        "/admin/data-exchange",
+        "/admin",
+        "/admin?section=equipment-library",
+        "/admin?section=scenario-templates",
+        "/admin?section=audit-logs",
+        "/admin?section=master-data",
+        "/admin?section=database-backup",
+        "/admin?section=simulation-data",
+        "/admin?section=runtime-status"
+      ],
+      "type": "string"
+    },
+    "minItems": 1,
+    "type": "array",
+    "uniqueItems": true
+  },
+  "RoleProfile": {
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "else": {
+          "properties": {
+            "menuPaths": {
+              "contains": {
+                "const": "/admin"
+              }
+            },
+            "permissions": {
+              "contains": {
+                "const": "USER_ROLE_MAINTAIN"
+              }
+            }
+          }
+        },
+        "if": {
+          "properties": {
+            "baseRole": {
+              "const": "OPERATOR"
+            }
+          },
+          "required": [
+            "baseRole"
+          ]
+        },
+        "then": {
+          "properties": {
+            "menuPaths": {
+              "items": {
+                "enum": [
+                  "/situation",
+                  "/scenarios",
+                  "/reports",
+                  "/replays",
+                  "/batches",
+                  "/blueprint",
+                  "/interactions",
+                  "/traceability",
+                  "/admin/data-exchange"
+                ]
+              }
+            },
+            "permissions": {
+              "items": {
+                "enum": [
+                  "BUSINESS_READ",
+                  "SCENARIO_DRAFT_WRITE",
+                  "SIMULATION_CONTROL",
+                  "ORDINARY_REPORT_EXPORT"
+                ]
+              }
+            }
+          }
+        }
+      }
+    ],
+    "properties": {
+      "baseRole": {
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ],
+        "type": "string"
+      },
+      "menuPaths": {
+        "$ref": "#/components/schemas/MenuPaths"
+      },
+      "name": {
+        "maxLength": 64,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "permissions": {
+        "contains": {
+          "const": "BUSINESS_READ"
+        },
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "uniqueItems": true
+      },
+      "profileId": {
+        "pattern": "^[A-Za-z0-9_-]{1,64}$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "profileId",
+      "name",
+      "baseRole",
+      "permissions",
+      "menuPaths"
+    ],
+    "type": "object"
+  },
+  "RoleAssignment": {
+    "additionalProperties": false,
+    "properties": {
+      "profileId": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "userId": {
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      }
+    },
+    "required": [
+      "userId",
+      "profileId"
+    ],
+    "type": "object"
+  },
+  "AccessControlConfig": {
+    "additionalProperties": false,
+    "properties": {
+      "assignments": {
+        "items": {
+          "$ref": "#/components/schemas/RoleAssignment"
+        },
+        "maxItems": 1000,
+        "type": "array",
+        "uniqueItems": true
+      },
+      "profiles": {
+        "items": {
+          "$ref": "#/components/schemas/RoleProfile"
+        },
+        "maxItems": 100,
+        "type": "array",
+        "uniqueItems": true
+      },
+      "version": {
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "version",
+      "profiles",
+      "assignments"
+    ],
+    "type": "object"
+  },
+  "GetapiV1AdminEquipmentEquipmentIdDetailsResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/EquipmentDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdReferenceResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/EquipmentDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "GetapiV1AdminAccessControlResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/AccessControlConfig"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "PutapiV1AdminAccessControlResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/AccessControlConfig"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
+  "PutapiV1AdminAccessControlRequest": {
+    "$ref": "#/components/schemas/AccessControlConfig"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdReferenceRequest": {
+    "$ref": "#/components/schemas/EquipmentReferenceRequest"
+  },
+  "LocalReportEvidence": {
+    "additionalProperties": false,
+    "properties": {
+      "connections": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "eventId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "scope": {
+              "enum": [
+                "INTERNAL",
+                "INTER_PLATFORM"
+              ]
+            },
+            "sourceDeviceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "sourcePlatformId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "targetDeviceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "targetPlatformId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "time": {
+              "minimum": 0,
+              "type": "number"
+            }
+          },
+          "required": [
+            "eventId",
+            "time",
+            "scope",
+            "sourcePlatformId",
+            "sourceDeviceId",
+            "targetPlatformId",
+            "targetDeviceId"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "deviceEvents": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "deviceId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "eventId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "platformId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "time": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "type": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "eventId",
+            "type",
+            "time",
+            "platformId",
+            "deviceId"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "endTimeS": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "eventCount": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "eventCounts": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "count": {
+              "maximum": 9007199254740991,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "type": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "count"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      },
+      "eventFile": {
+        "additionalProperties": false,
+        "properties": {
+          "fileName": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fileName",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "eventWarningCount": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "nodes": {
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "firstTimeS": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "lastTimeS": {
+              "minimum": 0,
+              "type": "number"
+            },
+            "name": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "platformId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "positionCount": {
+              "maximum": 9007199254740991,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "side": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "type": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "platformId",
+            "name",
+            "type",
+            "side",
+            "positionCount",
+            "firstTimeS",
+            "lastTimeS"
+          ],
+          "type": "object"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "positionCount": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "positionFile": {
+        "additionalProperties": false,
+        "properties": {
+          "fileName": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "fileName",
+          "sha256"
+        ],
+        "type": "object"
+      },
+      "positionIssueCount": {
+        "maximum": 9007199254740991,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "simulationComplete": {
+        "type": "boolean"
+      },
+      "startTimeS": {
+        "minimum": 0,
+        "type": "number"
+      },
+      "waitingForPositionLine": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "eventFile",
+      "positionFile",
+      "startTimeS",
+      "endTimeS",
+      "simulationComplete",
+      "positionCount",
+      "positionIssueCount",
+      "waitingForPositionLine",
+      "eventCount",
+      "eventWarningCount",
+      "nodes",
+      "eventCounts",
+      "connections",
+      "deviceEvents"
+    ],
+    "type": "object"
+  },
+  "LocalReportExportResult": {
+    "additionalProperties": false,
+    "properties": {
+      "filePath": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "format": {
+        "enum": [
+          "HTML",
+          "CSV"
+        ]
+      },
+      "generated": {
+        "const": true
+      },
+      "reportId": {
+        "pattern": "^RPT-LOCAL-[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "sha256": {
+        "pattern": "^[a-f0-9]{64}$",
+        "type": "string"
+      },
+      "status": {
+        "const": "SUCCESS"
+      },
+      "verifiedAt": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "watermark": {
+        "minLength": 1,
+        "type": "string"
+      }
+    },
+    "required": [
+      "reportId",
+      "generated",
+      "status",
+      "format",
+      "watermark",
+      "verifiedAt",
+      "filePath",
+      "sha256"
+    ],
+    "type": "object"
+  },
+  "ReportExportOutcome": {
+    "oneOf": [
+      {
+        "$ref": "#/components/schemas/ReportExportResult"
+      },
+      {
+        "$ref": "#/components/schemas/LocalReportExportResult"
+      }
+    ]
+  },
+  "DeleteapiV1AdminEquipmentEquipmentIdResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      },
+      "ok": {
+        "const": true
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "type": "object"
+  },
   "EquipmentCreateRequest": {
     "allOf": [
       {
@@ -35,9 +692,23 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "additionalProperties": false,
     "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。",
     "properties": {
+      "bandwidthMHz": {
+        "exclusiveMinimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
+      },
       "berThreshold": {
         "maximum": 1,
         "minimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
+      },
+      "dataRateMbps": {
+        "exclusiveMinimum": 0,
         "type": [
           "number",
           "null"
@@ -72,6 +743,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "readOnly": {
         "type": "boolean"
+      },
+      "txPowerW": {
+        "minimum": 0,
+        "type": [
+          "number",
+          "null"
+        ]
       },
       "type": {
         "maxLength": 100,
@@ -440,60 +1118,63 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'required': [],
     'type': 'object'
   },
-  'AuthResult': {
-    'additionalProperties': false,
-    'properties': {
-      'authenticated': {
-        'type': 'boolean'
+  "AuthResult": {
+    "additionalProperties": false,
+    "properties": {
+      "authenticated": {
+        "type": "boolean"
       },
-      'principal': {
-        'additionalProperties': false,
-        'properties': {
-          'permissions': {
-            'items': {
-              'type': 'string'
+      "principal": {
+        "additionalProperties": false,
+        "properties": {
+          "menuPaths": {
+            "$ref": "#/components/schemas/MenuPaths"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
             },
-            'type': 'array'
+            "type": "array"
           },
-          'role': {
-            'enum': [
-              'ADMIN',
-              'OPERATOR'
+          "role": {
+            "enum": [
+              "ADMIN",
+              "OPERATOR"
             ],
-            'type': 'string'
+            "type": "string"
           },
-          'userId': {
-            'minLength': 1,
-            'type': 'string'
+          "userId": {
+            "minLength": 1,
+            "type": "string"
           },
-          'username': {
-            'type': 'string'
+          "username": {
+            "type": "string"
           }
         },
-        'required': [
-          'userId',
-          'username',
-          'role',
-          'permissions'
+        "required": [
+          "userId",
+          "username",
+          "role",
+          "permissions"
         ],
-        'type': 'object'
+        "type": "object"
       },
-      'reason': {
-        'enum': [
-          'INVALID_CREDENTIALS',
-          'ACCOUNT_LOCKED'
+      "reason": {
+        "enum": [
+          "INVALID_CREDENTIALS",
+          "ACCOUNT_LOCKED"
         ]
       },
-      'sessionCreated': {
-        'description': 'true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry.',
-        'type': 'boolean'
+      "sessionCreated": {
+        "description": "true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry.",
+        "type": "boolean"
       }
     },
-    'required': [
-      'authenticated',
-      'sessionCreated'
+    "required": [
+      "authenticated",
+      "sessionCreated"
     ],
-    'type': 'object'
+    "type": "object"
   },
   'BackupList': {
     'items': {
@@ -3525,29 +4206,32 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     'type': 'object'
   },
-  'PermissionSet': {
-    'additionalProperties': false,
-    'properties': {
-      'permissions': {
-        'items': {
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
+  "PermissionSet": {
+    "additionalProperties": false,
+    "properties": {
+      "menuPaths": {
+        "$ref": "#/components/schemas/MenuPaths"
       },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
+      "permissions": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array",
+        "uniqueItems": true
+      },
+      "role": {
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
         ],
-        'type': 'string'
+        "type": "string"
       }
     },
-    'required': [
-      'role',
-      'permissions'
+    "required": [
+      "role",
+      "permissions"
     ],
-    'type': 'object'
+    "type": "object"
   },
   'Platform': {
     'additionalProperties': false,
@@ -4213,25 +4897,25 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   'PostapiV1ReportsReportIdExportRequest': {
     '$ref': '#/components/schemas/ReportExportRequest'
   },
-  'PostapiV1ReportsReportIdExportResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ReportExportResult'
+  "PostapiV1ReportsReportIdExportResponse": {
+    "additionalProperties": false,
+    "properties": {
+      "data": {
+        "$ref": "#/components/schemas/ReportExportOutcome"
       },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
       },
-      'ok': {
-        'const': true
+      "ok": {
+        "const": true
       }
     },
-    'required': [
-      'ok',
-      'data',
-      'meta'
+    "required": [
+      "ok",
+      "data",
+      "meta"
     ],
-    'type': 'object'
+    "type": "object"
   },
   'PostapiV1ResetRequest': {
     '$ref': '#/components/schemas/ResetRequest'
@@ -4760,66 +5444,110 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     },
     'type': 'array'
   },
-  'Report': {
-    'additionalProperties': false,
-    'allOf': [
+  "Report": {
+    "additionalProperties": false,
+    "allOf": [
       {
-        'if': {
-          'required': [
-            'runId'
+        "if": {
+          "required": [
+            "runId"
           ]
         },
-        'then': {
-          'required': [
-            'timeSeries'
+        "then": {
+          "required": [
+            "timeSeries"
           ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "localEvidence"
+          ]
+        },
+        "then": {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "runId"
+                ]
+              },
+              {
+                "required": [
+                  "batchId"
+                ]
+              },
+              {
+                "required": [
+                  "kpis"
+                ]
+              },
+              {
+                "required": [
+                  "timeSeries"
+                ]
+              }
+            ]
+          },
+          "properties": {
+            "classification": {
+              "const": "LEVEL_II"
+            },
+            "reportId": {
+              "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
+            }
+          }
         }
       }
     ],
-    'properties': {
-      'batchId': {
-        'pattern': '^BATCH-',
-        'type': 'string'
+    "properties": {
+      "batchId": {
+        "pattern": "^BATCH-",
+        "type": "string"
       },
-      'classification': {
-        'enum': [
-          'LEVEL_II',
-          'LEVEL_III'
+      "classification": {
+        "enum": [
+          "LEVEL_II",
+          "LEVEL_III"
         ]
       },
-      'generatedTime': {
-        'format': 'date-time',
-        'type': 'string'
+      "generatedTime": {
+        "format": "date-time",
+        "type": "string"
       },
-      'kpis': {
-        '$ref': '#/components/schemas/ReportKpis'
+      "kpis": {
+        "$ref": "#/components/schemas/ReportKpis"
       },
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
+      "localEvidence": {
+        "$ref": "#/components/schemas/LocalReportEvidence"
       },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
+      "reportId": {
+        "pattern": "^RPT-",
+        "type": "string"
       },
-      'status': {
-        'const': 'READY'
+      "runId": {
+        "pattern": "^RUN-",
+        "type": "string"
       },
-      'timeSeries': {
-        'items': {
-          '$ref': '#/components/schemas/ReportTimeSeries'
+      "status": {
+        "const": "READY"
+      },
+      "timeSeries": {
+        "items": {
+          "$ref": "#/components/schemas/ReportTimeSeries"
         },
-        'minItems': 1,
-        'type': 'array'
+        "minItems": 1,
+        "type": "array"
       }
     },
-    'required': [
-      'reportId',
-      'classification',
-      'generatedTime',
-      'status'
+    "required": [
+      "reportId",
+      "classification",
+      "generatedTime",
+      "status"
     ],
-    'type': 'object'
+    "type": "object"
   },
   'ReportExportRequest': {
     'additionalProperties': false,

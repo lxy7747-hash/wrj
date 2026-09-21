@@ -11,6 +11,7 @@ const props = defineProps<{
   modelValue: boolean
   link: SituationLinkView | null
   configuredLink?: Link | null
+  fileLink?: { linkId: string; sourceName: string; destinationName: string; typeLabel: string; registeredAt: number; deviceStatus: string } | null
 }>()
 
 defineEmits<{ 'update:modelValue': [value: boolean] }>()
@@ -54,11 +55,20 @@ function reasonLabel(reason: string): string {
     <template #header>
       <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : '链路不存在或已从当前帧移除' }}</strong>
+        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
-    <div v-if="!link && configuredLink" class="link-quality-dialog__body" data-testid="link-detail-configured">
+    <div v-if="!link && fileLink" class="link-quality-dialog__body" data-testid="link-detail-file">
+      <p>{{ fileLink.sourceName }} → {{ fileLink.destinationName }}</p>
+      <dl class="link-quality-dialog__grid">
+        <div><dt>通信体制</dt><dd>{{ fileLink.typeLabel }}</dd></div>
+        <div><dt>设备启停证据</dt><dd>{{ fileLink.deviceStatus }}</dd></div>
+        <div><dt>最近登记时刻</dt><dd>{{ Math.floor(fileLink.registeredAt / 60) }}分{{ Number((fileLink.registeredAt % 60).toFixed(3)) }}秒</dd></div>
+        <div v-for="label in ['干信比', '信噪比 SNR', '误码率 BER', '接收功率', '路径损耗', '时延', '可用率', '质量判定依据', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+      </dl>
+    </div>
+    <div v-else-if="!link && configuredLink" class="link-quality-dialog__body" data-testid="link-detail-configured">
       <p>{{ configuredLink.sourcePlatformId }} → {{ configuredLink.targetPlatformId }}</p>
       <dl class="link-quality-dialog__grid">
         <div><dt>链路体制</dt><dd>{{ LINK_TYPE_LABELS[configuredLink.type] }}</dd></div>
@@ -69,7 +79,7 @@ function reasonLabel(reason: string): string {
         <div><dt>调制方式</dt><dd>{{ configuredLink.modulation }}</dd></div>
         <div><dt>误码率阈值</dt><dd>{{ formatBer(configuredLink.berThreshold) }}</dd></div>
         <div><dt>数据速率</dt><dd>{{ configuredLink.dataRate }} Mbps</dd></div>
-        <div v-for="label in ['信噪比 SNR', '误码率 BER', '界面状态', '规范状态']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+        <div v-for="label in ['干信比', '信噪比 SNR', '误码率 BER', '接收功率', '路径损耗', '时延', '可用率', '界面状态', '规范状态', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
       </dl>
       <p class="link-quality-dialog__notice">以上为已保存配置；尚无当前运行结果，未使用历史数据。</p>
     </div>
@@ -94,12 +104,13 @@ function reasonLabel(reason: string): string {
         <div><dt>更新时间</dt><dd>{{ link.updatedAt }} s</dd></div>
         <div><dt>信噪比 SNR</dt><dd>{{ link.snrDb.toFixed(2) }} dB</dd></div>
         <div><dt>误码率 BER</dt><dd>{{ formatBer(link.ber) }}</dd></div>
+        <div v-for="label in ['干信比', '时延', '可用率']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
         <div><dt>数据年龄</dt><dd>{{ link.ageMs }} ms</dd></div>
         <div><dt>数据新鲜度</dt><dd>{{ freshnessLabel }}</dd></div>
         <div><dt>界面状态</dt><dd :class="`status--${link.status.toLowerCase()}`">{{ uiStatusLabel }}</dd></div>
         <div><dt>规范状态</dt><dd :class="`status--${link.canonicalStatus.toLowerCase()}`">{{ canonicalStatusLabel }}</dd></div>
-        <div><dt>阈值版本</dt><dd>{{ link.thresholdVersion ?? '未提供' }}</dd></div>
-        <div><dt>稳定帧数</dt><dd>{{ link.consecutiveFrames ?? '未提供' }}</dd></div>
+        <div><dt>阈值版本</dt><dd>{{ link.thresholdVersion ?? '暂无数据' }}</dd></div>
+        <div><dt>稳定帧数</dt><dd>{{ link.consecutiveFrames ?? '暂无数据' }}</dd></div>
         <div class="link-quality-dialog__wide"><dt>判定依据</dt><dd>{{ reasonLabel(link.reason) }}</dd></div>
         <template v-if="link.detailed">
           <div><dt>传输距离</dt><dd>{{ (link.detailed.distance / 1000).toFixed(1) }} km</dd></div>
@@ -109,7 +120,9 @@ function reasonLabel(reason: string): string {
           <div><dt>误码率阈值</dt><dd>{{ formatBer(link.detailed.berThreshold) }}</dd></div>
           <div><dt>路径损耗</dt><dd>{{ link.detailed.pathLoss }} dB</dd></div>
           <div><dt>数据速率</dt><dd>{{ link.detailed.dataRate }} Mbps</dd></div>
+          <div><dt>调制方式</dt><dd>{{ link.detailed.modulation }}</dd></div>
         </template>
+        <template v-else><div v-for="label in ['传输距离', '频率', '带宽', '接收功率', '路径损耗', '调制方式']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div></template>
       </dl>
 
       <p v-if="!link.detailed" class="link-quality-dialog__notice">

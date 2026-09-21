@@ -5,10 +5,10 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { DetectionEvent, Link, SimulationMode, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
-import LinkCandidatePanel from '../../components/situation/LinkCandidatePanel.vue'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
+import QualityMetricPanel from '../../components/situation/QualityMetricPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import SavedScenePreview from '../../components/situation/SavedScenePreview.vue'
@@ -83,7 +83,7 @@ const stopDialogVisible = ref(false)
 const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
-const candidatePanelVisible = ref(false)
+const telemetryTab = ref('status')
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
@@ -274,8 +274,15 @@ const selectedConfiguredLink = computed(() => {
   const link = selectedScene.value?.config.links.find(link => link.id === selectedLinkId.value)
   return link ? { ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) } : null
 })
-watch([selectedLink, selectedConfiguredLink], ([live, configured]) => {
-  if (!live && !configured) linkDialogVisible.value = false
+const selectedFileLink = computed(() => {
+  const row = displayedLinks.value.find(link => link.linkId === selectedLinkId.value && link.file)
+  if (!row?.file) return null
+  return { linkId: row.linkId, sourceName: row.sourceName, destinationName: row.destinationName,
+    typeLabel: FILE_COMMUNICATION_LABELS[row.file.type], deviceStatus: row.file.status,
+    registeredAt: Math.max(...row.file.records.map(record => record.time)) }
+})
+watch([selectedLink, selectedConfiguredLink, selectedFileLink], ([live, configured, file]) => {
+  if (!live && !configured && !file) linkDialogVisible.value = false
 })
 watch(() => selectedScene.value?.config.scenario.id, () => {
   selectedNodeId.value = ''
@@ -545,16 +552,9 @@ function handleLinkRowClick(link: typeof displayedLinks.value[number]): void {
     openConfiguredLinkDetails(link.configured)
   } else if (link.file) {
     focusLinkOnMap(link.linkId)
+    selectedLinkId.value = link.linkId
+    linkDialogVisible.value = true
   }
-}
-
-/**
- * 打开当前固定帧的链路候选快照。
- * @returns 无返回值。
- * @sideeffect 显示链路候选集合弹框。
- */
-function openLinkCandidates(): void {
-  candidatePanelVisible.value = true
 }
 
 /**
@@ -917,15 +917,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :aria-label="telemetryPanelCollapsed ? '展开链路、干扰与事件' : '折叠链路、干扰与事件'"
           @click="toggleTelemetryPanel"
         ><span aria-hidden="true">{{ telemetryPanelCollapsed ? '‹' : '›' }}</span></button>
+        <el-tabs v-model="telemetryTab" class="telemetry-tabs">
+          <el-tab-pane label="链路状态" name="status" class="telemetry-status-pane">
         <section class="telemetry-section telemetry-section--links" :data-frame-id="frame?.frameId">
           <div class="panel-heading">
             <div><strong>全链路状态</strong></div>
-            <div>
-              <span class="panel-heading__more">异常 {{ situationMetrics ? `${situationMetrics.degradedLinkCount + situationMetrics.downLinkCount} 条` : '暂无数据' }}</span>
-              <el-button link type="primary" data-testid="open-link-candidates" :disabled="!frame" @click="openLinkCandidates">
-                候选 {{ frame ? `${frame.evidence.routeCandidates.length} 条` : '暂无数据' }}
-              </el-button>
-            </div>
           </div>
           <div class="link-table-wrap">
             <table class="link-table" :class="{ 'link-table--quality': MAP_CONFIG.showLinkQualityColumns }">
@@ -995,6 +991,16 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </ol>
           <el-empty v-else class="telemetry-empty-state" description="暂无当前运行事件" :image-size="48" />
         </section>
+          </el-tab-pane>
+          <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
+            <QualityMetricPanel
+              :links="displayedLinks.map(link => link.live ?? link)"
+              :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
+              :source-key="`${sourceState}:${selectedScene?.config.scenario.id ?? frame?.runId ?? ''}`"
+              :selected-link-id="selectedLinkId"
+            />
+          </el-tab-pane>
+        </el-tabs>
       </aside>
     </div>
 
@@ -1015,15 +1021,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>{{ fileTimeLabel(fileTime) }} · 节点 {{ fileNodes.length }} 个 · 点击左侧节点可定位</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" />
-    <LinkCandidatePanel
-      v-model="candidatePanelVisible"
-      :frame="frame"
-      :links="situationLinks"
-      :capability-state="telemetryCapabilityState"
-      :feedback="telemetryFeedback"
-      @reload="retryTelemetry"
-    />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
       <p class="stop-dialog-copy">{{ selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
@@ -1095,12 +1093,16 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 }
 .scene-summary, .telemetry-panel { position: absolute; z-index: 1100; top: .75rem; bottom: .75rem; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--console-border); border-radius: 8px; background: rgba(8,25,39,.96); box-shadow: var(--console-shadow); transition: width .18s ease; }
 .scene-summary { left: .75rem; display: grid; width: 16rem; grid-template-rows: auto auto minmax(0, 1fr); }
-.telemetry-panel { right: .75rem; display: grid; width: 22.5rem; grid-template-rows: minmax(14rem, 1.35fr) minmax(10rem, 1fr) minmax(8rem, .8fr); border-color: #1e3448; background: #0f1f30; }
+.telemetry-panel { right: .75rem; display: flex; flex-direction: column; width: 22.5rem; border-color: #1e3448; background: #0f1f30; }
+.telemetry-tabs { flex: 1; min-width: 0; min-height: 0; }
+.telemetry-tabs :deep(.el-tabs__header) { flex: 0 0 auto; margin: 0; padding: 0 .85rem 0 2.65rem; }
+.telemetry-tabs :deep(.el-tabs__content) { min-height: 0; overflow: hidden; }
+.telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .8fr); }
+.telemetry-quality-pane { height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
 .floating-panel__toggle { position: absolute; z-index: 2; top: .3rem; display: grid; width: 1.75rem; height: 1.75rem; place-items: center; padding: 0; border: 1px solid var(--console-border-strong); border-radius: 5px; color: var(--console-cyan); background: rgba(7,21,34,.96); font-size: 1.1rem; line-height: 1; cursor: pointer; }
 .floating-panel__toggle--left { right: .35rem; }
 .floating-panel__toggle--right { left: .35rem; }
 .scene-summary > .panel-heading { padding-right: 2.65rem; }
-.telemetry-panel > .telemetry-section:first-of-type .panel-heading { padding-left: 2.65rem; }
 .scene-summary.is-collapsed > :not(.floating-panel__toggle), .telemetry-panel.is-collapsed > :not(.floating-panel__toggle) { display: none; }
 .scene-summary.is-collapsed .floating-panel__toggle, .telemetry-panel.is-collapsed .floating-panel__toggle { top: 0; right: auto; left: 0; font-size: 1.5rem; font-weight: 700; text-shadow: 0 0 2px #06111d, 0 0 5px #06111d; }
 .panel-heading { display: flex; min-height: 2.25rem; align-items: center; justify-content: space-between; gap: .5rem; padding: .4rem .65rem; border-bottom: 1px solid var(--console-border); background: rgba(16,40,58,.72); }

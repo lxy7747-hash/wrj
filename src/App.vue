@@ -6,10 +6,12 @@ import BrandIcon from './components/BrandIcon.vue'
 import { APP_CONFIG } from './config/app.config'
 import { useAuthStore } from './stores/auth'
 import { useUiStore } from './stores/ui'
+import { canVisitMenu } from './features/admin/access-control'
 
 const auth = useAuthStore()
 const ui = useUiStore()
 const router = useRouter()
+const menuVisible = (path: string) => canVisitMenu(auth.principal, path)
 
 watch(
   () => auth.principal,
@@ -70,12 +72,12 @@ async function logout(): Promise<void> {
 
       <div class="app-shell__navigation">
         <nav aria-label="主导航">
-          <router-link to="/situation">态势主界面</router-link>
-          <router-link to="/scenarios">场景配置</router-link>
+          <router-link v-if="menuVisible('/situation')" to="/situation">态势主界面</router-link>
+          <router-link v-if="menuVisible('/scenarios')" to="/scenarios">场景配置</router-link>
           <!-- <router-link to="/batches">批量仿真</router-link> -->
-          <router-link v-if="APP_CONFIG.showReports" to="/reports">报表中心</router-link>
-          <router-link to="/replays">历史回放</router-link>
-          <router-link v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" :to="systemManagementPath">系统管理</router-link>
+          <router-link v-if="APP_CONFIG.showReports && menuVisible('/reports')" to="/reports">评估报表</router-link>
+          <router-link v-if="menuVisible('/replays')" to="/replays">历史回放</router-link>
+          <router-link v-if="(auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange) && menuVisible(systemManagementPath)" :to="systemManagementPath">系统管理</router-link>
           <!-- <router-link
             to="/blueprint"
             :class="{ 'router-link-active': ['/traceability', '/interactions'].includes($route.path) }"
@@ -108,30 +110,32 @@ async function logout(): Promise<void> {
           <aside v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" class="system-management__sidebar" aria-label="系统管理导航">
             <el-menu router :default-active="$route.fullPath">
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="模型与参数">
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData && menuVisible('/admin?section=master-data')" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
                 <el-menu-item
+                  v-if="menuVisible('/admin?section=equipment-library')"
                   index="/admin?section=equipment-library"
                   :disabled="auth.principal?.role !== 'ADMIN'"
                 >
                   装备参数库
                 </el-menu-item>
-                <el-menu-item index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
+                <el-menu-item v-if="menuVisible('/admin?section=scenario-templates')" index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="账号与维护">
                 <el-menu-item
+                  v-if="menuVisible('/admin?section=audit-logs')"
                   index="/admin?section=audit-logs"
                   :disabled="auth.principal?.role !== 'ADMIN'"
                 >
                   操作审计日志
                 </el-menu-item>
                 <el-menu-item index="/admin" :disabled="auth.principal?.role !== 'ADMIN'">账号管理</el-menu-item>
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showDatabaseBackup" index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showDatabaseBackup && menuVisible('/admin?section=database-backup')" index="/admin?section=database-backup" :disabled="auth.principal?.role !== 'ADMIN'">数据库备份 / 恢复</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN' && (APP_CONFIG.systemManagement.showSimulationData || APP_CONFIG.systemManagement.showRuntimeStatus)" title="数据与运行">
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showSimulationData" index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showRuntimeStatus" index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showSimulationData && menuVisible('/admin?section=simulation-data')" index="/admin?section=simulation-data" :disabled="auth.principal?.role !== 'ADMIN'">仿真数据管理</el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showRuntimeStatus && menuVisible('/admin?section=runtime-status')" index="/admin?section=runtime-status" :disabled="auth.principal?.role !== 'ADMIN'">系统运行状态</el-menu-item>
               </el-menu-item-group>
-              <el-menu-item-group v-if="APP_CONFIG.systemManagement.showDataExchange" title="数据交换">
+              <el-menu-item-group v-if="APP_CONFIG.systemManagement.showDataExchange && menuVisible('/admin/data-exchange')" title="数据交换">
                 <el-menu-item index="/admin/data-exchange">
                   <span>数据交换与接口</span>
                 </el-menu-item>
@@ -153,9 +157,9 @@ async function logout(): Promise<void> {
           <aside class="system-management__sidebar" aria-label="能力与接口导航">
             <el-menu router :default-active="$route.path">
               <el-menu-item-group title="能力与追踪">
-                <el-menu-item index="/blueprint">能力/接口蓝图</el-menu-item>
-                <el-menu-item index="/traceability">需求追踪</el-menu-item>
-                <el-menu-item index="/interactions">感知、干扰与选路</el-menu-item>
+                <el-menu-item v-if="menuVisible('/blueprint')" index="/blueprint">能力/接口蓝图</el-menu-item>
+                <el-menu-item v-if="menuVisible('/traceability')" index="/traceability">需求追踪</el-menu-item>
+                <el-menu-item v-if="menuVisible('/interactions')" index="/interactions">感知、干扰与选路</el-menu-item>
               </el-menu-item-group>
             </el-menu>
           </aside>

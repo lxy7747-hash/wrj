@@ -158,11 +158,21 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/ws/v1', operationId: 'getwsV1' },
   { method: 'post', path: '/api/v1/admin/config/export', operationId: 'postapiV1AdminConfigExport' },
   { method: 'get', path: '/api/v1/admin/equipment', operationId: 'getapiV1AdminEquipment' },
+  { method: 'delete', path: '/api/v1/admin/equipment/{equipmentId}', operationId: 'deleteapiV1AdminEquipmentEquipmentId' },
   { method: 'post', path: '/api/v1/admin/equipment', operationId: 'postapiV1AdminEquipment' },
   { method: 'put', path: '/api/v1/admin/equipment/{equipmentId}', operationId: 'putapiV1AdminEquipmentEquipmentId' },
+  {"method":"get","path":"/api/v1/admin/equipment/{equipmentId}/details","operationId":"getapiV1AdminEquipmentEquipmentIdDetails"},
+  {"method":"put","path":"/api/v1/admin/equipment/{equipmentId}/reference","operationId":"putapiV1AdminEquipmentEquipmentIdReference"},
+  {"method":"get","path":"/api/v1/admin/access-control","operationId":"getapiV1AdminAccessControl"},
+  {"method":"put","path":"/api/v1/admin/access-control","operationId":"putapiV1AdminAccessControl"},
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
+  getapiV1AdminEquipmentEquipmentIdDetails: operationSchemaBinding(null, '200', "#/components/schemas/EquipmentDetails"),
+  putapiV1AdminEquipmentEquipmentIdReference: operationSchemaBinding("#/components/schemas/EquipmentReferenceRequest", '200', "#/components/schemas/EquipmentDetails"),
+  getapiV1AdminAccessControl: operationSchemaBinding(null, '200', "#/components/schemas/AccessControlConfig"),
+  putapiV1AdminAccessControl: operationSchemaBinding("#/components/schemas/AccessControlConfig", '200', "#/components/schemas/AccessControlConfig"),
   getapiV1AdminEquipment: operationSchemaBinding(null, '200', '#/components/schemas/EquipmentParameterList'),
+  deleteapiV1AdminEquipmentEquipmentId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   postapiV1AdminEquipment: operationSchemaBinding('#/components/schemas/EquipmentCreateRequest', '201', '#/components/schemas/EquipmentParameter'),
   putapiV1AdminEquipmentEquipmentId: operationSchemaBinding('#/components/schemas/EquipmentUpdateRequest', '200', '#/components/schemas/EquipmentParameter'),
   postapiV1AuthLogin: operationSchemaBinding('#/components/schemas/LoginRequest', '200', '#/components/schemas/AuthResult'),
@@ -208,7 +218,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1BatchesBatchIdCommands: operationSchemaBinding('#/components/schemas/BatchCommand', '200', '#/components/schemas/Batch'),
   getapiV1Reports: operationSchemaBinding(null, '200', '#/components/schemas/ReportList'),
   getapiV1ReportsReportId: operationSchemaBinding(null, '200', '#/components/schemas/Report'),
-  postapiV1ReportsReportIdExport: operationSchemaBinding('#/components/schemas/ReportExportRequest', '200', '#/components/schemas/ReportExportResult'),
+  postapiV1ReportsReportIdExport: operationSchemaBinding('#/components/schemas/ReportExportRequest', '200', '#/components/schemas/ReportExportOutcome'),
   postapiV1Confirmations: operationSchemaBinding('#/components/schemas/ConfirmationRequest', '201', '#/components/schemas/ConfirmationContext'),
   postapiV1ConfirmationsConfirmationId: operationSchemaBinding('#/components/schemas/ConfirmRequest', '200', '#/components/schemas/ConfirmationContext'),
   getapiV1Replays: operationSchemaBinding(null, '200', '#/components/schemas/ReplayList'),
@@ -234,7 +244,12 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  getapiV1AdminEquipmentEquipmentIdDetails: ["401","403","503"],
+  putapiV1AdminEquipmentEquipmentIdReference: ["401","403","404","409","422","503"],
+  getapiV1AdminAccessControl: ["401","403","503"],
+  putapiV1AdminAccessControl: ["401","403","404","409","422","503"],
   getapiV1AdminEquipment: ['401', '403', '503'],
+  deleteapiV1AdminEquipmentEquipmentId: ['401', '403', '404', '409', '422', '428', '503'],
   postapiV1AdminEquipment: ['401', '403', '409', '422', '503'],
   putapiV1AdminEquipmentEquipmentId: ['401', '403', '404', '409', '422', '503'],
   postapiV1AuthLogin: ['401', '423', '429'],
@@ -278,9 +293,9 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1Batches: ['401', '422'],
   getapiV1BatchesBatchId: ['401', '404', '409'],
   postapiV1BatchesBatchIdCommands: ['401', '409'],
-  getapiV1Reports: ['401'],
-  getapiV1ReportsReportId: ['401'],
-  postapiV1ReportsReportIdExport: ['401', '403', '428'],
+  getapiV1Reports: ['401', '503'],
+  getapiV1ReportsReportId: ['401', '409', '503'],
+  postapiV1ReportsReportIdExport: ['401', '403', '404', '409', '422', '428', '503'],
   postapiV1Confirmations: ['401', '400', '403'],
   postapiV1ConfirmationsConfirmationId: ['401', '400', '403', '409'],
   getapiV1Replays: ['401'],
@@ -306,10 +321,23 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ["#/components/schemas/MenuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/batches","/blueprint","/interactions","/traceability","/admin/data-exchange","/admin","/admin?section=equipment-library","/admin?section=scenario-templates","/admin?section=audit-logs","/admin?section=master-data","/admin?section=database-backup","/admin?section=simulation-data","/admin?section=runtime-status"]],
+  ["#/components/schemas/RoleProfile/properties/baseRole/enum",["ADMIN","OPERATOR"]],
+  ["#/components/schemas/RoleProfile/properties/permissions/contains/const","BUSINESS_READ"],
+  ["#/components/schemas/RoleProfile/allOf/0/if/properties/baseRole/const","OPERATOR"],
+  ["#/components/schemas/RoleProfile/allOf/0/then/properties/permissions/items/enum",["BUSINESS_READ","SCENARIO_DRAFT_WRITE","SIMULATION_CONTROL","ORDINARY_REPORT_EXPORT"]],
+  ["#/components/schemas/RoleProfile/allOf/0/then/properties/menuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/batches","/blueprint","/interactions","/traceability","/admin/data-exchange"]],
+  ["#/components/schemas/RoleProfile/allOf/0/else/properties/permissions/contains/const","USER_ROLE_MAINTAIN"],
+  ["#/components/schemas/RoleProfile/allOf/0/else/properties/menuPaths/contains/const","/admin"],
+  ["#/components/schemas/GetapiV1AdminEquipmentEquipmentIdDetailsResponse/properties/ok/const",true],
+  ["#/components/schemas/PutapiV1AdminEquipmentEquipmentIdReferenceResponse/properties/ok/const",true],
+  ["#/components/schemas/GetapiV1AdminAccessControlResponse/properties/ok/const",true],
+  ["#/components/schemas/PutapiV1AdminAccessControlResponse/properties/ok/const",true],
   ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/readOnly/const', false],
   ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/version/const', 1],
   ['#/components/schemas/EquipmentUpdateRequest/allOf/1/properties/readOnly/const', false],
   ['#/components/schemas/GetapiV1AdminEquipmentResponse/properties/ok/const', true],
+  ['#/components/schemas/DeleteapiV1AdminEquipmentEquipmentIdResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminEquipmentResponse/properties/ok/const', true],
   ['#/components/schemas/PutapiV1AdminEquipmentEquipmentIdResponse/properties/ok/const', true],
   ['#/components/schemas/Platform/allOf/0/if/properties/type/const','REAR_COMMAND_NODE'],
@@ -403,6 +431,11 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/CapabilityMetadata/properties/states/items/enum', ['LOADING','VALIDATING','EXECUTING','SUCCESS','EMPTY','ERROR']],
   ['#/components/schemas/InterfaceMetadata/properties/kind/enum', ['外部','内部']],
   ['#/components/schemas/ReportExportResult/properties/generated/const', false],
+  ['#/components/schemas/LocalReportEvidence/properties/connections/items/properties/scope/enum', ['INTERNAL', 'INTER_PLATFORM']],
+  ['#/components/schemas/LocalReportExportResult/properties/generated/const', true],
+  ['#/components/schemas/LocalReportExportResult/properties/status/const', 'SUCCESS'],
+  ['#/components/schemas/LocalReportExportResult/properties/format/enum', ['HTML', 'CSV']],
+  ['#/components/schemas/Report/allOf/1/then/properties/classification/const', 'LEVEL_II'],
   ['#/components/schemas/ReportExportResult/properties/status/const', 'FIXTURE_SUCCESS'],
   ['#/components/schemas/ConfirmationContext/properties/state/enum', ['CLOSED','AWAITING_CONFIRMATION','CONFIRMED','CANCELLED','EXPIRED','ERROR']],
   ['#/components/schemas/ConfirmationContext/properties/role/enum', ['ADMIN','OPERATOR']],
@@ -1476,12 +1509,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 70) {
+  if (operationCount !== 75) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 70 operations, found ${operationCount}`,
+      `Expected exactly 75 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1500,12 +1533,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 35 || requestSchemaOwners.size !== 35) {
+  if (writeCount !== 37 || requestSchemaOwners.size !== 37) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 35 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 37 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

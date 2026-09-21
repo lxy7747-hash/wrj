@@ -3,13 +3,17 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import ReportTabs from '../../components/reports/ReportTabs.vue'
+import LocalReportTabs from '../../components/reports/LocalReportTabs.vue'
 import type { ReportExportRequest } from '../../contracts/domain-models'
 import { useBatchStore } from '../../stores/batch'
 import { useReportStore } from '../../stores/report'
+import { useAuthStore } from '../../stores/auth'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { formatDateTime } from '../../features/shared/date-time'
 
 const reportStore = useReportStore()
+const authStore = useAuthStore()
+const canPrint = computed(() => authStore.principal !== null && authStore.permissions.includes('ORDINARY_REPORT_EXPORT'))
 const batchStore = useBatchStore()
 const telemetryStore = useTelemetryStore()
 const route = useRoute()
@@ -20,6 +24,12 @@ const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(c
 /** 加载当前报告所引用的正式批次或遥测证据。 */
 async function loadEvidence(): Promise<void> {
   const report = selectedReport.value
+  if (report?.localEvidence) {
+    telemetryStore.resetToSafeEmpty()
+    batchStore.resetToSafeEmpty()
+    exportFormat.value = 'HTML'
+    return
+  }
   if (report?.batchId !== undefined) {
     telemetryStore.resetToSafeEmpty()
     await batchStore.loadComparison(report.batchId)
@@ -49,7 +59,11 @@ async function changeReport(reportId: string): Promise<void> {
   if (await reportStore.selectReport(reportId)) await loadEvidence()
 }
 
-/** 发起当前格式的无文件导出验证。 */
+async function reload(): Promise<void> {
+  if (await reportStore.load()) await loadEvidence()
+}
+
+/** 发起当前格式的导出，由服务端区分真实文件与纯 Mock 验证。 */
 async function requestExport(): Promise<void> {
   await reportStore.requestExport(exportFormat.value)
 }
@@ -58,10 +72,15 @@ async function requestExport(): Promise<void> {
 async function confirmExport(): Promise<void> {
   await reportStore.confirmExport()
 }
+
+/** 使用浏览器打印当前真实报告视图，不声称服务端已生成 PDF 文件。 */
+function printReport(): void {
+  if (!pending.value && canPrint.value && selectedReport.value?.localEvidence) window.print()
+}
 </script>
 
 <template>
-  <section class="reports-page" aria-label="报告分析">
+  <section class="reports-page" aria-label="评估报表">
     <header class="reports-page__header">
       <div class="reports-page__actions">
         <el-select
@@ -76,12 +95,12 @@ async function confirmExport(): Promise<void> {
             v-for="report in reports"
             :key="report.reportId"
             :value="report.reportId"
-            :label="report.runId ? `${report.reportId} · 单次仿真` : `${report.reportId} · 批量聚合`"
+            :label="report.localEvidence ? `本地文件报告 · ${report.reportId.slice(-12)}` : report.runId ? `${report.reportId} · 单次仿真` : `${report.reportId} · 批量聚合`"
           />
         </el-select>
         <el-select v-model="exportFormat" aria-label="导出格式" :disabled="pending || selectedReport === null">
           <el-option value="HTML" label="HTML" />
-          <el-option value="PDF" label="PDF" />
+          <el-option v-if="!selectedReport?.localEvidence" value="PDF" label="PDF" />
           <el-option value="CSV" label="CSV" />
         </el-select>
         <el-button
@@ -90,12 +109,16 @@ async function confirmExport(): Promise<void> {
           :loading="capabilityState === 'EXECUTING'"
           :disabled="pending || selectedReport === null"
           @click="requestExport"
-        >验证导出</el-button>
+        >{{ selectedReport?.localEvidence ? '导出完整报告' : '验证导出' }}</el-button>
+        <el-button :disabled="pending" @click="reload">重新加载</el-button>
+        <el-button v-if="selectedReport?.localEvidence" :disabled="pending || !canPrint" data-testid="report-print-pdf" @click="printReport">打印当前视图／另存 PDF</el-button>
       </div>
     </header>
 
     <main class="reports-page__content">
+      <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
+      <LocalReportTabs v-else-if="selectedReport?.localEvidence" :evidence="selectedReport.localEvidence" />
       <ReportTabs
         v-else-if="selectedReport"
         :report="selectedReport"
@@ -104,7 +127,7 @@ async function confirmExport(): Promise<void> {
         :events="telemetryStore.events"
       />
       <el-result v-else-if="capabilityState === 'ERROR'" icon="error" title="报告加载失败" :sub-title="resultMessage">
-        <template #extra><el-button type="primary" @click="reportStore.load()">重新加载</el-button></template>
+        <template #extra><el-button type="primary" @click="reload">重新加载</el-button></template>
       </el-result>
       <el-empty v-else description="暂无可用报告" />
     </main>
@@ -117,6 +140,11 @@ async function confirmExport(): Promise<void> {
       :closable="false"
       :title="`${exportResult.watermark} · 验证时刻 ${formatDateTime(exportResult.verifiedAt)}`"
     />
+    <el-descriptions v-if="exportResult?.generated" :column="1" border data-testid="local-report-export-result">
+      <el-descriptions-item label="文件保存路径">{{ exportResult.filePath }}</el-descriptions-item>
+      <el-descriptions-item label="格式">{{ exportResult.format }}</el-descriptions-item>
+      <el-descriptions-item label="文件 SHA-256">{{ exportResult.sha256 }}</el-descriptions-item>
+    </el-descriptions>
 
     <el-dialog
       :model-value="confirmation !== null"
@@ -139,11 +167,13 @@ async function confirmExport(): Promise<void> {
   display: grid;
   width: 100%;
   height: 100%;
+  min-width: 0;
   min-height: 0;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 0.75rem;
   padding: 1rem;
-  overflow: auto;
+  overflow: hidden;
   color: var(--console-text);
   background: var(--console-bg-elevated);
 }
@@ -175,6 +205,8 @@ async function confirmExport(): Promise<void> {
 
 .reports-page__actions{
   display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
   align-items: center;
   gap: 0.6rem;
 }
@@ -188,11 +220,66 @@ async function confirmExport(): Promise<void> {
 }
 
 .reports-page__content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
   padding: 0.85rem;
   border: 1px solid var(--console-border);
   border-radius: 8px;
   background: rgba(7, 23, 37, 0.82);
+}
+
+.reports-page__content :deep(.el-tabs),
+.reports-page__content :deep(.el-tabs__content),
+.reports-page__content :deep(.el-tab-pane) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.reports-page__content > p {
+  flex: 0 0 auto;
+}
+
+.reports-page__content :deep(.local-report),
+.reports-page__content :deep(.report-tabs) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.reports-page__content :deep(.local-report > :not(.el-tabs)),
+.reports-page__content :deep(.report-tabs > :not(.el-tabs)) {
+  flex: 0 0 auto;
+}
+
+.reports-page__content :deep(.el-tabs) {
+  flex: 1;
+  min-height: 0;
+}
+
+.reports-page__content :deep(.el-tabs__header) {
+  flex: 0 0 auto;
+}
+
+.reports-page__content :deep(.el-tabs__content) {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.reports-page__content :deep(.el-tab-pane) {
+  height: 100%;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.reports-page__content :deep(.report-table-pane) {
+  overflow: hidden;
 }
 
 .reports-page__export-result {
@@ -208,5 +295,18 @@ async function confirmExport(): Promise<void> {
   .reports-page__actions {
     flex-wrap: wrap;
   }
+}
+</style>
+
+<style>
+@media print {
+  body * { visibility: hidden; }
+  .reports-page, .reports-page * { visibility: visible; }
+  .reports-page { position: absolute; inset: 0; height: auto !important; overflow: visible !important; background: white !important; color: black !important; --console-text: #111; --console-text-muted: #444; --console-cyan: #087f9c; --console-border: #ccc; --el-text-color-primary: #111; --el-text-color-regular: #111; --el-text-color-secondary: #444; --el-fill-color-blank: white; --el-bg-color: white; }
+  .reports-page__header, .reports-page .el-tabs__header, .reports-page .report-filters, .reports-page .el-pagination { display: none !important; }
+  .reports-page .el-scrollbar__wrap { max-height: none !important; overflow: visible !important; }
+  .reports-page .el-table, .reports-page .el-table__inner-wrapper, .reports-page .el-table__body-wrapper, .reports-page .el-scrollbar, .reports-page .el-scrollbar__wrap { height: auto !important; max-height: none !important; }
+  .reports-page .reports-page__content { border: 0; background: white !important; }
+  .reports-page .reports-page__content, .reports-page .local-report, .reports-page .report-tabs, .reports-page .el-tabs, .reports-page .el-tabs__content, .reports-page .el-tab-pane { height: auto !important; overflow: visible !important; flex: none !important; }
 }
 </style>

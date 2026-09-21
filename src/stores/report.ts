@@ -6,9 +6,11 @@ import type {
   Report,
   ReportExportRequest,
   ReportExportResult,
+  LocalReportExportResult,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, unwrapSuccessData } from './api-envelope'
+import { isLocalReport, isLocalReportExport } from '../features/reports/local-report'
 
 type ExportFormat = ReportExportRequest['format']
 
@@ -49,6 +51,7 @@ function isReportTimeSeries(value: unknown): boolean {
 
 /** 校验服务端返回的单次或批量聚合报告。 */
 export function isReport(value: unknown): value is Report {
+  if (isLocalReport(value)) return true
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const report = value as Partial<Report>
   const keys = Object.keys(value)
@@ -78,8 +81,9 @@ function isConfirmation(value: unknown, state: ConfirmationContext['state']): va
     && typeof context.expiresAt === 'string'
 }
 
-/** 校验报表导出仅返回验证状态且不会生成文件。 */
-function isExportResult(value: unknown): value is ReportExportResult {
+/** 区分真实本地文件导出与纯 Mock 合同验证结果。 */
+function isExportResult(value: unknown): value is ReportExportResult | LocalReportExportResult {
+  if (isLocalReportExport(value)) return true
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const result = value as Partial<ReportExportResult>
   return typeof result.reportId === 'string'
@@ -108,7 +112,7 @@ export const useReportStore = defineStore('report', {
     resultMessage: '尚未加载报告。',
     confirmation: null as ConfirmationContext | null,
     pendingFormat: null as ExportFormat | null,
-    exportResult: null as ReportExportResult | null,
+    exportResult: null as ReportExportResult | LocalReportExportResult | null,
     requestEpoch: 0,
   }),
 
@@ -182,7 +186,7 @@ export const useReportStore = defineStore('report', {
      * 发起导出验证；三级报告先创建一次性确认，二级报告直接验证。
      * @param format 用户选择的导出格式。
      * @returns 请求进入确认或直接验证成功时返回 `true`。
-     * @sideEffects 更新能力状态、确认上下文或导出验证结果；始终不生成文件。
+     * @sideEffects 本地报告由服务端生成文件；纯 Mock 只更新导出验证结果。
      */
     async requestExport(format: ExportFormat): Promise<boolean> {
       const report = this.selectedReport
@@ -258,7 +262,7 @@ export const useReportStore = defineStore('report', {
     },
 
     /**
-     * 调用无文件副作用的导出验证接口。
+     * 调用导出接口；本地报告生成文件，纯 Mock 只验证合同。
      * @param format 需要验证的格式。
      * @param confirmationId 三级报告已确认的一次性编号。
      * @returns 固定验证结果有效时返回 `true`。
@@ -276,13 +280,14 @@ export const useReportStore = defineStore('report', {
         })
         const result = await readSuccess(response, isExportResult)
         if (epoch !== this.requestEpoch) return false
-        if (result.reportId !== report.reportId) throw new Error('导出结果与当前报告不一致。')
+        if (result.reportId !== report.reportId || result.generated !== !!report.localEvidence
+          || (result.generated && result.format !== format)) throw new Error('导出结果与当前报告不一致。')
         this.exportResult = result
         this.confirmation = null
         this.pendingFormat = null
         this.capabilityState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
-        this.resultMessage = '导出合同验证通过，未生成文件。'
+        this.resultMessage = result.generated ? '报告文件已由本机服务生成。' : '导出合同验证通过，未生成文件。'
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
