@@ -93,7 +93,7 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-button link type="danger" :disabled="pending || confirming || row.readOnly" @click="remove(row)">删除</el-button>
       </template></el-table-column>
     </el-table>
-    <p class="equipment-note">保存默认参数，不自动修改已创建场景。未配置的频段、调制或阈值请留空。</p>
+    <p class="equipment-note">保存时同步已登记引用的场景参数与版本；空值不覆盖、频率不自动选取。引用场景锁定、频率越界或校验失败时整次保存取消，历史归档不变。</p>
     <el-dialog :model-value="viewing !== null" title="查看参数详情" width="min(900px, calc(100vw - 32px))" @close="viewing = null">
       <el-descriptions v-if="viewing" :column="1" border>
         <el-descriptions-item label="编号">{{ viewing.equipmentId }}</el-descriptions-item>

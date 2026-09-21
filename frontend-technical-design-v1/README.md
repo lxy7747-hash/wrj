@@ -2,7 +2,77 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 前端能力兼容扩展冻结（2026-09-21，当前值）
+## 装备引用场景同步冻结（2026-09-21，当前值）
+
+用户确认保存装备时同步已登记引用场景：非空带宽、功率、速率、调制和 BER 阈值覆盖，具体频率保留并检查新范围，锁定／引用失效／版本冲突／校验失败整次拒绝。SQLite 同一连接跨库事务保存装备、历史、引用版本与场景修订，历史归档、模板及未引用场景不变。引用登记本身不覆盖参数。此前“不自动更新场景”仅是历史范围，现由本授权替代；主数据登记语义不变。
+
+OpenAPI **1.8.1 / 83 操作 / 40 写操作**，仅版本和 PUT 行为说明变更，无新字段或接口；领域模型、schema snapshot 与 fixture 均未改变。新代码不在启动时迁移存量场景；回退程序不自动回退已同步数据，应保留兼容版本及用户授权备份。跨库同步要求文件回滚日志模式，不能保证原子性时明确拒绝，不修改数据库模式。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致，未改） | `BA5B7725EB772BFDB893E26DB9BE8550C81E58C22C89E5801CDB093B08E8D58A` |
+| `contracts/mock-api.openapi.yaml` | `BF0A0195E0D274A47CE47E0453949D0899430F63AB538502335F05CBFB3D2055` |
+| `../scripts/contracts/openapi-schema.snapshot.ts`（未改） | `ED1B20DC17EA565F1BC7793793FAA595DEBC95AE65EC55D71A8587D2D0F48397` |
+| `contracts/deterministic-fixtures.json`（未改） | `6D0776F84EE4D767F4050AD8B4C9BD3C7D55C6DA2904D01403D379601955EAF0` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.46） | `2F2694B6750B1F6B71D0B0ED04B8C527BE0F01B22354EE0270FADCB3A185D592` |
+
+## SQLite 完整备份与计划冻结（2026-09-21，历史记录）
+
+用户确认包含历史归档，关键配置按白名单备份、排除凭据，国产数据库暂缓。OpenAPI **1.8.0 / 83 操作 / 40 个 POST、PUT、PATCH**；兼容扩展备份名称／范围及 `GET/PUT /api/v1/admin/backup-plan`，保留管理员和备份／恢复的一次性确认。领域模型镜像、完整 schema snapshot、操作和错误响应审计同步，业务 fixture 未改。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致） | `BA5B7725EB772BFDB893E26DB9BE8550C81E58C22C89E5801CDB093B08E8D58A` |
+| `contracts/mock-api.openapi.yaml` | `D6A2EC2DB8B5F1C2D828BC4AFE1CB1F51ECFE4BC2D5618F399681E0E76831A2A` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `ED1B20DC17EA565F1BC7793793FAA595DEBC95AE65EC55D71A8587D2D0F48397` |
+| `contracts/deterministic-fixtures.json`（本次未改） | `6D0776F84EE4D767F4050AD8B4C9BD3C7D55C6DA2904D01403D379601955EAF0` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.45） | `AEA382DBE553B483CF3F5E6748A736457DA2675E492F76C1769D0D626DD833A3` |
+
+新增独立 `runtime-config.db`，只保存事件／位置 CSV 路径及当前部署的同项环境基线；不复制 `.env.local` 或任意环境变量。多库备份采用受控 SQLite 包，在同一锁定点捕获主库、装备、角色权限、主数据、历史归档和配置。恢复只替换白名单业务表数据，审计及文件读取记录保留，计划和备份目录不回退；旧会话和运行失效。恢复需文件回滚日志模式，拒绝 WAL／MEMORY／OFF，不暗改日志模式。所有验证仅使用临时数据库。
+
+旧主库备份保留查看但不可作为完整系统恢复来源，旧包不迁移或删除。回退旧程序保留全部新库和包，仅停止新计划；旧程序不能读取完整包，不能借此声称旧版具备多库恢复能力。配置恢复即时生效，同环境重启保留；明确修改 `.env.local` 路径后下一次启动采用新路径。原始 CSV 不备份，已登记归档包含完整解析数据。账号密码散列属于账号数据，仍受备份保护；未包含明文配置凭据，但包未加密，只可用于非敏感开发数据。加密、国产适配及跨机器灾难恢复另行验收。
+
+## 主数据真实内容与版本引用冻结（2026-09-21，历史记录）
+
+用户确认“主数据真实内容、持久化、版本与引用保护”，采用显式登记场景／模板版本关系，不自动应用参数。OpenAPI **1.7.0 / 81 操作 / 39 个 POST、PUT、PATCH**。MasterData 旧读兼容，新写强制内容；增加类型化条目、实际历史与引用模型及三项接口。完整 schema snapshot、操作三元组、错误响应和字面量审计同步；不改既有业务夹具。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致） | `AB51F51E185D991CB229EF140FC735341787AE03F19DDF9C1A1CDD5F77CCCE99` |
+| `contracts/mock-api.openapi.yaml` | `B57A66C6B60973FCF52A35A401BD969C32DF19CAA473E4013D47B4D6ACD0D68D` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `3468250754298D4EEC767B42C8C903243DF6A2ECF17DD1BE807C7E60EDCEBAA8` |
+| `contracts/deterministic-fixtures.json`（本次未改） | `6D0776F84EE4D767F4050AD8B4C9BD3C7D55C6DA2904D01403D379601955EAF0` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.44） | `6E567D6509BA073E46856B75DD60641DF3945BBAAB823847BCB805B731D411B4` |
+
+本机正常启动时在主库同目录新增独立 `master-data.db`，空库起步；已有场景、模板、账号和装备不迁移、不覆盖。只保留真实保存版本；显式历史引用阻止删除，不因目标后续变化自动解除。无引用项删除后保留历史、编号不复用。该独立主数据存储尚未纳入旧主库备份／恢复，需独立保护；回滚程序不删除新库。接口登记不等于参数已经应用，也不宣称已自动发现全部业务引用。
+
+## 系统状态接入的路由元数据同步（2026-09-21，历史记录）
+
+系统运行状态复用已有本机 `/api/v1/data-exchange/monitor`、LocalMonitorSnapshot 和 dataExchangeStore；接口版本仍为 **1.6.0 / 78 操作 / 38 个 POST、PUT、PATCH**。仅同步 fixture 中 `/admin` 的 Store 依赖及对应审计清单，不修改冻结业务证据、领域模型或 OpenAPI schema。旧 `/admin/health` 留作兼容，不作为真实状态页的数据来源；未监测项不显示正常。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致，未改） | `1E984DFC08A89EC9DD63C01072F3DD385AD229D83012F27B7227E53FBD7C06FC` |
+| `contracts/mock-api.openapi.yaml`（未改） | `3E85B09B2FE5F7E1B8AF2EFF275916B8A4323B629690B94E784F3D09B5237F9C` |
+| `../scripts/contracts/openapi-schema.snapshot.ts`（未改） | `B0DE7DDF64E2F73AD920E53E342553E7FA76881E05C8B6A62615C83AAEC6639E` |
+| `contracts/deterministic-fixtures.json`（仅上述路由依赖变更） | `6D0776F84EE4D767F4050AD8B4C9BD3C7D55C6DA2904D01403D379601955EAF0` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.43，未改） | `FE4032819DD74588F0DF33020E7C7F9CE4982B79BADC5BF67808B18C0C4B9F21` |
+
+## 真实快照归档兼容扩展冻结（2026-09-21，历史记录）
+
+用户确认阶段 2：管理员手动登记当前有效快照，兼容扩展接口、独立存储和合同。OpenAPI **1.6.0，78 操作 / 38 个 POST、PUT、PATCH**。新增 LocalArchiveRecord 及真实列表／登记／读取接口；回放与评估共用同一归档，报告导出可指定 archiveId。旧 ArchiveRecord 与纯 Mock 路径保留兼容，真实归档页不再消费演示归档。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 src 副本一致） | `1E984DFC08A89EC9DD63C01072F3DD385AD229D83012F27B7227E53FBD7C06FC` |
+| `contracts/mock-api.openapi.yaml` | `3E85B09B2FE5F7E1B8AF2EFF275916B8A4323B629690B94E784F3D09B5237F9C` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `B0DE7DDF64E2F73AD920E53E342553E7FA76881E05C8B6A62615C83AAEC6639E` |
+| `contracts/deterministic-fixtures.json`（本次未修改） | `2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84` |
+| `../多手段无人集群通联技术软件-前端开发需求基线.md`（V1.1.43，本次未修改） | `FE4032819DD74588F0DF33020E7C7F9CE4982B79BADC5BF67808B18C0C4B9F21` |
+
+本机启动时在主库同目录新增独立 `archives.db`，保存解析快照及报告，不复制原始 CSV，不改主库／装备／账号／模板；归档明确未绑定场景或运行。两次来源哈希一致才可登记，重复登记幂等返回原记录。归档损坏拒绝读取，不回退最新文件。该库尚未纳入现有主库备份／恢复，需独立保留；不自动删除历史。回滚旧程序仅停止使用新接口和新库，不删除已登记数据。当前结构为初版，只新增表，无既有归档迁移。
+
+## 前端能力兼容扩展冻结（2026-09-21，历史记录）
 
 用户授权补齐前端模块并兼容扩展接口与 SQLite。OpenAPI **1.5.0，75 操作 / 37 个 POST、PUT、PATCH**。新增装备可选带宽/功率/速率、真实保存版本与引用登记，以及自定义角色/菜单分配。旧装备字段可缺省；未分配账号维持原权限。没有真实质量、阶段或批次数据的视图统一显示“暂无数据”，不植入结果。
 
@@ -40,7 +110,7 @@ PDF 入口为浏览器“打印当前视图／另存 PDF”，不是 Node 生成
 | `../scripts/contracts/openapi-schema.snapshot.ts` | `BBA3A3D467D0708E2BD07FD211E25546DC81AB907F49AF56A84C5AC65A10F9DA` |
 | `contracts/deterministic-fixtures.json`（本次未修改） | `2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84` |
 
-以上增量值保留作为历史证据；当前合同采用本文最上方前端能力兼容扩展冻结值。
+以上增量值保留作为历史证据；当前合同采用本文最上方系统状态接入的路由元数据同步值。
 
 ## 使用顺序
 

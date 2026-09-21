@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import ReportTabs from '../../components/reports/ReportTabs.vue'
@@ -17,6 +17,7 @@ const canPrint = computed(() => authStore.principal !== null && authStore.permis
 const batchStore = useBatchStore()
 const telemetryStore = useTelemetryStore()
 const route = useRoute()
+const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const { reports, selectedReport, capabilityState, resultMessage, confirmation, exportResult } = storeToRefs(reportStore)
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
@@ -40,9 +41,11 @@ async function loadEvidence(): Promise<void> {
 }
 
 onMounted(async () => {
+  if (archiveId.value !== undefined) { await reload(); return }
   const requestedReportId = typeof route.query.reportId === 'string' ? route.query.reportId : undefined
   if (await reportStore.load(requestedReportId)) await loadEvidence()
 })
+watch(archiveId, () => { void reload() })
 onBeforeUnmount(() => {
   reportStore.resetToSafeEmpty()
   batchStore.resetToSafeEmpty()
@@ -60,7 +63,7 @@ async function changeReport(reportId: string): Promise<void> {
 }
 
 async function reload(): Promise<void> {
-  if (await reportStore.load()) await loadEvidence()
+  if (await (archiveId.value === undefined ? reportStore.load() : reportStore.loadArchive(archiveId.value))) await loadEvidence()
 }
 
 /** 发起当前格式的导出，由服务端区分真实文件与纯 Mock 验证。 */
@@ -116,6 +119,7 @@ function printReport(): void {
     </header>
 
     <main class="reports-page__content">
+      <p v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>
       <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
       <LocalReportTabs v-else-if="selectedReport?.localEvidence" :evidence="selectedReport.localEvidence" />

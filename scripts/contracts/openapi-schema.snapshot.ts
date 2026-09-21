@@ -1,5 +1,1322 @@
 export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object.freeze(
 {
+  "BackupPlan": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "enabled",
+      "name",
+      "intervalMinutes"
+    ],
+    "properties": {
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      },
+      "intervalMinutes": {
+        "type": "integer",
+        "minimum": 60,
+        "maximum": 10080
+      }
+    }
+  },
+  "BackupExecution": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "startedAt",
+      "completedAt",
+      "result",
+      "backupId",
+      "message"
+    ],
+    "properties": {
+      "startedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "completedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "result": {
+        "enum": [
+          "SUCCESS",
+          "FAILURE"
+        ]
+      },
+      "backupId": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "result": {
+              "const": "SUCCESS"
+            }
+          },
+          "required": [
+            "result"
+          ]
+        },
+        "then": {
+          "properties": {
+            "backupId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "backupId": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "BackupPlanStatus": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "plan",
+      "nextRunAt",
+      "executions"
+    ],
+    "properties": {
+      "plan": {
+        "$ref": "#/components/schemas/BackupPlan"
+      },
+      "nextRunAt": {
+        "oneOf": [
+          {
+            "type": "string",
+            "format": "date-time"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "executions": {
+        "type": "array",
+        "maxItems": 20,
+        "items": {
+          "$ref": "#/components/schemas/BackupExecution"
+        }
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "plan": {
+              "properties": {
+                "enabled": {
+                  "const": true
+                }
+              },
+              "required": [
+                "enabled"
+              ]
+            }
+          },
+          "required": [
+            "plan"
+          ]
+        },
+        "then": {
+          "properties": {
+            "nextRunAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "nextRunAt": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "PutapiV1AdminBackupPlanRequest": {
+    "$ref": "#/components/schemas/BackupPlan"
+  },
+  "GetapiV1AdminBackupPlanResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BackupPlanStatus"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminBackupPlanResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BackupPlanStatus"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "LocalArchiveRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "archiveId": {
+        "type": "string",
+        "pattern": "^ARCH-LOCAL-[a-f0-9]{64}$"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "createdBy": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "sourceKind": {
+        "const": "LOCAL_FILE_SNAPSHOT"
+      },
+      "binding": {
+        "const": "UNBOUND"
+      },
+      "eventFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fileName": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "fileName",
+          "sha256"
+        ]
+      },
+      "positionFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fileName": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        },
+        "required": [
+          "fileName",
+          "sha256"
+        ]
+      },
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
+      },
+      "nodeCount": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "positionCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "durationS": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "archiveId",
+      "name",
+      "createdAt",
+      "createdBy",
+      "sourceKind",
+      "binding",
+      "eventFile",
+      "positionFile",
+      "reportId",
+      "nodeCount",
+      "positionCount",
+      "durationS"
+    ]
+  },
+  "PostapiV1AdminLocalArchivesRequest": {
+    "$ref": "#/components/schemas/LocalArchiveRequest"
+  },
+  "LocalArchiveRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      }
+    },
+    "required": [
+      "name"
+    ]
+  },
+  "LocalArchiveList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/LocalArchiveRecord"
+    }
+  },
+  "LocalArchiveReplay": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "initial": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "fileName": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "platformId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "time": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "longitude": {
+                  "type": "number",
+                  "minimum": -180,
+                  "maximum": 180
+                },
+                "latitude": {
+                  "type": "number",
+                  "minimum": -90,
+                  "maximum": 90
+                },
+                "altitude": {
+                  "type": "number"
+                },
+                "speed": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "heading": {
+                  "type": "number"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "side": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "sourceEventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "platformId",
+                "time",
+                "longitude",
+                "latitude",
+                "altitude",
+                "speed",
+                "name",
+                "type",
+                "sourceEventId"
+              ]
+            },
+            "minItems": 1
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceEventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "time": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "scope": {
+                  "const": "INTER_PLATFORM"
+                },
+                "source": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "platformName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "communicationName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "address": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": [
+                    "platformName",
+                    "communicationName",
+                    "address"
+                  ]
+                },
+                "target": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "platformName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "communicationName": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "address": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": [
+                    "platformName",
+                    "communicationName",
+                    "address"
+                  ]
+                },
+                "sourceType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "targetType": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "required": [
+                "sourceEventId",
+                "time",
+                "scope",
+                "source",
+                "target",
+                "sourceType",
+                "targetType"
+              ]
+            }
+          },
+          "deviceEvents": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceEventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "time": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "platformId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "deviceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "kind": {
+                  "enum": [
+                    "COMMUNICATION",
+                    "JAMMING"
+                  ]
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "frequencyHz": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                },
+                "bandwidthHz": {
+                  "type": "number",
+                  "exclusiveMinimum": 0
+                }
+              },
+              "required": [
+                "sourceEventId",
+                "time",
+                "platformId",
+                "deviceId",
+                "kind",
+                "active"
+              ]
+            }
+          },
+          "messageLinks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "type": {
+                  "enum": [
+                    "SAT",
+                    "MICROWAVE",
+                    "DATALINK",
+                    "FIBER"
+                  ]
+                },
+                "sourcePlatformId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "targetPlatformId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "sourceDeviceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "targetDeviceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "records": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "sourceEventId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "transmitEventId": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "time": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "source": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "platformName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          },
+                          "communicationName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        },
+                        "required": [
+                          "platformName",
+                          "communicationName"
+                        ]
+                      },
+                      "target": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                          "platformName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          },
+                          "communicationName": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "\\S"
+                          }
+                        },
+                        "required": [
+                          "platformName",
+                          "communicationName"
+                        ]
+                      },
+                      "messageType": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "messageSizeBits": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "delayS": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "sourceEventId",
+                      "transmitEventId",
+                      "time",
+                      "source",
+                      "target",
+                      "messageType",
+                      "messageSizeBits",
+                      "delayS"
+                    ]
+                  }
+                },
+                "firstTimeS": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "lastTimeS": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "activeIntervals": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "startTimeS": {
+                        "type": "number",
+                        "minimum": 0
+                      },
+                      "endTimeS": {
+                        "type": "number",
+                        "minimum": 0
+                      }
+                    },
+                    "required": [
+                      "startTimeS",
+                      "endTimeS"
+                    ]
+                  }
+                },
+                "messageCount": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "messageTypes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "uniqueItems": true
+                },
+                "direction": {
+                  "enum": [
+                    "FORWARD",
+                    "REVERSE"
+                  ]
+                },
+                "medianDelayS": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "sourcePlatformId",
+                "targetPlatformId",
+                "sourceDeviceId",
+                "targetDeviceId",
+                "records",
+                "firstTimeS",
+                "lastTimeS",
+                "activeIntervals",
+                "messageCount",
+                "messageTypes",
+                "medianDelayS"
+              ]
+            }
+          },
+          "platformDeletions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "sourceEventId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "platformId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "time": {
+                  "type": "number",
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "sourceEventId",
+                "platformId",
+                "time"
+              ]
+            }
+          }
+        },
+        "required": [
+          "fileName",
+          "sha256",
+          "nodes"
+        ]
+      },
+      "fileName": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "durationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "recordCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "tracks": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "platformId": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "positions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "platformId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "time": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "longitude": {
+                    "type": "number",
+                    "minimum": -180,
+                    "maximum": 180
+                  },
+                  "latitude": {
+                    "type": "number",
+                    "minimum": -90,
+                    "maximum": 90
+                  },
+                  "altitude": {
+                    "type": "number"
+                  },
+                  "speed": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "heading": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "platformId",
+                  "time",
+                  "longitude",
+                  "latitude",
+                  "altitude",
+                  "speed",
+                  "heading"
+                ]
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "platformId",
+            "positions"
+          ]
+        }
+      },
+      "issueCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "issues": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "line": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "line",
+            "message"
+          ]
+        }
+      },
+      "waitingForLine": {
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "initial",
+      "fileName",
+      "sha256",
+      "durationS",
+      "recordCount",
+      "tracks",
+      "issueCount",
+      "issues",
+      "waitingForLine"
+    ]
+  },
+  "LocalArchiveSnapshot": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "record": {
+        "$ref": "#/components/schemas/LocalArchiveRecord"
+      },
+      "replay": {
+        "$ref": "#/components/schemas/LocalArchiveReplay"
+      },
+      "report": {
+        "$ref": "#/components/schemas/Report"
+      }
+    },
+    "required": [
+      "record",
+      "replay",
+      "report"
+    ]
+  },
+  "GetapiV1AdminLocalArchivesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/LocalArchiveList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ]
+  },
+  "PostapiV1AdminLocalArchivesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/LocalArchiveRecord"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ]
+  },
+  "GetapiV1ArchivesArchiveIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/LocalArchiveSnapshot"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    },
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ]
+  },
+  "MasterDataEntry": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "valueType",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+          },
+          "valueType": {
+            "const": "TEXT"
+          },
+          "value": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S",
+            "maxLength": 1000
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "valueType",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+          },
+          "valueType": {
+            "const": "BOOLEAN"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "valueType",
+          "value"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,63}$"
+          },
+          "valueType": {
+            "const": "NUMBER"
+          },
+          "value": {
+            "type": "number"
+          },
+          "unit": {
+            "type": "string",
+            "maxLength": 24
+          },
+          "minimum": {
+            "type": "number"
+          },
+          "maximum": {
+            "type": "number"
+          }
+        }
+      }
+    ]
+  },
+  "MasterDataContent": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "description",
+      "entries"
+    ],
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 1000
+      },
+      "entries": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {
+          "$ref": "#/components/schemas/MasterDataEntry"
+        }
+      }
+    }
+  },
+  "MasterDataWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/MasterData"
+      },
+      {
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "COMMUNICATION_SYSTEM",
+              "PARAMETER_DICTIONARY",
+              "ENUMERATION"
+            ]
+          }
+        }
+      }
+    ],
+    "description": "写入必须提供真实内容；运行时额外校验条目键唯一、数值在声明范围内、枚举值唯一且仅文本。旧只读元数据允许缺少 content。"
+  },
+  "MasterDataReference": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "dataId",
+      "dataVersion",
+      "targetType",
+      "targetId",
+      "targetVersion"
+    ],
+    "properties": {
+      "dataId": {
+        "type": "string",
+        "minLength": 1,
+        "not": {
+          "enum": [
+            ".",
+            ".."
+          ]
+        }
+      },
+      "dataVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "targetType": {
+        "enum": [
+          "SCENARIO",
+          "TEMPLATE"
+        ]
+      },
+      "targetId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "targetVersion": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    }
+  },
+  "MasterDataTarget": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "targetType",
+      "targetId",
+      "targetVersion",
+      "name"
+    ],
+    "properties": {
+      "targetType": {
+        "enum": [
+          "SCENARIO",
+          "TEMPLATE"
+        ]
+      },
+      "targetId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "targetVersion": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    }
+  },
+  "MasterDataDetails": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "dataId",
+      "history",
+      "references"
+    ],
+    "properties": {
+      "dataId": {
+        "type": "string",
+        "minLength": 1,
+        "not": {
+          "enum": [
+            ".",
+            ".."
+          ]
+        }
+      },
+      "history": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/MasterData"
+        }
+      },
+      "references": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/MasterDataReference"
+        },
+        "uniqueItems": true
+      }
+    }
+  },
+  "MasterDataTargetList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/MasterDataTarget"
+    },
+    "uniqueItems": true
+  },
+  "GetapiV1AdminMasterDataTargetsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterDataTargetList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminMasterDataDataIdDetailsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterDataDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminMasterDataDataIdReferenceResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterDataDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminMasterDataDataIdReferenceRequest": {
+    "$ref": "#/components/schemas/MasterDataReference"
+  },
   "EquipmentReference": {
     "additionalProperties": false,
     "properties": {
@@ -1182,82 +2499,100 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     },
     'type': 'array'
   },
-  'BackupRecord': {
-    'additionalProperties': false,
-    'allOf': [
+  "BackupRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "backupId",
+      "status",
+      "checksum",
+      "createdAt"
+    ],
+    "properties": {
+      "backupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "status": {
+        "enum": [
+          "VALID_FIXTURE",
+          "INVALID_FIXTURE",
+          "VALID",
+          "INVALID"
+        ]
+      },
+      "checksum": {
+        "type": "string",
+        "minLength": 1
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      },
+      "format": {
+        "enum": [
+          "SYSTEM_SQLITE_V1",
+          "MAIN_SQLITE_V1"
+        ]
+      }
+    },
+    "allOf": [
       {
-        'if': {
-          'properties': {
-            'status': {
-              'enum': [
-                'VALID',
-                'INVALID'
+        "if": {
+          "properties": {
+            "status": {
+              "enum": [
+                "VALID",
+                "INVALID"
               ]
             }
           },
-          'required': [
-            'status'
+          "required": [
+            "status"
           ]
         },
-        'then': {
-          'properties': {
-            'checksum': {
-              'pattern': '^[A-F0-9]{64}$'
+        "then": {
+          "properties": {
+            "checksum": {
+              "pattern": "^[A-F0-9]{64}$"
             }
           }
         }
       }
-    ],
-    'properties': {
-      'backupId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'checksum': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'createdAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'status': {
-        'enum': [
-          'VALID_FIXTURE',
-          'INVALID_FIXTURE',
-          'VALID',
-          'INVALID'
-        ]
-      }
-    },
-    'required': [
-      'backupId',
-      'status',
-      'checksum',
-      'createdAt'
-    ],
-    'type': 'object'
+    ]
   },
-  'BackupRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'backupId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'operation': {
-        'const': 'BACKUP'
-      }
-    },
-    'required': [
-      'operation',
-      'confirmationId'
+  "BackupRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation",
+      "confirmationId"
     ],
-    'type': 'object'
+    "properties": {
+      "operation": {
+        "const": "BACKUP"
+      },
+      "backupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      }
+    }
   },
   'Batch': {
     'additionalProperties': false,
@@ -4065,33 +5400,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'object'
   },
   'MasterData': {
+    'type': 'object',
     'additionalProperties': false,
-    'properties': {
-      'active': {
-        'type': 'boolean'
-      },
-      'dataId': {
-        'minLength': 1,
-        'not': {
-          'enum': [
-            '.',
-            '..'
-          ]
-        },
-        'type': 'string'
-      },
-      'kind': {
-        'type': 'string'
-      },
-      'referenceCount': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'version': {
-        'minimum': 1,
-        'type': 'integer'
-      }
-    },
     'required': [
       'dataId',
       'kind',
@@ -4099,7 +5409,37 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       'referenceCount',
       'active'
     ],
-    'type': 'object'
+    'properties': {
+      'dataId': {
+        'type': 'string',
+        'minLength': 1,
+        'not': {
+          'enum': [
+            '.',
+            '..'
+          ]
+        }
+      },
+      'kind': {
+        'type': 'string',
+        'minLength': 1,
+        'pattern': '\\S'
+      },
+      'version': {
+        'type': 'integer',
+        'minimum': 1
+      },
+      'referenceCount': {
+        'type': 'integer',
+        'minimum': 0
+      },
+      'active': {
+        'type': 'boolean'
+      },
+      'content': {
+        '$ref': '#/components/schemas/MasterDataContent'
+      }
+    }
   },
   'MasterDataList': {
     'items': {
@@ -4108,28 +5448,28 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     'type': 'array'
   },
   'MasterDataRequest': {
+    'type': 'object',
     'additionalProperties': false,
+    'required': [
+      'operation',
+      'data'
+    ],
     'properties': {
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'data': {
-        '$ref': '#/components/schemas/MasterData'
-      },
       'operation': {
         'enum': [
           'CREATE',
           'UPDATE',
           'DELETE'
         ]
+      },
+      'data': {
+        '$ref': '#/components/schemas/MasterDataWrite'
+      },
+      'confirmationId': {
+        'type': 'string',
+        'minLength': 1
       }
-    },
-    'required': [
-      'operation',
-      'data'
-    ],
-    'type': 'object'
+    }
   },
   'Meta': {
     'additionalProperties': false,

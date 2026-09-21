@@ -324,7 +324,8 @@ describe('P8 元数据与确定性重置', () => {
 
 describe('P7 系统维护接口', () => {
   const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
-  const master: MasterData = { dataId: 'DEVICE-P7', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }
+  const master: MasterData = { dataId: 'DEVICE-P7', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+    content: { name: '测试字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT', value: 'standard' }] } }
 
   it('独立限制每条维护接口的角色，禁止绕过页面权限', async () => {
     const { baseUrl } = await startServer()

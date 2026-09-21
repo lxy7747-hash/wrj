@@ -6,8 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtures from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import MasterDataPanel from '../../src/components/admin/MasterDataPanel.vue'
 import BackupRestoreWizard from '../../src/components/admin/BackupRestoreWizard.vue'
-import ArchivePanel from '../../src/components/admin/ArchivePanel.vue'
-import HealthPanel from '../../src/components/admin/HealthPanel.vue'
 import ScenarioConfigExport from '../../src/components/scenarios/ScenarioConfigExport.vue'
 import { useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
@@ -26,6 +24,7 @@ describe('P7 系统管理面板', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
     vi.spyOn(useAdminStore(), 'loadMaintenance').mockResolvedValue(true)
+    vi.spyOn(useAdminStore(), 'loadBackupPlan').mockResolvedValue(true)
   })
   afterEach(() => { wrapper?.unmount(); wrapper = undefined; ElMessage.closeAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
@@ -33,7 +32,8 @@ describe('P7 系统管理面板', () => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().role = 'ADMIN'
-    const master = { dataId: 'DEVICE-FEEDBACK', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }
+    const master = { dataId: 'DICT-FEEDBACK', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '反馈字典', description: '', entries: [{ key: 'sample', valueType: 'TEXT' as const, value: 'value' }] } }
     const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
       meta: { requestId: 'REQ-FEEDBACK', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: 1 },
     }) }) as Response
@@ -90,8 +90,6 @@ describe('P7 系统管理面板', () => {
   it.each([
     { section: 'master', component: MasterDataPanel, data: fixtures.masterData, content: 'MW-COMM', refresh: '刷新' },
     { section: 'backup', component: BackupRestoreWizard, data: fixtures.backups, content: 'PREBACKUP-002', refresh: '刷新记录' },
-    { section: 'archive', component: ArchivePanel, data: [fixtures.archive], content: fixtures.archive.archiveId, refresh: '刷新归档' },
-    { section: 'health', component: HealthPanel, data: fixtures.diagnostics, content: '前端界面', refresh: '刷新状态' },
   ] as const)('$section 加载成功不显示常驻提示，加载中和失败仍可见', async ({ section, component, data, content, refresh }) => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
@@ -118,15 +116,17 @@ describe('P7 系统管理面板', () => {
     expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('系统管理服务暂时不可用，请稍后重试。')
   })
 
-  it('主数据列表筛选、独立编辑、新增与删除确认复用既有组件', async () => {
+  it('主数据列表筛选、内容编辑、新增与删除确认复用既有组件', async () => {
     const store = useAdminStore()
-    store.masterData = structuredClone(fixtures.masterData)
+    const writable = { dataId: 'DICT-UI', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '界面参数', description: '', entries: [{ key: 'sample', valueType: 'TEXT' as const, value: 'value' }] } }
+    store.masterData = [writable]
     const save = vi.spyOn(store, 'saveMasterData').mockResolvedValueOnce(false).mockResolvedValue(true)
     const run = vi.spyOn(store, 'runMaintenanceAction').mockResolvedValue(true)
     const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
     wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
     await flushPromises()
-    expect(wrapper.text()).toContain('MW-COMM')
+    expect(wrapper.text()).toContain('DICT-UI')
     await wrapper.get('input[aria-label="主数据检索"]').setValue('missing')
     expect(wrapper.text()).toContain('暂无匹配的主数据')
     await wrapper.get('input[aria-label="主数据检索"]').setValue('')
@@ -138,19 +138,165 @@ describe('P7 系统管理面板', () => {
     await click('编辑')
     expect(wrapper.get('[data-testid="master-id"]').attributes('disabled')).toBeDefined()
     await click('保存')
-    expect(save).toHaveBeenLastCalledWith(fixtures.masterData[0], false)
+    expect(save).toHaveBeenLastCalledWith(writable, false)
     await click('取消')
     await click('新增主数据')
     await wrapper.get('[data-testid="master-id"]').setValue(' DEVICE-P7 ')
+    await wrapper.get('[data-testid="master-name"]').setValue('新增字典')
+    await click('新增条目')
+    await wrapper.get('input[aria-label="参数键"]').setValue('enabled')
     await click('保存')
-    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ dataId: 'DEVICE-P7', version: 1, referenceCount: 0 }), true)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ dataId: 'DEVICE-P7', version: 1, referenceCount: 0, content: expect.objectContaining({ name: '新增字典' }) }), true)
     await click('删除')
     expect(run).not.toHaveBeenCalled()
     await click('删除')
     expect(confirm).toHaveBeenCalledTimes(2)
-    expect(run).toHaveBeenCalledWith('DELETE', 'MW-COMM')
+    expect(run).toHaveBeenCalledWith('DELETE', 'DICT-UI')
     await click('刷新')
     expect(store.loadMaintenance).toHaveBeenCalledWith('master')
+  })
+
+  it('主数据编辑副本支持数值和布尔条目切换，取消不污染原记录', async () => {
+    const store = useAdminStore()
+    const source = { dataId: 'DICT-TYPES', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '类型测试', description: '', entries: [{ key: 'enabled', valueType: 'TEXT' as const, value: 'original' }] } }
+    store.masterData = [structuredClone(source)]
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('编辑')
+    const valueType = wrapper.findAllComponents({ name: 'ElSelect' }).find((component) => component.find('input[aria-label="参数值类型"]').exists())
+    expect(valueType).toBeDefined()
+    valueType!.vm.$emit('update:modelValue', 'NUMBER')
+    await flushPromises()
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).length).toBeGreaterThan(0)
+    valueType!.vm.$emit('update:modelValue', 'BOOLEAN')
+    await flushPromises()
+    expect(wrapper.text()).toContain('是')
+    await click('取消')
+    expect(store.masterData).toEqual([source])
+  })
+
+  it('主数据内容编辑支持文本、数值范围、布尔值和移除条目，数值清空不能保存', async () => {
+    const store = useAdminStore()
+    useAuthStore().role = 'ADMIN'
+    const source = { dataId: 'DICT-ENTRY', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '条目字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT' as const, value: 'original' }] } }
+    store.masterData = [structuredClone(source)]
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('编辑')
+    await click('新增条目')
+    const keys = wrapper.findAll('input[aria-label="参数键"]')
+    await keys[keys.length - 1]!.setValue('retryLimit')
+    const texts = wrapper.findAll('input[placeholder="文本值"]')
+    await texts[texts.length - 1]!.setValue('three')
+    const typeSelectors = wrapper.findAllComponents({ name: 'ElSelect' }).filter((component) => component.find('input[aria-label="参数值类型"]').exists())
+    typeSelectors[typeSelectors.length - 1]!.vm.$emit('update:modelValue', 'NUMBER')
+    await flushPromises()
+    const numbers = wrapper.findAllComponents({ name: 'ElInputNumber' })
+    numbers[0]!.vm.$emit('update:modelValue', 3)
+    numbers[1]!.vm.$emit('update:modelValue', 0)
+    numbers[2]!.vm.$emit('update:modelValue', 10)
+    await wrapper.get('input[placeholder="单位（可选）"]').setValue('次')
+    await flushPromises()
+    numbers[0]!.vm.$emit('update:modelValue', undefined)
+    await click('保存')
+    expect(store.maintenance.master.state).toBe('ERROR')
+    expect(fetchMock).not.toHaveBeenCalled()
+    typeSelectors[typeSelectors.length - 1]!.vm.$emit('update:modelValue', 'BOOLEAN')
+    await flushPromises()
+    const switches = wrapper.findAllComponents({ name: 'ElSwitch' })
+    switches[switches.length - 1]!.vm.$emit('update:modelValue', true)
+    await click('移除')
+    expect(wrapper.findAll('input[aria-label="参数键"]')).toHaveLength(1)
+    await click('取消')
+    expect(store.masterData).toEqual([source])
+  })
+
+  it('主数据详情显示实际历史和引用，确认后才登记并更新引用数量', async () => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    const master = { dataId: 'DICT-DETAIL', kind: 'PARAMETER_DICTIONARY', version: 2, referenceCount: 0, active: true,
+      content: { name: '版本字典', description: '当前版本。', entries: [{ key: 'mode', valueType: 'TEXT' as const, value: 'current' }] } }
+    const historical = { ...master, version: 1, content: { ...master.content, description: '历史版本。', entries: [{ key: 'mode', valueType: 'TEXT' as const, value: 'history' }] } }
+    const target = { targetType: 'SCENARIO' as const, targetId: 'SCN-DETAIL', targetVersion: '7', name: '详情场景' }
+    const reference = { dataId: master.dataId, dataVersion: 1, targetType: target.targetType, targetId: target.targetId, targetVersion: target.targetVersion }
+    const registered = { dataId: master.dataId, history: [{ ...master, referenceCount: 1 }, historical], references: [reference] }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-MASTER-DETAIL', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: Array.isArray(data) ? data.length : 1 },
+    }) }) as Response
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([master])).mockResolvedValueOnce(response({ dataId: master.dataId, history: [master, historical], references: [] }))
+      .mockResolvedValueOnce(response([target])).mockResolvedValueOnce(response(registered))
+    vi.stubGlobal('fetch', fetchMock)
+    const confirm = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValueOnce('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const message = vi.spyOn(ElMessage, 'success')
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('查看')
+    const details = wrapper.findAll('[role="dialog"]').find((dialog) => dialog.isVisible())!
+    await details.get('.el-table__expand-icon').trigger('click')
+    await flushPromises()
+    expect(details.text()).toContain('当前版本。')
+    expect(details.get('[data-testid="master-history-table"]').text()).toContain('版本字典')
+    expect(details.get('[data-testid="master-reference-table"]').text()).toContain('暂无引用记录')
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
+    const versionSelect = selects.find((component) => component.find('input[aria-label="主数据版本"]').exists())
+    const targetSelect = selects.find((component) => component.find('input[aria-label="引用目标"]').exists())
+    expect(versionSelect).toBeDefined()
+    expect(targetSelect).toBeDefined()
+    versionSelect!.vm.$emit('update:modelValue', 1)
+    targetSelect!.vm.$emit('update:modelValue', 'SCENARIO:SCN-DETAIL:7')
+    await flushPromises()
+    await click('登记引用')
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    await click('登记引用')
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    expect(wrapper.get('[data-testid="master-reference-table"]').text()).toContain('SCN-DETAIL')
+    expect(store.masterData[0]?.referenceCount).toBe(1)
+    expect(message).toHaveBeenCalledTimes(1)
+    await click('关闭')
+    expect(store.masterDetails).toBeNull()
+    expect(store.masterTargets).toEqual([])
+  })
+
+  it('关闭主数据详情会使在途引用登记失效，迟到响应不会登记', async () => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    const master = { dataId: 'DICT-LATE', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '迟到字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT' as const, value: 'current' }] } }
+    const target = { targetType: 'SCENARIO' as const, targetId: 'SCN-LATE', targetVersion: '3', name: '迟到场景' }
+    const reference = { dataId: master.dataId, dataVersion: 1, targetType: target.targetType, targetId: target.targetId, targetVersion: target.targetVersion }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-MASTER-LATE', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: Array.isArray(data) ? data.length : 1 },
+    }) }) as Response
+    let resolve!: (value: Response) => void
+    const deferred = new Promise<Response>((res) => { resolve = res })
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([master])).mockResolvedValueOnce(response({ dataId: master.dataId, history: [master], references: [] }))
+      .mockResolvedValueOnce(response([target])).mockReturnValueOnce(deferred)
+    vi.stubGlobal('fetch', fetchMock)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const message = vi.spyOn(ElMessage, 'success')
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('查看')
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
+    selects.find((component) => component.find('input[aria-label="引用目标"]').exists())!.vm.$emit('update:modelValue', 'SCENARIO:SCN-LATE:3')
+    await flushPromises()
+    const register = wrapper.findAll('button').find((button) => button.text() === '登记引用')
+    await register!.trigger('click')
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+    await click('关闭')
+    resolve(response({ dataId: master.dataId, history: [{ ...master, referenceCount: 1 }], references: [reference] }))
+    await flushPromises()
+    expect(store.masterDetails).toBeNull()
+    expect(store.masterData[0]?.referenceCount).toBe(0)
+    expect(message).not.toHaveBeenCalled()
   })
 
   it('备份选择、取消操作和恢复证据不再包含配置导出入口', async () => {
@@ -166,10 +312,10 @@ describe('P7 系统管理面板', () => {
     expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('2026-08-06 18:08:00')
     expect(run).not.toHaveBeenCalled()
     await click('创建备份')
-    expect(run).toHaveBeenLastCalledWith('BACKUP', '')
+    expect(run).toHaveBeenLastCalledWith('BACKUP', '', '手动备份')
     await click('选择恢复')
     await click('恢复所选备份')
-    expect(run).toHaveBeenLastCalledWith('RESTORE', 'PREBACKUP-002')
+    expect(run).toHaveBeenLastCalledWith('RESTORE', 'PREBACKUP-002', undefined)
     store.restoreResult = { prebackupId: 'PREBACKUP-002', integrityValid: false, result: 'FAILURE', progress: 0, rolledBack: false, generated: false }
     await flushPromises()
     expect(wrapper.get('[data-testid="restore-result"]').text()).toContain('失败，恢复未开始')
@@ -291,51 +437,17 @@ describe('P7 系统管理面板', () => {
     await router.push('/admin')
     wrapper = mount(BackupRestoreWizard, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
-    expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('SQLite 文件')
+    expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('旧主库备份')
     await click('选择恢复')
     await click('恢复所选备份')
     expect(fetchMock).toHaveBeenCalledTimes(1)
     await click('恢复所选备份')
-    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('当前审计日志保留'), '恢复备份', expect.anything())
+    expect(confirm).toHaveBeenLastCalledWith(expect.stringContaining('审计与文件读取记录保留'), '恢复备份', expect.anything())
     expect(JSON.parse(String(fetchMock.mock.calls[3]?.[1]?.body))).toEqual({ operation: 'RESTORE', backupId: 'BACKUP-SQLITE', confirmationId: 'CONF-SQLITE' })
     expect(auth.principal).toBeNull()
     expect(router.currentRoute.value.path).toBe('/login')
     expect(message).toHaveBeenCalledWith('SQLite 数据已恢复，审计记录保留，请重新登录。')
   })
 
-  it('归档详情复用索引编号并可进入关联报告', async () => {
-    const store = useAdminStore()
-    store.archives = [fixtures.archive] as typeof store.archives
-    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:pathMatch(.*)*', component: { template: '<div />' } }] })
-    await router.push('/admin?section=simulation-data')
-    wrapper = mount(ArchivePanel, { global: { plugins: [ElementPlus, router] } })
-    await flushPromises()
-    await wrapper.get('input[aria-label="归档检索"]').setValue('missing')
-    expect(wrapper.text()).toContain('暂无匹配归档')
-    await wrapper.get('input[aria-label="归档检索"]').setValue('RPT-001')
-    await click('详情')
-    for (const value of Object.values(fixtures.archive).filter((item) => item !== 'INDEXED')) expect(wrapper.get('[data-testid="archive-detail"]').text()).toContain(value)
-    await click('关闭')
-    await click('详情')
-    await click('查看关联报告')
-    expect(router.currentRoute.value.fullPath).toBe('/reports?reportId=RPT-001')
-    await click('刷新归档')
-    expect(store.loadMaintenance).toHaveBeenCalledWith('archive')
-  })
 
-  it('健康状态显示接口四个组件，不把未接入标成健康', async () => {
-    const store = useAdminStore()
-    wrapper = mount(HealthPanel, { global: { plugins: [ElementPlus] } })
-    await flushPromises()
-    expect(wrapper.text()).toContain('暂无匹配组件')
-    store.health = fixtures.diagnostics as typeof store.health
-    await flushPromises()
-    expect(wrapper.findAll('.el-table__row')).toHaveLength(4)
-    wrapper.getComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'NOT_CONNECTED_BY_DESIGN')
-    await flushPromises()
-    expect(wrapper.findAll('.el-table__row')).toHaveLength(3)
-    expect(wrapper.get('[data-testid="health-table"]').text()).not.toContain('前端界面')
-    await click('刷新状态')
-    expect(store.loadMaintenance).toHaveBeenCalledWith('health')
-  })
 })

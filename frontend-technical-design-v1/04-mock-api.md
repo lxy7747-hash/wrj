@@ -1,6 +1,6 @@
 # 04 本机确定性 Mock API
 
-`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。64 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 32 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
+`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。当前 83 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 40 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
 
 ## 启动与安全不变量
 
@@ -8,7 +8,26 @@
 
 数据仅来自冻结 JSON，启动和 reset 深拷贝为内存 projection。禁止 `fs`、SQLite driver、`child_process`、系统时间、随机数、加密 API、Blob/下载 URL 和导出生成器。即使 endpoint 名称包含 backup/export/script，也只返回设计状态。
 
+## 真实快照归档增量（OpenAPI 1.6.0）
+
+此项为用户授权的本机持久化扩展，不改变上述纯 Mock 的无外部副作用约束。
+
+| 接口 | 语义 |
+|---|---|
+| `GET /api/v1/admin/local-archives` | ADMIN 查询真实归档；未配置存储返回空列表，损坏返回 503 |
+| `POST /api/v1/admin/local-archives` | ADMIN 提交 `{name}`，服务端读取已配置事件／位置并验证同源后原子登记；201 返回记录；非法名称 422，来源不可用或变化 503 |
+| `GET /api/v1/archives/{archiveId}` | 按现有登录／菜单权限读取 `{record,replay,report}`；非法编号 422，不存在 404，损坏 503；不回退其他数据 |
+| `POST /api/v1/reports/{reportId}/export?archiveId=...` | 保留报告导出权限／真实 HTML、CSV 约束；只导出该归档的匹配报告，不读取最新源文件 |
+
+`LocalArchiveRecord` 明确 `sourceKind=LOCAL_FILE_SNAPSHOT`、`binding=UNBOUND`，保存文件名及 SHA-256、登记人／时刻、节点／位置数量和回放时长；不生成 taskId／scenarioId／runId。登记保存解析后的完整回放快照和汇总报告，不复制源 CSV。文件哈希对生成稳定 archiveId，相同源重复登记保留最初名称和登记信息。独立 `archives.db` 不纳入旧主库备份，旧 `/admin/archives` 仅保留协议兼容，真实页面不使用其演示记录。
+
 ## Envelope
+
+### SQLite 完整备份增量（OpenAPI 1.8.0）
+
+授权本机适配器通过 `BackupStorage` 接入六库一致备份；纯 Mock 仍无文件副作用。备份请求可传名称，记录明确 `SYSTEM_SQLITE_V1`／`MAIN_SQLITE_V1` 范围；旧主库记录只可查看。`GET /api/v1/admin/backup-plan` 返回持久化计划、下次时刻及最近执行结果，`PUT` 仅 ADMIN 可写且检查版本（409）和闭合参数（422），存储失败 503。纯 Mock 无实际调度器，计划保存明确拒绝，不伪造执行记录。
+
+默认计划关闭；启用后按配置间隔执行，运行结果必须来自真实备份。恢复前备份、校验、写入都在同一多库锁内；全局事务失败回滚，成功要求重新登录。配置仅允许事件／位置路径，凭据环境变量不进入包；历史归档包含完整已登记快照。审计、读取记录、计划和备份目录不回退。完整范围及迁移边界见 README 当前冻结章节。
 
 成功：`{ ok:true, data:T, meta:{requestId,generatedAt,page,pageSize,total} }`。失败：`{ ok:false, error:{code,message,fieldPath?,details?,retryable,correlationId}, meta:{requestId,generatedAt} }`。所有时间冻结；分页即使单页也完整提供 meta。HTTP 状态与 code 配对：400 输入、401 凭据、403 权限/回环、404 缺失、409 状态/重复/引用、422 schema/业务校验、423 锁定账号、428 二次确认。
 
@@ -91,9 +110,17 @@ DELETE 使用 query `expectedVersion` 与 `X-Confirmation-Id`，确认动作复�
 
 - `EquipmentParameter` 可选 `bandwidthMHz`、`txPowerW`、`dataRateMbps`，缺省或 null 表示暂无数据，带宽/速率须正数，功率须非负数；不把空值转成 0。
 - GET `/admin/equipment/{equipmentId}/details` 返回实际保存的 `history` 和显式登记的 `references`；PUT `/admin/equipment/{equipmentId}/reference` 接受 `{ reference, remove }`。登记核验装备版本、场景和链路存在且场景未锁；解除引用不修改场景。存在引用时装备删除 409。历史按版本倒序，从真实记录开始，旧版本缺口不补造；删除后同编号新建视为新生命周期。
+- 2026-09-21 用户确认：PUT 装备时同步全部登记场景的非空带宽／功率／速率／调制／BER 阈值，保留并校验具体频率。场景修订、引用版本和装备历史原子更新；锁定或校验／版本失败整次拒绝，历史归档不变。数据库模式不能保证跨库事务时 503，不偷偷切换模式。OpenAPI 1.8.1 只更新此行为说明，schema 和原请求响应不变。
 - GET/PUT `/admin/access-control` 返回/保存 `AccessControlConfig`；PUT 携带当前 version，成功递增。只允许 ADMIN + USER_ROLE_MAINTAIN；角色只收窄基础角色权限，菜单必须在冻结白名单，分配必须匹配账号基础身份。禁止修改自身分配/自身角色，冲突 409、非法 422、权限 403、存储失败 503。SQLite 入口逐请求校验并撤销受影响会话；未分配用户不受影响。
 - 本机 access-control.db 独立持久化；纯 Mock 只提供内存配置表单验证，真实身份授权验证使用临时 SQLite 会话测试，不把 DemoRole 请求头当作生产认证。
 - 两新增组件请求只保存明确提交的内容，不自动应用装备参数或给现有账号分配自定义角色。主库既有备份不包含独立装备与权限库。
+
+## 主数据真实存储增量（OpenAPI 1.7.0，2026-09-21）
+
+- 共 81 个操作、39 个 POST／PUT／PATCH。复用主数据 CRUD，增加 GET `/api/v1/admin/master-data/targets`、GET `/{dataId}/details`、PUT `/{dataId}/reference`；均在主数据管理权限下，引用 body 直接为 `MasterDataReference`。
+- MasterData 新增兼容可选 content；写入 MasterDataWrite 强制真实名称、说明及类型化条目。新写类型为通信体制／参数字典／枚举，设备参数继续由装备库维护。共享校验补足条目键唯一、数字上下限以及枚举文本值唯一等跨字段约束。旧元数据仅兼容读取。
+- targets 来自当前场景／模板目录，不填固定目标；登记核验目标版本、场景锁、主数据当前与选定版本的启用状态。引用只保存版本关系，不应用参数，不因目标以后变化而自动解除。引用按五字段复合键幂等登记，所有历史版本引用均阻止删除。非法 422、版本／锁／引用冲突 409、缺失 404、权限 403、存储失败 503，不回退演示数据。
+- 独立 master-data.db，空库起步、事务保存及版本条件更新；保留真实历史，删除无引用当前项不删除历史，禁止复用历史编号。旧主库备份暂不包含本库，须单独保护；回滚程序不删除新库。纯 Mock 保留原 MW-COMM 元数据及删除保护，不伪造其引用详情。
 
 ## Fixture schema linkage
 

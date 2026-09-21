@@ -2097,6 +2097,7 @@
         "page": "AdminPage",
         "stores": [
           "adminStore",
+          "dataExchangeStore",
           "authStore",
           "uiStore"
         ],

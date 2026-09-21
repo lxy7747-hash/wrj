@@ -11,6 +11,7 @@ import type {
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isLocalReport, isLocalReportExport } from '../features/reports/local-report'
+import { isLocalArchiveSnapshot } from '../features/admin/local-archive'
 
 type ExportFormat = ReportExportRequest['format']
 
@@ -114,9 +115,34 @@ export const useReportStore = defineStore('report', {
     pendingFormat: null as ExportFormat | null,
     exportResult: null as ReportExportResult | LocalReportExportResult | null,
     requestEpoch: 0,
+    archiveId: null as string | null,
   }),
 
   actions: {
+    async loadArchive(archiveId: string): Promise<boolean> {
+      this.resetToSafeEmpty()
+      const epoch = this.requestEpoch
+      this.archiveId = archiveId
+      this.capabilityState = 'LOADING'
+      try {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/archives/${encodeURIComponent(archiveId)}`, {
+          headers: { 'X-Demo-Role': useAuthStore().role },
+        })
+        const archived = await readSuccess(response, isLocalArchiveSnapshot)
+        if (epoch !== this.requestEpoch) return false
+        if (archived.record.archiveId !== archiveId) throw new Error('归档来源与请求不一致。')
+        this.reports = [archived.report]
+        this.selectedReport = archived.report
+        this.capabilityState = 'SUCCESS'
+        this.resultCode = 'SUCCESS'
+        this.resultMessage = ''
+        return true
+      } catch (error) {
+        if (epoch !== this.requestEpoch) return false
+        this.showError(error, '归档报告加载失败。')
+        return false
+      }
+    },
     /**
      * 加载报告目录并选择第一份报告。
      * @param preferredReportId 可选的预选报告编号，不在目录中时回退首份报告。
@@ -124,7 +150,9 @@ export const useReportStore = defineStore('report', {
      * @sideEffects 原子替换报告目录和当前来源；失败时清空旧报告，避免来源混用。
      */
     async load(preferredReportId?: string): Promise<boolean> {
-      const epoch = this.requestEpoch
+      this.archiveId = null
+      // 从历史归档切回当前文件时，迟到的归档响应不能恢复旧来源。
+      const epoch = ++this.requestEpoch
       this.capabilityState = 'LOADING'
       try {
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports`, {
@@ -156,6 +184,7 @@ export const useReportStore = defineStore('report', {
      * @sideEffects 清除旧导出确认和结果；失败时清空当前报告，杜绝单次与批量数据混用。
      */
     async selectReport(reportId: string): Promise<boolean> {
+      if (this.archiveId !== null) return this.loadArchive(this.archiveId)
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
       this.confirmation = null
@@ -273,7 +302,8 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/export`, {
+        const query = this.archiveId === null ? '' : `?archiveId=${encodeURIComponent(this.archiveId)}`
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/export${query}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify({ reportId: report.reportId, format, ...(confirmationId === undefined ? {} : { confirmationId }) }),
@@ -318,6 +348,7 @@ export const useReportStore = defineStore('report', {
 
     /** 清除报告、确认和导出结果，恢复安全空态。 */
     resetToSafeEmpty(): void {
+      this.archiveId = null
       this.requestEpoch += 1
       this.reports = []
       this.selectedReport = null

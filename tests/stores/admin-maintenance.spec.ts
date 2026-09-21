@@ -1,12 +1,15 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtures from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ConfirmationContext, MasterData, RestoreResult } from '../../src/contracts/domain-models'
-import { isArchiveRecord, isBackupRecord, isMasterData, isRestoreResult, isSystemHealth } from '../../src/features/admin/admin-contract'
+import type { ConfirmationContext, MasterData, MasterDataDetails, RestoreResult } from '../../src/contracts/domain-models'
+import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isRestoreResult, isSystemHealth } from '../../src/features/admin/admin-contract'
 import { useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
 
-const master: MasterData = { dataId: 'DEVICE-P7', kind: 'DEVICE', version: 1, referenceCount: 0, active: true }
+const master: MasterData = {
+  dataId: 'DICT-P7', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+  content: { name: '测试参数字典', description: '测试保存真实内容。', entries: [{ key: 'frequencyMHz', valueType: 'NUMBER', value: 1200, unit: 'MHz', minimum: 1, maximum: 2000 }] },
+}
 const backup = fixtures.backups[0]!
 const restore: RestoreResult = { prebackupId: backup.backupId, integrityValid: true, progress: 100, result: 'SUCCESS', rolledBack: false, generated: false }
 const exported = { objectId: 'FULL-CONFIG', generated: false, classification: 'INTERNAL', watermark: '内部使用', verifiedAt: fixtures.epoch }
@@ -87,6 +90,108 @@ describe('P7 系统维护状态', () => {
     expect(await store.saveMasterData(master, false)).toBe(false)
     expect(await store.saveMasterData({ ...master, dataId: '' }, true)).toBe(false)
     expect(store.masterData[0]?.version).toBe(2)
+  })
+
+  it('加载真实版本、目标并登记显式引用，不自动应用参数', async () => {
+    const store = useAdminStore()
+    const details: MasterDataDetails = {
+      dataId: master.dataId,
+      history: [{ ...master, version: 2 }, master],
+      references: [],
+    }
+    const target = { targetType: 'SCENARIO' as const, targetId: 'SCN-REAL', targetVersion: '8', name: '真实场景' }
+    const reference = { dataId: master.dataId, dataVersion: 2, targetType: target.targetType, targetId: target.targetId, targetVersion: target.targetVersion }
+    const registered: MasterDataDetails = { ...details, history: [{ ...master, version: 2, referenceCount: 1 }, master], references: [reference] }
+    const fetchMock = vi.fn().mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target])).mockResolvedValueOnce(response(registered))
+    vi.stubGlobal('fetch', fetchMock)
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    expect(store.masterTargets).toEqual([target])
+    expect(await store.registerMasterReference(reference)).toBe(true)
+    expect(store.masterDetails).toEqual(registered)
+    expect(store.masterData).toEqual([])
+    expect(fetchMock.mock.calls[2]?.[0]).toContain(`/admin/master-data/${master.dataId}/reference`)
+    expect(JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body))).toEqual(reference)
+  })
+
+  it('详情请求迟到、畸形详情或目标不会恢复旧版本与引用', async () => {
+    const store = useAdminStore()
+    let resolveDetails!: (value: Response) => void
+    const deferred = new Promise<Response>((resolve) => { resolveDetails = resolve })
+    const fetchMock = vi.fn().mockReturnValueOnce(deferred).mockResolvedValueOnce(response([]))
+    vi.stubGlobal('fetch', fetchMock)
+    const load = store.loadMasterDetails(master.dataId)
+    store.clearMasterDetails()
+    resolveDetails(response({ dataId: master.dataId, history: [master], references: [] }))
+    expect(await load).toBe(false)
+    expect(store.masterDetails).toBeNull()
+    expect(store.masterTargets).toEqual([])
+    fetchMock.mockResolvedValueOnce(response({ dataId: master.dataId, history: [master], references: [] })).mockResolvedValueOnce(response([{ targetType: 'SCENARIO', targetId: 'SCN-1', targetVersion: '', name: '坏目标' }]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(false)
+    expect(store.masterDetailsState).toBe('ERROR')
+  })
+
+  it('主数据详情与引用登记拒绝错目标、停用版本、重复请求和迟到结果', async () => {
+    const store = useAdminStore()
+    const target = { targetType: 'SCENARIO' as const, targetId: 'SCN-REAL', targetVersion: '8', name: '真实场景' }
+    const details: MasterDataDetails = { dataId: master.dataId, history: [master], references: [] }
+    const reference = { dataId: master.dataId, dataVersion: 1, targetType: target.targetType, targetId: target.targetId, targetVersion: target.targetVersion }
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    expect(await store.registerMasterReference(reference)).toBe(false)
+    expect(await store.loadMasterDetails('')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    fetchMock.mockResolvedValueOnce(response({ ...details, dataId: 'WRONG' })).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(false)
+    fetchMock.mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target, target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(false)
+    fetchMock.mockResolvedValueOnce({ ok: false, json: async () => ({ ok: false, error: { code: 'OFFLINE', message: '离线', retryable: false, correlationId: 'C', fieldPath: '' } }) }).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(false)
+
+    fetchMock.mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    expect(await store.registerMasterReference({ ...reference, dataVersion: 9 })).toBe(false)
+    expect(await store.registerMasterReference({ ...reference, targetId: 'SCN-OTHER' })).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(8)
+
+    fetchMock.mockResolvedValueOnce(response({ ...details, history: [{ ...master, active: false }] })).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    expect(await store.registerMasterReference(reference)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(10)
+
+    const selectedInactive: MasterDataDetails = { dataId: master.dataId, history: [{ ...master, version: 2 }, { ...master, active: false }], references: [] }
+    fetchMock.mockResolvedValueOnce(response(selectedInactive)).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    expect(await store.registerMasterReference(reference)).toBe(false)
+    expect(fetchMock).toHaveBeenCalledTimes(12)
+
+    fetchMock.mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    fetchMock.mockResolvedValueOnce(response(details))
+    expect(await store.registerMasterReference(reference)).toBe(false)
+    expect(store.masterDetailsState).toBe('ERROR')
+
+    fetchMock.mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    let resolve!: (value: Response) => void
+    let reject!: (error: Error) => void
+    const deferred = new Promise<Response>((res, rej) => { resolve = res; reject = rej })
+    fetchMock.mockReturnValueOnce(deferred)
+    const first = store.registerMasterReference(reference)
+    expect(await store.registerMasterReference(reference)).toBe(false)
+    store.resetToSafeEmpty()
+    resolve(response({ ...details, references: [reference] }))
+    expect(await first).toBe(false)
+    expect(store.masterDetails).toBeNull()
+
+    fetchMock.mockResolvedValueOnce(response(details)).mockResolvedValueOnce(response([target]))
+    expect(await store.loadMasterDetails(master.dataId)).toBe(true)
+    fetchMock.mockReturnValueOnce(Promise.reject(new Error('late')))
+    const lateFailure = store.registerMasterReference(reference)
+    store.clearMasterDetails()
+    reject(new Error('unused'))
+    expect(await lateFailure).toBe(false)
+    expect(store.masterDetails).toBeNull()
   })
 
   it('拒绝会被 URL 规范化的主数据编号且不发送写入请求', async () => {
@@ -213,6 +318,7 @@ describe('P7 系统维护状态', () => {
 
   it('共享边界校验拒绝畸形字段及互相矛盾的结果', () => {
     expect(isMasterData(master)).toBe(true)
+    expect(isMasterDetails({ dataId: master.dataId, history: [master], references: [] })).toBe(true)
     for (const bad of [null, [], { ...master, extra: 1 }, { ...master, kind: '' }, { ...master, version: 0 }, { ...master, referenceCount: -1 }, { ...master, active: 1 }]) expect(isMasterData(bad)).toBe(false)
     expect(isBackupRecord(backup)).toBe(true)
     for (const bad of [{ ...backup, status: 'BAD' }, { ...backup, checksum: '' }, { ...backup, createdAt: '2026-02-30T08:00:00Z' }, { ...backup, createdAt: '2026-99-01T08:00:00Z' }, { ...backup, createdAt: '' }]) expect(isBackupRecord(bad)).toBe(false)

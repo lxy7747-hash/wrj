@@ -4,6 +4,8 @@ import type {
   ApiFailure,
   ArchiveRecord,
   BackupRecord,
+  BackupPlan,
+  BackupPlanStatus,
   AuditRecord,
   AuditRequest,
   AuditExportResult,
@@ -14,6 +16,9 @@ import type {
   ExportStatus,
   PageMeta,
   MasterData,
+  MasterDataDetails,
+  MasterDataReference,
+  MasterDataTarget,
   EquipmentParameter,
   RestoreResult,
   SystemHealth,
@@ -22,8 +27,11 @@ import type {
   UserRoleCommand,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
-import { isArchiveRecord, isBackupRecord, isMasterData, isRestoreResult, isSystemHealth } from '../features/admin/admin-contract'
+import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isMasterReference, isMasterTarget, isMasterWrite, isRestoreResult, isSystemHealth } from '../features/admin/admin-contract'
+import { isLocalArchiveRecord } from '../features/admin/local-archive'
+import type { LocalArchiveRecord } from '../contracts/domain-models'
 import { equipmentIssue, isEquipmentParameter } from '../features/admin/equipment-contract'
+import { isBackupPlan, isBackupPlanStatus } from '../features/admin/backup-plan'
 
 type MaintenanceSection = 'master' | 'equipment' | 'backup' | 'archive' | 'health' | 'export'
 export type MaintenanceAction = 'DELETE' | 'BACKUP' | 'RESTORE' | 'EXPORT'
@@ -324,19 +332,53 @@ export const useAdminStore = defineStore('admin', {
     auditExportFilters: {} as AuditFilters,
     auditExportStatus: null as AuditExportResult | null,
     masterData: [] as MasterData[],
+    masterDetails: null as MasterDataDetails | null,
+    masterTargets: [] as MasterDataTarget[],
+    masterDetailsState: 'EMPTY' as CapabilityState,
+    masterDetailsMessage: '请选择主数据查看版本和引用记录。',
     equipment: [] as EquipmentParameter[],
     backups: [] as BackupRecord[],
+    backupPlanStatus: null as BackupPlanStatus | null,
+    backupPlanPending: false,
+    backupPlanError: '',
     archives: [] as ArchiveRecord[],
+    localArchives: [] as LocalArchiveRecord[],
     health: null as SystemHealth | null,
     restoreResult: null as RestoreResult | null,
     fullConfigExport: null as ExportStatus | null,
     maintenance: maintenanceFeedback(),
     maintenanceEpoch: 0,
+    masterDetailsEpoch: 0,
     requestEpoch: 0,
     maintenanceConfirmation: null as ConfirmationContext | null,
   }),
 
   actions: {
+    /** 管理员登记和加载真实快照目录，不把旧演示归档混入真实列表。 */
+    async loadLocalArchives(name?: string): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.archive.state)) return false
+      const epoch = this.maintenanceEpoch
+      this.maintenance.archive = { state: name === undefined ? 'LOADING' : 'EXECUTING', message: '', fieldPath: '' }
+      try {
+        if (name !== undefined) {
+          const saved = readStrictData(await requestMaintenance('admin/local-archives', { method: 'POST', body: JSON.stringify({ name }) }))
+          if (epoch !== this.maintenanceEpoch) return false
+          if (!isLocalArchiveRecord(saved)) throw new Error('归档登记响应格式不正确。')
+        }
+        const data = readStrictData(await requestMaintenance('admin/local-archives'))
+        if (epoch !== this.maintenanceEpoch) return false
+        this.maintenance.archive.state = 'VALIDATING'
+        if (!Array.isArray(data) || !data.every(isLocalArchiveRecord) || new Set(data.map(row => row.archiveId)).size !== data.length) throw new Error('归档目录响应格式不正确。')
+        this.localArchives = data
+        this.maintenance.archive = { state: data.length ? 'SUCCESS' : 'EMPTY', message: '', fieldPath: '' }
+        return true
+      } catch (error) {
+        if (epoch !== this.maintenanceEpoch) return false
+        this.localArchives = []
+        this.showMaintenanceError('archive', error)
+        return false
+      }
+    },
     /** 依次重载管理员目录；操作员仅清空受限数据，不请求管理接口。 */
     async loadAll(): Promise<boolean> {
       if (useAuthStore().role !== 'ADMIN') {
@@ -357,6 +399,7 @@ export const useAdminStore = defineStore('admin', {
     invalidateConfirmation(): void {
       this.requestEpoch += 1
       this.maintenanceEpoch += 1
+      this.clearMasterDetails()
       this.auditConfirmation = null
       this.auditExportFilters = {}
       this.auditExportStatus = null
@@ -366,6 +409,7 @@ export const useAdminStore = defineStore('admin', {
     /** 加载指定维护面板；参数为主数据、备份目录、归档或健康面板名称。 */
     async loadMaintenance(section: Exclude<MaintenanceSection, 'export'>): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance[section].state)) return false
+      if (section === 'master') this.clearMasterDetails()
       const epoch = this.maintenanceEpoch
       const path = { master: 'master-data', equipment: 'equipment', backup: 'backups', archive: 'archives', health: 'health' }[section]
       this.maintenance[section] = { state: 'LOADING', message: '正在加载数据。', fieldPath: '' }
@@ -475,8 +519,8 @@ export const useAdminStore = defineStore('admin', {
     async saveMasterData(data: MasterData, create: boolean): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.master.state)) return false
       this.maintenance.master = { state: 'VALIDATING', message: '正在校验主数据。', fieldPath: '' }
-      if (!isMasterData(data)) {
-        this.showMaintenanceError('master', new Error('请填写有效编号、类型和版本。'))
+      if (!isMasterWrite(data)) {
+        this.showMaintenanceError('master', new Error('请填写有效编号、类型、名称和参数条目。'))
         return false
       }
       const epoch = this.maintenanceEpoch
@@ -487,7 +531,7 @@ export const useAdminStore = defineStore('admin', {
         })
         if (epoch !== this.maintenanceEpoch) return false
         const updated = readStrictData(payload)
-        if (!isMasterData(updated) || updated.dataId !== data.dataId || updated.version !== (create ? 1 : data.version + 1)
+        if (!isMasterWrite(updated) || updated.dataId !== data.dataId || updated.version !== (create ? 1 : data.version + 1)
           || updated.referenceCount !== data.referenceCount) throw new Error('保存结果与当前主数据不一致。')
         this.masterData = create ? [...this.masterData, updated] : this.masterData.map((item) => item.dataId === updated.dataId ? updated : item)
         this.maintenance.master = { state: 'SUCCESS', message: `主数据已保存，当前版本 ${updated.version}。`, fieldPath: '' }
@@ -499,12 +543,106 @@ export const useAdminStore = defineStore('admin', {
       }
     },
 
+    /** 加载实际保存的版本历史、历史引用和可引用的场景/模板目标。 */
+    async loadMasterDetails(dataId: string): Promise<boolean> {
+      const normalizedId = dataId.trim()
+      const epoch = ++this.masterDetailsEpoch
+      this.masterDetails = null
+      this.masterTargets = []
+      this.masterDetailsState = 'LOADING'
+      this.masterDetailsMessage = '正在加载版本与引用记录。'
+      if (!normalizedId) {
+        this.masterDetailsState = 'ERROR'
+        this.masterDetailsMessage = '请选择有效主数据。'
+        return false
+      }
+      try {
+        const [detailPayload, targetPayload] = await Promise.all([
+          requestMaintenance(`admin/master-data/${encodeURIComponent(normalizedId)}/details`),
+          requestMaintenance('admin/master-data/targets'),
+        ])
+        if (epoch !== this.masterDetailsEpoch) return false
+        this.masterDetailsState = 'VALIDATING'
+        const details = readStrictData(detailPayload)
+        const targets = readStrictData(targetPayload)
+        if (!isMasterDetails(details) || details.dataId !== normalizedId
+          || !Array.isArray(targets) || !targets.every(isMasterTarget)
+          || new Set(targets.map((target) => JSON.stringify([target.targetType, target.targetId, target.targetVersion]))).size !== targets.length) {
+          throw new Error('主数据版本或引用记录格式不正确。')
+        }
+        this.masterDetails = details
+        this.masterTargets = targets
+        this.masterDetailsState = 'SUCCESS'
+        this.masterDetailsMessage = ''
+        return true
+      } catch (error) {
+        if (epoch !== this.masterDetailsEpoch) return false
+        this.masterDetails = null
+        this.masterTargets = []
+        this.masterDetailsState = 'ERROR'
+        this.masterDetailsMessage = error instanceof Error ? error.message : '主数据详情加载失败。'
+        return false
+      }
+    },
+
+    /** 显式登记已选版本与当前场景或模板的历史关系，不会写入或应用任何参数。 */
+    async registerMasterReference(reference: MasterDataReference): Promise<boolean> {
+      const details = this.masterDetails
+      const epoch = this.masterDetailsEpoch
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.masterDetailsState)) return false
+      if (!isMasterReference(reference) || details === null || details.dataId !== reference.dataId
+        || details.history[0]?.active !== true
+        || details.history.find((item) => item.version === reference.dataVersion)?.active !== true
+        || !this.masterTargets.some((target) => target.targetType === reference.targetType && target.targetId === reference.targetId
+          && target.targetVersion === reference.targetVersion)) {
+        this.masterDetailsState = 'ERROR'
+        this.masterDetailsMessage = '请选择有效的主数据版本和引用目标。'
+        return false
+      }
+      this.masterDetailsState = 'VALIDATING'
+      this.masterDetailsMessage = '正在校验引用登记。'
+      try {
+        this.masterDetailsState = 'EXECUTING'
+        const payload = await requestMaintenance(`admin/master-data/${encodeURIComponent(reference.dataId)}/reference`, {
+          method: 'PUT', body: JSON.stringify(reference),
+        })
+        if (epoch !== this.masterDetailsEpoch) return false
+        this.masterDetailsState = 'VALIDATING'
+        const updated = readStrictData(payload)
+        if (!isMasterDetails(updated) || updated.dataId !== reference.dataId
+          || !updated.references.some((item) => item.dataVersion === reference.dataVersion && item.targetType === reference.targetType
+            && item.targetId === reference.targetId && item.targetVersion === reference.targetVersion)) {
+          throw new Error('引用登记结果不正确。')
+        }
+        this.masterDetails = updated
+        const current = updated.history[0]
+        if (current) this.masterData = this.masterData.map((item) => item.dataId === current.dataId ? current : item)
+        this.masterDetailsState = 'SUCCESS'
+        this.masterDetailsMessage = '已登记版本引用关系；参数不会自动应用到目标。'
+        return true
+      } catch (error) {
+        if (epoch !== this.masterDetailsEpoch) return false
+        this.masterDetailsState = 'ERROR'
+        this.masterDetailsMessage = error instanceof Error ? error.message : '引用登记失败。'
+        return false
+      }
+    },
+
+    /** 关闭详情或会话时取消在途详情请求，避免迟到结果恢复旧记录。 */
+    clearMasterDetails(): void {
+      this.masterDetailsEpoch += 1
+      this.masterDetails = null
+      this.masterTargets = []
+      this.masterDetailsState = 'EMPTY'
+      this.masterDetailsMessage = '请选择主数据查看版本和引用记录。'
+    },
+
     /**
      * 用户在界面确认后执行敏感操作；每步响应都检查会话是否已失效。
      * @param operation 删除、备份、恢复或配置导出动作。
      * @param targetId 删除的主数据编号或恢复的备份编号。
      */
-    async runMaintenanceAction(operation: MaintenanceAction, targetId = ''): Promise<boolean> {
+    async runMaintenanceAction(operation: MaintenanceAction, targetId = '', backupName?: string): Promise<boolean> {
       if (this.maintenanceConfirmation !== null || Object.values(this.maintenance).some((item) => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(item.state))) return false
       const section: MaintenanceSection = operation === 'DELETE' ? 'master' : operation === 'EXPORT' ? 'export' : 'backup'
       const action: ConfirmationAction = operation === 'DELETE' ? 'MASTER_DATA_DELETE' : operation === 'EXPORT' ? 'FULL_CONFIG_EXPORT' : 'BACKUP_RESTORE'
@@ -532,7 +670,7 @@ export const useAdminStore = defineStore('admin', {
         const confirmationId = confirmed.confirmationId
         const path = operation === 'DELETE' ? `master-data/${encodeURIComponent(targetId)}` : operation === 'RESTORE' ? 'restore' : operation === 'BACKUP' ? 'backup' : 'config/export'
         const body = operation === 'RESTORE' ? { operation: 'RESTORE', backupId: targetId, confirmationId }
-          : operation === 'BACKUP' ? { operation: 'BACKUP', confirmationId } : { format: 'JSON', confirmationId }
+          : operation === 'BACKUP' ? { operation: 'BACKUP', confirmationId, ...(backupName === undefined ? {} : { name: backupName }) } : { format: 'JSON', confirmationId }
         const payload = await requestMaintenance(`admin/${path}`, operation === 'DELETE'
           ? { method: 'DELETE', headers: { 'X-Confirmation-Id': confirmationId } }
           : { method: 'POST', body: JSON.stringify(body) })
@@ -579,6 +717,41 @@ export const useAdminStore = defineStore('admin', {
       this.maintenance.backup = { state: 'EMPTY', message: '恢复来源已切换，请确认后执行恢复。', fieldPath: '' }
     },
 
+    async loadBackupPlan(): Promise<boolean> {
+      if (this.backupPlanPending) return false
+      const epoch = this.maintenanceEpoch
+      this.backupPlanPending = true
+      this.backupPlanError = ''
+      this.backupPlanStatus = null
+      try {
+        const data = readStrictData(await requestMaintenance('admin/backup-plan'))
+        if (epoch !== this.maintenanceEpoch) return false
+        if (!isBackupPlanStatus(data)) throw new Error('备份计划响应格式不正确。')
+        this.backupPlanStatus = data
+        return true
+      } catch (error) {
+        if (epoch === this.maintenanceEpoch) this.backupPlanError = error instanceof Error ? error.message : '备份计划读取失败。'
+        return false
+      } finally { if (epoch === this.maintenanceEpoch) this.backupPlanPending = false }
+    },
+    async saveBackupPlan(plan: BackupPlan): Promise<boolean> {
+      if (this.backupPlanPending) return false
+      if (!isBackupPlan(plan)) { this.backupPlanError = '请填写名称和 60～10080 分钟的整数间隔。'; return false }
+      const epoch = this.maintenanceEpoch
+      this.backupPlanPending = true
+      this.backupPlanError = ''
+      try {
+        const data = readStrictData(await requestMaintenance('admin/backup-plan', { method: 'PUT', body: JSON.stringify(plan) }))
+        if (epoch !== this.maintenanceEpoch) return false
+        if (!isBackupPlanStatus(data) || data.plan.version !== plan.version + 1 || data.plan.name !== plan.name || data.plan.enabled !== plan.enabled || data.plan.intervalMinutes !== plan.intervalMinutes) throw new Error('备份计划保存响应不匹配。')
+        this.backupPlanStatus = data
+        return true
+      } catch (error) {
+        if (epoch === this.maintenanceEpoch) { this.backupPlanStatus = null; this.backupPlanError = error instanceof Error ? error.message : '备份计划保存失败。' }
+        return false
+      } finally { if (epoch === this.maintenanceEpoch) this.backupPlanPending = false }
+    },
+
     /** 将维护操作的失败映射为中文反馈，并保留可定位的字段路径。 */
     showMaintenanceError(section: MaintenanceSection, error: unknown): void {
       const failure = readFailure(error)
@@ -588,11 +761,16 @@ export const useAdminStore = defineStore('admin', {
     /** 退出维护页面或会话时使在途请求失效，清除敏感确认与旧结果。 */
     resetMaintenance(): void {
       this.maintenanceEpoch += 1
+      this.clearMasterDetails()
       this.maintenanceConfirmation = null
       this.masterData = []
       this.equipment = []
       this.backups = []
+      this.backupPlanStatus = null
+      this.backupPlanPending = false
+      this.backupPlanError = ''
       this.archives = []
+      this.localArchives = []
       this.health = null
       this.restoreResult = null
       this.fullConfigExport = null

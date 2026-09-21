@@ -10,7 +10,7 @@
 | `/batches` | `BatchesPage` | `BatchForm`, `BatchRunTable`, `BatchStateCard` | `batchStore`, `scenarioStore`, `uiStore` | batches | `requirePrincipal` |
 | `/reports` | `ReportsPage` | `ReportSourcePicker`, `KpiGrid`, `ReportTabs`, `BatchComparisonTable`, `ExportConfirmationDialog` | `reportStore`, `batchStore`, `telemetryStore`, `authStore`, `uiStore` | reports/batches/simulations/confirmations | `requirePrincipal`; Level III 导出需 ADMIN+确认 |
 | `/replays` | `ReplaysPage` | `ReplaySelector`, `ReplayTimeline`, `ReplayToolbar`, `ReplayEventDetail` | `replayStore`, `telemetryStore`, `uiStore` | replays | `requirePrincipal` |
-| `/admin` | `AdminPage` | `MasterDataPanel`, `UserRolePanel`, `BackupRestoreWizard`, `AuditPanel`, `FullConfigExportPanel`, `ArchivePanel`, `HealthPanel` | `adminStore`, `authStore`, `uiStore` | admin groups including `/api/v1/admin/config/export` | `requireAdmin`; operator 重定向 `/blueprint` 并显示拒绝原因 |
+| `/admin` | `AdminPage` | `MasterDataPanel`, `UserRolePanel`, `BackupRestoreWizard`, `AuditPanel`, `FullConfigExportPanel`, `ArchivePanel`, `HealthPanel` | `adminStore`, `dataExchangeStore`, `authStore`, `uiStore` | admin groups including `/api/v1/admin/config/export`; 本机监测 `/api/v1/data-exchange/monitor` | `requireAdmin`; operator 重定向 `/blueprint` 并显示拒绝原因 |
 | `/blueprint` | `BlueprintPage` | `CapabilityCardGrid`, `InterfaceContractTable`, `DecisionRegister` | `traceabilityStore`, `authStore`, `uiStore` | meta capabilities/interfaces/decisions | `requirePrincipal` |
 | `/admin/data-exchange` | `DataExchangePage` | `CsvContractCard`, `ScenarioJsonPanel`, `WebSocketContractCard`, `ProcessContractCard`, `InterfaceContractTable` | `dataExchangeStore`, `scenarioStore`, `simulationStore`, `telemetryStore` | contracts/csv；scenario JSON；`/ws/v1`；runtime state | `requirePrincipal`; 通过 `/admin` 系统管理壳进入，其他管理子页仍需 `requireAdmin` |
 | `/traceability` | `TraceabilityPage` | `TraceFilterBar`, `RequirementTraceTable`, `InterfaceTraceTable` | `traceabilityStore`, `uiStore` | meta capabilities/interfaces/routes | `requirePrincipal` |
@@ -21,6 +21,8 @@
 2026-09-11 场景列表补充：`/scenarios` 的页面壳由 `ScenarioWorkspace.vue` 实现，复用原 `scenarios.vue` 编辑器；不增加命名路由。进入先加载列表，用户选择新建、编辑、复制或从模板创建；保存返回列表。`scenarioStore` 增加 `scenes/listState`、`loadScenes/deleteScene/prepareSceneCopy`，按编号隔离加载与写入；列表请求、编辑草稿及预览在会话重置后不得回写。删除需用户确认和最新修订，运行锁定时拒绝。模板仍为独立配置副本。
 
 ## Pinia Store 合同
+
+2026-09-21 系统运行状态接入：HealthPanel 复用 dataExchangeStore 的 loadMonitor／clearMonitor、本机 LocalMonitorSnapshot 和五秒请求超时，五秒轮询。仅展示实际被检查的主库／读取记录库及最近文件读取证据；未监测的其他库、引擎与通信通道显示暂无数据。离页停止轮询并取消在途请求。旧 adminStore.health 和 `/admin/health` 保留协议兼容，不作为该页真实数据来源。不新增数据库或仿真进程检查。
 
 | Store | 唯一拥有的 state | Actions | 不得拥有 |
 |---|---|---|---|
@@ -40,6 +42,8 @@
 
 - P7 管理面板通过 `/admin?section=master-data`、`database-backup`、`simulation-data`、`runtime-status` 四个查询参数值切换，不增加命名路由。完整配置导出复用备份恢复页面内的区域，不另建重复面板。
 - `adminStore.loadMaintenance` 统一读取主数据、备份、归档和健康投影；`saveMasterData` 保存主数据副本；`runMaintenanceAction` 串联创建确认、确认完成和敏感操作。面板卸载及登出调用 `resetMaintenance`，清空旧结果并使在途响应失效。页面不直接读取 fixture。
+- SQLite 完整备份页面复用上述入口；`loadBackupPlan`／`saveBackupPlan` 读取和保存真实计划及执行记录，`runMaintenanceAction` 备份时传入名称。计划默认关闭，保存需用户确认，状态及在途请求受 `maintenanceEpoch` 保护；数据库文件和调度器仅存在于 Node 本机适配器。
+- 主数据增加 `loadMasterDetails`、`registerMasterReference`、`clearMasterDetails`：读取真实历史／目标并显式登记版本关系；关闭详情、离页和会话失效使迟到响应失效。主数据编辑深拷贝内容，不修改当前列表；引用登记不会调用场景写入接口或自动应用参数。
 
 - `SituationPage` 只通过 selectors 获取同一 F-00042：地图、指标、弹窗必须同 frameId；ageMs 只接受 0～5000 ms，并按当前、最近 1 秒、最近 5 秒呈现，超过 5 秒拒绝。
 - `ScenariosPage` 对 `ScenarioConfig` 使用单一 canonical 编辑副本，并以独立 `ScenarioUiExtensions` 保存干扰器/传感器 UI 扩展；保存/预览前必经 AJV+业务规则。四类业务信息节点合计支持 50 个，支撑实体不计数；新增第 51 个业务信息节点以 `NODE_LIMIT_EXCEEDED` 阻断且草稿不改变。

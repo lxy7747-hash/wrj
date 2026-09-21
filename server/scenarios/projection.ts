@@ -426,6 +426,12 @@ export class ScenarioProjection {
 
   constructor(private readonly storage?: ScenarioStorage) { this.reset() }
 
+  /** 仅纯内存模式使用；持久化模式由装备库跨库事务提交，再由 get 按修订号重载。 */
+  applyEquipmentScenes(updates: { after: ScenarioDraft }[]): void {
+    if (this.storage) throw new Error('持久化场景必须在装备保存事务中更新。')
+    for (const { after } of updates) this.documents.set(after.config.scenario.id, new ScenarioDocument(undefined, structuredClone(after)))
+  }
+
   private document(id: string): ScenarioDocument {
     let document = this.documents.get(id)
     if (!document) {

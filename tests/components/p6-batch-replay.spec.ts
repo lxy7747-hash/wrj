@@ -1,7 +1,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
-import { createMemoryHistory } from 'vue-router'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Batch, Principal } from '../../src/contracts/domain-models'
@@ -277,7 +277,9 @@ describe('P6 批量仿真与历史回放页面', () => {
     let finishLoad!: (response: Response) => void
     const fetchSpy = vi.fn().mockReturnValue(new Promise<Response>((resolve) => { finishLoad = resolve }))
     vi.stubGlobal('fetch', fetchSpy)
-    const wrapper = mount(ReplaysPage, { global: { plugins: [pinia, ElementPlus] } })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/replays', component: ReplaysPage }] })
+    await router.push('/replays')
+    const wrapper = mount(ReplaysPage, { global: { plugins: [pinia, ElementPlus, router] } })
     await flushPromises()
     expect(wrapper.find('.el-skeleton').exists()).toBe(true)
     wrapper.unmount()

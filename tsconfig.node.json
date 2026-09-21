@@ -37,6 +37,8 @@
     "src/features/scenarios/link-settings.ts",
     "src/features/scenarios/jammer-settings.ts",
     "src/features/admin/admin-contract.ts",
+    "src/features/admin/backup-plan.ts",
+    "src/features/admin/local-archive.ts",
     "src/features/admin/equipment-contract.ts",
     "src/features/admin/access-control.ts",
     "src/features/admin/audit-labels.ts",

@@ -63,6 +63,58 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('完整备份名称和计划冻结边界，执行结果与备份编号闭合', () => {
+    const document = loadContractDocuments().openApi
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    ajv.addSchema({ $id: 'backup-contract', components: asObject(document).components })
+    const plan = ajv.compile({ $ref: 'backup-contract#/components/schemas/BackupPlan' })
+    const status = ajv.compile({ $ref: 'backup-contract#/components/schemas/BackupPlanStatus' })
+    const request = ajv.compile({ $ref: 'backup-contract#/components/schemas/BackupRequest' })
+    const value = { version: 1, enabled: false, name: '每日备份', intervalMinutes: 1440 }
+    expect(plan(value)).toBe(true)
+    for (const patch of [{ name: ' ' }, { intervalMinutes: 59 }, { intervalMinutes: 10081 }, { intervalMinutes: 60.5 }, { version: 0 }, { extra: true }]) {
+      expect(plan({ ...value, ...patch })).toBe(false)
+    }
+    expect(request({ operation: 'BACKUP', confirmationId: 'CONF-1', name: '手动备份' })).toBe(true)
+    expect(request({ operation: 'BACKUP', confirmationId: 'CONF-1', name: ' ' })).toBe(false)
+    const data = { plan: value, nextRunAt: null, executions: [] }
+    expect(status(data)).toBe(true)
+    expect(status({ ...data, plan: { ...value, enabled: true } })).toBe(false)
+    const time = '2026-09-21T00:00:00Z'
+    expect(status({ ...data, plan: { ...value, enabled: true }, nextRunAt: time })).toBe(true)
+    const execution = { startedAt: time, completedAt: time, result: 'SUCCESS', backupId: 'BACKUP-1', message: '完成' }
+    expect(status({ ...data, executions: [execution] })).toBe(true)
+    expect(status({ ...data, executions: [{ ...execution, backupId: null }] })).toBe(false)
+    expect(status({ ...data, executions: [{ ...execution, result: 'FAILURE' }] })).toBe(false)
+    expect(status({ ...data, executions: [{ ...execution, result: 'FAILURE', backupId: null }] })).toBe(true)
+  })
+  it('主数据旧记录可读，新写必须包含闭合的真实内容；版本引用接口保持冻结', () => {
+    const document = loadContractDocuments().openApi
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    ajv.addSchema({ $id: 'master-contract', components: asObject(document).components })
+    const read = ajv.compile({ $ref: 'master-contract#/components/schemas/MasterData' })
+    const write = ajv.compile({ $ref: 'master-contract#/components/schemas/MasterDataWrite' })
+    const record = { dataId: 'DICT-1', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true }
+    expect(read(record)).toBe(true)
+    expect(write(record)).toBe(false)
+    const content = { name: '通信字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT', value: '标准' }] }
+    expect(write({ ...record, content })).toBe(true)
+    for (const patch of [{ kind: 'DEVICE' }, { content: { ...content, entries: [] } },
+      { content: { ...content, entries: [{ key: 'x', valueType: 'NUMBER', value: '3' }] } },
+      { content: { ...content, entries: [{ key: 'x', valueType: 'BOOLEAN', value: false, unit: 'm' }] } },
+      { content: { ...content, name: ' ' } }, { extra: true }]) {
+      expect(write({ ...record, content, ...patch })).toBe(false)
+    }
+    for (const [valueType, value] of [['NUMBER', 0], ['BOOLEAN', false]] as const) {
+      expect(write({ ...record, content: { ...content, entries: [{ key: 'x', valueType, value }] } })).toBe(true)
+    }
+    for (const path of ['/api/v1/admin/master-data/targets', '/api/v1/admin/master-data/{dataId}/details', '/api/v1/admin/master-data/{dataId}/reference']) {
+      expect(responseSchemaAt(document, path, path.endsWith('/reference') ? 'put' : 'get', '503').$ref).toBe('#/components/schemas/ErrorEnvelope')
+    }
+  })
+
   it('freezes real SQLite backup status, checksum and restore results while retaining pure Mock compatibility', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })
@@ -122,7 +174,7 @@ describe('OpenAPI contract audit', () => {
     expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SERVERS', path: '$.servers' }))
   })
 
-  it('accepts the authoritative 75-operation contract', () => {
+  it('accepts the authoritative 83-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(asObject(openApi).servers).toEqual([expect.objectContaining({ url: 'http://127.0.0.1:4173' })])
@@ -135,9 +187,9 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(75)
-    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(37)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(75)
+    expect(operations).toHaveLength(83)
+    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(40)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(83)
   })
 
   it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {

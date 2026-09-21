@@ -77,6 +77,8 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；32 个 POST/PUT/
 | `/reports` | RUN/BATCH source 原子切换；Level II/III 权限和确认 |
 | `/replays` | REPLAY-001 控件、事件、corrupt/empty overlay |
 | `/admin` | operator 重定向；ADMIN 主数据/用户/备份/审计/归档/健康 |
+
+SQLite 完整备份追加专项：使用临时主库、装备库、角色权限库、主数据库、归档库及白名单配置库，覆盖多库一致性、命名备份、计划持久化／定时执行／失败记录、校验损坏、恢复前备份、中途失败整体回滚与重新登录。旧主库备份不可冒充完整系统恢复；不回退审计／读取记录，不读取正式账号库。浏览器通过 `playwright.backup.config.ts` 的两种既定视口独立验证，专项结果与全套 E2E 分开记录。
 | `/blueprint` | 29 cards、7 interface anchors、8 decisions |
 | `/admin/data-exchange` | 系统管理下的 CSV/JSON/WebSocket/AFSIM 四项能力、7 类接口合同、零连接边界 |
 | `/traceability` | 29+7 行过滤与 destination navigation |

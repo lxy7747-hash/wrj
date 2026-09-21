@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { useRoute } from 'vue-router'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import ReplayTimeline from '../../components/replays/ReplayTimeline.vue'
 import type { ReplayState } from '../../contracts/domain-models'
@@ -10,6 +11,8 @@ import { selectFileCommunicationLinks } from '../../features/situation/file-comm
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 
 const replayStore = useReplayStore()
+const route = useRoute()
+const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const { replay, events, state, speed, selectedEventId, resultMessage, localSnapshot } = storeToRefs(replayStore)
 const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
 // 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联。
@@ -79,7 +82,7 @@ async function changeSpeed(value: number): Promise<void> {
 async function reload(): Promise<void> {
   sliderDragging.value = false
   focusTarget.value = null
-  await replayStore.loadLocalFile()
+  await replayStore.loadLocalFile(archiveId.value)
 }
 
 /** 选中节点仍存在时保留高亮；时间变化不自动重置视图或选择。 */
@@ -94,6 +97,7 @@ function locateFileNode(platformId: string): void {
 }
 
 onMounted(() => { void reload() })
+watch(archiveId, () => { void reload() })
 onBeforeUnmount(() => {
   replayStore.resetToSafeEmpty()
 })
@@ -160,7 +164,8 @@ onBeforeUnmount(() => {
               <el-button :disabled="!selectedNodeId" @click="locateFileNode(selectedNodeId)">定位</el-button>
             </div>
           </div>
-          <p>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
+          <p v-if="archiveId" data-testid="replay-archive-source">归档：{{ archiveId }}；重新加载仍读取此快照，不切换到最新文件。</p>
+          <p v-else>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
           <p>按回放时刻展示位置及已登记的通信关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"

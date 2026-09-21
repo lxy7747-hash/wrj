@@ -56,7 +56,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
     <el-table :data="details?.references ?? []" empty-text="暂无数据">
       <el-table-column prop="scenarioId" label="场景编号" /><el-table-column prop="linkId" label="链路编号" />
       <el-table-column prop="equipmentVersion" label="引用版本" />
-      <el-table-column label="更新影响"><template #default="{ row }">{{ row.equipmentVersion === equipment.version ? '当前版本' : `参数已更新至 v${equipment.version}；场景未自动更新` }}</template></el-table-column>
+      <el-table-column label="更新影响"><template #default="{ row }">{{ row.equipmentVersion === equipment.version ? '当前引用版本' : `保留旧引用 v${row.equipmentVersion}；下次保存装备时同步` }}</template></el-table-column>
       <el-table-column label="操作"><template #default="{ row }"><el-button link :disabled="pending" @click="request(row, true)">解除引用</el-button></template></el-table-column>
     </el-table>
     <el-form inline aria-label="登记装备引用">
@@ -64,7 +64,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
       <el-form-item label="链路编号"><el-input v-model="linkId" placeholder="已有链路编号" /></el-form-item>
       <el-button :disabled="pending || equipment.readOnly" @click="bind">登记当前版本引用</el-button>
     </el-form>
-    <p>引用登记不覆盖场景配置。有引用时不能删除装备；历史记录从实际保存版本开始，不补造更早版本。</p>
+    <p>登记本身不覆盖场景；之后保存装备会同步已登记链路与引用版本。有引用时不能删除装备，历史归档不变。</p>
     <h4>版本历史</h4>
     <el-table :data="details?.history ?? []" empty-text="暂无数据">
       <el-table-column prop="version" label="版本" /><el-table-column prop="type" label="类型" />

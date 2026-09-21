@@ -90,6 +90,9 @@ const SCHEMA_BEARING_KEYS = Object.freeze([
   'allOf',
 ] as const)
 const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
+  { method: 'get', path: '/api/v1/admin/local-archives', operationId: 'getapiV1AdminLocalArchives' },
+  { method: 'post', path: '/api/v1/admin/local-archives', operationId: 'postapiV1AdminLocalArchives' },
+  { method: 'get', path: '/api/v1/archives/{archiveId}', operationId: 'getapiV1ArchivesArchiveId' },
   { method: 'post', path: '/api/v1/auth/login', operationId: 'postapiV1AuthLogin' },
   { method: 'get', path: '/api/v1/auth/session', operationId: 'getapiV1AuthSession' },
   { method: 'post', path: '/api/v1/auth/logout', operationId: 'postapiV1AuthLogout' },
@@ -150,6 +153,8 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/admin/audit', operationId: 'getapiV1AdminAudit' },
   { method: 'post', path: '/api/v1/admin/audit/export', operationId: 'postapiV1AdminAuditExport' },
   { method: 'get', path: '/api/v1/admin/backups', operationId: 'getapiV1AdminBackups' },
+  { method: 'get', path: '/api/v1/admin/backup-plan', operationId: 'getapiV1AdminBackupPlan' },
+  { method: 'put', path: '/api/v1/admin/backup-plan', operationId: 'putapiV1AdminBackupPlan' },
   { method: 'post', path: '/api/v1/admin/backup', operationId: 'postapiV1AdminBackup' },
   { method: 'post', path: '/api/v1/admin/restore', operationId: 'postapiV1AdminRestore' },
   { method: 'get', path: '/api/v1/admin/health', operationId: 'getapiV1AdminHealth' },
@@ -165,8 +170,17 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   {"method":"put","path":"/api/v1/admin/equipment/{equipmentId}/reference","operationId":"putapiV1AdminEquipmentEquipmentIdReference"},
   {"method":"get","path":"/api/v1/admin/access-control","operationId":"getapiV1AdminAccessControl"},
   {"method":"put","path":"/api/v1/admin/access-control","operationId":"putapiV1AdminAccessControl"},
+  { method: 'get', path: '/api/v1/admin/master-data/targets', operationId: 'getapiV1AdminMasterDataTargets' },
+  { method: 'get', path: '/api/v1/admin/master-data/{dataId}/details', operationId: 'getapiV1AdminMasterDataDataIdDetails' },
+  { method: 'put', path: '/api/v1/admin/master-data/{dataId}/reference', operationId: 'putapiV1AdminMasterDataDataIdReference' },
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
+  getapiV1AdminMasterDataTargets: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataTargetList'),
+  getapiV1AdminMasterDataDataIdDetails: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataDetails'),
+  putapiV1AdminMasterDataDataIdReference: operationSchemaBinding('#/components/schemas/MasterDataReference', '200', '#/components/schemas/MasterDataDetails'),
+  getapiV1AdminLocalArchives: operationSchemaBinding(null, '200', '#/components/schemas/LocalArchiveList'),
+  postapiV1AdminLocalArchives: operationSchemaBinding('#/components/schemas/LocalArchiveRequest', '201', '#/components/schemas/LocalArchiveRecord'),
+  getapiV1ArchivesArchiveId: operationSchemaBinding(null, '200', '#/components/schemas/LocalArchiveSnapshot'),
   getapiV1AdminEquipmentEquipmentIdDetails: operationSchemaBinding(null, '200', "#/components/schemas/EquipmentDetails"),
   putapiV1AdminEquipmentEquipmentIdReference: operationSchemaBinding("#/components/schemas/EquipmentReferenceRequest", '200', "#/components/schemas/EquipmentDetails"),
   getapiV1AdminAccessControl: operationSchemaBinding(null, '200', "#/components/schemas/AccessControlConfig"),
@@ -235,6 +249,8 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1AdminAudit: operationSchemaBinding(null, '200', '#/components/schemas/AuditList'),
   postapiV1AdminAuditExport: operationSchemaBinding('#/components/schemas/AuditExportRequest', '200', '#/components/schemas/AuditExportResult'),
   getapiV1AdminBackups: operationSchemaBinding(null, '200', '#/components/schemas/BackupList'),
+  getapiV1AdminBackupPlan: operationSchemaBinding(null, '200', '#/components/schemas/BackupPlanStatus'),
+  putapiV1AdminBackupPlan: operationSchemaBinding('#/components/schemas/BackupPlan', '200', '#/components/schemas/BackupPlanStatus'),
   postapiV1AdminBackup: operationSchemaBinding('#/components/schemas/BackupRequest', '200', '#/components/schemas/BackupRecord'),
   postapiV1AdminRestore: operationSchemaBinding('#/components/schemas/RestoreRequest', '200', '#/components/schemas/RestoreResult'),
   getapiV1AdminHealth: operationSchemaBinding(null, '200', '#/components/schemas/SystemHealth'),
@@ -244,6 +260,12 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  getapiV1AdminMasterDataTargets: ['401','403','503'],
+  getapiV1AdminMasterDataDataIdDetails: ['401','403','404','503'],
+  putapiV1AdminMasterDataDataIdReference: ['401','403','404','409','422','503'],
+  getapiV1AdminLocalArchives: ['401', '403', '503'],
+  postapiV1AdminLocalArchives: ['401', '403', '422', '503'],
+  getapiV1ArchivesArchiveId: ['401', '403', '404', '422', '503'],
   getapiV1AdminEquipmentEquipmentIdDetails: ["401","403","503"],
   putapiV1AdminEquipmentEquipmentIdReference: ["401","403","404","409","422","503"],
   getapiV1AdminAccessControl: ["401","403","503"],
@@ -301,10 +323,10 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1Replays: ['401'],
   getapiV1ReplaysReplayId: ['401'],
   postapiV1ReplaysReplayIdCommands: ['401', '409'],
-  getapiV1AdminMasterData: ['401', '403'],
-  postapiV1AdminMasterData: ['401', '403', '409', '422'],
-  putapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '422'],
-  deleteapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '428'],
+  getapiV1AdminMasterData: ['401', '403', '503'],
+  postapiV1AdminMasterData: ['401', '403', '409', '422', '503'],
+  putapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '422', '503'],
+  deleteapiV1AdminMasterDataDataId: ['401', '403', '404', '409', '428', '503'],
   getapiV1AdminUsers: ['401'],
   postapiV1AdminUsers: ['401'],
   putapiV1AdminUsersUserId: ['401', '409'],
@@ -312,6 +334,8 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1AdminAudit: ['401', '400', '403'],
   postapiV1AdminAuditExport: ['401', '400', '403', '409', '428'],
   getapiV1AdminBackups: ['401', '403', '503'],
+  getapiV1AdminBackupPlan: ['401', '403', '503'],
+  putapiV1AdminBackupPlan: ['401', '403', '409', '422', '503'],
   postapiV1AdminBackup: ['401', '403', '404', '409', '422', '428', '503'],
   postapiV1AdminRestore: ['401', '403', '404', '409', '422', '428', '503'],
   getapiV1AdminHealth: ['401', '403'],
@@ -321,6 +345,32 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ['#/components/schemas/BackupRecord/properties/format/enum', ['SYSTEM_SQLITE_V1', 'MAIN_SQLITE_V1']],
+  ['#/components/schemas/BackupExecution/properties/result/enum', ['SUCCESS', 'FAILURE']],
+  ['#/components/schemas/BackupExecution/allOf/0/if/properties/result/const', 'SUCCESS'],
+  ['#/components/schemas/BackupPlanStatus/allOf/0/if/properties/plan/properties/enabled/const', true],
+  ['#/components/schemas/GetapiV1AdminBackupPlanResponse/properties/ok/const', true],
+  ['#/components/schemas/PutapiV1AdminBackupPlanResponse/properties/ok/const', true],
+  ['#/components/schemas/MasterDataDetails/properties/dataId/not/enum', ['.', '..']],
+  ['#/components/schemas/MasterDataEntry/oneOf/0/properties/valueType/const','TEXT'],
+  ['#/components/schemas/MasterDataEntry/oneOf/1/properties/valueType/const','BOOLEAN'],
+  ['#/components/schemas/MasterDataEntry/oneOf/2/properties/valueType/const','NUMBER'],
+  ['#/components/schemas/MasterDataWrite/allOf/1/properties/kind/enum',['COMMUNICATION_SYSTEM','PARAMETER_DICTIONARY','ENUMERATION']],
+  ['#/components/schemas/MasterDataReference/properties/dataId/not/enum',['.','..']],
+  ['#/components/schemas/MasterDataReference/properties/targetType/enum',['SCENARIO','TEMPLATE']],
+  ['#/components/schemas/MasterDataTarget/properties/targetType/enum',['SCENARIO','TEMPLATE']],
+  ['#/components/schemas/GetapiV1AdminMasterDataTargetsResponse/properties/ok/const',true],
+  ['#/components/schemas/GetapiV1AdminMasterDataDataIdDetailsResponse/properties/ok/const',true],
+  ['#/components/schemas/PutapiV1AdminMasterDataDataIdReferenceResponse/properties/ok/const',true],
+["#/components/schemas/LocalArchiveRecord/properties/sourceKind/const","LOCAL_FILE_SNAPSHOT"],
+["#/components/schemas/LocalArchiveRecord/properties/binding/const","UNBOUND"],
+["#/components/schemas/LocalArchiveReplay/properties/initial/properties/connections/items/properties/scope/const","INTER_PLATFORM"],
+["#/components/schemas/LocalArchiveReplay/properties/initial/properties/deviceEvents/items/properties/kind/enum",["COMMUNICATION","JAMMING"]],
+["#/components/schemas/LocalArchiveReplay/properties/initial/properties/messageLinks/items/properties/type/enum",["SAT","MICROWAVE","DATALINK","FIBER"]],
+["#/components/schemas/LocalArchiveReplay/properties/initial/properties/messageLinks/items/properties/direction/enum",["FORWARD","REVERSE"]],
+["#/components/schemas/GetapiV1AdminLocalArchivesResponse/properties/ok/const",true],
+["#/components/schemas/PostapiV1AdminLocalArchivesResponse/properties/ok/const",true],
+["#/components/schemas/GetapiV1ArchivesArchiveIdResponse/properties/ok/const",true],
   ["#/components/schemas/MenuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/batches","/blueprint","/interactions","/traceability","/admin/data-exchange","/admin","/admin?section=equipment-library","/admin?section=scenario-templates","/admin?section=audit-logs","/admin?section=master-data","/admin?section=database-backup","/admin?section=simulation-data","/admin?section=runtime-status"]],
   ["#/components/schemas/RoleProfile/properties/baseRole/enum",["ADMIN","OPERATOR"]],
   ["#/components/schemas/RoleProfile/properties/permissions/contains/const","BUSINESS_READ"],
@@ -688,7 +738,7 @@ const EXPECTED_ROUTE_CONTRACTS = Object.freeze({
   '/batches': routeContract('BatchesPage', ['batchStore', 'scenarioStore', 'uiStore'], 'requirePrincipal'),
   '/reports': routeContract('ReportsPage', ['reportStore', 'batchStore', 'telemetryStore', 'authStore', 'uiStore'], 'requirePrincipal'),
   '/replays': routeContract('ReplaysPage', ['replayStore', 'telemetryStore', 'uiStore'], 'requirePrincipal'),
-  '/admin': routeContract('AdminPage', ['adminStore', 'authStore', 'uiStore'], 'requireAdmin'),
+  '/admin': routeContract('AdminPage', ['adminStore', 'dataExchangeStore', 'authStore', 'uiStore'], 'requireAdmin'),
   '/blueprint': routeContract('BlueprintPage', ['traceabilityStore', 'authStore', 'uiStore'], 'requirePrincipal'),
   '/admin/data-exchange': routeContract('DataExchangePage', ['scenarioStore', 'simulationStore', 'telemetryStore', 'dataExchangeStore', 'uiStore'], 'requirePrincipal'),
   '/traceability': routeContract('TraceabilityPage', ['traceabilityStore', 'uiStore'], 'requirePrincipal'),
@@ -799,6 +849,9 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
     operationReference('post', '/api/v1/admin/master-data', 'postapiV1AdminMasterData'),
     operationReference('put', '/api/v1/admin/master-data/{dataId}', 'putapiV1AdminMasterDataDataId'),
     operationReference('delete', '/api/v1/admin/master-data/{dataId}', 'deleteapiV1AdminMasterDataDataId'),
+    operationReference('get', '/api/v1/admin/master-data/targets', 'getapiV1AdminMasterDataTargets'),
+    operationReference('get', '/api/v1/admin/master-data/{dataId}/details', 'getapiV1AdminMasterDataDataIdDetails'),
+    operationReference('put', '/api/v1/admin/master-data/{dataId}/reference', 'putapiV1AdminMasterDataDataIdReference'),
   ]),
   'DSDWRJQTLJS-XQ-XTGL-YHJS': capabilityTrace('/admin', [
     operationReference('post', '/api/v1/auth/login', 'postapiV1AuthLogin'),
@@ -809,6 +862,8 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
     operationReference('delete', '/api/v1/admin/users/{userId}', 'deleteapiV1AdminUsersUserId'),
   ]),
   'DSDWRJQTLJS-XQ-XTGL-BFHF': capabilityTrace('/admin', [
+    operationReference('get', '/api/v1/admin/backup-plan', 'getapiV1AdminBackupPlan'),
+    operationReference('put', '/api/v1/admin/backup-plan', 'putapiV1AdminBackupPlan'),
     operationReference('post', '/api/v1/admin/backup', 'postapiV1AdminBackup'),
     operationReference('post', '/api/v1/admin/restore', 'postapiV1AdminRestore'),
   ]),
@@ -1509,12 +1564,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 75) {
+  if (operationCount !== 83) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 75 operations, found ${operationCount}`,
+      `Expected exactly 83 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1533,12 +1588,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 37 || requestSchemaOwners.size !== 37) {
+  if (writeCount !== 40 || requestSchemaOwners.size !== 40) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 37 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 40 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

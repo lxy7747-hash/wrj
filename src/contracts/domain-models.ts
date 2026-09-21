@@ -337,7 +337,13 @@ export interface ConfirmationRequest { action: ConfirmationAction; objectId: Ide
 export interface ConfirmationContext { confirmationId: Identifier; state: ConfirmationState; actor: string; role: Role; createdAt: Iso8601Utc; expiresAt: Iso8601Utc; }
 
 export interface User { userId: Identifier; username: string; role: Role; status: 'ACTIVE' | 'DISABLED' | 'LOCKED'; lastLoginAt?: Iso8601Utc; }
-export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; }
+export interface MasterDataEntry { key: string; valueType: 'TEXT' | 'NUMBER' | 'BOOLEAN'; value: string | number | boolean; unit?: string; minimum?: number; maximum?: number; }
+export interface MasterDataContent { name: string; description: string; entries: MasterDataEntry[]; }
+export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; content?: MasterDataContent; }
+/** 显式登记的版本关系，不表示参数已应用到场景；历史关系不自动解除。 */
+export interface MasterDataReference { dataId: Identifier; dataVersion: number; targetType: 'SCENARIO' | 'TEMPLATE'; targetId: Identifier; targetVersion: string; }
+export interface MasterDataTarget { targetType: 'SCENARIO' | 'TEMPLATE'; targetId: Identifier; targetVersion: string; name: string; }
+export interface MasterDataDetails { dataId: Identifier; history: MasterData[]; references: MasterDataReference[]; }
 /** 管理员维护的装备默认参数；空值表示未配置，不代表零。频率单位 MHz，阈值为 BER。 */
 export interface EquipmentParameter {
   equipmentId: string
@@ -359,8 +365,11 @@ export interface RoleProfile { profileId: string; name: string; baseRole: Role; 
 export interface RoleAssignment { userId: string; profileId: string; }
 export interface AccessControlConfig { version: number; profiles: RoleProfile[]; assignments: RoleAssignment[]; }
 export interface UserRoleCommand { operation: 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'; user: User; confirmationId?: Identifier; password?: string; }
-export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; }
-export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; confirmationId: Identifier; }
+export interface BackupRecord { backupId: Identifier; status: 'VALID_FIXTURE' | 'INVALID_FIXTURE' | 'VALID' | 'INVALID'; checksum: string; createdAt: Iso8601Utc; name?: string; format?: 'SYSTEM_SQLITE_V1' | 'MAIN_SQLITE_V1'; }
+export interface BackupRequest { operation: 'BACKUP'; backupId?: Identifier; name?: string; confirmationId: Identifier; }
+export interface BackupPlan { version: number; enabled: boolean; name: string; intervalMinutes: number; }
+export interface BackupExecution { startedAt: Iso8601Utc; completedAt: Iso8601Utc; result: 'SUCCESS' | 'FAILURE'; backupId: string | null; message: string; }
+export interface BackupPlanStatus { plan: BackupPlan; nextRunAt: Iso8601Utc | null; executions: BackupExecution[]; }
 export interface RestoreRequest { operation: 'RESTORE'; backupId: Identifier; confirmationId: Identifier; }
 export interface AuditRecord { auditId: Identifier; actor: string; role: Role; module: string; action: string; objectId?: Identifier; result: 'SUCCESS' | 'DENIED' | 'ERROR'; occurredAt: Iso8601Utc; immutableFixture: true; }
 export interface AuditRequest { from?: Iso8601Utc; to?: Iso8601Utc; actor?: string; role?: Role; module?: string; action?: string; result?: AuditRecord['result']; export?: boolean; confirmationId?: Identifier; }
@@ -368,6 +377,13 @@ export interface AuditExportRequest extends AuditRequest { export: true; confirm
 export interface AuditExportResult { objectId: 'AUDIT-LOG'; generated: true; classification: 'INTERNAL'; watermark: string; verifiedAt: Iso8601Utc; fileName: string; content: string; recordCount: number; }
 export interface SystemHealth { ui: 'HEALTHY'; engine: 'NOT_CONNECTED_BY_DESIGN'; database: 'NOT_CONNECTED_BY_DESIGN'; channel: 'NOT_CONNECTED_BY_DESIGN'; }
 export interface ArchiveRecord { archiveId: ArchiveId; taskId: TaskId; scenarioId: ScenarioId; runId: RunId; replayId: ReplayId; reportId: ReportId; status: 'INDEXED'; }
+/** 真实文件快照不借用任务或运行编号；保留旧 ArchiveRecord 供旧合同读取。 */
+export interface LocalArchiveRecord {
+  archiveId: string; name: string; createdAt: Iso8601Utc; createdBy: string;
+  sourceKind: 'LOCAL_FILE_SNAPSHOT'; binding: 'UNBOUND';
+  eventFile: { fileName: string; sha256: string }; positionFile: { fileName: string; sha256: string };
+  reportId: ReportId; nodeCount: number; positionCount: number; durationS: Seconds;
+}
 export interface DeleteResult { deleted: boolean; objectId: Identifier; }
 export interface RestoreResult { prebackupId: Identifier; integrityValid: boolean; progress: Percent0To100; result: 'SUCCESS' | 'FAILURE'; rolledBack: boolean; generated: boolean; }
 export interface ExportStatus { objectId: Identifier; generated: false; classification: 'INTERNAL' | 'LEVEL_II' | 'LEVEL_III'; watermark: string; verifiedAt: Iso8601Utc; }

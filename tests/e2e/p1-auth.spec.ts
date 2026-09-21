@@ -344,6 +344,10 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
     await expect(createDialog.getByRole('alert')).toContainText('请填写有效编号')
   }
   await createDialog.getByTestId('master-id').fill('DEVICE-P7-E2E')
+  await createDialog.getByTestId('master-name').fill('浏览器测试字典')
+  await createDialog.getByRole('button', { name: '新增条目' }).click()
+  await createDialog.getByRole('textbox', { name: '参数键', exact: true }).fill('mode')
+  await createDialog.getByPlaceholder('文本值').fill('standard')
   const created = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/admin/master-data')
   await createDialog.getByTestId('master-save').click()
@@ -365,7 +369,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   await expect(editDialog).not.toBeVisible()
   await panel.getByRole('button', { name: '刷新', exact: true }).click()
   await expect(row).toContainText('停用')
-  await expect(row.locator('td').nth(2)).toHaveText('2')
+  await expect(row.locator('td').nth(3)).toHaveText('2')
   await row.getByRole('button', { name: '删除', exact: true }).click()
   const deleted = page.waitForResponse((response) => response.request().method() === 'DELETE'
     && new URL(response.url()).pathname === '/api/v1/admin/master-data/DEVICE-P7-E2E')
@@ -433,14 +437,9 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
   await page.goto('/admin?section=simulation-data')
   const archive = page.getByTestId('archive-panel')
-  await archive.getByRole('textbox', { name: '归档检索' }).fill('RPT-001')
-  await archive.getByTestId('archive-table').getByRole('button', { name: '详情', exact: true }).click()
-  for (const id of ['TASK-001', 'SCN-001', 'RUN-001', 'REPLAY-001', 'RPT-001']) {
-    await expect(page.getByTestId('archive-detail')).toContainText(id)
-  }
-  await page.getByRole('dialog', { name: '归档关联详情' }).getByRole('button', { name: '查看关联报告' }).click()
-  await page.waitForURL('**/reports?reportId=RPT-001')
-  await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
+  // 纯 Mock 没有真实归档存储，不再把 ARCH-001 当作真实运行数据。
+  await expect(archive.getByTestId('archive-table')).toContainText('暂无数据')
+  await expect(archive.getByTestId('archive-create')).toBeVisible()
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])

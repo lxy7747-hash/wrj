@@ -38,8 +38,9 @@ import { TemplateProjection, type TemplateStorage } from './templates/projection
 import { attachRealtimeServer, type RealtimeController } from './ws/realtime.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { BatchReplayProjection, type BatchReplayResult } from './batch-replay/projection.js'
-import { AdminProjection, type AdminResult, type BackupStorage, type EquipmentStorage } from './admin/projection.js'
-import { isAdminText } from '../src/features/admin/admin-contract.js'
+import { AdminProjection, type AdminResult, type BackupStorage, type EquipmentStorage, type MasterDataStorage } from './admin/projection.js'
+import { isBackupPlan } from '../src/features/admin/backup-plan.js'
+import { isAdminText, isMasterReference } from '../src/features/admin/admin-contract.js'
 import { isEquipmentReference } from '../src/features/admin/equipment-contract.js'
 import { isAccessControlConfig } from '../src/features/admin/access-control.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
@@ -50,6 +51,8 @@ import type { LocalReportExportResult } from '../src/contracts/domain-models.js'
 import { isLocalReport, isLocalReportExport } from '../src/features/reports/local-report.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
+import type { LocalArchiveStorage } from './local/archive-sqlite.js'
+import { isLocalArchiveId } from '../src/features/admin/local-archive.js'
 
 export interface MockServerOptions {
   port?: number
@@ -69,6 +72,9 @@ export interface MockServerOptions {
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
   equipmentStorage?: EquipmentStorage
+  /** 本机独立主数据存储；纯 Mock 继续使用冻结只读夹具。 */
+  masterDataStorage?: MasterDataStorage
+  archiveStorage?: LocalArchiveStorage
   accessControlStorage?: { load(): AccessControlConfig; save(config: AccessControlConfig, expected: number): boolean }
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
@@ -569,7 +575,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
-  const admin = new AdminProjection(options.backupStorage, options.equipmentStorage)
+  const admin = new AdminProjection(options.backupStorage, options.equipmentStorage, options.masterDataStorage, scenarios)
   let accessControl: AccessControlConfig = { version: 1, profiles: [], assignments: [] }
   const readAccessControl = () => options.accessControlStorage?.load() ?? structuredClone(accessControl)
   const principalForUser = (user: Pick<User, 'userId' | 'username' | 'role'>): Principal => {
@@ -684,9 +690,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             : /\/admin\/(?:backup|restore)/.test(path) ? 'BACKUP_RESTORE'
               : path.startsWith('/admin/config') ? 'FULL_CONFIG_EXPORT' : 'USER_ROLE_MAINTAIN'
         menu = path.startsWith('/admin/equipment') ? '/admin?section=equipment-library'
+          : path.startsWith('/admin/local-archives') ? '/admin?section=simulation-data'
           : path.startsWith('/admin/audit') ? '/admin?section=audit-logs'
             : path.startsWith('/admin/master-data') ? '/admin?section=master-data'
               : /\/admin\/(?:backup|restore)/.test(path) ? '/admin?section=database-backup' : '/admin'
+      } else if (path.startsWith('/archives/') && !principal.menuPaths.some(item => ['/reports', '/replays', '/admin?section=simulation-data'].includes(item))) {
+        res.status(403).json(failure('PERMISSION_DENIED', 403))
+        return
       } else if (path.startsWith('/reports')) {
         menu = '/reports'
         if (req.method !== 'GET') permission = req.body?.classification === 'LEVEL_III' ? 'BATCH_LEVEL_III_EXPORT' : 'ORDINARY_REPORT_EXPORT'
@@ -1654,7 +1664,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    if (options.loadLocalReport) {
+    const archiveId = req.query.archiveId
+    if (Object.keys(req.query).some(key => key !== 'archiveId') || (archiveId !== undefined && !isLocalArchiveId(archiveId))) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '归档编号不正确。', fieldPath: 'archiveId' }))
+      return
+    }
+    if (options.loadLocalReport || archiveId !== undefined) {
       if (!auth.permissionSet(role).permissions.includes('ORDINARY_REPORT_EXPORT')) {
         res.status(403).json(failure('PERMISSION_DENIED', 403))
         return
@@ -1664,7 +1679,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       try {
-        const report = await options.loadLocalReport()
+        const report = archiveId !== undefined ? options.archiveStorage?.get(archiveId)?.report ?? null : await options.loadLocalReport!()
         if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
         if (!report || report.reportId !== reportId) {
           res.status(409).json(failure('CONFLICT', 409, { message: '来源文件已变化，请重新加载后导出，避免导出与页面不一致。', retryable: true }))
@@ -1973,19 +1988,91 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   /** 读取主数据；权限由服务端独立校验。 */
   app.get('/api/v1/admin/master-data', (req, res) => {
     if (!requireAdmin(req, res, auth, 'MASTER_DATA_LIST')) return
-    finishAdmin(res, 'MASTER_DATA_LIST', { ok: true, data: admin.listMasterData() })
+    try { finishAdmin(res, 'MASTER_DATA_LIST', { ok: true, data: admin.listMasterData() }) }
+    catch { finishAdmin(res, 'MASTER_DATA_LIST', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据读取失败，未回退到演示数据。' }) }
   })
 
-  /** 创建主数据；版本及引用数量由内存投影校验。 */
+  /** 返回当前可登记的真实场景、模板及其版本；不把主数据自动应用到目标。 */
+  app.get('/api/v1/admin/master-data/targets', (req, res) => {
+    const action = 'MASTER_DATA_TARGET_LIST'
+    if (!requireAdmin(req, res, auth, action)) return
+    try {
+      const targets = [
+        ...scenarios.list().map(draft => ({ targetType: 'SCENARIO' as const, targetId: draft.config.scenario.id,
+          targetVersion: String(draft.revision), name: draft.config.scenario.name })),
+        ...templates.list().map(template => ({ targetType: 'TEMPLATE' as const, targetId: template.templateId,
+          targetVersion: template.version, name: template.name })),
+      ]
+      finishAdmin(res, action, { ok: true, data: targets })
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '引用目标读取失败，请重新加载。' }) }
+  })
+
+  /** 返回版本快照与已登记关系；旧 fixture 的引用数不被伪造成详细关系。 */
+  app.get('/api/v1/admin/master-data/:dataId/details', (req, res) => {
+    const action = 'MASTER_DATA_DETAILS'
+    if (!requireAdmin(req, res, auth, action, req.params.dataId)) return
+    try {
+      const details = admin.masterDataDetails(req.params.dataId)
+      if (details.history.length === 0) {
+        finishAdmin(res, action, { ok: false, code: 'NOT_FOUND', status: 404, message: '主数据不存在。' }, req.params.dataId)
+        return
+      }
+      finishAdmin(res, action, { ok: true, data: details }, req.params.dataId)
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据历史读取失败，请重新加载。' }, req.params.dataId) }
+  })
+
+  /** 显式登记已选主数据版本和当前目标版本，登记不会修改场景或模板配置。 */
+  app.put('/api/v1/admin/master-data/:dataId/reference', (req, res) => {
+    const action = 'MASTER_DATA_REFERENCE'
+    const dataId = req.params.dataId
+    if (!requireAdmin(req, res, auth, action, dataId)) return
+    if (!isMasterReference(req.body) || req.body.dataId !== dataId) {
+      finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '主数据引用参数不正确。', fieldPath: 'request' }, dataId)
+      return
+    }
+    const reference = req.body
+    try {
+      if (reference.targetType === 'SCENARIO') {
+        const scene = scenarios.get(reference.targetId)
+        if (!scene.ok) {
+          finishAdmin(res, action, { ok: false, code: 'NOT_FOUND', status: 404, message: '引用场景不存在。', fieldPath: 'targetId' }, dataId)
+          return
+        }
+        if (scene.data.locked) {
+          finishAdmin(res, action, { ok: false, code: 'CONFIG_LOCKED', status: 409, message: '场景已锁定，不能登记引用。' }, dataId)
+          return
+        }
+        if (reference.targetVersion !== String(scene.data.revision)) {
+          finishAdmin(res, action, { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '场景版本已变化，请重新加载后登记。', fieldPath: 'targetVersion' }, dataId)
+          return
+        }
+      } else {
+        const template = templates.get(reference.targetId)
+        if (!template.ok) {
+          finishAdmin(res, action, { ok: false, code: 'NOT_FOUND', status: 404, message: '引用模板不存在。', fieldPath: 'targetId' }, dataId)
+          return
+        }
+        if (reference.targetVersion !== template.data.version) {
+          finishAdmin(res, action, { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '模板版本已变化，请重新加载后登记。', fieldPath: 'targetVersion' }, dataId)
+          return
+        }
+      }
+      finishAdmin(res, action, admin.addMasterDataReference(reference), dataId)
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据引用保存失败，请重新加载。' }, dataId) }
+  })
+
+  /** 创建主数据；真实存储与纯 Mock 共用内容、版本和引用数量校验。 */
   app.post('/api/v1/admin/master-data', (req, res) => {
     if (!requireAdmin(req, res, auth, 'MASTER_DATA_CREATE')) return
-    finishAdmin(res, 'MASTER_DATA_CREATE', admin.saveMasterData(req.body), isAdminText(req.body?.data?.dataId) ? req.body.data.dataId : undefined, 201)
+    try { finishAdmin(res, 'MASTER_DATA_CREATE', admin.saveMasterData(req.body), isAdminText(req.body?.data?.dataId) ? req.body.data.dataId : undefined, 201) }
+    catch { finishAdmin(res, 'MASTER_DATA_CREATE', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据保存失败，请稍后重试。' }) }
   })
 
   /** 按路径编号和期望版本更新主数据。 */
   app.put('/api/v1/admin/master-data/:dataId', (req, res) => {
     if (!requireAdmin(req, res, auth, 'MASTER_DATA_UPDATE', req.params.dataId)) return
-    finishAdmin(res, 'MASTER_DATA_UPDATE', admin.saveMasterData(req.body, req.params.dataId), req.params.dataId)
+    try { finishAdmin(res, 'MASTER_DATA_UPDATE', admin.saveMasterData(req.body, req.params.dataId), req.params.dataId) }
+    catch { finishAdmin(res, 'MASTER_DATA_UPDATE', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据保存失败，请稍后重试。' }, req.params.dataId) }
   })
 
   /** 删除前消费确认，并重新校验服务器持有的引用数量。 */
@@ -1993,7 +2080,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const dataId = req.params.dataId
     if (!requireAdmin(req, res, auth, 'MASTER_DATA_DELETE', dataId)) return
     if (!confirmAdmin(res, req.get('X-Confirmation-Id'), 'MASTER_DATA_DELETE', dataId)) return
-    finishAdmin(res, 'MASTER_DATA_DELETE', admin.deleteMasterData(dataId), dataId)
+    try { finishAdmin(res, 'MASTER_DATA_DELETE', admin.deleteMasterData(dataId), dataId) }
+    catch { finishAdmin(res, 'MASTER_DATA_DELETE', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '主数据删除失败，请重新加载核实。' }, dataId) }
   })
 
   /** 返回可供恢复选择的备份目录。 */
@@ -2006,13 +2094,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   /** 校验并执行备份；确认不能用于恢复操作。 */
   app.post('/api/v1/admin/backup', (req, res) => {
     if (!requireAdmin(req, res, auth, 'BACKUP_CREATE')) return
-    if (!isStrictObject(req.body, ['operation'], ['backupId', 'confirmationId']) || req.body.operation !== 'BACKUP'
+    if (!isStrictObject(req.body, ['operation'], ['backupId', 'confirmationId', 'name']) || req.body.operation !== 'BACKUP'
+      || (req.body.name !== undefined && (!isAdminText(req.body.name) || req.body.name.length > 80))
       || (req.body.backupId !== undefined && !isAdminText(req.body.backupId))) {
       finishAdmin(res, 'BACKUP_CREATE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份请求不正确。', fieldPath: 'request' })
       return
     }
     if (!confirmAdmin(res, req.body.confirmationId, 'BACKUP_RESTORE', `BACKUP:${req.body.backupId ?? 'NEW'}`)) return
-    finishAdmin(res, 'BACKUP_CREATE', admin.backup(req.body.backupId as string | undefined))
+    finishAdmin(res, 'BACKUP_CREATE', admin.backup(req.body.backupId as string | undefined, req.body.name as string | undefined))
+  })
+
+  app.get('/api/v1/admin/backup-plan', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'BACKUP_PLAN_READ')) return
+    try { finishAdmin(res, 'BACKUP_PLAN_READ', { ok: true, data: admin.backupPlan() }) }
+    catch { finishAdmin(res, 'BACKUP_PLAN_READ', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '备份计划读取失败。' }) }
+  })
+  app.put('/api/v1/admin/backup-plan', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'BACKUP_PLAN_UPDATE')) return
+    if (!isBackupPlan(req.body)) { finishAdmin(res, 'BACKUP_PLAN_UPDATE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份计划参数不正确。', fieldPath: 'plan' }); return }
+    try { finishAdmin(res, 'BACKUP_PLAN_UPDATE', admin.saveBackupPlan(req.body)) }
+    catch { finishAdmin(res, 'BACKUP_PLAN_UPDATE', { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '备份计划保存失败，请刷新核实。' }) }
   })
 
   /** 恢复结果包含预备份和完整性证据；损坏数据不会开始恢复。 */
@@ -2042,7 +2143,55 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     finishAdmin(res, 'BACKUP_RESTORE', result, req.body.backupId)
   })
 
-  /** 读取任务、场景、运行、回放、报告的统一归档关系。 */
+  /** 管理员主动登记真实文件快照，不推断场景或运行归属。 */
+  app.get('/api/v1/admin/local-archives', (req, res) => {
+    if (!requireAdmin(req, res, auth, 'ARCHIVE_LIST')) return
+    try {
+      const records = options.archiveStorage?.list() ?? []
+      res.status(200).json(success(records, pageMeta('REQ-LOCAL-ARCHIVE-LIST', records.length, records.length)))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, { message: '归档目录校验失败，请检查归档库完整性。', retryable: true }))
+    }
+  })
+
+  app.post('/api/v1/admin/local-archives', async (req, res) => {
+    if (!requireAdmin(req, res, auth, 'ARCHIVE_CREATE')) return
+    if (!isStrictObject(req.body, ['name']) || typeof req.body.name !== 'string' || !req.body.name.trim() || req.body.name.length > 80) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '请输入不超过 80 字的归档名称。', fieldPath: 'name' }))
+      return
+    }
+    try {
+      if (!options.archiveStorage || !options.loadLocalReplay || !options.loadLocalReport) throw new Error('archive unavailable')
+      const [replay, report] = await Promise.all([options.loadLocalReplay(), options.loadLocalReport()])
+      if (!report) throw new Error('no local report')
+      const record = options.archiveStorage.register(req.body.name.trim(), actorForRequest(req, 'ADMIN'), replay, report)
+      auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'ARCHIVE_CREATE', record.archiveId)
+      res.status(201).json(success(record, pageMeta('REQ-LOCAL-ARCHIVE-CREATE')))
+    } catch {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'ARCHIVE_CREATE')
+      res.status(503).json(failure('START_FAILED', 503, { message: '归档失败：真实数据未配置、来源已变化或归档库不可用，请刷新后重试。', retryable: true }))
+    }
+  })
+
+  /** 回放和评估读取同一份已校验的持久化快照，不回退最新文件或演示夹具。 */
+  app.get('/api/v1/archives/:archiveId', (req, res) => {
+    if (requireDemoRole(req, res, auth, 'ARCHIVE_READ') === undefined) return
+    if (!isLocalArchiveId(req.params.archiveId)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '归档编号不正确。', fieldPath: 'archiveId' }))
+      return
+    }
+    try {
+      const snapshot = options.archiveStorage?.get(req.params.archiveId)
+      if (!snapshot) {
+        res.status(404).json(failure('NOT_FOUND', 404, { message: '归档不存在，不使用其他数据代替。', fieldPath: 'archiveId' }))
+        return
+      }
+      res.status(200).json(success(snapshot, pageMeta('REQ-LOCAL-ARCHIVE-READ')))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, { message: '归档数据损坏或存储不可用，请检查归档库。', retryable: true }))
+    }
+  })
+
   app.get('/api/v1/admin/archives', (req, res) => {
     if (!requireAdmin(req, res, auth, 'ARCHIVE_LIST')) return
     finishAdmin(res, 'ARCHIVE_LIST', { ok: true, data: [projection.snapshot().archive] })

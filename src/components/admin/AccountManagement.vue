@@ -12,6 +12,11 @@ const showRoleProfiles = ref(false)
 const auth = useAuthStore()
 onMounted(() => { void admin.refreshUsers() })
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
+const filters = reactive<{ username: string; role: Role | ''; status: User['status'] | '' }>({ username: '', role: '', status: '' })
+const filteredUsers = computed(() => users.value.filter(user =>
+  user.username.toLowerCase().includes(filters.username.trim().toLowerCase())
+  && (!filters.role || user.role === filters.role)
+  && (!filters.status || user.status === filters.status)))
 
 /**
  * 指示用户管理面板当前是否正处于不可重复提交的处理阶段。
@@ -201,8 +206,14 @@ async function confirmDelete(): Promise<void> {
         </div>
       </div>
 
+      <el-form inline class="user-filters" aria-label="账号筛选" @submit.prevent>
+        <el-form-item label="用户名"><el-input v-model="filters.username" clearable aria-label="筛选用户名" /></el-form-item>
+        <el-form-item label="角色"><el-select v-model="filters.role" aria-label="筛选角色"><el-option label="全部角色" value="" /><el-option v-for="(label, role) in roleLabels" :key="role" :label="label" :value="role" /></el-select></el-form-item>
+        <el-form-item label="状态"><el-select v-model="filters.status" aria-label="筛选状态"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in statusLabels" :key="status" :label="label" :value="status" /></el-select></el-form-item>
+        <el-form-item><el-button @click="Object.assign(filters, { username: '', role: '', status: '' })">重置筛选</el-button></el-form-item>
+      </el-form>
       <div class="console-table-frame table-scroll" tabindex="0" aria-label="用户列表，可横向滚动">
-        <el-table class="admin-table" :data="users" row-key="userId" data-testid="user-role-panel">
+        <el-table class="admin-table" :data="filteredUsers" row-key="userId" empty-text="暂无匹配账号" data-testid="user-role-panel">
           <el-table-column prop="username" label="用户" min-width="120" />
           <el-table-column label="角色" min-width="180">
             <template #default="scope">{{ roleLabels[scope.row.role as Role] }}</template>
@@ -461,6 +472,7 @@ async function confirmDelete(): Promise<void> {
 .admin-table {
   min-width: 50.5rem;
 }
+.user-filters :deep(.el-select), .user-filters :deep(.el-input) { width: 200px; }
 
 .permission-table {
   min-width: 46rem;

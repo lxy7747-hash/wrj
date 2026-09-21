@@ -12,6 +12,7 @@ import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isSituationEvent, useTelemetryStore } from './telemetry'
 import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../features/replays/local-replay'
+import { isLocalArchiveSnapshot } from '../features/admin/local-archive'
 
 type ReplayEvent = DetectionEvent | SwitchEvent
 
@@ -86,7 +87,7 @@ export const useReplayStore = defineStore('replay', {
      * 读取本机文件回放快照；true 为已加载，null 为未配置，false 为读取失败。
      * 未配置时显示空态，读取失败显示错误，页面不回退演示数据。
      */
-    async loadLocalFile(): Promise<boolean | null> {
+    async loadLocalFile(archiveId?: string): Promise<boolean | null> {
       this.resetToSafeEmpty()
       const epoch = this.requestEpoch
       const request = new AbortController()
@@ -94,10 +95,13 @@ export const useReplayStore = defineStore('replay', {
       const timeout = setTimeout(() => request.abort(), 10_000)
       this.state = 'LOADING'
       try {
-        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/replays/local-file`, {
+        const path = archiveId === undefined ? 'replays/local-file' : `archives/${encodeURIComponent(archiveId)}`
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/${path}`, {
           headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
         })
-        const snapshot = await readSuccess(response, isLocalReplaySnapshot)
+        const archived = archiveId === undefined ? null : await readSuccess(response, isLocalArchiveSnapshot)
+        if (archived && archived.record.archiveId !== archiveId) throw new Error('归档来源与请求不一致。')
+        const snapshot = archived ? archived.replay : await readSuccess(response, isLocalReplaySnapshot)
         if (epoch !== this.requestEpoch) return false
         if (snapshot === null) {
           this.state = 'EMPTY'

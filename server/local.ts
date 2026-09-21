@@ -7,13 +7,16 @@ import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
 import { readLocalReplay } from './local/afsim-replay-reader.js'
 import { AuthSqliteStorage } from './local/auth-sqlite.js'
-import { BackupSqliteStorage } from './local/backup-sqlite.js'
+import { SystemBackupSqliteStorage } from './local/system-backup-sqlite.js'
+import { RuntimeConfigSqliteStorage } from './local/runtime-config-sqlite.js'
 import { LocalExchangeMonitor } from './local/exchange-monitor.js'
 import { EquipmentSqliteStorage } from './local/equipment-sqlite.js'
 import { AccessControlSqliteStorage } from './local/access-control-sqlite.js'
 import { readLocalReport, exportLocalReport } from './local/report-file.js'
+import { ArchiveSqliteStorage } from './local/archive-sqlite.js'
+import { MasterDataSqliteStorage } from './local/master-data-sqlite.js'
 
-// 本机文件配置与纯 Mock 入口分离；路径只存于忽略的 .env.local，不写入共享代码。
+// 本机路径从忽略的 .env.local 初始化白名单配置库，不写入共享代码或复制凭据。
 try {
   loadEnvFile('.env.local')
 } catch (error) {
@@ -40,20 +43,38 @@ try {
   scenarioStorage?.close()
   throw error
 }
-const backupStorage = new BackupSqliteStorage(scenarioDbPath)
-// 主库备份严格冻结表结构；独立装备库不参与主库恢复，也不植入默认参数。
-const equipmentStorage = new EquipmentSqliteStorage(join(dirname(scenarioDbPath), 'equipment.db'))
+// 独立业务库不植入默认参数，初始化后统一纳入完整系统备份。
+const equipmentStorage = new EquipmentSqliteStorage(join(dirname(scenarioDbPath), 'equipment.db'), scenarioDbPath)
 const accessControlStorage = new AccessControlSqliteStorage(join(dirname(scenarioDbPath), 'access-control.db'))
+const archiveStorage = new ArchiveSqliteStorage(join(dirname(scenarioDbPath), 'archives.db'))
+// 主数据独立空库；不写入冻结样例。
+const masterDataStorage = new MasterDataSqliteStorage(join(dirname(scenarioDbPath), 'master-data.db'))
+const runtimeConfig = new RuntimeConfigSqliteStorage(join(dirname(scenarioDbPath), 'runtime-config.db'), { eventPath: logPath || null, positionPath: positionPath || null })
+const backupStorage = new SystemBackupSqliteStorage(scenarioDbPath)
 const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
-const positionReader = logPath && positionPath ? createPositionReader(positionPath) : undefined
+let cachedPositionPath: string | null = null
+let positionReader: ReturnType<typeof createPositionReader> | undefined
 const server = createMockServer({
   port,
   writeScriptText: (script, revision) => writeScriptText(fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision),
-  loadInitialNodes: logPath ? () => exchangeMonitor.read('INITIAL_NODES', logPath, () => readInitialNodes(logPath), value => ({ recordCount: value.nodes.length, issueCount: 0 })) : undefined,
-  loadPositions: positionReader && positionPath ? () => exchangeMonitor.read('POSITIONS', positionPath, positionReader, value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
-  loadLocalReplay: logPath ? () => exchangeMonitor.read('LOCAL_REPLAY', positionPath ?? logPath, () => readLocalReplay(logPath, positionPath), value => ({ recordCount: value.recordCount, issueCount: value.issueCount })) : undefined,
+  loadInitialNodes: () => {
+    const { eventPath } = runtimeConfig.load()
+    if (!eventPath) throw new Error('尚未配置事件文件路径。')
+    return exchangeMonitor.read('INITIAL_NODES', eventPath, () => readInitialNodes(eventPath), value => ({ recordCount: value.nodes.length, issueCount: 0 }))
+  },
+  loadPositions: () => {
+    const config = runtimeConfig.load()
+    if (!config.eventPath || !config.positionPath) throw new Error('尚未配置事件或位置文件路径。')
+    if (cachedPositionPath !== config.positionPath || !positionReader) { positionReader = createPositionReader(config.positionPath); cachedPositionPath = config.positionPath }
+    return exchangeMonitor.read('POSITIONS', config.positionPath, positionReader, value => ({ recordCount: value.recordCount, issueCount: value.issueCount }))
+  },
+  loadLocalReplay: () => {
+    const { eventPath, positionPath: currentPosition } = runtimeConfig.load()
+    if (!eventPath) throw new Error('尚未配置事件文件路径。')
+    return exchangeMonitor.read('LOCAL_REPLAY', currentPosition ?? eventPath, () => readLocalReplay(eventPath, currentPosition ?? undefined), value => ({ recordCount: value.recordCount, issueCount: value.issueCount }))
+  },
   loadExchangeMonitor: () => exchangeMonitor.snapshot(),
-  loadLocalReport: () => readLocalReport(logPath, positionPath),
+  loadLocalReport: () => { const config = runtimeConfig.load(); return readLocalReport(config.eventPath ?? undefined, config.positionPath ?? undefined) },
   exportLocalReport: (report, format, actor) => exportLocalReport(fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor),
   scenarioStorage,
   templateStorage,
@@ -61,12 +82,17 @@ const server = createMockServer({
   backupStorage,
   equipmentStorage,
   accessControlStorage,
+  archiveStorage,
+  masterDataStorage,
 })
 function closeStorage(): void {
   exchangeMonitor.close()
   backupStorage.close()
+  runtimeConfig.close()
   equipmentStorage.close()
   accessControlStorage.close()
+  archiveStorage.close()
+  masterDataStorage.close()
   authStorage.close()
   scenarioStorage?.close()
   templateStorage?.close()
@@ -74,6 +100,7 @@ function closeStorage(): void {
 server.httpServer.once('close', closeStorage)
 server.httpServer.once('error', closeStorage)
 server.httpServer.once('listening', () => {
+  backupStorage.start()
   console.log(`本机接口已启动：http://127.0.0.1:${port}；初始位置来源：${logPath ? '真实日志' : 'Mock'}`)
   if (scenarioStorage) console.log('场景与模板存储：SQLite 开发验证（未加密，仅限非敏感测试数据）。')
 })
