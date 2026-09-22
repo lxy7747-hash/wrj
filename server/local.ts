@@ -56,7 +56,7 @@ let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
 const server = createMockServer({
   port,
-  writeScriptText: (script, revision) => writeScriptText(fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision),
+  writeScriptText: (script, revision, draft) => writeScriptText(fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()
     if (!eventPath) throw new Error('尚未配置事件文件路径。')

@@ -4,7 +4,7 @@ import { apiFetch } from '../../features/shared/api-fetch'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { MAP_CONFIG } from '../../config/map.config'
-import type { DetectionEvent, Link, SimulationMode, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
+import type { DetectionEvent, Link, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
@@ -67,7 +67,6 @@ const {
   uiStatus: simulationStatus,
   currentTime: simulationTime,
   speedMultiplier: simulationSpeed,
-  mode: simulationMode,
   capabilityState: simulationCapabilityState,
   resultMessage: simulationFeedback,
   pending: simulationPending,
@@ -466,19 +465,6 @@ async function pauseSimulation(): Promise<void> {
 }
 
 /**
- * 文件播放前进一秒；仿真执行一个场景时间步。
- * @returns 操作完成后兑现且不返回值的 Promise。
- * @sideeffect 通过 simulationStore 发送 STEP 命令并更新规范仿真时刻。
- */
-async function stepSimulation(): Promise<void> {
-  if (sourceState.value === 'FILE') {
-    await filePlayback.step('forward')
-    return
-  }
-  await simulationStore.step()
-}
-
-/**
  * 文件播放停止并归零；仿真打开停止操作确认框。
  * @returns 无返回值。
  * @sideeffect 修改停止确认框的可见状态。
@@ -512,16 +498,6 @@ async function updateSpeed(speed: number): Promise<void> {
     return
   }
   await simulationStore.setSpeed(speed)
-}
-
-/**
- * 更新下一次 START 使用的运行模式。
- * @param mode 合同定义的运行模式。
- * @returns 无返回值。
- * @sideeffect 只更新 simulationStore 中的模式选择。
- */
-function updateMode(mode: SimulationMode): void {
-  simulationStore.setMode(mode)
 }
 
 /**
@@ -654,16 +630,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :file-playback="sourceState === 'FILE'"
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
-      :mode="sourceState === 'FILE' ? 'HISTORICAL_REPLAY' : simulationMode"
       :capability-state="simulationCapabilityState"
       :pending="sourceState === 'FILE' ? fileLoading : simulationPending || simulationStore.selectingScene"
       :feedback="sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
-      @step="stepSimulation"
       @stop="requestStop"
       @update:speed="updateSpeed"
-      @update:mode="updateMode"
     >
       <template #timeline>
         <div v-if="sourceState === 'FILE' && filePlayback.replay" class="toolbar-timeline">

@@ -19,6 +19,7 @@ import type {
   Role,
   ScriptPreviewRequest,
   ScriptContract,
+  ScenarioDraft,
   User,
   UserRoleCommand,
 } from '../src/contracts/domain-models.js'
@@ -32,6 +33,7 @@ import { assertLoopbackRequest } from './http/loopback.js'
 import { ScenarioProjection, type ScenarioStorage } from './scenarios/projection.js'
 import { SimulationProjection, type SimulationProjectionResult } from './simulations/projection.js'
 import { ScriptProjection } from './scripts/projection.js'
+import { MissionGenerationError } from './scripts/mission-generator.js'
 import { MockProjection } from './state/projection.js'
 import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
 import { TemplateProjection, type TemplateStorage } from './templates/projection.js'
@@ -78,7 +80,7 @@ export interface MockServerOptions {
   accessControlStorage?: { load(): AccessControlConfig; save(config: AccessControlConfig, expected: number): boolean }
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
-  writeScriptText?: (script: ScriptContract, revision: number) => Promise<string>
+  writeScriptText?: (script: ScriptContract, revision: number, draft: ScenarioDraft) => Promise<string>
 }
 
 export interface MockServer {
@@ -1482,11 +1484,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     try {
-      const path = await options.writeScriptText(script, draft.data.revision)
+      const path = await options.writeScriptText(script, draft.data.revision, draft.data)
       auth.recordSuccess(actorForRequest(req, role), role, 'SCRIPT_FILE_WRITE', script.scenarioId)
       res.status(200).json(success({ scriptId: script.scriptId, configVersion: script.configVersion, path }, pageMeta('REQ-SCRIPT-FILE')))
-    } catch {
+    } catch (error) {
       auth.recordError(actorForRequest(req, role), role, 'SCRIPT_FILE_WRITE', script.scenarioId)
+      if (error instanceof MissionGenerationError) {
+        res.status(422).json(failure('VALIDATION_FAILED', 422, { message: error.message, fieldPath: error.fieldPath }))
+        return
+      }
       res.status(503).json(failure('START_FAILED', 503, { message: 'TXT 写入失败，请检查 output/scripts 目录权限及磁盘空间后重试。', retryable: true }))
     }
   })

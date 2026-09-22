@@ -1846,12 +1846,8 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   await toolbar.getByTestId('simulation-pause').click()
   expect((await paused).status()).toBe(200)
   await expect(toolbar.getByTestId('simulation-start')).toContainText('继续')
-  await expect(toolbar.getByTestId('simulation-step')).toBeEnabled()
-
-  const stepped = waitForCommand('STEP')
-  await toolbar.getByTestId('simulation-step').click()
-  expect((await stepped).status()).toBe(200)
-  expect((await (await stepped).json()).data.canonical.currentTime).toBe(1)
+  await expect(toolbar.getByTestId('simulation-step')).toHaveCount(0)
+  await expect(toolbar.getByRole('combobox', { name: '运行模式' })).toHaveCount(0)
 
   await toolbar.getByTestId('simulation-stop').click()
   const stopDialog = page.getByRole('dialog', { name: '确认停止仿真' })

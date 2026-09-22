@@ -1,10 +1,9 @@
 <script setup lang="ts">
-import type { CapabilityState, SimulationMode, UiSimulationStatus } from '../../contracts/domain-models'
+import type { CapabilityState, UiSimulationStatus } from '../../contracts/domain-models'
 
 defineProps<{
   status: UiSimulationStatus
   speed: number
-  mode: SimulationMode
   capabilityState: CapabilityState
   pending: boolean
   feedback: string
@@ -17,10 +16,8 @@ defineProps<{
 defineEmits<{
   start: []
   pause: []
-  step: []
   stop: []
   'update:speed': [value: number]
-  'update:mode': [value: SimulationMode]
 }>()
 
 </script>
@@ -52,12 +49,6 @@ defineEmits<{
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
-        size="small"
-        data-testid="simulation-step"
-        :disabled="readOnly || pending || status !== 'PAUSED'"
-        @click="$emit('step')"
-      ><span aria-hidden="true">⏭</span> 单步</el-button>
-      <el-button
         type="danger"
         plain
         size="small"
@@ -77,19 +68,6 @@ defineEmits<{
           <option :value="2">×2</option>
           <option :value="4">×4</option>
           <option :value="8">×8</option>
-        </select>
-      </label>
-      <label class="simulation-toolbar__select">
-        <select
-          :value="mode"
-          aria-label="运行模式"
-          :disabled="readOnly || filePlayback || pending || status === 'RUNNING' || status === 'PAUSED'"
-          @change="$emit('update:mode', ($event.target as HTMLSelectElement).value as SimulationMode)"
-        >
-          <option value="INTERACTIVE_SINGLE">单次仿真</option>
-          <option value="BATCH_PARAMETER_TRAVERSAL">批量仿真</option>
-          <option value="PARAMETER_SCAN">参数扫描</option>
-          <option value="HISTORICAL_REPLAY">历史回放</option>
         </select>
       </label>
 

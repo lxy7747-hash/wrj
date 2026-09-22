@@ -714,7 +714,7 @@ describe('P2-1 场景管理页面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(scenario.draft?.revision).toBe(5)
     expect(messageSpy).not.toHaveBeenCalled()
-    expect(ElMessageBox.alert).toHaveBeenCalledExactlyOnceWith('TXT 已生成并写入：H:\\output\\SCN-001-r5.txt', '场景保存成功', { confirmButtonText: '知道了' })
+    expect(ElMessageBox.alert).toHaveBeenCalledExactlyOnceWith('TXT 已生成并写入：H:\\output\\SCN-001-r5.txt\n文本生成不等于 mission 执行验证，请以生成文件中的支持范围说明为准。', '场景保存成功', { confirmButtonText: '知道了' })
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')

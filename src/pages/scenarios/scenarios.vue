@@ -1147,7 +1147,7 @@ async function saveScenario(): Promise<void> {
       try {
         const path = await saveScriptText(script.value)
         if (!current()) return
-        await ElMessageBox.alert(`TXT 已生成并写入：${path}`, '场景保存成功', { confirmButtonText: '知道了' }).catch(() => {})
+        await ElMessageBox.alert(`TXT 已生成并写入：${path}\n文本生成不等于 mission 执行验证，请以生成文件中的支持范围说明为准。`, '场景保存成功', { confirmButtonText: '知道了' }).catch(() => {})
         if (!current()) return
       } catch (error) {
         if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
