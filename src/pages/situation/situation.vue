@@ -1004,10 +1004,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       </aside>
     </div>
 
-    <section v-else class="telemetry-empty" aria-live="polite">
-      <strong>{{ sourceState === 'LOADING' || telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
-      <p>{{ sourceState === 'MOCK' ? telemetryFeedback : sourceMessage }}</p>
-      <el-button v-if="sourceState === 'ERROR' || telemetryCapabilityState === 'ERROR'" type="primary" @click="retryTelemetry">重新加载</el-button>
+    <section v-else class="situation-empty-map" aria-label="无业务数据的态势底图">
+      <!-- 底图不依赖业务读取；显式空输入隔离旧帧和旧文件快照。 -->
+      <OfflineSituationMap :frame="null" :initial-nodes="[]" :links="[]" selected-node-id="" :focus-target="null" />
+      <div class="telemetry-empty" aria-live="polite">
+        <strong>{{ sourceState === 'LOADING' || telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
+        <p>{{ sourceState === 'MOCK' ? telemetryFeedback : sourceMessage }}</p>
+        <el-button v-if="sourceState === 'ERROR' || telemetryCapabilityState === 'ERROR'" type="primary" @click="retryTelemetry">重新加载</el-button>
+      </div>
     </section>
 
     <footer v-if="frame" class="situation-footer" :data-frame-id="frame.frameId">
@@ -1080,7 +1084,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   box-shadow: var(--console-shadow);
 }
 .situation-page__semantic-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-.telemetry-empty { display: grid; place-content: center; justify-items: center; gap: .65rem; color: var(--console-text-muted); text-align: center; }
+.situation-empty-map { position: relative; display: grid; min-width: 0; min-height: 0; }
+.telemetry-empty { position: absolute; z-index: 500; top: 4rem; left: 50%; transform: translateX(-50%); width: min(32rem, calc(100% - 6rem)); box-sizing: border-box; padding: 1rem; border: 1px solid var(--console-border); border-radius: var(--console-radius); background: var(--console-bg-elevated); display: grid; place-content: center; justify-items: center; gap: .65rem; color: var(--console-text-muted); text-align: center; }
 .telemetry-empty strong { color: var(--console-text); }
 .telemetry-empty p { margin: 0; }
 .situation-page__workspace {

@@ -754,7 +754,10 @@ describe('态势主界面', () => {
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('位置文件读取失败')
-    expect(wrapper.findComponent(OfflineSituationMap).exists()).toBe(false)
+    expect(wrapper.findComponent(OfflineSituationMap).exists()).toBe(true)
+    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
+    expect(mapControllerMock.latestOptions?.fileLinks ?? []).toEqual([])
+    expect(mapControllerMock.latestOptions?.fileMessageLinks ?? []).toEqual([])
     expect(useReplayStore().localSnapshot).toBeNull()
     expect(fetchSpy).toHaveBeenCalledTimes(2)
   })
@@ -1222,15 +1225,40 @@ describe('态势主界面', () => {
     expect(fetcher.mock.calls.filter(([url]) => /frames|events|initial-nodes|positions/.test(url))).toHaveLength(telemetryCalls)
   })
 
-  it('真实日志读取失败不回显预置 Mock 数据，允许重新加载', async () => {
+  it('真实日志读取失败保留空底图，不回显预置 Mock 数据，重试成功后显示节点', async () => {
     const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('读取失败'))
       .mockResolvedValueOnce(successResponse(INITIAL_NODES))
       .mockResolvedValue(successResponse(null))
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = await mountSituationPage()
     expect(wrapper.text()).toContain('初始节点读取失败')
-    expect(wrapper.find('.offline-map').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
+    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
+    expect(mapControllerMock.latestOptions?.fileLinks ?? []).toEqual([])
+    expect(mapControllerMock.latestOptions?.fileMessageLinks ?? []).toEqual([])
     expect(wrapper.find('.telemetry-panel').exists()).toBe(false)
+    await wrapper.get('.telemetry-empty button').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
+    expect(wrapper.find('.telemetry-empty').exists()).toBe(false)
+    expect(mapControllerMock.latestOptions?.initialNodes).toEqual(INITIAL_NODES.nodes)
+    expect(fetchSpy).toHaveBeenCalledTimes(2)
+  })
+
+  it('节点请求挂起时底图已挂载，非法响应只显示错误且可重试', async () => {
+    let resolveRequest!: (response: Response) => void
+    const fetchSpy = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { resolveRequest = resolve }))
+      .mockResolvedValueOnce(successResponse(INITIAL_NODES))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage()
+    expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
+    expect(wrapper.get('.telemetry-empty').text()).toContain('正在读取初始节点位置')
+    expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
+    resolveRequest(successResponse({ nodes: 'invalid' }))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
+    expect(wrapper.get('.telemetry-empty').text()).toContain('初始节点读取失败')
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
     await wrapper.get('.telemetry-empty button').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
@@ -1264,7 +1292,9 @@ describe('态势主界面', () => {
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
     expect(fetchSpy.mock.calls.some(([url]) => url.endsWith('/positions'))).toBe(false)
     expect(wrapper.get('[data-testid="focus-node-A"]').attributes('aria-pressed')).toBe('true')
-    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
+    // 加载期空底图销毁后创建文件地图；之后游标未变化，不重复创建。
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledTimes(2)
+    expect(mapControllerMock.controller.destroy).toHaveBeenCalledOnce()
     wrapper.unmount()
     mountedWrapper = null
     const requests = fetchSpy.mock.calls.length
@@ -1358,6 +1388,8 @@ describe('态势主界面', () => {
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
     const wrapper = await mountSituationPage()
     const layerButtons = wrapper.findAll('[aria-label="态势图层"] button')
+    // 本用例统计用户图层交互，不包含加载期空底图的初始化。
+    mapControllerMock.controller.setLayerVisible.mockClear()
 
     await layerButtons[0]?.trigger('click')
     await wrapper.get('[data-testid="focus-node-UAV-01"]').trigger('click')
@@ -1770,7 +1802,8 @@ describe('态势主界面', () => {
 
     wrapper.unmount()
     mountedWrapper = null
-    expect(mapControllerMock.controller.destroy).toHaveBeenCalledOnce()
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledTimes(2)
+    expect(mapControllerMock.controller.destroy).toHaveBeenCalledTimes(2)
   })
 })
 
