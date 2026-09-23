@@ -9,10 +9,14 @@ import type { ApiSuccess, Batch, BatchRunResult, Replay, ScenarioConfig, Scenari
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
     setFrame: vi.fn(),
+    setNodes: vi.fn(),
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
+    setFileMessageLinks: vi.fn(),
     setFileDeviceStates: vi.fn(),
+    setConfiguredLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
+    focusTarget: vi.fn(),
     setLayerVisible: vi.fn(),
     setTheme: vi.fn(),
     setBasemap: vi.fn(),

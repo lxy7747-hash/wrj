@@ -1,6 +1,6 @@
-import { VectorTile, type VectorTileFeature } from '@mapbox/vector-tile'
+import type { VectorTile, VectorTileFeature } from '@mapbox/vector-tile'
 import L from 'leaflet'
-import { PbfReader } from 'pbf'
+import { createVectorTileSource, type VectorTileSource } from './vector-tile-source'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { MapTheme } from '../../config/map.config'
 
@@ -131,10 +131,12 @@ interface TileLoadEvent extends L.LeafletEvent {
  * 创建只读取本机 MVT 的透明文字瓦片层。
  * @param theme 初始标签主题，配置默认使用浅色主题。
  * @returns 可直接添加到 Leaflet 地图并原地切换主题的 Canvas GridLayer。
- * @sideeffect 每个可见标签瓦片会独立请求本机 4174 端口；卸载瓦片或移除图层会取消对应请求。
+ * @param source 与底图共用的瓦片源；独立使用时创建本层专用缓存。
+ * @sideeffect 可见标签读取共享瓦片；卸载只取消本层订阅，不中断底图仍需的请求。
  */
 export function createOfflineVectorLabelLayer(
   theme: MapTheme = MAP_CONFIG.defaults.theme,
+  source: VectorTileSource = createVectorTileSource(),
 ): OfflineVectorLabelLayer {
   const controllers = new Map<HTMLCanvasElement, AbortController>()
   let currentTheme = theme
@@ -175,12 +177,8 @@ export function createOfflineVectorLabelLayer(
     controllers.set(canvas, controller)
     const loadTile = async (): Promise<void> => {
       try {
-        const response = await fetch(tileUrl(coords), { signal: controller.signal })
-        if (!response.ok) return
-
-        const bytes = await response.arrayBuffer()
+        const tile = await source.load(coords, controller.signal)
         if (controller.signal.aborted) return
-        const tile = new VectorTile(new PbfReader(bytes))
         drawTileLabels(context, canvas, tile, coords.z, currentTheme)
       } catch {
         try {
@@ -257,18 +255,8 @@ function configureCanvasElement(canvas: HTMLCanvasElement): void {
   canvas.style.overflow = 'visible'
 }
 
-/**
- * 将瓦片坐标写入固定的本机 URL 模板。
- * @param coords Leaflet 提供的瓦片横纵坐标和缩放级别。
- * @returns 由浏览器端地图配置生成的本机 MVT 地址。
- * @sideeffect 无副作用。
- */
-function tileUrl(coords: L.Coords): string {
-  return MAP_CONFIG.resources.vector.tileUrl
-    .replace('{z}', String(coords.z))
-    .replace('{x}', String(coords.x))
-    .replace('{y}', String(coords.y))
-}
+// 候选与主题无关；WeakMap 不延长被瓦片缓存淘汰的数据的生命周期。
+const labelCandidates = new WeakMap<VectorTile, Map<number, LabelCandidate[]>>()
 
 /**
  * 解析、去重并按优先级绘制单个 MVT 的标签。
@@ -288,11 +276,16 @@ function drawTileLabels(
   theme: MapTheme,
 ): void {
   clearCanvas(context, canvas)
-  const sources = collectLabelSources(tile, zoom).sort(compareLabelSources)
-  const candidates = sources
-    .map(materializeCandidate)
-    .filter((candidate): candidate is LabelCandidate => candidate !== null)
-  const uniqueCandidates = deduplicateCandidates(candidates).sort(compareLabelSources)
+  const cached = labelCandidates.get(tile) ?? new Map<number, LabelCandidate[]>()
+  labelCandidates.set(tile, cached)
+  let uniqueCandidates = cached.get(zoom)
+  if (!uniqueCandidates) {
+    const candidates = collectLabelSources(tile, zoom).sort(compareLabelSources)
+      .map(materializeCandidate)
+      .filter((candidate): candidate is LabelCandidate => candidate !== null)
+    uniqueCandidates = deduplicateCandidates(candidates).sort(compareLabelSources)
+    cached.set(zoom, uniqueCandidates)
+  }
   const occupied: LabelBox[] = []
   const limit = tileLabelLimit(zoom)
   let drawn = 0

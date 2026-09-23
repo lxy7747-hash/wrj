@@ -49,6 +49,7 @@ vi.mock('pbf', () => ({
 
 import { createOfflineVectorLabelLayer } from '../../src/components/situation/offline-vector-label-layer'
 import { MAP_CONFIG } from '../../src/config/map.config'
+import { bindVectorTileSource, createVectorTileSource } from '../../src/components/situation/vector-tile-source'
 
 type PublicGridLayer = ReturnType<typeof createOfflineVectorLabelLayer> & {
   createTile: (coords: L.Coords, done: L.DoneCallback) => HTMLElement
@@ -318,6 +319,92 @@ describe('离线矢量文字瓦片层', () => {
     expect(pending[1]?.signal.aborted).toBe(true)
     expect(firstDone).toHaveBeenCalledOnce()
     expect(secondDone).toHaveBeenCalledOnce()
+  })
+
+  it('底图和标注共享请求与解码，换肤复用标签候选但重新绘制颜色', async () => {
+    const feature = pointFeature({ name: '共享标签', admin_level: 4 }, 2000, 2000)
+    parserState.tile = tileWith({ boundary_labels: [feature] })
+    const source = createVectorTileSource()
+    const base = L.layerGroup()
+    bindVectorTileSource(base, source)
+    const load = (base as unknown as { _getVectorTilePromise: (coords: L.Coords) => Promise<{ layers: Record<string, { features: unknown[] }> }> })._getVectorTilePromise
+    const labels = createOfflineVectorLabelLayer('light', source) as PublicGridLayer
+    const done = vi.fn()
+    const baseTile = load(coords(7))
+    labels.createTile(coords(7), done)
+    expect((await baseTile).layers.boundary_labels?.features).toHaveLength(1)
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(parserState.vectorTileCalls).toBe(1)
+    expect(feature).not.toHaveProperty('geometry')
+    const geometryCalls = feature.loadGeometry.mock.calls.length
+    labels.setTheme('dark', false)
+    labels.createTile(coords(7), done)
+    await vi.waitFor(() => expect(done).toHaveBeenCalledTimes(2))
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(parserState.vectorTileCalls).toBe(1)
+    expect(feature.loadGeometry).toHaveBeenCalledTimes(geometryCalls)
+    expect(context.fillStyle).toBe('#d7e8f3')
+    source.clear()
+  })
+
+  it('单层卸载不取消另一层读取，所有消费者卸载后才取消，重新请求可恢复', async () => {
+    let finish!: (response: Response) => void
+    let requestSignal!: AbortSignal
+    vi.mocked(fetch).mockImplementation((_url, options) => {
+      requestSignal = options!.signal as AbortSignal
+      return new Promise(resolve => { finish = resolve })
+    })
+    const source = createVectorTileSource()
+    const base = L.layerGroup()
+    bindVectorTileSource(base, source)
+    const load = (base as unknown as { _getVectorTilePromise: (coords: L.Coords) => Promise<unknown> })._getVectorTilePromise
+    const labels = createOfflineVectorLabelLayer('light', source) as PublicGridLayer
+    const done = vi.fn()
+    const baseTile = load(coords(7))
+    labels.createTile(coords(7), done)
+    labels.fire('remove')
+    expect(requestSignal.aborted).toBe(false)
+    finish({ ok: true, arrayBuffer: async () => new ArrayBuffer(1) } as Response)
+    await baseTile
+    await vi.waitFor(() => expect(done).toHaveBeenCalledOnce())
+    const next = load(coords(8))
+    base.fire('tileunload', { coords: coords(8) })
+    expect(requestSignal.aborted).toBe(true)
+    expect(await next).toEqual({ layers: {} })
+    finish({ ok: true, arrayBuffer: async () => new ArrayBuffer(1) } as Response)
+    const retry = load(coords(8))
+    expect(requestSignal.aborted).toBe(false)
+    source.clear()
+    finish({ ok: true, arrayBuffer: async () => new ArrayBuffer(1) } as Response)
+    expect(await retry).toEqual({ layers: {} })
+  })
+
+  it('缓存限制瓦片数量和原始字节数，淘汰后重新读取，失败和取消不缓存', async () => {
+    const source = createVectorTileSource()
+    for (let x = 0; x < 65; x++) await source.load(coords(7, x))
+    expect(fetch).toHaveBeenCalledTimes(65)
+    await source.load(coords(7, 64))
+    expect(fetch).toHaveBeenCalledTimes(65)
+    await source.load(coords(7, 0))
+    expect(fetch).toHaveBeenCalledTimes(66)
+    source.clear()
+    vi.mocked(fetch).mockClear().mockResolvedValue({ ok: true, arrayBuffer: async () => new ArrayBuffer(9 * 1024 * 1024) } as Response)
+    await source.load(coords(7, 0))
+    await source.load(coords(7, 1))
+    await source.load(coords(7, 0))
+    expect(fetch).toHaveBeenCalledTimes(3)
+    source.clear()
+    vi.mocked(fetch).mockResolvedValueOnce({ ok: false } as Response)
+    await expect(source.load(coords(7))).rejects.toThrow('读取失败')
+    parserState.throwOnParse = true
+    await expect(source.load(coords(7))).rejects.toThrow('损坏')
+    parserState.throwOnParse = false
+    await expect(source.load(coords(7))).resolves.toBe(parserState.tile)
+    const cancel = new AbortController()
+    cancel.abort()
+    await expect(source.load(coords(7), cancel.signal)).rejects.toMatchObject({ name: 'AbortError' })
+    source.clear()
   })
 
   /**

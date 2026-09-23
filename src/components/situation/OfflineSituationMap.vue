@@ -19,6 +19,8 @@ import {
 } from './situation-map-controller'
 
 const props = defineProps<{
+  /** 数据源更换只清理业务选择与详情，不销毁底图。 */
+  sourceKey?: string
   frame: TelemetryFrame | null
   initialNodes?: SituationMapNode[]
   /** 已登记的通信关联；只表示路由登记，不是已发生的业务。 */
@@ -355,6 +357,15 @@ watch(() => props.configuredLinks, links => {
 
 watch(selectedFileLink, link => {
   if (!link) fileLinkDialogVisible.value = false
+})
+
+watch(() => props.sourceKey, () => {
+  selectedNodeDialogVisible.value = false
+  fileLinkDialogVisible.value = false
+  messageLinkDialogVisible.value = false
+  selectedFileLinkId.value = ''
+  selectedMessageLinkId.value = ''
+  mapController.value?.setSelectedNodeId(props.selectedNodeId)
 })
 
 /**

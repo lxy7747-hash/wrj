@@ -93,7 +93,14 @@ const mapControllerMock = vi.hoisted(() => {
     controller,
     latestOptions: null as SituationMapControllerOptions | null,
     createSituationMapController: vi.fn((options: SituationMapControllerOptions) => {
-      mapControllerMock.latestOptions = options
+      // 记录初始化及后续 setter 实际送入的数据，不再依赖重建地图同步 props。
+      mapControllerMock.latestOptions = { ...options }
+      controller.setFrame.mockImplementation(value => { mapControllerMock.latestOptions!.frame = value })
+      controller.setNodes.mockImplementation(value => { mapControllerMock.latestOptions!.initialNodes = value })
+      controller.setFileLinks.mockImplementation(value => { mapControllerMock.latestOptions!.fileLinks = value })
+      controller.setFileMessageLinks.mockImplementation(value => { mapControllerMock.latestOptions!.fileMessageLinks = value })
+      controller.setFileDeviceStates.mockImplementation(value => { mapControllerMock.latestOptions!.fileDeviceStates = value })
+      controller.setConfiguredLinks.mockImplementation(value => { mapControllerMock.latestOptions!.configuredLinks = value })
       return controller
     }),
   }
@@ -1235,7 +1242,7 @@ describe('态势主界面', () => {
     expect(wrapper.text()).toContain('初始节点读取失败')
     expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
     const status = wrapper.get('[role="status"][aria-label="态势数据加载状态"]')
-    expect(status.element.previousElementSibling?.classList.contains('offline-map')).toBe(true)
+    expect(status.element.previousElementSibling?.querySelector('.offline-map')).not.toBeNull()
     expect(status.element.closest('.el-dialog, .el-overlay')).toBeNull()
     expect(status.get('button').classes()).toContain('is-link')
     expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
@@ -1259,6 +1266,8 @@ describe('态势主界面', () => {
     expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
     expect(wrapper.get('.telemetry-empty').text()).toContain('正在读取初始节点位置')
     expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
+    const mapElement = wrapper.get('[data-testid="leaflet-situation-map"]').element
+    await wrapper.get('[aria-label="切换为深色地图"]').trigger('click')
     resolveRequest(successResponse({ nodes: 'invalid' }))
     await flushPromises()
     expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
@@ -1268,6 +1277,10 @@ describe('态势主界面', () => {
     await flushPromises()
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
     expect(fetchSpy).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('[data-testid="leaflet-situation-map"]').element).toBe(mapElement)
+    expect(wrapper.find('[aria-label="切换为浅色地图"]').exists()).toBe(true)
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
+    expect(mapControllerMock.controller.destroy).not.toHaveBeenCalled()
   })
 
   it('文件含末帧位置时仍停留零秒，未来节点不显示，重新进入仍从初始位置显示', async () => {
@@ -1297,9 +1310,9 @@ describe('态势主界面', () => {
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
     expect(fetchSpy.mock.calls.some(([url]) => url.endsWith('/positions'))).toBe(false)
     expect(wrapper.get('[data-testid="focus-node-A"]').attributes('aria-pressed')).toBe('true')
-    // 加载期空底图销毁后创建文件地图；之后游标未变化，不重复创建。
-    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledTimes(2)
-    expect(mapControllerMock.controller.destroy).toHaveBeenCalledOnce()
+    // 空底图加载业务数据时原地更新，只有离页才销毁。
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
+    expect(mapControllerMock.controller.destroy).not.toHaveBeenCalled()
     wrapper.unmount()
     mountedWrapper = null
     const requests = fetchSpy.mock.calls.length
@@ -1395,6 +1408,7 @@ describe('态势主界面', () => {
     const layerButtons = wrapper.findAll('[aria-label="态势图层"] button')
     // 本用例统计用户图层交互，不包含加载期空底图的初始化。
     mapControllerMock.controller.setLayerVisible.mockClear()
+    mapControllerMock.controller.setSelectedNodeId.mockClear()
 
     await layerButtons[0]?.trigger('click')
     await wrapper.get('[data-testid="focus-node-UAV-01"]').trigger('click')
@@ -1807,8 +1821,8 @@ describe('态势主界面', () => {
 
     wrapper.unmount()
     mountedWrapper = null
-    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledTimes(2)
-    expect(mapControllerMock.controller.destroy).toHaveBeenCalledTimes(2)
+    expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
+    expect(mapControllerMock.controller.destroy).toHaveBeenCalledOnce()
   })
 })
 
@@ -2352,6 +2366,26 @@ describe('Leaflet 控制器回归', () => {
     expect(container?.textContent).toContain('状态未知')
   })
 
+  it.each(['场景', '遥测'])('同一地图切到%s清除文件专属图层，返回文件后可重新绘制', async source => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const mapSpy = vi.spyOn(L, 'map')
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES,
+      fileLinks: selectFileCommunicationLinks(FILE_CONNECTIONS, 5), fileMessageLinks: [MESSAGE_LINK] })
+    const flow = groups.mock.results[2]!.value as L.LayerGroup
+    const potential = groups.mock.results[3]!.value as L.LayerGroup
+    expect(flow.getLayers().length).toBeGreaterThan(0)
+    expect(potential.getLayers().length).toBeGreaterThan(0)
+    if (source === '场景') controller.setConfiguredLinks([])
+    else controller.setFrame(structuredClone(SITUATION_FRAME_F00042))
+    expect(flow.getLayers()).toHaveLength(0)
+    expect(potential.getLayers()).toHaveLength(0)
+    if (source === '场景') controller.setConfiguredLinks(undefined)
+    else controller.setFrame(null)
+    expect(flow.getLayers().length).toBeGreaterThan(0)
+    expect(potential.getLayers().length).toBeGreaterThan(0)
+    expect(mapSpy).toHaveBeenCalledOnce()
+  })
+
   it('业务链路与登记关联分层渲染：业务链路实线带方向箭头，登记关联默认开启且为点线', async () => {
     const groups = vi.spyOn(L, 'layerGroup')
     const mapSpy = vi.spyOn(L, 'map')
@@ -2851,7 +2885,7 @@ describe('Leaflet 控制器回归', () => {
 
     expect(leaflet.vectorGrid.protobuf).toHaveBeenCalledOnce()
     expect((originalStyles?.ocean as L.PathOptions).fillColor).toBe('#cfe8f3')
-    expect(offlineLabelLayerMock.create).toHaveBeenCalledWith('light')
+    expect(offlineLabelLayerMock.create).toHaveBeenCalledWith('light', expect.objectContaining({ load: expect.any(Function), clear: expect.any(Function) }))
     controller.setTheme('light')
     expect(vectorGridLayer?.redraw).not.toHaveBeenCalled()
     expect(offlineLabelLayerMock.setTheme).not.toHaveBeenCalled()

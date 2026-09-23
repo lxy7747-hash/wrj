@@ -11,6 +11,7 @@ import { fileJammerRadiusMeters, fileLinkDeviceStatus, type FileDeviceEvent } fr
 import type { FileMessageLink } from '../../features/situation/file-message-links'
 import { FILE_MESSAGE_DIRECTION_LABELS, FILE_MESSAGE_DIRECTION_MARKS } from '../../features/situation/file-message-links'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
+import { bindVectorTileSource, createVectorTileSource } from './vector-tile-source'
 import {
   LINK_TYPE_LABELS,
   PLATFORM_TYPE_LABELS,
@@ -488,6 +489,8 @@ export function createSituationMapController(options: SituationMapControllerOpti
 
   /** 根据当前联动目标重绘节点、链路和干扰范围的唯一高亮态。 */
   const renderBusinessLayers = (): void => {
+    // 底图复用后，切到场景或遥测源必须同步移除文件专属的登记关联和流向动画。
+    if (currentFrame || configuredLinks) renderConnections(layerGroups.potential, [], layerGroups.flow)
     let highlightedNodeId = selectedNodeId
     if (focusedTarget?.kind === 'link') highlightedNodeId = ''
     if (focusedTarget?.kind === 'node') highlightedNodeId = focusedTarget.targetId
@@ -550,8 +553,10 @@ export function createSituationMapController(options: SituationMapControllerOpti
     interactive: false,
     pane: 'tilePane',
   })
+  const tileSource = createVectorTileSource()
+  bindVectorTileSource(vectorGrid, tileSource)
   vectorGrid.addTo(map)
-  const offlineLabelLayer = createOfflineVectorLabelLayer(currentTheme)
+  const offlineLabelLayer = createOfflineVectorLabelLayer(currentTheme, tileSource)
   offlineLabelLayer.addTo(map)
   const satelliteLayer = L.tileLayer(MAP_CONFIG.resources.satellite.tileUrl, {
     bounds: L.latLngBounds([...MAP_CONFIG.resources.satellite.bounds[0]], [...MAP_CONFIG.resources.satellite.bounds[1]]),
@@ -785,6 +790,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
 
     destroy(): void {
       if (!map) return
+      tileSource.clear()
       resizeObserver?.disconnect()
       resizeObserver = null
       removeResizeFallback?.()

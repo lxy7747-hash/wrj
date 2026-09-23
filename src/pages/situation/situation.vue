@@ -11,7 +11,6 @@ import MetricPanel from '../../components/situation/MetricPanel.vue'
 import QualityMetricPanel from '../../components/situation/QualityMetricPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
-import SavedScenePreview from '../../components/situation/SavedScenePreview.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
@@ -113,6 +112,11 @@ async function seekFileTime(time: number | number[]): Promise<void> {
 const sourceMessage = ref('正在读取初始节点位置。')
 // 同一时刻只使用一种数据源，不把文件坐标与 Mock 链路、事件混合。
 const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
+const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value)))
+const mapNodes = computed(() => selectedScene.value
+  ? selectedScene.value.config.platforms.map(platform => ({ platformId: platform.id, name: platform.name, type: platform.type, ...platform.initialPosition, speed: 0 }))
+  : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
+const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
 
 /** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
@@ -658,14 +662,15 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </SimulationToolbar>
 
     <div
-      v-if="selectedScene || (frame && situationMetrics) || (sourceState === 'FILE' && initialSnapshot)"
       class="situation-page__workspace"
       :class="{
+        'situation-empty-map': !hasMapData,
         'situation-page__workspace--scene-collapsed': sceneSummaryCollapsed,
         'situation-page__workspace--telemetry-collapsed': telemetryPanelCollapsed,
       }"
     >
       <aside
+        v-if="hasMapData"
         class="scene-summary"
         :class="{ 'is-collapsed': sceneSummaryCollapsed }"
         aria-label="场景配置"
@@ -852,31 +857,32 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
       </aside>
 
-      <main class="situation-center" data-testid="situation-center">
-        <SavedScenePreview v-if="selectedScene" :scene="selectedScene" :selected-node-id="selectedNodeId" :focus-target="mapFocusTarget"
-          @select-node="selectedNodeId = $event" @select-configured-link="openConfiguredLinkDetails" />
+      <main class="situation-center" data-testid="situation-center" :aria-label="!hasMapData ? '无业务数据的态势底图' : undefined">
         <OfflineSituationMap
-          v-else
-          :key="initialSnapshot?.sha256 ?? 'mock'"
-          :frame="frame"
-          :initial-nodes="initialSnapshot ? fileNodes : undefined"
-          :file-links="fileLinks"
-          :file-message-links="fileMessageLinks"
-          :file-device-events="initialSnapshot?.deviceEvents"
+          :data-testid="selectedScene ? 'saved-scene-preview' : undefined"
+          :source-key="!hasMapData ? 'empty' : selectedScene ? `${selectedScene.config.scenario.id}:${selectedScene.revision}` : initialSnapshot?.sha256 ?? frame?.runId"
+          :frame="hasMapData ? frame : null"
+          :initial-nodes="mapNodes"
+          :configured-links="mapConfiguredLinks"
+          :file-links="hasMapData && sourceState === 'FILE' ? fileLinks : []"
+          :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
+          :file-device-events="hasMapData && sourceState === 'FILE' ? initialSnapshot?.deviceEvents : []"
           :file-time="fileTime"
-          :links="situationLinks"
-          :selected-node-id="selectedNodeId"
-          :focus-target="mapFocusTarget"
+          :links="hasMapData ? situationLinks : []"
+          :selected-node-id="hasMapData ? selectedNodeId : ''"
+          :focus-target="hasMapData ? mapFocusTarget : null"
           @select-node="selectedNodeId = $event"
           @select-link="openLinkDetails"
+          @select-configured-link="openConfiguredLinkDetails"
         >
           <template #topbar>
-            <MetricPanel v-if="situationMetrics" :metrics="situationMetrics" />
+            <MetricPanel v-if="hasMapData && situationMetrics" :metrics="situationMetrics" />
           </template>
         </OfflineSituationMap>
       </main>
 
       <aside
+        v-if="hasMapData"
         class="telemetry-panel"
         :class="{ 'is-collapsed': telemetryPanelCollapsed }"
         aria-label="链路、干扰与事件"
@@ -975,17 +981,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </el-tab-pane>
         </el-tabs>
       </aside>
-    </div>
-
-    <section v-else class="situation-empty-map" aria-label="无业务数据的态势底图">
-      <!-- 底图不依赖业务读取；显式空输入隔离旧帧和旧文件快照。 -->
-      <OfflineSituationMap :frame="null" :initial-nodes="[]" :links="[]" selected-node-id="" :focus-target="null" />
-      <div class="telemetry-empty" role="status" aria-label="态势数据加载状态" aria-live="polite">
+      <div v-if="!hasMapData" class="telemetry-empty" role="status" aria-label="态势数据加载状态" aria-live="polite">
         <strong>{{ sourceState === 'LOADING' || telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
         <p>{{ sourceState === 'MOCK' ? telemetryFeedback : sourceMessage }}</p>
         <el-button v-if="sourceState === 'ERROR' || telemetryCapabilityState === 'ERROR'" link type="primary" @click="retryTelemetry">重新加载</el-button>
       </div>
-    </section>
+    </div>
 
     <footer v-if="frame" class="situation-footer" :data-frame-id="frame.frameId">
       <span><i class="footer-dot"></i>{{ connectionLabel }}</span>
@@ -1183,6 +1184,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 }
 .situation-page__workspace--scene-collapsed { --scene-panel-clearance: 3.25rem; --legend-clearance: .75rem; }
 .situation-page__workspace--telemetry-collapsed { --telemetry-panel-clearance: 3.25rem; --view-controls-clearance: .75rem; }
+.situation-page__workspace.situation-empty-map { --legend-clearance: .75rem; --view-controls-clearance: .75rem; }
 .scene-summary.is-collapsed, .telemetry-panel.is-collapsed { bottom: auto; width: 1.75rem; height: 1.75rem; overflow: visible; border-color: transparent; background: transparent; box-shadow: none; }
 @media (max-width: 760px) {
   .situation-page { height: auto; }
