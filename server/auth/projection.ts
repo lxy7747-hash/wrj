@@ -15,6 +15,9 @@ import { loadFixtureProjection } from '../fixtures/source.js'
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const CURRENT_ADMIN_ID = 'USR-ADMIN'
 
+export const isManagedUsername = (value: unknown): value is string => typeof value === 'string'
+  && value.length >= 1 && value.length <= 64 && value === value.trim()
+
 const OPERATOR_PERMISSIONS: readonly Permission[] = [
   'BUSINESS_READ',
   'SCENARIO_DRAFT_WRITE',
@@ -42,6 +45,7 @@ export interface AuthStorage {
   list(): User[]
   verify(username: string, password: string): Promise<boolean>
   save(user: User, password?: string): void
+  recordLogin(userId: string, at: string): void
   delete(id: string): void
   time(): string
   revokeUser(id: string): void
@@ -233,7 +237,7 @@ export class AuthProjection {
     }
 
     user.lastLoginAt = this.storage?.time() ?? this.runtimeState.occurredAt
-    this.storage?.save(user)
+    this.storage?.recordLogin(user.userId, user.lastLoginAt)
     this.appendAudit(user.username, user.role, 'AUTH_LOGIN', user.userId, 'SUCCESS')
     // HTTP 层仅在配置本机账号库时建立 Cookie 会话，纯 Mock 保持无状态。
     return {
@@ -260,6 +264,8 @@ export class AuthProjection {
       return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'password' }
     }
     const user = structuredClone(command.user)
+    if (!isManagedUsername(user.username)) return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
+    delete user.lastLoginAt
     const duplicate = this.runtimeState.users.some(
       (candidate) => candidate.userId === user.userId || candidate.username === user.username,
     ) || user.username === 'locked'
@@ -300,6 +306,8 @@ export class AuthProjection {
     switch (command.operation) {
       case 'UPDATE':
         next = structuredClone(command.user)
+        if (current.lastLoginAt === undefined) delete next.lastLoginAt
+        else next.lastLoginAt = current.lastLoginAt
         break
       case 'ENABLE':
         next = { ...current, status: 'ACTIVE' }
@@ -310,6 +318,10 @@ export class AuthProjection {
       default:
         this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
         return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'operation' }
+    }
+
+    if (command.operation === 'UPDATE' && !isManagedUsername(next.username)) {
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
     }
 
     const duplicateUsername = this.runtimeState.users.some(

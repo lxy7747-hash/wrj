@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
 import {
   buildFileMessageLinks,
@@ -297,6 +297,18 @@ describe('文件消息链路投影', () => {
       expect(isFileMessageLink({ ...link, direction }, ids)).toBe(false)
     }
     expect(isFileMessageLink({ ...link, messageTypes: ['CMD_ORDER', 'RECON_DATA'] }, ids)).toBe(false)
+  })
+
+  it('旧版浏览器没有 Object.hasOwn 时仍可校验消息链路', () => {
+    const ids = new Set(['A', 'B'])
+    const link = build([
+      transmit(1, 'A', 'c_band_uplink', 1, 'CMD_ORDER'),
+      receive(1.0004, 'B', 'c_band_uplink', 1, 'CMD_ORDER'),
+    ]).links[0]!
+    const hasOwn = vi.spyOn(Object, 'hasOwn').mockImplementation(() => { throw new Error('Object.hasOwn 不可用') })
+    let valid = false
+    try { valid = isFileMessageLink(link, ids) } finally { hasOwn.mockRestore() }
+    expect(valid).toBe(true)
   })
 
   it('偶数条投递取中位时延，且不输出任何未由消息证据支撑的字段', () => {

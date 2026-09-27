@@ -35,6 +35,42 @@ async function start() {
 }
 
 describe('兼容角色配置与服务端权限', () => {
+  it('场景读取按菜单限制、模板复制按草稿权限；报告等级只取服务端报告', async () => {
+    const { api, login, access, auth } = await start()
+    const users = [
+      { userId: 'USR-NO-SCENE', username: 'no-scene', role: 'OPERATOR' as const },
+      { userId: 'USR-SCENE', username: 'scene-writer', role: 'OPERATOR' as const },
+      { userId: 'USR-REPORT', username: 'report-reader', role: 'ADMIN' as const },
+      { userId: 'USR-LEVEL3', username: 'level3-reader', role: 'ADMIN' as const },
+    ]
+    for (const user of users) auth.save({ ...user, status: 'ACTIVE' }, password)
+    const profiles = [
+      { profileId: 'NO-SCENE', name: '无场景菜单', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ'], menuPaths: ['/situation'] },
+      { profileId: 'SCENE', name: '场景编辑', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'], menuPaths: ['/scenarios'] },
+      { profileId: 'REPORT', name: '普通报告', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN', 'ORDINARY_REPORT_EXPORT'], menuPaths: ['/reports', '/admin'] },
+      { profileId: 'LEVEL3', name: '三级报告', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN', 'BATCH_LEVEL_III_EXPORT'], menuPaths: ['/reports', '/admin'] },
+    ]
+    expect(access.save({ version: 2, profiles, assignments: users.map((user, index) => ({ userId: user.userId, profileId: profiles[index]!.profileId })) }, 1)).toBe(true)
+    const denied = { ...headers, Cookie: (await login('no-scene')).cookie }
+    await api.get('/api/v1/scenarios').set(denied).expect(403)
+    await api.get('/api/v1/scenarios/SCN-001').set(denied).expect(403)
+    const writer = { ...headers, Cookie: (await login('scene-writer')).cookie }
+    await api.get('/api/v1/scenarios').set(writer).expect(200)
+    await api.get('/api/v1/scenarios/SCN-001').set(writer).expect(200)
+    await api.post('/api/v1/templates/TPL-SCN-001/copy').set(writer).send({ name: '场景副本' }).expect(201)
+    await api.delete('/api/v1/templates/TPL-SCN-001').set(writer).expect(403)
+    const ordinary = { ...headers, Cookie: (await login('report-reader')).cookie }
+    await api.post('/api/v1/reports/RPT-BATCH-001/export').set(ordinary)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF' }).expect(403)
+    await api.post('/api/v1/reports/RPT-BATCH-001/export').set(ordinary)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF', classification: 'LEVEL_II' }).expect(403)
+    await api.post('/api/v1/reports/RPT-001/export').set(ordinary)
+      .send({ reportId: 'RPT-001', format: 'PDF', classification: 'LEVEL_III' }).expect(422)
+    const level3 = { ...headers, Cookie: (await login('level3-reader')).cookie }
+    await api.post('/api/v1/reports/RPT-BATCH-001/export').set(level3)
+      .send({ reportId: 'RPT-BATCH-001', format: 'PDF' }).expect(428)
+  })
+
   it('空配置保持既有权限，显式分配后撤销旧会话并按菜单及操作收窄，持久化可重读', async () => {
     const { api, login, access, auth, file } = await start()
     expect(access.load()).toEqual({ version: 1, profiles: [], assignments: [] })

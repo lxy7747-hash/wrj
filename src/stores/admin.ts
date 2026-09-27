@@ -900,19 +900,25 @@ export const useAdminStore = defineStore('admin', {
 
     /**
      * 校验创建表单并通过统一用户变更流程创建用户。
-     * @param usernameInput 用户输入的用户名，提交前会移除首尾空白。
+     * @param usernameInput 用户输入的原始用户名；首尾空白应报错而不是静默移除。
      * @param role 冻结合同定义的用户角色。
      * @param status 冻结合同定义的账号状态。
      * @returns 创建成功时为 `true`，本地校验或服务端处理失败时为 `false`。
      * @sideEffects 更新面板状态与结果信息；服务端创建成功时向用户列表追加新用户。
      */
     async createUser(usernameInput: string, role: Role, status: User['status'], password?: string): Promise<boolean> {
-      const username = usernameInput.trim()
+      const username = usernameInput
       this.panelState = 'VALIDATING'
-      if (username.length === 0) {
+      if (username.trim().length === 0) {
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
         this.resultMessage = '用户名：请输入用户名。'
+        return false
+      }
+      if (username.length > 64 || username !== username.trim()) {
+        this.panelState = 'ERROR'
+        this.resultCode = 'VALIDATION_FAILED'
+        this.resultMessage = '用户名须为 1–64 位，且不能包含首尾空格。'
         return false
       }
 

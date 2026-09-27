@@ -63,6 +63,26 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('旧场景可读取零设备参数，写入合同只接受正功率和正侦测距离', () => {
+    const { openApi, fixtures } = loadContractDocuments()
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    ajv.addSchema({ $id: 'device-boundary', components: asObject(openApi).components })
+    const read = ajv.compile({ $ref: 'device-boundary#/components/schemas/ScenarioConfig' })
+    const write = ajv.compile({ $ref: 'device-boundary#/components/schemas/ScenarioConfigWrite' })
+    const config = structuredClone(asObject(fixtures).scenario)
+    expect(read(config)).toBe(true)
+    expect(write(config)).toBe(true)
+    const zeroPower = structuredClone(config) as { jammers: Array<{ defaultPower: number }> }
+    zeroPower.jammers[0]!.defaultPower = 0
+    expect(read(zeroPower)).toBe(true)
+    expect(write(zeroPower)).toBe(false)
+    const zeroRange = structuredClone(config) as { sensors: Array<{ detectionRange: number }> }
+    zeroRange.sensors[0]!.detectionRange = 0
+    expect(read(zeroRange)).toBe(true)
+    expect(write(zeroRange)).toBe(false)
+  })
+
   it('读取保留历史业务及四类优先级，写入只接受四枚举及完整五类优先级', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })

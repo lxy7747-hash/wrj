@@ -383,7 +383,9 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前场景实体。', `${path}.platformId`)
   else if (mode === 'write' && !jammerPlatformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_TYPE_INVALID', '请选择地面干扰站或机载干扰平台作为所属干扰节点。', `${path}.platformId`)
   if (typeof value.type !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(value.type)) addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${path}.type`)
-  if (!isFiniteNumber(value.defaultPower, 0)) addError(errors, 'JAMMER_POWER_INVALID', '默认功率不能小于 0 W。', `${path}.defaultPower`)
+  if (mode === 'write' ? !isPositiveFiniteNumber(value.defaultPower) : !isFiniteNumber(value.defaultPower, 0)) {
+    addError(errors, 'JAMMER_POWER_INVALID', mode === 'write' ? '默认功率必须大于 0 W。' : '默认功率不能小于 0 W。', `${path}.defaultPower`)
+  }
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (typeof value.autoDetect !== 'boolean') addError(errors, 'JAMMER_AUTO_DETECT_INVALID', '自动检测开关格式不正确。', `${path}.autoDetect`)
@@ -399,7 +401,7 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
 }
 
 /** 校验一台传感器的规范参数和归属平台。 */
-function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write'): void {
   const path = `sensors[${index}]`
   if (!isClosedObject(value, SENSOR_KEYS)) {
     addError(errors, 'SENSOR_SHAPE_INVALID', '传感器结构不正确。', path)
@@ -420,7 +422,9 @@ function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<s
       addError(errors, 'SENSOR_FREQUENCY_RANGE_REVERSED', '最高频率不能小于最低频率。', `${path}.frequencyRange.max`)
     }
   }
-  if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'SENSOR_RANGE_INVALID', '侦测距离不能小于 0 m。', `${path}.detectionRange`)
+  if (mode === 'write' ? !isPositiveFiniteNumber(value.detectionRange) : !isFiniteNumber(value.detectionRange, 0)) {
+    addError(errors, 'SENSOR_RANGE_INVALID', mode === 'write' ? '侦测距离必须大于 0 m。' : '侦测距离不能小于 0 m。', `${path}.detectionRange`)
+  }
 }
 
 /** 校验输出目录合同、写入间隔和三个输出开关。 */
@@ -802,7 +806,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const sensorIds = collectIds(value.sensors)
     const platformIds = collectIds(value.platforms)
     if (sensorIds.size !== value.sensors.length) addError(errors, 'SENSOR_ID_DUPLICATED', '传感器 ID 不允许为空或重复。', 'sensors')
-    value.sensors.forEach((sensor, index) => inspectSensor(sensor, index, platformIds, errors))
+    value.sensors.forEach((sensor, index) => inspectSensor(sensor, index, platformIds, errors, mode))
   }
 
   inspectOutput(value.output, scenario.timeStep, errors)

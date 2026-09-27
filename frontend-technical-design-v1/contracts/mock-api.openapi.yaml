@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.8.4",
+    "version": "1.8.5",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; other simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -9183,6 +9183,24 @@
                 "type": "array",
                 "items": {
                   "$ref": "#/components/schemas/PlatformWrite"
+                }
+              },
+              "jammers": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Jammer" },
+                    { "properties": { "defaultPower": { "type": "number", "exclusiveMinimum": 0 } } }
+                  ]
+                }
+              },
+              "sensors": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/Sensor" },
+                    { "properties": { "detectionRange": { "type": "number", "exclusiveMinimum": 0 } } }
+                  ]
                 }
               },
               "informationDemand": {

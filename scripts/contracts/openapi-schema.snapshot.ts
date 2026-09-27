@@ -2083,6 +2083,24 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               "$ref": "#/components/schemas/PlatformWrite"
             }
           },
+          "jammers": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Jammer" },
+                { "properties": { "defaultPower": { "type": "number", "exclusiveMinimum": 0 } } }
+              ]
+            }
+          },
+          "sensors": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/Sensor" },
+                { "properties": { "detectionRange": { "type": "number", "exclusiveMinimum": 0 } } }
+              ]
+            }
+          },
           "informationDemand": {
             "type": "array",
             "items": {

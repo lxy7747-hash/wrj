@@ -45,6 +45,42 @@ async function start(now?: () => number, extra: NonNullable<Parameters<typeof cr
 }
 
 describe('SQLite authentication', () => {
+  it('用户名写入拒绝空值、超长和首尾空格，不触碰已有账号', async () => {
+    const { api, login, storage } = await start()
+    const cookie = await login()
+    const admin = { ...headers, Cookie: cookie }
+    const user = { userId: 'USR-NAME', username: 'valid-name', role: 'OPERATOR', status: 'ACTIVE' }
+    await api.post('/api/v1/admin/users').set(admin).send({ operation: 'CREATE', user, password: PASSWORD }).expect(201)
+    const before = storage.list()
+    for (const username of ['', ' leading', 'trailing ', 'x'.repeat(65)]) {
+      const invalid = { ...user, username }
+      const created = await api.post('/api/v1/admin/users').set(admin)
+        .send({ operation: 'CREATE', user: { ...invalid, userId: 'USR-INVALID' }, password: PASSWORD }).expect(400)
+      expect(created.body.error.fieldPath).toBe('user.username')
+      const updated = await api.put('/api/v1/admin/users/USR-NAME').set(admin)
+        .send({ operation: 'UPDATE', user: invalid }).expect(400)
+      expect(updated.body.error.fieldPath).toBe('user.username')
+      expect(storage.list()).toEqual(before)
+    }
+  })
+
+  it('管理请求不能改写最后登录时间，成功登录才更新服务端字段', async () => {
+    const { api, login, storage } = await start(() => Date.parse('2026-09-27T10:00:00Z'))
+    const admin = { ...headers, Cookie: await login() }
+    const user = { userId: 'USR-TIME', username: 'time-user', role: 'OPERATOR', status: 'ACTIVE', lastLoginAt: '2000-01-01T00:00:00Z' }
+    const created = await api.post('/api/v1/admin/users').set(admin)
+      .send({ operation: 'CREATE', user, password: PASSWORD }).expect(201)
+    expect(created.body.data.lastLoginAt).toBeUndefined()
+    expect(storage.list().find((item: { userId: string }) => item.userId === user.userId)?.lastLoginAt).toBeUndefined()
+    await login('time-user')
+    const loggedInAt = storage.list().find((item: { userId: string }) => item.userId === user.userId)?.lastLoginAt
+    expect(loggedInAt).toBe('2026-09-27T10:00:00.000Z')
+    const updated = await api.put('/api/v1/admin/users/USR-TIME').set(admin)
+      .send({ operation: 'UPDATE', user: { ...user, lastLoginAt: '2001-01-01T00:00:00Z' } }).expect(200)
+    expect(updated.body.data.lastLoginAt).toBe(loggedInAt)
+    expect(storage.list().find((item: { userId: string }) => item.userId === user.userId)?.lastLoginAt).toBe(loggedInAt)
+  })
+
   it('交错完成的两个账号请求分别归属审计和一次性确认', async () => {
     let releaseWrite!: (path: string) => void
     let enteredWrite!: () => void

@@ -25,6 +25,7 @@ import type {
 } from '../src/contracts/domain-models.js'
 import {
   AuthProjection,
+  isManagedUsername,
   type ProjectionFailure,
   type ProjectionResult,
 } from './auth/projection.js'
@@ -32,7 +33,7 @@ import { failure, success } from './http/envelope.js'
 import { assertLoopbackRequest, assertLanRequest, validatePublicOrigin } from './http/loopback.js'
 import { ScenarioProjection, type ScenarioStorage } from './scenarios/projection.js'
 import { SimulationProjection, type SimulationProjectionResult } from './simulations/projection.js'
-import type { MissionExecution, MissionProcess } from './simulations/mission-execution.js'
+import type { MissionExecution, MissionOutcome, MissionProcess } from './simulations/mission-execution.js'
 import { ScriptProjection } from './scripts/projection.js'
 import { MissionGenerationError } from './scripts/mission-generator.js'
 import { MockProjection } from './state/projection.js'
@@ -590,6 +591,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   let mission: MissionProcess | undefined
   let missionStarting: Promise<MissionProcess> | undefined
   let missionStopping = false
+  let missionCompletedWhileStopping: MissionOutcome | undefined
   let closing = false
   const confirmations = new ConfirmationProjection(options.confirmationClock ?? (options.authStorage ? {
     now: () => options.authStorage!.time(),
@@ -728,10 +730,20 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       } else if (path.startsWith('/reports')) {
         menu = '/reports'
-        if (req.method !== 'GET') permission = req.body?.classification === 'LEVEL_III' ? 'BATCH_LEVEL_III_EXPORT' : 'ORDINARY_REPORT_EXPORT'
+        if (req.method !== 'GET') {
+          const reportId = /^\/reports\/([^/]+)\/export$/.exec(path)?.[1]
+          // 本机/归档报告合同固定为 LEVEL_II；纯 Mock 则按服务端报告快照判级。
+          const report = options.loadLocalReport || req.query.archiveId !== undefined || req.query.resultId !== undefined
+            ? undefined : [projection.snapshot().report, projection.snapshot().batchAggregateReport].find(item => item.reportId === reportId)
+          permission = report?.classification === 'LEVEL_III' ? 'BATCH_LEVEL_III_EXPORT' : 'ORDINARY_REPORT_EXPORT'
+        }
+      } else if (path.startsWith('/scenarios')) {
+        menu = '/scenarios'
+        if (req.method !== 'GET') permission = 'SCENARIO_DRAFT_WRITE'
       } else if (req.method !== 'GET') {
         if (/^\/(?:scenarios|scripts)/.test(path)) { permission = 'SCENARIO_DRAFT_WRITE'; menu = '/scenarios' }
-        if (path.startsWith('/templates')) { permission = 'OFFICIAL_TEMPLATE_MAINTAIN'; menu = '/admin?section=scenario-templates' }
+        if (/^\/templates\/[^/]+\/copy$/.test(path)) { permission = 'SCENARIO_DRAFT_WRITE'; menu = '/scenarios' }
+        else if (path.startsWith('/templates')) { permission = 'OFFICIAL_TEMPLATE_MAINTAIN'; menu = '/admin?section=scenario-templates' }
         if (/^\/(?:simulations|tasks|batches)/.test(path)) permission = 'SIMULATION_CONTROL'
         if (path.startsWith('/confirmations') && req.body?.action) {
           const byAction: Partial<Record<ConfirmationAction, Permission>> = {
@@ -1074,9 +1086,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         missionStarting = options.missionExecution.start(draft.data)
         const process = await missionStarting
         mission = process
+        missionCompletedWhileStopping = undefined
         const started = simulations.startMission(process.pid, process.startedAt)
         void process.completed.then(outcome => {
-          if (mission !== process || missionStopping || closing) return
+          if (mission !== process || closing) return
+          if (missionStopping) { missionCompletedWhileStopping = outcome; return }
           mission = undefined
           const finished = simulations.finishMission(outcome)
           realtime.publishRuntimeState(finished)
@@ -1127,13 +1141,24 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         await mission.stop()
         mission = undefined
       } catch (error) {
-        const stoppedProcess = mission
-        mission = undefined
-        if (stoppedProcess) realtime.publishRuntimeState(simulations.finishMission(await stoppedProcess.completed))
+        const message = error instanceof Error ? error.message : 'mission 停止失败。'
+        if (missionCompletedWhileStopping) {
+          mission = undefined
+          realtime.publishRuntimeState(simulations.finishMission(missionCompletedWhileStopping))
+        } else {
+          realtime.publishRuntimeState(simulations.markMissionStopUncertain(message))
+        }
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-        res.status(503).json(failure('START_FAILED', 503, { message: error instanceof Error ? error.message : 'mission 停止失败。' }))
+        res.status(503).json(failure('START_FAILED', 503, { message }))
         return
-      } finally { missionStopping = false }
+      } finally {
+        missionStopping = false
+        if (mission && missionCompletedWhileStopping) {
+          mission = undefined
+          realtime.publishRuntimeState(simulations.finishMission(missionCompletedWhileStopping))
+        }
+        missionCompletedWhileStopping = undefined
+      }
     }
 
     const result = simulations.command(runId, command, stopConfirmed)
@@ -2443,6 +2468,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    */
   app.post('/api/v1/admin/users', (req, res) => {
     const requestId = 'REQ-P1-USERS-CREATE'
+    if (!isManagedUsername(req.body?.user?.username)) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_CREATE')
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '用户名须为 1–64 位，且不能包含首尾空格。',
+      }))
+      return
+    }
     if (req.body?.operation === 'CREATE' && typeof req.body.password === 'string' && !req.body.password.trim()) {
       auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_CREATE')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
@@ -2478,6 +2510,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.put('/api/v1/admin/users/:userId', (req, res) => {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-UPDATE'
+    if (req.body?.operation === 'UPDATE' && !isManagedUsername(req.body?.user?.username)) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_UPDATE', userId)
+      res.status(400).json(failure('INVALID_REQUEST', 400, {
+        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '用户名须为 1–64 位，且不能包含首尾空格。',
+      }))
+      return
+    }
     if (!isUserRoleCommand(req.body)) {
       auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_UPDATE', userId)
       res.status(400).json(failure('INVALID_REQUEST', 400, {

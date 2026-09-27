@@ -111,7 +111,7 @@ export class LocalMissionRunner implements MissionExecution {
           if (!exited) { try { child.kill('SIGKILL') } catch { /* 超时后报告可能残留。 */ } }
           if (!await waitForClose()) {
             stopError = 'mission 强制终止后仍未关闭，可能残留进程；请检查本机进程与运行记录。'
-            await finish(null)
+            throw new Error(stopError)
           }
         }
         const outcome = await completed

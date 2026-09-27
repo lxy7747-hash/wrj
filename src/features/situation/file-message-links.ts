@@ -241,7 +241,7 @@ export function isFileMessageLink(value: unknown, platformIds: ReadonlySet<strin
   if (!value || typeof value !== 'object') return false
   const link = value as FileMessageLink
   if (!isNonEmptyText(link.id)) return false
-  if (!Object.hasOwn(FILE_COMMUNICATION_LABELS, link.type)) return false
+  if (!Object.prototype.hasOwnProperty.call(FILE_COMMUNICATION_LABELS, link.type)) return false
   if (!platformIds.has(link.sourcePlatformId) || !platformIds.has(link.targetPlatformId)) return false
   if (link.sourcePlatformId === link.targetPlatformId) return false
   if (!isNonEmptyText(link.sourceDeviceId) || !isNonEmptyText(link.targetDeviceId)) return false

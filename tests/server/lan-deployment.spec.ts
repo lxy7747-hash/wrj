@@ -136,6 +136,13 @@ describe('内网配置校验', () => {
     await expect(readLanConfig({ ...env(), SCENARIO_DB_PATH: join(webRoot, 'private.db') })).rejects.toThrow('公开目录')
     await expect(readLanConfig({ ...env(), WRJ_WEB_ROOT: 'relative' })).rejects.toThrow('绝对路径')
   })
+  it('仅网页部署无需仿真程序，同时保持数据库和输出目录隔离', async () => {
+    const webOnly = { ...env(), WRJ_WEB_ONLY: '1' }
+    delete (webOnly as { MISSION_EXECUTABLE_PATH?: string }).MISSION_EXECUTABLE_PATH
+    expect((await readLanConfig(webOnly)).executable).toBeUndefined()
+    await expect(readLanConfig({ ...webOnly, SCENARIO_DB_PATH: join(webRoot, 'private.db') })).rejects.toThrow('公开目录')
+    await expect(readLanConfig({ ...webOnly, WRJ_WEB_ONLY: 'yes' })).rejects.toThrow('只能设置为 1')
+  })
   it('拒绝普通开发构建，避免发布后浏览器访问自己的 localhost', async () => {
     await writeFile(join(webRoot, 'index.html'), '<main>ordinary build</main>')
     await expect(readLanConfig(env())).rejects.toThrow('build:lan')

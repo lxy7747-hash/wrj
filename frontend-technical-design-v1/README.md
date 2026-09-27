@@ -2,7 +2,18 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 通用服务端异常响应（2026-09-27，当前冻结记录）
+## 已接通设备参数写入边界（2026-09-27，当前冻结记录）
+
+经用户授权，OpenAPI 更新为 **1.8.5 / 83 操作 / 40 写操作**：写入场景中的 `jammers[].defaultPower` 与 `sensors[].detectionRange` 必须大于 0，读取旧场景仍允许 0；仅 `ScenarioConfigWrite` 收紧，不修改设备读取模型、业务夹具或数据库。写入方须同步升级；回退时须同步恢复写入 schema 与校验规则。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/mock-api.openapi.yaml` | `B5C523721E79E08E29CA551B670E42617E3680DB69773F70E396F2F3ECA31963` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `275778FEC03FA6D6224D541D7D1AA4C39EC3524A5941419A4FB47EB681043056` |
+| `contracts/domain-models.ts`（未修改） | `985F2BD4909B4AE3BBAEB68CCB5239174D1BDA27CF9C630C6F0759095F786EF1` |
+| `contracts/deterministic-fixtures.json`（未修改） | `C1BB07FCF492F44E9BC99D3BDF5E6D4540DDCBA790A767B9E0D6B6123ED91A6B` |
+
+## 通用服务端异常响应（2026-09-27，历史冻结记录）
 
 经用户授权，OpenAPI 更新为 **1.8.4 / 83 操作 / 40 写操作**：82 条 REST 操作增加引用 `ErrorEnvelope` 的通用 500 响应；WebSocket 升级与关闭协议不变。意外服务端异常返回脱敏的 `INTERNAL_ERROR`，请求 JSON 解析错误仍为 400 `INVALID_REQUEST`，业务启动失败仍使用 `START_FAILED`。同步领域错误码、schema snapshot 和每操作错误状态审计；不修改业务数据模型、fixture 或存量数据。前后端同步升级；回退时同步恢复错误码和合同。
 

@@ -1582,7 +1582,7 @@ watch(activeTab, (tab) => {
               </el-table-column>
               <el-table-column label="最低频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
               <el-table-column label="最高频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="0" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="Number.MIN_VALUE" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
               <el-table-column label="方向" min-width="220">
                 <template #default="{ row, $index }">
                   <div class="sensor-direction-editor">

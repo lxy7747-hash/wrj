@@ -1732,6 +1732,16 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
+  it('旧场景可读取零功率与零侦测距离，新写入按字段拒绝', () => {
+    const legacy = draft()
+    legacy.config.jammers[0]!.defaultPower = 0
+    legacy.config.sensors[0]!.detectionRange = 0
+    expect(inspectScenarioConfig(legacy.config, 'read').result.valid).toBe(true)
+    const errors = inspectScenarioConfig(legacy.config, 'write').result.errors
+    expect(errors).toContainEqual(expect.objectContaining({ fieldPath: 'jammers[0].defaultPower' }))
+    expect(errors).toContainEqual(expect.objectContaining({ fieldPath: 'sensors[0].detectionRange' }))
+  })
+
   it('兼容读取旧卫星但编辑时必须主动选择子类型才能确认', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)

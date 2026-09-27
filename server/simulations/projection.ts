@@ -183,6 +183,13 @@ export class SimulationProjection {
     return structuredClone(this.run)
   }
 
+  markMissionStopUncertain(message: string): SimulationRun {
+    this.run.uiStatus = 'ERROR'
+    this.run.canonical.status = 'ERROR'
+    this.run.canonical.errorMessage = message
+    return structuredClone(this.run)
+  }
+
   /** 返回当前确定性运行列表的独立副本。 */
   list(): SimulationRun[] {
     return [structuredClone(this.run)]

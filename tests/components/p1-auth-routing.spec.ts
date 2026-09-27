@@ -752,6 +752,26 @@ describe('P1 authentication and routing', () => {
     wrapper.unmount()
   })
 
+  it.each([' worker', 'worker '])('rejects a username with surrounding whitespace before creating: %j', async (username) => {
+    const fetchSpy = vi.fn().mockResolvedValueOnce(response(success(USERS)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountAt(AdminPage, '/admin')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="open-create-user"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('input[data-testid="create-username"]').setValue(username)
+    await wrapper.get('input[data-testid="create-password"]').setValue('123456')
+    await wrapper.get('form.create-form').trigger('submit')
+    await flushPromises()
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-testid="create-user-error"]').text()).toContain('不能包含首尾空格')
+    expect((wrapper.get('input[data-testid="create-username"]').element as HTMLInputElement).value).toBe(username)
+    expect(useAdminStore().users).toEqual(USERS)
+    wrapper.unmount()
+  })
+
   it.each([
     ['invalid role', { userId: 'USR-BROKEN', username: 'broken', role: 'ROOT', status: 'ACTIVE' }],
     ['empty userId', { userId: '', username: 'broken', role: 'OPERATOR', status: 'ACTIVE' }],

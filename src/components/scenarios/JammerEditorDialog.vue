@@ -100,7 +100,7 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
-          <el-form-item required label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
+          <el-form-item required label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="Number.MIN_VALUE" controls-position="right" data-testid="jammer-power" /></el-form-item>
           <el-form-item required label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
           <el-form-item required label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
           <el-form-item label="干扰触发时间（仿真秒）"><el-input-number :model-value="editor.triggerTimeS" :min="0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>

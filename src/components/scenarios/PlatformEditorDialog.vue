@@ -71,7 +71,9 @@ const cannotAdd = computed(() => !props.editing && availableQuantity.value === 0
 const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE')
 const positionRule = computed(() => editor.value ? PLATFORM_POSITION_RULES[editor.value.type] : undefined)
 const waypointBounds = computed(() => editor.value?.type === 'AIRBORNE_MISSION_CLUSTER' ? positionRule.value : undefined)
-const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value)
+const isSatellite = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE')
+const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value && !isSatellite.value)
+const showWaypoints = computed(() => supportsWaypoints.value || (isSatellite.value && Boolean(editor.value?.waypoints.length)))
 const hasInvalidWaypointSpeed = computed(() => supportsWaypoints.value && editor.value?.waypoints.some(point => waypointSpeedError(point.speed)) === true)
 const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE'
   && editor.value.satelliteType !== 'TIANTONG' && editor.value.satelliteType !== 'SHENTONG')
@@ -121,6 +123,7 @@ function onSatelliteTypeChange(satelliteType: SatelliteType): void {
 }
 
 function addWaypoint(): void {
+  if (!supportsWaypoints.value) return
   confirmationAttempted.value = false
   editor.value?.waypoints.push({ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 })
 }
@@ -157,7 +160,8 @@ function apply(): void {
   confirmationAttempted.value = true
   if (!editor.value.name?.trim() || invalidSpacing.value || hasInvalidWaypointSpeed.value) return
   if (invalidSatelliteType.value) return
-  if (!supportsWaypoints.value) editor.value.waypoints = []
+  if (isSatellite.value && editor.value.waypoints.length > 0) return
+  if (!supportsWaypoints.value && !isSatellite.value) editor.value.waypoints = []
   emit('apply', editor.value, quantity.value, spacingKm.value)
 }
 
@@ -254,12 +258,14 @@ watch(() => props.modelValue, (visible) => {
         </div>
       </section>
 
-      <section v-if="supportsWaypoints" class="platform-editor-section" aria-labelledby="platform-waypoint-title">
+      <section v-if="showWaypoints" class="platform-editor-section" aria-labelledby="platform-waypoint-title">
         <div class="waypoint-heading">
           <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ editor.waypoints.length }}）</h4>
-          <el-button size="small" :disabled="pending || locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
+          <el-button v-if="supportsWaypoints" size="small" :disabled="pending || locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
+          <el-button v-else-if="isSatellite" size="small" type="danger" :disabled="pending || locked" data-testid="clear-satellite-waypoints" @click="editor.waypoints = []">清除历史航点</el-button>
         </div>
-        <p class="platform-editor-field__hint">航点非必填；固定节点无需新增。新增后各列均为必填，速度须大于 0，到达时间须严格递增且不超过场景时长。</p>
+        <p v-if="isSatellite" class="platform-editor-field__hint" data-testid="satellite-waypoint-warning">通信卫星不能配置航点。请主动清除历史航点后确认；原数据不会自动丢弃。</p>
+        <p v-else class="platform-editor-field__hint">航点非必填；固定节点无需新增。新增后各列均为必填，速度须大于 0，到达时间须严格递增且不超过场景时长。</p>
         <el-table :data="editor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
           <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="waypointBounds?.minLongitude ?? -180" :max="waypointBounds?.maxLongitude ?? 180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
           <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="waypointBounds?.minLatitude ?? -90" :max="waypointBounds?.maxLatitude ?? 90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
@@ -268,7 +274,7 @@ watch(() => props.modelValue, (visible) => {
           <el-table-column label="到达时间（s） *" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
           <el-table-column label="操作" width="140">
             <template #default="{ $index }">
-              <el-button link type="primary" :disabled="pending || locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
+              <el-button v-if="supportsWaypoints" link type="primary" :disabled="pending || locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
               <el-button link type="danger" :disabled="pending || locked" :data-testid="`delete-waypoint-${$index}`" @click="removeWaypoint($index)">删除</el-button>
             </template>
           </el-table-column>
@@ -277,7 +283,7 @@ watch(() => props.modelValue, (visible) => {
     </el-form>
     <template #footer>
       <el-button data-testid="cancel-platform" @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :disabled="pending || locked || cannotAdd" data-testid="apply-platform" @click="apply">确认</el-button>
+      <el-button type="primary" :disabled="pending || locked || cannotAdd || (isSatellite && editor.waypoints.length > 0)" data-testid="apply-platform" @click="apply">确认</el-button>
     </template>
   </el-dialog>
 

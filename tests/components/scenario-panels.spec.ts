@@ -291,6 +291,47 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
+  it('卫星不能新增航点，历史航点须明确删除；移动节点仍可新增', async () => {
+    const platform = structuredClone(fixtureSource.scenario.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!) as Platform
+    platform.waypoints = [{ longitude: 120, latitude: 25, altitude: 1000, speed: 20, arrivalTime: 1 }]
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [{ value: 'COMMUNICATION_SATELLITE', label: '通信卫星' }],
+        satelliteTypeOptions: [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHENTONG', label: '神通卫星' }],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '空间' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="satellite-waypoint-warning"]').text()).toContain('主动清除')
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    await wrapper.get('[data-testid="clear-satellite-waypoints"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="satellite-waypoint-warning"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toHaveProperty('waypoints', [])
+    expect(platform.waypoints).toHaveLength(1)
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'platform-type')!
+    type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
+    type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
+    await flushPromises()
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    expect(wrapper.find('[data-testid="waypoint-speed-0"]').exists()).toBe(true)
+    type.vm.$emit('update:modelValue', 'COMMUNICATION_SATELLITE')
+    type.vm.$emit('change', 'COMMUNICATION_SATELLITE')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="clear-satellite-waypoints"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it.each([[false, 47], [false, 46], [true, 47]] as const)('数量额度：编辑=%s，已有=%s', async (editing, count) => {
     const wrapper = mount(PlatformEditorDialog, {
       props: {

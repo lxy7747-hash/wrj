@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path'
 import { randomBytes, scrypt, scryptSync, timingSafeEqual, createHash } from 'node:crypto'
 import type { AuditRecord, User } from '../../src/contracts/domain-models.js'
 import type { AuthStorage } from '../auth/projection.js'
+import { isManagedUsername } from '../auth/projection.js'
 
 const SESSION_MS = 8 * 60 * 60 * 1000
 export const SESSION_COOKIE = 'wrj_session'
@@ -112,20 +113,28 @@ export class AuthSqliteStorage implements AuthStorage {
   }
 
   save(user: User, password?: string): void {
+    const current = password === undefined ? this.db.prepare('SELECT username FROM users WHERE user_id=?').get(user.userId) : undefined
+    if (!isManagedUsername(user.username) && current?.username !== user.username) {
+      throw new Error('用户名须为 1–64 位，且不能包含首尾空格。')
+    }
     if (password !== undefined) {
       if (!validPassword(password) || password.length > 32) throw new Error('密码须为 6–32 位。密码不能全为空白。')
       this.insertUser(user, password)
     } else {
-      this.db.prepare('UPDATE users SET username=?, role=?, status=?, last_login_at=? WHERE user_id=?')
-        .run(user.username, user.role, user.status, user.lastLoginAt ?? null, user.userId)
+      this.db.prepare('UPDATE users SET username=?, role=?, status=? WHERE user_id=?')
+        .run(user.username, user.role, user.status, user.userId)
     }
+  }
+
+  recordLogin(userId: string, at: string): void {
+    this.db.prepare('UPDATE users SET last_login_at=? WHERE user_id=?').run(at, userId)
   }
 
   // 初始化管理员与界面新建账号的长度规则独立，校验后共用同一哈希写入路径。
   private insertUser(user: User, password: string): void {
     const salt = randomBytes(16)
     this.db.prepare(`INSERT INTO users (user_id, username, role, status, password_salt, password_hash, last_login_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(user.userId, user.username, user.role, user.status, salt.toString('hex'), derive(password, salt).toString('hex'), user.lastLoginAt ?? null)
+      VALUES (?, ?, ?, ?, ?, ?, NULL)`).run(user.userId, user.username, user.role, user.status, salt.toString('hex'), derive(password, salt).toString('hex'))
   }
 
   delete(id: string): void { this.db.prepare('DELETE FROM users WHERE user_id=?').run(id); this.revokeUser(id) }

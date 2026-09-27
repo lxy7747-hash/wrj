@@ -64,11 +64,13 @@ const server = createMockServer({
   missionResults,
   port,
   ...(lan ? { publicOrigin: lan.publicOrigin, host: lan.host, site: createLanSite(lan.webRoot, lan.tilePort) } : {}),
-  missionExecution: new LocalMissionRunner(
-    lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url))),
-    lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url)),
-    missionResults,
-  ),
+  missionExecution: lan?.webOnly
+    ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
+    : new LocalMissionRunner(
+      lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url))),
+      lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url)),
+      missionResults,
+    ),
   writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()

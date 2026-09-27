@@ -129,6 +129,24 @@ describe('真实 mission 命令边界', () => {
       canonical: { processId: null, errorMessage: expect.stringContaining('停止超时') } })
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', result: 'ERROR' })
   })
+
+  it('强制终止后仍无进程关闭证据时保留锁和进程，拒绝再次创建或开始', async () => {
+    const { handle, result } = processHandle()
+    handle.stop = vi.fn(async () => { throw new Error('强制终止后仍未关闭，可能残留进程') })
+    const { api, command, run } = await apiFor(async () => handle)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const context = (await api.post('/api/v1/confirmations').set(headers)
+      .send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+    await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+    await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(503)
+    expect(await run()).toMatchObject({ uiStatus: 'ERROR', configLocked: true,
+      canonical: { processId: 7654, errorMessage: expect.stringContaining('仍未关闭') } })
+    expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(true)
+    await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(409)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(409)
+    result.resolve({ code: null, errorMessage: '进程最终关闭' })
+    await expect.poll(run).toMatchObject({ uiStatus: 'ERROR', configLocked: false, canonical: { processId: null } })
+  })
 })
 
 function draftForMission(): ScenarioDraft {
@@ -574,6 +592,26 @@ describe('本机 mission 执行器', () => {
       expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
       expect((await process.completed).errorMessage).toContain('停止超时')
       expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toContain('停止超时')
+    } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('强制终止后缺少 close 时不伪造 completed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-open-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8766, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draftForMission())
+      let completed = false
+      void process.completed.then(() => { completed = true })
+      vi.useFakeTimers()
+      const stopping = process.stop()
+      const rejection = expect(stopping).rejects.toThrow('仍未关闭')
+      await vi.advanceTimersByTimeAsync(10_002)
+      await rejection
+      expect(completed).toBe(false)
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
+      child.emit('close', null)
+      expect((await process.completed).errorMessage).toContain('仍未关闭')
     } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
   })
 

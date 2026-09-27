@@ -957,7 +957,7 @@ describe('P0 deterministic mock server', () => {
     expect(linkSavedDraft.config.links[0]?.frequency).toBe(4600)
 
     const jammerMutation = structuredClone(linkSavedDraft.config)
-    jammerMutation.jammers[0]!.defaultPower = 0
+    jammerMutation.jammers[0]!.defaultPower = 1
     jammerMutation.jammers[0]!.detectionRange = 1852
     jammerMutation.jammers[0]!.frequency = 0.0001
     jammerMutation.jammers[0]!.bandwidth = Number.MIN_VALUE
@@ -970,7 +970,7 @@ describe('P0 deterministic mock server', () => {
     const jammerSavedDraft = (jammerSaved.body as { data: ScenarioDraft }).data
     expect(jammerSavedDraft.revision).toBe(8)
     expect(jammerSavedDraft.config.jammers[0]).toMatchObject({
-      defaultPower: 0,
+      defaultPower: 1,
       detectionRange: 1852,
       frequency: 0.0001,
       bandwidth: Number.MIN_VALUE,
@@ -1001,6 +1001,20 @@ describe('P0 deterministic mock server', () => {
       ok: false,
       error: { code: 'VALIDATION_FAILED', fieldPath: 'jammers[0].defaultPower' },
     })
+
+    const zeroPower = structuredClone(jammerMutation)
+    zeroPower.jammers[0]!.defaultPower = 0
+    const zeroPowerRejected = await request(baseUrl).put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
+      .send({ config: zeroPower, uiExtensions: original.uiExtensions }).expect(422)
+    expect((zeroPowerRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('jammers[0].defaultPower')
+
+    const zeroRange = structuredClone(jammerMutation)
+    zeroRange.sensors[0]!.detectionRange = 0
+    const zeroRangeRejected = await request(baseUrl).put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
+      .send({ config: zeroRange, uiExtensions: original.uiExtensions }).expect(422)
+    expect((zeroRangeRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('sensors[0].detectionRange')
 
     const invalidLink = structuredClone(linkMutation)
     invalidLink.links[0]!.bandwidth = 0
