@@ -15,6 +15,7 @@
   },
   "include": [
     "vite.config.ts",
+    "vite.server.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",
     "scripts/**/*.ts",
@@ -30,6 +31,7 @@
     "src/features/situation/position-updates.ts",
     "src/features/replays/local-replay.ts",
     "src/features/reports/local-report.ts",
+    "src/features/results/mission-result.ts",
     "src/features/data-exchange/csv-contract.ts",
     "src/features/scenarios/scenario-validation.ts",
     "src/features/scenarios/platform-position-rules.ts",

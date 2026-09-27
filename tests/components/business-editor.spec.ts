@@ -51,7 +51,7 @@ describe('业务编辑弹框', () => {
   })
   it('复用旧业务、换算字节和 MB、取消不落盘且禁用阻止确认', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-    const demand: InformationDemand = { ...config.informationDemand[0]!, volumeMb: 0.000256, informationType: '历史类型', enabled: false }
+    const demand: InformationDemand = { ...config.informationDemand[0]!, volumeMb: 0.000256, informationType: '历史类型' as never, enabled: false }
     const original = structuredClone(demand)
     const wrapper: VueWrapper = mount(BusinessEditorDialog, { props: { modelValue: true, editing: true, demand, platforms: config.platforms, disabled: false, error: '' },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } } })
@@ -72,11 +72,11 @@ describe('业务编辑弹框', () => {
     await wrapper.setProps({ modelValue: false })
     await wrapper.setProps({ modelValue: true })
     component('ElSelect', 'demand-direction').vm.$emit('change', 'REVERSE')
-    component('ElSelect', 'demand-type').vm.$emit('update:modelValue', '视频')
+    component('ElSelect', 'demand-type').vm.$emit('update:modelValue', '侦察信息')
     await wrapper.vm.$nextTick()
-    expect(wrapper.text()).toContain('传输频次（帧/秒）')
+    expect(wrapper.text()).toContain('传输频次（次/秒）')
     await wrapper.get('[data-testid="apply-business"]').trigger('click')
-    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ id: original.id, priority: original.priority, volumeMb: 0.000256, direction: 'REVERSE', informationType: '视频', enabled: false })
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ id: original.id, priority: original.priority, volumeMb: 0.000256, direction: 'REVERSE', informationType: '侦察信息', enabled: false })
     expect(demand).toEqual(original)
     await wrapper.setProps({ disabled: true })
     await wrapper.get('[data-testid="apply-business"]').trigger('click')

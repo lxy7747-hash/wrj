@@ -2,6 +2,8 @@ import { loadEnvFile } from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { writeScriptText } from './local/script-file.js'
+import { LocalMissionRunner } from './local/mission-runner.js'
+import { LocalMissionResults } from './local/mission-results.js'
 import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
@@ -15,14 +17,17 @@ import { AccessControlSqliteStorage } from './local/access-control-sqlite.js'
 import { readLocalReport, exportLocalReport } from './local/report-file.js'
 import { ArchiveSqliteStorage } from './local/archive-sqlite.js'
 import { MasterDataSqliteStorage } from './local/master-data-sqlite.js'
+import { readLanConfig } from './local/lan-config.js'
+import { createLanSite } from './local/lan-site.js'
 
 // 本机路径从忽略的 .env.local 初始化白名单配置库，不写入共享代码或复制凭据。
 try {
-  loadEnvFile('.env.local')
+  if (process.env.WRJ_DEPLOYMENT !== 'lan') loadEnvFile('.env.local')
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
 }
-const port = Number(process.env.MOCK_PORT ?? '4173')
+const lan = process.env.WRJ_DEPLOYMENT === 'lan' ? await readLanConfig(process.env) : undefined
+const port = lan?.port ?? Number(process.env.MOCK_PORT ?? '4173')
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new RangeError('MOCK_PORT 必须为有效端口号。')
 const logPath = process.env.AFSIM_EVENT_LOG_PATH?.trim()
 const positionPath = process.env.AFSIM_POSITION_LOG_PATH?.trim()
@@ -54,9 +59,17 @@ const backupStorage = new SystemBackupSqliteStorage(scenarioDbPath)
 const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
 let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
+const missionResults = new LocalMissionResults(lan ? join(lan.outputRoot, 'results') : fileURLToPath(new URL('../output/results/', import.meta.url)))
 const server = createMockServer({
+  missionResults,
   port,
-  writeScriptText: (script, revision, draft) => writeScriptText(fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
+  ...(lan ? { publicOrigin: lan.publicOrigin, host: lan.host, site: createLanSite(lan.webRoot, lan.tilePort) } : {}),
+  missionExecution: new LocalMissionRunner(
+    lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url))),
+    lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url)),
+    missionResults,
+  ),
+  writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()
     if (!eventPath) throw new Error('尚未配置事件文件路径。')
@@ -75,7 +88,7 @@ const server = createMockServer({
   },
   loadExchangeMonitor: () => exchangeMonitor.snapshot(),
   loadLocalReport: () => { const config = runtimeConfig.load(); return readLocalReport(config.eventPath ?? undefined, config.positionPath ?? undefined) },
-  exportLocalReport: (report, format, actor) => exportLocalReport(fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor),
+  exportLocalReport: (report, format, actor, source) => exportLocalReport(lan ? join(lan.outputRoot, 'reports') : fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor, source),
   scenarioStorage,
   templateStorage,
   authStorage,
@@ -86,21 +99,35 @@ const server = createMockServer({
   masterDataStorage,
 })
 function closeStorage(): void {
-  exchangeMonitor.close()
-  backupStorage.close()
-  runtimeConfig.close()
-  equipmentStorage.close()
-  accessControlStorage.close()
-  archiveStorage.close()
-  masterDataStorage.close()
-  authStorage.close()
-  scenarioStorage?.close()
-  templateStorage?.close()
+  for (const storage of [exchangeMonitor, backupStorage, runtimeConfig, equipmentStorage,
+    accessControlStorage, archiveStorage, masterDataStorage, authStorage, scenarioStorage, templateStorage]) {
+    try { storage?.close() } catch (error) {
+      console.error('本机存储关闭失败：', error)
+      process.exitCode = 1
+    }
+  }
 }
 server.httpServer.once('close', closeStorage)
-server.httpServer.once('error', closeStorage)
+server.httpServer.once('error', error => {
+  console.error('本机 HTTP 服务异常：', error)
+  void server.close().catch(closeError => { console.error('本机服务停止失败：', closeError); process.exitCode = 1 })
+})
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    void server.close().catch(error => { console.error('本机服务停止失败：', error); process.exitCode = 1 })
+  })
+}
+// Windows 启动器通过 IPC 请求正常关闭，避免直接终止 Node 后遗留 mission 进程。
+if (lan && process.connected) {
+  process.on('message', message => {
+    if (typeof message === 'object' && message !== null && 'type' in message && message.type === 'shutdown') {
+      void server.close().catch(error => { console.error('服务停止失败：', error); process.exitCode = 1 })
+        .finally(() => { if (process.connected) process.disconnect() })
+    }
+  })
+}
 server.httpServer.once('listening', () => {
   backupStorage.start()
-  console.log(`本机接口已启动：http://127.0.0.1:${port}；初始位置来源：${logPath ? '真实日志' : 'Mock'}`)
+  console.log(`接口已启动：${lan?.publicOrigin ?? `http://127.0.0.1:${port}`}；初始位置来源：${logPath ? '配置的事件文件' : '尚未配置事件文件'}`)
   if (scenarioStorage) console.log('场景与模板存储：SQLite 开发验证（未加密，仅限非敏感测试数据）。')
 })

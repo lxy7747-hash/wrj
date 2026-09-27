@@ -493,7 +493,8 @@
         "frequency": 2200,
         "bandwidth": 40,
         "autoDetect": true,
-        "detectionRange": 44448
+        "detectionRange": 44448,
+        "jammingRange": 44448
       }
     ],
     "sensors": [
@@ -521,7 +522,7 @@
         "destinationPlatformIds": [
           "UAV-01"
         ],
-        "informationType": "COMMAND",
+        "informationType": "目标指令",
         "volumeMb": 2,
         "frequencyHz": 1,
         "priority": "HIGH",

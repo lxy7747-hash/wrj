@@ -107,7 +107,7 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
     const state = node.initialState
     if (!state) throw new Error('日志中有节点缺少初始位置。')
     return { platformId: node.name, name: PLATFORM_DISPLAY_NAMES.get(node.name) ?? node.name, type: node.type,
-      side: node.side,
+      ...(node.side ? { side: node.side } : {}),
       longitude: state.longitude, latitude: state.latitude,
       altitude: state.altitudeMeters, speed: state.speedMetersPerSecond,
       time: state.time, sourceEventId: state.sourceEventId }

@@ -106,6 +106,91 @@ function confirmation(): ConfirmationContext {
 }
 
 describe('P2-1 场景管理页面', () => {
+  it('默认显示参数界面，无配置参数按钮，辅助面板仍可通过页签返回', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const store = useScenarioStore()
+    store.createScenario()
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="workflow-config"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="scenario-name"]').isVisible()).toBe(true)
+    for (const entry of ['open-scenario-templates', 'save-scenario']) {
+      await wrapper.get(`[data-testid="${entry}"]`).trigger('click')
+      expect(wrapper.get('#tab-scenario').isVisible()).toBe(true)
+      expect(wrapper.get('.scenario-tabs').classes()).toContain('scenario-tabs--navigation-only')
+      await wrapper.get('#tab-scenario').trigger('click')
+      await flushPromises()
+      expect(wrapper.get('[data-testid="scenario-name"]').isVisible()).toBe(true)
+      expect(wrapper.get('.scenario-tabs').classes()).not.toContain('scenario-tabs--navigation-only')
+    }
+  })
+
+  it('新建只显示必填标记，编辑或失焦后按字段提示，保存仍拦截全部错误且新草稿不继承提示', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const store = useScenarioStore()
+    expect(store.createScenario()).toBe(true)
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    const nameField = () => wrapper.get('[data-field-path="scenario.name"]')
+    const timeField = () => wrapper.get('[data-field-path="scenario.startTime"]')
+    expect(wrapper.find('[data-testid="scenario-live-validation"]').exists()).toBe(false)
+    expect(wrapper.findAll('.el-form-item.is-error')).toHaveLength(0)
+    expect(nameField().classes()).toContain('is-required')
+    await wrapper.get('[data-testid="scenario-name"]').trigger('focusout')
+    await vi.waitFor(() => expect(nameField().text()).toContain('场景名称为必填项'))
+    expect(timeField().find('.el-form-item__error').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-live-validation"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="scenario-name"]').setValue('新场景')
+    await vi.waitFor(() => expect(nameField().find('.el-form-item__error').exists()).toBe(false))
+    await wrapper.get('[data-testid="scenario-name"]').setValue('')
+    await vi.waitFor(() => expect(nameField().text()).toContain('场景名称为必填项'))
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('不能保存')
+    expect(store.validation.valid).toBe(false)
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('场景名称为必填项')
+    expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('scenario.name')
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="preflight-script"]').exists()).toBe(false)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(store.draft!.revision).toBe(0)
+    store.resetToSafeEmpty()
+    expect(store.createScenario()).toBe(true)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="scenario-live-validation"]').exists()).toBe(false)
+    await vi.waitFor(() => expect(wrapper.findAll('.el-form-item__error')).toHaveLength(0))
+    wrapper.unmount()
+  })
+
+  it('加载零速度航点后立即显示问题，未点击保存也能定位；保存不发出写请求', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const value = draft()
+    const platform = value.config.platforms[3]!
+    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 10 }]
+    const fetchSpy = vi.fn().mockResolvedValue(response(value))
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('platforms[3].waypoints[0].speed')
+    expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('必须大于 0')
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    expect(fetchSpy.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+    expect(useScenarioStore().draft!.revision).toBe(value.revision)
+    await wrapper.get('[data-testid="scenario-name"]').setValue('')
+    await flushPromises()
+    expect(wrapper.text()).toContain('场景名称为必填项')
+    wrapper.unmount()
+  })
+
   it('管理员从已保存场景另存完整模板，原场景不变；取消和修改后禁止误存', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -250,7 +335,7 @@ describe('P2-1 场景管理页面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('空库显示空态且不生成草稿，可通过已有导入入口创建首个场景', async () => {
+  it('空库保持空态，不再提供场景操作或快照导入入口', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -259,7 +344,6 @@ describe('P2-1 场景管理页面', () => {
         ok: false, error: { code: 'NOT_FOUND', message: '暂无场景。', retryable: false, correlationId: 'CORR-EMPTY' },
         meta: { requestId: META.requestId, generatedAt: META.generatedAt },
       }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, data: { imported: 1, rejected: 0, drafts: [draft()] }, meta: META }) })
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
@@ -267,12 +351,8 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeDefined()
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(draft().config) } as never)
-    await wrapper.get('[data-testid="import-scenario-snapshot"]').trigger('click')
-    await flushPromises()
-    expect(fetchSpy.mock.calls[1]![0]).toContain('/api/v1/scenarios/import')
-    expect(wrapper.find('[data-testid="scenario-empty"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="import-scenario-snapshot"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="open-scenario-operations"]').exists()).toBe(false)
   })
 
   it('空库可以显式选择模板，应用成功后才出现场景编辑器', async () => {
@@ -403,7 +483,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.links.map(link => link.enabled)).toEqual([true, true, false, true, true])
   })
 
-  it('不展示旧业务入口，链路参数可新增、保存重载和删除且不改历史数据', async () => {
+  it('不展示旧业务入口，链路参数可新增、保存重载和删除且不改历史数据', { timeout: 30_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -460,7 +540,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
-    const savedDemand = { ...initialDemand, linkId: 'L-CFG-001', direction: 'REVERSE', informationType: '视频', frequencyHz: 30, minDataRateMbps: 2, volumeMb: 3, destinationPlatformIds: ['GCC-01'] }
+    const savedDemand = { ...initialDemand, linkId: 'L-CFG-001', direction: 'REVERSE', informationType: '侦察信息', frequencyHz: 30, minDataRateMbps: 2, volumeMb: 3, destinationPlatformIds: ['GCC-01'] }
     expect(scenario.draft!.config.informationDemand).toEqual([...original.informationDemand, savedDemand])
     expect(scenario.draft!.config.links.at(-1)).toMatchObject({ id: 'L-CFG-001', direction: 'REVERSE', targetPlatformId: 'GCC-01' })
     expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
@@ -607,7 +687,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
-    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 100, bandwidth: 20, triggerTimeS: 300, detectionRange: 44448 })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 100, bandwidth: 20, triggerTimeS: 300, detectionRange: 44448, jammingRange: 44448 })
     expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
@@ -720,11 +800,10 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.text()).toContain('已就绪')
     expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ method: 'PUT' })
     expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
-    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(true)
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('脚本预览已生成')
-    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('点击“执行预检”')
-    expect(wrapper.get('[data-testid="preflight-script"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="preflight-script"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).not.toContain('预检')
   })
 
   it('按文档展示五项环境配置，分钟换算后保存且不提交重复时长字段', async () => {
@@ -786,7 +865,7 @@ describe('P2-1 场景管理页面', () => {
     }))
   })
 
-  it('已保存草稿点击保存只检查；失败展示结果，通过后开放脚本，不重复写入', async () => {
+  it('已保存草稿点击保存只检查；失败展示结果，通过后自动生成且没有脚本入口，不重复写入', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -799,33 +878,32 @@ describe('P2-1 场景管理页面', () => {
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
 
     expect(wrapper.find('[data-testid="workflow-validation"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="validation-panel"]').text()).toContain('校验服务不可用。')
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(fetchSpy.mock.calls.every(([url, options]) => String(url).endsWith('/validate') && options.method === 'POST')).toBe(true)
     expect(scenario.draft?.revision).toBe(4)
     expect(wrapper.find('[data-testid="validation-panel"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
     scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, true)
     await nextTick()
     expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeDefined()
     scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, false)
     await nextTick()
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
-    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="workflow-config"]').trigger('click')
+    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
+    await wrapper.get('#tab-scenario').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('校验后修改')
     expect(wrapper.get('[data-testid="save-scenario"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
   })
 
-  it('编辑完整数据域并进入场景快照和脚本操作', { timeout: 15_000 }, async () => {
+  it('编辑完整数据域，不再提供场景操作或独立脚本操作', { timeout: 15_000 }, async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -886,45 +964,11 @@ describe('P2-1 场景管理页面', () => {
     lastDelete.vm.$emit('confirm', new MouseEvent('click'))
     expect(scenario.dirty).toBe(true)
 
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
-    await nextTick()
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
 
-    scenario.dirty = false
-    const messageSpy = vi.spyOn(ElMessage, 'success')
-    const promptSpy = vi.spyOn(ElMessageBox, 'prompt').mockResolvedValue({ value: JSON.stringify(scenario.draft!.config) } as never)
-    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue(true as never)
-    const importSpy = vi.spyOn(scenario, 'importScenarioSnapshot').mockImplementation(async () => {
-      scenario.resultMessage = '已导入 1 个完整场景快照。'
-      return true
-    })
-    const undoSpy = vi.spyOn(scenario, 'undoScenario').mockImplementation(async () => {
-      scenario.resultMessage = '场景操作已撤销。'
-      return true
-    })
-    const resetSpy = vi.spyOn(scenario, 'resetScenario').mockImplementation(async () => {
-      scenario.resultMessage = '当前场景已重置。'
-      return true
-    })
-    await wrapper.get('[data-testid="open-scenario-operations"]').trigger('click')
-    await wrapper.get('[data-testid="import-scenario-snapshot"]').trigger('click')
-    await wrapper.get('[data-testid="undo-scenario"]').trigger('click')
-    await wrapper.get('[data-testid="reset-scenario"]').trigger('click')
-    await flushPromises()
-    expect(promptSpy).toHaveBeenCalled()
-    expect(importSpy).toHaveBeenCalledOnce()
-    expect(undoSpy).toHaveBeenCalledOnce()
-    expect(resetSpy).toHaveBeenCalledOnce()
-    expect(messageSpy.mock.calls).toEqual([
-      ['已导入 1 个完整场景快照。'], ['场景操作已撤销。'], ['当前场景已重置。'],
-    ])
-    expect(wrapper.find('.platform-feedback').exists()).toBe(false)
-
-    vi.spyOn(scenario, 'validateScenario').mockResolvedValue(true)
-    vi.spyOn(scenario, 'generateScriptPreview').mockResolvedValue(false)
-    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
-    await flushPromises()
+    expect(wrapper.find('[data-testid="open-scenario-operations"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-json-preview"]').exists()).toBe(false)
 
     scenario.scriptResultCode = 'CONFIRMATION_REQUIRED'
     scenario.scriptResultMessage = '存在警告。'
@@ -938,37 +982,28 @@ describe('P2-1 场景管理页面', () => {
       ],
       warnings: [],
     }
-    const generateSpy = vi.spyOn(scenario, 'generateScriptPreview').mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-    generateSpy.mockClear()
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
-    await wrapper.get('[data-testid="generate-script"]').trigger('click')
-    await wrapper.get('[data-testid="preflight-script"]').trigger('click')
-    await flushPromises()
-    expect(generateSpy).toHaveBeenNthCalledWith(2, true)
-    expect(preflightSpy).toHaveBeenCalledOnce()
-    expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('2026-08-06 16:00:00')
+    await nextTick()
+    expect(preflightSpy).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
     expect(scenario.script?.generatedTime).toBe(META.generatedAt)
-    expect(wrapper.text()).toContain('2:3')
-    expect(wrapper.text()).toContain('—')
+    expect(wrapper.find('[data-testid="preflight-issues"]').exists()).toBe(false)
 
     scenario.scriptResultCode = 'PREFLIGHT_SUCCESS'
     scenario.preflight = { valid: true, errors: [], warnings: [] }
     await nextTick()
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('脚本预检已通过，未启动真实 AFSIM')
-    expect(wrapper.get('[data-testid="script-next-step"]').text()).toContain('保存场景时由本机服务写入 TXT，不会启动真实 AFSIM')
-    await wrapper.get('[data-testid="workflow-config"]').trigger('click')
+    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).not.toContain('预检')
+    expect(wrapper.find('[data-testid="script-next-step"]').exists()).toBe(false)
+    await wrapper.get('#tab-scenario').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('重新编辑场景')
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('未保存修改')
-    await wrapper.get('[data-testid="workflow-script"]').trigger('click')
     expect(wrapper.find('[data-testid="script-preview"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="workflow-script"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
   })
 
   it.each([
     OPERATOR,
     ADMIN,
-  ])('场景配置对 $role 仅提供模板查看和应用，场景导出仅管理员可见', async (principal) => {
+  ])('场景配置对 $role 保留模板查看和应用，均不提供场景操作', async (principal) => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -998,9 +1033,9 @@ describe('P2-1 场景管理页面', () => {
     expect(panel.text()).not.toMatch(/更新|导出|删除/)
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('CONF-P2-001')
     expect(panel.get('[data-testid="latest-confirmation"]').text()).toContain('已完成')
-    await wrapper.get('[data-testid="open-scenario-operations"]').trigger('click')
-    expect(wrapper.find('[data-testid="scenario-config-export"]').exists()).toBe(principal.role === 'ADMIN')
-    if (principal.role === 'ADMIN') expect(wrapper.get('[aria-label="场景快照操作"]').text()).toContain('完整配置导出流程演示')
+    for (const id of ['open-scenario-operations', 'import-scenario-snapshot', 'open-local-scene-import', 'undo-scenario', 'reset-scenario', 'scenario-config-export', 'scenario-json-preview']) {
+      expect(wrapper.find(`[data-testid="${id}"]`).exists()).toBe(false)
+    }
   })
 
   it('在场景配置中查看并应用模板', { timeout: 15_000 }, async () => {
@@ -1464,6 +1499,12 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(document.querySelector('[data-testid="waypoint-table"]')?.textContent).toContain('经度')
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(false)
+    expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
+    wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!.vm.$emit('update:modelValue', 20)
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await nextTick()
 
     expect(document.body.textContent).toContain('场景实体已新增，保存草稿后生效。')
@@ -1472,7 +1513,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
       name: '新增空中无人作业集群',
       type: 'AIRBORNE_MISSION_CLUSTER',
-      waypoints: [{ longitude: 117, latitude: 21, altitude: 0, speed: 0, arrivalTime: 0 }],
+      waypoints: [{ longitude: 117, latitude: 21, altitude: 0, speed: 20, arrivalTime: 0 }],
     })
     expect(scenario.dirty).toBe(true)
     wrapper.unmount()
@@ -1504,6 +1545,7 @@ describe('P2-1 场景管理页面', () => {
     const newAltitude = wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === 'waypoint-altitude-0')!
     newAltitude.vm.$emit('update:modelValue', 1500)
+    wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!.vm.$emit('update:modelValue', 20)
     document.querySelector<HTMLElement>('[data-testid="pick-waypoint-0"]')!.click()
     await nextTick()
     await wrapper.get('[data-testid="confirm-map-point"]').trigger('click')
@@ -1611,7 +1653,9 @@ describe('P2-1 场景管理页面', () => {
     expect(input('platform-spacing').props('modelValue')).toBe(1)
     input('platform-spacing').vm.$emit('update:modelValue', 0)
     await nextTick()
-    expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(true)
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(false)
     expect(scenario.draft!.config.platforms).toHaveLength(originalCount)
     input('platform-spacing').vm.$emit('update:modelValue', spacingKm)
     input('platform-spacing').vm.$emit('update:modelValue', 50000)
@@ -1701,16 +1745,17 @@ describe('P2-1 场景管理页面', () => {
     expect(inspectScenarioConfig(legacy.config).result.valid).toBe(true)
     expect(inspectScenarioConfig(legacy.config, 'write').result.errors).toContainEqual(expect.objectContaining({ fieldPath: `platforms[${index}].satelliteType` }))
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
-    await wrapper.get('[data-testid="workflow-config"]').trigger('click')
+    await wrapper.get('#tab-scenario').trigger('click')
     await wrapper.get('#tab-platforms').trigger('click')
     await wrapper.get(`[data-testid="edit-platform-${index}"]`).trigger('click')
     await flushPromises()
     const satellite = wrapper.findAllComponents({ name: 'ElSelect' }).find((component) => component.attributes('data-testid') === 'platform-satellite-type')!
     expect(satellite.props('modelValue')).toBeUndefined()
     expect(scenario.draft!.config.platforms[index]!.satelliteType).toBeUndefined()
+    expect(document.body.textContent).not.toContain('请选择天通卫星或神通卫星。')
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
-    expect(document.body.textContent).toContain('请选择天通卫星或神通卫星。')
+    await vi.waitFor(() => expect(document.body.textContent).toContain('请选择天通卫星或神通卫星。'))
     expect(scenario.draft!.config.platforms[index]!.satelliteType).toBeUndefined()
     satellite.vm.$emit('update:modelValue', 'SHENTONG')
     await nextTick()
@@ -1874,7 +1919,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-links').trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('已配置 4 / 4 类')
+    expect(wrapper.text()).toContain('已配置 4 / 5 类')
     const originalCount = scenario.draft!.config.links.length
     await wrapper.get('[data-testid="add-link"]').trigger('click')
     await flushPromises()
@@ -2066,6 +2111,7 @@ describe('P2-1 场景管理页面', () => {
       bandwidth: 15,
       autoDetect: true,
       detectionRange: 44448,
+      jammingRange: 44448,
       triggerTimeS: 300,
     })
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).toContain('JAM-CFG-001')

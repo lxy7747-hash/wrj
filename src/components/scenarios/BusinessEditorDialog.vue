@@ -23,11 +23,11 @@ const localEditor = ref<InformationDemand | null>(null)
 const editor = computed(() => props.embedded ? props.demand : localEditor.value)
 const volumeUnit = ref<'B' | 'KB' | 'MB'>('MB')
 const unitFactors = { B: 1_000_000, KB: 1000, MB: 1 }
-// 文档的视频默认值单列为视频，不推断其与侦察信息的等价关系；旧自定义类型继续可选。
+// 已确认选择：中文业务类型限定四枚举；不再提供视频帧语义选项。
 const typeOptions = computed(() => {
   const types = editor.value?.direction === 'FORWARD' ? ['态势信息', '目标指令']
-    : editor.value?.direction === 'REVERSE' ? ['侦察信息', '状态信息', '视频']
-      : ['态势信息', '目标指令', '侦察信息', '状态信息', '视频']
+    : editor.value?.direction === 'REVERSE' ? ['侦察信息', '状态信息']
+      : ['态势信息', '目标指令', '侦察信息', '状态信息']
   return [...new Set([...types, ...(editor.value?.informationType ? [editor.value.informationType] : [])])]
 })
 const volume = computed<number | undefined>({
@@ -64,26 +64,26 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
       <el-form-item v-if="!embedded" label="业务方向"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
         <el-option label="前向" value="FORWARD" /><el-option label="返向" value="REVERSE" />
       </el-select></el-form-item>
-      <el-form-item label="信息类型"><el-select v-model="editor.informationType" data-testid="demand-type">
+      <el-form-item required label="信息类型"><el-select v-model="editor.informationType" data-testid="demand-type">
         <el-option v-for="type in typeOptions" :key="type" :label="type" :value="type" />
       </el-select></el-form-item>
-      <el-form-item v-if="!embedded" label="源平台"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
+      <el-form-item required v-if="!embedded" label="源平台"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item v-if="!embedded" label="目标平台"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
+      <el-form-item required v-if="!embedded" label="目标平台"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item :label="editor.informationType === '视频' ? '单帧信息量' : '单报文信息量'">
+      <el-form-item required :label="'单报文信息量'">
         <div class="business-editor__volume"><el-input-number v-model="volume" :min="0" controls-position="right" data-testid="demand-volume" />
           <el-select v-model="volumeUnit" aria-label="信息量单位" data-testid="demand-volume-unit">
             <el-option label="字节" value="B" /><el-option label="KB" value="KB" /><el-option label="MB" value="MB" />
           </el-select></div>
       </el-form-item>
-      <el-form-item :label="editor.informationType === '视频' ? '传输频次（帧/秒）' : '传输频次（次/秒）'">
+      <el-form-item required :label="'传输频次（次/秒）'">
         <el-input-number v-model="editor.frequencyHz" :min="0" controls-position="right" data-testid="demand-frequency" />
       </el-form-item>
-      <el-form-item label="最低业务速率（Mbps）"><el-input-number v-model="editor.minDataRateMbps" :min="0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
-      <el-form-item label="最大时延（ms）"><el-input-number v-model="editor.maxLatencyMs" :min="0" controls-position="right" data-testid="demand-latency" /></el-form-item>
+      <el-form-item required label="最低业务速率（Mbps）"><el-input-number v-model="editor.minDataRateMbps" :min="0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
+      <el-form-item required label="最大时延（ms）"><el-input-number v-model="editor.maxLatencyMs" :min="0" controls-position="right" data-testid="demand-latency" /></el-form-item>
     </component>
     <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
   </component>

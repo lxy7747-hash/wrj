@@ -8,7 +8,7 @@ const { attachRealtimeServer } = await import('../../server/ws/' + 'realtime.js'
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks() })
 
-async function setup(missing = false, authorize?: () => boolean) {
+async function setup(missing = false, authorize?: () => boolean, limits?: { maxClients: number; maxPerSource: number; heartbeatMs: number }) {
   const projection = new MockProjection()
   if (missing) {
     const snapshot = projection.snapshot()
@@ -16,7 +16,7 @@ async function setup(missing = false, authorize?: () => boolean) {
     vi.spyOn(projection, 'snapshot').mockReturnValue(snapshot)
   }
   const http = createServer()
-  const realtime = attachRealtimeServer(http, projection, () => missing ? undefined : projection.snapshot().run, authorize)
+  const realtime = attachRealtimeServer(http, projection, () => missing ? undefined : projection.snapshot().run, authorize, undefined, limits)
   http.listen(0, '127.0.0.1')
   await once(http, 'listening')
   const clients: InstanceType<typeof WebSocket>[] = []
@@ -34,7 +34,7 @@ async function setup(missing = false, authorize?: () => boolean) {
     client.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics }))
     return { client, messages }
   }
-  return { realtime, connect }
+  return { realtime, connect, port: http.address().port, clients }
 }
 
 it('缺失运行与事件时不伪造信封，仍返回可用的链路摘要；新订阅重放缓存快照', async () => {
@@ -67,4 +67,41 @@ it('握手后会话失效，订阅阶段关闭连接，不发送任何业务快�
   expect(reason.toString()).toBe('SESSION_EXPIRED')
   expect(messages.filter(message => message.type === 'event')).toEqual([])
   expect(realtime.activeClientCount()).toBe(0)
+})
+
+it('单来源与全局连接限额明确拒绝，关闭后释放名额', async () => {
+  const { connect, realtime, port, clients } = await setup(false, undefined, { maxClients: 2, maxPerSource: 1, heartbeatMs: 30_000 })
+  const first = await connect(['link.metric'])
+  await vi.waitFor(() => expect(first.messages.some(message => message.type === 'subscribed')).toBe(true))
+  const rejected = new WebSocket(`ws://127.0.0.1:${port}/ws/v1?role=OPERATOR`, { origin: 'http://127.0.0.1:5173' })
+  clients.push(rejected)
+  const messages: any[] = []
+  rejected.on('message', (raw: { toString(): string }) => messages.push(JSON.parse(raw.toString())))
+  await once(rejected, 'close')
+  expect(messages).toMatchObject([{ type: 'rejected', code: 'INVALID_ENVELOPE', message: expect.stringContaining('limit') }])
+  expect(realtime.activeClientCount()).toBe(1)
+  first.client.close()
+  await vi.waitFor(() => expect(realtime.activeClientCount()).toBe(0))
+  const next = await connect(['link.metric'])
+  await vi.waitFor(() => expect(next.messages.some(message => message.type === 'subscribed')).toBe(true))
+  expect(realtime.activeClientCount()).toBe(1)
+
+  const global = await setup(false, undefined, { maxClients: 1, maxPerSource: 3, heartbeatMs: 30_000 })
+  await global.connect(['link.metric'])
+  const excess = new WebSocket(`ws://127.0.0.1:${global.port}/ws/v1?role=OPERATOR`, { origin: 'http://127.0.0.1:5173' })
+  global.clients.push(excess)
+  const globalMessages: any[] = []
+  excess.on('message', (raw: { toString(): string }) => globalMessages.push(JSON.parse(raw.toString())))
+  await once(excess, 'close')
+  expect(globalMessages[0]).toMatchObject({ type: 'rejected', message: expect.stringContaining('limit') })
+})
+
+it('心跳清理失活连接，健康连接继续占用名额', async () => {
+  const { connect, realtime } = await setup(false, undefined, { maxClients: 2, maxPerSource: 2, heartbeatMs: 50 })
+  const healthy = await connect(['link.metric'])
+  const stale = await connect(['link.metric'])
+  await vi.waitFor(() => expect(realtime.activeClientCount()).toBe(2))
+  ;(stale.client as WebSocket & { _socket: { pause(): void } })._socket.pause()
+  await vi.waitFor(() => expect(realtime.activeClientCount()).toBe(1), { timeout: 1000 })
+  expect(healthy.client.readyState).toBe(WebSocket.OPEN)
 })

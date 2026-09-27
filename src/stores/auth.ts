@@ -184,6 +184,8 @@ function isLoopbackHost(hostname: string): boolean {
  * @remarks Resolution performs no network access and does not mutate authentication state.
  */
 export function resolveMockOrigin(candidate = import.meta.env.VITE_MOCK_ORIGIN): string {
+  // 内网发布包跟随页面入口，迁移服务器地址不需要重新构建；开发入口保留原有边界。
+  if (import.meta.env.MODE === 'lan') return window.location.origin
   const origin = candidate?.trim() || DEFAULT_MOCK_ORIGIN
   let url: URL
 
@@ -334,6 +336,8 @@ export const useAuthStore = defineStore('auth', {
       lastDenial: null as RbacDecision | null,
       lastCode: null as AuthFeedbackCode | null,
       lastMessage: '',
+      /** 本机 SQLite 入口装配真实 mission；纯 Mock 入口保留完整确定性控制。 */
+      runtimeMode: 'UNKNOWN' as 'UNKNOWN' | 'MOCK' | 'LOCAL',
       requestEpoch: 0,
     }
   },
@@ -348,6 +352,7 @@ export const useAuthStore = defineStore('auth', {
      * 安全身份投影，失败时恢复 OPERATOR 基线并清除会话投影，且绝不持久化密码。
      */
     async login(credentials: LoginCredentials): Promise<AuthResult> {
+      this.runtimeMode = 'UNKNOWN'
       invalidateSessionRequests()
       clearStoredPrincipal()
       this.authState = 'LOADING'
@@ -395,6 +400,8 @@ export const useAuthStore = defineStore('auth', {
         const result = readAuthResult(payload)
 
         if (response.ok && result !== undefined && isAuthResultForRequest(result, request)) {
+          const mode = response.headers?.get('X-Auth-Mode')
+          this.runtimeMode = mode === 'mock' ? 'MOCK' : mode === 'sqlite' ? 'LOCAL' : 'UNKNOWN'
           this.principal = result.principal
           this.role = result.principal.role
           this.permissions = [...result.principal.permissions]
@@ -457,6 +464,7 @@ export const useAuthStore = defineStore('auth', {
      * @remarks 请求与响应体共用 5 秒期限；超时不保留缓存身份，迟到结果不写入状态。
      */
     async restoreSession(): Promise<void> {
+      this.runtimeMode = 'UNKNOWN'
       const epoch = this.requestEpoch
       const controller = new AbortController()
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -477,7 +485,9 @@ export const useAuthStore = defineStore('auth', {
           timeout,
         ])
         if (epoch !== this.requestEpoch) return
-        if (response.headers.get('X-Auth-Mode') === 'mock') return
+        const authMode = response.headers.get('X-Auth-Mode')
+        this.runtimeMode = authMode === 'sqlite' ? 'LOCAL' : authMode === 'mock' ? 'MOCK' : 'UNKNOWN'
+        if (authMode === 'mock') return
         if (!response.ok || !result?.authenticated || !result.principal || !result.sessionCreated) { this.resetToSafeEmpty(); return }
         this.principal = result.principal
         this.role = result.principal.role
@@ -567,6 +577,7 @@ export const useAuthStore = defineStore('auth', {
      * 中的身份投影，不访问 Cookie 或 localStorage。
      */
     resetToSafeEmpty(): void {
+      this.runtimeMode = 'UNKNOWN'
       invalidateSessionRequests()
       this.requestEpoch += 1
       this.principal = null

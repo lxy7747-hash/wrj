@@ -9,7 +9,7 @@ import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink, type FileCommunicationType } from '../../features/situation/file-communication-links'
 import { fileJammerRadiusMeters, fileLinkDeviceStatus, type FileDeviceEvent } from '../../features/situation/file-device-events'
 import type { FileMessageLink } from '../../features/situation/file-message-links'
-import { FILE_MESSAGE_DIRECTION_LABELS, FILE_MESSAGE_DIRECTION_MARKS } from '../../features/situation/file-message-links'
+import { FILE_MESSAGE_DIRECTION_LABELS } from '../../features/situation/file-message-links'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
 import { bindVectorTileSource, createVectorTileSource } from './vector-tile-source'
 import {
@@ -19,6 +19,16 @@ import {
 } from '../../features/situation/situation-model'
 
 export type MapLayer = 'nodes' | 'links' | 'flow' | 'potential' | 'interference' | 'grid'
+
+/** 文件播放时钟；定位/换源必须更新 key，不把跳过的消息补播。 */
+export interface FileLinkPlayback {
+  time: number
+  playing: boolean
+  speed: number
+  key: string
+}
+
+interface FileMessagePulse { eventId: string; time: number }
 
 export interface SituationMapFocusTarget {
   kind: 'node' | 'link' | 'interference'
@@ -74,6 +84,7 @@ export interface SituationMapController {
   setFileLinks: (links: FileCommunicationLink[]) => void
   /** 更新由消息证据推导的业务链路；与登记关联使用不同图层。 */
   setFileMessageLinks: (links: FileMessageLink[]) => void
+  setFilePlayback: (playback: FileLinkPlayback, evidence?: readonly FileMessageLink[]) => void
   setFileDeviceStates: (states: FileDeviceEvent[]) => void
 
   /**
@@ -344,6 +355,11 @@ const LINK_TYPE_STYLES: Record<SituationLinkView['type'], L.PathOptions> = {
     weight: 3,
     opacity: 0.95,
   },
+  FIBER: {
+    color: '#20b2aa',
+    weight: 3,
+    opacity: 0.95,
+  },
 }
 
 const UNAVAILABLE_LINK_STYLE: L.PathOptions = {
@@ -435,6 +451,8 @@ export function createSituationMapController(options: SituationMapControllerOpti
   let fileNodes = options.initialNodes ?? []
   let fileLinks = options.fileLinks ?? []
   let fileMessageLinks = options.fileMessageLinks ?? []
+  let filePlayback: FileLinkPlayback | undefined
+  const filePulses = new Map<string, FileMessagePulse>()
   let fileDeviceStates = options.fileDeviceStates ?? []
   let configuredLinks = options.configuredLinks
   let currentNodes = currentFrame?.platforms ?? fileNodes
@@ -525,7 +543,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       renderMessageLinks(layerGroups.links, currentNodes, fileMessageLinks, focusedTarget?.targetId ?? '', link => {
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileMessageLink?.(link)
-      }, layerGroups.flow)
+      }, layerGroups.flow, filePulses, filePlayback)
       // 仅过滤绘制：任一登记的两端均未明确关闭就保留合并线，完整明细不变。
       const visibleLinks = fileLinks.filter(link => link.records.length > 0 && fileLinkDeviceStatus(link, fileDeviceStates) !== '关闭')
       renderFileLinks(layerGroups.potential, currentNodes, visibleLinks, link => {
@@ -556,8 +574,9 @@ export function createSituationMapController(options: SituationMapControllerOpti
   const tileSource = createVectorTileSource()
   bindVectorTileSource(vectorGrid, tileSource)
   vectorGrid.addTo(map)
-  const offlineLabelLayer = createOfflineVectorLabelLayer(currentTheme, tileSource)
-  offlineLabelLayer.addTo(map)
+  const offlineLabelLayer = MAP_CONFIG.defaults.basemapLabelsVisible
+    ? createOfflineVectorLabelLayer(currentTheme, tileSource) : null
+  offlineLabelLayer?.addTo(map)
   const satelliteLayer = L.tileLayer(MAP_CONFIG.resources.satellite.tileUrl, {
     bounds: L.latLngBounds([...MAP_CONFIG.resources.satellite.bounds[0]], [...MAP_CONFIG.resources.satellite.bounds[1]]),
     minZoom: MAP_CONFIG.zoom.min,
@@ -645,6 +664,33 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setFileMessageLinks(links): void {
       if (!map) return
       fileMessageLinks = links
+      if (!currentFrame && !configuredLinks) renderBusinessLayers()
+    },
+
+    setFilePlayback(playback, evidence = fileMessageLinks): void {
+      if (!map) return
+      const previous = filePlayback
+      if (!previous || previous.key !== playback.key || playback.time < previous.time
+        || (playback.time !== previous.time && !playback.playing)) {
+        filePulses.clear()
+      } else if (playback.playing && ((previous.playing && playback.time > previous.time)
+        || (!previous.playing && playback.time === 0))) {
+        const from = previous.time === 0 ? -Number.EPSILON : previous.time
+        for (const link of evidence) {
+          // 原始配对证据包含发送时刻（接收时刻减时延）。不依赖当前详情里已截断的记录。
+          let latest: FileMessagePulse | undefined
+          for (const record of link.records) {
+            const sentAt = record.time - record.delayS
+            if (sentAt > from && sentAt <= playback.time && (!latest || sentAt > latest.time)) {
+              latest = { eventId: record.transmitEventId, time: sentAt }
+            }
+          }
+          if (latest) filePulses.set(link.id, latest)
+        }
+      }
+      const ids = new Set(evidence.map(link => link.id))
+      for (const id of filePulses.keys()) if (!ids.has(id)) filePulses.delete(id)
+      filePlayback = { ...playback }
       if (!currentFrame && !configuredLinks) renderBusinessLayers()
     },
 
@@ -747,17 +793,17 @@ export function createSituationMapController(options: SituationMapControllerOpti
       if (currentBasemap === 'vector') {
         if (Number.isInteger(map.getZoom())) {
           vectorGrid.redraw()
-          offlineLabelLayer.setTheme(theme)
+          offlineLabelLayer?.setTheme(theme)
         } else {
           // GridLayer.redraw() 会直接使用分数 map zoom；重新挂载才会走 Leaflet 的整数瓦片网格选择。
-          offlineLabelLayer.setTheme(theme, false)
+          offlineLabelLayer?.setTheme(theme, false)
           vectorGrid.removeFrom(map)
           vectorGrid.addTo(map)
-          offlineLabelLayer.removeFrom(map)
-          offlineLabelLayer.addTo(map)
+          offlineLabelLayer?.removeFrom(map)
+          offlineLabelLayer?.addTo(map)
         }
       } else {
-        offlineLabelLayer.setTheme(theme, false)
+        offlineLabelLayer?.setTheme(theme, false)
       }
       renderGrid(layerGroups.grid, theme)
     },
@@ -767,13 +813,13 @@ export function createSituationMapController(options: SituationMapControllerOpti
       currentBasemap = basemap
       if (basemap === 'satellite') {
         vectorGrid.removeFrom(map)
-        offlineLabelLayer.removeFrom(map)
+        offlineLabelLayer?.removeFrom(map)
         satelliteLayer.addTo(map)
         return
       }
       satelliteLayer.removeFrom(map)
       vectorGrid.addTo(map)
-      offlineLabelLayer.addTo(map)
+      offlineLabelLayer?.addTo(map)
     },
 
     zoomIn(): void {
@@ -796,7 +842,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
       removeResizeFallback?.()
       removeResizeFallback = null
       map.off('zoomend', handleZoomEnd)
-      offlineLabelLayer.remove()
+      offlineLabelLayer?.remove()
       map.remove()
       map = null
       Object.values(layerGroups).forEach((group) => {
@@ -1108,10 +1154,10 @@ interface ConnectionDrawing {
   select: () => void
   /** 有向链路的方向箭头；无向关联不设置。rotation 为 CSS 顺时针角度，0 指向正东。 */
   arrow?: { position: L.LatLngTuple; rotation: number }
-  /** 业务方向单字标记（前/返）；与物理方向无关，未判定方向时不设置。 */
-  directionMark?: { position: L.LatLngTuple; text: string }
   /** 射线脉冲的样式；在独立图层组中沿主线几何绘制渐亮光束。 */
   flow?: L.PathOptions
+  pulseId?: string
+  playback?: FileLinkPlayback
 }
 interface ConnectionLayer {
   line: L.Polyline
@@ -1121,14 +1167,16 @@ interface ConnectionLayer {
   appearance: string
   arrow?: L.Marker
   arrowAppearance?: string
-  directionMark?: L.Marker
-  directionMarkAppearance?: string
 }
 const connectionLayers = new WeakMap<L.LayerGroup, Map<string, ConnectionLayer>>()
 interface FlowLayer {
   lines: L.Polyline[]
   geometry: string
   appearance: string
+  pulseId?: string
+  elapsedMs: number
+  updatedAt: number
+  playing: boolean
 }
 /** 流向叠加载独立图层组管理，与主连线几何完全一致。 */
 const flowLayers = new WeakMap<L.LayerGroup, Map<string, FlowLayer>>()
@@ -1147,12 +1195,6 @@ const flowLayers = new WeakMap<L.LayerGroup, Map<string, FlowLayer>>()
   return { position: points[index]!, rotation: Math.atan2(east, north) * 180 / Math.PI }
 }
 
-/** 取曲线几何中点作为业务方向标记的位置；方向箭头在偏后位置，两者不重叠。 */
-function curveMidpoint(points: L.LatLngTuple[]): L.LatLngTuple | undefined {
-  if (points.length < 2) return undefined
-  return points[Math.floor((points.length - 1) / 2)]
-}
-
 /** 取链路样式颜色用于箭头着色；函数式样式不提供颜色时回退为当前文字色。 */
 function arrowColor(style: L.PathOptions): string {
   return typeof style.color === 'string' ? style.color : '#c0c4cc'
@@ -1168,7 +1210,6 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
       group.removeLayer(entry.line)
       group.removeLayer(entry.marker)
       if (entry.arrow) group.removeLayer(entry.arrow)
-      if (entry.directionMark) group.removeLayer(entry.directionMark)
       entries.delete(id)
     }
   }
@@ -1228,42 +1269,8 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
       entry.appearance = appearance
     }
     syncArrowMarker(group, entry, drawing)
-    syncDirectionMark(group, entry, drawing)
     syncFlowLine(flowGroup, flows, drawing)
   }
-}
-
-/**
- * 按需创建、更新或移除业务方向单字标记；未判定方向的链路不会残留上一次的标记。
- * 位置取曲线几何中点，与偏后的方向箭头错开，避免互相遮挡。
- */
-function syncDirectionMark(group: L.LayerGroup, entry: ConnectionLayer, drawing: ConnectionDrawing): void {
-  if (!drawing.directionMark) {
-    if (entry.directionMark) {
-      group.removeLayer(entry.directionMark)
-      entry.directionMark = undefined
-      entry.directionMarkAppearance = undefined
-    }
-    return
-  }
-  const appearance = JSON.stringify([drawing.directionMark.position, drawing.directionMark.text])
-  if (entry.directionMark && entry.directionMarkAppearance === appearance) return
-  const text = document.createElement('span')
-  text.className = 'situation-map-link-direction__text'
-  text.textContent = drawing.directionMark.text
-  const icon = L.divIcon({
-    html: text,
-    className: 'situation-map-link-direction',
-    iconSize: [16, 16],
-    iconAnchor: [8, 8],
-  })
-  if (entry.directionMark) {
-    entry.directionMark.setLatLng(drawing.directionMark.position)
-    entry.directionMark.setIcon(icon)
-  } else {
-    entry.directionMark = L.marker(drawing.directionMark.position, { icon, interactive: false, keyboard: false }).addTo(group)
-  }
-  entry.directionMarkAppearance = appearance
 }
 
 /** 按需创建、更新或移除流向叠加线；几何始终与主连线一致。 */
@@ -1275,7 +1282,7 @@ function syncFlowLine(
   if (!flowGroup || !flows || !drawing.flow) return
   const geometry = JSON.stringify(drawing.points)
   const appearance = JSON.stringify(drawing.flow)
-  const entry = flows.get(drawing.id)
+  let entry = flows.get(drawing.id)
   // 四段拼成一颗流星，亮头从起点进入，暗尾完全离开终点后才开始下一轮。
   const segmentLength = LINK_FLOW_TRAIL_LENGTH / LINK_FLOW_BRIGHTNESS.length
   const segmentStyle = (index: number): L.PathOptions => ({
@@ -1289,16 +1296,18 @@ function syncFlowLine(
     bubblingMouseEvents: false,
   })
   if (!entry) {
+    const created: FlowLayer = { lines: [], geometry, appearance, elapsedMs: Infinity,
+      updatedAt: performance.now(), playing: false }
     const lines = LINK_FLOW_BRIGHTNESS.map((_, index) => {
       const line = L.polyline(drawing.points, segmentStyle(index))
       // 图层重开后 SVG 元素会重建，需恢复同一组脉冲相位。
-      line.on('add', () => applyFlowAnimation(line))
+      line.on('add', () => applyFlowAnimation(line, created))
       line.addTo(flowGroup)
-      applyFlowAnimation(line)
       return line
     })
-    flows.set(drawing.id, { lines, geometry, appearance })
-    return
+    created.lines = lines
+    flows.set(drawing.id, created)
+    entry = created
   }
   if (entry.geometry !== geometry) {
     entry.lines.forEach(line => line.setLatLngs(drawing.points))
@@ -1307,25 +1316,49 @@ function syncFlowLine(
   if (entry.appearance !== appearance) {
     entry.lines.forEach((line, index) => {
       line.setStyle(segmentStyle(index))
-      applyFlowAnimation(line)
     })
     entry.appearance = appearance
+  }
+  const now = performance.now()
+  const elapsed = entry.elapsedMs + (entry.playing ? now - entry.updatedAt : 0)
+  const playing = drawing.playback?.playing ?? false
+  const changed = entry.pulseId !== drawing.pulseId || entry.playing !== playing
+  if (changed) {
+    // 流星尚在途中时合并后续密集消息，不重置亮头、不排队，统计记录不变。
+    entry.elapsedMs = !drawing.pulseId ? Infinity
+      : drawing.pulseId !== entry.pulseId && elapsed >= MAP_CONFIG.linkFlowCycleSeconds * 1000
+        ? 0 : elapsed
+    entry.pulseId = drawing.pulseId
+    entry.updatedAt = now
+    entry.playing = playing
+  }
+  if (changed || entry.lines.some(line => !line.getElement()?.hasAttribute('pathLength'))) {
+    entry.lines.forEach(line => applyFlowAnimation(line, entry))
   }
 }
 
 /**
- * 给流星写入归一化路径与行程：循环首尾整颗流星均位于路径外，不会多颗并排或跳闪。
+ * 给单次流星写入归一化路径与行程：首尾整颗流星均位于路径外，不会停在终点。
  * 尾迹比例和时长来自 MAP_CONFIG；动画名由组件 scoped 样式提供，行内只覆盖参数，
  * 避免 Vue 的局部 @keyframes 哈希重命名与行内名字失配。
  */
-function applyFlowAnimation(line: L.Polyline): void {
+function applyFlowAnimation(line: L.Polyline, flow: FlowLayer): void {
   const element = line.getElement() as SVGPathElement | null
   if (!element) return
   element.setAttribute('pathLength', `${LINK_FLOW_PATH_LENGTH}`)
   const offset = Number(line.options.dashOffset ?? 0)
   element.style.setProperty('--situation-link-flow-start', `${offset}`)
   element.style.setProperty('--situation-link-flow-shift', `${offset - LINK_FLOW_TRAVEL}`)
+  // 事件由数据时钟触发，流星按现实时间展示；倍速不能压缩动画或跳过其可见部分。
+  const elapsed = flow.elapsedMs + (flow.playing ? performance.now() - flow.updatedAt : 0)
+  element.style.visibility = Number.isFinite(elapsed) ? '' : 'hidden'
   element.style.animationDuration = `${MAP_CONFIG.linkFlowCycleSeconds}s`
+  element.style.animationDelay = `${-Math.min(elapsed, MAP_CONFIG.linkFlowCycleSeconds * 1000)}ms`
+  element.style.animationPlayState = flow.playing ? 'running' : 'paused'
+  // 仅重启同一 scoped CSS 动画，不写入未经 Vue 转换的动画名。
+  element.classList.remove('situation-map-link-flow')
+  void element.getBoundingClientRect()
+  element.classList.add('situation-map-link-flow')
 }
 
 /** 按需创建、更新或移除方向箭头；无箭头的链路不会残留上一次的标记。 */
@@ -1396,14 +1429,14 @@ function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], l
  * @param flowGroup 流向动画的独立图层组；组不在地图上时动画 DOM 也不存在，等于零开销关闭。
  */
 function renderMessageLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: FileMessageLink[], selectedId: string,
-  onSelect: (link: FileMessageLink) => void, flowGroup?: L.LayerGroup): void {
+  onSelect: (link: FileMessageLink) => void, flowGroup?: L.LayerGroup,
+  pulses?: ReadonlyMap<string, FileMessagePulse>, playback?: FileLinkPlayback): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
   renderConnections(group, links.flatMap(link => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     const points = sampleConnectionCurve(source, target, messageLinkCurveOffset(link, links), nodes)
-    const midpoint = curveMidpoint(points)
     const directionLabel = link.direction ? FILE_MESSAGE_DIRECTION_LABELS[link.direction] : ''
     return [{
       id: `message:${link.id}`,
@@ -1416,11 +1449,8 @@ function renderMessageLinks(group: L.LayerGroup, nodes: SituationMapNode[], link
       hitClass: 'situation-map-message-link-hit',
       select: () => onSelect(link),
       arrow: curveArrow(points),
-      // 业务方向与物理方向无关，因此用中文单字单独标注，不复用方向箭头。
-      directionMark: link.direction && midpoint
-        ? { position: midpoint, text: FILE_MESSAGE_DIRECTION_MARKS[link.direction] }
-        : undefined,
       flow: { ...LINK_FLOW_STYLE, color: arrowColor(FILE_LINK_TYPE_STYLES[link.type]) },
+      pulseId: pulses?.get(link.id)?.eventId, playback,
     }]
   }), flowGroup)
 }

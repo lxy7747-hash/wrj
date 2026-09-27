@@ -33,7 +33,7 @@ export class ConfirmationProjection {
   private contexts = new Map<string, StoredConfirmation>()
   private nextSequence = 1
 
-  constructor(private readonly clock: ConfirmationClock = DEFAULT_CLOCK, private readonly owner?: () => { id: string; name: string }) {}
+  constructor(private readonly clock: ConfirmationClock = DEFAULT_CLOCK) {}
 
   /** 判断确认上下文是否已到期，并在到期时立即移除。 */
   private hasExpired(confirmationId: string, stored: StoredConfirmation): boolean {
@@ -47,22 +47,23 @@ export class ConfirmationProjection {
    * @param action 需要确认的受控动作。
    * @param objectId 动作对应的业务对象编号。
    * @param role 发起确认的当前角色。
+   * @param owner 已认证请求的账号身份；纯 Mock 可省略。
    * @returns 等待确认的确定性上下文。
    * @remarks 只写入内存，不访问系统时间或持久化介质。
    */
-  create(action: ConfirmationAction, objectId: string, role: Role): ConfirmationContext {
+  create(action: ConfirmationAction, objectId: string, role: Role, owner?: { id: string; name: string }): ConfirmationContext {
     const confirmationId = `CONF-P2-${String(this.nextSequence).padStart(3, '0')}`
     this.nextSequence += 1
     const createdAt = this.clock.now()
     const context: ConfirmationContext = {
       confirmationId,
       state: 'AWAITING_CONFIRMATION',
-      actor: this.owner?.().name ?? (role === 'ADMIN' ? 'admin' : 'operator'),
+      actor: owner?.name ?? (role === 'ADMIN' ? 'admin' : 'operator'),
       role,
       createdAt,
       expiresAt: this.clock.expiresAt(createdAt),
     }
-    this.contexts.set(confirmationId, { context, action, objectId, ...(this.owner ? { owner: this.owner().id } : {}) })
+    this.contexts.set(confirmationId, { context, action, objectId, ...(owner ? { owner: owner.id } : {}) })
     return structuredClone(context)
   }
 
@@ -70,15 +71,16 @@ export class ConfirmationProjection {
    * 将等待中的上下文标记为已确认。
    * @param confirmationId 待确认上下文编号。
    * @param role 当前请求角色。
+   * @param ownerId 当前已认证账号编号。
    * @returns 已确认上下文，或失效错误。
    * @remarks 角色不一致、未知编号和重复确认均按失效处理。
    */
-  confirm(confirmationId: string, role: Role): ConfirmationProjectionResult<ConfirmationContext> {
+  confirm(confirmationId: string, role: Role, ownerId?: string): ConfirmationProjectionResult<ConfirmationContext> {
     const stored = this.contexts.get(confirmationId)
     if (stored === undefined || this.hasExpired(confirmationId, stored) || stored.context.state !== 'AWAITING_CONFIRMATION') {
       return { ok: false, code: 'CONFIRMATION_EXPIRED', status: 409, message: '二次确认已失效。' }
     }
-    if (stored.context.role !== role || (this.owner && stored.owner !== this.owner().id)) {
+    if (stored.context.role !== role || (stored.owner !== undefined && stored.owner !== ownerId)) {
       return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '当前角色不能处理该确认。' }
     }
     stored.context.state = 'CONFIRMED'
@@ -91,6 +93,7 @@ export class ConfirmationProjection {
    * @param action 受控动作。
    * @param objectId 受控对象编号。
    * @param role 当前请求角色。
+   * @param ownerId 当前已认证账号编号。
    * @returns 上下文匹配时返回成功，否则返回失效错误。
    * @remarks 成功后立即删除上下文，防止重复使用。
    */
@@ -99,6 +102,7 @@ export class ConfirmationProjection {
     action: ConfirmationAction,
     objectId: string,
     role: Role,
+    ownerId?: string,
   ): ConfirmationProjectionResult<true> {
     const stored = this.contexts.get(confirmationId)
     if (stored === undefined || this.hasExpired(confirmationId, stored) || stored.context.state !== 'CONFIRMED'
@@ -106,7 +110,7 @@ export class ConfirmationProjection {
       || stored.objectId !== objectId) {
       return { ok: false, code: 'CONFIRMATION_EXPIRED', status: 409, message: '二次确认已失效。' }
     }
-    if (stored.context.role !== role || (this.owner && stored.owner !== this.owner().id)) {
+    if (stored.context.role !== role || (stored.owner !== undefined && stored.owner !== ownerId)) {
       return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '当前角色不能处理该确认。' }
     }
     this.contexts.delete(confirmationId)

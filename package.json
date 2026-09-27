@@ -10,6 +10,10 @@
     "dev:mock": "npm run validate:contracts && tsx server/local.ts",
     "start:mock": "npm run validate:contracts && tsx server/local.ts",
     "build": "vite build",
+    "build:lan": "vite build --mode lan && vite build --config vite.server.config.ts",
+    "start:lan": "node --env-file=.env.server scripts/start-lan.mjs",
+    "start:server": "node --env-file=.env.server server-dist/server.mjs",
+    "start:tiles": "node --env-file=.env.server scripts/start-tiles.mjs",
     "typecheck": "tsc -b",
     "validate:contracts": "tsx scripts/validate-contracts.ts",
     "test:unit": "vitest run --config vitest.config.ts tests/components tests/stores",
@@ -18,7 +22,7 @@
     "test:e2e": "playwright test",
     "release:check": "node scripts/release-check.mjs",
     "test": "npm run test:unit && npm run test:contracts && npm run test:server",
-    "test:coverage": "vitest run --config vitest.config.ts --coverage",
+    "test:coverage": "vitest run --config vitest.config.ts --coverage --no-file-parallelism --coverage.reporter=text",
     "p0:check": "npm run typecheck && npm run build && npm run validate:contracts && npm run test:unit && npm run test:contracts && npm run test:server && npm run test:coverage"
   },
   "dependencies": {

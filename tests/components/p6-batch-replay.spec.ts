@@ -7,7 +7,7 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import type { Batch, Principal } from '../../src/contracts/domain-models'
 
 vi.mock('../../src/components/situation/OfflineSituationMap.vue', () => ({
-  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'fileDeviceEvents', 'fileTime', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
+  default: { name: 'OfflineSituationMap', props: ['frame', 'initialNodes', 'fileLinks', 'fileDeviceEvents', 'fileTime', 'filePlaying', 'fileSpeed', 'fileSeekRevision', 'links', 'selectedNodeId', 'focusTarget'], template: '<div data-testid="offline-map-stub" />' },
 }))
 
 import BatchesPage from '../../src/pages/batches/batches.vue'
@@ -47,6 +47,33 @@ describe('P6 批量仿真与历史回放页面', () => {
     vi.restoreAllMocks()
   })
 
+  it.each([16, 32])('历史回放 %s 倍每秒推进对应游标并在末尾停止', async speed => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.tracks[1]!.positions[1]!.time = 64
+    snapshot.durationS = 64
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(snapshot)))
+    const { wrapper } = await mountPage(ReplaysPage, '/replays')
+    try {
+      const select = wrapper.get('.replay-controls__toolbar').getComponent({ name: 'ElSelect' })
+      expect(select.findAllComponents({ name: 'ElOption' }).some(option => option.props('value') === speed)).toBe(true)
+      select.vm.$emit('update:modelValue', speed)
+      await flushPromises()
+      await wrapper.get('[data-testid="replay-play"]').trigger('click')
+      await vi.advanceTimersByTimeAsync(1000)
+      const map = wrapper.findComponent({ name: 'OfflineSituationMap' })
+      expect(useReplayStore().replay?.currentTimeS).toBe(speed)
+      expect(map.props('fileSpeed')).toBe(speed)
+      expect(map.props('fileTime')).toBe(speed)
+      await vi.advanceTimersByTimeAsync(4000)
+      expect(useReplayStore().replay?.currentTimeS).toBe(64)
+      expect(useReplayStore().state).toBe('COMPLETED')
+    } finally {
+      wrapper.unmount()
+    }
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
   it('真实文件回放保持现有控制，按播放和拖动时刻更新地图，不加载模拟帧或事件', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const fetchSpy = vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY)))
@@ -57,12 +84,15 @@ describe('P6 批量仿真与历史回放页面', () => {
     expect(wrapper.text()).not.toContain('F-00042')
     expect(wrapper.text()).not.toContain('SW-004')
     expect(map.props('frame')).toBeNull()
+    expect(map.props('filePlaying')).toBe(false)
+    expect(map.props('fileSpeed')).toBe(1)
     expect(map.props('links')).toEqual([])
     expect(map.props('initialNodes')).toHaveLength(2)
     expect(map.props('initialNodes')[0].longitude).toBe(-77)
     await wrapper.get('.replay-node-location button').trigger('click')
     expect(map.props('focusTarget')).toEqual({ kind: 'node', targetId: 'A' })
     await wrapper.get('[data-testid="replay-play"]').trigger('click')
+    expect(map.props('filePlaying')).toBe(true)
     await vi.advanceTimersByTimeAsync(1000)
     await flushPromises()
     expect(map.props('initialNodes')[0].longitude).toBe(-78)
@@ -74,6 +104,8 @@ describe('P6 批量仿真与历史回放页面', () => {
     await flushPromises()
     expect(map.props('initialNodes')[0].longitude).toBe(-79)
     expect(map.props('selectedNodeId')).toBe('B')
+    expect(map.props('filePlaying')).toBe(false)
+    expect(map.props('fileSeekRevision')).toBe(1)
     await wrapper.get('[role="slider"]').trigger('keydown', { key: 'Home', code: 'Home' })
     await flushPromises()
     expect(map.props('initialNodes')[0].longitude).toBe(-77)

@@ -1,4 +1,6 @@
 import { apiFetch } from '../features/shared/api-fetch'
+import { saveDownload } from '../features/shared/download'
+import { isMissionResultSnapshot, type MissionResultRecord } from '../features/results/mission-result'
 import { defineStore } from 'pinia'
 import type {
   CapabilityState,
@@ -116,9 +118,32 @@ export const useReportStore = defineStore('report', {
     exportResult: null as ReportExportResult | LocalReportExportResult | null,
     requestEpoch: 0,
     archiveId: null as string | null,
+    resultSource: null as MissionResultRecord | null,
   }),
 
   actions: {
+    async loadResult(resultId: string): Promise<boolean> {
+      this.resetToSafeEmpty()
+      const epoch = this.requestEpoch
+      this.capabilityState = 'LOADING'
+      try {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(resultId)}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
+        const snapshot = await readSuccess(response, isMissionResultSnapshot)
+        if (epoch !== this.requestEpoch) return false
+        if (snapshot.record.resultId !== resultId) throw new Error('运行结果与请求不一致。')
+        this.resultSource = snapshot.record
+        this.reports = [snapshot.report]
+        this.selectedReport = snapshot.report
+        this.capabilityState = 'SUCCESS'
+        this.resultCode = 'SUCCESS'
+        this.resultMessage = '本次运行报告已加载。'
+        return true
+      } catch (error) {
+        if (epoch !== this.requestEpoch) return false
+        this.showError(error, '运行报告加载失败。')
+        return false
+      }
+    },
     async loadArchive(archiveId: string): Promise<boolean> {
       this.resetToSafeEmpty()
       const epoch = this.requestEpoch
@@ -150,6 +175,7 @@ export const useReportStore = defineStore('report', {
      * @sideEffects 原子替换报告目录和当前来源；失败时清空旧报告，避免来源混用。
      */
     async load(preferredReportId?: string): Promise<boolean> {
+      this.resultSource = null
       this.archiveId = null
       // 从历史归档切回当前文件时，迟到的归档响应不能恢复旧来源。
       const epoch = ++this.requestEpoch
@@ -184,6 +210,7 @@ export const useReportStore = defineStore('report', {
      * @sideEffects 清除旧导出确认和结果；失败时清空当前报告，杜绝单次与批量数据混用。
      */
     async selectReport(reportId: string): Promise<boolean> {
+      if (this.resultSource !== null) return this.loadResult(this.resultSource.resultId)
       if (this.archiveId !== null) return this.loadArchive(this.archiveId)
       const epoch = this.requestEpoch
       this.capabilityState = 'LOADING'
@@ -302,16 +329,29 @@ export const useReportStore = defineStore('report', {
       const epoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       try {
-        const query = this.archiveId === null ? '' : `?archiveId=${encodeURIComponent(this.archiveId)}`
+        const params = new URLSearchParams()
+        if (this.archiveId !== null) params.set('archiveId', this.archiveId)
+        if (this.resultSource !== null) params.set('resultId', this.resultSource.resultId)
+        if (report.localEvidence) params.set('download', '1')
+        const query = params.size ? `?${params}` : ''
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/reports/${encodeURIComponent(report.reportId)}/export${query}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify({ reportId: report.reportId, format, ...(confirmationId === undefined ? {} : { confirmationId }) }),
         })
+        if (report.localEvidence) {
+          if (!await saveDownload(response, `${this.resultSource?.resultId ?? report.reportId}.${format.toLowerCase()}`, () => epoch === this.requestEpoch)) return false
+          this.exportResult = null
+          this.confirmation = null
+          this.pendingFormat = null
+          this.capabilityState = 'SUCCESS'
+          this.resultCode = 'SUCCESS'
+          this.resultMessage = '已发起报告下载，请在浏览器下载记录中查看。'
+          return true
+        }
         const result = await readSuccess(response, isExportResult)
         if (epoch !== this.requestEpoch) return false
-        if (result.reportId !== report.reportId || result.generated !== !!report.localEvidence
-          || (result.generated && result.format !== format)) throw new Error('导出结果与当前报告不一致。')
+        if (result.reportId !== report.reportId || result.generated) throw new Error('导出结果与当前报告不一致。')
         this.exportResult = result
         this.confirmation = null
         this.pendingFormat = null
@@ -348,6 +388,7 @@ export const useReportStore = defineStore('report', {
 
     /** 清除报告、确认和导出结果，恢复安全空态。 */
     resetToSafeEmpty(): void {
+      this.resultSource = null
       this.archiveId = null
       this.requestEpoch += 1
       this.reports = []

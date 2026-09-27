@@ -12,7 +12,7 @@ import type {
   WsSubscribeRequest,
   WsTopic,
 } from '../../src/contracts/domain-models.js'
-import { assertLoopbackRequest } from '../http/loopback.js'
+import { assertLoopbackRequest, assertLanRequest } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
 import { ownsFixedEvidence } from '../simulations/projection.js'
 
@@ -25,6 +25,9 @@ const CANONICAL_TOPICS = new Set<WsTopic>([
 ])
 const MAX_SUBSCRIPTION_BYTES = 16_384
 const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
+const MAX_CLIENTS = 64
+const MAX_CLIENTS_PER_SOURCE = 8
+const HEARTBEAT_MS = 30_000
 
 export interface RealtimeController {
   activeClientCount(): number
@@ -214,13 +217,35 @@ export function attachRealtimeServer(
   projection: MockProjection,
   currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
   authorize?: (request: IncomingMessage) => boolean,
+  publicOrigin?: string,
+  limits: { maxClients: number; maxPerSource: number; heartbeatMs: number } = {
+    maxClients: MAX_CLIENTS,
+    maxPerSource: MAX_CLIENTS_PER_SOURCE,
+    heartbeatMs: HEARTBEAT_MS,
+  },
 ): RealtimeController {
   const clients = new Map<WebSocket, Set<WsTopic>>()
   const requests = new Map<WebSocket, IncomingMessage>()
+  const alive = new Map<WebSocket, boolean>()
+  const sourceFor = (request: IncomingMessage) => request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown'
+  const heartbeat = setInterval(() => {
+    for (const client of clients.keys()) {
+      if (client.readyState !== WebSocket.OPEN || !alive.get(client)) {
+        clients.delete(client)
+        requests.delete(client)
+        alive.delete(client)
+        client.terminate()
+        continue
+      }
+      alive.set(client, false)
+      client.ping()
+    }
+  }, limits.heartbeatMs)
+  heartbeat.unref()
   function revalidateSessions(): void {
     if (!authorize) return
     for (const [client, request] of requests) {
-      if (!authorize(request)) { clients.delete(client); requests.delete(client); client.close(1008, 'SESSION_EXPIRED') }
+      if (!authorize(request)) { clients.delete(client); requests.delete(client); alive.delete(client); client.close(1008, 'SESSION_EXPIRED') }
     }
   }
   const currentEnvelopes = new Map<WsTopic, string>()
@@ -263,7 +288,9 @@ export function attachRealtimeServer(
 
   webSocketServer.on('connection', (client, request) => {
     requests.set(client, request)
-    client.once('close', () => requests.delete(client))
+    alive.set(client, true)
+    client.on('pong', () => alive.set(client, true))
+    client.once('close', () => { requests.delete(client); alive.delete(client) })
     trackClient(client, clients, projection, replayTopic)
   })
 
@@ -274,7 +301,7 @@ export function attachRealtimeServer(
       return
     }
 
-    const loopback = assertLoopbackRequest(request)
+    const loopback = publicOrigin ? assertLanRequest(request, publicOrigin, true) : assertLoopbackRequest(request)
     const role = request.headers['x-demo-role']
     const roleValue = (Array.isArray(role) ? undefined : role) ?? requestUrl.searchParams.get('role') ?? undefined
 
@@ -288,6 +315,12 @@ export function attachRealtimeServer(
         reject(client, 'INVALID_ENVELOPE', 'A valid demo role is required.')
         return
       }
+      const source = sourceFor(request)
+      if (clients.size >= limits.maxClients
+        || [...requests.values()].filter(item => sourceFor(item) === source).length >= limits.maxPerSource) {
+        reject(client, 'INVALID_ENVELOPE', 'The realtime connection limit has been reached.')
+        return
+      }
       webSocketServer.emit('connection', client, request)
     })
   })
@@ -299,6 +332,7 @@ export function attachRealtimeServer(
     }
     clients.clear()
     requests.clear()
+    alive.clear()
     currentEnvelopes.clear()
   }
 
@@ -344,10 +378,13 @@ export function attachRealtimeServer(
       return projection.reset()
     },
     close: () => new Promise<void>((resolve, rejectClose) => {
+      clearInterval(heartbeat)
       for (const client of clients.keys()) {
         client.terminate()
       }
       clients.clear()
+      requests.clear()
+      alive.clear()
       webSocketServer.close((error) => {
         if (error === undefined) {
           resolve()

@@ -25,9 +25,6 @@ import {
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
-import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
-import ScenarioConfigExport from '../../components/scenarios/ScenarioConfigExport.vue'
-import LocalSceneImport from '../../components/scenarios/LocalSceneImport.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
@@ -54,14 +51,18 @@ const {
   lastConfirmation,
   script,
   scriptState,
-  scriptResultCode,
   scriptResultMessage,
-  preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
 const showIds = ref(false)
 const draftReviewed = ref(false)
 const savingScript = ref(false)
+const validationAttempted = ref(false)
+const touchedFields = ref(new Set<string>())
+watch(() => draft.value?.config.scenario.id, () => {
+  validationAttempted.value = false
+  touchedFields.value.clear()
+}, { flush: 'sync' })
 let active = true
 onBeforeUnmount(() => { active = false })
 const platformDialogVisible = ref(false)
@@ -147,21 +148,26 @@ function updateLinkSettings(settings: ScenarioLinkSettings): void {
   markDirty()
 }
 const jammerTypeCount = computed(() => new Set(draft.value?.config.jammers.map((jammer) => jammer.type) ?? []).size)
+const liveValidation = computed(() => {
+  if (!draft.value) return { valid: true, errors: [], warnings: [] }
+  const config = draft.value.config
+  const result = inspectScenarioConfig(config, 'write').result
+  const extensions = inspectScenarioUiExtensions(draft.value.uiExtensions, config.jammers.map(item => item.id), config.sensors.map(item => item.id)).result
+  return { valid: result.valid && extensions.valid, errors: [...result.errors, ...extensions.errors], warnings: result.warnings }
+})
 const validationCompleted = computed(() => draftReviewed.value || resultCode.value.startsWith('VALIDATION_'))
+const showValidationSummary = computed(() => validationAttempted.value || validationCompleted.value || (draft.value?.revision ?? 0) > 0)
 const templatePending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(templateState.value))
 const configurationTab = computed(() => ['scenario', 'platforms', 'links', 'jammers', 'data'].includes(activeTab.value))
 const scriptPending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(scriptState.value))
 const alreadySaved = computed(() => draft.value !== null && draft.value.revision > 0
   && !dirty.value && !draft.value.locked && !pending.value && !scriptPending.value)
 const canMaintainTemplates = computed(() => authStore.authorize('OFFICIAL_TEMPLATE_MAINTAIN').allowed)
-const preflightPassed = computed(() => script.value !== null && scriptResultCode.value === 'PREFLIGHT_SUCCESS')
-const canPreviewScript = computed(() => draftReviewed.value && draft.value !== null && !draft.value.locked
-  && !dirty.value && panelState.value === 'SUCCESS' && validation.value.errors.length === 0)
 
 // 校验资格只属于当前草稿；编辑、重载或替换草稿后失效，不把“已保存”等同于“已校验”。
 watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
 
-/** 根据当前草稿和脚本结果提示下一步，不把已加载或已生成误报为预检通过。 */
+/** 保存统一检查配置，不再要求用户进入独立的脚本预览或预检步骤。 */
 const workflowMessage = computed(() => {
   if (draft.value === null) return panelState.value === 'EMPTY'
     ? '暂无场景，可新建场景，也可导入完整快照或选择场景模板。'
@@ -173,15 +179,11 @@ const workflowMessage = computed(() => {
   if (configurationTab.value) return dirty.value ? '参数有未保存修改，点击“保存”将自动检查并保存，然后生成 TXT 脚本。' : '当前草稿已保存；再次点击“保存”可重新生成 TXT，不重复写入配置。'
   if (activeTab.value === 'validation') {
     if (dirty.value) return '参数有未保存修改，点击“保存”将自动检查并保存。'
-    if (canPreviewScript.value) return '当前配置校验通过且已保存。下一步：脚本预览。'
+    if (draftReviewed.value) return '当前配置检查通过且已保存。'
     return '请处理检查结果后重新点击“保存”。'
   }
-  if (dirty.value) return '参数有未保存修改，请点击“保存”后再生成脚本。'
-  if (scriptState.value === 'ERROR') return '脚本处理未通过，请查看脚本区域的问题提示；修改配置后需重新保存、生成和预检。'
-  if (preflightPassed.value) return '脚本预检已通过，未启动真实 AFSIM。TXT 写入结果及路径以实际写入响应为准。'
-  if (script.value !== null) return '脚本预览已生成，尚未完成预检。下一步：进入脚本区域，点击“执行预检”。'
-  if (activeTab.value === 'script') return '当前草稿已保存。下一步：点击下方“生成脚本预览”，生成后再执行预检。'
-  return '完成场景操作后，可返回“配置参数”继续编辑并保存。'
+  if (dirty.value) return '参数有未保存修改，请点击“保存”自动检查并保存。'
+  return '选择场景模板应用，或选择下方参数页签继续编辑并保存。'
 })
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
@@ -251,7 +253,15 @@ const useStartTimeDatePicker = computed(() => {
  * @remarks 只读取当前校验结果，不修改表单或错误集合。
  */
 function issueMessage(fieldPath: string): string {
-  return validation.value.errors.find((issue) => issue.fieldPath === fieldPath)?.message ?? ''
+  if (!showValidationSummary.value && !touchedFields.value.has(fieldPath)) return ''
+  return liveValidation.value.errors.find((issue) => issue.fieldPath === fieldPath)?.message
+    ?? validation.value.errors.find((issue) => issue.fieldPath === fieldPath)?.message ?? ''
+}
+
+function touchField(event: Event): void {
+  if (!(event.target instanceof Element)) return
+  const path = event.target.closest<HTMLElement>('[data-field-path]')?.dataset.fieldPath
+  if (path) touchedFields.value.add(path)
 }
 
 /**
@@ -974,7 +984,7 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
   const jammerField = /^jammers\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
-    frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
+    frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
   const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (demandField && linkDialogVisible.value) {
     const sharedTarget = ({ direction: 'link-direction', sourcePlatformId: 'link-source', destinationPlatformIds: 'link-target', linkId: 'link-id' } as Record<string, string>)[demandField]
@@ -1123,6 +1133,15 @@ async function saveAsTemplate(): Promise<void> {
  */
 async function saveScenario(): Promise<void> {
   if (savingScript.value || pending.value || scriptPending.value) return
+  validationAttempted.value = true
+  if (!liveValidation.value.valid) {
+    scenarioStore.validation = liveValidation.value
+    scenarioStore.panelState = 'ERROR'
+    scenarioStore.resultCode = 'VALIDATION_FAILED'
+    scenarioStore.resultMessage = `请先修正 ${liveValidation.value.errors.length} 项配置错误。`
+    activeTab.value = 'validation'
+    return
+  }
   const saved = alreadySaved.value
   const epoch = scenarioStore.requestEpoch
   const userId = authStore.principal?.userId
@@ -1160,45 +1179,6 @@ async function saveScenario(): Promise<void> {
   } finally { savingScript.value = false }
 }
 
-/** 粘贴并导入完整场景快照；不访问模板库或全局 Mock 重置。 */
-async function importScenarioSnapshot(): Promise<void> {
-  try {
-    const { value } = await ElMessageBox.prompt('粘贴一个完整 ScenarioConfig 规范快照。UI 扩展将按规则重建。', '导入场景规范快照', {
-      confirmButtonText: '导入场景',
-      cancelButtonText: '取消',
-      inputType: 'textarea',
-      inputPlaceholder: '{ "schemaVersion": "1.0", ... }',
-      inputValidator: (text) => text.trim() !== '' || '请输入场景快照 JSON。',
-    })
-    if (await scenarioStore.importScenarioSnapshot(value)) ElMessage.success(scenarioStore.resultMessage)
-  } catch {
-    // 用户取消时保持当前场景不变。
-  }
-}
-
-/** 二次确认后撤销最近一次已持久化场景操作。 */
-async function undoScenario(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('撤销最近一次场景保存、导入或重置操作？', '撤销场景操作', {
-      confirmButtonText: '撤销', cancelButtonText: '取消', type: 'warning',
-    })
-    if (await scenarioStore.undoScenario()) ElMessage.success(scenarioStore.resultMessage)
-  } catch {
-    // 用户取消时保持当前场景不变。
-  }
-}
-
-/** 二次确认后将当前场景恢复为初始快照。 */
-async function resetScenario(): Promise<void> {
-  try {
-    await ElMessageBox.confirm('重置当前场景的全部参数？该操作完成后仍可撤销。', '重置场景', {
-      confirmButtonText: '重置场景', cancelButtonText: '取消', type: 'warning',
-    })
-    if (await scenarioStore.resetScenario()) ElMessage.success(scenarioStore.resultMessage)
-  } catch {
-    // 用户取消时保持当前场景不变。
-  }
-}
 
 /** 生成脚本预览；遇到 WARNING 时只在本次确认后继续。 */
 async function generateScriptPreview(): Promise<boolean> {
@@ -1259,17 +1239,12 @@ watch(activeTab, (tab) => {
   <section class="page scenario-page" aria-label="场景配置">
     <header class="scenario-header" aria-label="场景操作">
       <el-button v-if="managed" data-testid="back-scene-list" @click="emit('back')">返回场景列表</el-button>
-      <nav class="scenario-workflow" aria-label="场景工作流程">
-        <el-button :type="configurationTab ? 'primary' : 'default'" :aria-current="configurationTab ? 'step' : undefined" data-testid="workflow-config" @click="activeTab = 'scenario'">配置参数</el-button>
-        <el-button :type="activeTab === 'script' ? 'primary' : 'default'" :aria-current="activeTab === 'script' ? 'step' : undefined" :disabled="!canPreviewScript || scriptPending" title="当前配置校验通过且已保存后可进入" data-testid="workflow-script" @click="activeTab = 'script'">脚本预览与预检</el-button>
-      </nav>
       <div class="scenario-header__actions" aria-label="场景辅助工具">
         <el-checkbox v-if="draft" v-model="showIds" data-testid="show-scenario-ids">显示编号</el-checkbox>
         <el-tooltip v-if="canMaintainTemplates" content="请先保存场景；运行中或处理中不可另存模板。" :disabled="alreadySaved && !templatePending">
           <span><el-button :disabled="!alreadySaved || templatePending" :loading="templatePending" data-testid="save-as-template" @click="saveAsTemplate">另存为模板</el-button></span>
         </el-tooltip>
         <el-button :type="activeTab === 'templates' ? 'primary' : 'default'" :aria-pressed="activeTab === 'templates'" data-testid="open-scenario-templates" @click="activeTab = 'templates'">场景模板</el-button>
-        <el-button :type="activeTab === 'operations' ? 'primary' : 'default'" :aria-pressed="activeTab === 'operations'" data-testid="open-scenario-operations" @click="activeTab = 'operations'">场景操作</el-button>
       </div>
     </header>
 
@@ -1315,16 +1290,27 @@ watch(activeTab, (tab) => {
       label-position="top"
       :disabled="pending || draft.locked"
       data-testid="scenario-editor"
+      @input.capture="touchField"
+      @change.capture="touchField"
+      @focusout="touchField"
     >
+      <div class="scenario-validation-notices">
+        <p class="scenario-required-hint">* 为必填项。航点可不配置，新增后须完整填写。</p>
+        <el-alert v-if="showValidationSummary && liveValidation.errors.length > 0" type="error" :closable="false" show-icon data-testid="scenario-live-validation">
+          <template #title>当前有 {{ liveValidation.errors.length }} 项配置错误，不能保存。</template>
+          {{ liveValidation.errors[0]?.fieldPath }}：{{ liveValidation.errors[0]?.message }}
+          <el-button link type="primary" @click="locateValidationIssue(liveValidation.errors[0]!)">定位首个问题</el-button>
+        </el-alert>
+      </div>
       <!-- 保留参数组件实例，避免切换阶段时数字输入重新挂载并按最小值改写待修正参数。 -->
-      <el-tabs v-show="configurationTab" v-model="activeTab" class="scenario-tabs" aria-label="参数分类">
+      <el-tabs v-model="activeTab" class="scenario-tabs" :class="{ 'scenario-tabs--navigation-only': !configurationTab }" aria-label="参数分类">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-label="场景基础">
         <div class="form-grid form-grid--scenario">
-          <el-form-item v-show="showIds" label="场景编号" :error="issueMessage('scenario.id')">
+          <el-form-item data-field-path="scenario.id" v-show="showIds" label="场景编号" :error="issueMessage('scenario.id')">
             <el-input v-model="draft.config.scenario.id" disabled data-testid="scenario-id" />
           </el-form-item>
-          <el-form-item label="场景名称" :error="issueMessage('scenario.name')">
+          <el-form-item data-field-path="scenario.name" required label="场景名称" :error="issueMessage('scenario.name')">
             <el-input
               v-model="draft.config.scenario.name"
               maxlength="128"
@@ -1332,7 +1318,7 @@ watch(activeTab, (tab) => {
               @update:model-value="markDirty"
             />
           </el-form-item>
-          <el-form-item label="开始时间" :error="issueMessage('scenario.startTime')">
+          <el-form-item data-field-path="scenario.startTime" required label="开始时间" :error="issueMessage('scenario.startTime')">
             <div class="scenario-start-time" data-testid="scenario-start-time">
               <el-date-picker
                   v-if="useStartTimeDatePicker"
@@ -1346,7 +1332,7 @@ watch(activeTab, (tab) => {
               <el-input v-else v-model="startTimeBeijing" />
             </div>
           </el-form-item>
-          <el-form-item label="时间步长（秒）" :error="issueMessage('scenario.timeStep')">
+          <el-form-item data-field-path="scenario.timeStep" required label="时间步长（秒）" :error="issueMessage('scenario.timeStep')">
             <el-input-number
                 v-model="draft.config.scenario.timeStep"
                 controls-position="right"
@@ -1354,7 +1340,7 @@ watch(activeTab, (tab) => {
                 @update:model-value="markDirty"
             />
           </el-form-item>
-          <el-form-item label="仿真总时长（min）" :error="issueMessage('scenario.duration')">
+          <el-form-item data-field-path="scenario.duration" required label="仿真总时长（min）" :error="issueMessage('scenario.duration')">
             <el-input-number
                 v-model="simulationDurationMinutes"
                 controls-position="right"
@@ -1362,7 +1348,7 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
-          <el-form-item label="仿真时钟倍速（倍）" :error="issueMessage('scenario.environment.simClockSpeed')">
+          <el-form-item data-field-path="scenario.environment.simClockSpeed" label="仿真时钟倍速（倍）" :error="issueMessage('scenario.environment.simClockSpeed')">
             <el-input-number
                 v-model="draft.config.scenario.environment.simClockSpeed"
                 controls-position="right"
@@ -1372,7 +1358,7 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
-          <el-form-item label="海峡宽度（km）" :error="issueMessage('scenario.environment.transmissionDistance')">
+          <el-form-item data-field-path="scenario.environment.transmissionDistance" label="海峡宽度（km）" :error="issueMessage('scenario.environment.transmissionDistance')">
             <el-input-number
                 v-model="draft.config.scenario.environment.transmissionDistance"
                 controls-position="right"
@@ -1383,7 +1369,7 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
-          <el-form-item label="云雨气象衰减" :error="issueMessage('scenario.environment.rainCloudAttenuation')">
+          <el-form-item data-field-path="scenario.environment.rainCloudAttenuation" label="云雨气象衰减" :error="issueMessage('scenario.environment.rainCloudAttenuation')">
             <el-select
                 v-model="draft.config.scenario.environment.rainCloudAttenuation"
                 data-testid="scenario-rain-cloud-atten"
@@ -1396,7 +1382,7 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
 
-          <el-form-item class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
+          <el-form-item data-field-path="scenario.environment.multipathEnabled" class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
             <el-switch
                 v-model="draft.config.scenario.environment.multipathEnabled"
                 inline-prompt
@@ -1407,22 +1393,22 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
           <!-- 保留原有环境参数；不从气象档位推算这些数值。 -->
-          <el-form-item label="海况等级" :error="issueMessage('scenario.environment.seaState')">
+          <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
             <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
           </el-form-item>
-          <el-form-item label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
+          <el-form-item data-field-path="scenario.environment.temperatureC" required label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
             <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" data-testid="scenario-temperature" @update:model-value="markDirty" />
           </el-form-item>
-          <el-form-item label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
+          <el-form-item data-field-path="scenario.environment.humidityPercent" required label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
             <el-input-number v-model="draft.config.scenario.environment.humidityPercent" controls-position="right" data-testid="scenario-humidity" @update:model-value="markDirty" />
           </el-form-item>
-          <el-form-item label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
+          <el-form-item data-field-path="scenario.environment.rainRateMmPerHour" required label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
             <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
           </el-form-item>
-          <el-form-item label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
+          <el-form-item data-field-path="scenario.environment.rainLossDbPerKm" label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
             <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" data-testid="scenario-rain-loss" @update:model-value="markDirty" />
           </el-form-item>
-          <el-form-item label="场景描述" :error="issueMessage('scenario.description')">
+          <el-form-item data-field-path="scenario.description" label="场景描述" :error="issueMessage('scenario.description')">
             <el-input
               v-model="draft.config.scenario.description"
               type="textarea"
@@ -1492,7 +1478,7 @@ watch(activeTab, (tab) => {
 <!--              </div>-->
               <div class="platform-counts" aria-label="链路类型覆盖">
                 <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
-                <el-tag :type="linkTypeCount === 4 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 4 类</el-tag>
+                <el-tag :type="linkTypeCount === 5 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 5 类</el-tag>
               </div>
               <div class="platform-actions">
                 <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
@@ -1555,7 +1541,8 @@ watch(activeTab, (tab) => {
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
               <el-table-column prop="defaultPower" label="发射功率（W）"  />
               <el-table-column label="自动检测"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
-              <el-table-column label="探测距离（海里）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="探测范围（海里）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="干扰范围（海里）"><template #default="{ row }">{{ Number((row.jammingRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
               <el-table-column label="触发时间（秒）"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
               <el-table-column label="方向（°）" ><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
               <el-table-column label="持续时间（s）" ><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
@@ -1616,8 +1603,8 @@ watch(activeTab, (tab) => {
           <section class="console-panel scenario-section" aria-labelledby="scenario-output-title">
             <div class="section-heading"><div><p class="section-kicker">结果配置</p><h3 id="scenario-output-title">输出参数</h3></div></div>
             <div class="form-grid form-grid--basic">
-              <el-form-item label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
-              <el-form-item label="写入间隔（秒）" :error="issueMessage('output.writeInterval')"><el-input-number v-model="draft.config.output.writeInterval" :min="draft.config.scenario.timeStep" :step="0.001" controls-position="right" data-testid="output-write-interval" @update:model-value="markDirty" /></el-form-item>
+              <el-form-item data-field-path="output.directory" required label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
+              <el-form-item data-field-path="output.writeInterval" required label="写入间隔（秒）" :error="issueMessage('output.writeInterval')"><el-input-number v-model="draft.config.output.writeInterval" :min="draft.config.scenario.timeStep" :step="0.001" controls-position="right" data-testid="output-write-interval" @update:model-value="markDirty" /></el-form-item>
               <el-form-item label="链路质量"><el-switch v-model="draft.config.output.linkQualityEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-quality" @change="markDirty" /></el-form-item>
               <el-form-item label="事件"><el-switch v-model="draft.config.output.eventsEnabled" active-text="输出" inactive-text="关闭" data-testid="output-events" @change="markDirty" /></el-form-item>
               <el-form-item label="链路切换"><el-switch v-model="draft.config.output.linkSwitchEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-switch" @change="markDirty" /></el-form-item>
@@ -1629,38 +1616,8 @@ watch(activeTab, (tab) => {
       </el-tabs>
 
       <div v-if="!configurationTab" class="scenario-stage-content">
-          <section v-if="activeTab === 'operations'" class="console-panel scenario-section" aria-label="场景快照操作">
-<!--            <div class="section-heading">-->
-<!--              <div>-->
-<!--                <p class="section-kicker">完整快照</p>-->
-<!--                <h3 id="scenario-operation-title">导入、撤销与重置</h3>-->
-<!--              </div>-->
-<!--            </div>-->
-            <el-alert title="导入 ScenarioConfig 规范快照，UI 扩展按规则重建。以下操作不导入模板，也不会重置全局 Mock 数据。" type="info" :closable="false" show-icon />
-            <div class="platform-actions">
-              <el-button type="primary" :disabled="pending || draft.locked" data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
-              <LocalSceneImport />
-              <el-button :disabled="pending || draft.locked || dirty" data-testid="undo-scenario" @click="undoScenario">撤销场景操作</el-button>
-              <el-button type="danger" plain :disabled="pending || draft.locked || dirty" data-testid="reset-scenario" @click="resetScenario">重置当前场景</el-button>
-            </div>
-            <ScenarioConfigExport />
-            <pre class="scenario-json-preview" data-testid="scenario-json-preview">{{ JSON.stringify(draft.config, null, 2) }}</pre>
-          </section>
-          <ScriptPreview
-            v-else-if="activeTab === 'script'"
-            :state="scriptState"
-            :result-message="scriptResultMessage"
-            :script="script"
-            :preflight="preflight"
-            :output-directory="draft.config.output.directory"
-            :locked="draft.locked"
-            :dirty="dirty"
-            :preflight-passed="preflightPassed"
-            @generate="generateScriptPreview"
-            @preflight="scenarioStore.preflightScript"
-          />
           <ValidationPanel
-            v-else-if="activeTab === 'validation'"
+            v-if="activeTab === 'validation'"
             :pending="pending"
             :panel-state="panelState"
             :result-message="resultMessage"
@@ -1702,9 +1659,8 @@ watch(activeTab, (tab) => {
         @load="scenarioStore.loadTemplate"
         @copy="applyTemplate"
       />
-      <el-empty v-else-if="panelState === 'EMPTY'" description="暂无场景，请新建场景、导入快照或选择场景模板。" data-testid="scenario-empty">
+      <el-empty v-else-if="panelState === 'EMPTY'" description="暂无场景，请新建场景或选择场景模板。" data-testid="scenario-empty">
         <el-button type="primary" data-testid="create-scenario" @click="createScenario">新建场景</el-button>
-        <el-button data-testid="import-scenario-snapshot" @click="importScenarioSnapshot">导入完整快照</el-button>
         <el-button @click="activeTab = 'templates'">选择场景模板</el-button>
       </el-empty>
     </div>
@@ -1781,7 +1737,6 @@ watch(activeTab, (tab) => {
 
 .scenario-header,
 .scenario-header__actions,
-.scenario-workflow,
 .scenario-workflow-bar,
 .section-heading {
   display: flex;
@@ -1796,12 +1751,6 @@ watch(activeTab, (tab) => {
   border-bottom: 1px solid var(--console-border);
 }
 
-.scenario-workflow {
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.scenario-workflow .el-button + .el-button,
 .scenario-header__actions .el-button + .el-button {
   margin-left: 0;
 }
@@ -1821,6 +1770,7 @@ watch(activeTab, (tab) => {
 
 .scenario-stage-content {
   min-height: 0;
+  flex: 1;
   overflow: auto;
   padding: 0 0.75rem 0.75rem;
 }
@@ -1830,26 +1780,58 @@ watch(activeTab, (tab) => {
   justify-content: flex-end;
 }
 
+.scenario-header > .scenario-header__actions {
+  margin-left: auto;
+}
+
 .scenario-feedback {
   margin-bottom: 1rem;
 }
 
 .scenario-form {
-  display: grid;
+  display: flex;
   min-height: 0;
   flex: 1;
-  grid-template-rows: minmax(0, 1fr);
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.5rem;
+  overflow: hidden;
+}
+
+.scenario-validation-notices {
+  flex: none;
+  padding: 0 0.75rem;
+}
+
+.scenario-required-hint {
+  margin: 0;
+  color: var(--console-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.scenario-validation-notices .el-alert {
+  margin-top: 0.5rem;
+  color: var(--console-danger);
+  background: color-mix(in srgb, var(--console-danger) 10%, var(--console-surface));
 }
 
 .scenario-tabs {
   display: flex;
   min-height: 0;
+  flex: 1;
   flex-direction: column
 }
 
 .scenario-tabs :deep(.el-tabs__header) {
   flex: none;
+}
+
+.scenario-tabs--navigation-only {
+  flex: none;
+}
+
+.scenario-tabs--navigation-only :deep(.el-tabs__content) {
+  display: none;
 }
 
 .scenario-tabs :deep(.el-tabs__content) {
@@ -1978,18 +1960,6 @@ watch(activeTab, (tab) => {
   width: 100%;
 }
 
-.scenario-json-preview {
-  max-height: 32rem;
-  margin: 1rem 0 0;
-  padding: 1rem;
-  overflow: auto;
-  border: 1px solid var(--console-border);
-  border-radius: 4px;
-  background: var(--console-bg-elevated);
-  color: var(--console-text);
-  font: 12px/1.6 Consolas, monospace;
-  white-space: pre;
-}
 
 .sensor-direction-editor {
   display: grid;

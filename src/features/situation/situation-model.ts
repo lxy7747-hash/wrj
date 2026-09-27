@@ -70,6 +70,7 @@ export const LINK_TYPE_LABELS: Record<LinkStatusSummary['linkType'], string> = {
   MICROWAVE: '微波链路',
   DATALINK: '新一代数传链路',
   LASER: '激光链路',
+  FIBER: '光纤链路',
 }
 
 export const JAMMER_TYPE_LABELS: Record<ScenarioConfig['jammers'][number]['type'], string> = {

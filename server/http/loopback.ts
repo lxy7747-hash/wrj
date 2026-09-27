@@ -1,4 +1,5 @@
 interface LoopbackRequestLike {
+  method?: string
   headers: {
     host?: string
     origin?: string
@@ -6,6 +7,29 @@ interface LoopbackRequestLike {
   socket: {
     remoteAddress?: string
   }
+}
+
+/** 发布入口只允许一个完整 origin；拒绝路径、凭据和模糊的主机匹配。 */
+export function validatePublicOrigin(value: string): string {
+  const url = new URL(value)
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password
+    || url.pathname !== '/' || url.search || url.hash || url.origin !== value.replace(/\/$/, '')) {
+    throw new Error('WRJ_PUBLIC_ORIGIN 必须是完整的 HTTP(S) 地址，不能包含路径、凭据或查询参数。')
+  }
+  return url.origin
+}
+
+/** 同源 GET/HEAD 可以不带 Origin；写操作和 WebSocket 握手必须验证来源。 */
+export function assertLanRequest(req: LoopbackRequestLike, publicOrigin: string, websocket = false):
+  { allowed: true; origin?: string } | { allowed: false; code: 'LOOPBACK_ONLY'; message: string } {
+  const deny = (message: string) => ({ allowed: false as const, code: 'LOOPBACK_ONLY' as const, message })
+  if (req.headers.host !== new URL(publicOrigin).host) return deny('请求 Host 与部署入口不匹配。')
+  const origin = req.headers.origin
+  if (origin !== undefined && origin !== publicOrigin) return deny('请求来源不在允许范围内。')
+  if (origin === undefined && (websocket || !['GET', 'HEAD'].includes(req.method ?? ''))) {
+    return deny('此请求必须提供部署入口的 Origin。')
+  }
+  return { allowed: true, ...(origin ? { origin } : {}) }
 }
 
 export type LoopbackDecision =

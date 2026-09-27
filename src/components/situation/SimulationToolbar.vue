@@ -11,6 +11,10 @@ defineProps<{
   readOnly?: boolean
   /** 文件播放只推进 CSV 游标，不启动仿真引擎。 */
   filePlayback?: boolean
+  /** 真实 mission 当前仅接通开始/停止，不支持暂停、继续、单步和倍速。 */
+  realMission?: boolean
+  /** 未确认运行模式时不能假定具备 Mock 的控制能力。 */
+  runtimeUnknown?: boolean
 }>()
 
 defineEmits<{
@@ -35,7 +39,8 @@ defineEmits<{
         size="small"
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
-        :disabled="readOnly || pending || status === 'RUNNING'"
+        :disabled="readOnly || pending || status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED')"
+        :title="runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
@@ -45,7 +50,8 @@ defineEmits<{
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="readOnly || pending || status !== 'RUNNING'"
+        :disabled="readOnly || pending || realMission || runtimeUnknown || status !== 'RUNNING'"
+        :title="runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
@@ -61,13 +67,16 @@ defineEmits<{
         <select
           :value="speed"
           aria-label="仿真倍速"
-          :disabled="readOnly || pending || (filePlayback && status === 'STOPPED')"
+          :disabled="readOnly || pending || realMission || runtimeUnknown || (filePlayback && status === 'STOPPED')"
+          :title="runtimeUnknown ? '运行模式尚未确认，暂不开放倍速控制。' : realMission ? '真实 mission 未接入倍速控制。' : undefined"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
           <option :value="2">×2</option>
           <option :value="4">×4</option>
           <option :value="8">×8</option>
+          <option :value="16">×16</option>
+          <option :value="32">×32</option>
         </select>
       </label>
 
@@ -79,6 +88,12 @@ defineEmits<{
     </div>
     <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">
       <small class="simulation-toolbar__error">{{ feedback || '运行控制异常' }}</small>
+    </div>
+    <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
+      <small>运行模式尚未确认，暂不开放暂停、继续及倍速控制。</small>
+    </div>
+    <div v-else-if="realMission" class="simulation-toolbar__runtime" aria-live="polite">
+      <small>真实 mission 模式仅支持开始和停止；暂停、继续、单步及倍速控制未接入。</small>
     </div>
   </header>
 </template>

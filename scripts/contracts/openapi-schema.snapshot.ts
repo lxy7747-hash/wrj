@@ -1003,6 +1003,7546 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "meta"
     ]
   },
+  "LocalReportEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "eventFile",
+      "positionFile",
+      "startTimeS",
+      "endTimeS",
+      "simulationComplete",
+      "positionCount",
+      "positionIssueCount",
+      "waitingForPositionLine",
+      "eventCount",
+      "eventWarningCount",
+      "nodes",
+      "eventCounts",
+      "connections",
+      "deviceEvents"
+    ],
+    "properties": {
+      "eventFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fileName",
+          "sha256"
+        ],
+        "properties": {
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      },
+      "positionFile": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "fileName",
+          "sha256"
+        ],
+        "properties": {
+          "fileName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      },
+      "startTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "endTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "simulationComplete": {
+        "type": "boolean"
+      },
+      "positionCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "positionIssueCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "waitingForPositionLine": {
+        "type": "boolean"
+      },
+      "eventCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "eventWarningCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "nodes": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "platformId",
+            "name",
+            "type",
+            "side",
+            "positionCount",
+            "firstTimeS",
+            "lastTimeS"
+          ],
+          "properties": {
+            "platformId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "side": {
+              "type": "string",
+              "minLength": 1
+            },
+            "positionCount": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "firstTimeS": {
+              "type": "number",
+              "minimum": 0
+            },
+            "lastTimeS": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "minItems": 1
+      },
+      "eventCounts": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "count"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      },
+      "connections": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "eventId",
+            "time",
+            "scope",
+            "sourcePlatformId",
+            "sourceDeviceId",
+            "targetPlatformId",
+            "targetDeviceId"
+          ],
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "time": {
+              "type": "number",
+              "minimum": 0
+            },
+            "scope": {
+              "enum": [
+                "INTERNAL",
+                "INTER_PLATFORM"
+              ]
+            },
+            "sourcePlatformId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sourceDeviceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "targetPlatformId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "targetDeviceId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      },
+      "deviceEvents": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "eventId",
+            "type",
+            "time",
+            "platformId",
+            "deviceId"
+          ],
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "type": {
+              "type": "string",
+              "minLength": 1
+            },
+            "time": {
+              "type": "number",
+              "minimum": 0
+            },
+            "platformId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "deviceId": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  },
+  "LocalReportExportResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reportId",
+      "generated",
+      "status",
+      "format",
+      "watermark",
+      "verifiedAt",
+      "filePath",
+      "sha256"
+    ],
+    "properties": {
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
+      },
+      "generated": {
+        "const": true
+      },
+      "status": {
+        "const": "SUCCESS"
+      },
+      "format": {
+        "enum": [
+          "HTML",
+          "CSV"
+        ]
+      },
+      "watermark": {
+        "type": "string",
+        "minLength": 1
+      },
+      "verifiedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "filePath": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
+    }
+  },
+  "ReportExportOutcome": {
+    "oneOf": [
+      {
+        "$ref": "#/components/schemas/ReportExportResult"
+      },
+      {
+        "$ref": "#/components/schemas/LocalReportExportResult"
+      }
+    ]
+  },
+  "DeleteapiV1AdminEquipmentEquipmentIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "EquipmentCreateRequest": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      {
+        "properties": {
+          "readOnly": {
+            "const": false
+          },
+          "version": {
+            "const": 1
+          }
+        }
+      }
+    ]
+  },
+  "EquipmentUpdateRequest": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      {
+        "properties": {
+          "readOnly": {
+            "const": false
+          }
+        }
+      }
+    ]
+  },
+  "EquipmentParameter": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "equipmentId",
+      "type",
+      "frequencyMinMHz",
+      "frequencyMaxMHz",
+      "modulation",
+      "berThreshold",
+      "readOnly",
+      "version"
+    ],
+    "properties": {
+      "equipmentId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "type": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+        "pattern": "\\S"
+      },
+      "frequencyMinMHz": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "exclusiveMinimum": 0
+      },
+      "frequencyMaxMHz": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "exclusiveMinimum": 0
+      },
+      "modulation": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "maxLength": 32,
+        "pattern": "\\S"
+      },
+      "berThreshold": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "minimum": 0,
+        "maximum": 1
+      },
+      "readOnly": {
+        "type": "boolean"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "bandwidthMHz": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "exclusiveMinimum": 0
+      },
+      "txPowerW": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "minimum": 0
+      },
+      "dataRateMbps": {
+        "type": [
+          "number",
+          "null"
+        ],
+        "exclusiveMinimum": 0
+      }
+    },
+    "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。"
+  },
+  "EquipmentReference": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "equipmentId",
+      "scenarioId",
+      "linkId",
+      "equipmentVersion"
+    ],
+    "properties": {
+      "equipmentId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "scenarioId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "linkId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "equipmentVersion": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  },
+  "EquipmentDetails": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "history",
+      "references"
+    ],
+    "properties": {
+      "history": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EquipmentParameter"
+        }
+      },
+      "references": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EquipmentReference"
+        }
+      }
+    }
+  },
+  "EquipmentReferenceRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reference",
+      "remove"
+    ],
+    "properties": {
+      "reference": {
+        "$ref": "#/components/schemas/EquipmentReference"
+      },
+      "remove": {
+        "type": "boolean"
+      }
+    }
+  },
+  "MenuPaths": {
+    "type": "array",
+    "minItems": 1,
+    "uniqueItems": true,
+    "items": {
+      "type": "string",
+      "enum": [
+        "/situation",
+        "/scenarios",
+        "/reports",
+        "/replays",
+        "/batches",
+        "/blueprint",
+        "/interactions",
+        "/traceability",
+        "/admin/data-exchange",
+        "/admin",
+        "/admin?section=equipment-library",
+        "/admin?section=scenario-templates",
+        "/admin?section=audit-logs",
+        "/admin?section=master-data",
+        "/admin?section=database-backup",
+        "/admin?section=simulation-data",
+        "/admin?section=runtime-status"
+      ]
+    }
+  },
+  "RoleProfile": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "profileId",
+      "name",
+      "baseRole",
+      "permissions",
+      "menuPaths"
+    ],
+    "properties": {
+      "profileId": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]{1,64}$"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 64
+      },
+      "baseRole": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "permissions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "uniqueItems": true,
+        "contains": {
+          "const": "BUSINESS_READ"
+        }
+      },
+      "menuPaths": {
+        "$ref": "#/components/schemas/MenuPaths"
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "baseRole": {
+              "const": "OPERATOR"
+            }
+          },
+          "required": [
+            "baseRole"
+          ]
+        },
+        "then": {
+          "properties": {
+            "permissions": {
+              "items": {
+                "enum": [
+                  "BUSINESS_READ",
+                  "SCENARIO_DRAFT_WRITE",
+                  "SIMULATION_CONTROL",
+                  "ORDINARY_REPORT_EXPORT"
+                ]
+              }
+            },
+            "menuPaths": {
+              "items": {
+                "enum": [
+                  "/situation",
+                  "/scenarios",
+                  "/reports",
+                  "/replays",
+                  "/batches",
+                  "/blueprint",
+                  "/interactions",
+                  "/traceability",
+                  "/admin/data-exchange"
+                ]
+              }
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "permissions": {
+              "contains": {
+                "const": "USER_ROLE_MAINTAIN"
+              }
+            },
+            "menuPaths": {
+              "contains": {
+                "const": "/admin"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "RoleAssignment": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "userId",
+      "profileId"
+    ],
+    "properties": {
+      "userId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "profileId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    }
+  },
+  "AccessControlConfig": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "profiles",
+      "assignments"
+    ],
+    "properties": {
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "profiles": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RoleProfile"
+        },
+        "maxItems": 100,
+        "uniqueItems": true
+      },
+      "assignments": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RoleAssignment"
+        },
+        "maxItems": 1000,
+        "uniqueItems": true
+      }
+    }
+  },
+  "GetapiV1AdminEquipmentEquipmentIdDetailsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EquipmentDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminEquipmentEquipmentIdReferenceResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EquipmentDetails"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminAccessControlResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AccessControlConfig"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminAccessControlResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AccessControlConfig"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminAccessControlRequest": {
+    "$ref": "#/components/schemas/AccessControlConfig"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdReferenceRequest": {
+    "$ref": "#/components/schemas/EquipmentReferenceRequest"
+  },
+  "EquipmentParameterList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/EquipmentParameter"
+    }
+  },
+  "GetapiV1AdminEquipmentResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameterList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminEquipmentResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminEquipmentRequest": {
+    "$ref": "#/components/schemas/EquipmentCreateRequest"
+  },
+  "PutapiV1AdminEquipmentEquipmentIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EquipmentParameter"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminEquipmentEquipmentIdRequest": {
+    "$ref": "#/components/schemas/EquipmentUpdateRequest"
+  },
+  "Position": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "longitude",
+      "latitude",
+      "altitude"
+    ],
+    "properties": {
+      "longitude": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180
+      },
+      "latitude": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90
+      },
+      "altitude": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "Waypoint": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "longitude",
+      "latitude",
+      "altitude",
+      "speed",
+      "arrivalTime"
+    ],
+    "properties": {
+      "longitude": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180
+      },
+      "latitude": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90
+      },
+      "altitude": {
+        "type": "number",
+        "minimum": 0
+      },
+      "speed": {
+        "type": "number",
+        "minimum": 0
+      },
+      "arrivalTime": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "AntennaGain": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "tx",
+      "rx"
+    ],
+    "properties": {
+      "tx": {
+        "type": "number"
+      },
+      "rx": {
+        "type": "number"
+      }
+    }
+  },
+  "FrequencyRange": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "min",
+      "max"
+    ],
+    "properties": {
+      "min": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "max": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    }
+  },
+  "Environment": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "seaState",
+      "temperatureC",
+      "humidityPercent",
+      "rainRateMmPerHour",
+      "rainLossDbPerKm",
+      "multipathEnabled"
+    ],
+    "properties": {
+      "simClockSpeed": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "default": 2
+      },
+      "transmissionDistance": {
+        "type": "number",
+        "minimum": 150,
+        "maximum": 410,
+        "default": 300,
+        "description": "海峡宽度，单位 km；不是各条链路的实际通信距离。"
+      },
+      "rainCloudAttenuation": {
+        "type": "string",
+        "enum": [
+          "none",
+          "lightRain",
+          "moderateRain",
+          "heavyRain"
+        ],
+        "default": "lightRain"
+      },
+      "seaState": {
+        "type": "number",
+        "minimum": 0
+      },
+      "temperatureC": {
+        "type": "number"
+      },
+      "humidityPercent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "rainRateMmPerHour": {
+        "type": "number",
+        "minimum": 0
+      },
+      "rainLossDbPerKm": {
+        "type": "number",
+        "minimum": 0
+      },
+      "multipathEnabled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ScenarioIdentity": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "name",
+      "description",
+      "startTime",
+      "duration",
+      "timeStep",
+      "environment"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "description": {
+        "type": "string",
+        "maxLength": 512
+      },
+      "startTime": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "duration": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "timeStep": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "environment": {
+        "$ref": "#/components/schemas/Environment"
+      }
+    }
+  },
+  "PlatformWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/Platform"
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "COMMUNICATION_SATELLITE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "required": [
+            "satelliteType"
+          ]
+        }
+      }
+    ]
+  },
+  "ScenarioConfigWrite": {
+    "description": "写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。",
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/ScenarioConfig"
+      },
+      {
+        "properties": {
+          "platforms": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PlatformWrite"
+            }
+          },
+          "informationDemand": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/InformationDemandWrite"
+            }
+          },
+          "linkSettings": {
+            "$ref": "#/components/schemas/ScenarioLinkSettingsWrite"
+          }
+        }
+      }
+    ]
+  },
+  "Platform": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "name",
+      "type",
+      "category",
+      "initialPosition",
+      "waypoints",
+      "linkIds",
+      "sensorIds",
+      "jammerIds"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "REAR_COMMAND_NODE",
+          "FORWARD_RELAY_NODE",
+          "GROUND_CLUSTER_COMMAND_NODE",
+          "AIRBORNE_MISSION_CLUSTER",
+          "COMMUNICATION_SATELLITE",
+          "GROUND_JAMMER_DETECTION_STATION",
+          "AIRBORNE_JAMMER_PLATFORM"
+        ]
+      },
+      "satelliteType": {
+        "type": "string",
+        "enum": [
+          "TIANTONG",
+          "SHENTONG"
+        ],
+        "description": "仅通信卫星使用；旧场景允许缺省。"
+      },
+      "category": {
+        "type": "string",
+        "enum": [
+          "ground",
+          "air",
+          "space"
+        ]
+      },
+      "initialPosition": {
+        "$ref": "#/components/schemas/Position"
+      },
+      "waypoints": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Waypoint"
+        }
+      },
+      "linkIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
+      "sensorIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
+      "jammerIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "REAR_COMMAND_NODE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "ground"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "FORWARD_RELAY_NODE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "air"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "GROUND_CLUSTER_COMMAND_NODE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "ground"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "AIRBORNE_MISSION_CLUSTER"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "air"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "COMMUNICATION_SATELLITE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "space"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "GROUND_JAMMER_DETECTION_STATION"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "ground"
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "COMMUNICATION_SATELLITE"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "else": {
+          "not": {
+            "required": [
+              "satelliteType"
+            ]
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "AIRBORNE_JAMMER_PLATFORM"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "category": {
+              "const": "air"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "Link": {
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "SAT"
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "relayPlatformId": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    ],
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "type",
+      "sourcePlatformId",
+      "targetPlatformId",
+      "frequency",
+      "bandwidth",
+      "txPower",
+      "antennaGain",
+      "modulation",
+      "berThreshold",
+      "dataRate",
+      "direction"
+    ],
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "antennaGainCorrectionDb": {
+        "type": "number",
+        "default": 0
+      },
+      "coding": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$"
+      },
+      "antiJammingGainDb": {
+        "type": "number",
+        "minimum": 0,
+        "default": 0
+      },
+      "spatialIsolationDb": {
+        "type": "number",
+        "minimum": 0,
+        "default": 0
+      },
+      "relayPlatformId": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1
+      },
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER",
+          "FIBER"
+        ]
+      },
+      "sourcePlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "txPower": {
+        "type": "number",
+        "minimum": 0
+      },
+      "antennaGain": {
+        "$ref": "#/components/schemas/AntennaGain"
+      },
+      "modulation": {
+        "type": "string",
+        "enum": [
+          "BPSK",
+          "QPSK"
+        ]
+      },
+      "berThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "dataRate": {
+        "type": "number",
+        "minimum": 0
+      },
+      "direction": {
+        "type": "string",
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      }
+    }
+  },
+  "Jammer": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "platformId",
+      "type",
+      "defaultPower",
+      "frequency",
+      "bandwidth",
+      "autoDetect",
+      "detectionRange",
+      "jammingRange"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "platformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "BARRAGE",
+          "SPOT",
+          "SWEEP"
+        ]
+      },
+      "defaultPower": {
+        "type": "number",
+        "minimum": 0
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "autoDetect": {
+        "type": "boolean"
+      },
+      "triggerTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "detectionRange": {
+        "type": "number",
+        "minimum": 0
+      },
+      "jammingRange": {
+        "type": "number",
+        "minimum": 0,
+        "description": "干扰有效作用距离，单位 m；界面按海里编辑。"
+      }
+    }
+  },
+  "JammingCommand": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "enabled",
+      "frequency",
+      "bandwidth",
+      "power",
+      "direction",
+      "duration"
+    ],
+    "properties": {
+      "enabled": {
+        "type": "boolean"
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "power": {
+        "type": "number",
+        "minimum": 0
+      },
+      "direction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
+      },
+      "duration": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    }
+  },
+  "JammerState": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "jammerId",
+      "enabled",
+      "frequency",
+      "bandwidth",
+      "power",
+      "direction",
+      "duration",
+      "executionStatus",
+      "effectiveFrameId",
+      "reason"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "power": {
+        "type": "number",
+        "minimum": 0
+      },
+      "direction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
+      },
+      "duration": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "executionStatus": {
+        "const": "SUCCESS"
+      },
+      "effectiveFrameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "Sensor": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "platformId",
+      "frequencyRange",
+      "detectionRange"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "platformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frequencyRange": {
+        "$ref": "#/components/schemas/FrequencyRange"
+      },
+      "detectionRange": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "OutputConfig": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "directory",
+      "writeInterval",
+      "linkQualityEnabled",
+      "eventsEnabled",
+      "linkSwitchEnabled"
+    ],
+    "properties": {
+      "directory": {
+        "type": "string",
+        "minLength": 1
+      },
+      "writeInterval": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "linkQualityEnabled": {
+        "type": "boolean"
+      },
+      "eventsEnabled": {
+        "type": "boolean"
+      },
+      "linkSwitchEnabled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "InformationDemandWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/InformationDemand"
+      },
+      {
+        "properties": {
+          "informationType": {
+            "type": "string",
+            "enum": [
+              "态势信息",
+              "目标指令",
+              "侦察信息",
+              "状态信息"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "ScenarioLinkSettingsWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/ScenarioLinkSettings"
+      },
+      {
+        "properties": {
+          "priority": {
+            "type": "array",
+            "minItems": 5,
+            "maxItems": 5,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "SAT",
+                "MICROWAVE",
+                "DATALINK",
+                "LASER",
+                "FIBER"
+              ]
+            }
+          },
+          "enabledTypes": {
+            "deprecated": true,
+            "description": "仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。",
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "SAT",
+              "MICROWAVE",
+              "DATALINK",
+              "LASER",
+              "FIBER"
+            ],
+            "properties": {
+              "SAT": {
+                "type": "boolean"
+              },
+              "MICROWAVE": {
+                "type": "boolean"
+              },
+              "DATALINK": {
+                "type": "boolean"
+              },
+              "LASER": {
+                "type": "boolean"
+              },
+              "FIBER": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    ]
+  },
+  "InformationDemand": {
+    "type": "object",
+    "additionalProperties": false,
+    "if": {
+      "required": [
+        "linkId"
+      ]
+    },
+    "then": {
+      "required": [
+        "direction"
+      ],
+      "properties": {
+        "destinationPlatformIds": {
+          "maxItems": 1
+        }
+      }
+    },
+    "required": [
+      "id",
+      "sourcePlatformId",
+      "destinationPlatformIds",
+      "informationType",
+      "volumeMb",
+      "frequencyHz",
+      "priority",
+      "maxLatencyMs",
+      "minDataRateMbps"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "id": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sourcePlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "destinationPlatformIds": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
+      "informationType": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "description": "读取保留历史业务文本；新建、保存与导入使用 InformationDemandWrite 四枚举。"
+      },
+      "direction": {
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      },
+      "enabled": {
+        "type": "boolean"
+      },
+      "volumeMb": {
+        "type": "number",
+        "minimum": 0
+      },
+      "frequencyHz": {
+        "type": "number",
+        "minimum": 0
+      },
+      "priority": {
+        "enum": [
+          "HIGH",
+          "NORMAL"
+        ]
+      },
+      "maxLatencyMs": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minDataRateMbps": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "ScenarioLinkSettings": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "enabledSatellites",
+      "switchCooldownS",
+      "priority"
+    ],
+    "properties": {
+      "enabledTypes": {
+        "deprecated": true,
+        "description": "仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER"
+        ],
+        "properties": {
+          "SAT": {
+            "type": "boolean"
+          },
+          "MICROWAVE": {
+            "type": "boolean"
+          },
+          "DATALINK": {
+            "type": "boolean"
+          },
+          "LASER": {
+            "type": "boolean"
+          },
+          "FIBER": {
+            "type": "boolean"
+          }
+        }
+      },
+      "enabledSatellites": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "TIANTONG",
+          "SHENTONG"
+        ],
+        "properties": {
+          "TIANTONG": {
+            "type": "boolean"
+          },
+          "SHENTONG": {
+            "type": "boolean"
+          }
+        }
+      },
+      "switchCooldownS": {
+        "type": "number",
+        "minimum": 0,
+        "default": 5
+      },
+      "priority": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 5,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "enum": [
+            "SAT",
+            "MICROWAVE",
+            "DATALINK",
+            "LASER",
+            "FIBER"
+          ]
+        },
+        "allOf": [
+          {
+            "if": {
+              "maxItems": 4
+            },
+            "then": {
+              "items": {
+                "enum": [
+                  "SAT",
+                  "MICROWAVE",
+                  "DATALINK",
+                  "LASER"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "ScenarioConfig": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schemaVersion",
+      "scenario",
+      "platforms",
+      "links",
+      "jammers",
+      "sensors",
+      "output",
+      "informationDemand"
+    ],
+    "properties": {
+      "linkSettings": {
+        "$ref": "#/components/schemas/ScenarioLinkSettings"
+      },
+      "schemaVersion": {
+        "const": "1.0"
+      },
+      "scenario": {
+        "$ref": "#/components/schemas/ScenarioIdentity"
+      },
+      "platforms": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/Platform"
+        },
+        "x-max-business-information-nodes": 50,
+        "x-min-business-information-nodes": 1,
+        "x-business-information-node-types": [
+          "REAR_COMMAND_NODE",
+          "FORWARD_RELAY_NODE",
+          "GROUND_CLUSTER_COMMAND_NODE",
+          "AIRBORNE_MISSION_CLUSTER"
+        ],
+        "x-business-information-node-limits": {
+          "REAR_COMMAND_NODE": 1,
+          "FORWARD_RELAY_NODE": 1,
+          "GROUND_CLUSTER_COMMAND_NODE": 1,
+          "AIRBORNE_MISSION_CLUSTER": 47
+        },
+        "x-supporting-entity-types-excluded-from-capacity": [
+          "COMMUNICATION_SATELLITE",
+          "GROUND_JAMMER_DETECTION_STATION",
+          "AIRBORNE_JAMMER_PLATFORM"
+        ]
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Link"
+        }
+      },
+      "jammers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Jammer"
+        }
+      },
+      "sensors": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/Sensor"
+        }
+      },
+      "output": {
+        "$ref": "#/components/schemas/OutputConfig"
+      },
+      "informationDemand": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/InformationDemand"
+        }
+      },
+      "jammingEnabled": {
+        "type": "boolean"
+      }
+    },
+    "x-fixture-path": "$.scenario",
+    "x-source": "SRS §1.2.2 and §3.5.3 Table 22; approved frontend baseline V1.1 §6.1"
+  },
+  "LinkQualityData": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "time",
+      "sourcePlatform",
+      "destPlatform",
+      "linkType",
+      "frequency",
+      "bandwidth",
+      "distance",
+      "txPower",
+      "txAntennaGain",
+      "rxAntennaGain",
+      "pathLoss",
+      "jammingPower",
+      "receivedPower",
+      "snr",
+      "modulation",
+      "ber",
+      "linkStatus",
+      "berThreshold",
+      "dataRate"
+    ],
+    "properties": {
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sourcePlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "destPlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "linkType": {
+        "type": "string",
+        "enum": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER",
+          "FIBER"
+        ]
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "distance": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txPower": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txAntennaGain": {
+        "type": "number"
+      },
+      "rxAntennaGain": {
+        "type": "number"
+      },
+      "pathLoss": {
+        "type": "number"
+      },
+      "jammingPower": {
+        "type": "number"
+      },
+      "receivedPower": {
+        "type": "number"
+      },
+      "snr": {
+        "type": "number"
+      },
+      "modulation": {
+        "type": "string",
+        "enum": [
+          "BPSK",
+          "QPSK"
+        ]
+      },
+      "ber": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "linkStatus": {
+        "enum": [
+          "UP",
+          "DOWN"
+        ]
+      },
+      "berThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "dataRate": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "x-source": "SRS §3.5.4"
+  },
+  "TelemetryLinkRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkId",
+      "time",
+      "sourcePlatform",
+      "destPlatform",
+      "linkType",
+      "frequency",
+      "bandwidth",
+      "distance",
+      "txPower",
+      "txAntennaGain",
+      "rxAntennaGain",
+      "pathLoss",
+      "jammingPower",
+      "receivedPower",
+      "snr",
+      "modulation",
+      "coding",
+      "qualityModelVersion",
+      "ber",
+      "linkStatus",
+      "berThreshold",
+      "dataRate"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sourcePlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "destPlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "linkType": {
+        "type": "string",
+        "enum": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER",
+          "FIBER"
+        ]
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "distance": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txPower": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txAntennaGain": {
+        "type": "number"
+      },
+      "rxAntennaGain": {
+        "type": "number"
+      },
+      "pathLoss": {
+        "type": "number"
+      },
+      "jammingPower": {
+        "type": "number"
+      },
+      "receivedPower": {
+        "type": "number"
+      },
+      "snr": {
+        "type": "number"
+      },
+      "modulation": {
+        "type": "string",
+        "enum": [
+          "BPSK",
+          "QPSK"
+        ]
+      },
+      "coding": {
+        "const": "UNCODED"
+      },
+      "qualityModelVersion": {
+        "const": "SNBER-1.2"
+      },
+      "ber": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "linkStatus": {
+        "enum": [
+          "UP",
+          "DOWN"
+        ]
+      },
+      "berThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "dataRate": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "JammerStatusData": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "time",
+      "jammerId",
+      "platformId",
+      "power",
+      "frequency",
+      "bandwidth",
+      "active"
+    ],
+    "properties": {
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "platformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "power": {
+        "type": "number",
+        "minimum": 0
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "active": {
+        "type": "boolean"
+      }
+    }
+  },
+  "PlatformStatus": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "platformId",
+      "name",
+      "type",
+      "longitude",
+      "latitude",
+      "altitude",
+      "speed",
+      "linkIds",
+      "jammers",
+      "updatedAt"
+    ],
+    "properties": {
+      "platformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "name": {
+        "type": "string"
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "REAR_COMMAND_NODE",
+          "FORWARD_RELAY_NODE",
+          "GROUND_CLUSTER_COMMAND_NODE",
+          "AIRBORNE_MISSION_CLUSTER",
+          "COMMUNICATION_SATELLITE",
+          "GROUND_JAMMER_DETECTION_STATION",
+          "AIRBORNE_JAMMER_PLATFORM"
+        ]
+      },
+      "longitude": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180
+      },
+      "latitude": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90
+      },
+      "altitude": {
+        "type": "number",
+        "minimum": 0
+      },
+      "speed": {
+        "type": "number",
+        "minimum": 0
+      },
+      "linkIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
+      "jammers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/JammerStatusData"
+        }
+      },
+      "updatedAt": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "SimulationState": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "status",
+      "currentTime",
+      "totalDuration",
+      "processId",
+      "progress"
+    ],
+    "properties": {
+      "status": {
+        "enum": [
+          "IDLE",
+          "RUNNING",
+          "PAUSED",
+          "COMPLETED",
+          "ERROR"
+        ]
+      },
+      "currentTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "totalDuration": {
+        "type": "number",
+        "minimum": 0
+      },
+      "processId": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "minimum": 1
+      },
+      "progress": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "errorMessage": {
+        "type": "string"
+      }
+    }
+  },
+  "UiLinkProjection": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkId",
+      "frameId",
+      "status",
+      "canonicalStatus",
+      "reason",
+      "thresholdVersion",
+      "consecutiveFrames",
+      "ageMs"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "status": {
+        "enum": [
+          "UP",
+          "DEGRADED",
+          "DOWN"
+        ]
+      },
+      "canonicalStatus": {
+        "enum": [
+          "UP",
+          "DOWN"
+        ]
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      },
+      "thresholdVersion": {
+        "const": "LLZT-1.0"
+      },
+      "consecutiveFrames": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "ageMs": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 5000
+      }
+    }
+  },
+  "CompositeLossEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkId",
+      "freeSpaceLossDb",
+      "systemLossDb",
+      "obstructionLossDb",
+      "interferenceLossDb",
+      "totalPathLossDb",
+      "noisePowerDbm",
+      "effectiveNoiseAndInterferenceDbm",
+      "modelVersion"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "freeSpaceLossDb": {
+        "type": "number"
+      },
+      "systemLossDb": {
+        "type": "number"
+      },
+      "obstructionLossDb": {
+        "type": "number"
+      },
+      "interferenceLossDb": {
+        "type": "number"
+      },
+      "totalPathLossDb": {
+        "type": "number"
+      },
+      "noisePowerDbm": {
+        "type": "number"
+      },
+      "effectiveNoiseAndInterferenceDbm": {
+        "type": "number"
+      },
+      "modelVersion": {
+        "const": "COMPOSITE-LOSS-1.0"
+      }
+    }
+  },
+  "RouteCandidateEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkId",
+      "direction",
+      "eligible",
+      "jamImpactDb",
+      "ber",
+      "stabilityFrames",
+      "rank",
+      "eliminationReason"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "direction": {
+        "type": "string",
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      },
+      "eligible": {
+        "type": "boolean"
+      },
+      "jamImpactDb": {
+        "type": "number"
+      },
+      "ber": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "stabilityFrames": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "rank": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "eliminationReason": {
+        "oneOf": [
+          {
+            "type": "string",
+            "minLength": 1
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    }
+  },
+  "SynchronizationEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "configVersion",
+      "engineVersion",
+      "uiVersion",
+      "effectiveFrameId",
+      "effectiveSimulationTime"
+    ],
+    "properties": {
+      "configVersion": {
+        "const": "SCN-001-v4"
+      },
+      "engineVersion": {
+        "const": "AFSIM-2.9.0-FIXTURE"
+      },
+      "uiVersion": {
+        "const": "FRAME-1.0"
+      },
+      "effectiveFrameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "effectiveSimulationTime": {
+        "type": "number",
+        "minimum": 0
+      }
+    }
+  },
+  "FrameEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "losses",
+      "routeCandidates",
+      "routeDecisions",
+      "synchronization",
+      "jammerExecution"
+    ],
+    "properties": {
+      "losses": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/CompositeLossEvidence"
+        }
+      },
+      "routeCandidates": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RouteCandidateEvidence"
+        }
+      },
+      "synchronization": {
+        "$ref": "#/components/schemas/SynchronizationEvidence"
+      },
+      "jammerExecution": {
+        "$ref": "#/components/schemas/JammerExecutionEvidence"
+      },
+      "routeDecisions": {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": 2,
+        "items": {
+          "$ref": "#/components/schemas/RouteDecision"
+        }
+      }
+    }
+  },
+  "TelemetryFrame": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "frameId",
+      "taskId",
+      "runId",
+      "simulationTime",
+      "sequence",
+      "platforms",
+      "links",
+      "linkSummaries",
+      "uiLinks",
+      "eventIds",
+      "evidence"
+    ],
+    "properties": {
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "simulationTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sequence": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "platforms": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/PlatformStatus"
+        }
+      },
+      "links": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/TelemetryLinkRecord"
+        }
+      },
+      "uiLinks": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/UiLinkProjection"
+        }
+      },
+      "eventIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
+      "evidence": {
+        "$ref": "#/components/schemas/FrameEvidence"
+      },
+      "linkSummaries": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/LinkStatusSummary"
+        }
+      }
+    },
+    "x-fixture-path": "$.frame"
+  },
+  "EventRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "eventId",
+      "frameId",
+      "time",
+      "type",
+      "dedupeKey"
+    ],
+    "properties": {
+      "eventId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sourceRegistryTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "type": {
+        "enum": [
+          "DETECTION",
+          "LINK_SWITCH"
+        ]
+      },
+      "sensorId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "oldLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "newLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "decision": {
+        "enum": [
+          "ACCEPTED",
+          "REJECTED"
+        ]
+      },
+      "reason": {
+        "type": "string"
+      },
+      "dedupeKey": {
+        "type": "string"
+      },
+      "detectionProbability": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "direction": {
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      },
+      "oldBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "newBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "stabilityFrames": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "minimumStableFrames": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "hysteresisSatisfied": {
+        "type": "boolean"
+      },
+      "cooldownRemainingS": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "x-fixture-path": "$.events",
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "DETECTION"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "sensorId",
+            "targetPlatformId",
+            "detectionProbability"
+          ]
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "LINK_SWITCH"
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "direction",
+            "oldLinkId",
+            "newLinkId",
+            "oldBer",
+            "newBer",
+            "stabilityFrames",
+            "minimumStableFrames",
+            "hysteresisSatisfied",
+            "cooldownRemainingS",
+            "decision",
+            "reason"
+          ]
+        }
+      }
+    ]
+  },
+  "SimulationRun": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "runId",
+      "taskId",
+      "scenarioId",
+      "uiStatus",
+      "canonical",
+      "configLocked"
+    ],
+    "properties": {
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "uiStatus": {
+        "enum": [
+          "IDLE",
+          "RUNNING",
+          "PAUSED",
+          "STOPPED",
+          "COMPLETED",
+          "ERROR"
+        ]
+      },
+      "canonical": {
+        "$ref": "#/components/schemas/SimulationState"
+      },
+      "configLocked": {
+        "type": "boolean"
+      },
+      "startedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "completedAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    },
+    "x-fixture-path": "$.run"
+  },
+  "ValidationIssue": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "severity",
+      "code",
+      "message",
+      "fieldPath"
+    ],
+    "properties": {
+      "severity": {
+        "enum": [
+          "ERROR",
+          "WARNING"
+        ]
+      },
+      "code": {
+        "type": "string"
+      },
+      "message": {
+        "type": "string"
+      },
+      "fieldPath": {
+        "type": "string"
+      }
+    }
+  },
+  "ValidationResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "valid",
+      "errors",
+      "warnings"
+    ],
+    "properties": {
+      "valid": {
+        "type": "boolean"
+      },
+      "errors": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ValidationIssue"
+        }
+      },
+      "warnings": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ValidationIssue"
+        }
+      }
+    }
+  },
+  "JammerUiExtension": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "jammerId",
+      "direction",
+      "duration",
+      "enabled"
+    ],
+    "properties": {
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "direction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
+      },
+      "duration": {
+        "type": "number",
+        "minimum": 0
+      },
+      "enabled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "SensorUiExtension": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sensorId",
+      "type",
+      "direction",
+      "probability",
+      "enabled"
+    ],
+    "properties": {
+      "sensorId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "type": {
+        "const": "ESM"
+      },
+      "direction": {
+        "oneOf": [
+          {
+            "const": "OMNI"
+          },
+          {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 360
+          }
+        ]
+      },
+      "probability": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "enabled": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ScenarioUiExtensions": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "jammers",
+      "sensors"
+    ],
+    "properties": {
+      "jammers": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/JammerUiExtension"
+        }
+      },
+      "sensors": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/SensorUiExtension"
+        }
+      }
+    }
+  },
+  "DeleteapiV1ScenariosScenarioIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "ScenarioDraft": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "config",
+      "uiExtensions",
+      "revision",
+      "officialLibraryChanged",
+      "locked"
+    ],
+    "properties": {
+      "config": {
+        "$ref": "#/components/schemas/ScenarioConfig"
+      },
+      "uiExtensions": {
+        "$ref": "#/components/schemas/ScenarioUiExtensions"
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "officialLibraryChanged": {
+        "const": false
+      },
+      "locked": {
+        "type": "boolean"
+      }
+    }
+  },
+  "ScenarioDraftUpdate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "config",
+      "uiExtensions"
+    ],
+    "properties": {
+      "config": {
+        "$ref": "#/components/schemas/ScenarioConfigWrite"
+      },
+      "uiExtensions": {
+        "$ref": "#/components/schemas/ScenarioUiExtensions"
+      },
+      "expectedRevision": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "ScenarioTemplate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "templateId",
+      "name",
+      "version",
+      "official",
+      "config",
+      "referenceCount"
+    ],
+    "properties": {
+      "uiExtensions": {
+        "$ref": "#/components/schemas/ScenarioUiExtensions"
+      },
+      "templateId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "name": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "official": {
+        "type": "boolean"
+      },
+      "config": {
+        "$ref": "#/components/schemas/ScenarioConfig"
+      },
+      "referenceCount": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "ScriptContract": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "scriptId",
+      "taskId",
+      "scenarioId",
+      "configVersion",
+      "target",
+      "checksum",
+      "preview",
+      "generatedTime"
+    ],
+    "properties": {
+      "scriptId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "configVersion": {
+        "type": "string"
+      },
+      "target": {
+        "const": "AFSIM 2.9.0"
+      },
+      "checksum": {
+        "type": "string"
+      },
+      "preview": {
+        "type": "string"
+      },
+      "generatedTime": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "BatchRunResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "runId",
+      "reportId",
+      "powerW",
+      "distanceKm",
+      "connectivityDurationS",
+      "connectivityRate",
+      "switchCount",
+      "avgBer",
+      "maxBer",
+      "avgSnrDb",
+      "minSnrDb",
+      "interferenceDurationS",
+      "status"
+    ],
+    "properties": {
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "powerW": {
+        "type": "number",
+        "minimum": 0
+      },
+      "distanceKm": {
+        "type": "number",
+        "minimum": 0
+      },
+      "connectivityDurationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "connectivityRate": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "switchCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "avgBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "maxBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "avgSnrDb": {
+        "type": "number"
+      },
+      "minSnrDb": {
+        "type": "number"
+      },
+      "interferenceDurationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "status": {
+        "enum": [
+          "COMPLETED",
+          "ERROR"
+        ]
+      }
+    }
+  },
+  "Batch": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "batchId",
+      "state",
+      "runIds",
+      "reportIds",
+      "aggregateReportId"
+    ],
+    "properties": {
+      "batchId": {
+        "type": "string",
+        "pattern": "^BATCH-"
+      },
+      "state": {
+        "enum": [
+          "DRAFT",
+          "VALIDATING",
+          "QUEUED",
+          "RUNNING",
+          "COMPLETED",
+          "PARTIAL_FAILURE",
+          "CANCELLED",
+          "ERROR"
+        ]
+      },
+      "runIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^RUN-"
+        }
+      },
+      "reportIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "pattern": "^RPT-"
+        }
+      },
+      "aggregateReportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      }
+    },
+    "x-fixture-path": "$.batch"
+  },
+  "ReportTimeSeriesPoint": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "time",
+      "snrDb",
+      "ber",
+      "interferencePowerDbm"
+    ],
+    "properties": {
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "snrDb": {
+        "type": "number"
+      },
+      "ber": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "interferencePowerDbm": {
+        "type": "number"
+      }
+    }
+  },
+  "ReportTimeSeries": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkId",
+      "sourcePlatformId",
+      "targetPlatformId",
+      "points"
+    ],
+    "properties": {
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sourcePlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "points": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "$ref": "#/components/schemas/ReportTimeSeriesPoint"
+        }
+      }
+    }
+  },
+  "ReportKpis": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "connectivityRate",
+      "switchCount",
+      "avgBer",
+      "avgSnrDb",
+      "interferenceDurationS",
+      "avgConnectivityDurationS",
+      "minSnrDb",
+      "maxBer"
+    ],
+    "properties": {
+      "connectivityRate": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "switchCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "avgBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "avgSnrDb": {
+        "type": "number"
+      },
+      "interferenceDurationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "avgConnectivityDurationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "minSnrDb": {
+        "type": "number"
+      },
+      "maxBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      }
+    }
+  },
+  "Report": {
+    "type": "object",
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "required": [
+            "runId"
+          ]
+        },
+        "then": {
+          "required": [
+            "timeSeries"
+          ]
+        }
+      },
+      {
+        "if": {
+          "required": [
+            "localEvidence"
+          ]
+        },
+        "then": {
+          "properties": {
+            "classification": {
+              "const": "LEVEL_II"
+            },
+            "reportId": {
+              "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "runId"
+                ]
+              },
+              {
+                "required": [
+                  "batchId"
+                ]
+              },
+              {
+                "required": [
+                  "kpis"
+                ]
+              },
+              {
+                "required": [
+                  "timeSeries"
+                ]
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "required": [
+      "reportId",
+      "classification",
+      "generatedTime",
+      "status"
+    ],
+    "properties": {
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "batchId": {
+        "type": "string",
+        "pattern": "^BATCH-"
+      },
+      "classification": {
+        "enum": [
+          "LEVEL_II",
+          "LEVEL_III"
+        ]
+      },
+      "generatedTime": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "status": {
+        "const": "READY"
+      },
+      "kpis": {
+        "$ref": "#/components/schemas/ReportKpis"
+      },
+      "timeSeries": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/ReportTimeSeries"
+        }
+      },
+      "localEvidence": {
+        "$ref": "#/components/schemas/LocalReportEvidence"
+      }
+    }
+  },
+  "Replay": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "replayId",
+      "runId",
+      "state",
+      "durationS",
+      "currentTimeS",
+      "eventIds"
+    ],
+    "properties": {
+      "replayId": {
+        "type": "string",
+        "pattern": "^REPLAY-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "state": {
+        "enum": [
+          "EMPTY",
+          "LOADING",
+          "PAUSED",
+          "PLAYING",
+          "SEEKING",
+          "COMPLETED",
+          "CORRUPT",
+          "ERROR"
+        ]
+      },
+      "durationS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "currentTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "eventIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "User": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "userId",
+      "username",
+      "role",
+      "status"
+    ],
+    "properties": {
+      "userId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "username": {
+        "type": "string"
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "status": {
+        "enum": [
+          "ACTIVE",
+          "DISABLED",
+          "LOCKED"
+        ]
+      },
+      "lastLoginAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "MasterData": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "dataId",
+      "kind",
+      "version",
+      "referenceCount",
+      "active"
+    ],
+    "properties": {
+      "dataId": {
+        "type": "string",
+        "minLength": 1,
+        "not": {
+          "enum": [
+            ".",
+            ".."
+          ]
+        }
+      },
+      "kind": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "referenceCount": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "content": {
+        "$ref": "#/components/schemas/MasterDataContent"
+      }
+    }
+  },
+  "BackupRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "backupId",
+      "status",
+      "checksum",
+      "createdAt"
+    ],
+    "properties": {
+      "backupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "status": {
+        "enum": [
+          "VALID_FIXTURE",
+          "INVALID_FIXTURE",
+          "VALID",
+          "INVALID"
+        ]
+      },
+      "checksum": {
+        "type": "string",
+        "minLength": 1
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      },
+      "format": {
+        "enum": [
+          "SYSTEM_SQLITE_V1",
+          "MAIN_SQLITE_V1"
+        ]
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "status": {
+              "enum": [
+                "VALID",
+                "INVALID"
+              ]
+            }
+          },
+          "required": [
+            "status"
+          ]
+        },
+        "then": {
+          "properties": {
+            "checksum": {
+              "pattern": "^[A-F0-9]{64}$"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "AuditRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "auditId",
+      "actor",
+      "role",
+      "module",
+      "action",
+      "result",
+      "occurredAt",
+      "immutableFixture"
+    ],
+    "properties": {
+      "auditId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "actor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "module": {
+        "type": "string",
+        "minLength": 1
+      },
+      "action": {
+        "type": "string",
+        "minLength": 1
+      },
+      "objectId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "result": {
+        "enum": [
+          "SUCCESS",
+          "DENIED",
+          "ERROR"
+        ]
+      },
+      "occurredAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "immutableFixture": {
+        "const": true
+      }
+    }
+  },
+  "SystemHealth": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ui",
+      "engine",
+      "database",
+      "channel"
+    ],
+    "properties": {
+      "ui": {
+        "const": "HEALTHY"
+      },
+      "engine": {
+        "const": "NOT_CONNECTED_BY_DESIGN"
+      },
+      "database": {
+        "const": "NOT_CONNECTED_BY_DESIGN"
+      },
+      "channel": {
+        "const": "NOT_CONNECTED_BY_DESIGN"
+      }
+    }
+  },
+  "ArchiveRecord": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "archiveId",
+      "taskId",
+      "scenarioId",
+      "runId",
+      "replayId",
+      "reportId",
+      "status"
+    ],
+    "properties": {
+      "archiveId": {
+        "type": "string",
+        "pattern": "^ARCH-"
+      },
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "replayId": {
+        "type": "string",
+        "pattern": "^REPLAY-"
+      },
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "status": {
+        "const": "INDEXED"
+      }
+    }
+  },
+  "Meta": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "requestId",
+      "generatedAt",
+      "page",
+      "pageSize",
+      "total"
+    ],
+    "properties": {
+      "requestId": {
+        "type": "string"
+      },
+      "generatedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "page": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "pageSize": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "total": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "ErrorCode": {
+    "type": "string",
+    "enum": [
+      "INVALID_REQUEST",
+      "VALIDATION_FAILED",
+      "NOT_FOUND",
+      "CONFLICT",
+      "INVALID_CREDENTIALS",
+      "ACCOUNT_LOCKED",
+      "PERMISSION_DENIED",
+      "LAST_ADMIN_GUARD",
+      "CONFIRMATION_REQUIRED",
+      "CONFIRMATION_EXPIRED",
+      "CONFIG_LOCKED",
+      "INVALID_TRANSITION",
+      "NODE_LIMIT_EXCEEDED",
+      "DUPLICATE_EVENT",
+      "VERSION_CONFLICT",
+      "FRAME_MISMATCH",
+      "HEADER_INVALID",
+      "TYPE_INVALID",
+      "ENCODING_INVALID",
+      "ATOMIC_REPLACE_FAILED",
+      "START_FAILED",
+      "TIMEOUT",
+      "EXIT_NONZERO",
+      "CORRUPT_FIXTURE",
+      "OUT_OF_RANGE",
+      "DEVICE_DISABLED",
+      "LOOPBACK_ONLY",
+      "TOPIC_FORBIDDEN",
+      "SEQUENCE_GAP",
+      "INTERNAL_FIXTURE_ERROR"
+    ]
+  },
+  "ErrorDetail": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "code",
+      "message",
+      "retryable",
+      "correlationId"
+    ],
+    "properties": {
+      "code": {
+        "$ref": "#/components/schemas/ErrorCode"
+      },
+      "message": {
+        "type": "string"
+      },
+      "fieldPath": {
+        "type": "string"
+      },
+      "details": {
+        "type": [
+          "object",
+          "array",
+          "string",
+          "number",
+          "boolean",
+          "null"
+        ]
+      },
+      "retryable": {
+        "type": "boolean"
+      },
+      "correlationId": {
+        "type": "string"
+      }
+    }
+  },
+  "ErrorEnvelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "error",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": false
+      },
+      "error": {
+        "$ref": "#/components/schemas/ErrorDetail"
+      },
+      "meta": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "generatedAt"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string"
+          },
+          "generatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      }
+    }
+  },
+  "LoginRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "username",
+      "passwordFixture"
+    ],
+    "properties": {
+      "username": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": ".*\\S.*"
+      },
+      "passwordFixture": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "writeOnly": true,
+        "description": "Legacy wire field name retained for compatibility; carries the entered password, never a fixture selector. Do not log or persist plaintext."
+      }
+    }
+  },
+  "AuthResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "authenticated",
+      "sessionCreated"
+    ],
+    "properties": {
+      "authenticated": {
+        "type": "boolean"
+      },
+      "principal": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "userId",
+          "username",
+          "role",
+          "permissions"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "username": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "ADMIN",
+              "OPERATOR"
+            ]
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "menuPaths": {
+            "$ref": "#/components/schemas/MenuPaths"
+          }
+        }
+      },
+      "reason": {
+        "enum": [
+          "INVALID_CREDENTIALS",
+          "ACCOUNT_LOCKED"
+        ]
+      },
+      "sessionCreated": {
+        "type": "boolean",
+        "description": "true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry."
+      }
+    }
+  },
+  "PermissionSet": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "role",
+      "permissions"
+    ],
+    "properties": {
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "permissions": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "uniqueItems": true
+      },
+      "menuPaths": {
+        "$ref": "#/components/schemas/MenuPaths"
+      }
+    }
+  },
+  "CapabilityMetadata": {
+    "type": "object",
+    "additionalProperties": false,
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "id": {
+              "enum": [
+                "DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS",
+                "DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX",
+                "DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER",
+                "DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT",
+                "DSDWRJQTLJS-XQ-GRYGZ-ESMGL",
+                "DSDWRJQTLJS-XQ-LLQHYYX-LLJC",
+                "DSDWRJQTLJS-XQ-LLQHYYX-QXL",
+                "DSDWRJQTLJS-XQ-LLQHYYX-HXL",
+                "DSDWRJQTLJS-XQ-LLQHYYX-QHJY"
+              ]
+            }
+          },
+          "required": [
+            "id"
+          ]
+        },
+        "then": {
+          "properties": {
+            "states": {
+              "minItems": 5,
+              "maxItems": 5,
+              "not": {
+                "contains": {
+                  "const": "EXECUTING"
+                }
+              }
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "states": {
+              "minItems": 6,
+              "maxItems": 6
+            }
+          }
+        }
+      }
+    ],
+    "required": [
+      "id",
+      "module",
+      "name",
+      "coverage",
+      "destination",
+      "states"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^DSDWRJQTLJS-XQ-"
+      },
+      "module": {
+        "type": "string"
+      },
+      "name": {
+        "type": "string"
+      },
+      "coverage": {
+        "enum": [
+          "INTERACTIVE_UI",
+          "VISIBLE_CONTRACT"
+        ]
+      },
+      "destination": {
+        "type": "string"
+      },
+      "states": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "LOADING",
+            "VALIDATING",
+            "EXECUTING",
+            "SUCCESS",
+            "EMPTY",
+            "ERROR"
+          ]
+        }
+      }
+    }
+  },
+  "InterfaceMetadata": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "kind",
+      "name",
+      "destination"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^DSDWRJQTLJS-JK-"
+      },
+      "kind": {
+        "enum": [
+          "外部",
+          "内部"
+        ]
+      },
+      "name": {
+        "type": "string"
+      },
+      "destination": {
+        "type": "string"
+      }
+    }
+  },
+  "DecisionMetadata": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "conflict",
+      "adopted",
+      "effect"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^DEC-"
+      },
+      "conflict": {
+        "type": "string"
+      },
+      "adopted": {
+        "type": "string"
+      },
+      "effect": {
+        "type": "string"
+      }
+    }
+  },
+  "RouteMetadata": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "path",
+      "page",
+      "stores",
+      "guard"
+    ],
+    "properties": {
+      "path": {
+        "type": "string",
+        "pattern": "^/"
+      },
+      "page": {
+        "type": "string"
+      },
+      "stores": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "guard": {
+        "type": "string"
+      }
+    }
+  },
+  "ContractDescriptor": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "version",
+      "sourceRef",
+      "fields"
+    ],
+    "properties": {
+      "name": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "sourceRef": {
+        "type": "string"
+      },
+      "fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "ImportResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "imported",
+      "rejected",
+      "drafts"
+    ],
+    "properties": {
+      "imported": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "rejected": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "drafts": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ScenarioDraft"
+        }
+      }
+    }
+  },
+  "DeleteResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "deleted",
+      "objectId"
+    ],
+    "properties": {
+      "deleted": {
+        "type": "boolean"
+      },
+      "objectId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "ReportExportResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reportId",
+      "generated",
+      "status",
+      "watermark",
+      "verifiedAt"
+    ],
+    "properties": {
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "generated": {
+        "const": false
+      },
+      "status": {
+        "const": "FIXTURE_SUCCESS"
+      },
+      "watermark": {
+        "type": "string"
+      },
+      "verifiedAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ConfirmationContext": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "confirmationId",
+      "state",
+      "actor",
+      "role",
+      "createdAt",
+      "expiresAt"
+    ],
+    "properties": {
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "state": {
+        "enum": [
+          "CLOSED",
+          "AWAITING_CONFIRMATION",
+          "CONFIRMED",
+          "CANCELLED",
+          "EXPIRED",
+          "ERROR"
+        ]
+      },
+      "actor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "expiresAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "RestoreResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "prebackupId",
+      "integrityValid",
+      "progress",
+      "result",
+      "rolledBack",
+      "generated"
+    ],
+    "properties": {
+      "prebackupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "integrityValid": {
+        "type": "boolean"
+      },
+      "progress": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      },
+      "result": {
+        "enum": [
+          "SUCCESS",
+          "FAILURE"
+        ]
+      },
+      "rolledBack": {
+        "type": "boolean"
+      },
+      "generated": {
+        "type": "boolean"
+      }
+    }
+  },
+  "AuditExportResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "objectId",
+      "generated",
+      "classification",
+      "watermark",
+      "verifiedAt",
+      "fileName",
+      "content",
+      "recordCount"
+    ],
+    "properties": {
+      "objectId": {
+        "const": "AUDIT-LOG"
+      },
+      "generated": {
+        "const": true
+      },
+      "classification": {
+        "const": "INTERNAL"
+      },
+      "watermark": {
+        "type": "string",
+        "minLength": 1
+      },
+      "verifiedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "fileName": {
+        "type": "string",
+        "pattern": "^operation_audit_[0-9]{14}_[A-Za-z0-9_-]+\\.txt$"
+      },
+      "content": {
+        "type": "string",
+        "minLength": 1
+      },
+      "recordCount": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "ExportStatus": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "objectId",
+      "generated",
+      "classification",
+      "watermark",
+      "verifiedAt"
+    ],
+    "properties": {
+      "objectId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "generated": {
+        "const": false
+      },
+      "classification": {
+        "enum": [
+          "INTERNAL",
+          "LEVEL_II",
+          "LEVEL_III"
+        ]
+      },
+      "watermark": {
+        "type": "string"
+      },
+      "verifiedAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "ResetResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "requestId",
+      "generatedAt",
+      "nextSequence"
+    ],
+    "properties": {
+      "requestId": {
+        "const": "REQ-RESET-001"
+      },
+      "generatedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "nextSequence": {
+        "const": 1
+      }
+    }
+  },
+  "ScenarioList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/ScenarioDraft"
+    }
+  },
+  "TemplateList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/ScenarioTemplate"
+    }
+  },
+  "SimulationRunList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/SimulationRun"
+    }
+  },
+  "EventList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/EventRecord"
+    }
+  },
+  "BatchList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/Batch"
+    }
+  },
+  "ReportList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/Report"
+    }
+  },
+  "ReplayList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/Replay"
+    }
+  },
+  "MasterDataList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/MasterData"
+    }
+  },
+  "UserList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/User"
+    }
+  },
+  "AuditList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/AuditRecord"
+    }
+  },
+  "ArchiveList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/ArchiveRecord"
+    }
+  },
+  "CapabilityMetadataList": {
+    "type": "array",
+    "minItems": 29,
+    "maxItems": 29,
+    "items": {
+      "$ref": "#/components/schemas/CapabilityMetadata"
+    }
+  },
+  "InterfaceMetadataList": {
+    "type": "array",
+    "minItems": 7,
+    "maxItems": 7,
+    "items": {
+      "$ref": "#/components/schemas/InterfaceMetadata"
+    }
+  },
+  "DecisionMetadataList": {
+    "type": "array",
+    "minItems": 8,
+    "maxItems": 8,
+    "items": {
+      "$ref": "#/components/schemas/DecisionMetadata"
+    }
+  },
+  "RouteMetadataList": {
+    "type": "array",
+    "minItems": 11,
+    "maxItems": 11,
+    "items": {
+      "$ref": "#/components/schemas/RouteMetadata"
+    }
+  },
+  "FrontendContractList": {
+    "type": "array",
+    "minItems": 5,
+    "maxItems": 5,
+    "items": {
+      "$ref": "#/components/schemas/ContractDescriptor"
+    }
+  },
+  "CsvContractList": {
+    "type": "array",
+    "minItems": 3,
+    "maxItems": 3,
+    "items": {
+      "$ref": "#/components/schemas/ContractDescriptor"
+    }
+  },
+  "BatchDetail": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "batch",
+      "runs",
+      "aggregateReport"
+    ],
+    "properties": {
+      "batch": {
+        "$ref": "#/components/schemas/Batch"
+      },
+      "runs": {
+        "type": "array",
+        "minItems": 12,
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/components/schemas/BatchRunResult"
+        }
+      },
+      "aggregateReport": {
+        "$ref": "#/components/schemas/Report"
+      }
+    }
+  },
+  "ScenarioValidationRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "config"
+    ],
+    "properties": {
+      "config": {
+        "$ref": "#/components/schemas/ScenarioConfig"
+      }
+    }
+  },
+  "MutationRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "expectedRevision"
+    ],
+    "properties": {
+      "expectedRevision": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "ScenarioImportRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "items"
+    ],
+    "properties": {
+      "items": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/ScenarioConfigWrite"
+        }
+      }
+    }
+  },
+  "TemplateMutationRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name",
+      "config"
+    ],
+    "properties": {
+      "uiExtensions": {
+        "$ref": "#/components/schemas/ScenarioUiExtensions"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "config": {
+        "$ref": "#/components/schemas/ScenarioConfigWrite"
+      }
+    }
+  },
+  "CopyTemplateRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "name"
+    ],
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1
+      },
+      "scenarioId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^SCN-"
+      }
+    }
+  },
+  "ScriptPreviewRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "scenarioId"
+    ],
+    "properties": {
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "warningConfirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "description": "warningConfirmationId is required by business validation when the latest result contains WARNING and no ERROR. ERROR always blocks preview."
+  },
+  "PreflightRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "checksum"
+    ],
+    "properties": {
+      "checksum": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "SimulationCreateRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "scenarioId"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      }
+    }
+  },
+  "SimulationCommand": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "enum": [
+          "START",
+          "PAUSE",
+          "RESUME",
+          "STEP",
+          "STOP",
+          "SET_SPEED"
+        ]
+      },
+      "mode": {
+        "enum": [
+          "INTERACTIVE_SINGLE",
+          "BATCH_PARAMETER_TRAVERSAL",
+          "PARAMETER_SCAN",
+          "HISTORICAL_REPLAY"
+        ]
+      },
+      "speedMultiplier": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "stepCount": {
+        "const": 1
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "description": "START requires mode; SET_SPEED requires speedMultiplier; STEP requires stepCount=1; STOP requires a valid SIMULATION_STOP confirmation when unsaved execution state would be discarded."
+  },
+  "BatchRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "scenarioId",
+      "powersW",
+      "distancesKm",
+      "deterministicOrder"
+    ],
+    "properties": {
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "powersW": {
+        "type": "array",
+        "const": [
+          50,
+          100,
+          150,
+          200
+        ],
+        "minItems": 1,
+        "items": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "distancesKm": {
+        "type": "array",
+        "const": [
+          80,
+          100,
+          120
+        ],
+        "minItems": 1,
+        "items": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "deterministicOrder": {
+        "const": true
+      }
+    }
+  },
+  "BatchCommand": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "enum": [
+          "START",
+          "CANCEL"
+        ]
+      }
+    }
+  },
+  "ReportExportRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reportId",
+      "format"
+    ],
+    "properties": {
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "format": {
+        "enum": [
+          "HTML",
+          "PDF",
+          "CSV"
+        ]
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "ConfirmationRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "action",
+      "objectId"
+    ],
+    "properties": {
+      "action": {
+        "enum": [
+          "SCENARIO_WARNING_CONTINUE",
+          "OFFICIAL_TEMPLATE_DELETE",
+          "SIMULATION_STOP",
+          "BATCH_LEVEL_III_EXPORT",
+          "BACKUP_RESTORE",
+          "FULL_CONFIG_EXPORT",
+          "AUDIT_EXPORT",
+          "MASTER_DATA_DELETE"
+        ]
+      },
+      "objectId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "ConfirmRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "confirm"
+    ],
+    "properties": {
+      "confirm": {
+        "const": true
+      }
+    }
+  },
+  "ReplayCommand": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "command"
+    ],
+    "properties": {
+      "command": {
+        "enum": [
+          "PLAY",
+          "PAUSE",
+          "SEEK",
+          "STEP_FORWARD",
+          "STEP_BACK",
+          "SPEED"
+        ]
+      },
+      "value": {
+        "type": "number"
+      }
+    }
+  },
+  "MasterDataRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation",
+      "data"
+    ],
+    "properties": {
+      "operation": {
+        "enum": [
+          "CREATE",
+          "UPDATE",
+          "DELETE"
+        ]
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterDataWrite"
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "UserRoleCommand": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation",
+      "user"
+    ],
+    "properties": {
+      "operation": {
+        "enum": [
+          "CREATE",
+          "UPDATE",
+          "DELETE",
+          "ENABLE",
+          "DISABLE"
+        ]
+      },
+      "user": {
+        "$ref": "#/components/schemas/User"
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "password": {
+        "type": "string",
+        "minLength": 6,
+        "maxLength": 32,
+        "writeOnly": true,
+        "description": "Required when creating a SQLite account; never returned in User."
+      }
+    },
+    "allOf": [
+      {
+        "if": {
+          "required": [
+            "password"
+          ]
+        },
+        "then": {
+          "properties": {
+            "operation": {
+              "const": "CREATE"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "AuditRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [],
+    "properties": {
+      "from": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "to": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "actor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "module": {
+        "type": "string",
+        "minLength": 1
+      },
+      "action": {
+        "type": "string",
+        "minLength": 1
+      },
+      "result": {
+        "enum": [
+          "SUCCESS",
+          "DENIED",
+          "ERROR"
+        ]
+      },
+      "export": {
+        "type": "boolean"
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "BackupRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation",
+      "confirmationId"
+    ],
+    "properties": {
+      "operation": {
+        "const": "BACKUP"
+      },
+      "backupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S",
+        "maxLength": 80
+      }
+    }
+  },
+  "RestoreRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "operation",
+      "backupId",
+      "confirmationId"
+    ],
+    "properties": {
+      "operation": {
+        "const": "RESTORE"
+      },
+      "backupId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "FullConfigExportRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "format",
+      "confirmationId"
+    ],
+    "properties": {
+      "format": {
+        "const": "JSON"
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "ResetRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "confirm"
+    ],
+    "properties": {
+      "confirm": {
+        "const": true
+      }
+    }
+  },
+  "FixtureValidationLink": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "openApiDocument",
+      "rootSchema",
+      "typeContract",
+      "fixturePaths",
+      "requiredEvidence"
+    ],
+    "properties": {
+      "openApiDocument": {
+        "const": "mock-api.openapi.yaml"
+      },
+      "rootSchema": {
+        "const": "#/components/schemas/DeterministicFixtures"
+      },
+      "typeContract": {
+        "const": "domain-models.ts#DeterministicFixtureSet"
+      },
+      "fixturePaths": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        }
+      },
+      "requiredEvidence": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  "ScenarioTemplateIndex": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "templateId",
+      "scenarioId",
+      "name",
+      "version",
+      "official",
+      "referenceCount"
+    ],
+    "properties": {
+      "templateId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "name": {
+        "type": "string"
+      },
+      "version": {
+        "type": "string"
+      },
+      "official": {
+        "type": "boolean"
+      },
+      "referenceCount": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "FileArchiveFixture": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "fileId",
+      "taskId",
+      "contract",
+      "status",
+      "createdAt"
+    ],
+    "properties": {
+      "fileId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "contract": {
+        "enum": [
+          "link_quality.csv",
+          "events.csv",
+          "link_switch.csv"
+        ]
+      },
+      "status": {
+        "const": "VALID_FIXTURE"
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "TaskFixture": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "scenarioId",
+      "configVersion",
+      "scriptId",
+      "createdAt"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "scenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "configVersion": {
+        "type": "string"
+      },
+      "scriptId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "createdAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "BatchReportLink": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "reportId",
+      "runId"
+    ],
+    "properties": {
+      "reportId": {
+        "type": "string",
+        "pattern": "^RPT-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      }
+    }
+  },
+  "ResetFixture": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "method",
+      "path",
+      "requestId",
+      "responseGeneratedAt",
+      "nextSequence"
+    ],
+    "properties": {
+      "method": {
+        "const": "POST"
+      },
+      "path": {
+        "const": "/api/v1/reset"
+      },
+      "requestId": {
+        "const": "REQ-RESET-001"
+      },
+      "responseGeneratedAt": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "nextSequence": {
+        "const": 1
+      }
+    }
+  },
+  "Clock": {
+    "type": "object",
+    "additionalProperties": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "ScenarioCoverageFixture": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "businessNodeTypes",
+      "supportingEntityTypes",
+      "acceptedBusinessNodeCount",
+      "rejectedBusinessNodeCount",
+      "rejection",
+      "linkTypes",
+      "jammerTypes",
+      "minimumInformationDemandCount"
+    ],
+    "properties": {
+      "businessNodeTypes": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "REAR_COMMAND_NODE",
+            "FORWARD_RELAY_NODE",
+            "GROUND_CLUSTER_COMMAND_NODE",
+            "AIRBORNE_MISSION_CLUSTER"
+          ]
+        }
+      },
+      "supportingEntityTypes": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "COMMUNICATION_SATELLITE",
+            "GROUND_JAMMER_DETECTION_STATION",
+            "AIRBORNE_JAMMER_PLATFORM"
+          ]
+        }
+      },
+      "acceptedBusinessNodeCount": {
+        "const": 50
+      },
+      "rejectedBusinessNodeCount": {
+        "const": 51
+      },
+      "rejection": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "fieldPath",
+          "mutationApplied"
+        ],
+        "properties": {
+          "code": {
+            "const": "NODE_LIMIT_EXCEEDED"
+          },
+          "fieldPath": {
+            "const": "platforms"
+          },
+          "mutationApplied": {
+            "const": false
+          }
+        }
+      },
+      "linkTypes": {
+        "type": "array",
+        "minItems": 4,
+        "maxItems": 4,
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "SAT",
+            "MICROWAVE",
+            "DATALINK",
+            "LASER",
+            "FIBER"
+          ]
+        }
+      },
+      "jammerTypes": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "uniqueItems": true,
+        "items": {
+          "enum": [
+            "BARRAGE",
+            "SPOT",
+            "SWEEP"
+          ]
+        }
+      },
+      "minimumInformationDemandCount": {
+        "const": 1
+      }
+    }
+  },
+  "DeterministicFixtures": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schemaVersion",
+      "fixtureVersion",
+      "epoch",
+      "clock",
+      "principals",
+      "templates",
+      "fileArchives",
+      "masterData",
+      "backups",
+      "audit",
+      "diagnostics",
+      "scenarioCoverage",
+      "scenario",
+      "task",
+      "script",
+      "run",
+      "frame",
+      "events",
+      "replay",
+      "report",
+      "archive",
+      "batch",
+      "batchRuns",
+      "batchReports",
+      "batchAggregateReport",
+      "reset",
+      "validation",
+      "metadata",
+      "contracts"
+    ],
+    "properties": {
+      "schemaVersion": {
+        "const": "1.0"
+      },
+      "fixtureVersion": {
+        "type": "string"
+      },
+      "epoch": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "clock": {
+        "$ref": "#/components/schemas/Clock"
+      },
+      "principals": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/User"
+        }
+      },
+      "templates": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ScenarioTemplateIndex"
+        }
+      },
+      "fileArchives": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/FileArchiveFixture"
+        }
+      },
+      "masterData": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/MasterData"
+        }
+      },
+      "backups": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/BackupRecord"
+        }
+      },
+      "audit": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AuditRecord"
+        }
+      },
+      "diagnostics": {
+        "$ref": "#/components/schemas/SystemHealth"
+      },
+      "scenarioCoverage": {
+        "$ref": "#/components/schemas/ScenarioCoverageFixture"
+      },
+      "scenario": {
+        "$ref": "#/components/schemas/ScenarioConfig"
+      },
+      "task": {
+        "$ref": "#/components/schemas/TaskFixture"
+      },
+      "script": {
+        "$ref": "#/components/schemas/ScriptContract"
+      },
+      "run": {
+        "$ref": "#/components/schemas/SimulationRun"
+      },
+      "frame": {
+        "$ref": "#/components/schemas/TelemetryFrame"
+      },
+      "events": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/EventRecord"
+        }
+      },
+      "replay": {
+        "$ref": "#/components/schemas/Replay"
+      },
+      "report": {
+        "$ref": "#/components/schemas/Report"
+      },
+      "archive": {
+        "$ref": "#/components/schemas/ArchiveRecord"
+      },
+      "batch": {
+        "$ref": "#/components/schemas/Batch"
+      },
+      "batchRuns": {
+        "type": "array",
+        "minItems": 12,
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/components/schemas/BatchRunResult"
+        }
+      },
+      "batchReports": {
+        "type": "array",
+        "minItems": 12,
+        "maxItems": 12,
+        "items": {
+          "$ref": "#/components/schemas/BatchReportLink"
+        }
+      },
+      "batchAggregateReport": {
+        "$ref": "#/components/schemas/Report"
+      },
+      "reset": {
+        "$ref": "#/components/schemas/ResetFixture"
+      },
+      "validation": {
+        "$ref": "#/components/schemas/FixtureValidationLink"
+      },
+      "metadata": {
+        "$ref": "#/components/schemas/FixtureMetadata"
+      },
+      "contracts": {
+        "$ref": "#/components/schemas/FixtureContracts"
+      }
+    },
+    "x-fixture-document": "deterministic-fixtures.json",
+    "x-type-contract": "domain-models.ts#DeterministicFixtureSet"
+  },
+  "PostapiV1AuthLoginRequest": {
+    "$ref": "#/components/schemas/LoginRequest"
+  },
+  "PostapiV1AuthLoginResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuthResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AuthPermissionsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/PermissionSet"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1MetaCapabilitiesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/CapabilityMetadataList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1MetaInterfacesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/InterfaceMetadataList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1MetaDecisionsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DecisionMetadataList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1MetaRoutesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/RouteMetadataList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ScenariosResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScenariosRequest": {
+    "$ref": "#/components/schemas/ScenarioDraftUpdate"
+  },
+  "PostapiV1ScenariosResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ScenariosScenarioIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1ScenariosScenarioIdRequest": {
+    "$ref": "#/components/schemas/ScenarioDraftUpdate"
+  },
+  "PutapiV1ScenariosScenarioIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScenariosScenarioIdValidateRequest": {
+    "$ref": "#/components/schemas/ScenarioValidationRequest"
+  },
+  "PostapiV1ScenariosScenarioIdValidateResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ValidationResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScenariosScenarioIdUndoRequest": {
+    "$ref": "#/components/schemas/MutationRequest"
+  },
+  "PostapiV1ScenariosScenarioIdUndoResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScenariosScenarioIdResetRequest": {
+    "$ref": "#/components/schemas/MutationRequest"
+  },
+  "PostapiV1ScenariosScenarioIdResetResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScenariosImportRequest": {
+    "$ref": "#/components/schemas/ScenarioImportRequest"
+  },
+  "PostapiV1ScenariosImportResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ImportResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1TemplatesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/TemplateList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1TemplatesRequest": {
+    "$ref": "#/components/schemas/TemplateMutationRequest"
+  },
+  "PostapiV1TemplatesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioTemplate"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1TemplatesTemplateIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioTemplate"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1TemplatesTemplateIdRequest": {
+    "$ref": "#/components/schemas/TemplateMutationRequest"
+  },
+  "PutapiV1TemplatesTemplateIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioTemplate"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "DeleteapiV1TemplatesTemplateIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1TemplatesTemplateIdCopyRequest": {
+    "$ref": "#/components/schemas/CopyTemplateRequest"
+  },
+  "PostapiV1TemplatesTemplateIdCopyResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioDraft"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScriptsPreviewRequest": {
+    "$ref": "#/components/schemas/ScriptPreviewRequest"
+  },
+  "PostapiV1ScriptsPreviewResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScriptContract"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ScriptsScriptIdPreflightRequest": {
+    "$ref": "#/components/schemas/PreflightRequest"
+  },
+  "PostapiV1ScriptsScriptIdPreflightResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ValidationResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ContractsScenarioConfigResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ContractDescriptor"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ContractsFrontendTypesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/FrontendContractList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ContractsCsvResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/CsvContractList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1SimulationsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SimulationRunList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1SimulationsRequest": {
+    "$ref": "#/components/schemas/SimulationCreateRequest"
+  },
+  "PostapiV1SimulationsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SimulationRun"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1SimulationsRunIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SimulationRun"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1SimulationsRunIdCommandsRequest": {
+    "$ref": "#/components/schemas/SimulationCommand"
+  },
+  "PostapiV1SimulationsRunIdCommandsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SimulationRun"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1TasksTaskIdJammersJammerIdCommandsRequest": {
+    "$ref": "#/components/schemas/JammingCommand"
+  },
+  "PostapiV1TasksTaskIdJammersJammerIdCommandsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/JammerState"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1SimulationsRunIdFramesFrameIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/TelemetryFrame"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1SimulationsRunIdEventsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/EventList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1SimulationsRunIdEventsRequest": {
+    "$ref": "#/components/schemas/ClosedLoopContext"
+  },
+  "PostapiV1SimulationsRunIdEventsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/JammingDecision"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1BatchesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BatchList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1BatchesRequest": {
+    "$ref": "#/components/schemas/BatchRequest"
+  },
+  "PostapiV1BatchesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/Batch"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1BatchesBatchIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BatchDetail"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1BatchesBatchIdCommandsRequest": {
+    "$ref": "#/components/schemas/BatchCommand"
+  },
+  "PostapiV1BatchesBatchIdCommandsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/Batch"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ReportsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ReportList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ReportsReportIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/Report"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ReportsReportIdExportRequest": {
+    "$ref": "#/components/schemas/ReportExportRequest"
+  },
+  "PostapiV1ReportsReportIdExportResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ReportExportOutcome"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ConfirmationsRequest": {
+    "$ref": "#/components/schemas/ConfirmationRequest"
+  },
+  "PostapiV1ConfirmationsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ConfirmationContext"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ConfirmationsConfirmationIdRequest": {
+    "$ref": "#/components/schemas/ConfirmRequest"
+  },
+  "PostapiV1ConfirmationsConfirmationIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ConfirmationContext"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ReplaysResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ReplayList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1ReplaysReplayIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/Replay"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ReplaysReplayIdCommandsRequest": {
+    "$ref": "#/components/schemas/ReplayCommand"
+  },
+  "PostapiV1ReplaysReplayIdCommandsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/Replay"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminMasterDataResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterDataList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminMasterDataRequest": {
+    "$ref": "#/components/schemas/MasterDataRequest"
+  },
+  "PostapiV1AdminMasterDataResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterData"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminMasterDataDataIdRequest": {
+    "$ref": "#/components/schemas/MasterDataRequest"
+  },
+  "PutapiV1AdminMasterDataDataIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MasterData"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "DeleteapiV1AdminMasterDataDataIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminUsersResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/UserList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminUsersRequest": {
+    "$ref": "#/components/schemas/UserRoleCommand"
+  },
+  "PostapiV1AdminUsersResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/User"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1AdminUsersUserIdRequest": {
+    "$ref": "#/components/schemas/UserRoleCommand"
+  },
+  "PutapiV1AdminUsersUserIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/User"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "DeleteapiV1AdminUsersUserIdResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminAuditResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuditList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminAuditExportRequest": {
+    "$ref": "#/components/schemas/AuditExportRequest"
+  },
+  "PostapiV1AdminAuditExportResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuditExportResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminBackupRequest": {
+    "$ref": "#/components/schemas/BackupRequest"
+  },
+  "PostapiV1AdminBackupResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BackupRecord"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminRestoreRequest": {
+    "$ref": "#/components/schemas/RestoreRequest"
+  },
+  "PostapiV1AdminRestoreResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/RestoreResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminHealthResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SystemHealth"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "GetapiV1AdminArchivesResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ArchiveList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1ResetRequest": {
+    "$ref": "#/components/schemas/ResetRequest"
+  },
+  "PostapiV1ResetResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ResetResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminConfigExportRequest": {
+    "$ref": "#/components/schemas/FullConfigExportRequest"
+  },
+  "PostapiV1AdminConfigExportResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ExportStatus"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "JammerExecutionEvidence": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "jammerId",
+      "targetPlatformId",
+      "power",
+      "frequency",
+      "bandwidth",
+      "startTime",
+      "duration",
+      "reason"
+    ],
+    "properties": {
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "power": {
+        "type": "number",
+        "minimum": 0
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "startTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "duration": {
+        "type": "number",
+        "minimum": 0
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "AuditExportRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "export",
+      "confirmationId"
+    ],
+    "properties": {
+      "from": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "to": {
+        "type": "string",
+        "format": "date-time"
+      },
+      "actor": {
+        "type": "string",
+        "minLength": 1
+      },
+      "role": {
+        "type": "string",
+        "enum": [
+          "ADMIN",
+          "OPERATOR"
+        ]
+      },
+      "module": {
+        "type": "string",
+        "minLength": 1
+      },
+      "action": {
+        "type": "string",
+        "minLength": 1
+      },
+      "result": {
+        "type": "string",
+        "enum": [
+          "SUCCESS",
+          "DENIED",
+          "ERROR"
+        ]
+      },
+      "export": {
+        "const": true
+      },
+      "confirmationId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "LinkStatusSummary": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "linkKey",
+      "sourcePlatform",
+      "destPlatform",
+      "linkType",
+      "currentSnr",
+      "currentBer",
+      "status",
+      "updatedAt"
+    ],
+    "properties": {
+      "linkKey": {
+        "type": "string",
+        "minLength": 1
+      },
+      "sourcePlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "destPlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "linkType": {
+        "type": "string",
+        "enum": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER",
+          "FIBER"
+        ]
+      },
+      "currentSnr": {
+        "type": "number"
+      },
+      "currentBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "UP",
+          "DOWN"
+        ]
+      },
+      "updatedAt": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "x-source": "SRS §3.5.4"
+  },
+  "FixtureMetadata": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "capabilities",
+      "interfaces",
+      "decisions",
+      "routes"
+    ],
+    "properties": {
+      "capabilities": {
+        "$ref": "#/components/schemas/CapabilityMetadataList"
+      },
+      "interfaces": {
+        "$ref": "#/components/schemas/InterfaceMetadataList"
+      },
+      "decisions": {
+        "$ref": "#/components/schemas/DecisionMetadataList"
+      },
+      "routes": {
+        "$ref": "#/components/schemas/RouteMetadataList"
+      }
+    }
+  },
+  "FixtureContracts": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "scenarioConfig",
+      "frontendTypes",
+      "csv"
+    ],
+    "properties": {
+      "scenarioConfig": {
+        "$ref": "#/components/schemas/ContractDescriptor"
+      },
+      "frontendTypes": {
+        "$ref": "#/components/schemas/FrontendContractList"
+      },
+      "csv": {
+        "$ref": "#/components/schemas/CsvContractList"
+      }
+    }
+  },
+  "RouteDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "runId",
+      "frameId",
+      "simulationTime",
+      "direction",
+      "selectedLinkId",
+      "previousLinkId",
+      "strategy",
+      "metric",
+      "minimumStableFrames",
+      "hysteresisThreshold",
+      "reason"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "simulationTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "direction": {
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      },
+      "selectedLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "previousLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "strategy": {
+        "enum": [
+          "MIN_JAM_IMPACT",
+          "MIN_BER_WITH_HYSTERESIS"
+        ]
+      },
+      "metric": {
+        "type": "number"
+      },
+      "minimumStableFrames": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "hysteresisThreshold": {
+        "oneOf": [
+          {
+            "type": "number",
+            "minimum": 0
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "ClosedLoopContext": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "frameId",
+      "detectionEventId",
+      "targetPlatformId",
+      "affectedLinkId"
+    ],
+    "properties": {
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "detectionEventId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "affectedLinkId": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "JammingDecision": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "decisionId",
+      "runId",
+      "frameId",
+      "detectionEventId",
+      "targetPlatformId",
+      "jammerId",
+      "affectedLinkId",
+      "action",
+      "linkStatus",
+      "effectiveFrameId",
+      "reason"
+    ],
+    "properties": {
+      "decisionId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-"
+      },
+      "frameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "detectionEventId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "affectedLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "action": {
+        "const": "START"
+      },
+      "linkStatus": {
+        "enum": [
+          "UP",
+          "DEGRADED",
+          "DOWN"
+        ]
+      },
+      "effectiveFrameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "reason": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "JammingParameterSet": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "effectiveFrameId",
+      "parameters"
+    ],
+    "properties": {
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "effectiveFrameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "parameters": {
+        "$ref": "#/components/schemas/JammingCommand"
+      }
+    }
+  },
+  "SyncResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "jammerId",
+      "parameterVersion",
+      "configParameterVersion",
+      "nodeParameterVersion",
+      "engineParameterVersion",
+      "uiParameterVersion",
+      "effectiveFrameId",
+      "effectiveSimulationTime",
+      "status",
+      "jammerStatus"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "parameterVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "configParameterVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "nodeParameterVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "engineParameterVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "uiParameterVersion": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "effectiveFrameId": {
+        "type": "string",
+        "pattern": "^F-"
+      },
+      "effectiveSimulationTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "status": {
+        "const": "SYNCHRONIZED"
+      },
+      "jammerStatus": {
+        "$ref": "#/components/schemas/JammerStatusData"
+      }
+    }
+  },
+  "PostapiV1TasksTaskIdJammersJammerIdParametersRequest": {
+    "$ref": "#/components/schemas/JammingParameterSet"
+  },
+  "PostapiV1TasksTaskIdJammersJammerIdParametersResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/SyncResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "BackupList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/BackupRecord"
+    }
+  },
+  "GetapiV1AdminBackupsResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/BackupList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "LogoutRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "confirm": {
+        "const": true
+      }
+    },
+    "required": [
+      "confirm"
+    ]
+  },
+  "GetapiV1AuthSessionResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuthResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AuthLogoutResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuthResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AuthLogoutRequest": {
+    "$ref": "#/components/schemas/LogoutRequest"
+  },
   "MasterDataEntry": {
     "oneOf": [
       {
@@ -1316,7425 +8856,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   "PutapiV1AdminMasterDataDataIdReferenceRequest": {
     "$ref": "#/components/schemas/MasterDataReference"
-  },
-  "EquipmentReference": {
-    "additionalProperties": false,
-    "properties": {
-      "equipmentId": {
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "equipmentVersion": {
-        "minimum": 1,
-        "type": "integer"
-      },
-      "linkId": {
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "scenarioId": {
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      }
-    },
-    "required": [
-      "equipmentId",
-      "scenarioId",
-      "linkId",
-      "equipmentVersion"
-    ],
-    "type": "object"
-  },
-  "EquipmentDetails": {
-    "additionalProperties": false,
-    "properties": {
-      "history": {
-        "items": {
-          "$ref": "#/components/schemas/EquipmentParameter"
-        },
-        "type": "array"
-      },
-      "references": {
-        "items": {
-          "$ref": "#/components/schemas/EquipmentReference"
-        },
-        "type": "array"
-      }
-    },
-    "required": [
-      "history",
-      "references"
-    ],
-    "type": "object"
-  },
-  "EquipmentReferenceRequest": {
-    "additionalProperties": false,
-    "properties": {
-      "reference": {
-        "$ref": "#/components/schemas/EquipmentReference"
-      },
-      "remove": {
-        "type": "boolean"
-      }
-    },
-    "required": [
-      "reference",
-      "remove"
-    ],
-    "type": "object"
-  },
-  "MenuPaths": {
-    "items": {
-      "enum": [
-        "/situation",
-        "/scenarios",
-        "/reports",
-        "/replays",
-        "/batches",
-        "/blueprint",
-        "/interactions",
-        "/traceability",
-        "/admin/data-exchange",
-        "/admin",
-        "/admin?section=equipment-library",
-        "/admin?section=scenario-templates",
-        "/admin?section=audit-logs",
-        "/admin?section=master-data",
-        "/admin?section=database-backup",
-        "/admin?section=simulation-data",
-        "/admin?section=runtime-status"
-      ],
-      "type": "string"
-    },
-    "minItems": 1,
-    "type": "array",
-    "uniqueItems": true
-  },
-  "RoleProfile": {
-    "additionalProperties": false,
-    "allOf": [
-      {
-        "else": {
-          "properties": {
-            "menuPaths": {
-              "contains": {
-                "const": "/admin"
-              }
-            },
-            "permissions": {
-              "contains": {
-                "const": "USER_ROLE_MAINTAIN"
-              }
-            }
-          }
-        },
-        "if": {
-          "properties": {
-            "baseRole": {
-              "const": "OPERATOR"
-            }
-          },
-          "required": [
-            "baseRole"
-          ]
-        },
-        "then": {
-          "properties": {
-            "menuPaths": {
-              "items": {
-                "enum": [
-                  "/situation",
-                  "/scenarios",
-                  "/reports",
-                  "/replays",
-                  "/batches",
-                  "/blueprint",
-                  "/interactions",
-                  "/traceability",
-                  "/admin/data-exchange"
-                ]
-              }
-            },
-            "permissions": {
-              "items": {
-                "enum": [
-                  "BUSINESS_READ",
-                  "SCENARIO_DRAFT_WRITE",
-                  "SIMULATION_CONTROL",
-                  "ORDINARY_REPORT_EXPORT"
-                ]
-              }
-            }
-          }
-        }
-      }
-    ],
-    "properties": {
-      "baseRole": {
-        "enum": [
-          "ADMIN",
-          "OPERATOR"
-        ],
-        "type": "string"
-      },
-      "menuPaths": {
-        "$ref": "#/components/schemas/MenuPaths"
-      },
-      "name": {
-        "maxLength": 64,
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "permissions": {
-        "contains": {
-          "const": "BUSINESS_READ"
-        },
-        "items": {
-          "type": "string"
-        },
-        "type": "array",
-        "uniqueItems": true
-      },
-      "profileId": {
-        "pattern": "^[A-Za-z0-9_-]{1,64}$",
-        "type": "string"
-      }
-    },
-    "required": [
-      "profileId",
-      "name",
-      "baseRole",
-      "permissions",
-      "menuPaths"
-    ],
-    "type": "object"
-  },
-  "RoleAssignment": {
-    "additionalProperties": false,
-    "properties": {
-      "profileId": {
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "userId": {
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      }
-    },
-    "required": [
-      "userId",
-      "profileId"
-    ],
-    "type": "object"
-  },
-  "AccessControlConfig": {
-    "additionalProperties": false,
-    "properties": {
-      "assignments": {
-        "items": {
-          "$ref": "#/components/schemas/RoleAssignment"
-        },
-        "maxItems": 1000,
-        "type": "array",
-        "uniqueItems": true
-      },
-      "profiles": {
-        "items": {
-          "$ref": "#/components/schemas/RoleProfile"
-        },
-        "maxItems": 100,
-        "type": "array",
-        "uniqueItems": true
-      },
-      "version": {
-        "minimum": 1,
-        "type": "integer"
-      }
-    },
-    "required": [
-      "version",
-      "profiles",
-      "assignments"
-    ],
-    "type": "object"
-  },
-  "GetapiV1AdminEquipmentEquipmentIdDetailsResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/EquipmentDetails"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "PutapiV1AdminEquipmentEquipmentIdReferenceResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/EquipmentDetails"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "GetapiV1AdminAccessControlResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/AccessControlConfig"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "PutapiV1AdminAccessControlResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/AccessControlConfig"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "PutapiV1AdminAccessControlRequest": {
-    "$ref": "#/components/schemas/AccessControlConfig"
-  },
-  "PutapiV1AdminEquipmentEquipmentIdReferenceRequest": {
-    "$ref": "#/components/schemas/EquipmentReferenceRequest"
-  },
-  "LocalReportEvidence": {
-    "additionalProperties": false,
-    "properties": {
-      "connections": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "eventId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "scope": {
-              "enum": [
-                "INTERNAL",
-                "INTER_PLATFORM"
-              ]
-            },
-            "sourceDeviceId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "sourcePlatformId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "targetDeviceId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "targetPlatformId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "time": {
-              "minimum": 0,
-              "type": "number"
-            }
-          },
-          "required": [
-            "eventId",
-            "time",
-            "scope",
-            "sourcePlatformId",
-            "sourceDeviceId",
-            "targetPlatformId",
-            "targetDeviceId"
-          ],
-          "type": "object"
-        },
-        "type": "array"
-      },
-      "deviceEvents": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "deviceId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "eventId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "platformId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "time": {
-              "minimum": 0,
-              "type": "number"
-            },
-            "type": {
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "eventId",
-            "type",
-            "time",
-            "platformId",
-            "deviceId"
-          ],
-          "type": "object"
-        },
-        "type": "array"
-      },
-      "endTimeS": {
-        "minimum": 0,
-        "type": "number"
-      },
-      "eventCount": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "eventCounts": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "count": {
-              "maximum": 9007199254740991,
-              "minimum": 1,
-              "type": "integer"
-            },
-            "type": {
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "count"
-          ],
-          "type": "object"
-        },
-        "type": "array"
-      },
-      "eventFile": {
-        "additionalProperties": false,
-        "properties": {
-          "fileName": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "fileName",
-          "sha256"
-        ],
-        "type": "object"
-      },
-      "eventWarningCount": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "nodes": {
-        "items": {
-          "additionalProperties": false,
-          "properties": {
-            "firstTimeS": {
-              "minimum": 0,
-              "type": "number"
-            },
-            "lastTimeS": {
-              "minimum": 0,
-              "type": "number"
-            },
-            "name": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "platformId": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "positionCount": {
-              "maximum": 9007199254740991,
-              "minimum": 0,
-              "type": "integer"
-            },
-            "side": {
-              "minLength": 1,
-              "type": "string"
-            },
-            "type": {
-              "minLength": 1,
-              "type": "string"
-            }
-          },
-          "required": [
-            "platformId",
-            "name",
-            "type",
-            "side",
-            "positionCount",
-            "firstTimeS",
-            "lastTimeS"
-          ],
-          "type": "object"
-        },
-        "minItems": 1,
-        "type": "array"
-      },
-      "positionCount": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "positionFile": {
-        "additionalProperties": false,
-        "properties": {
-          "fileName": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "sha256": {
-            "pattern": "^[a-f0-9]{64}$",
-            "type": "string"
-          }
-        },
-        "required": [
-          "fileName",
-          "sha256"
-        ],
-        "type": "object"
-      },
-      "positionIssueCount": {
-        "maximum": 9007199254740991,
-        "minimum": 0,
-        "type": "integer"
-      },
-      "simulationComplete": {
-        "type": "boolean"
-      },
-      "startTimeS": {
-        "minimum": 0,
-        "type": "number"
-      },
-      "waitingForPositionLine": {
-        "type": "boolean"
-      }
-    },
-    "required": [
-      "eventFile",
-      "positionFile",
-      "startTimeS",
-      "endTimeS",
-      "simulationComplete",
-      "positionCount",
-      "positionIssueCount",
-      "waitingForPositionLine",
-      "eventCount",
-      "eventWarningCount",
-      "nodes",
-      "eventCounts",
-      "connections",
-      "deviceEvents"
-    ],
-    "type": "object"
-  },
-  "LocalReportExportResult": {
-    "additionalProperties": false,
-    "properties": {
-      "filePath": {
-        "minLength": 1,
-        "type": "string"
-      },
-      "format": {
-        "enum": [
-          "HTML",
-          "CSV"
-        ]
-      },
-      "generated": {
-        "const": true
-      },
-      "reportId": {
-        "pattern": "^RPT-LOCAL-[a-f0-9]{64}$",
-        "type": "string"
-      },
-      "sha256": {
-        "pattern": "^[a-f0-9]{64}$",
-        "type": "string"
-      },
-      "status": {
-        "const": "SUCCESS"
-      },
-      "verifiedAt": {
-        "format": "date-time",
-        "type": "string"
-      },
-      "watermark": {
-        "minLength": 1,
-        "type": "string"
-      }
-    },
-    "required": [
-      "reportId",
-      "generated",
-      "status",
-      "format",
-      "watermark",
-      "verifiedAt",
-      "filePath",
-      "sha256"
-    ],
-    "type": "object"
-  },
-  "ReportExportOutcome": {
-    "oneOf": [
-      {
-        "$ref": "#/components/schemas/ReportExportResult"
-      },
-      {
-        "$ref": "#/components/schemas/LocalReportExportResult"
-      }
-    ]
-  },
-  "DeleteapiV1AdminEquipmentEquipmentIdResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/DeleteResult"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "EquipmentCreateRequest": {
-    "allOf": [
-      {
-        "$ref": "#/components/schemas/EquipmentParameter"
-      },
-      {
-        "properties": {
-          "readOnly": {
-            "const": false
-          },
-          "version": {
-            "const": 1
-          }
-        }
-      }
-    ]
-  },
-  "EquipmentUpdateRequest": {
-    "allOf": [
-      {
-        "$ref": "#/components/schemas/EquipmentParameter"
-      },
-      {
-        "properties": {
-          "readOnly": {
-            "const": false
-          }
-        }
-      }
-    ]
-  },
-  "EquipmentParameter": {
-    "additionalProperties": false,
-    "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。",
-    "properties": {
-      "bandwidthMHz": {
-        "exclusiveMinimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "berThreshold": {
-        "maximum": 1,
-        "minimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "dataRateMbps": {
-        "exclusiveMinimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "equipmentId": {
-        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
-        "type": "string"
-      },
-      "frequencyMaxMHz": {
-        "exclusiveMinimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "frequencyMinMHz": {
-        "exclusiveMinimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "modulation": {
-        "maxLength": 32,
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
-      "readOnly": {
-        "type": "boolean"
-      },
-      "txPowerW": {
-        "minimum": 0,
-        "type": [
-          "number",
-          "null"
-        ]
-      },
-      "type": {
-        "maxLength": 100,
-        "minLength": 1,
-        "pattern": "\\S",
-        "type": "string"
-      },
-      "version": {
-        "minimum": 1,
-        "type": "integer"
-      }
-    },
-    "required": [
-      "equipmentId",
-      "type",
-      "frequencyMinMHz",
-      "frequencyMaxMHz",
-      "modulation",
-      "berThreshold",
-      "readOnly",
-      "version"
-    ],
-    "type": "object"
-  },
-  "EquipmentParameterList": {
-    "items": {
-      "$ref": "#/components/schemas/EquipmentParameter"
-    },
-    "type": "array"
-  },
-  "GetapiV1AdminEquipmentResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/EquipmentParameterList"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "PostapiV1AdminEquipmentRequest": {
-    "$ref": "#/components/schemas/EquipmentCreateRequest"
-  },
-  "PostapiV1AdminEquipmentResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/EquipmentParameter"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  "PutapiV1AdminEquipmentEquipmentIdRequest": {
-    "$ref": "#/components/schemas/EquipmentUpdateRequest"
-  },
-  "PutapiV1AdminEquipmentEquipmentIdResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/EquipmentParameter"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  'AntennaGain': {
-    'additionalProperties': false,
-    'properties': {
-      'rx': {
-        'type': 'number'
-      },
-      'tx': {
-        'type': 'number'
-      }
-    },
-    'required': [
-      'tx',
-      'rx'
-    ],
-    'type': 'object'
-  },
-  'ArchiveList': {
-    'items': {
-      '$ref': '#/components/schemas/ArchiveRecord'
-    },
-    'type': 'array'
-  },
-  'ArchiveRecord': {
-    'additionalProperties': false,
-    'properties': {
-      'archiveId': {
-        'pattern': '^ARCH-',
-        'type': 'string'
-      },
-      'replayId': {
-        'pattern': '^REPLAY-',
-        'type': 'string'
-      },
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'status': {
-        'const': 'INDEXED'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'archiveId',
-      'taskId',
-      'scenarioId',
-      'runId',
-      'replayId',
-      'reportId',
-      'status'
-    ],
-    'type': 'object'
-  },
-  'AuditExportResult': {
-    'additionalProperties': false,
-    'properties': {
-      'classification': {
-        'const': 'INTERNAL'
-      },
-      'content': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'fileName': {
-        'pattern': '^operation_audit_[0-9]{14}_[A-Za-z0-9_-]+\\.txt$',
-        'type': 'string'
-      },
-      'generated': {
-        'const': true
-      },
-      'objectId': {
-        'const': 'AUDIT-LOG'
-      },
-      'recordCount': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'verifiedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'watermark': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'objectId',
-      'generated',
-      'classification',
-      'watermark',
-      'verifiedAt',
-      'fileName',
-      'content',
-      'recordCount'
-    ],
-    'type': 'object'
-  },
-  'AuditExportRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'action': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'actor': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'export': {
-        'const': true
-      },
-      'from': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'module': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'result': {
-        'enum': [
-          'SUCCESS',
-          'DENIED',
-          'ERROR'
-        ],
-        'type': 'string'
-      },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
-        ],
-        'type': 'string'
-      },
-      'to': {
-        'format': 'date-time',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'export',
-      'confirmationId'
-    ],
-    'type': 'object'
-  },
-  'AuditList': {
-    'items': {
-      '$ref': '#/components/schemas/AuditRecord'
-    },
-    'type': 'array'
-  },
-  'AuditRecord': {
-    'additionalProperties': false,
-    'properties': {
-      'action': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'actor': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'auditId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'immutableFixture': {
-        'const': true
-      },
-      'module': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'objectId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'occurredAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'result': {
-        'enum': [
-          'SUCCESS',
-          'DENIED',
-          'ERROR'
-        ]
-      },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
-        ],
-        'type': 'string'
-      }
-    },
-    'required': [
-      'auditId',
-      'actor',
-      'role',
-      'module',
-      'action',
-      'result',
-      'occurredAt',
-      'immutableFixture'
-    ],
-    'type': 'object'
-  },
-  'AuditRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'action': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'actor': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'export': {
-        'type': 'boolean'
-      },
-      'from': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'module': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'result': {
-        'enum': [
-          'SUCCESS',
-          'DENIED',
-          'ERROR'
-        ]
-      },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
-        ],
-        'type': 'string'
-      },
-      'to': {
-        'format': 'date-time',
-        'type': 'string'
-      }
-    },
-    'required': [],
-    'type': 'object'
-  },
-  "AuthResult": {
-    "additionalProperties": false,
-    "properties": {
-      "authenticated": {
-        "type": "boolean"
-      },
-      "principal": {
-        "additionalProperties": false,
-        "properties": {
-          "menuPaths": {
-            "$ref": "#/components/schemas/MenuPaths"
-          },
-          "permissions": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "role": {
-            "enum": [
-              "ADMIN",
-              "OPERATOR"
-            ],
-            "type": "string"
-          },
-          "userId": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "username": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "userId",
-          "username",
-          "role",
-          "permissions"
-        ],
-        "type": "object"
-      },
-      "reason": {
-        "enum": [
-          "INVALID_CREDENTIALS",
-          "ACCOUNT_LOCKED"
-        ]
-      },
-      "sessionCreated": {
-        "description": "true for SQLite server sessions; false only for unauthenticated responses or the isolated Mock entry.",
-        "type": "boolean"
-      }
-    },
-    "required": [
-      "authenticated",
-      "sessionCreated"
-    ],
-    "type": "object"
-  },
-  'BackupList': {
-    'items': {
-      '$ref': '#/components/schemas/BackupRecord'
-    },
-    'type': 'array'
-  },
-  "BackupRecord": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "backupId",
-      "status",
-      "checksum",
-      "createdAt"
-    ],
-    "properties": {
-      "backupId": {
-        "type": "string",
-        "minLength": 1
-      },
-      "status": {
-        "enum": [
-          "VALID_FIXTURE",
-          "INVALID_FIXTURE",
-          "VALID",
-          "INVALID"
-        ]
-      },
-      "checksum": {
-        "type": "string",
-        "minLength": 1
-      },
-      "createdAt": {
-        "type": "string",
-        "format": "date-time"
-      },
-      "name": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "\\S",
-        "maxLength": 80
-      },
-      "format": {
-        "enum": [
-          "SYSTEM_SQLITE_V1",
-          "MAIN_SQLITE_V1"
-        ]
-      }
-    },
-    "allOf": [
-      {
-        "if": {
-          "properties": {
-            "status": {
-              "enum": [
-                "VALID",
-                "INVALID"
-              ]
-            }
-          },
-          "required": [
-            "status"
-          ]
-        },
-        "then": {
-          "properties": {
-            "checksum": {
-              "pattern": "^[A-F0-9]{64}$"
-            }
-          }
-        }
-      }
-    ]
-  },
-  "BackupRequest": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "operation",
-      "confirmationId"
-    ],
-    "properties": {
-      "operation": {
-        "const": "BACKUP"
-      },
-      "backupId": {
-        "type": "string",
-        "minLength": 1
-      },
-      "confirmationId": {
-        "type": "string",
-        "minLength": 1
-      },
-      "name": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "\\S",
-        "maxLength": 80
-      }
-    }
-  },
-  'Batch': {
-    'additionalProperties': false,
-    'properties': {
-      'aggregateReportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      },
-      'batchId': {
-        'pattern': '^BATCH-',
-        'type': 'string'
-      },
-      'reportIds': {
-        'items': {
-          'pattern': '^RPT-',
-          'type': 'string'
-        },
-        'type': 'array'
-      },
-      'runIds': {
-        'items': {
-          'pattern': '^RUN-',
-          'type': 'string'
-        },
-        'type': 'array'
-      },
-      'state': {
-        'enum': [
-          'DRAFT',
-          'VALIDATING',
-          'QUEUED',
-          'RUNNING',
-          'COMPLETED',
-          'PARTIAL_FAILURE',
-          'CANCELLED',
-          'ERROR'
-        ]
-      }
-    },
-    'required': [
-      'batchId',
-      'state',
-      'runIds',
-      'reportIds',
-      'aggregateReportId'
-    ],
-    'type': 'object',
-    'x-fixture-path': '$.batch'
-  },
-  'BatchCommand': {
-    'additionalProperties': false,
-    'properties': {
-      'command': {
-        'enum': [
-          'START',
-          'CANCEL'
-        ]
-      }
-    },
-    'required': [
-      'command'
-    ],
-    'type': 'object'
-  },
-  'BatchDetail': {
-    'additionalProperties': false,
-    'properties': {
-      'aggregateReport': {
-        '$ref': '#/components/schemas/Report'
-      },
-      'batch': {
-        '$ref': '#/components/schemas/Batch'
-      },
-      'runs': {
-        'items': {
-          '$ref': '#/components/schemas/BatchRunResult'
-        },
-        'maxItems': 12,
-        'minItems': 12,
-        'type': 'array'
-      }
-    },
-    'required': [
-      'batch',
-      'runs',
-      'aggregateReport'
-    ],
-    'type': 'object'
-  },
-  'BatchList': {
-    'items': {
-      '$ref': '#/components/schemas/Batch'
-    },
-    'type': 'array'
-  },
-  'BatchReportLink': {
-    'additionalProperties': false,
-    'properties': {
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'reportId',
-      'runId'
-    ],
-    'type': 'object'
-  },
-  'BatchRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'deterministicOrder': {
-        'const': true
-      },
-      'distancesKm': {
-        'const': [
-          80,
-          100,
-          120
-        ],
-        'items': {
-          'minimum': 0,
-          'type': 'number'
-        },
-        'minItems': 1,
-        'type': 'array'
-      },
-      'powersW': {
-        'const': [
-          50,
-          100,
-          150,
-          200
-        ],
-        'items': {
-          'minimum': 0,
-          'type': 'number'
-        },
-        'minItems': 1,
-        'type': 'array'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'scenarioId',
-      'powersW',
-      'distancesKm',
-      'deterministicOrder'
-    ],
-    'type': 'object'
-  },
-  'BatchRunResult': {
-    'additionalProperties': false,
-    'properties': {
-      'avgBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'avgSnrDb': {
-        'type': 'number'
-      },
-      'connectivityDurationS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'connectivityRate': {
-        'maximum': 100,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'distanceKm': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'interferenceDurationS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'maxBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'minSnrDb': {
-        'type': 'number'
-      },
-      'powerW': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'status': {
-        'enum': [
-          'COMPLETED',
-          'ERROR'
-        ]
-      },
-      'switchCount': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'runId',
-      'reportId',
-      'powerW',
-      'distanceKm',
-      'connectivityDurationS',
-      'connectivityRate',
-      'switchCount',
-      'avgBer',
-      'maxBer',
-      'avgSnrDb',
-      'minSnrDb',
-      'interferenceDurationS',
-      'status'
-    ],
-    'type': 'object'
-  },
-  'CapabilityMetadata': {
-    'additionalProperties': false,
-    'allOf': [
-      {
-        'else': {
-          'properties': {
-            'states': {
-              'maxItems': 6,
-              'minItems': 6
-            }
-          }
-        },
-        'if': {
-          'properties': {
-            'id': {
-              'enum': [
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLJS',
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-FHSX',
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-SNBER',
-                'DSDWRJQTLJS-XQ-FZYXYLLJS-LLZT',
-                'DSDWRJQTLJS-XQ-GRYGZ-ESMGL',
-                'DSDWRJQTLJS-XQ-LLQHYYX-LLJC',
-                'DSDWRJQTLJS-XQ-LLQHYYX-QXL',
-                'DSDWRJQTLJS-XQ-LLQHYYX-HXL',
-                'DSDWRJQTLJS-XQ-LLQHYYX-QHJY'
-              ]
-            }
-          },
-          'required': [
-            'id'
-          ]
-        },
-        'then': {
-          'properties': {
-            'states': {
-              'maxItems': 5,
-              'minItems': 5,
-              'not': {
-                'contains': {
-                  'const': 'EXECUTING'
-                }
-              }
-            }
-          }
-        }
-      }
-    ],
-    'properties': {
-      'coverage': {
-        'enum': [
-          'INTERACTIVE_UI',
-          'VISIBLE_CONTRACT'
-        ]
-      },
-      'destination': {
-        'type': 'string'
-      },
-      'id': {
-        'pattern': '^DSDWRJQTLJS-XQ-',
-        'type': 'string'
-      },
-      'module': {
-        'type': 'string'
-      },
-      'name': {
-        'type': 'string'
-      },
-      'states': {
-        'items': {
-          'enum': [
-            'LOADING',
-            'VALIDATING',
-            'EXECUTING',
-            'SUCCESS',
-            'EMPTY',
-            'ERROR'
-          ]
-        },
-        'type': 'array',
-        'uniqueItems': true
-      }
-    },
-    'required': [
-      'id',
-      'module',
-      'name',
-      'coverage',
-      'destination',
-      'states'
-    ],
-    'type': 'object'
-  },
-  'CapabilityMetadataList': {
-    'items': {
-      '$ref': '#/components/schemas/CapabilityMetadata'
-    },
-    'maxItems': 29,
-    'minItems': 29,
-    'type': 'array'
-  },
-  'Clock': {
-    'additionalProperties': {
-      'format': 'date-time',
-      'type': 'string'
-    },
-    'type': 'object'
-  },
-  'ClosedLoopContext': {
-    'additionalProperties': false,
-    'properties': {
-      'affectedLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'detectionEventId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'frameId',
-      'detectionEventId',
-      'targetPlatformId',
-      'affectedLinkId'
-    ],
-    'type': 'object'
-  },
-  'CompositeLossEvidence': {
-    'additionalProperties': false,
-    'properties': {
-      'effectiveNoiseAndInterferenceDbm': {
-        'type': 'number'
-      },
-      'freeSpaceLossDb': {
-        'type': 'number'
-      },
-      'interferenceLossDb': {
-        'type': 'number'
-      },
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'modelVersion': {
-        'const': 'COMPOSITE-LOSS-1.0'
-      },
-      'noisePowerDbm': {
-        'type': 'number'
-      },
-      'obstructionLossDb': {
-        'type': 'number'
-      },
-      'systemLossDb': {
-        'type': 'number'
-      },
-      'totalPathLossDb': {
-        'type': 'number'
-      }
-    },
-    'required': [
-      'linkId',
-      'freeSpaceLossDb',
-      'systemLossDb',
-      'obstructionLossDb',
-      'interferenceLossDb',
-      'totalPathLossDb',
-      'noisePowerDbm',
-      'effectiveNoiseAndInterferenceDbm',
-      'modelVersion'
-    ],
-    'type': 'object'
-  },
-  'ConfirmRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'confirm': {
-        'const': true
-      }
-    },
-    'required': [
-      'confirm'
-    ],
-    'type': 'object'
-  },
-  'ConfirmationContext': {
-    'additionalProperties': false,
-    'properties': {
-      'actor': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'createdAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'expiresAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
-        ],
-        'type': 'string'
-      },
-      'state': {
-        'enum': [
-          'CLOSED',
-          'AWAITING_CONFIRMATION',
-          'CONFIRMED',
-          'CANCELLED',
-          'EXPIRED',
-          'ERROR'
-        ]
-      }
-    },
-    'required': [
-      'confirmationId',
-      'state',
-      'actor',
-      'role',
-      'createdAt',
-      'expiresAt'
-    ],
-    'type': 'object'
-  },
-  'ConfirmationRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'action': {
-        'enum': [
-          'SCENARIO_WARNING_CONTINUE',
-          'OFFICIAL_TEMPLATE_DELETE',
-          'SIMULATION_STOP',
-          'BATCH_LEVEL_III_EXPORT',
-          'BACKUP_RESTORE',
-          'FULL_CONFIG_EXPORT',
-          'AUDIT_EXPORT',
-          'MASTER_DATA_DELETE'
-        ]
-      },
-      'objectId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'action',
-      'objectId'
-    ],
-    'type': 'object'
-  },
-  'ContractDescriptor': {
-    'additionalProperties': false,
-    'properties': {
-      'fields': {
-        'items': {
-          'type': 'string'
-        },
-        'type': 'array'
-      },
-      'name': {
-        'type': 'string'
-      },
-      'sourceRef': {
-        'type': 'string'
-      },
-      'version': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'name',
-      'version',
-      'sourceRef',
-      'fields'
-    ],
-    'type': 'object'
-  },
-  'CopyTemplateRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'name': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'scenarioId': {
-        'minLength': 1,
-        'pattern': '^SCN-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'name'
-    ],
-    'type': 'object'
-  },
-  'CsvContractList': {
-    'items': {
-      '$ref': '#/components/schemas/ContractDescriptor'
-    },
-    'maxItems': 3,
-    'minItems': 3,
-    'type': 'array'
-  },
-  'DecisionMetadata': {
-    'additionalProperties': false,
-    'properties': {
-      'adopted': {
-        'type': 'string'
-      },
-      'conflict': {
-        'type': 'string'
-      },
-      'effect': {
-        'type': 'string'
-      },
-      'id': {
-        'pattern': '^DEC-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'id',
-      'conflict',
-      'adopted',
-      'effect'
-    ],
-    'type': 'object'
-  },
-  'DecisionMetadataList': {
-    'items': {
-      '$ref': '#/components/schemas/DecisionMetadata'
-    },
-    'maxItems': 8,
-    'minItems': 8,
-    'type': 'array'
-  },
-  'DeleteResult': {
-    'additionalProperties': false,
-    'properties': {
-      'deleted': {
-        'type': 'boolean'
-      },
-      'objectId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'deleted',
-      'objectId'
-    ],
-    'type': 'object'
-  },
-  'DeleteapiV1AdminMasterDataDataIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/DeleteResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'DeleteapiV1AdminUsersUserIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/DeleteResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'DeleteapiV1ScenariosScenarioIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/DeleteResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'DeleteapiV1TemplatesTemplateIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/DeleteResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'DeterministicFixtures': {
-    'additionalProperties': false,
-    'properties': {
-      'archive': {
-        '$ref': '#/components/schemas/ArchiveRecord'
-      },
-      'audit': {
-        'items': {
-          '$ref': '#/components/schemas/AuditRecord'
-        },
-        'type': 'array'
-      },
-      'backups': {
-        'items': {
-          '$ref': '#/components/schemas/BackupRecord'
-        },
-        'type': 'array'
-      },
-      'batch': {
-        '$ref': '#/components/schemas/Batch'
-      },
-      'batchAggregateReport': {
-        '$ref': '#/components/schemas/Report'
-      },
-      'batchReports': {
-        'items': {
-          '$ref': '#/components/schemas/BatchReportLink'
-        },
-        'maxItems': 12,
-        'minItems': 12,
-        'type': 'array'
-      },
-      'batchRuns': {
-        'items': {
-          '$ref': '#/components/schemas/BatchRunResult'
-        },
-        'maxItems': 12,
-        'minItems': 12,
-        'type': 'array'
-      },
-      'clock': {
-        '$ref': '#/components/schemas/Clock'
-      },
-      'contracts': {
-        '$ref': '#/components/schemas/FixtureContracts'
-      },
-      'diagnostics': {
-        '$ref': '#/components/schemas/SystemHealth'
-      },
-      'epoch': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'events': {
-        'items': {
-          '$ref': '#/components/schemas/EventRecord'
-        },
-        'type': 'array'
-      },
-      'fileArchives': {
-        'items': {
-          '$ref': '#/components/schemas/FileArchiveFixture'
-        },
-        'type': 'array'
-      },
-      'fixtureVersion': {
-        'type': 'string'
-      },
-      'frame': {
-        '$ref': '#/components/schemas/TelemetryFrame'
-      },
-      'masterData': {
-        'items': {
-          '$ref': '#/components/schemas/MasterData'
-        },
-        'type': 'array'
-      },
-      'metadata': {
-        '$ref': '#/components/schemas/FixtureMetadata'
-      },
-      'principals': {
-        'items': {
-          '$ref': '#/components/schemas/User'
-        },
-        'type': 'array'
-      },
-      'replay': {
-        '$ref': '#/components/schemas/Replay'
-      },
-      'report': {
-        '$ref': '#/components/schemas/Report'
-      },
-      'reset': {
-        '$ref': '#/components/schemas/ResetFixture'
-      },
-      'run': {
-        '$ref': '#/components/schemas/SimulationRun'
-      },
-      'scenario': {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      },
-      'scenarioCoverage': {
-        '$ref': '#/components/schemas/ScenarioCoverageFixture'
-      },
-      'schemaVersion': {
-        'const': '1.0'
-      },
-      'script': {
-        '$ref': '#/components/schemas/ScriptContract'
-      },
-      'task': {
-        '$ref': '#/components/schemas/TaskFixture'
-      },
-      'templates': {
-        'items': {
-          '$ref': '#/components/schemas/ScenarioTemplateIndex'
-        },
-        'type': 'array'
-      },
-      'validation': {
-        '$ref': '#/components/schemas/FixtureValidationLink'
-      }
-    },
-    'required': [
-      'schemaVersion',
-      'fixtureVersion',
-      'epoch',
-      'clock',
-      'principals',
-      'templates',
-      'fileArchives',
-      'masterData',
-      'backups',
-      'audit',
-      'diagnostics',
-      'scenarioCoverage',
-      'scenario',
-      'task',
-      'script',
-      'run',
-      'frame',
-      'events',
-      'replay',
-      'report',
-      'archive',
-      'batch',
-      'batchRuns',
-      'batchReports',
-      'batchAggregateReport',
-      'reset',
-      'validation',
-      'metadata',
-      'contracts'
-    ],
-    'type': 'object',
-    'x-fixture-document': 'deterministic-fixtures.json',
-    'x-type-contract': 'domain-models.ts#DeterministicFixtureSet'
-  },
-  'Environment': {
-    'additionalProperties': false,
-    'properties': {
-      'humidityPercent': {
-        'maximum': 100,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'multipathEnabled': {
-        'type': 'boolean'
-      },
-      'rainCloudAttenuation': {
-        'default': 'lightRain',
-        'enum': [
-          'none',
-          'lightRain',
-          'moderateRain',
-          'heavyRain'
-        ],
-        'type': 'string'
-      },
-      'rainLossDbPerKm': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'rainRateMmPerHour': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'seaState': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'simClockSpeed': {
-        'default': 2,
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'temperatureC': {
-        'type': 'number'
-      },
-      'transmissionDistance': {
-        'default': 300,
-        'description': '海峡宽度，单位 km；不是各条链路的实际通信距离。',
-        'maximum': 410,
-        'minimum': 150,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'seaState',
-      'temperatureC',
-      'humidityPercent',
-      'rainRateMmPerHour',
-      'rainLossDbPerKm',
-      'multipathEnabled'
-    ],
-    'type': 'object'
-  },
-  'ErrorCode': {
-    'enum': [
-      'INVALID_REQUEST',
-      'VALIDATION_FAILED',
-      'NOT_FOUND',
-      'CONFLICT',
-      'INVALID_CREDENTIALS',
-      'ACCOUNT_LOCKED',
-      'PERMISSION_DENIED',
-      'LAST_ADMIN_GUARD',
-      'CONFIRMATION_REQUIRED',
-      'CONFIRMATION_EXPIRED',
-      'CONFIG_LOCKED',
-      'INVALID_TRANSITION',
-      'NODE_LIMIT_EXCEEDED',
-      'DUPLICATE_EVENT',
-      'VERSION_CONFLICT',
-      'FRAME_MISMATCH',
-      'HEADER_INVALID',
-      'TYPE_INVALID',
-      'ENCODING_INVALID',
-      'ATOMIC_REPLACE_FAILED',
-      'START_FAILED',
-      'TIMEOUT',
-      'EXIT_NONZERO',
-      'CORRUPT_FIXTURE',
-      'OUT_OF_RANGE',
-      'DEVICE_DISABLED',
-      'LOOPBACK_ONLY',
-      'TOPIC_FORBIDDEN',
-      'SEQUENCE_GAP',
-      'INTERNAL_FIXTURE_ERROR'
-    ],
-    'type': 'string'
-  },
-  'ErrorDetail': {
-    'additionalProperties': false,
-    'properties': {
-      'code': {
-        '$ref': '#/components/schemas/ErrorCode'
-      },
-      'correlationId': {
-        'type': 'string'
-      },
-      'details': {
-        'type': [
-          'object',
-          'array',
-          'string',
-          'number',
-          'boolean',
-          'null'
-        ]
-      },
-      'fieldPath': {
-        'type': 'string'
-      },
-      'message': {
-        'type': 'string'
-      },
-      'retryable': {
-        'type': 'boolean'
-      }
-    },
-    'required': [
-      'code',
-      'message',
-      'retryable',
-      'correlationId'
-    ],
-    'type': 'object'
-  },
-  'ErrorEnvelope': {
-    'additionalProperties': false,
-    'properties': {
-      'error': {
-        '$ref': '#/components/schemas/ErrorDetail'
-      },
-      'meta': {
-        'additionalProperties': false,
-        'properties': {
-          'generatedAt': {
-            'format': 'date-time',
-            'type': 'string'
-          },
-          'requestId': {
-            'type': 'string'
-          }
-        },
-        'required': [
-          'requestId',
-          'generatedAt'
-        ],
-        'type': 'object'
-      },
-      'ok': {
-        'const': false
-      }
-    },
-    'required': [
-      'ok',
-      'error',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'EventList': {
-    'items': {
-      '$ref': '#/components/schemas/EventRecord'
-    },
-    'type': 'array'
-  },
-  'EventRecord': {
-    'additionalProperties': false,
-    'allOf': [
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'DETECTION'
-            }
-          }
-        },
-        'then': {
-          'required': [
-            'sensorId',
-            'targetPlatformId',
-            'detectionProbability'
-          ]
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'LINK_SWITCH'
-            }
-          }
-        },
-        'then': {
-          'required': [
-            'direction',
-            'oldLinkId',
-            'newLinkId',
-            'oldBer',
-            'newBer',
-            'stabilityFrames',
-            'minimumStableFrames',
-            'hysteresisSatisfied',
-            'cooldownRemainingS',
-            'decision',
-            'reason'
-          ]
-        }
-      }
-    ],
-    'properties': {
-      'cooldownRemainingS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'decision': {
-        'enum': [
-          'ACCEPTED',
-          'REJECTED'
-        ]
-      },
-      'dedupeKey': {
-        'type': 'string'
-      },
-      'detectionProbability': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'enum': [
-          'FORWARD',
-          'REVERSE'
-        ]
-      },
-      'eventId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'hysteresisSatisfied': {
-        'type': 'boolean'
-      },
-      'minimumStableFrames': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'newBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'newLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'oldBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'oldLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'reason': {
-        'type': 'string'
-      },
-      'sensorId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'sourceRegistryTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'stabilityFrames': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'time': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'type': {
-        'enum': [
-          'DETECTION',
-          'LINK_SWITCH'
-        ]
-      }
-    },
-    'required': [
-      'eventId',
-      'frameId',
-      'time',
-      'type',
-      'dedupeKey'
-    ],
-    'type': 'object',
-    'x-fixture-path': '$.events'
-  },
-  'ExportStatus': {
-    'additionalProperties': false,
-    'properties': {
-      'classification': {
-        'enum': [
-          'INTERNAL',
-          'LEVEL_II',
-          'LEVEL_III'
-        ]
-      },
-      'generated': {
-        'const': false
-      },
-      'objectId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'verifiedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'watermark': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'objectId',
-      'generated',
-      'classification',
-      'watermark',
-      'verifiedAt'
-    ],
-    'type': 'object'
-  },
-  'FileArchiveFixture': {
-    'additionalProperties': false,
-    'properties': {
-      'contract': {
-        'enum': [
-          'link_quality.csv',
-          'events.csv',
-          'link_switch.csv'
-        ]
-      },
-      'createdAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'fileId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'status': {
-        'const': 'VALID_FIXTURE'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'fileId',
-      'taskId',
-      'contract',
-      'status',
-      'createdAt'
-    ],
-    'type': 'object'
-  },
-  'FixtureContracts': {
-    'additionalProperties': false,
-    'properties': {
-      'csv': {
-        '$ref': '#/components/schemas/CsvContractList'
-      },
-      'frontendTypes': {
-        '$ref': '#/components/schemas/FrontendContractList'
-      },
-      'scenarioConfig': {
-        '$ref': '#/components/schemas/ContractDescriptor'
-      }
-    },
-    'required': [
-      'scenarioConfig',
-      'frontendTypes',
-      'csv'
-    ],
-    'type': 'object'
-  },
-  'FixtureMetadata': {
-    'additionalProperties': false,
-    'properties': {
-      'capabilities': {
-        '$ref': '#/components/schemas/CapabilityMetadataList'
-      },
-      'decisions': {
-        '$ref': '#/components/schemas/DecisionMetadataList'
-      },
-      'interfaces': {
-        '$ref': '#/components/schemas/InterfaceMetadataList'
-      },
-      'routes': {
-        '$ref': '#/components/schemas/RouteMetadataList'
-      }
-    },
-    'required': [
-      'capabilities',
-      'interfaces',
-      'decisions',
-      'routes'
-    ],
-    'type': 'object'
-  },
-  'FixtureValidationLink': {
-    'additionalProperties': false,
-    'properties': {
-      'fixturePaths': {
-        'additionalProperties': {
-          'type': 'string'
-        },
-        'type': 'object'
-      },
-      'openApiDocument': {
-        'const': 'mock-api.openapi.yaml'
-      },
-      'requiredEvidence': {
-        'items': {
-          'type': 'string'
-        },
-        'type': 'array'
-      },
-      'rootSchema': {
-        'const': '#/components/schemas/DeterministicFixtures'
-      },
-      'typeContract': {
-        'const': 'domain-models.ts#DeterministicFixtureSet'
-      }
-    },
-    'required': [
-      'openApiDocument',
-      'rootSchema',
-      'typeContract',
-      'fixturePaths',
-      'requiredEvidence'
-    ],
-    'type': 'object'
-  },
-  'FrameEvidence': {
-    'additionalProperties': false,
-    'properties': {
-      'jammerExecution': {
-        '$ref': '#/components/schemas/JammerExecutionEvidence'
-      },
-      'losses': {
-        'items': {
-          '$ref': '#/components/schemas/CompositeLossEvidence'
-        },
-        'type': 'array'
-      },
-      'routeCandidates': {
-        'items': {
-          '$ref': '#/components/schemas/RouteCandidateEvidence'
-        },
-        'type': 'array'
-      },
-      'routeDecisions': {
-        'items': {
-          '$ref': '#/components/schemas/RouteDecision'
-        },
-        'maxItems': 2,
-        'minItems': 0,
-        'type': 'array'
-      },
-      'synchronization': {
-        '$ref': '#/components/schemas/SynchronizationEvidence'
-      }
-    },
-    'required': [
-      'losses',
-      'routeCandidates',
-      'routeDecisions',
-      'synchronization',
-      'jammerExecution'
-    ],
-    'type': 'object'
-  },
-  'FrequencyRange': {
-    'additionalProperties': false,
-    'properties': {
-      'max': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'min': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'min',
-      'max'
-    ],
-    'type': 'object'
-  },
-  'FrontendContractList': {
-    'items': {
-      '$ref': '#/components/schemas/ContractDescriptor'
-    },
-    'maxItems': 5,
-    'minItems': 5,
-    'type': 'array'
-  },
-  'FullConfigExportRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'format': {
-        'const': 'JSON'
-      }
-    },
-    'required': [
-      'format',
-      'confirmationId'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminArchivesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ArchiveList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminAuditResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/AuditList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminBackupsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/BackupList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminHealthResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SystemHealth'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminMasterDataResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/MasterDataList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AdminUsersResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/UserList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AuthPermissionsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/PermissionSet'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1AuthSessionResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/AuthResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1BatchesBatchIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/BatchDetail'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1BatchesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/BatchList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ContractsCsvResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/CsvContractList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ContractsFrontendTypesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/FrontendContractList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ContractsScenarioConfigResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ContractDescriptor'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1MetaCapabilitiesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/CapabilityMetadataList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1MetaDecisionsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/DecisionMetadataList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1MetaInterfacesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/InterfaceMetadataList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1MetaRoutesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/RouteMetadataList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ReplaysReplayIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/Replay'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ReplaysResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ReplayList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ReportsReportIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/Report'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ReportsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ReportList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ScenariosResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1ScenariosScenarioIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1SimulationsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SimulationRunList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1SimulationsRunIdEventsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/EventList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1SimulationsRunIdFramesFrameIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/TelemetryFrame'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1SimulationsRunIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SimulationRun'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1TemplatesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/TemplateList'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'GetapiV1TemplatesTemplateIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioTemplate'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'ImportResult': {
-    'additionalProperties': false,
-    'properties': {
-      'drafts': {
-        'items': {
-          '$ref': '#/components/schemas/ScenarioDraft'
-        },
-        'type': 'array'
-      },
-      'imported': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'rejected': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'imported',
-      'rejected',
-      'drafts'
-    ],
-    'type': 'object'
-  },
-  'InformationDemand': {
-    'additionalProperties': false,
-    'if': {
-      'required': [
-        'linkId'
-      ]
-    },
-    'properties': {
-      'destinationPlatformIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'minItems': 1,
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'direction': {
-        'enum': [
-          'FORWARD',
-          'REVERSE'
-        ]
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'frequencyHz': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'id': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'informationType': {
-        'type': 'string'
-      },
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'maxLatencyMs': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'minDataRateMbps': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'priority': {
-        'enum': [
-          'HIGH',
-          'NORMAL'
-        ]
-      },
-      'sourcePlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'volumeMb': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'id',
-      'sourcePlatformId',
-      'destinationPlatformIds',
-      'informationType',
-      'volumeMb',
-      'frequencyHz',
-      'priority',
-      'maxLatencyMs',
-      'minDataRateMbps'
-    ],
-    'then': {
-      'properties': {
-        'destinationPlatformIds': {
-          'maxItems': 1
-        }
-      },
-      'required': [
-        'direction'
-      ]
-    },
-    'type': 'object'
-  },
-  'InterfaceMetadata': {
-    'additionalProperties': false,
-    'properties': {
-      'destination': {
-        'type': 'string'
-      },
-      'id': {
-        'pattern': '^DSDWRJQTLJS-JK-',
-        'type': 'string'
-      },
-      'kind': {
-        'enum': [
-          '外部',
-          '内部'
-        ]
-      },
-      'name': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'id',
-      'kind',
-      'name',
-      'destination'
-    ],
-    'type': 'object'
-  },
-  'InterfaceMetadataList': {
-    'items': {
-      '$ref': '#/components/schemas/InterfaceMetadata'
-    },
-    'maxItems': 7,
-    'minItems': 7,
-    'type': 'array'
-  },
-  'Jammer': {
-    'additionalProperties': false,
-    'properties': {
-      'autoDetect': {
-        'type': 'boolean'
-      },
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'defaultPower': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'detectionRange': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'id': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'platformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'triggerTimeS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'type': {
-        'enum': [
-          'BARRAGE',
-          'SPOT',
-          'SWEEP'
-        ],
-        'type': 'string'
-      }
-    },
-    'required': [
-      'id',
-      'platformId',
-      'type',
-      'defaultPower',
-      'frequency',
-      'bandwidth',
-      'autoDetect',
-      'detectionRange'
-    ],
-    'type': 'object'
-  },
-  'JammerExecutionEvidence': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'duration': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'power': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'reason': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'startTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'jammerId',
-      'targetPlatformId',
-      'power',
-      'frequency',
-      'bandwidth',
-      'startTime',
-      'duration',
-      'reason'
-    ],
-    'type': 'object'
-  },
-  'JammerState': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'maximum': 360,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'duration': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'effectiveFrameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'executionStatus': {
-        'const': 'SUCCESS'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'power': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'reason': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'taskId',
-      'jammerId',
-      'enabled',
-      'frequency',
-      'bandwidth',
-      'power',
-      'direction',
-      'duration',
-      'executionStatus',
-      'effectiveFrameId',
-      'reason'
-    ],
-    'type': 'object'
-  },
-  'JammerStatusData': {
-    'additionalProperties': false,
-    'properties': {
-      'active': {
-        'type': 'boolean'
-      },
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'platformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'power': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'targetPlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'time': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'time',
-      'jammerId',
-      'platformId',
-      'power',
-      'frequency',
-      'bandwidth',
-      'active'
-    ],
-    'type': 'object'
-  },
-  'JammerUiExtension': {
-    'additionalProperties': false,
-    'properties': {
-      'direction': {
-        'maximum': 360,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'duration': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'jammerId',
-      'direction',
-      'duration',
-      'enabled'
-    ],
-    'type': 'object'
-  },
-  'JammingCommand': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'maximum': 360,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'duration': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'power': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'enabled',
-      'frequency',
-      'bandwidth',
-      'power',
-      'direction',
-      'duration'
-    ],
-    'type': 'object'
-  },
-  'JammingDecision': {
-    'additionalProperties': false,
-    'properties': {
-      'action': {
-        'const': 'START'
-      },
-      'affectedLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'decisionId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'detectionEventId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'effectiveFrameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'linkStatus': {
-        'enum': [
-          'UP',
-          'DEGRADED',
-          'DOWN'
-        ]
-      },
-      'reason': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'decisionId',
-      'runId',
-      'frameId',
-      'detectionEventId',
-      'targetPlatformId',
-      'jammerId',
-      'affectedLinkId',
-      'action',
-      'linkStatus',
-      'effectiveFrameId',
-      'reason'
-    ],
-    'type': 'object'
-  },
-  'JammingParameterSet': {
-    'additionalProperties': false,
-    'properties': {
-      'effectiveFrameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'parameters': {
-        '$ref': '#/components/schemas/JammingCommand'
-      },
-      'version': {
-        'minimum': 1,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'version',
-      'effectiveFrameId',
-      'parameters'
-    ],
-    'type': 'object'
-  },
-  'Link': {
-    'additionalProperties': false,
-    'allOf': [
-      {
-        'else': {
-          'properties': {
-            'relayPlatformId': {
-              'type': 'null'
-            }
-          }
-        },
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'SAT'
-            }
-          }
-        }
-      }
-    ],
-    'properties': {
-      'antennaGain': {
-        '$ref': '#/components/schemas/AntennaGain'
-      },
-      'antennaGainCorrectionDb': {
-        'default': 0,
-        'type': 'number'
-      },
-      'antiJammingGainDb': {
-        'default': 0,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'berThreshold': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'coding': {
-        'pattern': '^[A-Za-z0-9][A-Za-z0-9_.()+/=-]{0,63}$',
-        'type': [
-          'string',
-          'null'
-        ]
-      },
-      'dataRate': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'enum': [
-          'FORWARD',
-          'REVERSE'
-        ],
-        'type': 'string'
-      },
-      'enabled': {
-        'default': true,
-        'type': 'boolean'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'id': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'modulation': {
-        'enum': [
-          'BPSK',
-          'QPSK'
-        ],
-        'type': 'string'
-      },
-      'relayPlatformId': {
-        'minLength': 1,
-        'type': [
-          'string',
-          'null'
-        ]
-      },
-      'sourcePlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'spatialIsolationDb': {
-        'default': 0,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'txPower': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'type': {
-        'enum': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'type': 'string'
-      }
-    },
-    'required': [
-      'id',
-      'type',
-      'sourcePlatformId',
-      'targetPlatformId',
-      'frequency',
-      'bandwidth',
-      'txPower',
-      'antennaGain',
-      'modulation',
-      'berThreshold',
-      'dataRate',
-      'direction'
-    ],
-    'type': 'object'
-  },
-  'LinkQualityData': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'ber': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'berThreshold': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'dataRate': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'destPlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'distance': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'jammingPower': {
-        'type': 'number'
-      },
-      'linkStatus': {
-        'enum': [
-          'UP',
-          'DOWN'
-        ]
-      },
-      'linkType': {
-        'enum': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'type': 'string'
-      },
-      'modulation': {
-        'enum': [
-          'BPSK',
-          'QPSK'
-        ],
-        'type': 'string'
-      },
-      'pathLoss': {
-        'type': 'number'
-      },
-      'receivedPower': {
-        'type': 'number'
-      },
-      'rxAntennaGain': {
-        'type': 'number'
-      },
-      'snr': {
-        'type': 'number'
-      },
-      'sourcePlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'time': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'txAntennaGain': {
-        'type': 'number'
-      },
-      'txPower': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'time',
-      'sourcePlatform',
-      'destPlatform',
-      'linkType',
-      'frequency',
-      'bandwidth',
-      'distance',
-      'txPower',
-      'txAntennaGain',
-      'rxAntennaGain',
-      'pathLoss',
-      'jammingPower',
-      'receivedPower',
-      'snr',
-      'modulation',
-      'ber',
-      'linkStatus',
-      'berThreshold',
-      'dataRate'
-    ],
-    'type': 'object',
-    'x-source': 'SRS §3.5.4'
-  },
-  'LinkStatusSummary': {
-    'additionalProperties': false,
-    'properties': {
-      'currentBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'currentSnr': {
-        'type': 'number'
-      },
-      'destPlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'linkKey': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'linkType': {
-        'enum': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'type': 'string'
-      },
-      'sourcePlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'status': {
-        'enum': [
-          'UP',
-          'DOWN'
-        ],
-        'type': 'string'
-      },
-      'updatedAt': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'linkKey',
-      'sourcePlatform',
-      'destPlatform',
-      'linkType',
-      'currentSnr',
-      'currentBer',
-      'status',
-      'updatedAt'
-    ],
-    'type': 'object',
-    'x-source': 'SRS §3.5.4'
-  },
-  'LoginRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'passwordFixture': {
-        'description': 'Legacy wire field name retained for compatibility; carries the entered password, never a fixture selector. Do not log or persist plaintext.',
-        'maxLength': 128,
-        'minLength': 1,
-        'type': 'string',
-        'writeOnly': true
-      },
-      'username': {
-        'maxLength': 64,
-        'minLength': 1,
-        'pattern': '.*\\S.*',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'username',
-      'passwordFixture'
-    ],
-    'type': 'object'
-  },
-  'LogoutRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'confirm': {
-        'const': true
-      }
-    },
-    'required': [
-      'confirm'
-    ],
-    'type': 'object'
-  },
-  'MasterData': {
-    'type': 'object',
-    'additionalProperties': false,
-    'required': [
-      'dataId',
-      'kind',
-      'version',
-      'referenceCount',
-      'active'
-    ],
-    'properties': {
-      'dataId': {
-        'type': 'string',
-        'minLength': 1,
-        'not': {
-          'enum': [
-            '.',
-            '..'
-          ]
-        }
-      },
-      'kind': {
-        'type': 'string',
-        'minLength': 1,
-        'pattern': '\\S'
-      },
-      'version': {
-        'type': 'integer',
-        'minimum': 1
-      },
-      'referenceCount': {
-        'type': 'integer',
-        'minimum': 0
-      },
-      'active': {
-        'type': 'boolean'
-      },
-      'content': {
-        '$ref': '#/components/schemas/MasterDataContent'
-      }
-    }
-  },
-  'MasterDataList': {
-    'items': {
-      '$ref': '#/components/schemas/MasterData'
-    },
-    'type': 'array'
-  },
-  'MasterDataRequest': {
-    'type': 'object',
-    'additionalProperties': false,
-    'required': [
-      'operation',
-      'data'
-    ],
-    'properties': {
-      'operation': {
-        'enum': [
-          'CREATE',
-          'UPDATE',
-          'DELETE'
-        ]
-      },
-      'data': {
-        '$ref': '#/components/schemas/MasterDataWrite'
-      },
-      'confirmationId': {
-        'type': 'string',
-        'minLength': 1
-      }
-    }
-  },
-  'Meta': {
-    'additionalProperties': false,
-    'properties': {
-      'generatedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'page': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'pageSize': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'requestId': {
-        'type': 'string'
-      },
-      'total': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'requestId',
-      'generatedAt',
-      'page',
-      'pageSize',
-      'total'
-    ],
-    'type': 'object'
-  },
-  'MutationRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'expectedRevision': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'expectedRevision'
-    ],
-    'type': 'object'
-  },
-  'OutputConfig': {
-    'additionalProperties': false,
-    'properties': {
-      'directory': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'eventsEnabled': {
-        'type': 'boolean'
-      },
-      'linkQualityEnabled': {
-        'type': 'boolean'
-      },
-      'linkSwitchEnabled': {
-        'type': 'boolean'
-      },
-      'writeInterval': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'directory',
-      'writeInterval',
-      'linkQualityEnabled',
-      'eventsEnabled',
-      'linkSwitchEnabled'
-    ],
-    'type': 'object'
-  },
-  "PermissionSet": {
-    "additionalProperties": false,
-    "properties": {
-      "menuPaths": {
-        "$ref": "#/components/schemas/MenuPaths"
-      },
-      "permissions": {
-        "items": {
-          "type": "string"
-        },
-        "type": "array",
-        "uniqueItems": true
-      },
-      "role": {
-        "enum": [
-          "ADMIN",
-          "OPERATOR"
-        ],
-        "type": "string"
-      }
-    },
-    "required": [
-      "role",
-      "permissions"
-    ],
-    "type": "object"
-  },
-  'Platform': {
-    'additionalProperties': false,
-    'allOf': [
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'REAR_COMMAND_NODE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'ground'
-            }
-          }
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'FORWARD_RELAY_NODE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'air'
-            }
-          }
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'GROUND_CLUSTER_COMMAND_NODE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'ground'
-            }
-          }
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'AIRBORNE_MISSION_CLUSTER'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'air'
-            }
-          }
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'COMMUNICATION_SATELLITE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'space'
-            }
-          }
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'GROUND_JAMMER_DETECTION_STATION'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'ground'
-            }
-          }
-        }
-      },
-      {
-        'else': {
-          'not': {
-            'required': [
-              'satelliteType'
-            ]
-          }
-        },
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'COMMUNICATION_SATELLITE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        }
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'AIRBORNE_JAMMER_PLATFORM'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'properties': {
-            'category': {
-              'const': 'air'
-            }
-          }
-        }
-      }
-    ],
-    'properties': {
-      'category': {
-        'enum': [
-          'ground',
-          'air',
-          'space'
-        ],
-        'type': 'string'
-      },
-      'id': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'initialPosition': {
-        '$ref': '#/components/schemas/Position'
-      },
-      'jammerIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'linkIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'name': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'satelliteType': {
-        'description': '仅通信卫星使用；旧场景允许缺省。',
-        'enum': [
-          'TIANTONG',
-          'SHENTONG'
-        ],
-        'type': 'string'
-      },
-      'sensorIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'type': {
-        'enum': [
-          'REAR_COMMAND_NODE',
-          'FORWARD_RELAY_NODE',
-          'GROUND_CLUSTER_COMMAND_NODE',
-          'AIRBORNE_MISSION_CLUSTER',
-          'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION',
-          'AIRBORNE_JAMMER_PLATFORM'
-        ],
-        'type': 'string'
-      },
-      'waypoints': {
-        'items': {
-          '$ref': '#/components/schemas/Waypoint'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'id',
-      'name',
-      'type',
-      'category',
-      'initialPosition',
-      'waypoints',
-      'linkIds',
-      'sensorIds',
-      'jammerIds'
-    ],
-    'type': 'object'
-  },
-  'PlatformStatus': {
-    'additionalProperties': false,
-    'properties': {
-      'altitude': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'jammers': {
-        'items': {
-          '$ref': '#/components/schemas/JammerStatusData'
-        },
-        'type': 'array'
-      },
-      'latitude': {
-        'maximum': 90,
-        'minimum': -90,
-        'type': 'number'
-      },
-      'linkIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'longitude': {
-        'maximum': 180,
-        'minimum': -180,
-        'type': 'number'
-      },
-      'name': {
-        'type': 'string'
-      },
-      'platformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'speed': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'type': {
-        'enum': [
-          'REAR_COMMAND_NODE',
-          'FORWARD_RELAY_NODE',
-          'GROUND_CLUSTER_COMMAND_NODE',
-          'AIRBORNE_MISSION_CLUSTER',
-          'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION',
-          'AIRBORNE_JAMMER_PLATFORM'
-        ],
-        'type': 'string'
-      },
-      'updatedAt': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'platformId',
-      'name',
-      'type',
-      'longitude',
-      'latitude',
-      'altitude',
-      'speed',
-      'linkIds',
-      'jammers',
-      'updatedAt'
-    ],
-    'type': 'object'
-  },
-  'PlatformWrite': {
-    'allOf': [
-      {
-        '$ref': '#/components/schemas/Platform'
-      },
-      {
-        'if': {
-          'properties': {
-            'type': {
-              'const': 'COMMUNICATION_SATELLITE'
-            }
-          },
-          'required': [
-            'type'
-          ]
-        },
-        'then': {
-          'required': [
-            'satelliteType'
-          ]
-        }
-      }
-    ]
-  },
-  'Position': {
-    'additionalProperties': false,
-    'properties': {
-      'altitude': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'latitude': {
-        'maximum': 90,
-        'minimum': -90,
-        'type': 'number'
-      },
-      'longitude': {
-        'maximum': 180,
-        'minimum': -180,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'longitude',
-      'latitude',
-      'altitude'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminAuditExportRequest': {
-    '$ref': '#/components/schemas/AuditExportRequest'
-  },
-  'PostapiV1AdminAuditExportResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/AuditExportResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminBackupRequest': {
-    '$ref': '#/components/schemas/BackupRequest'
-  },
-  'PostapiV1AdminBackupResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/BackupRecord'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminConfigExportRequest': {
-    '$ref': '#/components/schemas/FullConfigExportRequest'
-  },
-  'PostapiV1AdminConfigExportResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ExportStatus'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminMasterDataRequest': {
-    '$ref': '#/components/schemas/MasterDataRequest'
-  },
-  'PostapiV1AdminMasterDataResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/MasterData'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminRestoreRequest': {
-    '$ref': '#/components/schemas/RestoreRequest'
-  },
-  'PostapiV1AdminRestoreResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/RestoreResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AdminUsersRequest': {
-    '$ref': '#/components/schemas/UserRoleCommand'
-  },
-  'PostapiV1AdminUsersResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/User'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AuthLoginRequest': {
-    '$ref': '#/components/schemas/LoginRequest'
-  },
-  'PostapiV1AuthLoginResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/AuthResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1AuthLogoutRequest': {
-    '$ref': '#/components/schemas/LogoutRequest'
-  },
-  'PostapiV1AuthLogoutResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/AuthResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1BatchesBatchIdCommandsRequest': {
-    '$ref': '#/components/schemas/BatchCommand'
-  },
-  'PostapiV1BatchesBatchIdCommandsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/Batch'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1BatchesRequest': {
-    '$ref': '#/components/schemas/BatchRequest'
-  },
-  'PostapiV1BatchesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/Batch'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ConfirmationsConfirmationIdRequest': {
-    '$ref': '#/components/schemas/ConfirmRequest'
-  },
-  'PostapiV1ConfirmationsConfirmationIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ConfirmationContext'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ConfirmationsRequest': {
-    '$ref': '#/components/schemas/ConfirmationRequest'
-  },
-  'PostapiV1ConfirmationsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ConfirmationContext'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ReplaysReplayIdCommandsRequest': {
-    '$ref': '#/components/schemas/ReplayCommand'
-  },
-  'PostapiV1ReplaysReplayIdCommandsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/Replay'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ReportsReportIdExportRequest': {
-    '$ref': '#/components/schemas/ReportExportRequest'
-  },
-  "PostapiV1ReportsReportIdExportResponse": {
-    "additionalProperties": false,
-    "properties": {
-      "data": {
-        "$ref": "#/components/schemas/ReportExportOutcome"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      },
-      "ok": {
-        "const": true
-      }
-    },
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "type": "object"
-  },
-  'PostapiV1ResetRequest': {
-    '$ref': '#/components/schemas/ResetRequest'
-  },
-  'PostapiV1ResetResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ResetResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScenariosImportRequest': {
-    '$ref': '#/components/schemas/ScenarioImportRequest'
-  },
-  'PostapiV1ScenariosImportResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ImportResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScenariosRequest': {
-    '$ref': '#/components/schemas/ScenarioDraftUpdate'
-  },
-  'PostapiV1ScenariosResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScenariosScenarioIdResetRequest': {
-    '$ref': '#/components/schemas/MutationRequest'
-  },
-  'PostapiV1ScenariosScenarioIdResetResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScenariosScenarioIdUndoRequest': {
-    '$ref': '#/components/schemas/MutationRequest'
-  },
-  'PostapiV1ScenariosScenarioIdUndoResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScenariosScenarioIdValidateRequest': {
-    '$ref': '#/components/schemas/ScenarioValidationRequest'
-  },
-  'PostapiV1ScenariosScenarioIdValidateResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ValidationResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScriptsPreviewRequest': {
-    '$ref': '#/components/schemas/ScriptPreviewRequest'
-  },
-  'PostapiV1ScriptsPreviewResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScriptContract'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1ScriptsScriptIdPreflightRequest': {
-    '$ref': '#/components/schemas/PreflightRequest'
-  },
-  'PostapiV1ScriptsScriptIdPreflightResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ValidationResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1SimulationsRequest': {
-    '$ref': '#/components/schemas/SimulationCreateRequest'
-  },
-  'PostapiV1SimulationsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SimulationRun'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1SimulationsRunIdCommandsRequest': {
-    '$ref': '#/components/schemas/SimulationCommand'
-  },
-  'PostapiV1SimulationsRunIdCommandsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SimulationRun'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1SimulationsRunIdEventsRequest': {
-    '$ref': '#/components/schemas/ClosedLoopContext'
-  },
-  'PostapiV1SimulationsRunIdEventsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/JammingDecision'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1TasksTaskIdJammersJammerIdCommandsRequest': {
-    '$ref': '#/components/schemas/JammingCommand'
-  },
-  'PostapiV1TasksTaskIdJammersJammerIdCommandsResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/JammerState'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1TasksTaskIdJammersJammerIdParametersRequest': {
-    '$ref': '#/components/schemas/JammingParameterSet'
-  },
-  'PostapiV1TasksTaskIdJammersJammerIdParametersResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/SyncResult'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1TemplatesRequest': {
-    '$ref': '#/components/schemas/TemplateMutationRequest'
-  },
-  'PostapiV1TemplatesResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioTemplate'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PostapiV1TemplatesTemplateIdCopyRequest': {
-    '$ref': '#/components/schemas/CopyTemplateRequest'
-  },
-  'PostapiV1TemplatesTemplateIdCopyResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PreflightRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'checksum': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'checksum'
-    ],
-    'type': 'object'
-  },
-  'PutapiV1AdminMasterDataDataIdRequest': {
-    '$ref': '#/components/schemas/MasterDataRequest'
-  },
-  'PutapiV1AdminMasterDataDataIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/MasterData'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PutapiV1AdminUsersUserIdRequest': {
-    '$ref': '#/components/schemas/UserRoleCommand'
-  },
-  'PutapiV1AdminUsersUserIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/User'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PutapiV1ScenariosScenarioIdRequest': {
-    '$ref': '#/components/schemas/ScenarioDraftUpdate'
-  },
-  'PutapiV1ScenariosScenarioIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioDraft'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'PutapiV1TemplatesTemplateIdRequest': {
-    '$ref': '#/components/schemas/TemplateMutationRequest'
-  },
-  'PutapiV1TemplatesTemplateIdResponse': {
-    'additionalProperties': false,
-    'properties': {
-      'data': {
-        '$ref': '#/components/schemas/ScenarioTemplate'
-      },
-      'meta': {
-        '$ref': '#/components/schemas/Meta'
-      },
-      'ok': {
-        'const': true
-      }
-    },
-    'required': [
-      'ok',
-      'data',
-      'meta'
-    ],
-    'type': 'object'
-  },
-  'Replay': {
-    'additionalProperties': false,
-    'properties': {
-      'currentTimeS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'durationS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'eventIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array'
-      },
-      'replayId': {
-        'pattern': '^REPLAY-',
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'state': {
-        'enum': [
-          'EMPTY',
-          'LOADING',
-          'PAUSED',
-          'PLAYING',
-          'SEEKING',
-          'COMPLETED',
-          'CORRUPT',
-          'ERROR'
-        ]
-      }
-    },
-    'required': [
-      'replayId',
-      'runId',
-      'state',
-      'durationS',
-      'currentTimeS',
-      'eventIds'
-    ],
-    'type': 'object'
-  },
-  'ReplayCommand': {
-    'additionalProperties': false,
-    'properties': {
-      'command': {
-        'enum': [
-          'PLAY',
-          'PAUSE',
-          'SEEK',
-          'STEP_FORWARD',
-          'STEP_BACK',
-          'SPEED'
-        ]
-      },
-      'value': {
-        'type': 'number'
-      }
-    },
-    'required': [
-      'command'
-    ],
-    'type': 'object'
-  },
-  'ReplayList': {
-    'items': {
-      '$ref': '#/components/schemas/Replay'
-    },
-    'type': 'array'
-  },
-  "Report": {
-    "additionalProperties": false,
-    "allOf": [
-      {
-        "if": {
-          "required": [
-            "runId"
-          ]
-        },
-        "then": {
-          "required": [
-            "timeSeries"
-          ]
-        }
-      },
-      {
-        "if": {
-          "required": [
-            "localEvidence"
-          ]
-        },
-        "then": {
-          "not": {
-            "anyOf": [
-              {
-                "required": [
-                  "runId"
-                ]
-              },
-              {
-                "required": [
-                  "batchId"
-                ]
-              },
-              {
-                "required": [
-                  "kpis"
-                ]
-              },
-              {
-                "required": [
-                  "timeSeries"
-                ]
-              }
-            ]
-          },
-          "properties": {
-            "classification": {
-              "const": "LEVEL_II"
-            },
-            "reportId": {
-              "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
-            }
-          }
-        }
-      }
-    ],
-    "properties": {
-      "batchId": {
-        "pattern": "^BATCH-",
-        "type": "string"
-      },
-      "classification": {
-        "enum": [
-          "LEVEL_II",
-          "LEVEL_III"
-        ]
-      },
-      "generatedTime": {
-        "format": "date-time",
-        "type": "string"
-      },
-      "kpis": {
-        "$ref": "#/components/schemas/ReportKpis"
-      },
-      "localEvidence": {
-        "$ref": "#/components/schemas/LocalReportEvidence"
-      },
-      "reportId": {
-        "pattern": "^RPT-",
-        "type": "string"
-      },
-      "runId": {
-        "pattern": "^RUN-",
-        "type": "string"
-      },
-      "status": {
-        "const": "READY"
-      },
-      "timeSeries": {
-        "items": {
-          "$ref": "#/components/schemas/ReportTimeSeries"
-        },
-        "minItems": 1,
-        "type": "array"
-      }
-    },
-    "required": [
-      "reportId",
-      "classification",
-      "generatedTime",
-      "status"
-    ],
-    "type": "object"
-  },
-  'ReportExportRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'format': {
-        'enum': [
-          'HTML',
-          'PDF',
-          'CSV'
-        ]
-      },
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'reportId',
-      'format'
-    ],
-    'type': 'object'
-  },
-  'ReportExportResult': {
-    'additionalProperties': false,
-    'properties': {
-      'generated': {
-        'const': false
-      },
-      'reportId': {
-        'pattern': '^RPT-',
-        'type': 'string'
-      },
-      'status': {
-        'const': 'FIXTURE_SUCCESS'
-      },
-      'verifiedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'watermark': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'reportId',
-      'generated',
-      'status',
-      'watermark',
-      'verifiedAt'
-    ],
-    'type': 'object'
-  },
-  'ReportKpis': {
-    'additionalProperties': false,
-    'properties': {
-      'avgBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'avgConnectivityDurationS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'avgSnrDb': {
-        'type': 'number'
-      },
-      'connectivityRate': {
-        'maximum': 100,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'interferenceDurationS': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'maxBer': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'minSnrDb': {
-        'type': 'number'
-      },
-      'switchCount': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'connectivityRate',
-      'switchCount',
-      'avgBer',
-      'avgSnrDb',
-      'interferenceDurationS',
-      'avgConnectivityDurationS',
-      'minSnrDb',
-      'maxBer'
-    ],
-    'type': 'object'
-  },
-  'ReportList': {
-    'items': {
-      '$ref': '#/components/schemas/Report'
-    },
-    'type': 'array'
-  },
-  'ReportTimeSeries': {
-    'additionalProperties': false,
-    'properties': {
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'points': {
-        'items': {
-          '$ref': '#/components/schemas/ReportTimeSeriesPoint'
-        },
-        'minItems': 2,
-        'type': 'array'
-      },
-      'sourcePlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'targetPlatformId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'linkId',
-      'sourcePlatformId',
-      'targetPlatformId',
-      'points'
-    ],
-    'type': 'object'
-  },
-  'ReportTimeSeriesPoint': {
-    'additionalProperties': false,
-    'properties': {
-      'ber': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'interferencePowerDbm': {
-        'type': 'number'
-      },
-      'snrDb': {
-        'type': 'number'
-      },
-      'time': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'time',
-      'snrDb',
-      'ber',
-      'interferencePowerDbm'
-    ],
-    'type': 'object'
-  },
-  'ResetFixture': {
-    'additionalProperties': false,
-    'properties': {
-      'method': {
-        'const': 'POST'
-      },
-      'nextSequence': {
-        'const': 1
-      },
-      'path': {
-        'const': '/api/v1/reset'
-      },
-      'requestId': {
-        'const': 'REQ-RESET-001'
-      },
-      'responseGeneratedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'method',
-      'path',
-      'requestId',
-      'responseGeneratedAt',
-      'nextSequence'
-    ],
-    'type': 'object'
-  },
-  'ResetRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'confirm': {
-        'const': true
-      }
-    },
-    'required': [
-      'confirm'
-    ],
-    'type': 'object'
-  },
-  'ResetResult': {
-    'additionalProperties': false,
-    'properties': {
-      'generatedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'nextSequence': {
-        'const': 1
-      },
-      'requestId': {
-        'const': 'REQ-RESET-001'
-      }
-    },
-    'required': [
-      'requestId',
-      'generatedAt',
-      'nextSequence'
-    ],
-    'type': 'object'
-  },
-  'RestoreRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'backupId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'operation': {
-        'const': 'RESTORE'
-      }
-    },
-    'required': [
-      'operation',
-      'backupId',
-      'confirmationId'
-    ],
-    'type': 'object'
-  },
-  'RestoreResult': {
-    'additionalProperties': false,
-    'properties': {
-      'generated': {
-        'type': 'boolean'
-      },
-      'integrityValid': {
-        'type': 'boolean'
-      },
-      'prebackupId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'progress': {
-        'maximum': 100,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'result': {
-        'enum': [
-          'SUCCESS',
-          'FAILURE'
-        ]
-      },
-      'rolledBack': {
-        'type': 'boolean'
-      }
-    },
-    'required': [
-      'prebackupId',
-      'integrityValid',
-      'progress',
-      'result',
-      'rolledBack',
-      'generated'
-    ],
-    'type': 'object'
-  },
-  'RouteCandidateEvidence': {
-    'additionalProperties': false,
-    'properties': {
-      'ber': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'direction': {
-        'enum': [
-          'FORWARD',
-          'REVERSE'
-        ],
-        'type': 'string'
-      },
-      'eligible': {
-        'type': 'boolean'
-      },
-      'eliminationReason': {
-        'oneOf': [
-          {
-            'minLength': 1,
-            'type': 'string'
-          },
-          {
-            'type': 'null'
-          }
-        ]
-      },
-      'jamImpactDb': {
-        'type': 'number'
-      },
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'rank': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'stabilityFrames': {
-        'minimum': 0,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'linkId',
-      'direction',
-      'eligible',
-      'jamImpactDb',
-      'ber',
-      'stabilityFrames',
-      'rank',
-      'eliminationReason'
-    ],
-    'type': 'object'
-  },
-  'RouteDecision': {
-    'additionalProperties': false,
-    'properties': {
-      'direction': {
-        'enum': [
-          'FORWARD',
-          'REVERSE'
-        ]
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'hysteresisThreshold': {
-        'oneOf': [
-          {
-            'minimum': 0,
-            'type': 'number'
-          },
-          {
-            'type': 'null'
-          }
-        ]
-      },
-      'metric': {
-        'type': 'number'
-      },
-      'minimumStableFrames': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'previousLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'reason': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'selectedLinkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'simulationTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'strategy': {
-        'enum': [
-          'MIN_JAM_IMPACT',
-          'MIN_BER_WITH_HYSTERESIS'
-        ]
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'taskId',
-      'runId',
-      'frameId',
-      'simulationTime',
-      'direction',
-      'selectedLinkId',
-      'previousLinkId',
-      'strategy',
-      'metric',
-      'minimumStableFrames',
-      'hysteresisThreshold',
-      'reason'
-    ],
-    'type': 'object'
-  },
-  'RouteMetadata': {
-    'additionalProperties': false,
-    'properties': {
-      'guard': {
-        'type': 'string'
-      },
-      'page': {
-        'type': 'string'
-      },
-      'path': {
-        'pattern': '^/',
-        'type': 'string'
-      },
-      'stores': {
-        'items': {
-          'type': 'string'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'path',
-      'page',
-      'stores',
-      'guard'
-    ],
-    'type': 'object'
-  },
-  'RouteMetadataList': {
-    'items': {
-      '$ref': '#/components/schemas/RouteMetadata'
-    },
-    'maxItems': 11,
-    'minItems': 11,
-    'type': 'array'
-  },
-  'ScenarioConfig': {
-    'additionalProperties': false,
-    'properties': {
-      'informationDemand': {
-        'items': {
-          '$ref': '#/components/schemas/InformationDemand'
-        },
-        'minItems': 1,
-        'type': 'array'
-      },
-      'jammers': {
-        'items': {
-          '$ref': '#/components/schemas/Jammer'
-        },
-        'type': 'array'
-      },
-      'jammingEnabled': {
-        'type': 'boolean'
-      },
-      'linkSettings': {
-        '$ref': '#/components/schemas/ScenarioLinkSettings'
-      },
-      'links': {
-        'items': {
-          '$ref': '#/components/schemas/Link'
-        },
-        'type': 'array'
-      },
-      'output': {
-        '$ref': '#/components/schemas/OutputConfig'
-      },
-      'platforms': {
-        'items': {
-          '$ref': '#/components/schemas/Platform'
-        },
-        'minItems': 1,
-        'type': 'array',
-        'x-business-information-node-limits': {
-          'AIRBORNE_MISSION_CLUSTER': 47,
-          'FORWARD_RELAY_NODE': 1,
-          'GROUND_CLUSTER_COMMAND_NODE': 1,
-          'REAR_COMMAND_NODE': 1
-        },
-        'x-business-information-node-types': [
-          'REAR_COMMAND_NODE',
-          'FORWARD_RELAY_NODE',
-          'GROUND_CLUSTER_COMMAND_NODE',
-          'AIRBORNE_MISSION_CLUSTER'
-        ],
-        'x-max-business-information-nodes': 50,
-        'x-min-business-information-nodes': 1,
-        'x-supporting-entity-types-excluded-from-capacity': [
-          'COMMUNICATION_SATELLITE',
-          'GROUND_JAMMER_DETECTION_STATION',
-          'AIRBORNE_JAMMER_PLATFORM'
-        ]
-      },
-      'scenario': {
-        '$ref': '#/components/schemas/ScenarioIdentity'
-      },
-      'schemaVersion': {
-        'const': '1.0'
-      },
-      'sensors': {
-        'items': {
-          '$ref': '#/components/schemas/Sensor'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'schemaVersion',
-      'scenario',
-      'platforms',
-      'links',
-      'jammers',
-      'sensors',
-      'output',
-      'informationDemand'
-    ],
-    'type': 'object',
-    'x-fixture-path': '$.scenario',
-    'x-source': 'SRS §1.2.2 and §3.5.3 Table 22; approved frontend baseline V1.1 §6.1'
-  },
-  'ScenarioConfigWrite': {
-    'allOf': [
-      {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      },
-      {
-        'properties': {
-          'platforms': {
-            'items': {
-              '$ref': '#/components/schemas/PlatformWrite'
-            },
-            'type': 'array'
-          }
-        }
-      }
-    ],
-    'description': '写入时每台干扰设备的 platformId 必须指向当前 platforms 中的地面干扰站或机载干扰平台；跨集合归属由共享运行时校验拒绝，ScenarioConfig 读取仍兼容旧归属。'
-  },
-  'ScenarioCoverageFixture': {
-    'additionalProperties': false,
-    'properties': {
-      'acceptedBusinessNodeCount': {
-        'const': 50
-      },
-      'businessNodeTypes': {
-        'items': {
-          'enum': [
-            'REAR_COMMAND_NODE',
-            'FORWARD_RELAY_NODE',
-            'GROUND_CLUSTER_COMMAND_NODE',
-            'AIRBORNE_MISSION_CLUSTER'
-          ]
-        },
-        'maxItems': 4,
-        'minItems': 4,
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'jammerTypes': {
-        'items': {
-          'enum': [
-            'BARRAGE',
-            'SPOT',
-            'SWEEP'
-          ]
-        },
-        'maxItems': 2,
-        'minItems': 2,
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'linkTypes': {
-        'items': {
-          'enum': [
-            'SAT',
-            'MICROWAVE',
-            'DATALINK',
-            'LASER'
-          ]
-        },
-        'maxItems': 4,
-        'minItems': 4,
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'minimumInformationDemandCount': {
-        'const': 1
-      },
-      'rejectedBusinessNodeCount': {
-        'const': 51
-      },
-      'rejection': {
-        'additionalProperties': false,
-        'properties': {
-          'code': {
-            'const': 'NODE_LIMIT_EXCEEDED'
-          },
-          'fieldPath': {
-            'const': 'platforms'
-          },
-          'mutationApplied': {
-            'const': false
-          }
-        },
-        'required': [
-          'code',
-          'fieldPath',
-          'mutationApplied'
-        ],
-        'type': 'object'
-      },
-      'supportingEntityTypes': {
-        'items': {
-          'enum': [
-            'COMMUNICATION_SATELLITE',
-            'GROUND_JAMMER_DETECTION_STATION',
-            'AIRBORNE_JAMMER_PLATFORM'
-          ]
-        },
-        'maxItems': 2,
-        'minItems': 2,
-        'type': 'array',
-        'uniqueItems': true
-      }
-    },
-    'required': [
-      'businessNodeTypes',
-      'supportingEntityTypes',
-      'acceptedBusinessNodeCount',
-      'rejectedBusinessNodeCount',
-      'rejection',
-      'linkTypes',
-      'jammerTypes',
-      'minimumInformationDemandCount'
-    ],
-    'type': 'object'
-  },
-  'ScenarioDraft': {
-    'additionalProperties': false,
-    'properties': {
-      'config': {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      },
-      'locked': {
-        'type': 'boolean'
-      },
-      'officialLibraryChanged': {
-        'const': false
-      },
-      'revision': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      }
-    },
-    'required': [
-      'config',
-      'uiExtensions',
-      'revision',
-      'officialLibraryChanged',
-      'locked'
-    ],
-    'type': 'object'
-  },
-  'ScenarioDraftUpdate': {
-    'additionalProperties': false,
-    'properties': {
-      'config': {
-        '$ref': '#/components/schemas/ScenarioConfigWrite'
-      },
-      'expectedRevision': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      }
-    },
-    'required': [
-      'config',
-      'uiExtensions'
-    ],
-    'type': 'object'
-  },
-  'ScenarioIdentity': {
-    'additionalProperties': false,
-    'properties': {
-      'description': {
-        'maxLength': 512,
-        'type': 'string'
-      },
-      'duration': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'environment': {
-        '$ref': '#/components/schemas/Environment'
-      },
-      'id': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'name': {
-        'maxLength': 128,
-        'minLength': 1,
-        'type': 'string'
-      },
-      'startTime': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'timeStep': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'id',
-      'name',
-      'description',
-      'startTime',
-      'duration',
-      'timeStep',
-      'environment'
-    ],
-    'type': 'object'
-  },
-  'ScenarioImportRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'items': {
-        'items': {
-          '$ref': '#/components/schemas/ScenarioConfigWrite'
-        },
-        'maxItems': 1,
-        'minItems': 1,
-        'type': 'array'
-      }
-    },
-    'required': [
-      'items'
-    ],
-    'type': 'object'
-  },
-  'ScenarioLinkSettings': {
-    'additionalProperties': false,
-    'properties': {
-      'enabledSatellites': {
-        'additionalProperties': false,
-        'properties': {
-          'SHENTONG': {
-            'type': 'boolean'
-          },
-          'TIANTONG': {
-            'type': 'boolean'
-          }
-        },
-        'required': [
-          'TIANTONG',
-          'SHENTONG'
-        ],
-        'type': 'object'
-      },
-      'enabledTypes': {
-        'additionalProperties': false,
-        'deprecated': true,
-        'description': '仅兼容历史配置；单条链路的 enabled 优先，新配置不再生成此字段。',
-        'properties': {
-          'DATALINK': {
-            'type': 'boolean'
-          },
-          'LASER': {
-            'type': 'boolean'
-          },
-          'MICROWAVE': {
-            'type': 'boolean'
-          },
-          'SAT': {
-            'type': 'boolean'
-          }
-        },
-        'required': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'type': 'object'
-      },
-      'priority': {
-        'items': {
-          'enum': [
-            'SAT',
-            'MICROWAVE',
-            'DATALINK',
-            'LASER'
-          ],
-          'type': 'string'
-        },
-        'maxItems': 4,
-        'minItems': 4,
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'switchCooldownS': {
-        'default': 5,
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'enabledSatellites',
-      'switchCooldownS',
-      'priority'
-    ],
-    'type': 'object'
-  },
-  'ScenarioList': {
-    'items': {
-      '$ref': '#/components/schemas/ScenarioDraft'
-    },
-    'type': 'array'
-  },
-  'ScenarioTemplate': {
-    'additionalProperties': false,
-    'properties': {
-      'config': {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      },
-      'name': {
-        'type': 'string'
-      },
-      'official': {
-        'type': 'boolean'
-      },
-      'referenceCount': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'templateId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      },
-      'version': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'templateId',
-      'name',
-      'version',
-      'official',
-      'config',
-      'referenceCount'
-    ],
-    'type': 'object'
-  },
-  'ScenarioTemplateIndex': {
-    'additionalProperties': false,
-    'properties': {
-      'name': {
-        'type': 'string'
-      },
-      'official': {
-        'type': 'boolean'
-      },
-      'referenceCount': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'templateId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'version': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'templateId',
-      'scenarioId',
-      'name',
-      'version',
-      'official',
-      'referenceCount'
-    ],
-    'type': 'object'
-  },
-  'ScenarioUiExtensions': {
-    'additionalProperties': false,
-    'properties': {
-      'jammers': {
-        'items': {
-          '$ref': '#/components/schemas/JammerUiExtension'
-        },
-        'type': 'array'
-      },
-      'sensors': {
-        'items': {
-          '$ref': '#/components/schemas/SensorUiExtension'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'jammers',
-      'sensors'
-    ],
-    'type': 'object'
-  },
-  'ScenarioValidationRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'config': {
-        '$ref': '#/components/schemas/ScenarioConfig'
-      }
-    },
-    'required': [
-      'config'
-    ],
-    'type': 'object'
-  },
-  'ScriptContract': {
-    'additionalProperties': false,
-    'properties': {
-      'checksum': {
-        'type': 'string'
-      },
-      'configVersion': {
-        'type': 'string'
-      },
-      'generatedTime': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'preview': {
-        'type': 'string'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'scriptId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'target': {
-        'const': 'AFSIM 2.9.0'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'scriptId',
-      'taskId',
-      'scenarioId',
-      'configVersion',
-      'target',
-      'checksum',
-      'preview',
-      'generatedTime'
-    ],
-    'type': 'object'
-  },
-  'ScriptPreviewRequest': {
-    'additionalProperties': false,
-    'description': 'warningConfirmationId is required by business validation when the latest result contains WARNING and no ERROR. ERROR always blocks preview.',
-    'properties': {
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'warningConfirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'scenarioId'
-    ],
-    'type': 'object'
-  },
-  'Sensor': {
-    'additionalProperties': false,
-    'properties': {
-      'detectionRange': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'frequencyRange': {
-        '$ref': '#/components/schemas/FrequencyRange'
-      },
-      'id': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'platformId': {
-        'minLength': 1,
-        'type': 'string'
-      }
-    },
-    'required': [
-      'id',
-      'platformId',
-      'frequencyRange',
-      'detectionRange'
-    ],
-    'type': 'object'
-  },
-  'SensorUiExtension': {
-    'additionalProperties': false,
-    'properties': {
-      'direction': {
-        'oneOf': [
-          {
-            'const': 'OMNI'
-          },
-          {
-            'maximum': 360,
-            'minimum': 0,
-            'type': 'number'
-          }
-        ]
-      },
-      'enabled': {
-        'type': 'boolean'
-      },
-      'probability': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'sensorId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'type': {
-        'const': 'ESM'
-      }
-    },
-    'required': [
-      'sensorId',
-      'type',
-      'direction',
-      'probability',
-      'enabled'
-    ],
-    'type': 'object'
-  },
-  'SimulationCommand': {
-    'additionalProperties': false,
-    'description': 'START requires mode; SET_SPEED requires speedMultiplier; STEP requires stepCount=1; STOP requires a valid SIMULATION_STOP confirmation when unsaved execution state would be discarded.',
-    'properties': {
-      'command': {
-        'enum': [
-          'START',
-          'PAUSE',
-          'RESUME',
-          'STEP',
-          'STOP',
-          'SET_SPEED'
-        ]
-      },
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'mode': {
-        'enum': [
-          'INTERACTIVE_SINGLE',
-          'BATCH_PARAMETER_TRAVERSAL',
-          'PARAMETER_SCAN',
-          'HISTORICAL_REPLAY'
-        ]
-      },
-      'speedMultiplier': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'stepCount': {
-        'const': 1
-      }
-    },
-    'required': [
-      'command'
-    ],
-    'type': 'object'
-  },
-  'SimulationCreateRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'taskId',
-      'scenarioId'
-    ],
-    'type': 'object'
-  },
-  'SimulationRun': {
-    'additionalProperties': false,
-    'properties': {
-      'canonical': {
-        '$ref': '#/components/schemas/SimulationState'
-      },
-      'completedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'configLocked': {
-        'type': 'boolean'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'startedAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      },
-      'uiStatus': {
-        'enum': [
-          'IDLE',
-          'RUNNING',
-          'PAUSED',
-          'STOPPED',
-          'COMPLETED',
-          'ERROR'
-        ]
-      }
-    },
-    'required': [
-      'runId',
-      'taskId',
-      'scenarioId',
-      'uiStatus',
-      'canonical',
-      'configLocked'
-    ],
-    'type': 'object',
-    'x-fixture-path': '$.run'
-  },
-  'SimulationRunList': {
-    'items': {
-      '$ref': '#/components/schemas/SimulationRun'
-    },
-    'type': 'array'
-  },
-  'SimulationState': {
-    'additionalProperties': false,
-    'properties': {
-      'currentTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'errorMessage': {
-        'type': 'string'
-      },
-      'processId': {
-        'minimum': 1,
-        'type': [
-          'integer',
-          'null'
-        ]
-      },
-      'progress': {
-        'maximum': 100,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'status': {
-        'enum': [
-          'IDLE',
-          'RUNNING',
-          'PAUSED',
-          'COMPLETED',
-          'ERROR'
-        ]
-      },
-      'totalDuration': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'status',
-      'currentTime',
-      'totalDuration',
-      'processId',
-      'progress'
-    ],
-    'type': 'object'
-  },
-  'SyncResult': {
-    'additionalProperties': false,
-    'properties': {
-      'configParameterVersion': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'effectiveFrameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'effectiveSimulationTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'engineParameterVersion': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'jammerId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'jammerStatus': {
-        '$ref': '#/components/schemas/JammerStatusData'
-      },
-      'nodeParameterVersion': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'parameterVersion': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'status': {
-        'const': 'SYNCHRONIZED'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      },
-      'uiParameterVersion': {
-        'minimum': 1,
-        'type': 'integer'
-      }
-    },
-    'required': [
-      'taskId',
-      'jammerId',
-      'parameterVersion',
-      'configParameterVersion',
-      'nodeParameterVersion',
-      'engineParameterVersion',
-      'uiParameterVersion',
-      'effectiveFrameId',
-      'effectiveSimulationTime',
-      'status',
-      'jammerStatus'
-    ],
-    'type': 'object'
-  },
-  'SynchronizationEvidence': {
-    'additionalProperties': false,
-    'properties': {
-      'configVersion': {
-        'const': 'SCN-001-v4'
-      },
-      'effectiveFrameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'effectiveSimulationTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'engineVersion': {
-        'const': 'AFSIM-2.9.0-FIXTURE'
-      },
-      'uiVersion': {
-        'const': 'FRAME-1.0'
-      }
-    },
-    'required': [
-      'configVersion',
-      'engineVersion',
-      'uiVersion',
-      'effectiveFrameId',
-      'effectiveSimulationTime'
-    ],
-    'type': 'object'
-  },
-  'SystemHealth': {
-    'additionalProperties': false,
-    'properties': {
-      'channel': {
-        'const': 'NOT_CONNECTED_BY_DESIGN'
-      },
-      'database': {
-        'const': 'NOT_CONNECTED_BY_DESIGN'
-      },
-      'engine': {
-        'const': 'NOT_CONNECTED_BY_DESIGN'
-      },
-      'ui': {
-        'const': 'HEALTHY'
-      }
-    },
-    'required': [
-      'ui',
-      'engine',
-      'database',
-      'channel'
-    ],
-    'type': 'object'
-  },
-  'TaskFixture': {
-    'additionalProperties': false,
-    'properties': {
-      'configVersion': {
-        'type': 'string'
-      },
-      'createdAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'scenarioId': {
-        'pattern': '^SCN-',
-        'type': 'string'
-      },
-      'scriptId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      }
-    },
-    'required': [
-      'taskId',
-      'scenarioId',
-      'configVersion',
-      'scriptId',
-      'createdAt'
-    ],
-    'type': 'object'
-  },
-  'TelemetryFrame': {
-    'additionalProperties': false,
-    'properties': {
-      'eventIds': {
-        'items': {
-          'minLength': 1,
-          'type': 'string'
-        },
-        'type': 'array',
-        'uniqueItems': true
-      },
-      'evidence': {
-        '$ref': '#/components/schemas/FrameEvidence'
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'linkSummaries': {
-        'items': {
-          '$ref': '#/components/schemas/LinkStatusSummary'
-        },
-        'type': 'array'
-      },
-      'links': {
-        'items': {
-          '$ref': '#/components/schemas/TelemetryLinkRecord'
-        },
-        'type': 'array'
-      },
-      'platforms': {
-        'items': {
-          '$ref': '#/components/schemas/PlatformStatus'
-        },
-        'type': 'array'
-      },
-      'runId': {
-        'pattern': '^RUN-',
-        'type': 'string'
-      },
-      'sequence': {
-        'minimum': 1,
-        'type': 'integer'
-      },
-      'simulationTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'taskId': {
-        'pattern': '^TASK-',
-        'type': 'string'
-      },
-      'uiLinks': {
-        'items': {
-          '$ref': '#/components/schemas/UiLinkProjection'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'frameId',
-      'taskId',
-      'runId',
-      'simulationTime',
-      'sequence',
-      'platforms',
-      'links',
-      'linkSummaries',
-      'uiLinks',
-      'eventIds',
-      'evidence'
-    ],
-    'type': 'object',
-    'x-fixture-path': '$.frame'
-  },
-  'TelemetryLinkRecord': {
-    'additionalProperties': false,
-    'properties': {
-      'bandwidth': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'ber': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'berThreshold': {
-        'maximum': 1,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'coding': {
-        'const': 'UNCODED'
-      },
-      'dataRate': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'destPlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'distance': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'frequency': {
-        'exclusiveMinimum': 0,
-        'type': 'number'
-      },
-      'jammingPower': {
-        'type': 'number'
-      },
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'linkStatus': {
-        'enum': [
-          'UP',
-          'DOWN'
-        ]
-      },
-      'linkType': {
-        'enum': [
-          'SAT',
-          'MICROWAVE',
-          'DATALINK',
-          'LASER'
-        ],
-        'type': 'string'
-      },
-      'modulation': {
-        'enum': [
-          'BPSK',
-          'QPSK'
-        ],
-        'type': 'string'
-      },
-      'pathLoss': {
-        'type': 'number'
-      },
-      'qualityModelVersion': {
-        'const': 'SNBER-1.2'
-      },
-      'receivedPower': {
-        'type': 'number'
-      },
-      'rxAntennaGain': {
-        'type': 'number'
-      },
-      'snr': {
-        'type': 'number'
-      },
-      'sourcePlatform': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'time': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'txAntennaGain': {
-        'type': 'number'
-      },
-      'txPower': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'linkId',
-      'time',
-      'sourcePlatform',
-      'destPlatform',
-      'linkType',
-      'frequency',
-      'bandwidth',
-      'distance',
-      'txPower',
-      'txAntennaGain',
-      'rxAntennaGain',
-      'pathLoss',
-      'jammingPower',
-      'receivedPower',
-      'snr',
-      'modulation',
-      'coding',
-      'qualityModelVersion',
-      'ber',
-      'linkStatus',
-      'berThreshold',
-      'dataRate'
-    ],
-    'type': 'object'
-  },
-  'TemplateList': {
-    'items': {
-      '$ref': '#/components/schemas/ScenarioTemplate'
-    },
-    'type': 'array'
-  },
-  'TemplateMutationRequest': {
-    'additionalProperties': false,
-    'properties': {
-      'config': {
-        '$ref': '#/components/schemas/ScenarioConfigWrite'
-      },
-      'name': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'uiExtensions': {
-        '$ref': '#/components/schemas/ScenarioUiExtensions'
-      }
-    },
-    'required': [
-      'name',
-      'config'
-    ],
-    'type': 'object'
-  },
-  'UiLinkProjection': {
-    'additionalProperties': false,
-    'properties': {
-      'ageMs': {
-        'maximum': 5000,
-        'minimum': 0,
-        'type': 'number'
-      },
-      'canonicalStatus': {
-        'enum': [
-          'UP',
-          'DOWN'
-        ]
-      },
-      'consecutiveFrames': {
-        'minimum': 0,
-        'type': 'integer'
-      },
-      'frameId': {
-        'pattern': '^F-',
-        'type': 'string'
-      },
-      'linkId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'reason': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'status': {
-        'enum': [
-          'UP',
-          'DEGRADED',
-          'DOWN'
-        ]
-      },
-      'thresholdVersion': {
-        'const': 'LLZT-1.0'
-      }
-    },
-    'required': [
-      'linkId',
-      'frameId',
-      'status',
-      'canonicalStatus',
-      'reason',
-      'thresholdVersion',
-      'consecutiveFrames',
-      'ageMs'
-    ],
-    'type': 'object'
-  },
-  'User': {
-    'additionalProperties': false,
-    'properties': {
-      'lastLoginAt': {
-        'format': 'date-time',
-        'type': 'string'
-      },
-      'role': {
-        'enum': [
-          'ADMIN',
-          'OPERATOR'
-        ],
-        'type': 'string'
-      },
-      'status': {
-        'enum': [
-          'ACTIVE',
-          'DISABLED',
-          'LOCKED'
-        ]
-      },
-      'userId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'username': {
-        'type': 'string'
-      }
-    },
-    'required': [
-      'userId',
-      'username',
-      'role',
-      'status'
-    ],
-    'type': 'object'
-  },
-  'UserList': {
-    'items': {
-      '$ref': '#/components/schemas/User'
-    },
-    'type': 'array'
-  },
-  'UserRoleCommand': {
-    'additionalProperties': false,
-    'allOf': [
-      {
-        'if': {
-          'required': [
-            'password'
-          ]
-        },
-        'then': {
-          'properties': {
-            'operation': {
-              'const': 'CREATE'
-            }
-          }
-        }
-      }
-    ],
-    'properties': {
-      'confirmationId': {
-        'minLength': 1,
-        'type': 'string'
-      },
-      'operation': {
-        'enum': [
-          'CREATE',
-          'UPDATE',
-          'DELETE',
-          'ENABLE',
-          'DISABLE'
-        ]
-      },
-      'password': {
-        'description': 'Required when creating a SQLite account; never returned in User.',
-        'maxLength': 32,
-        'minLength': 6,
-        'type': 'string',
-        'writeOnly': true
-      },
-      'user': {
-        '$ref': '#/components/schemas/User'
-      }
-    },
-    'required': [
-      'operation',
-      'user'
-    ],
-    'type': 'object'
-  },
-  'ValidationIssue': {
-    'additionalProperties': false,
-    'properties': {
-      'code': {
-        'type': 'string'
-      },
-      'fieldPath': {
-        'type': 'string'
-      },
-      'message': {
-        'type': 'string'
-      },
-      'severity': {
-        'enum': [
-          'ERROR',
-          'WARNING'
-        ]
-      }
-    },
-    'required': [
-      'severity',
-      'code',
-      'message',
-      'fieldPath'
-    ],
-    'type': 'object'
-  },
-  'ValidationResult': {
-    'additionalProperties': false,
-    'properties': {
-      'errors': {
-        'items': {
-          '$ref': '#/components/schemas/ValidationIssue'
-        },
-        'type': 'array'
-      },
-      'valid': {
-        'type': 'boolean'
-      },
-      'warnings': {
-        'items': {
-          '$ref': '#/components/schemas/ValidationIssue'
-        },
-        'type': 'array'
-      }
-    },
-    'required': [
-      'valid',
-      'errors',
-      'warnings'
-    ],
-    'type': 'object'
-  },
-  'Waypoint': {
-    'additionalProperties': false,
-    'properties': {
-      'altitude': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'arrivalTime': {
-        'minimum': 0,
-        'type': 'number'
-      },
-      'latitude': {
-        'maximum': 90,
-        'minimum': -90,
-        'type': 'number'
-      },
-      'longitude': {
-        'maximum': 180,
-        'minimum': -180,
-        'type': 'number'
-      },
-      'speed': {
-        'minimum': 0,
-        'type': 'number'
-      }
-    },
-    'required': [
-      'longitude',
-      'latitude',
-      'altitude',
-      'speed',
-      'arrivalTime'
-    ],
-    'type': 'object'
   }
 }
 )

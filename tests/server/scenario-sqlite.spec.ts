@@ -66,6 +66,87 @@ afterEach(async () => {
 })
 
 describe('SQLite 场景开发持久化', () => {
+  it('零速度航点在保存前返回字段错误，不写入或增加修订；正速度可保存', async () => {
+    const { api, storage } = await start(await databasePath())
+    const value = draft()
+    const saved = (await api.put(endpoint).set(headers).send(update(value)).expect(200)).body.data
+    const platform = value.config.platforms[3]!
+    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 10 }]
+    const failed = await api.put(endpoint).set(headers).send(update(value)).expect(422)
+    expect(failed.body.error).toMatchObject({ fieldPath: 'platforms[3].waypoints[0].speed', message: expect.stringContaining('必须大于 0') })
+    expect(storage.load()).toEqual(saved)
+    platform.waypoints[0]!.speed = 20
+    await api.put(endpoint).set(headers).send(update(value)).expect(200)
+    expect(storage.load().config.platforms[3].waypoints[0].speed).toBe(20)
+  })
+
+  it('新干扰范围可保存重读，缺少 jammingRange 的旧格式不能新建、保存或导入', async () => {
+    const path = await databasePath()
+    const first = await start(path)
+    const current = draft()
+    const saved = (await first.api.put(endpoint).set(headers).send(update(current)).expect(200)).body.data
+    const legacy = structuredClone(current)
+    Reflect.deleteProperty(legacy.config.jammers[0]!, 'jammingRange')
+    const rejected = await first.api.put(endpoint).set(headers).send(update(legacy)).expect(422)
+    expect(rejected.body.error).toMatchObject({ fieldPath: 'jammers[0].jammingRange', message: expect.stringContaining('不支持该旧格式') })
+    legacy.config.scenario.id = 'SCN-LEGACY-JAMMER'
+    const created = await first.api.post('/api/v1/scenarios').set(headers).send(update(legacy)).expect(422)
+    expect(created.body.error.fieldPath).toBe('jammers[0].jammingRange')
+    const imported = await first.api.post('/api/v1/scenarios/import').set(headers).send({ items: [legacy.config] }).expect(422)
+    expect(imported.body.error.fieldPath).toBe('items[0].jammers[0].jammingRange')
+    expect(first.storage.list()).toEqual([saved])
+    expect(legacy.config.jammers[0]).not.toHaveProperty('jammingRange')
+    await first.stop()
+    const reopened = await start(path)
+    expect((await reopened.api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
+  })
+
+  it('读取也拒绝缺少 jammingRange 的旧格式，不补默认值或改写原记录', async () => {
+    const path = await databasePath()
+    const first = await start(path)
+    await first.api.put(endpoint).set(headers).send(update(draft())).expect(200)
+    await first.stop()
+    const legacy = draft().config
+    Reflect.deleteProperty(legacy.jammers[0]!, 'jammingRange')
+    const db = new DatabaseSync(path)
+    try {
+      const json = JSON.stringify(legacy)
+      db.prepare('UPDATE scenarios SET config_json = ? WHERE id = ?').run(json, legacy.scenario.id)
+      expect(() => new ScenarioSqliteStorage(path)).toThrow('场景数据库结构或数据无效')
+      expect(db.prepare('SELECT config_json FROM scenarios WHERE id = ?').get(legacy.scenario.id).config_json).toBe(json)
+    } finally { db.close() }
+  })
+
+  it('旧四类优先级与历史业务文本重新打开仍原样读取，新建和 PUT 继续拒绝旧写入', async () => {
+    const path = await databasePath()
+    const old = draft()
+    old.config.informationDemand[0]!.informationType = '视频'
+    old.config.linkSettings = {
+      priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'],
+      enabledTypes: { SAT: true, MICROWAVE: true, DATALINK: true, LASER: true },
+      enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
+    }
+    const initial = new ScenarioSqliteStorage(path)
+    expect(initial.save(old)).toBe(true)
+    initial.close()
+    const reopened = await start(path)
+    expect((await reopened.api.get(endpoint).set(headers).expect(200)).body.data.config).toEqual(old.config)
+    const failed = await reopened.api.put(endpoint).set(headers).send({ ...update(old), expectedRevision: old.revision }).expect(422)
+    expect(failed.body.error).toBeDefined()
+    expect(reopened.storage.load('SCN-001').config).toEqual(old.config)
+    const created = structuredClone(old)
+    created.config.scenario.id = 'SCN-LEGACY-NEW'
+    await reopened.api.post('/api/v1/scenarios').set(headers).send(update(created)).expect(422)
+    expect(reopened.storage.load('SCN-LEGACY-NEW')).toBeUndefined()
+    old.config.informationDemand[0]!.informationType = '态势信息'
+    old.config.linkSettings.priority.push('FIBER')
+    old.config.linkSettings.enabledTypes!.FIBER = true
+    await reopened.api.put(endpoint).set(headers).send({ ...update(old), expectedRevision: old.revision }).expect(200)
+    await reopened.stop()
+    const final = new ScenarioSqliteStorage(path)
+    try { expect(final.load('SCN-001').config).toEqual(old.config) } finally { final.close() }
+  })
+
   it('列表、多场景同修订持久化、独立编辑及按修订删除不会影响其他场景', async () => {
     const path = await databasePath()
     const first = await start(path)

@@ -15,6 +15,7 @@ import type {
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
+import type { MissionOutcome } from './mission-execution.js'
 
 export type SimulationProjectionResult<T> =
   | { ok: true; data: T }
@@ -155,6 +156,32 @@ export class SimulationProjection {
   private readonly jammerParameterVersions = new Map<string, number>()
 
   constructor(private readonly scenarios: ScenarioProjection) {}
+
+  startMission(pid: number, startedAt: string): SimulationRun {
+    this.run.uiStatus = 'RUNNING'
+    this.run.canonical.status = 'RUNNING'
+    this.run.canonical.processId = pid
+    this.run.startedAt = startedAt
+    delete this.run.completedAt
+    delete this.run.canonical.errorMessage
+    return structuredClone(this.run)
+  }
+
+  finishMission(outcome: MissionOutcome): SimulationRun {
+    const failed = outcome.code !== 0 || Boolean(outcome.errorMessage)
+    this.run.uiStatus = failed ? 'ERROR' : 'COMPLETED'
+    this.run.canonical.status = failed ? 'ERROR' : 'COMPLETED'
+    this.run.canonical.processId = null
+    this.run.completedAt = outcome.completedAt
+    if (failed) this.run.canonical.errorMessage = outcome.errorMessage ?? 'mission 执行失败。'
+    else {
+      this.run.canonical.currentTime = this.run.canonical.totalDuration
+      this.run.canonical.progress = 100
+    }
+    this.scenarios.setLocked(this.run.scenarioId, false)
+    this.run.configLocked = false
+    return structuredClone(this.run)
+  }
 
   /** 返回当前确定性运行列表的独立副本。 */
   list(): SimulationRun[] {

@@ -86,7 +86,7 @@ watch(() => editor.value?.direction, direction => {
       <section class="link-editor-section" aria-labelledby="link-basic-title">
         <h4 id="link-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
-          <el-form-item label="链路类型">
+          <el-form-item required label="链路类型">
             <el-select v-model="editor.type" style="width: 100%" data-testid="link-type" @change="changeType">
               <el-option v-for="option in linkTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
@@ -94,19 +94,19 @@ watch(() => editor.value?.direction, direction => {
           <el-form-item label="当前链路">
             <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
           </el-form-item>
-          <el-form-item v-show="showIds" label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
+          <el-form-item required v-show="showIds" label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
         </div>
       </section>
 
       <section class="link-editor-section" aria-labelledby="link-endpoint-title">
         <h4 id="link-endpoint-title" class="link-editor-section__title">端点配置</h4>
         <div class="link-editor-grid">
-          <el-form-item label="源平台">
+          <el-form-item required label="源平台">
             <el-select v-model="editor.sourcePlatformId" filterable style="width: 100%" data-testid="link-source">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="目标平台">
+          <el-form-item required label="目标平台">
             <el-select v-model="editor.targetPlatformId" filterable style="width: 100%" data-testid="link-target">
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
@@ -117,12 +117,12 @@ watch(() => editor.value?.direction, direction => {
       <section class="link-editor-section" aria-labelledby="link-communication-title">
         <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
         <div class="link-editor-grid">
-          <el-form-item label="频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
-          <el-form-item label="带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
-          <el-form-item label="发射功率（W）"><el-input-number v-model="editor.txPower" :min="0" controls-position="right" data-testid="link-power" /></el-form-item>
-          <el-form-item label="数据速率（Mbps）"><el-input-number v-model="editor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
-          <el-form-item label="发射天线增益（dBi）"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
-          <el-form-item label="接收天线增益（dBi）"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
+          <el-form-item required label="频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
+          <el-form-item required label="带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item required label="发射功率（W）"><el-input-number v-model="editor.txPower" :min="0" controls-position="right" data-testid="link-power" /></el-form-item>
+          <el-form-item required label="数据速率（Mbps）"><el-input-number v-model="editor.dataRate" :min="0" controls-position="right" data-testid="link-data-rate" /></el-form-item>
+          <el-form-item required label="发射天线增益（dBi）"><el-input-number v-model="editor.antennaGain.tx" controls-position="right" data-testid="link-tx-gain" /></el-form-item>
+          <el-form-item required label="接收天线增益（dBi）"><el-input-number v-model="editor.antennaGain.rx" controls-position="right" data-testid="link-rx-gain" /></el-form-item>
           <el-form-item label="天线增益修正值（dB）"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
           <el-form-item label="波形抗干扰增益（dB）"><el-input-number v-model="editor.antiJammingGainDb" :min="0" controls-position="right" data-testid="link-anti-jamming-gain" /></el-form-item>
           <el-form-item label="空域隔离量（dB）"><el-input-number v-model="editor.spatialIsolationDb" :min="0" controls-position="right" data-testid="link-spatial-isolation" /></el-form-item>
@@ -132,12 +132,12 @@ watch(() => editor.value?.direction, direction => {
       <section class="link-editor-section" aria-labelledby="link-quality-title">
         <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
         <div class="link-editor-grid">
-          <el-form-item label="调制方式">
+          <el-form-item required label="调制方式">
             <el-select v-model="editor.modulation" style="width: 100%" data-testid="link-modulation">
               <el-option label="BPSK" value="BPSK" /><el-option label="QPSK" value="QPSK" />
             </el-select>
           </el-form-item>
-          <el-form-item label="通信方向">
+          <el-form-item required label="通信方向">
             <el-select v-model="editor.direction" style="width: 100%" data-testid="link-direction">
               <el-option v-for="(label, value) in linkDirectionLabels" :key="value" :label="label" :value="value" />
             </el-select>
@@ -149,7 +149,7 @@ watch(() => editor.value?.direction, direction => {
               <el-option v-if="editor.coding && editor.coding !== 'UNCODED'" :label="editor.coding" :value="editor.coding" />
             </el-select>
           </el-form-item>
-          <el-form-item class="link-editor-field--wide" label="BER 阈值">
+          <el-form-item required class="link-editor-field--wide" label="BER 阈值">
             <div class="link-editor-threshold">
               <el-input-number v-model="editor.berThreshold" :min="0" :max="1" :step="0.000001" controls-position="right" data-testid="link-ber-threshold" />
               <span>取值范围 0–1</span>

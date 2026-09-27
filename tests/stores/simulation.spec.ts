@@ -357,6 +357,142 @@ describe('P3-1 仿真 Store', () => {
     }))
   })
 
+  it('START 失败先同步服务端 ERROR 并解锁，立即重试重新创建运行而不是重复 START', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 原始启动错误。'
+    let commandCount = 0
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/simulations')) {
+        return init?.method === 'POST' ? successResponse(run('IDLE', true)) : successResponse([failed])
+      }
+      if (url.endsWith('/commands')) {
+        commandCount += 1
+        return commandCount === 1 ? failureResponse('START_FAILED', 'mission 原始启动错误。') : successResponse(run('RUNNING', true))
+      }
+      throw new Error(`Unexpected request ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(simulation.start()).resolves.toBe(false)
+    expect(simulation.run).toMatchObject({ uiStatus: 'ERROR', configLocked: false })
+    expect(simulation.configurationLockState).toBe('UNLOCKED')
+    expect(simulation.resultMessage).toBe('mission 原始启动错误。')
+
+    await expect(simulation.start()).resolves.toBe(true)
+    expect(simulation.uiStatus).toBe('RUNNING')
+    expect(commandCount).toBe(2)
+    expect(fetchSpy.mock.calls.filter(([url]) => url.endsWith('/commands'))).toHaveLength(2)
+  })
+
+  it('START 失败同步期间阻止重复提交', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 启动失败。'
+    const sync = deferred<Response>()
+    const fetchSpy = vi.fn((url: string, init?: RequestInit) => {
+      if (url.endsWith('/simulations')) {
+        if (init?.method === 'POST') return Promise.resolve(successResponse(run('IDLE', true)))
+        return sync.promise
+      }
+      return Promise.resolve(failureResponse('START_FAILED', 'mission 启动失败。'))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    const first = simulation.start()
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(3))
+    expect(simulation.pending).toBe(true)
+    const callsBeforeRetry = fetchSpy.mock.calls.length
+    await expect(simulation.start()).resolves.toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeRetry)
+
+    sync.resolve(successResponse([failed]))
+    await expect(first).resolves.toBe(false)
+    expect(simulation.uiStatus).toBe('ERROR')
+    expect(simulation.configurationLockState).toBe('UNLOCKED')
+  })
+
+  it.each(['success', 'failure'])('后台同步不阻塞命令，迟到 %s 不覆盖暂停结果', async outcome => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const late = deferred<Response>()
+    const fetcher = vi.fn().mockResolvedValueOnce(successResponse([run('RUNNING')]))
+      .mockReturnValueOnce(late.promise).mockResolvedValueOnce(successResponse(run('PAUSED')))
+    vi.stubGlobal('fetch', fetcher)
+    await simulation.resetProjection()
+    const sync = simulation.synchronizeRuntimeState()
+    expect(simulation.runtimeSyncing).toBe(true)
+    expect(simulation.pending).toBe(false)
+    await expect(simulation.pause()).resolves.toBe(true)
+    const current = JSON.stringify(simulation.run)
+    late.resolve(outcome === 'success' ? successResponse([run('RUNNING')]) : failureResponse())
+    await sync
+    expect(JSON.stringify(simulation.run)).toBe(current)
+    expect(simulation.uiStatus).toBe('PAUSED')
+    expect(simulation.resultMessage).toBe('仿真已暂停。')
+    expect(simulation.runtimeSyncing).toBe(false)
+  })
+
+  it('START 失败同步失败保留原始错误并阻止重试，后续同步成功后恢复', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 原始错误。'
+    let syncAttempts = 0
+    const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.endsWith('/simulations')) {
+        if (init?.method === 'POST') return successResponse(run('IDLE', true))
+        syncAttempts += 1
+        if (syncAttempts === 1) throw new Error('运行状态同步失败。')
+        return successResponse([failed])
+      }
+      return failureResponse('START_FAILED', 'mission 原始错误。')
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(simulation.start()).resolves.toBe(false)
+    expect(simulation.runtimeSyncRequired).toBe(true)
+    expect(simulation.resultCode).toBe('START_FAILED')
+    expect(simulation.resultMessage).toContain('mission 原始错误。')
+    const callsBeforeRetry = fetchSpy.mock.calls.length
+    await expect(simulation.start()).resolves.toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(callsBeforeRetry)
+
+    await expect(simulation.synchronizeRuntimeState()).resolves.toBe(true)
+    expect(simulation.runtimeSyncRequired).toBe(false)
+    expect(simulation.run).toMatchObject({ uiStatus: 'ERROR', configLocked: false })
+    expect(simulation.resultMessage).toBe('mission 原始错误。')
+  })
+
+  it('刷新加载 ERROR 运行记录时保留引擎错误，不展示为成功', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 日志含 FATAL。'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([failed])))
+
+    await expect(simulation.resetProjection()).resolves.toBe(true)
+    expect(simulation).toMatchObject({ capabilityState: 'ERROR', resultCode: 'START_FAILED', resultMessage: 'mission 日志含 FATAL。' })
+    expect(simulation.configurationLockState).toBe('UNLOCKED')
+  })
+
+  it('加载 ERROR 运行记录后选择场景不覆盖引擎错误文案', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 执行记录失败。'
+    const draft = scenarioDraft()
+    const fetchSpy = vi.fn((url: string) => url.endsWith('/simulations')
+      ? Promise.resolve(successResponse([failed]))
+      : Promise.resolve(successResponse(draft)))
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(simulation.selectScene('SCN-001')).resolves.toBe(true)
+    expect(simulation).toMatchObject({ capabilityState: 'ERROR', resultCode: 'START_FAILED', resultMessage: 'mission 执行记录失败。' })
+  })
+
   it('覆盖暂停、继续、单步和运行期倍速命令', async () => {
     authorizeOperator()
     const simulation = useSimulationStore()
@@ -518,6 +654,19 @@ describe('P3-1 仿真 Store', () => {
     await expect(pending).resolves.toBe(false)
     expect(fetchSpy).toHaveBeenCalledTimes(phase === 'create' ? 1 : 2)
     expect(simulation.$state).toMatchObject({ run: null, capabilityState: 'EMPTY', lastConfirmation: null })
+  })
+
+  it('同步 mission 执行失败时显示真实错误并解除配置锁', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    simulation.applyRun(run('RUNNING', true))
+    const failed = run('ERROR', false)
+    failed.canonical.errorMessage = 'mission 解析失败，请查看运行日志。'
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([failed])))
+    expect(await simulation.synchronizeRuntimeState()).toBe(true)
+    expect(simulation.capabilityState).toBe('ERROR')
+    expect(simulation.resultMessage).toBe(failed.canonical.errorMessage)
+    expect(simulation.configurationLockState).toBe('UNLOCKED')
   })
 
   it('空闲运行停止时不创建确认上下文', async () => {

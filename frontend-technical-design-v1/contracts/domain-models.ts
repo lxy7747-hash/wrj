@@ -47,7 +47,9 @@ export type PlatformType = BusinessInformationNodeType | SupportingEntityType;
 /** 通信卫星的业务子类型；不增加信息节点分类数量。 */
 export type SatelliteType = 'TIANTONG' | 'SHENTONG';
 export type DeploymentDomain = 'ground' | 'air' | 'space';
-export type LinkType = 'SAT' | 'MICROWAVE' | 'DATALINK' | 'LASER';
+export type LinkType = 'SAT' | 'MICROWAVE' | 'DATALINK' | 'LASER' | 'FIBER';
+/** 已确认的新写入业务类型四枚举；读取保留历史业务文本。 */
+export type InformationType = '态势信息' | '目标指令' | '侦察信息' | '状态信息';
 export type Modulation = 'BPSK' | 'QPSK';
 export type LinkDirection = 'FORWARD' | 'REVERSE';
 /** SRS §3.5.3 Table 22 nested position object. */
@@ -88,13 +90,13 @@ export interface Link {
   /** 波形抗干扰增益和空域隔离衰减，单位 dB，缺省均为 0。 */
   antiJammingGainDb?: Decibels;
   spatialIsolationDb?: Decibels;
-  /** 卫星链路引用的中继卫星实体；缺省或 null 沿用端点卫星。 */
+  /** 单跳中继实体：SAT 链路引用通信卫星；微波/数传可引用 FORWARD_RELAY_NODE；缺省或 null 表示无额外中继跳。 */
   relayPlatformId?: Identifier | null;
 }
 /** 场景级卫星启用与链路切换策略；单条链路开关保存在 Link.enabled。 */
 export interface ScenarioLinkSettings {
   /** @deprecated 仅兼容历史配置的默认状态；新配置不再生成或编辑全局类型开关。 */
-  enabledTypes?: Record<LinkType, boolean>;
+  enabledTypes?: Record<Exclude<LinkType, 'FIBER'>, boolean> & { FIBER?: boolean };
   enabledSatellites: Record<SatelliteType, boolean>;
   switchCooldownS: Seconds;
   priority: LinkType[];
@@ -102,6 +104,8 @@ export interface ScenarioLinkSettings {
 export interface Jammer {
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
   frequency: Megahertz; bandwidth: Megahertz; autoDetect: boolean; detectionRange: Meters;
+  /** 干扰有效作用距离，合同单位 m；界面按海里编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */
+  jammingRange: Meters;
   /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
   triggerTimeS?: Seconds;
 }
@@ -121,6 +125,7 @@ export interface InformationDemand {
   direction?: 'FORWARD' | 'REVERSE';
   /** 单项业务独立启停；旧场景缺省视为启用，停用保留参数。 */
   enabled?: boolean;
+  /** 读取保留历史业务文本；写入由共享校验限制为 InformationType 四枚举。 */
   informationType: string; volumeMb: number; frequencyHz: number; priority: 'HIGH' | 'NORMAL';
   maxLatencyMs: Milliseconds; minDataRateMbps: MegabitsPerSecond;
 }

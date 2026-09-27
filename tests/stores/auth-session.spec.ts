@@ -50,13 +50,43 @@ it.each(['request', 'body'] as const)('bounds startup while %s hangs and ignores
   await startup
   expect(auth.principal).toBeNull()
   expect(auth.permissions).toEqual([])
+  expect(auth.runtimeMode).toBe('UNKNOWN')
   expect(sessionStorage.getItem('wrj.auth.principal')).toBeNull()
   expect(fetchSpy.mock.calls[0]![1].signal.aborted).toBe(true)
   finish()
   await vi.advanceTimersByTimeAsync(1)
   expect(auth.principal).toBeNull()
   expect(sessionStorage.getItem('wrj.auth.principal')).toBeNull()
+  expect(auth.runtimeMode).toBe('UNKNOWN')
   expect(vi.getTimerCount()).toBe(0)
+})
+
+it('首次恢复失败后本机登录重新识别模式，不保留 Mock 假设', async () => {
+  const fetchSpy = vi.fn().mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(async () => session())
+  vi.stubGlobal('fetch', fetchSpy)
+  const auth = useAuthStore()
+  expect(auth.runtimeMode).toBe('UNKNOWN')
+  await auth.restoreSession()
+  expect(auth.runtimeMode).toBe('UNKNOWN')
+  expect((await auth.login({ username: 'new-admin', password: 'test-password-123!' })).authenticated).toBe(true)
+  expect(auth.runtimeMode).toBe('LOCAL')
+})
+
+it.each([null, 'unrecognized', 'mock', 'sqlite'])('恢复及登录只接受明确模式头 %s', async mode => {
+  vi.stubGlobal('fetch', vi.fn(async () => {
+    const response = session()
+    if (mode === null) response.headers.delete('X-Auth-Mode')
+    else response.headers.set('X-Auth-Mode', mode)
+    return response
+  }))
+  const auth = useAuthStore()
+  const expected = mode === 'mock' ? 'MOCK' : mode === 'sqlite' ? 'LOCAL' : 'UNKNOWN'
+  await auth.restoreSession()
+  expect(auth.runtimeMode).toBe(expected)
+  await auth.login({ username: 'new-admin', password: 'test-password-123!' })
+  expect(auth.runtimeMode).toBe(expected)
+  auth.resetToSafeEmpty()
+  expect(auth.runtimeMode).toBe('UNKNOWN')
 })
 
 it('accepts a SQLite administrator without a fixed username and restores only a server-verified session', async () => {
@@ -70,6 +100,7 @@ it('accepts a SQLite administrator without a fixed username and restores only a 
   const restored = useAuthStore()
   await restored.restoreSession()
   expect(restored.principal).toEqual(principal)
+  expect(restored.runtimeMode).toBe('LOCAL')
   expect(fetchSpy).toHaveBeenLastCalledWith('http://127.0.0.1:4173/api/v1/auth/session', { credentials: 'include', signal: expect.any(AbortSignal) })
   fetchSpy.mockResolvedValueOnce(success({ authenticated: false, sessionCreated: false }))
   await restored.restoreSession()

@@ -4,6 +4,8 @@ import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import ReportTabs from '../../components/reports/ReportTabs.vue'
 import LocalReportTabs from '../../components/reports/LocalReportTabs.vue'
+import MissionResults from '../../components/situation/MissionResults.vue'
+import { ElMessage } from 'element-plus'
 import type { ReportExportRequest } from '../../contracts/domain-models'
 import { useBatchStore } from '../../stores/batch'
 import { useReportStore } from '../../stores/report'
@@ -18,6 +20,7 @@ const batchStore = useBatchStore()
 const telemetryStore = useTelemetryStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
+const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
 const { reports, selectedReport, capabilityState, resultMessage, confirmation, exportResult } = storeToRefs(reportStore)
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
@@ -41,11 +44,11 @@ async function loadEvidence(): Promise<void> {
 }
 
 onMounted(async () => {
-  if (archiveId.value !== undefined) { await reload(); return }
+  if (archiveId.value !== undefined || resultId.value !== undefined) { await reload(); return }
   const requestedReportId = typeof route.query.reportId === 'string' ? route.query.reportId : undefined
   if (await reportStore.load(requestedReportId)) await loadEvidence()
 })
-watch(archiveId, () => { void reload() })
+watch([archiveId, resultId], () => { void reload() })
 onBeforeUnmount(() => {
   reportStore.resetToSafeEmpty()
   batchStore.resetToSafeEmpty()
@@ -63,12 +66,19 @@ async function changeReport(reportId: string): Promise<void> {
 }
 
 async function reload(): Promise<void> {
+  if (resultId.value !== undefined) {
+    if (archiveId.value !== undefined) { reportStore.resetToSafeEmpty(); reportStore.showError(undefined, '不能同时选择归档和运行结果。'); return }
+    if (await reportStore.loadResult(resultId.value)) await loadEvidence()
+    return
+  }
   if (await (archiveId.value === undefined ? reportStore.load() : reportStore.loadArchive(archiveId.value))) await loadEvidence()
 }
 
 /** 发起当前格式的导出，由服务端区分真实文件与纯 Mock 验证。 */
 async function requestExport(): Promise<void> {
-  await reportStore.requestExport(exportFormat.value)
+  const local = !!reportStore.selectedReport?.localEvidence
+  const ok = await reportStore.requestExport(exportFormat.value)
+  if (local) { if (ok) ElMessage.success(reportStore.resultMessage); else ElMessage.error(reportStore.resultMessage) }
 }
 
 /** 完成三级批量报告的一次性确认和导出验证。 */
@@ -84,6 +94,9 @@ function printReport(): void {
 
 <template>
   <section class="reports-page" aria-label="评估报表">
+    <div>
+    <MissionResults view="report" />
+    <p v-if="!archiveId && !resultId">当前查看配置文件报告；可在上方选择一次已完成的仿真。</p>
     <header class="reports-page__header">
       <div class="reports-page__actions">
         <el-select
@@ -117,6 +130,7 @@ function printReport(): void {
         <el-button v-if="selectedReport?.localEvidence" :disabled="pending || !canPrint" data-testid="report-print-pdf" @click="printReport">打印当前视图／另存 PDF</el-button>
       </div>
     </header>
+    </div>
 
     <main class="reports-page__content">
       <p v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>

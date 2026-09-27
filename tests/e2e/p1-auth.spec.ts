@@ -381,7 +381,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P7 ADMIN restores backups, exports configuration and opens an archived report', async ({ page }) => {
+test('P7 ADMIN restores backups and opens archives without the removed scenario operations', async ({ page }) => {
   const audit = auditConsole(page)
   await loginAs(page, 'admin')
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
@@ -418,21 +418,8 @@ test('P7 ADMIN restores backups, exports configuration and opens an archived rep
   await expect(panel.getByTestId('full-config-export')).toHaveCount(0)
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   await page.getByTestId('scene-edit-SCN-001').click()
-  await page.getByTestId('open-scenario-operations').click()
-  const exportPanel = page.getByTestId('scenario-config-export')
-  await expect(exportPanel).toContainText('不校验或导出当前场景内容')
-  await exportPanel.getByTestId('full-config-export').click()
-  const exported = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/admin/config/export')
-  await page.getByRole('dialog', { name: '完整配置导出流程演示', exact: true }).getByRole('button', { name: '确认执行' }).click()
-  const exportResponse = await exported
-  expect(exportResponse.status()).toBe(200)
-  const exportBody = await exportResponse.json()
-  expect(exportBody).toMatchObject({ data: { objectId: 'FULL-CONFIG', classification: 'INTERNAL', generated: false } })
-  await expect(exportPanel).toContainText('完整配置导出流程验证通过；未校验或导出当前场景内容，未生成实际文件。')
-  await expect(exportPanel.getByTestId('full-config-result')).toContainText(exportBody.data.watermark)
-  expect(exportBody.data.verifiedAt).toBe('2026-08-06T08:00:00Z')
-  await expect(exportPanel.getByTestId('full-config-result')).toContainText('2026-08-06 16:00:00')
+  await expect(page.getByTestId('open-scenario-operations')).toHaveCount(0)
+  await expect(page.getByTestId('scenario-config-export')).toHaveCount(0)
 
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
   await page.goto('/admin?section=simulation-data')
@@ -1288,6 +1275,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('option', { name: '地面固定式干扰侦测站（STN-01）', exact: true }).click()
   await page.getByTestId('jammer-power').locator('input').fill('0')
   await page.getByTestId('jammer-range').locator('input').fill('1')
+  await page.getByTestId('jammer-jamming-range').locator('input').fill('1')
   await page.getByTestId('jammer-direction').locator('input').fill('270')
   await page.getByTestId('jammer-duration').locator('input').fill('90')
   await page.getByTestId('apply-jammer').click()
@@ -1334,6 +1322,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
     bandwidth: 0.0002,
     autoDetect: false,
     detectionRange: 1852,
+    jammingRange: 1852,
     triggerTimeS: 300,
   })
   expect(savedDraft.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
@@ -1394,7 +1383,7 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   const validationPanel = page.getByTestId('validation-panel')
   await expect(validationPanel).toContainText('当前雨衰值未匹配设备默认值，生成脚本前需要确认。')
 
-  await page.getByTestId('workflow-config').click()
+  await page.getByRole('tab', { name: '场景基础', exact: true }).click()
   const timeStep = page.getByTestId('scenario-time-step').locator('input')
   await timeStep.fill('-1')
   await validate.click()
@@ -1545,7 +1534,7 @@ test('P2-6 maintains templates in system management and applies them in scenario
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P2-7 OPERATOR persists full data parameters and completes import, undo, and reset', async ({ page, request }) => {
+test('P2-7 OPERATOR persists and reloads full data parameters without scenario operations', async ({ page, request }) => {
   const audit = auditConsole(page)
   const baseline = await loadScenarioDraft(request)
 
@@ -1626,38 +1615,16 @@ test('P2-7 OPERATOR persists full data parameters and completes import, undo, an
     informationType: '目标指令', direction: 'FORWARD', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
   })
 
-  await page.getByTestId('open-scenario-operations').click()
-  const importedConfig = structuredClone(persisted.config)
-  importedConfig.output.directory = './tasks/TASK-001/e2e-import'
-  await page.getByTestId('import-scenario-snapshot').click()
-  const messageBox = page.locator('.el-message-box')
-  await messageBox.locator('textarea').fill(JSON.stringify(importedConfig))
-  const importedResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/scenarios/import')
-  await messageBox.getByRole('button', { name: '导入场景', exact: true }).click()
-  expect((await importedResponse).status()).toBe(200)
-  await expect(page.getByTestId('scenario-json-preview')).toContainText('./tasks/TASK-001/e2e-import')
-
-  await page.getByTestId('undo-scenario').click()
-  const undoneResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === `${SCENARIO_PATH}/undo`)
-  await page.locator('.el-message-box').getByRole('button', { name: '撤销', exact: true }).click()
-  expect((await undoneResponse).status()).toBe(200)
-  await expect(page.getByTestId('scenario-json-preview')).toContainText('./tasks/TASK-001/e2e-full')
-
-  await page.getByTestId('reset-scenario').click()
-  const resetResponse = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === `${SCENARIO_PATH}/reset`)
-  await page.locator('.el-message-box').getByRole('button', { name: '重置场景', exact: true }).click()
-  expect((await resetResponse).status()).toBe(200)
-  await expect(page.getByTestId('scenario-json-preview')).toContainText(baseline.config.output.directory)
+  for (const id of ['open-scenario-operations', 'import-scenario-snapshot', 'undo-scenario', 'reset-scenario', 'scenario-json-preview']) {
+    await expect(page.getByTestId(id)).toHaveCount(0)
+  }
 
   expectPreviewConfirmationErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates preflight issues', async ({ page, request }) => {
+test('OPERATOR checks fields on save without a separate script preview or preflight entry', async ({ page }) => {
   const audit = auditConsole(page)
   const errorUrls: string[] = []
   page.on('console', message => { if (message.type() === 'error') errorUrls.push(message.location().url) })
@@ -1673,7 +1640,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await expect(page.getByTestId('validation-panel')).toBeVisible()
   await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'output.writeInterval' }).click()
   await expect(page.getByLabel('输出参数').getByText('输出写入间隔不能小于场景时间步长。', { exact: true })).toBeVisible()
-  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('script-preview-panel')).toHaveCount(0)
 
   const restored = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1684,7 +1651,7 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await expect(page.getByRole('tab')).toHaveCount(5)
   await expect(page.getByTestId('scenario-next-step')).toContainText('当前草稿已保存')
   await expect(page.getByTestId('next-script')).toHaveCount(0)
-  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('workflow-validation')).toHaveCount(0)
   await expect(page.getByTestId('save-scenario')).toBeEnabled()
   const validationFinished = page.waitForResponse((response) => response.request().method() === 'POST'
@@ -1698,63 +1665,20 @@ test('P2-8 OPERATOR blocks errors, confirms warnings, previews, and locates pref
   await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
   await messageBox.getByRole('button', { name: '取消', exact: true }).click()
   await expect(messageBox).toBeHidden()
-  await expect(page.getByTestId('workflow-script')).toBeEnabled()
-  await page.getByTestId('workflow-script').click()
-
-  const confirmationRequired = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/scripts/preview'
-    && response.status() === 428)
-  await page.getByTestId('generate-script').click()
-  expect((await confirmationRequired).status()).toBe(428)
-  await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
-
-  const previewReady = page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/scripts/preview'
-    && response.status() === 200)
-  await messageBox.getByRole('button', { name: '本次继续', exact: true }).click()
-  expect((await previewReady).status()).toBe(200)
-  await expect(page.getByTestId('script-preview')).toContainText('# AFSIM 2.9.0 场景脚本预览；仅内存生成')
-  await expect(page.getByTestId('script-next-step')).toContainText('点击“执行预检”')
-
-  let upstreamPreflightPassed = false
-  await page.route('**/api/v1/scripts/*/preflight', async (route) => {
-    const response = await route.fetch()
-    const payload = await response.json() as ApiSuccess<{ valid: boolean; errors: unknown[]; warnings: unknown[] }>
-    upstreamPreflightPassed = response.status() === 200 && payload.data.valid
-    await route.fulfill({
-      response,
-      json: {
-        ...payload,
-        data: {
-          valid: false,
-          errors: [{ severity: 'ERROR', code: 'SCRIPT_VERSION_INVALID', message: '第 2 行，第 1 列：版本错误。', fieldPath: 'preview[2:1]' }],
-          warnings: [],
-        },
-      },
-    })
-  })
-  await page.getByTestId('preflight-script').click()
-  await expect(page.getByTestId('preflight-issues')).toContainText('SCRIPT_VERSION_INVALID')
-  await expect(page.getByTestId('preflight-issues')).toContainText('2:1')
-  expect(upstreamPreflightPassed).toBe(true)
-
-  await page.unroute('**/api/v1/scripts/*/preflight')
-  await page.getByTestId('preflight-script').click()
-  await expect(page.getByTestId('scenario-next-step')).toContainText('脚本预检已通过，未启动真实 AFSIM')
-  await expect(page.getByTestId('script-next-step')).toContainText('保存场景时由本机服务写入 TXT，不会启动真实 AFSIM')
-  await page.screenshot({ path: test.info().outputPath('scenario-workflow-preflight.png') })
-  await page.getByTestId('workflow-config').click()
+  await expect(page.getByTestId('workflow-script')).toHaveCount(0)
+  await expect(page.getByTestId('preflight-script')).toHaveCount(0)
+  await expect(page.getByTestId('script-preview-panel')).toHaveCount(0)
+  await page.getByRole('tab', { name: '场景基础', exact: true }).click()
   await page.getByTestId('scenario-name').fill('流程回归：修改后重新生成')
   await expect(page.getByTestId('scenario-next-step')).toContainText('未保存修改')
-  await expect(page.getByTestId('workflow-script')).toBeDisabled()
+  await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('script-preview')).toHaveCount(0)
   await expect(page.getByTestId('workflow-validation')).toHaveCount(0)
 
   expect(audit.errors).toEqual([
     'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
-    'Failed to load resource: the server responded with a status of 428 (Precondition Required)',
   ])
-  expect(errorUrls).toEqual(Array(2).fill(`${MOCK_ORIGIN}/api/v1/scripts/preview`))
+  expect(errorUrls).toEqual([`${MOCK_ORIGIN}/api/v1/scripts/preview`])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })

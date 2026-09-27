@@ -87,6 +87,8 @@ const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'ERROR'>('LOADING')
+const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL')
+const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
@@ -100,12 +102,16 @@ const fileStatus = computed<UiSimulationStatus>(() => !ownsFilePlayback.value ||
   : filePlayback.state === 'PLAYING' ? 'RUNNING' : filePlayback.state === 'COMPLETED' ? 'COMPLETED' : 'PAUSED')
 const fileSliderTime = ref(0)
 const fileSliderDragging = ref(false)
+const fileSeekRevision = ref(0)
 watch(fileTime, time => { if (!fileSliderDragging.value) fileSliderTime.value = time })
 function fileTimeLabel(time: number): string {
   return `${Math.floor(time / 60)}分${Math.floor(time % 60)}秒`
 }
 async function seekFileTime(time: number | number[]): Promise<void> {
-  if (typeof time === 'number') await filePlayback.seek(time)
+  if (typeof time === 'number') {
+    fileSeekRevision.value += 1
+    await filePlayback.seek(time)
+  }
   fileSliderDragging.value = false
   fileSliderTime.value = fileTime.value
 }
@@ -144,7 +150,7 @@ async function initializeSituation(): Promise<void> {
       return
     }
     sourceState.value = 'SCENE'
-    sourceMessage.value = '已保存场景配置预览；未接入真实求解引擎。'
+    sourceMessage.value = '已保存场景配置预览；开始时执行服务端生成的脚本。'
     return
   }
   sourceState.value = 'LOADING'
@@ -184,6 +190,19 @@ async function initializeSituation(): Promise<void> {
 }
 
 onMounted(initializeSituation)
+
+// 所选场景不订阅冻结遥测，Mock 和本机模式都需轮询运行状态；不把原 CSV 当成本次运行结果。
+watch(() => [selectedScene.value?.config.scenario.id, simulationStore.run?.configLocked] as const, ([sceneId, locked], _, onCleanup) => {
+  if (!sceneId || !locked) return
+  let cancelled = false
+  let timer: ReturnType<typeof setTimeout>
+  const poll = async () => {
+    if (!simulationStore.pending) await simulationStore.synchronizeRuntimeState()
+    if (!cancelled) timer = setTimeout(poll, 1_000)
+  }
+  timer = setTimeout(poll, 1_000)
+  onCleanup(() => { cancelled = true; clearTimeout(timer) })
+}, { immediate: true })
 
 // 登出请求完成或路由卸载前就停止文件播放，并使在途加载失效。
 watch(() => useAuthStore().principal?.userId, () => {
@@ -629,9 +648,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   <section id="page-situation" class="situation-page" aria-labelledby="situation-title">
     <h2 id="situation-title" class="situation-page__semantic-title">态势主界面</h2>
 
+    <div class="situation-page__toolbar">
     <SimulationToolbar
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
+      :real-mission="realMissionMode"
+      :runtime-unknown="runtimeUnknown"
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
       :capability-state="simulationCapabilityState"
@@ -660,6 +682,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </div>
       </template>
     </SimulationToolbar>
+    </div>
 
     <div
       class="situation-page__workspace"
@@ -868,6 +891,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
           :file-device-events="hasMapData && sourceState === 'FILE' ? initialSnapshot?.deviceEvents : []"
           :file-time="fileTime"
+          :file-playing="sourceState === 'FILE' && fileStatus === 'RUNNING'"
+          :file-speed="filePlayback.speed"
+          :file-seek-revision="fileSeekRevision"
           :links="hasMapData ? situationLinks : []"
           :selected-node-id="hasMapData ? selectedNodeId : ''"
           :focus-target="hasMapData ? mapFocusTarget : null"

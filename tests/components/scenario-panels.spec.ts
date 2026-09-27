@@ -1,6 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { CapabilityState, ValidationResult } from '../../src/contracts/domain-models'
 import ValidationPanel from '../../src/components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorDialog.vue'
@@ -68,7 +68,7 @@ describe('场景拆分面板', () => {
     const wrapper = mount(LinkSettingsPanel, {
       props: { modelValue: baseline, platforms: config.platforms, disabled: false, typeOptions: [
         { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
-        { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' },
+        { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' },
       ] }, global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
     })
     // 项目的通用 .vue 声明不携带 Props 类型，此处只声明本用例更新的 Props。
@@ -80,7 +80,7 @@ describe('场景拆分面板', () => {
     await wrapper.get('[data-testid="open-link-settings"]').trigger('click')
     expect(wrapper.emitted('update:dialogVisible')!.at(-1)).toEqual([true])
     await typedWrapper.setProps({ dialogVisible: true })
-    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(4)
+    expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(5)
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
     expect(wrapper.find('[aria-label="中继卫星选择"]').exists()).toBe(true)
     expect(baseline.enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
@@ -114,7 +114,7 @@ describe('场景拆分面板', () => {
     expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeDrag)
     await priorityRow(0).trigger('drop')
     changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER'])
+    expect(changed.priority).toEqual(['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER'])
     expect(changed.enabledSatellites.TIANTONG).toBe(false)
     expect(baseline.priority).toEqual(originalPriority)
     await typedWrapper.setProps({ modelValue: changed })
@@ -122,25 +122,25 @@ describe('场景拆分面板', () => {
     await priorityItem(0).trigger('dragstart')
     await priorityRow(3).trigger('drop')
     changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'LASER', 'SAT'])
+    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'LASER', 'SAT', 'FIBER'])
     await typedWrapper.setProps({ modelValue: changed })
     await priorityItem(3).trigger('keydown', { key: 'ArrowUp' })
     changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
-    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER'])
+    expect(changed.priority).toEqual(['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'])
     await typedWrapper.setProps({ modelValue: changed })
     const beforeCancel = wrapper.emitted('update:modelValue')!.length
     await priorityItem(0).trigger('keydown', { key: 'ArrowUp' })
-    await priorityItem(3).trigger('keydown', { key: 'ArrowDown' })
+    await priorityItem(4).trigger('keydown', { key: 'ArrowDown' })
     await priorityItem(0).trigger('dragstart')
     await priorityItem(0).trigger('dragend')
-    await priorityRow(3).trigger('drop')
+    await priorityRow(4).trigger('drop')
     expect(wrapper.emitted('update:modelValue')).toHaveLength(beforeCancel)
     expect(wrapper.find('.is-dragging').exists()).toBe(false)
     await priorityItem(0).trigger('dragstart')
     await typedWrapper.setProps({ disabled: true, dialogVisible: true })
     const count = wrapper.emitted('update:modelValue')!.length
     wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!.vm.$emit('change', 'TIANTONG')
-    await priorityRow(3).trigger('drop')
+    await priorityRow(4).trigger('drop')
     expect(priorityItem(0).attributes('draggable')).toBe('false')
     expect(priorityItem(0).attributes('disabled')).toBeDefined()
     wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 20)
@@ -156,7 +156,7 @@ describe('场景拆分面板', () => {
       props: { modelValue: true, link, editing, error: '', pending: false, locked: false,
         platforms: fixtureSource.scenario.platforms as Platform[], linkTypeOptions: [
           { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
-          { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' },
+          { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' },
         ],
         linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
@@ -197,6 +197,97 @@ describe('场景拆分面板', () => {
       expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('relayPlatformId', null)
       expect(link.relayPlatformId).toBe('SAT-01')
     } else expect(wrapper.emitted('apply')!.at(-1)![0]).not.toHaveProperty('relayPlatformId')
+    wrapper.unmount()
+  })
+
+  it('新增航点不立即报错，确认时拦截零值或空速度，修改正确后可确认，重开不保留提示', async () => {
+    const platform = structuredClone(fixtureSource.scenario.platforms[3]) as Platform
+    platform.waypoints = []
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [], satelliteTypeOptions: [],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '空间' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await flushPromises()
+    const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!
+    expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0')
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.findAllComponents({ name: 'ElFormItem' }).find(item => item.props('label') === '名称')!.props('required')).toBe(true)
+    for (const value of [undefined, -1, 0]) {
+      speed.vm.$emit('update:modelValue', value)
+      await flushPromises()
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')).toBeUndefined()
+      await vi.waitFor(() => expect(wrapper.text()).toContain('航点速度必填且必须大于 0'))
+    }
+    speed.vm.$emit('update:modelValue', 20)
+    await flushPromises()
+    await vi.waitFor(() => expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0'))
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ waypoints: [expect.objectContaining({ speed: 20 })] })
+    expect(platform.waypoints).toEqual([])
+    const dialogWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue: boolean } }>
+    await dialogWrapper.setProps({ modelValue: false })
+    await dialogWrapper.setProps({ modelValue: true })
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0')
+    wrapper.unmount()
+  })
+
+  it('切换通信卫星先选后验，名称和子类型只在确认后报错，原对象不被修改', async () => {
+    const platform = structuredClone(fixtureSource.scenario.platforms[3]) as Platform
+    platform.waypoints = []
+    platform.name = ''
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [{ value: 'COMMUNICATION_SATELLITE', label: '通信卫星' }],
+        satelliteTypeOptions: [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHENTONG', label: '神通卫星' }],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '空间' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'platform-type')!
+    type.vm.$emit('update:modelValue', 'COMMUNICATION_SATELLITE')
+    type.vm.$emit('change', 'COMMUNICATION_SATELLITE')
+    await flushPromises()
+    const satellite = wrapper.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'platform-satellite-type')!
+    expect(satellite.props('modelValue')).toBeUndefined()
+    expect(wrapper.text()).not.toContain('请填写名称。')
+    expect(wrapper.text()).not.toContain('请选择天通卫星或神通卫星。')
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    await vi.waitFor(() => {
+      expect(wrapper.text()).toContain('请填写名称。')
+      expect(wrapper.text()).toContain('请选择天通卫星或神通卫星。')
+    })
+    await wrapper.get('[data-testid="platform-name"]').setValue('测试节点')
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    satellite.vm.$emit('update:modelValue', 'SHENTONG')
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toHaveLength(1)
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ name: '测试节点', satelliteType: 'SHENTONG' })
+    expect(platform.name).toBe('')
+    expect(platform.satelliteType).toBeUndefined()
+    const dialogWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue: boolean } }>
+    await dialogWrapper.setProps({ modelValue: false })
+    await dialogWrapper.setProps({ modelValue: true })
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('请填写名称。')
     wrapper.unmount()
   })
 

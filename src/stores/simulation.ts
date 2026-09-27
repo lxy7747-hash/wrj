@@ -129,6 +129,8 @@ export const useSimulationStore = defineStore('simulation', {
     lastConfirmation: null as ConfirmationContext | null,
     requestEpoch: 0,
     runtimeSyncEpoch: 0,
+    runtimeSyncing: false,
+    runtimeSyncRequired: false,
     selectedScene: null as ScenarioDraft | null,
     selectingScene: false,
   }),
@@ -140,10 +142,16 @@ export const useSimulationStore = defineStore('simulation', {
       state.capabilityState === 'LOADING'
       || state.capabilityState === 'VALIDATING'
       || state.capabilityState === 'EXECUTING'
+      || (state.runtimeSyncing && state.runtimeSyncRequired)
     ),
   },
 
   actions: {
+    /** 用户操作优先于后台快照，迟到的轮询不得覆盖操作结果。 */
+    invalidateRuntimeSync(): void {
+      this.runtimeSyncEpoch += 1
+      this.runtimeSyncing = false
+    },
     /** 只恢复同一账号的场景编号；配置及权限始终重新从服务端读取。 */
     readSelectedSceneId(): string | null {
       const userId = useAuthStore().principal?.userId
@@ -180,7 +188,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (!scene || scene.config.scenario.id !== id) throw new InvalidSimulationResponseError()
         this.selectedScene = scene
         try { window.sessionStorage.setItem(SELECTED_SCENE_KEY, JSON.stringify({ userId, scenarioId: id })) } catch { /* 禁用存储时本次选用仍有效。 */ }
-        this.resultMessage = '已选择保存的场景配置；Mock 运行不生成真实遥测。'
+        if (this.run?.uiStatus !== 'ERROR') this.resultMessage = '已选择保存的场景配置；Mock 运行不生成真实遥测。'
         return true
       } catch (error) {
         if (epoch === this.requestEpoch && !signal?.aborted && userId === useAuthStore().principal?.userId) this.showError(error, '场景选择失败。')
@@ -225,8 +233,11 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 读取运行列表并原子更新当前运行及场景配置锁；失败时显示同步错误。
      */
     async synchronizeRuntimeState(): Promise<boolean> {
+      if (this.runtimeSyncing) return false
+      if (this.pending) return true
       const requestEpoch = this.requestEpoch
       const runtimeSyncEpoch = ++this.runtimeSyncEpoch
+      this.runtimeSyncing = true
       try {
         const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/simulations`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
@@ -239,6 +250,13 @@ export const useSimulationStore = defineStore('simulation', {
         const run = runs?.find((candidate) => candidate.runId === 'RUN-001')
         if (run === undefined) throw new InvalidSimulationResponseError()
         this.applyRun(run)
+        this.runtimeSyncRequired = false
+        if (run.uiStatus === 'ERROR') {
+          this.capabilityState = 'ERROR'
+          this.resultCode = 'START_FAILED'
+          this.resultMessage = run.canonical.errorMessage ?? '仿真运行失败。'
+          return true
+        }
         if (this.resultCode === 'RUNTIME_SYNC_FAILED') {
           this.capabilityState = 'SUCCESS'
           this.resultCode = 'SUCCESS'
@@ -251,6 +269,8 @@ export const useSimulationStore = defineStore('simulation', {
         this.resultCode = 'RUNTIME_SYNC_FAILED'
         this.resultMessage = `仿真运行状态同步失败：${this.resultMessage}`
         return false
+      } finally {
+        if (runtimeSyncEpoch === this.runtimeSyncEpoch) this.runtimeSyncing = false
       }
     },
 
@@ -260,6 +280,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 更新运行、锁状态和能力反馈。
      */
     async resetProjection(): Promise<boolean> {
+      this.invalidateRuntimeSync()
       const requestEpoch = this.requestEpoch
       this.capabilityState = 'LOADING'
       try {
@@ -282,10 +303,18 @@ export const useSimulationStore = defineStore('simulation', {
           this.capabilityState = 'EMPTY'
           this.resultCode = 'EMPTY'
           this.resultMessage = '尚未创建仿真运行。'
+          this.runtimeSyncRequired = false
           this.lastConfirmation = null
           return true
         }
         this.applyRun(run)
+        this.runtimeSyncRequired = false
+        if (run.uiStatus === 'ERROR') {
+          this.capabilityState = 'ERROR'
+          this.resultCode = 'START_FAILED'
+          this.resultMessage = run.canonical.errorMessage ?? '仿真运行失败。'
+          return true
+        }
         this.capabilityState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
         this.resultMessage = '仿真运行状态已加载。'
@@ -303,6 +332,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 更新能力状态、当前运行和场景配置锁投影。
      */
     async create(): Promise<boolean> {
+      this.invalidateRuntimeSync()
       const auth = useAuthStore()
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
         this.showError(undefined, '当前账号没有仿真控制权限。')
@@ -352,6 +382,9 @@ export const useSimulationStore = defineStore('simulation', {
         this.resultCode = this.run === null ? 'EMPTY' : 'PERMISSION_DENIED'
         return false
       }
+      // START 失败后必须先完成一次服务端状态同步；同步期间任何命令都不能并发提交。
+      if (this.runtimeSyncRequired) return false
+      this.invalidateRuntimeSync()
       const requestEpoch = this.requestEpoch
       const runId = this.run.runId
       this.capabilityState = 'EXECUTING'
@@ -386,6 +419,20 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch) return false
         this.configurationLockState = this.run?.configLocked ? 'LOCKED' : 'UNLOCKED'
         this.showError(error, '仿真命令执行失败。')
+        if (command.command === 'START') {
+          // 保留原始启动错误；状态同步成功前不允许 start() 再次直接发送 START。
+          const originalCode = this.resultCode
+          const originalMessage = this.resultMessage
+          this.runtimeSyncRequired = true
+          const synchronized = await this.synchronizeRuntimeState()
+          if (requestEpoch !== this.requestEpoch) return false
+          this.capabilityState = 'ERROR'
+          this.configurationLockState = this.run?.configLocked ? 'LOCKED' : 'UNLOCKED'
+          this.resultCode = originalCode
+          this.resultMessage = synchronized
+            ? originalMessage
+            : `${originalMessage}（运行状态同步失败，暂不允许重试。）`
+        }
         return false
       }
     },
@@ -396,7 +443,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 可能依次创建运行、锁定场景并发送 START/RESUME 命令。
      */
     async start(): Promise<boolean> {
-      if (this.selectingScene || this.pending) return false
+      if (this.selectingScene || this.pending || this.runtimeSyncRequired) return false
       if (this.selectedScene && this.run?.configLocked && this.run.scenarioId !== this.selectedScene.config.scenario.id) {
         this.showError(undefined, '其他场景已有运行，请先停止该运行。')
         return false
@@ -459,6 +506,8 @@ export const useSimulationStore = defineStore('simulation', {
      * @sideEffects 依次写入确认上下文、运行状态和场景解锁投影。
      */
     async stop(): Promise<boolean> {
+      if (this.pending || this.runtimeSyncRequired) return false
+      this.invalidateRuntimeSync()
       const auth = useAuthStore()
       if (this.run === null || !auth.authorize('SIMULATION_CONTROL').allowed) {
         this.showError(undefined, this.run === null ? '当前没有可停止的仿真运行。' : '当前账号没有仿真控制权限。')
@@ -528,6 +577,8 @@ export const useSimulationStore = defineStore('simulation', {
     resetToSafeEmpty(): void {
       this.clearTimers()
       this.runtimeSyncEpoch += 1
+      this.runtimeSyncing = false
+      this.runtimeSyncRequired = false
       if (this.run !== null) useScenarioStore().projectRuntimeLock(this.run.scenarioId, false)
       this.run = null
       this.mode = 'INTERACTIVE_SINGLE'

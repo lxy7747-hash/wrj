@@ -141,15 +141,19 @@ it('恢复真实场景、模板和账号，保留当前审计及恢复前快照�
   expect(backups.listBackups()).toHaveLength(2)
 })
 
-it.each(['corrupt', 'missing', 'schema', 'no-admin'])('%s 备份拒绝恢复，先创建真实预备份且数据库不变', mode => {
+it.each(['corrupt', 'missing', 'schema', 'no-admin', 'legacy-jammer'])('%s 备份拒绝恢复，先创建真实预备份且数据库不变', mode => {
   const { db, backups } = setup()
   backups.backup('SOURCE')
   const path = join(backups.directory, 'SOURCE.db')
   if (mode === 'corrupt') writeFileSync(path, 'corrupt')
   if (mode === 'missing') rmSync(path)
-  if (mode === 'schema' || mode === 'no-admin') {
+  if (mode === 'schema' || mode === 'no-admin' || mode === 'legacy-jammer') {
     const snapshot = new DatabaseSync(path)
-    snapshot.exec(mode === 'schema' ? 'ALTER TABLE users ADD COLUMN unexpected TEXT' : "UPDATE users SET status = 'DISABLED'")
+    if (mode === 'legacy-jammer') {
+      snapshot.exec("UPDATE scenarios SET config_json = json_remove(config_json, '$.jammers[0].jammingRange')")
+    } else {
+      snapshot.exec(mode === 'schema' ? 'ALTER TABLE users ADD COLUMN unexpected TEXT' : "UPDATE users SET status = 'DISABLED'")
+    }
     snapshot.close()
     // 同步摘要模拟结构不兼容的历史目录，确保不只依赖文件哈希拒绝。
     const catalog = new DatabaseSync(join(backups.directory, 'catalog.db'))
@@ -157,8 +161,10 @@ it.each(['corrupt', 'missing', 'schema', 'no-admin'])('%s 备份拒绝恢复，�
     catalog.close()
   }
   const before = db.prepare('SELECT * FROM users').all()
+  const scenesBefore = db.prepare('SELECT * FROM scenarios').all()
   expect(backups.restore('SOURCE')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false, rolledBack: false, generated: true } })
   expect(db.prepare('SELECT * FROM users').all()).toEqual(before)
+  expect(db.prepare('SELECT * FROM scenarios').all()).toEqual(scenesBefore)
   expect(backups.listBackups()).toHaveLength(2)
   expect(backups.restore('UNKNOWN')).toMatchObject({ ok: false, status: 404 })
 })

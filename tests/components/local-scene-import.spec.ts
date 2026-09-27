@@ -39,7 +39,7 @@ function completeLink(input: ImportInput): void {
   input.links[0]!.selected = true
   input.links[0]!.parameters = { frequency: 2000, bandwidth: 2, txPower: 5, antennaGain: { tx: 1, rx: 2 },
     modulation: 'QPSK', berThreshold: 0.001, dataRate: 5, direction: 'FORWARD' }
-  input.links[0]!.demand = { informationType: '测试信息', volumeMb: 1, frequencyHz: 1, maxLatencyMs: 100, minDataRateMbps: 1 }
+  input.links[0]!.demand = { informationType: '态势信息' as const, volumeMb: 1, frequencyHz: 1, maxLatencyMs: 100, minDataRateMbps: 1 }
 }
 
 describe('本地场景导入候选', () => {

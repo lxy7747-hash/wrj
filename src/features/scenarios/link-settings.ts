@@ -26,7 +26,7 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
       SHENTONG: false,
     },
     switchCooldownS: 5,
-    priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER'],
+    priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'],
   }
   // 旧双选/均未选收敛为默认天通；仅转换合法布尔值的副本，非法输入仍交给校验阻断。
   const { TIANTONG, SHENTONG } = settings.enabledSatellites

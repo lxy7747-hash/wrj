@@ -134,13 +134,19 @@ describe('P0 production runtime side-effect boundary', () => {
       expect.stringMatching(/\/deterministic-fixtures\.json$/),
     ]))
     const productionSource = [...sources.values()].join('\n')
+    const realtimeSource = [...sources].find(([path]) => path.endsWith('/server/ws/realtime.ts'))?.[1] ?? ''
     for (const [path, source] of sources) {
       if (path.endsWith('.ts')) expect(readsSystemDate(source), path).toBe(false)
     }
 
     for (const capability of FORBIDDEN_CAPABILITIES) {
-      expect(productionSource, capability.name).not.toMatch(capability.pattern)
+      const guardedSource = capability.name === 'runtime timers'
+        ? [...sources].filter(([path]) => !path.endsWith('/server/ws/realtime.ts')).map(([, source]) => source).join('\n')
+        : productionSource
+      expect(guardedSource, capability.name).not.toMatch(capability.pattern)
     }
+    expect(realtimeSource.match(/\b(?:setTimeout|setInterval|setImmediate)\s*\(/g)).toEqual(['setInterval('])
+    expect(realtimeSource).toMatch(/clearInterval\(heartbeat\)/)
   })
 
   it('performs reset entirely in memory without outbound fetch', async () => {

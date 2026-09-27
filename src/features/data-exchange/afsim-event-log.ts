@@ -296,6 +296,8 @@ export function parseAfsimEventLog(text: string): AfsimEventLog {
         return
       }
       for (const key of required) {
+        // 引擎允许平台不设置阵营；CSV 声明的空 side 是缺省值，不是丢失字段。
+        if (key === 'Side' && current.csvFields && fields.side === '') continue
         if (!fields[key]) throw new Error(`事件缺少字段 ${key}。`)
       }
       if (!event.type.startsWith('SIMULATION_') && event.subject === '') throw new Error('事件缺少主体名称。')

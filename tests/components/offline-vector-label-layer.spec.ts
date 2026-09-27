@@ -121,15 +121,19 @@ describe('离线矢量文字瓦片层', () => {
     expect(canvas.style.marginLeft).toBe('-64px')
   })
 
-  it('无参创建默认使用现有浅色标签调色板', async () => {
+  it('无参创建使用地图配置中的默认主题调色板', async () => {
     parserState.tile = tileWith({
-      boundary_labels: [pointFeature({ name: '浅色标签', admin_level: 4 }, 2000, 2000)],
+      boundary_labels: [pointFeature({ name: '默认标签', admin_level: 4 }, 2000, 2000)],
     })
 
     await renderTile(7)
 
-    expect(context.fillStyle).toBe('#243746')
-    expect(context.strokeStyle).toBe('#f7fbfd')
+    const palette = {
+      dark: { fill: '#d7e8f3', stroke: '#06111d' },
+      light: { fill: '#243746', stroke: '#f7fbfd' },
+    }[MAP_CONFIG.defaults.theme]
+    expect(context.fillStyle).toBe(palette.fill)
+    expect(context.strokeStyle).toBe(palette.stroke)
   })
 
   it('切换深色主题仅重绘一次，新瓦片使用现有浅蓝色水系配色', async () => {
@@ -139,7 +143,7 @@ describe('离线矢量文字瓦片层', () => {
         [[500, 2000], [3500, 2000]],
       )],
     })
-    const layer = createOfflineVectorLabelLayer() as PublicGridLayer
+    const layer = createOfflineVectorLabelLayer('light') as PublicGridLayer
     const redrawSpy = vi.spyOn(layer, 'redraw')
 
     layer.setTheme('dark')
@@ -160,7 +164,7 @@ describe('离线矢量文字瓦片层', () => {
     parserState.tile = tileWith({
       boundary_labels: [pointFeature({ name: '延迟深色标签', admin_level: 4 }, 2000, 2000)],
     })
-    const layer = createOfflineVectorLabelLayer() as PublicGridLayer
+    const layer = createOfflineVectorLabelLayer('light') as PublicGridLayer
     const redrawSpy = vi.spyOn(layer, 'redraw')
 
     layer.setTheme('dark', false)

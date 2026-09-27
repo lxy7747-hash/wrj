@@ -2,7 +2,28 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 装备引用场景同步冻结（2026-09-21，当前值）
+## 场景读写兼容边界（2026-09-24，当前值）
+
+用户授权最小读写合同拆分，OpenAPI **1.8.3 / 83 操作 / 40 写操作**：`InformationDemand` 读取保留历史非空文本，`ScenarioLinkSettings` 读取兼容无 FIBER 的完整旧四类优先级和 enabledTypes。新增 Write schema，由 `ScenarioConfigWrite` 强制四种业务枚举及完整五类设置。领域类型、运行时校验、schema snapshot 和冻结审计同步；fixture 不改，不迁移或重写存量数据库。
+
+上线顺序：先部署兼容读取和严格写入版本，再由用户明确编辑旧场景。旧记录不被自动转换为新枚举。回退到不兼容读取的旧程序可能再次无法打开旧库，应保留本兼容版本；不通过删除或重置数据回退。混合版本部署时以新写入校验为准，不保证旧写入端执行新规则。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/mock-api.openapi.yaml` | `C3FDE6CA5BB7F4820EC92BD69FD4CED3015D5810D627E0F1FEF89A7CE01363C7` |
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 完全一致） | `BA39D8A5CDF88E8CA4A3B63C5C49EDF7DE4D322A6F858E58B6E2ABBDAA8A63C8` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `A27E1BEABB97D5BEDE77835B99846E454C39414DB3271816D13FED700CAC218C` |
+
+## 本机 mission 错误响应补齐（2026-09-24，历史记录）
+
+经用户授权，OpenAPI 更新为 **1.8.2 / 83 操作 / 40 写操作**：命令接口补充 422（脚本不可无损生成）、503（本机进程启动/停止失败），全局 reset 补充 409（本机运行期间拒绝重置）。三项均引用既有 `ErrorEnvelope`；同步错误响应冻结清单及删除响应的负例测试。不改变领域模型、fixture、需求范围或 schema 结构，因此完整 schema snapshot 保持原值。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/mock-api.openapi.yaml` | `BC96BD2ED809C15200196210BE5865D0C817D54CF6C528C955938446CFF2725C` |
+| `../scripts/contracts/openapi-schema.snapshot.ts`（结构未改） | `ED1B20DC17EA565F1BC7793793FAA595DEBC95AE65EC55D71A8587D2D0F48397` |
+
+## 装备引用场景同步冻结（2026-09-21，历史记录）
 
 用户确认保存装备时同步已登记引用场景：非空带宽、功率、速率、调制和 BER 阈值覆盖，具体频率保留并检查新范围，锁定／引用失效／版本冲突／校验失败整次拒绝。SQLite 同一连接跨库事务保存装备、历史、引用版本与场景修订，历史归档、模板及未引用场景不变。引用登记本身不覆盖参数。此前“不自动更新场景”仅是历史范围，现由本授权替代；主数据登记语义不变。
 

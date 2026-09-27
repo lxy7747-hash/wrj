@@ -102,11 +102,11 @@ describe('deterministic fixture contract', () => {
     }
     config.links[0]!.enabled = true
     expect(validate(config)).toBe(true)
-    config.linkSettings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true }
+    config.linkSettings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true, FIBER: true }
     expect(validate(config)).toBe(true)
     config.linkSettings.priority[0] = config.linkSettings.priority[1]!
     expect(validate(config)).toBe(false)
-    config.linkSettings.priority = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER']
+    config.linkSettings.priority = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER']
     config.links[0]!.coding = 'bad\ncode'
     expect(validate(config)).toBe(false)
     config.links[0]!.coding = 'UNCODED'

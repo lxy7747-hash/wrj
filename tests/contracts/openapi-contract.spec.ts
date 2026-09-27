@@ -63,6 +63,34 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('读取保留历史业务及四类优先级，写入只接受四枚举及完整五类优先级', () => {
+    const document = loadContractDocuments().openApi
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    ajv.addSchema({ $id: 'legacy-scene', components: asObject(document).components })
+    const readDemand = ajv.compile({ $ref: 'legacy-scene#/components/schemas/InformationDemand' })
+    const writeDemand = ajv.compile({ $ref: 'legacy-scene#/components/schemas/InformationDemandWrite' })
+    const readSettings = ajv.compile({ $ref: 'legacy-scene#/components/schemas/ScenarioLinkSettings' })
+    const writeSettings = ajv.compile({ $ref: 'legacy-scene#/components/schemas/ScenarioLinkSettingsWrite' })
+    const demand = { id: 'OLD-1', sourcePlatformId: 'CMD-01', destinationPlatformIds: ['AIR-01'], informationType: '视频',
+      volumeMb: 1, frequencyHz: 1, priority: 'NORMAL', maxLatencyMs: 100, minDataRateMbps: 1 }
+    expect(readDemand(demand)).toBe(true)
+    expect(writeDemand(demand)).toBe(false)
+    for (const informationType of ['态势信息', '目标指令', '侦察信息', '状态信息']) expect(writeDemand({ ...demand, informationType })).toBe(true)
+    expect(readDemand({ ...demand, informationType: '  ' })).toBe(false)
+    const old = { priority: ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'],
+      enabledTypes: { SAT: true, MICROWAVE: true, DATALINK: true, LASER: true },
+      enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5 }
+    expect(readSettings(old)).toBe(true)
+    expect(writeSettings(old)).toBe(false)
+    const current = { ...old, priority: [...old.priority, 'FIBER'], enabledTypes: { ...old.enabledTypes, FIBER: true } }
+    expect(readSettings(current)).toBe(true)
+    expect(writeSettings(current)).toBe(true)
+    expect(readSettings({ ...old, priority: ['SAT', 'MICROWAVE', 'FIBER', 'LASER'] })).toBe(false)
+    expect(readSettings({ ...old, priority: ['SAT', 'SAT', 'DATALINK', 'LASER'] })).toBe(false)
+    expect(readSettings({ ...old, enabledTypes: { ...old.enabledTypes, UNKNOWN: true } })).toBe(false)
+  })
+
   it('完整备份名称和计划冻结边界，执行结果与备份编号闭合', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })
@@ -289,6 +317,21 @@ describe('OpenAPI contract audit', () => {
       code: 'OPENAPI_ERROR_STATUS',
       path: '$.paths["/api/v1/templates/{templateId}"].delete.responses',
     }))
+  })
+
+  it.each([
+    ['/api/v1/simulations/{runId}/commands', '422'],
+    ['/api/v1/simulations/{runId}/commands', '503'],
+    ['/api/v1/reset', '409'],
+  ])('freezes local mission error response %s %s', (path, status) => {
+    const { openApi } = loadContractDocuments()
+    expect(auditOpenApi(openApi)).toEqual([])
+    const candidate = structuredClone(openApi)
+    const responses = asObject(operationAt(candidate, path!, 'post').responses)
+    expect(asObject(asObject(asObject(responses[status!]).content)['application/json']).schema)
+      .toEqual({ $ref: '#/components/schemas/ErrorEnvelope' })
+    delete responses[status!]
+    expect(auditOpenApi(candidate)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_ERROR_STATUS' }))
   })
 
   it('rejects duplicate required keys in a success envelope', () => {

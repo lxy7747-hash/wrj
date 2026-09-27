@@ -1,4 +1,5 @@
 import { apiFetch } from '../features/shared/api-fetch'
+import { isMissionResultSnapshot } from '../features/results/mission-result'
 import { defineStore } from 'pinia'
 import { markRaw, toRaw } from 'vue'
 import type {
@@ -87,7 +88,7 @@ export const useReplayStore = defineStore('replay', {
      * 读取本机文件回放快照；true 为已加载，null 为未配置，false 为读取失败。
      * 未配置时显示空态，读取失败显示错误，页面不回退演示数据。
      */
-    async loadLocalFile(archiveId?: string): Promise<boolean | null> {
+    async loadLocalFile(archiveId?: string, resultId?: string): Promise<boolean | null> {
       this.resetToSafeEmpty()
       const epoch = this.requestEpoch
       const request = new AbortController()
@@ -95,13 +96,16 @@ export const useReplayStore = defineStore('replay', {
       const timeout = setTimeout(() => request.abort(), 10_000)
       this.state = 'LOADING'
       try {
-        const path = archiveId === undefined ? 'replays/local-file' : `archives/${encodeURIComponent(archiveId)}`
+        if (archiveId !== undefined && resultId !== undefined) throw new Error('不能同时选择归档和运行结果。')
+        const path = resultId !== undefined ? `mission-results/${encodeURIComponent(resultId)}` : archiveId === undefined ? 'replays/local-file' : `archives/${encodeURIComponent(archiveId)}`
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/${path}`, {
           headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
         })
         const archived = archiveId === undefined ? null : await readSuccess(response, isLocalArchiveSnapshot)
         if (archived && archived.record.archiveId !== archiveId) throw new Error('归档来源与请求不一致。')
-        const snapshot = archived ? archived.replay : await readSuccess(response, isLocalReplaySnapshot)
+        const result = resultId === undefined ? null : await readSuccess(response, isMissionResultSnapshot)
+        if (result && result.record.resultId !== resultId) throw new Error('运行结果与请求不一致。')
+        const snapshot = result ? result.replay : archived ? archived.replay : await readSuccess(response, isLocalReplaySnapshot)
         if (epoch !== this.requestEpoch) return false
         if (snapshot === null) {
           this.state = 'EMPTY'
@@ -113,7 +117,7 @@ export const useReplayStore = defineStore('replay', {
           durationS: snapshot.durationS, currentTimeS: 0, eventIds: [] }
         this.state = 'PAUSED'
         this.resultCode = 'SUCCESS'
-        this.resultMessage = '真实文件回放已加载；重新加载可读取新增记录。'
+        this.resultMessage = result ? '本次运行回放已加载，重新加载保持同一结果快照。' : '真实文件回放已加载；重新加载可读取新增记录。'
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false

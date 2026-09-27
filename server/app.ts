@@ -1,5 +1,5 @@
 import { createServer, type Server as HttpServer } from 'node:http'
-import express, { type NextFunction, type Request, type Response } from 'express'
+import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
 import type {
   AuditRequest,
   AuditRecord,
@@ -29,9 +29,10 @@ import {
   type ProjectionResult,
 } from './auth/projection.js'
 import { failure, success } from './http/envelope.js'
-import { assertLoopbackRequest } from './http/loopback.js'
+import { assertLoopbackRequest, assertLanRequest, validatePublicOrigin } from './http/loopback.js'
 import { ScenarioProjection, type ScenarioStorage } from './scenarios/projection.js'
 import { SimulationProjection, type SimulationProjectionResult } from './simulations/projection.js'
+import type { MissionExecution, MissionProcess } from './simulations/mission-execution.js'
 import { ScriptProjection } from './scripts/projection.js'
 import { MissionGenerationError } from './scripts/mission-generator.js'
 import { MockProjection } from './state/projection.js'
@@ -55,9 +56,15 @@ import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
 import type { LocalArchiveStorage } from './local/archive-sqlite.js'
 import { isLocalArchiveId } from '../src/features/admin/local-archive.js'
+import { isMissionResultId, type MissionResultRecord } from '../src/features/results/mission-result.js'
+import type { MissionResults } from './local/mission-results.js'
 
 export interface MockServerOptions {
   port?: number
+  /** 只有真实账号库入口可以启用内网部署；未配置时保持本机 Mock 边界。 */
+  publicOrigin?: string
+  host?: string
+  site?: RequestHandler
   confirmationClock?: ConfirmationClock
   /** 仅由本机启动入口注入；纯 Mock 默认不访问文件系统。 */
   loadInitialNodes?: () => Promise<InitialNodeSnapshot>
@@ -67,7 +74,8 @@ export interface MockServerOptions {
   loadLocalReplay?: () => Promise<LocalReplaySnapshot>
   /** 存在此入口即为真实报告模式；无文件或失败不能回退 Mock。 */
   loadLocalReport?: () => Promise<Report | null>
-  exportLocalReport?: (report: Report, format: 'HTML' | 'CSV', actor: string) => Promise<LocalReportExportResult>
+  exportLocalReport?: (report: Report, format: 'HTML' | 'CSV', actor: string, source?: MissionResultRecord) => Promise<LocalReportExportResult>
+  missionResults?: MissionResults
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
   templateStorage?: TemplateStorage
@@ -81,6 +89,8 @@ export interface MockServerOptions {
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
   writeScriptText?: (script: ScriptContract, revision: number, draft: ScenarioDraft) => Promise<string>
+  /** 仅本机入口执行生成包；纯 Mock 继续使用确定性控制投影。 */
+  missionExecution?: MissionExecution
 }
 
 export interface MockServer {
@@ -198,6 +208,10 @@ function readDemoRole(req: Request): Role | undefined {
 const authenticatedUsers = new WeakMap<Request, User>()
 function actorForRequest(req: Request, role: Role): string {
   return authenticatedUsers.get(req)?.username ?? (role === 'ADMIN' ? 'admin' : 'operator')
+}
+function confirmationOwner(req: Request): { id: string; name: string } | undefined {
+  const user = authenticatedUsers.get(req)
+  return user ? { id: user.userId, name: user.username } : undefined
 }
 
 /**
@@ -518,7 +532,7 @@ function requireAdmin(
     return false
   }
   if (role === 'OPERATOR') {
-    auth.recordDenied('operator', role, action, objectId)
+    auth.recordDenied(actorForRequest(req, role), role, action, objectId)
     res.status(403).json(failure('PERMISSION_DENIED', 403, {
       requestId: `REQ-P1-${action}`,
       generatedAt: P1_GENERATED_AT,
@@ -530,6 +544,7 @@ function requireAdmin(
 
 /** 按确认动作授权角色；场景警告允许具备场景写权限的操作员继续。 */
 function requireConfirmationPermission(
+  req: Request,
   role: Role,
   action: ConfirmationAction,
   objectId: string,
@@ -543,7 +558,7 @@ function requireConfirmationPermission(
       && auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL'))
   if (allowed) return true
 
-  auth.recordDenied('operator', role, 'CONFIRMATION_CREATE', objectId)
+  auth.recordDenied(actorForRequest(req, role), role, 'CONFIRMATION_CREATE', objectId)
   res.status(403).json(failure('PERMISSION_DENIED', 403, {
     requestId: 'REQ-P2-CONFIRMATION-CREATE',
     generatedAt: P1_GENERATED_AT,
@@ -566,14 +581,20 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     throw new RangeError('Mock server port must be an integer from 0 through 65535.')
   }
 
+  const publicOrigin = options.publicOrigin === undefined ? undefined : validatePublicOrigin(options.publicOrigin)
+  if (publicOrigin && !options.authStorage) throw new Error('内网部署必须使用真实账号数据库。')
   const projection = new MockProjection()
   const auth = new AuthProjection(options.authStorage)
   const scenarios = new ScenarioProjection(options.scenarioStorage)
   const simulations = new SimulationProjection(scenarios)
+  let mission: MissionProcess | undefined
+  let missionStarting: Promise<MissionProcess> | undefined
+  let missionStopping = false
+  let closing = false
   const confirmations = new ConfirmationProjection(options.confirmationClock ?? (options.authStorage ? {
     now: () => options.authStorage!.time(),
     expiresAt: created => options.authStorage!.expiresAt(created),
-  } : undefined), options.authStorage ? () => ({ id: auth.actorId(), name: auth.actorName() }) : undefined)
+  } : undefined))
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const batchReplay = new BatchReplayProjection()
@@ -605,20 +626,27 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @remarks May send a 403 response; otherwise mutates response headers and continues routing.
    */
   app.use((req, res, next) => {
-    const decision = assertLoopbackRequest(req)
+    const decision = publicOrigin ? assertLanRequest(req, publicOrigin) : assertLoopbackRequest(req)
     if (!decision.allowed) {
       if (options.authStorage) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_LOOPBACK_DENIED')
       res.status(403).json(failure('LOOPBACK_ONLY', 403, { message: decision.message }))
       return
     }
 
-    res.setHeader('Access-Control-Allow-Origin', decision.origin)
+    if (decision.origin) res.setHeader('Access-Control-Allow-Origin', decision.origin)
     res.setHeader('Access-Control-Allow-Credentials', 'true')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Demo-Role, X-Confirmation-Id')
     res.setHeader('Vary', 'Origin')
+    if (req.path === '/api/v1/auth/login') {
+      res.setHeader('X-Auth-Mode', options.authStorage ? 'sqlite' : 'mock')
+      res.setHeader('Access-Control-Expose-Headers', 'X-Auth-Mode')
+    }
     next()
   })
+
+  // 仅本机/部署入口注入文件与地图服务，纯 Mock 不引入文件或外部请求能力。
+  if (options.site) app.use(options.site)
 
   /**
    * Responds to allowed API preflight requests.
@@ -646,7 +674,6 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     authenticatedUsers.set(req, user)
     req.headers['x-demo-role'] = user.role
-    auth.setActor(user)
     next()
   })
 
@@ -696,7 +723,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           : path.startsWith('/admin/audit') ? '/admin?section=audit-logs'
             : path.startsWith('/admin/master-data') ? '/admin?section=master-data'
               : /\/admin\/(?:backup|restore)/.test(path) ? '/admin?section=database-backup' : '/admin'
-      } else if (path.startsWith('/archives/') && !principal.menuPaths.some(item => ['/reports', '/replays', '/admin?section=simulation-data'].includes(item))) {
+      } else if ((path.startsWith('/archives/') || path.startsWith('/mission-results')) && !principal.menuPaths.some(item => ['/reports', '/replays', '/admin?section=simulation-data'].includes(item))) {
         res.status(403).json(failure('PERMISSION_DENIED', 403))
         return
       } else if (path.startsWith('/reports')) {
@@ -765,7 +792,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (options.authStorage && result.data.principal) {
       result.data.principal = principalForUser(result.data.principal)
       const token = options.authStorage.issueSession(result.data.principal.userId)
-      res.setHeader('Set-Cookie', `wrj_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800`)
+      res.setHeader('Set-Cookie', `wrj_session=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800${publicOrigin?.startsWith('https:') ? '; Secure' : ''}`)
       result.data.sessionCreated = true
     }
     res.status(200).json(success(result.data, pageMeta(requestId)))
@@ -793,7 +820,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (user) auth.recordSuccess(user.username, user.role, 'AUTH_LOGOUT', user.userId)
       else auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_LOGOUT')
     }
-    res.setHeader('Set-Cookie', 'wrj_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0')
+    res.setHeader('Set-Cookie', `wrj_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${publicOrigin?.startsWith('https:') ? '; Secure' : ''}`)
     res.status(200).json(success({ authenticated: false, sessionCreated: false }, pageMeta('REQ-AUTH-LOGOUT')))
   })
 
@@ -812,7 +839,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    auth.recordSuccess(role === 'ADMIN' ? 'admin' : 'operator', role, 'AUTH_PERMISSIONS')
+    auth.recordSuccess(actorForRequest(req, role), role, 'AUTH_PERMISSIONS')
     const user = authenticatedUsers.get(req)
     const principal = user ? principalForUser(user) : undefined
     res.status(200).json(success(principal ? { role, permissions: principal.permissions, ...(principal.menuPaths ? { menuPaths: principal.menuPaths } : {}) } : auth.permissionSet(role), pageMeta(requestId)))
@@ -1008,11 +1035,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * 执行开始、暂停、继续、单步、停止或倍速命令。
    * @remarks STOP 在状态校验后消费绑定运行和角色的一次性确认，其余命令不创建确认上下文。
    */
-  app.post('/api/v1/simulations/:runId/commands', (req, res) => {
+  app.post('/api/v1/simulations/:runId/commands', async (req, res) => {
     const runId = req.params.runId
     const requestId = 'REQ-P3-SIMULATION-COMMAND'
     const role = requireDemoRole(req, res, auth, 'SIMULATION_COMMAND', runId)
     if (role === undefined) return
+    if (missionStarting || missionStopping || closing) {
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: 'mission 正在启动或停止，请稍后重试。' }))
+      return
+    }
 
     const inspected = simulations.inspectCommand(runId, req.body)
     if (!inspected.ok) {
@@ -1021,6 +1053,50 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     const command = inspected.data
+    if (options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '本机 mission 尚未接入暂停、继续、单步和倍速控制，未执行此命令。' }))
+      return
+    }
+    if (options.missionExecution && command.command === 'START' && command.mode !== 'INTERACTIVE_SINGLE') {
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '本机 mission 当前只支持所选场景的单次执行。' }))
+      return
+    }
+    if (options.missionExecution && command.command === 'START') {
+      const run = simulations.get(runId)
+      const draft = run.ok ? scenarios.get(run.data.scenarioId) : run
+      if (sendSimulationFailure(res, draft, requestId) || !draft.ok) {
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        return
+      }
+      try {
+        missionStarting = options.missionExecution.start(draft.data)
+        const process = await missionStarting
+        mission = process
+        const started = simulations.startMission(process.pid, process.startedAt)
+        void process.completed.then(outcome => {
+          if (mission !== process || missionStopping || closing) return
+          mission = undefined
+          const finished = simulations.finishMission(outcome)
+          realtime.publishRuntimeState(finished)
+          if (finished.uiStatus === 'ERROR') auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        })
+        auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        realtime.publishRuntimeState(started)
+        res.status(200).json(success(started, pageMeta(requestId)))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'mission 启动失败，请检查本机配置。'
+        realtime.publishRuntimeState(simulations.finishMission({ code: null, errorMessage: message }))
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(error instanceof MissionGenerationError ? 422 : 503).json(failure(
+          error instanceof MissionGenerationError ? 'VALIDATION_FAILED' : 'START_FAILED',
+          error instanceof MissionGenerationError ? 422 : 503,
+          { message, ...(error instanceof MissionGenerationError ? { fieldPath: error.fieldPath } : {}) },
+        ))
+      } finally { missionStarting = undefined }
+      return
+    }
     let stopConfirmed = false
     if (command.command === 'STOP') {
       if (command.confirmationId === undefined) {
@@ -1032,7 +1108,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         }))
         return
       }
-      const confirmed = confirmations.consume(command.confirmationId, 'SIMULATION_STOP', runId, role)
+      const confirmed = confirmations.consume(command.confirmationId, 'SIMULATION_STOP', runId, role, confirmationOwner(req)?.id)
       if (!confirmed.ok) {
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
@@ -1043,6 +1119,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       stopConfirmed = true
+    }
+
+    if (mission && command.command === 'STOP') {
+      missionStopping = true
+      try {
+        await mission.stop()
+        mission = undefined
+      } catch (error) {
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(503).json(failure('START_FAILED', 503, { message: error instanceof Error ? error.message : 'mission 停止失败。' }))
+        return
+      } finally { missionStopping = false }
     }
 
     const result = simulations.command(runId, command, stopConfirmed)
@@ -1317,7 +1405,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!requireAdmin(req, res, auth, 'TEMPLATE_CREATE')) return
     const result = templates.create(req.body)
     if (!result.ok) {
-      auth.recordError('admin', 'ADMIN', 'TEMPLATE_CREATE')
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE')
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1326,7 +1414,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
+    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1364,7 +1452,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!requireAdmin(req, res, auth, 'TEMPLATE_UPDATE', templateId)) return
     const result = templates.update(templateId, req.body)
     if (!result.ok) {
-      auth.recordError('admin', 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1373,7 +1461,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1453,6 +1541,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         'SCENARIO_WARNING_CONTINUE',
         req.body.scenarioId,
         role,
+        confirmationOwner(req)?.id,
       )
       if (!confirmation.ok) {
         auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
@@ -1570,6 +1659,26 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 真实执行结果与固定文件回放分开查询，失败时不能回退到其他来源。 */
+  app.get('/api/v1/mission-results', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'REPORT_RESULT_LIST') === undefined) return
+    try {
+      if (Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+      const records = await options.missionResults?.list() ?? []
+      res.json(success(records, pageMeta('REQ-MISSION-RESULT-LIST', records.length, Math.max(1, records.length))))
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果读取失败，请检查结果快照。' })) }
+  })
+
+  app.get('/api/v1/mission-results/:resultId', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId) === undefined) return
+    try {
+      if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+      const snapshot = await options.missionResults?.get(req.params.resultId)
+      if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
+      res.json(success(snapshot, pageMeta('REQ-MISSION-RESULT-GET')))
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果损坏或不可读，未切换到其他文件。' })) }
+  })
+
   /** 返回当前历史回放目录。 */
   app.get('/api/v1/replays', (req, res) => {
     const requestId = 'REQ-P6-REPLAY-LIST'
@@ -1671,11 +1780,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     const archiveId = req.query.archiveId
-    if (Object.keys(req.query).some(key => key !== 'archiveId') || (archiveId !== undefined && !isLocalArchiveId(archiveId))) {
+    const resultId = req.query.resultId
+    const download = req.query.download
+    if (Object.keys(req.query).some(key => !['archiveId', 'resultId', 'download'].includes(key))
+      || (archiveId !== undefined && !isLocalArchiveId(archiveId))
+      || (resultId !== undefined && !isMissionResultId(resultId))
+      || (archiveId !== undefined && resultId !== undefined) || (download !== undefined && download !== '1')) {
       res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '归档编号不正确。', fieldPath: 'archiveId' }))
       return
     }
-    if (options.loadLocalReport || archiveId !== undefined) {
+    if (options.loadLocalReport || archiveId !== undefined || resultId !== undefined) {
       if (!auth.permissionSet(role).permissions.includes('ORDINARY_REPORT_EXPORT')) {
         res.status(403).json(failure('PERMISSION_DENIED', 403))
         return
@@ -1685,16 +1799,27 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       try {
-        const report = archiveId !== undefined ? options.archiveStorage?.get(archiveId)?.report ?? null : await options.loadLocalReport!()
+        const snapshot = typeof resultId === 'string' ? await options.missionResults?.get(resultId) : undefined
+        const report = resultId !== undefined ? snapshot?.report ?? null
+          : archiveId !== undefined ? options.archiveStorage?.get(archiveId)?.report ?? null : await options.loadLocalReport!()
         if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
         if (!report || report.reportId !== reportId) {
           res.status(409).json(failure('CONFLICT', 409, { message: '来源文件已变化，请重新加载后导出，避免导出与页面不一致。', retryable: true }))
           return
         }
         if (!options.exportLocalReport) throw new Error('export unavailable')
-        const result = await options.exportLocalReport(report, req.body.format, actorForRequest(req, role))
+        const result = await options.exportLocalReport(report, req.body.format, actorForRequest(req, role), snapshot?.record)
         if (!isLocalReportExport(result) || result.reportId !== reportId || result.format !== req.body.format) throw new Error('invalid export')
         auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_EXPORT', reportId)
+        if (download === '1') {
+          res.setHeader('Cache-Control', 'no-store')
+          res.setHeader('X-Content-Type-Options', 'nosniff')
+          res.setHeader('Content-Security-Policy', 'sandbox')
+          res.download(result.filePath, `${snapshot?.record.resultId ?? reportId}.${result.format.toLowerCase()}`, error => {
+            if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '报告下载失败，请重试。' }))
+          })
+          return
+        }
         res.status(200).json(success(result, pageMeta(requestId)))
       } catch {
         auth.recordError(actorForRequest(req, role), role, 'REPORT_EXPORT', reportId)
@@ -1714,7 +1839,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const user = authenticatedUsers.get(req)
       const permissions = user ? principalForUser(user).permissions : auth.permissionSet(role).permissions
       if (role !== 'ADMIN' || !permissions.includes('BATCH_LEVEL_III_EXPORT')) {
-        auth.recordDenied('operator', role, 'REPORT_EXPORT', reportId)
+        auth.recordDenied(actorForRequest(req, role), role, 'REPORT_EXPORT', reportId)
         res.status(403).json(failure('PERMISSION_DENIED', 403, { requestId, generatedAt: P1_GENERATED_AT }))
         return
       }
@@ -1726,7 +1851,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         }))
         return
       }
-      const confirmed = confirmations.consume(req.body.confirmationId, 'BATCH_LEVEL_III_EXPORT', reportId, role)
+      const confirmed = confirmations.consume(req.body.confirmationId, 'BATCH_LEVEL_III_EXPORT', reportId, role, confirmationOwner(req)?.id)
       if (!confirmed.ok) {
         res.status(confirmed.status).json(failure(confirmed.code, confirmed.status, {
           requestId,
@@ -1770,8 +1895,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    if (!requireConfirmationPermission(role, req.body.action, req.body.objectId, res, auth)) return
-    const result = confirmations.create(req.body.action, req.body.objectId, role)
+    if (!requireConfirmationPermission(req, role, req.body.action, req.body.objectId, res, auth)) return
+    const result = confirmations.create(req.body.action, req.body.objectId, role, confirmationOwner(req))
     res.status(201).json(success(result, pageMeta(requestId)))
   })
 
@@ -1794,10 +1919,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result = confirmations.confirm(confirmationId, role)
+    const result = confirmations.confirm(confirmationId, role, confirmationOwner(req)?.id)
     if (!result.ok) {
       if (result.code === 'PERMISSION_DENIED') {
-        auth.recordDenied(role === 'ADMIN' ? 'admin' : 'operator', role, 'CONFIRMATION_CONFIRM', confirmationId)
+        auth.recordDenied(actorForRequest(req, role), role, 'CONFIRMATION_CONFIRM', confirmationId)
       }
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
@@ -1838,7 +1963,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const confirmation = confirmations.consume(confirmationId, 'OFFICIAL_TEMPLATE_DELETE', templateId, 'ADMIN')
+    const confirmation = confirmations.consume(confirmationId, 'OFFICIAL_TEMPLATE_DELETE', templateId, 'ADMIN', confirmationOwner(req)?.id)
     if (!confirmation.ok) {
       res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
         requestId,
@@ -1849,7 +1974,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     const result = templates.delete(templateId)
     if (!result.ok) {
-      auth.recordError('admin', 'ADMIN', 'TEMPLATE_DELETE', templateId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_DELETE', templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -1858,7 +1983,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    auth.recordSuccess('admin', 'ADMIN', 'TEMPLATE_DELETE', templateId)
+    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_DELETE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -1866,14 +1991,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   function finishAdmin<T>(res: Response, action: string, result: AdminResult<T>, objectId?: string, status = 200): void {
     const requestId = `REQ-P7-${action}`
     if (!result.ok) {
-      auth.recordError('admin', 'ADMIN', action, objectId)
+      auth.recordError(actorForRequest(res.req, 'ADMIN'), 'ADMIN', action, objectId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId, generatedAt: P1_GENERATED_AT, message: result.message,
         ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
       }))
       return
     }
-    auth.recordSuccess('admin', 'ADMIN', action, objectId)
+    auth.recordSuccess(actorForRequest(res.req, 'ADMIN'), 'ADMIN', action, objectId)
     const total = Array.isArray(result.data) ? result.data.length : 1
     res.status(status).json(success(result.data, pageMeta(requestId, total, Math.max(1, total))))
   }
@@ -1882,7 +2007,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   function confirmAdmin(res: Response, confirmationId: unknown, action: ConfirmationAction, objectId: string): boolean {
     const result = !isAdminText(confirmationId)
       ? { ok: false as const, code: 'CONFIRMATION_REQUIRED' as const, status: 428, message: '执行此操作前需要二次确认。' }
-      : confirmations.consume(confirmationId, action, objectId, 'ADMIN')
+      : confirmations.consume(confirmationId, action, objectId, 'ADMIN', confirmationOwner(res.req)?.id)
     if (result.ok) return true
     finishAdmin(res, action, result, objectId)
     return false
@@ -2125,6 +2250,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   /** 恢复结果包含预备份和完整性证据；损坏数据不会开始恢复。 */
   app.post('/api/v1/admin/restore', (req, res) => {
     if (!requireAdmin(req, res, auth, 'BACKUP_RESTORE')) return
+    if (mission || missionStarting) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'BACKUP_RESTORE')
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '请先停止 mission，再恢复备份。' }))
+      return
+    }
     if (!isStrictObject(req.body, ['operation', 'backupId'], ['confirmationId']) || req.body.operation !== 'RESTORE' || !isAdminText(req.body.backupId)) {
       finishAdmin(res, 'BACKUP_RESTORE', { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '恢复请求不正确。', fieldPath: 'backupId' })
       return
@@ -2142,7 +2272,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       batchReplay.reset()
     }
     if (result.ok && result.data.result === 'FAILURE') {
-      auth.recordError('admin', 'ADMIN', 'BACKUP_RESTORE', req.body.backupId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'BACKUP_RESTORE', req.body.backupId)
       res.status(200).json(success(result.data, pageMeta('REQ-P7-BACKUP_RESTORE')))
       return
     }
@@ -2261,7 +2391,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const confirmation = confirmations.consume(req.body.confirmationId, 'AUDIT_EXPORT', 'AUDIT-LOG', 'ADMIN')
+    const confirmation = confirmations.consume(req.body.confirmationId, 'AUDIT_EXPORT', 'AUDIT-LOG', 'ADMIN', confirmationOwner(req)?.id)
     if (!confirmation.ok) {
       auth.recordDenied(actorForRequest(req, 'ADMIN'), 'ADMIN', 'AUDIT_EXPORT', 'AUDIT-LOG')
       res.status(confirmation.status).json(failure(confirmation.code, confirmation.status, {
@@ -2296,7 +2426,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.get('/api/v1/admin/users', (req, res) => {
     const requestId = 'REQ-P1-USERS-LIST'
     const users = auth.usersSnapshot()
-    auth.recordSuccess('admin', 'ADMIN', 'USER_LIST')
+    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_LIST')
     res.status(200).json(success(users, pageMeta(requestId, users.length, Math.max(1, users.length))))
   })
 
@@ -2311,14 +2441,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/admin/users', (req, res) => {
     const requestId = 'REQ-P1-USERS-CREATE'
     if (req.body?.operation === 'CREATE' && typeof req.body.password === 'string' && !req.body.password.trim()) {
-      auth.recordError('admin', 'ADMIN', 'USER_CREATE')
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_CREATE')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
         requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'password', message: '密码不能全为空白。',
       }))
       return
     }
     if (!isUserRoleCommand(req.body) || req.body.operation !== 'CREATE') {
-      auth.recordError('admin', 'ADMIN', 'USER_CREATE')
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_CREATE')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2327,7 +2457,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    const result = auth.create(req.body)
+    const result = auth.create(req.body, actorForRequest(req, 'ADMIN'))
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }
@@ -2346,7 +2476,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-UPDATE'
     if (!isUserRoleCommand(req.body)) {
-      auth.recordError('admin', 'ADMIN', 'USER_UPDATE', userId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_UPDATE', userId)
       res.status(400).json(failure('INVALID_REQUEST', 400, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2354,7 +2484,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     if (req.body.user.userId !== userId) {
-      auth.recordError('admin', 'ADMIN', 'USER_UPDATE', userId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_UPDATE', userId)
       res.status(400).json(failure('INVALID_REQUEST', 400, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2363,7 +2493,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    const result = auth.update(userId, req.body)
+    const result = auth.update(userId, req.body, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id)
     realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
@@ -2382,7 +2512,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.delete('/api/v1/admin/users/:userId', (req, res) => {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-DELETE'
-    const result = auth.delete(userId)
+    const result = auth.delete(userId, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id)
     realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
@@ -2399,7 +2529,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @remarks On success resets realtime and authentication projections before writing the response.
    */
   app.post('/api/v1/reset', (req, res) => {
-    if (readDemoRole(req) === undefined) {
+    const role = readDemoRole(req)
+    if (role === undefined) {
       res.status(403).json(failure('PERMISSION_DENIED', 403))
       return
     }
@@ -2409,6 +2540,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
+    if (mission || missionStarting) {
+      auth.recordError(actorForRequest(req, role), role, 'SCENARIO_RESET')
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '请先停止 mission，再执行全局重置。' }))
+      return
+    }
     // 本机场景只重载数据库，不用全局演示 reset 覆盖用户已保存配置。
     try {
       templates.reset()
@@ -2470,11 +2606,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const allowed = options.authStorage!.currentUser(request.headers.cookie) !== undefined
       if (!allowed) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_WS_DENIED')
       return allowed
-    } : undefined)
-  httpServer.listen(port, '127.0.0.1')
+    } : undefined, publicOrigin)
+  httpServer.listen(port, publicOrigin ? options.host ?? '0.0.0.0' : '127.0.0.1')
   if (options.authStorage) httpServer.once('close', options.authStorage.watchSessions(() => realtime?.revalidateSessions()))
 
   let closePromise: Promise<void> | undefined
+  let realtimeClosed = false
+  let httpClosed = false
   return {
     httpServer,
     projection,
@@ -2489,18 +2627,29 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
      * Closes realtime and HTTP listeners idempotently.
      *
      * @returns The shared shutdown promise.
-     * @remarks Starts listener shutdown on the first call and reuses its outcome thereafter.
+     * @remarks 并发调用共享结果；失败后可重试未完成步骤，成功步骤不重复执行。
      */
     close: () => {
-      closePromise ??= realtime.close().then(() => new Promise<void>((resolve, rejectClose) => {
-        httpServer.close((error) => {
-          if (error === undefined) {
-            resolve()
-          } else {
-            rejectClose(error)
-          }
-        })
-      }))
+      closing = true
+      closePromise ??= (async () => {
+        const errors: unknown[] = []
+        await missionStarting?.catch(() => undefined)
+        try { await mission?.stop(); mission = undefined } catch (error) { errors.push(error) }
+        if (!realtimeClosed) {
+          try { await realtime.close(); realtimeClosed = true } catch (error) { errors.push(error) }
+        }
+        // 进程或 WS 清理失败也必须关闭 HTTP；close 事件仅在在途请求结束后释放存储。
+        if (!httpClosed) {
+          try {
+            await new Promise<void>((resolve, rejectClose) => {
+              httpServer.close(error => error === undefined ? resolve() : rejectClose(error))
+            })
+            httpClosed = true
+          } catch (error) { errors.push(error) }
+        }
+        if (errors.length === 1) throw errors[0]
+        if (errors.length > 1) throw new AggregateError(errors, '服务关闭存在多个清理错误。')
+      })().catch(error => { closePromise = undefined; throw error })
       return closePromise
     },
   }

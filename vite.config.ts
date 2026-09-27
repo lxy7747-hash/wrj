@@ -8,12 +8,18 @@ import { createVersaTilesPlugin } from './scripts/vite-versatiles-plugin.ts'
 const loopbackHost = '127.0.0.1'
 const uiPort = 5173
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [
     vue(),
     AutoImport({ resolvers: [ElementPlusResolver()], dts: false }),
     Components({ resolvers: [ElementPlusResolver()], dts: false }),
     createVersaTilesPlugin(),
+    {
+      name: 'wrj-lan-marker',
+      transformIndexHtml: () => mode === 'lan'
+        ? [{ tag: 'meta', attrs: { name: 'wrj-deployment', content: 'lan' }, injectTo: 'head' as const }]
+        : [],
+    },
   ],
   optimizeDeps: {
     // 自动组件插件在懒路由转换时才注入样式，预构建可避免首次导航触发依赖重优化和整页重载。
@@ -41,4 +47,4 @@ export default defineConfig({
     port: uiPort,
     strictPort: true,
   },
-})
+}))

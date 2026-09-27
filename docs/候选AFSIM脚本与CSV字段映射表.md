@@ -125,6 +125,8 @@
 
 “有字段可转换”仅指数据含义或单位有对应基础，**不表示当前已生成 mission 可执行语法**。现有生成器输出自定义预览语句，落盘时仍标注“Mock 脚本预览，未经真实 AFSIM 运行验证”；当前预检检查预览结构，不是引擎语法验证。
 
+> 注意：本节各表的“当前生成器处理”列是 2026-09-22 的核对快照，之后生成器已按第 14～17 节多次改写。某个字段现在是否已接通，请以第 17 节为准；本节保留原样，用于记录当时的缺口判断。
+
 ### 9.1 场景基础与环境
 
 | 当前配置字段／界面含义 | 候选脚本对应位置 | CSV 输出对应 | 当前生成器处理 | 对接判断 |
@@ -298,3 +300,175 @@
 - 未运行 mission，未生成仿真 CSV，未重启常驻服务，未修改冻结合同；候选模型适用性、完整参数映射和引擎实际接受性仍待验证。下一步应先审阅最小包，再经授权用独立输出目录运行 mission，而不是宣称完整生成器已完成。
 
 本轮验证：生成器／文件接口／原脚本投影 3 文件 **24/24**；场景组件／Store 2 文件 **133/133**；`npm run typecheck`、`npm run validate:contracts`、`npm run build` 通过。未运行全量 P0、覆盖率或浏览器 E2E；以上不替代 mission 实机验收。
+
+## 15. 生成包 → mission 实际执行（2026-09-23）
+
+- 保存仍只持久化场景并生成 TXT，不自动执行。选用场景后点击态势页“开始”，本机 Node 通过既有 START 接口读取已保存修订，复用同一生成器创建独占执行包，再运行 `mission.exe -es mission.txt`。不执行浏览器传入的路径，也不复用可能已手工改写的旧 TXT。
+- 默认可执行文件为 `frontend` 同级 `Release/Release/mission.exe`；可在 `.env.local` 用绝对路径 `MISSION_EXECUTABLE_PATH` 覆盖。工作目录为 `frontend/output/mission-runs/mission-*/`，入口、依赖、输入快照、`mission-console.log`、`execution.json` 和本次 `output/` 均在此目录。原 `newWrj/output` 不被覆盖。
+- 使用实际 PID、启动/结束时间和退出码。退出码 0 后完成并解锁，启动或执行失败显示错误并解锁；停止需要原一次性确认且仅结束本次拥有的进程。启动/运行期间拒绝全局重置和备份恢复，正常关闭服务时清理拥有的进程。
+- `-es` 为非实时事件推进，不按前端倍速运行。本批没有真实暂停/继续/倍速接口，这些命令明确拒绝，不用 Mock 状态冒充执行。所选场景页面轮询完整运行状态，离页/登出停止轮询；新 CSV 暂不自动接入地图、指标或历史回放。
+- 支持范围仍为第 14 节的基础节点与微波设备，不扩展业务发包、卫星、中继、干扰、侦测或航点。`mapping.json` 的 `engineValidated: false` 是生成时标记；每次执行以 `execution.json` 和日志为证，不能推导全部参数、链路质量或完整业务已验收。
+- 实测本机 mission（WSF 2.9.0）：经保存配置 → 创建运行 → START 的完整 API 链路，独立 3 秒基础场景返回退出码 **0**，日志包含 `Simulation complete`，真实生成七列 `position.csv` 及含设备启用记录的 `scenario_events.csv`，并完成解锁。使用内存场景和临时目录，不操作用户数据库。可复验：设置 `MISSION_SMOKE_EXECUTABLE` 后运行 `tests/server/mission-execution.spec.ts`；不设置时该原生引擎用例显式跳过，其他测试不依赖本机 AFSIM 安装。
+
+本轮验证：包含真实引擎的聚焦回归 **9 文件 177/177**；全量服务端 **30 文件、396 通过、1 跳过**（默认跳过的原生引擎用例已在聚焦回归中实际通过）；类型检查、合同审计、生产构建、`git diff --check` 通过。未运行全量 P0、覆盖率及浏览器 E2E，不沿用历史数字。
+
+## 16. 业务发送与真实接收（2026-09-23）
+
+本节补充第 14～15 节尚未接通的业务发送，不改变其中其他模型边界。
+
+- 按用户确认：启用且频次大于零的业务从仿真起点发送，随后按 `1/频次` 周期发送；结束时刻不再新发，频次为零不发送。报文大小按十进制 `MB × 8,000,000` 四舍五入为整数 bit，不分包；保留配置的信息类型和业务编号，不把“视频”替换成示例类型。
+- 根据关联链路、配置源/目标和方向绑定独立通信设备，不因返向标签自动交换端点。旧版未关联业务仅在每个目的地都有唯一匹配的已启用直连链路时生成；歧义或缺少路径明确拒绝，不臆造路由。停用业务、停用链路不发包，配置仍保留。
+- 通过 `WSF_SCRIPT_PROCESSOR` 调用真实 `WsfMessage` / `SendMessage`。起点采用同一仿真时刻的排队调度，让所有端点完成网络登记，不增加任意启动延时。发送请求不等于成功送达，接收结果以引擎 `MESSAGE_RECEIVED` 为准。
+- 本机实测 `SetSizeInBits` 的整数上限为 **2,147,483,647 bit**，超过会被引擎截断；生成器改为显式拒绝，避免静默改变报文。单次预计发送请求另设 **100 万次**执行资源上限，超过时定位频次字段；不是修改冻结的业务频次合同。
+- 优先级、最大时延、最低业务速率保留在输入和映射记录，明确 `engineEnforced: false`；目前没有已确认的引擎调度保障，不改写设备速率或伪造时延来满足要求。
+- 发现 mission 脚本异常可能仍退出 0：运行器同时检查日志错误与 `Simulation complete`，不再仅凭退出码宣称成功。
+- 原生引擎回归覆盖前向、返向和零频次；短场景实际生成预期数量及时间的发送/接收事件，验证中文信息类型、位数和端点设备。完整 API 回归覆盖保存 → 确认 → TXT → START → mission 完成，保存包与实际执行脚本一致。使用内存场景和临时目录，不修改用户数据库或原 CSV。
+- 剩余范围：卫星、中继、其他平台/链路、干扰、侦测和航点仍未接通；新运行 CSV 暂不自动接入地图/历史回放。不能将本次直连业务验证称为完整场景或链路质量验收。
+
+本轮实际验证：含原生 mission 的聚焦回归 **5 文件 50/50**；设置 `MISSION_SMOKE_EXECUTABLE` 后全量 `npm run test:server` **30 文件 410/410，无跳过**；`npm run typecheck`、`npm run validate:contracts`、`git diff --check` 通过。本轮未运行全量 P0、覆盖率、生产构建和浏览器 E2E；未暂存、提交或推送。
+
+## 17. 平台、卫星、航点、干扰启停与环境参数（2026-09-23）
+
+本节承接第 16 节，只接通第 9～13 节已有明确规则的字段；不新增 UI 字段，不修改冻结合同，也不把未确认项换成相近模型。
+
+### 17.1 本批接通
+
+- **平台模型**：新增 `GROUND_CLUSTER_COMMAND_NODE → COMMAND_VEHICLE_PLATFORM`（第 13.1 节候选映射），运动模型 `WSF_GROUND_MOVER`。它与既有后方指挥节点、空中无人作业集群及两类干扰平台共用同一套平台／设备生成规则，不复制候选模型中硬编码的无人机名称、消息内容和定时剧情。
+- **通信卫星**：`COMMUNICATION_SATELLITE` 按 `satelliteType` 选择候选模型——`TIANTONG → TIAN_TONG_SAT`（GEO，`semi_major_axis 42164 km`）、`SHENTONG → SHEN_TONG_SAT`（LEO，`7000 km`／`inclination 60 deg`／`raan 80 deg`），运动模型 `WSF_SPACE_MOVER`，并写入候选模型的 `orbital_state`；历元取配置的仿真开始时刻，使轨道与 `start_date` 使用同一日期口径。卫星位置由轨道决定，实例不写 `position`／`altitude`，配置的初始经纬高不进入脚本。候选模型自带的转发剧情与设备编号未复制。
+- **卫星链路**：`links[].type = SAT` 按第 13.4 节已确认的“每条链路生成独立设备”规则生成两端设备，不复用候选模型的 `sat_link_a/b` 命名，因此不需要卫星 A/B 绑定选择；但链路至少要有一端是通信卫星，否则按 `links[i].type` 阻断。
+- **侦测设备**：`sensors[]` 按已确认选择生成候选脚本的**主动雷达** `WSF_RADAR_SENSOR`。`frequencyRange` 取中心频率作为 `transmitter.frequency`、`max−min` 作为 `receiver.bandwidth`，`detectionRange` 作为 `maximum_range`；波束视场、帧周期、发射功率、噪声系数与最小距离沿用候选模型给定值。界面扩展的 `ESM` 类型、`direction` 与 `probability` 只写入 `mapping.json`，不映射为引擎参数——本机引擎没有直接接受检测概率的输入指令（`detection_probability` 只是脚本 API），唯一的检测阈值参数 `detection_threshold` 是 dB，与本项目的 0–1 比率之间缺少虚警率假设。
+- **数传链路**：`links[].type = DATALINK` 按已确认选择固定为 **C 波段**，由 `direction` 决定上下行角色（`FORWARD → UPLINK`、`REVERSE → DOWNLINK`），并按候选脚本的合同固定值写入 `bit_error_probability 0.00001`；L 波段未使用。设备频率、带宽与功率仍取自配置，不使用候选模型的示例数值。
+- **高空中继**：`FORWARD_RELAY_NODE` 按已确认选择复用 `MISSION_UAV_PLATFORM` 生成（`WSF_AIR_MOVER`），`mapping.json` 标注 `relayRole: true`。本轮不生成中继转发行为，因此该节点当前只是普通空中端点。
+- **航点运动**：`platforms[].waypoints[]` 生成候选 `route` 区段。路线首点固定为 `initialPosition`——运动器会把平台起点设为路线首点，不写就会丢掉配置的初始位置。每个航点的 `speed` 作用于抵达该航点的那一段，末点速度不参与推进；`speed` 为 0 时按 `platforms[i].waypoints[j].speed` 阻断，避免引擎静默停在起点。`arrivalTime` 不作为引擎约束，`mapping.json` 记录 `arrivalTimeS` 与 `arrivalTimeEnforced: false`，实际到达时刻以引擎位置采样为准。
+- **干扰完整启停**：不再写 weapon 的常开 `on`。`jammingEnabled` 与单设备 `enabled` 决定是否生成启停动作；`triggerTimeS` 作为引擎绝对触发时刻（`at_time <秒> sec absolute`，起点触发使用引擎允许的最小正时刻 `0.001`），在该时刻 `TurnOn()` 并 `SelectMode(<映射模式>)`；配置的持续时间在同一处理器生成第二个 `TurnOff()`。关闭时刻晚于仿真结束时只保留启动动作，不写永不执行的关闭。
+- **环境、时钟与开始时刻**：`environment.seaState/rainRateMmPerHour` 生成 `global_environment` 区段（`sea_state`、`rain_rate <值> mm/hr`）；`environment.simClockSpeed` 生成 `clock_rate`；`scenario.startTime` 生成 `start_date <三字母月份> <两位日> <四位年>` 与 `start_time <时:分:秒.毫秒>`。候选脚本入口用的正是这一格式（`start_date sep 15 2025`、`start_time 00:00:00.0`）；全称月份和“年在前”写法都会被引擎拒绝。脚本没有时区标记，因此按配置存储的 UTC 分量原样写入，界面按 UTC+8 编辑的口径未换算，`mapping.json` 记 `convention: AS_STORED_UTC`。事件输出同时启用 `SIMULATION_STARTING/COMPLETE`，其回显的年月日时分秒是运行结果与配置开始时刻绑定的唯一证据。
+
+### 17.2 本批仍阻断的项与实测依据
+
+下表依据候选脚本本身（`afsim_script_cl/afsim_script`）与本机引擎实测重新核对，因此修正了第 9～13 节中若干过于笼统的判断：部分项并非“引擎做不到”，而是“项目还没定规则”。
+
+| 缺口 | 候选脚本／引擎实测依据 | 需要先确认的规则 |
+|---|---|---|
+| 侦测设备的扩展参数 | 主动雷达已接通；但界面扩展的 `ESM` 类型、`direction`、`probability` 没有引擎输入对应项：`detection_probability` 只是脚本 API，`detection_threshold` 是 dB 门限 | `probability` 要变成门限需要一个虚警率假设，尚未提供；`direction` 的方位视场宽度也没有配置来源 |
+| 干扰自动探测 | 候选的“自动探测”实际是对硬编码机名 `mission_uav_02/03` 的 `SlantRangeTo` 距离判断（24 海里），`auto_jammer_proc` 是空处理器 | 是否按配置的 `detectionRange` 对全部平台做距离判断（已确认选 A，待实施） |
+| 高空中继的转发行为 | 平台已按 `MISSION_UAV_PLATFORM` 生成并标注 `relayRole` | 中继转发行为本身尚未生成 |
+| 卫星轨道模板与转发 | 轨道要素取自候选模型并已按子类型接通；但候选模型的 `on_message` 把消息转发到硬编码的 `rear_comm_vehicle`，且配置的 `initialPosition` 不参与轨道 | 轨道模板能否作为通用默认；显式中继卫星的跳数与转发规则（已确认选“固定单跳”，待实施） |
+| 数传与激光链路 | 微波、数传、卫星已接通；`fiber_link` 用的是 `WSF_COMM_TRANSCEIVER`（有线收发），而前端 `LinkType` 没有 `FIBER`；`LASER_COMM_ANTENNA`（40 dB、5°×5°）已定义但没有任何 `comm` 引用它 | 光纤与激光需要先扩合同 |
+| 编码与修正参数 | 候选 `comm` 的参数是 `transfer_rate`、`channels`、`retransmit_attempts`、`retransmit_delay`、`polarization`、`noise_figure`、`attenuation_model`、`bit_error_probability`，没有信道编码、天线增益修正、抗干扰增益、空间隔离的等价项。其中 `bit_error_probability 0.00001` 是数传设备上的合同固定值（注释写明“写死”），与前端 `berThreshold` 判定阈值不是同一个概念 | 这些参数对应到哪个引擎模型参数 |
+| 极化、噪声系数、重传与信道数 | 候选按设备逐项给出（微波 `polarization horizontal`、卫星 `noise_figure 2 dB`、`channels 4`、`retransmit_attempts 3`） | 是否按候选模型模板写入；配置里没有对应输入字段 |
+| 动态选路与中继转发 | 引擎有 `WSF_COMM_NETWORK_AD_HOC`（对应候选的 `UAV_MESH_NET`）和 `WSF_COMM_NETWORK_MESH`；当前生成器只写 `network_name`，没有声明 `network` 类型 | 是否声明网络类型并启用 ad-hoc 路由 |
+| 业务类型与保障 | 候选用 4 个脚本变量承载信息类型（`forward_situation`／`forward_target`／`back_recon`／`back_status`）与频次、时延要求；这些时延只是脚本变量，不是引擎调度保障 | 已确认选择“限定为 4 个枚举”，但该选择会把前端自由文本（含 `视频` 的帧/报文语义）改成合同枚举，涉及合同、界面与夹具，需单独一批实施 |
+| 调制、BER 阈值、timeStep、链路优先级 | 候选脚本没有已确认的单一等价项 | 各自对应的引擎参数 |
+| 新运行 CSV 接入地图与历史回放 | 属于前端展示范围，不在生成器内 | 是否实施 |
+
+### 17.3 本轮验证
+
+- 生成器聚焦回归 `tests/server/mission-generator.spec.ts` **42/42**；本机真实引擎用例 `tests/server/mission-execution.spec.ts` **18/18**（需设置 `MISSION_SMOKE_EXECUTABLE`）。
+- 真实引擎：夹具场景 `SCN-001` 在停用唯一的激光链路（`L-LASER-04`）及其依赖业务（`INFO-001`，`CMD-01 → UAV-01` 只能走该激光链路）后**完整生成并执行成功**，退出码 0；`platforms.txt` 含 `WSF_RADAR_SENSOR`、`bit_error_probability 0.00001`、`WSF_SPACE_MOVER`；`mapping.json` 中 3 条微波、4 条数传、2 条卫星设备，`excludedLinkIds = ['L-LASER-04']`，1 个平台标注 `relayRole`。这是目前最接近真实场景的一次端到端验证。
+- 真实引擎：含航点路线、定时干扰、环境与时钟的最小场景退出码 **0**，日志含 `Simulation complete`；`SIMULATION_STARTING` 回显 **2026-3-5 06:07:08**，与配置的 `2026-03-05T06:07:08.000Z` 一致，证明 `start_date`／`start_time` 真正生效；`scenario_events.csv` 中 `WEAPON_TURNED_ON`／`WEAPON_MODE_ACTIVATED`／`JAMMING_REQUEST_INITIATED` 均落在 `t=1`，`JAMMING_REQUEST_CANCELED`／`WEAPON_TURNED_OFF` 落在 `t=2`；`position.csv` 中该节点经度按航点从 `120.1` 推进。本机引擎对 `WEAPON_TURNED_OFF` 会重复输出同一时刻的记录，断言只核对发生时刻。
+- 真实引擎：天通卫星场景退出码 **0**，`position.csv` 中卫星实际高度约 **35786 km**（与候选模型 `semi_major_axis 42164 km` 一致）、纬度接近 0（倾角 0），`COMM_TURNED_ON` 出现卫星设备记录，证明轨道模板与卫星设备真实生效。
+- 全量：`npm run test:unit` **51 文件 883/883**、`npm run test:contracts` **8 文件 132/132**、设置 `MISSION_SMOKE_EXECUTABLE` 后 `npm run test:server` **30 文件 434/434**；`npm run typecheck`、`npm run validate:contracts`、`git diff --check` 通过。生产构建在独立输出目录成功（1946 模块）；仓库 `dist/` 因本机批量删除保护无法就地清空，`npm run build` 在本环境退出，与本次改动无关。
+- 上一版本曾把 `start_date` 判为“引擎无此指令”，原因是只试了 `2026/09/23` 这种写法并误把 `Bad value` 当作未知指令；本轮按候选脚本入口的实际写法更正，并补了引擎侧回归。
+- 顺手修复 `tests/components/scenario-script-file.spec.ts` 的陈旧断言：页面提示自加入“文本生成不等于 mission 执行验证”一行后，该用例未同步，属改动前已存在的失败。
+- 未运行全量 P0、覆盖率与浏览器 E2E；未暂存、提交或推送。本批不宣称链路质量、完整业务或整份测试说明验收通过。
+
+### 17.4 本轮确认的规则选择
+
+以下选择由用户逐条确认，作为后续实施边界；未列入的项继续保持阻断。
+
+| 项 | 已确认选择 | 状态 |
+|---|---|---|
+| 侦测设备模型 | 主动雷达 `WSF_RADAR_SENSOR`（与候选脚本一致） | 已实施 |
+| 侦测频率映射 | `frequencyRange` 中心频率作 `frequency`，`max−min` 作 `bandwidth` | 已实施 |
+| 侦测扩展参数 | `probability` 映射为检测阈值类参数 | **未实施**：引擎无接受概率的输入指令，`detection_threshold` 是 dB，缺虚警率假设 |
+| 数传波段 | 固定 C 波段，`direction` 决定上下行 | 已实施 |
+| 数传误码概率 | 按候选合同值写死 `bit_error_probability 0.00001` | 已实施 |
+| 中文业务类型 | 限定为候选的 4 个枚举 | **未实施**：会把前端自由文本（含 `视频` 的帧/报文语义）改成合同枚举，涉及合同、界面与夹具，需单独一批 |
+| 高空中继 | 复用 `MISSION_UAV_PLATFORM` 生成中继角色 | 已实施（平台与角色标注；转发行为未生成） |
+| 中继转发 | 固定单跳（源→卫星→目标） | **未实施** |
+| 干扰自动探测 | 按配置 `detectionRange` 对全部平台做距离判断 | **未实施** |
+| 干扰目标 | 保持无目标，不补造 | 已按现状 |
+| 干扰方向 | 忽略，只保留记录 | 已按现状 |
+
+
+## 18. 剩余缺口补齐批次（2026-09-24）
+
+本节对应第 17.2 / 17.4 节已确认但仍未实施的项；生成器与合同已接通的部分如下，**未运行 mission.exe 实机验收**，`engineValidated` 保持 `false`。
+
+### 18.1 本批落地
+
+| 缺口 | 状态 | 行为 |
+|---|---|---|
+| 干扰自动探测（选择 A） | 已落地 | `autoDetect=true` 时生成 `at_interval_of 3 sec` 处理器，对全部其他平台 `SlantRangeTo`，距离 ≤ `detectionRange`（米）则 `TurnOn`/`SelectMode`；与定时触发并存时优先自动探测 |
+| 中继转发（固定单跳） | 已落地 | `SAT` + `relayPlatformId` 指向通信卫星时生成源/星/目标三端设备与两跳网络，卫星 `on_message` 转发到目标；高空中继平台仍只标注 `relayRole`，不自动转发 |
+| 业务四枚举 | 已落地 | 合同 `InformationType` 限定为态势信息/目标指令/侦察信息/状态信息；界面与校验同步；生成拒绝自由文本与视频 |
+| 输出路径与质量/切换标志 | 部分落地 | `csv_event_output`/`position.csv` 使用配置 `output.directory`；`linkQualityEnabled` 复用 MESSAGE/SENSOR 事件作代理；`linkSwitchEnabled` 仅记录标志，无专用切换统计事件 |
+| timeStep | 部分落地 | `timeStep>0` 映射为运动器 `update_interval`；输出采样仍用 `writeInterval` |
+| 光纤 | 已落地（生成） | `LinkType` 增加 `FIBER`，生成 `WSF_COMM_TRANSCEIVER` + `WSF_COMM_NETWORK_P2P`；**未做引擎实机验证** |
+| 通信参数已核实项 | 部分落地 | 数传 `bit_error_probability` 等既有映射保留；调制/`berThreshold`/编码/增益修正仍只进 mapping 或阻断 |
+
+### 18.2 仍阻断 / 明确不做本批
+
+| 缺口 | 原因 |
+|---|---|
+| 激光设备 | 候选仅有 `LASER_COMM_ANTENNA`，无已核实 `comm`；生成继续 422 |
+| ESM / direction / probability | 候选无 `WSF_ESM`；`detection_threshold` 为 dB 且缺虚警率；仅 mapping 注解 |
+| arrivalTime 引擎约束 | 候选 route 无同名约束；`arrivalTimeEnforced: false` |
+| clock_rate / 前端倍速生效 | 执行器固定 `mission.exe -es`，事件推进下 `clock_rate` 不改变墙钟；不在本批改为实时推进 |
+| 自动选路 / 链路切换统计 | `priority`/`switchCooldownS` 仅快照；无已核实 ad-hoc 切换与专用统计事件 |
+| 业务优先级/时延/最低速率保障 | 继续 `engineEnforced: false` |
+| 高空中继 UAV 转发 | 确认的单跳规则是源→卫星→目标，不把 `FORWARD_RELAY_NODE` 当转发器 |
+
+### 18.3 验证说明
+
+- 以生成器单测与类型/合同校验为主；不宣称本批路径已通过 mission 实机。
+- 若需验证自动探测或卫星单跳转发，应另开独占目录授权运行 mission，并更新 `execution.json` 证据后再改 `engineValidated`。
+
+
+## 19. 高空中继转发、自动选路与专用质量/切换 CSV（2026-09-24）
+
+> 历史实现记录：以下质量、切换输出方案已由 §20 的用户确认修正替代，不再代表当前支持范围。
+
+承接 §18，补齐“有规则可落地、不依赖未核实 DSL”的三项；仍**未跑 mission.exe**，`engineValidated=false`。
+
+### 19.1 已落地
+
+| 项 | 行为 |
+|---|---|
+| 高空中继真正转发 | `relayPlatformId` 指向 `FORWARD_RELAY_NODE` 时，与卫星单跳相同：源/中继/目标三端设备 + 两跳网络 + 中继 `on_message` 转发。适用微波/数传；不用于 SAT/FIBER。仅 `relayRole` 标注但未作中继引用的节点仍不转发。 |
+| 自动选路 | 未指定 `linkId` 且同端点多链路时，按 `linkSettings.priority` 选最高优先为主路由；`routePlans` 记录有序列表。 |
+| 链路切换 | `linkSwitchEnabled` 且存在次选路由时：在**定时干扰** `startTimeS + switchCooldownS` 切换到次优先路由，写出合同表头 `link_switch.csv`（原因 `JAMMER_FAILOVER_PRIORITY`）。自动探测干扰不预排切换时刻。 |
+| 链路质量 CSV | `linkQualityEnabled` 时按 `writeInterval` 写 `link_quality.csv`（合同表头）；`Distance=SlantRangeTo`（对中继或目标），调制/门限/功率/增益/速率取配置；PathLoss/SNR/ReceivedPower/JammingPower 留空并在 mapping 标明未测量。 |
+| 输出目录 | 上述 CSV 与 events/position 均使用配置 `output.directory`。 |
+
+### 19.2 仍阻断 / 诚实边界
+
+- 激光设备、ESM、虚警率、编码/增益修正引擎映射：不变。
+- `-es` 下 `clock_rate`、arrivalTime 硬约束、业务 QoS 硬保障：不变。
+- 完整 ad-hoc 路由器协议 / 动态拓扑发现：未生成 `WSF_COMM_ROUTER_PROTOCOL_AD_HOC` 全量配置；选路为生成期 priority 排序 + 干扰触发故障切换。
+- 链路质量不是引擎物理层解算结果，不能用于验收真实 SNR/BER。
+
+## 20. 实机回归与输出边界修正（2026-09-24）
+
+- 高空及卫星中继入口通信设备增加 `internal_link`，处理器使用真正的 `default` 消息分支；实机逐项核对源发送、中继接收、中继发送和目标接收，不以正常退出代替转发证据。
+- 多目标业务向各目标发送一次；同目标备选链路只走优先级最高者，修正条件括号，不重复广播。
+- 用户确认：缺少完整真实质量、切换前后 BER 测量时，分别在 `output.linkQualityEnabled`、`output.linkSwitchEnabled` 阻断生成。不得输出配置 BER、固定 UP、空测量或用零填充的规范 CSV。已删除对应 CSV 写入处理器，因此没有共享文件首次打开截断或伪成功记录；本阶段不执行基于这些假值的切换，主链路优先级选择保留。
+- 用户确认：`output.directory` 仅允许本次独占包内的相对目录，支持默认 `./tasks/TASK-001/output` 和自定义嵌套目录；拒绝绝对路径、上级目录和非法路径字符。写包时创建实际目录，启动前完成创建与文件写入。每次运行仍使用独占目录，重复运行不覆盖旧结果。
+- 新增/保存执行五类优先级和四种业务类型；读取兼容历史四类优先级与非空业务文本，不重写用户数据。脚本生成仍使用写入校验，旧场景须由用户明确调整后才能生成。
+- 真实引擎完整套件本轮 25/25 通过（无跳过，退出码 0），包含两类中继、双目标、同目标多链路、默认/嵌套目录及重复运行；只证明这些用例，不声称质量求解或切换测量已完成。`engineValidated=false` 仍表示普通生成请求未运行引擎。
+
+
+## 21. 干扰探测范围与干扰范围（2026-09-24）
+
+场景配置为每台干扰设备提供两个距离字段（合同单位 **米**；干扰编辑对话框与列表按 **海里** 展示，与既有探测距离一致，1～24 海里）：
+
+| 字段 | UI 标签 | 语义 | 生成行为 |
+|---|---|---|---|
+| `detectionRange` | 探测范围 | 自动探测发现目标的最大斜距 | `autoDetect` 时对全部其他平台 `SlantRangeTo`；需 `rangeM <= detectionRange` |
+| `jammingRange` | 干扰范围 | 干扰有效作用距离 | 自动探测在满足探测范围后，仅当 `rangeM <= jammingRange` 才 `TurnOn`/`SelectMode` |
+
+- 候选 `WSF_RF_JAMMER` **weapon 区段无** `maximum_range`（传感器雷达才有）；故干扰范围**不**写入假造 DSL，只用脚本距离门控。
+- 定时启停（`triggerTimeS`）仍按绝对时刻启停，**不**按 `jammingRange` 门控。
+- 校验：写模式两字段均须在 1～24 海里；`jammingRange > detectionRange` 仅 **WARNING** `JAMMER_RANGE_ORDER`，非硬错误。默认值均为最大（24 海里）。
+- 态势图：当前干扰图层未绘制探测/干扰距离圈，本批不新增。
+- `engineValidated` 保持 `false`（未对本次改动跑 mission.exe）。

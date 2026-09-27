@@ -165,7 +165,7 @@ describe('T-XQ-008 脚本结构预检', () => {
     draft.config.linkSettings.enabledSatellites.SHENTONG = true
     draft.config.platforms.push({ ...structuredClone(draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG', linkIds: [] })
     draft.config.linkSettings.switchCooldownS = 8
-    draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE']
+    draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE', 'FIBER']
     draft.config.links[0]!.coding = 'CUSTOM-1/2'
     draft.config.links[0]!.antennaGainCorrectionDb = -2
     const satelliteLink = draft.config.links.find(link => link.type === 'SAT')!

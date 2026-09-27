@@ -76,6 +76,7 @@ const mapControllerMock = vi.hoisted(() => {
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
     setFileMessageLinks: vi.fn(),
+    setFilePlayback: vi.fn(),
     setFileDeviceStates: vi.fn(),
     setConfiguredLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),
@@ -214,11 +215,11 @@ describe('态势主界面', () => {
    * @returns 已挂载的态势页面包装器。
    * @sideeffect 向 document.body 添加页面及 Element Plus 的关联 DOM。
    */
-  async function mountSituationPage(sceneId?: string) {
+  async function mountSituationPage(sceneId?: string, runtimeMode: 'MOCK' | 'LOCAL' | 'UNKNOWN' = 'MOCK') {
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
-    auth.$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
+    auth.$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions], runtimeMode })
     useTelemetryStore(pinia).$patch({
       frame: structuredClone(SITUATION_FRAME_F00042),
       events: structuredClone(SITUATION_EVENTS_F00042),
@@ -229,7 +230,7 @@ describe('态势主界面', () => {
       attachTo: document.body,
       global: {
         plugins: [pinia, ElementPlus],
-        stubs: { RouterLink: { template: '<a><slot /></a>' } },
+        stubs: { RouterLink: { template: '<a><slot /></a>' }, MissionResults: true },
       },
     })
     await flushPromises()
@@ -254,6 +255,16 @@ describe('态势主界面', () => {
     vi.unstubAllGlobals()
     vi.useRealTimers()
     sessionStorage.clear()
+  })
+
+  it('本机态势页不再显示运行结果栏或请求运行结果目录', async () => {
+    const fetchSpy = situationFetch()
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(wrapper.find('mission-results-stub').exists()).toBe(false)
+    expect(wrapper.find('[aria-label="仿真运行结果"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('刷新结果')
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/mission-results'))).toBe(false)
   })
 
   it('质量指标位于右侧页签而非弹框，联动选中链路且来回切换保留筛选', async () => {
@@ -295,6 +306,7 @@ describe('态势主界面', () => {
     })
     vi.stubGlobal('fetch', fetcher)
     await mountSituationPage(id)
+    expect(mountedWrapper!.findComponent({ name: 'SimulationToolbar' }).props('realMission')).toBe(false)
     mountedWrapper!.unmount()
     mountedWrapper = null
     scene.revision += 1
@@ -314,6 +326,73 @@ describe('态势主界面', () => {
     await flushPromises()
     expect(document.querySelector('[data-testid="link-detail-configured"]')?.textContent).toContain('规范状态暂无数据')
     expect(fetcher.mock.calls.some(([url]) => /initial-nodes|positions|frames|events/.test(url))).toBe(false)
+  })
+
+  it('本机 SQLite 场景将真实 mission 模式传给工具栏', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/simulations')
+      ? successResponse([]) : successResponse(scene)))
+
+    await mountSituationPage('SCN-001', 'LOCAL')
+    expect(mountedWrapper!.findComponent({ name: 'SimulationToolbar' }).props('realMission')).toBe(true)
+  })
+
+  it.each(['MOCK', 'LOCAL', 'UNKNOWN'] as const)('延迟后台同步时 %s 工具栏保持对应能力，不随轮询禁用', async mode => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const running = simulationRun('RUNNING', true)
+    const fetcher = vi.fn(async (url: string) => url.endsWith('/simulations')
+      ? successResponse([running]) : successResponse(scene))
+    vi.stubGlobal('fetch', fetcher)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountSituationPage('SCN-001', mode)
+    let finish!: (response: Response) => void
+    fetcher.mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(useSimulationStore().runtimeSyncing).toBe(true)
+    expect(useSimulationStore().pending).toBe(false)
+    const pauseDisabled = wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')
+    const speedDisabled = wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')
+    if (mode === 'MOCK') {
+      expect(pauseDisabled).toBeUndefined()
+      expect(speedDisabled).toBeUndefined()
+    } else {
+      expect(pauseDisabled).toBeDefined()
+      expect(speedDisabled).toBeDefined()
+    }
+    finish(successResponse([running]))
+    await flushPromises()
+  })
+
+  it.each(['完成', '离页', '登出'])('所选场景通过正式运行接口同步 mission，%s后停止轮询', async action => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    let current = simulationRun('RUNNING', true)
+    const fetcher = vi.fn(async (url: string) => url.endsWith('/simulations')
+      ? successResponse([current]) : successResponse(scene))
+    vi.stubGlobal('fetch', fetcher)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountSituationPage('SCN-001')
+    fetcher.mockClear()
+    if (action === '完成') {
+      current = simulationRun('COMPLETED', false)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await flushPromises()
+      expect(useSimulationStore().uiStatus).toBe('COMPLETED')
+      expect(useSimulationStore().configurationLockState).toBe('UNLOCKED')
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    } else if (action === '登出') {
+      useAuthStore().resetToSafeEmpty()
+      useSimulationStore().resetToSafeEmpty()
+      await flushPromises()
+    } else {
+      wrapper.unmount()
+      mountedWrapper = null
+    }
+    fetcher.mockClear()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(fetcher).not.toHaveBeenCalled()
   })
 
   it('刷新加载失败可连续重试原场景，未恢复前不展示旧配置或切换文件数据', async () => {
@@ -861,6 +940,8 @@ describe('态势主界面', () => {
     // 行内动画名不会被改写，会指向不存在的关键帧（曾导致动画完全不生效），因此动画名必须由 CSS 提供。
     expect(component).toMatch(/@keyframes situation-map-link-flow\s*\{/)
     expect(component).toMatch(/animation-name:\s*situation-map-link-flow;/)
+    expect(component).toMatch(/animation-iteration-count:\s*1;/)
+    expect(component).toMatch(/animation-fill-mode:\s*both;/)
     expect(component).toMatch(/:deep\(\.situation-map-link-flow\)/)
     expect(controller).toMatch(/className: 'situation-map-link-flow'/)
     expect(controller).not.toMatch(/style\.animation\b/)
@@ -871,6 +952,30 @@ describe('态势主界面', () => {
     // 路径归一化保证长短链路和缩放后都只有一颗流星。
     expect(controller).toMatch(/setAttribute\('pathLength'/)
     expect(controller).toContain('MAP_CONFIG.linkFlowTrailRatio')
+  })
+
+  it('文件播放时钟携带暂停、倍速和定位版本，消息先更新再驱动脉冲', async () => {
+    mountedWrapper = mount(OfflineSituationMap, {
+      props: { frame: null, initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: [MESSAGE_LINK],
+        fileTime: 0, filePlaying: false, fileSpeed: 1, sourceKey: 'source-a',
+        links: [], selectedNodeId: '', focusTarget: null },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(mapControllerMock.controller.setFilePlayback).toHaveBeenLastCalledWith({
+      time: 0, playing: false, speed: 1, key: 'source-a:0',
+    }, [MESSAGE_LINK])
+    await mountedWrapper.setProps({ fileTime: 2, filePlaying: true, fileSpeed: 2 })
+    expect(mapControllerMock.controller.setFilePlayback).toHaveBeenLastCalledWith({
+      time: 2, playing: true, speed: 2, key: 'source-a:0',
+    }, [MESSAGE_LINK])
+    expect(mapControllerMock.controller.setFileMessageLinks.mock.invocationCallOrder.at(-1))
+      .toBeLessThan(mapControllerMock.controller.setFilePlayback.mock.invocationCallOrder.at(-1)!)
+    await mountedWrapper.setProps({ filePlaying: false })
+    expect(mapControllerMock.controller.setFilePlayback).toHaveBeenLastCalledWith(expect.objectContaining({ playing: false }), [MESSAGE_LINK])
+    await mountedWrapper.setProps({ fileTime: 2000, fileSeekRevision: 1 })
+    expect(mapControllerMock.controller.setFilePlayback).toHaveBeenLastCalledWith(expect.objectContaining({ time: 2000, key: 'source-a:1' }), [MESSAGE_LINK])
+    await mountedWrapper.setProps({ sourceKey: 'source-b' })
+    expect(mapControllerMock.controller.setFilePlayback).toHaveBeenLastCalledWith(expect.objectContaining({ key: 'source-b:1' }), [MESSAGE_LINK])
   })
 
   it('业务链路详情展示业务类型、活跃窗口与投递时延，并在游标早于首次投递时不显示', async () => {
@@ -1267,7 +1372,7 @@ describe('态势主界面', () => {
     expect(wrapper.get('.telemetry-empty').text()).toContain('正在读取初始节点位置')
     expect(mapControllerMock.latestOptions).toMatchObject({ frame: null, initialNodes: [], links: [] })
     const mapElement = wrapper.get('[data-testid="leaflet-situation-map"]').element
-    await wrapper.get('[aria-label="切换为深色地图"]').trigger('click')
+    await wrapper.get('[aria-label="切换为浅色地图"]').trigger('click')
     resolveRequest(successResponse({ nodes: 'invalid' }))
     await flushPromises()
     expect(wrapper.find('[data-testid="leaflet-situation-map"]').exists()).toBe(true)
@@ -1278,7 +1383,7 @@ describe('态势主界面', () => {
     expect(wrapper.findAll('.summary-focus-button')).toHaveLength(2)
     expect(fetchSpy).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-testid="leaflet-situation-map"]').element).toBe(mapElement)
-    expect(wrapper.find('[aria-label="切换为浅色地图"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="切换为深色地图"]').exists()).toBe(true)
     expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
     expect(mapControllerMock.controller.destroy).not.toHaveBeenCalled()
   })
@@ -1727,7 +1832,7 @@ describe('态势主界面', () => {
     expect(viewButtons).toHaveLength(5)
     expect(viewButtons.map((button) => button.text())).toEqual(['', '', '＋', '－', ''])
     expect(viewButtons.map((button) => button.attributes('title'))).toEqual([
-      '切换为深色地图',
+      '切换为浅色地图',
       '切换为卫星底图',
       '放大态势图',
       '缩小态势图',
@@ -1735,10 +1840,10 @@ describe('态势主界面', () => {
     ])
 
     const mapSection = wrapper.get('[aria-label="Leaflet 离线态势图"]')
-    const themeButton = wrapper.get('[aria-label="切换为深色地图"]')
+    const themeButton = wrapper.get('[aria-label="切换为浅色地图"]')
     const basemapButton = wrapper.get('[aria-label="切换为卫星底图"]')
     const resetButton = wrapper.get('[aria-label="重置视图"]')
-    expect(mapSection.attributes('data-map-theme')).toBe('light')
+    expect(mapSection.attributes('data-map-theme')).toBe('dark')
     expect(mapSection.attributes('data-map-basemap')).toBe('vector')
     for (const iconButton of [themeButton, basemapButton, resetButton]) {
       expect(iconButton.text()).toBe('')
@@ -1769,19 +1874,19 @@ describe('态势主界面', () => {
     expect(satelliteBasemapButton.attributes('title')).toBe(satelliteBasemapButton.attributes('aria-label'))
 
     await themeButton.trigger('click')
-    expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(1, 'dark')
-    expect(mapSection.attributes('data-map-theme')).toBe('dark')
-    const lightThemeButton = wrapper.get('[aria-label="切换为浅色地图"]')
-    expect(lightThemeButton.attributes('title')).toBe('切换为浅色地图')
+    expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(1, 'light')
+    expect(mapSection.attributes('data-map-theme')).toBe('light')
+    const lightThemeButton = wrapper.get('[aria-label="切换为深色地图"]')
+    expect(lightThemeButton.attributes('title')).toBe('切换为深色地图')
     expect(lightThemeButton.attributes('title')).toBe(lightThemeButton.attributes('aria-label'))
     expect(lightThemeButton.text()).toBe('')
     expect(lightThemeButton.find('svg').exists()).toBe(true)
 
-    await wrapper.get('[aria-label="切换为浅色地图"]').trigger('click')
-    expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(2, 'light')
-    expect(mapSection.attributes('data-map-theme')).toBe('light')
-    const darkThemeButton = wrapper.get('[aria-label="切换为深色地图"]')
-    expect(darkThemeButton.attributes('title')).toBe('切换为深色地图')
+    await wrapper.get('[aria-label="切换为深色地图"]').trigger('click')
+    expect(mapControllerMock.controller.setTheme).toHaveBeenNthCalledWith(2, 'dark')
+    expect(mapSection.attributes('data-map-theme')).toBe('dark')
+    const darkThemeButton = wrapper.get('[aria-label="切换为浅色地图"]')
+    expect(darkThemeButton.attributes('title')).toBe('切换为浅色地图')
     expect(darkThemeButton.attributes('title')).toBe(darkThemeButton.attributes('aria-label'))
     expect(darkThemeButton.text()).toBe('')
 
@@ -1856,10 +1961,18 @@ describe('Leaflet 控制器回归', () => {
     onSelectLink?: (link: SituationLinkView) => void
     onZoomChange?: (zoom: number) => void
     useSatelliteDataPosition?: boolean
+    basemapLabelsVisible?: boolean
+    initialTheme?: 'dark' | 'light'
   } = {}) {
     vi.resetModules()
     vi.doUnmock('../../src/components/situation/situation-map-controller')
     const { MAP_CONFIG: activeConfig } = await import('../../src/config/map.config')
+    if (options.basemapLabelsVisible !== undefined) {
+      Object.assign(activeConfig.defaults, { basemapLabelsVisible: options.basemapLabelsVisible })
+    }
+    if (options.initialTheme !== undefined) {
+      Object.assign(activeConfig.defaults, { theme: options.initialTheme })
+    }
     if (options.useSatelliteDataPosition !== undefined) {
       ;(activeConfig as any).useSatelliteDataPosition = options.useSatelliteDataPosition
     }
@@ -2386,16 +2499,17 @@ describe('Leaflet 控制器回归', () => {
     expect(mapSpy).toHaveBeenCalledOnce()
   })
 
-  it('业务链路与登记关联分层渲染：业务链路实线带方向箭头，登记关联默认开启且为点线', async () => {
+  it.each(['FORWARD', 'REVERSE'] as const)('业务链路与登记关联分层渲染：%s 不显示方向文字，保留实线箭头和登记点线', async (direction) => {
     const groups = vi.spyOn(L, 'layerGroup')
     const mapSpy = vi.spyOn(L, 'map')
     const fileLinks = selectFileCommunicationLinks(FILE_CONNECTIONS, 5)
-    await createController({ initialNodes: SATELLITE_FILE_NODES, fileLinks, fileMessageLinks: [MESSAGE_LINK] })
+    const messageLink = { ...MESSAGE_LINK, direction }
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileLinks, fileMessageLinks: [messageLink] })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const businessGroup = groups.mock.results[1]!.value as L.LayerGroup
     const potentialGroup = groups.mock.results[3]!.value as L.LayerGroup
-    // 业务链路：连线、命中点、方向箭头与业务方向标记；登记关联：两条连线和两个命中点，两者都在地图上。
-    expect(businessGroup.getLayers()).toHaveLength(4)
+    // 业务链路仅保留连线、命中点和方向箭头；登记关联为两条连线和两个命中点。
+    expect(businessGroup.getLayers()).toHaveLength(3)
     expect(potentialGroup.getLayers()).toHaveLength(4)
     expect(map.hasLayer(potentialGroup)).toBe(true)
     expect(container?.querySelectorAll('.situation-map-link-arrow')).toHaveLength(1)
@@ -2409,15 +2523,13 @@ describe('Leaflet 控制器回归', () => {
     const arrow = (businessGroup.getLayers() as L.Marker[]).find(layer => layer.options.icon instanceof L.DivIcon
       && (layer.options.icon.options.html as HTMLElement)?.className === 'situation-map-link-arrow__glyph')!
     expect(arrow.getLatLng().distanceTo(targetPoint)).toBeLessThan(arrow.getLatLng().distanceTo(sourcePoint))
-    // 业务方向用中文单字单独标注。
-    const markText = container!.querySelector<HTMLElement>('.situation-map-link-direction__text')!
-    expect(markText.textContent).toBe('前')
-    const directionMark = (businessGroup.getLayers() as L.Marker[]).find(layer => layer.options.icon instanceof L.DivIcon
-      && (layer.options.icon.options.html as HTMLElement)?.className === 'situation-map-link-direction__text')!
+    expect(container!.querySelector('.situation-map-link-direction')).toBeNull()
+    controller.setFileMessageLinks([messageLink])
+    expect(container!.querySelector('.situation-map-link-direction__text')).toBeNull()
+    expect(businessGroup.getLayers()).toHaveLength(3)
+    expect(messageLink.direction).toBe(direction)
     // 业务链路用实线，登记关联用半透明点线。
     const businessLine = (businessGroup.getLayers() as L.Polyline[]).find(layer => layer instanceof L.Polyline)!
-    // 标记落在曲线几何中点（第 16 个采样点），与偏后的箭头错开。
-    expect(directionMark.getLatLng().equals((businessLine.getLatLngs() as L.LatLng[])[16]!)).toBe(true)
     expect(businessLine.options).toMatchObject({ color: '#67c23a', weight: 3, opacity: 0.95 })
     expect(businessLine.options.dashArray).toBeUndefined()
   })
@@ -2477,6 +2589,159 @@ describe('Leaflet 控制器回归', () => {
     controller.setFileMessageLinks([forward])
     expect(curves()).toHaveLength(1)
     expect(curves()[0]![16]!.lat).toBeCloseTo((curves()[0]![0]!.lat + curves()[0]!.at(-1)!.lat) / 2, 9)
+    controller.destroy()
+  })
+
+  it('各链路只按新的消息投递触发脉冲，无新消息、重复刷新和位置更新不重复播放', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const makeLink = (id: string, times: number[]): FileMessageLink => ({ ...MESSAGE_LINK, id,
+      records: times.map((time, index) => ({ ...MESSAGE_LINK.records[0]!, time,
+        sourceEventId: `${id}-receive-${index}`, transmitEventId: `${id}-send-${index}` })),
+    })
+    const links = [makeLink('frequent', [0.5, 2.5, 2.6, 4.5]), makeLink('sparse', [3.5])]
+    const groups = vi.spyOn(L, 'layerGroup')
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: links })
+    const flows = groups.mock.results[2]!.value as L.LayerGroup
+    const path = (index: number) => (flows.getLayers()[index] as L.Polyline).getElement() as SVGPathElement
+    const clock = (time: number) => controller.setFilePlayback({ time, playing: true, speed: 1, key: 'a' })
+    clock(0)
+    expect(path(0).style.visibility).toBe('hidden')
+    expect(path(4).style.visibility).toBe('hidden')
+    now = 1000
+    clock(1)
+    expect(path(0).style.visibility).toBe('')
+    expect(path(4).style.visibility).toBe('hidden')
+    const restart = vi.spyOn(path(0), 'getBoundingClientRect')
+    controller.setFileMessageLinks(structuredClone(links))
+    controller.setNodes(SATELLITE_FILE_NODES.map(node => ({ ...node, latitude: node.latitude + 0.01 })))
+    clock(1)
+    now = 2000
+    clock(2)
+    expect(restart).not.toHaveBeenCalled()
+    now = 3000
+    clock(3)
+    expect(restart).toHaveBeenCalledTimes(1) // 同一刷新区间的两条消息合并为一颗。
+    expect(path(4).style.visibility).toBe('hidden')
+    now = 4000
+    clock(4)
+    expect(path(4).style.visibility).toBe('')
+    expect(restart).toHaveBeenCalledTimes(1)
+    now = 5000
+    clock(5)
+    expect(restart).toHaveBeenCalledTimes(2)
+    now = 7000
+    clock(7)
+    expect(restart).toHaveBeenCalledTimes(2)
+    expect(links[0]!.records).toHaveLength(4)
+    controller.destroy()
+  })
+
+  it.each([16, 32])('%s 倍播放只加快事件触发，流星仍用固定现实时间且密集消息不堆积', async speed => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const groups = vi.spyOn(L, 'layerGroup')
+    const link = { ...MESSAGE_LINK, records: [1, speed + 1, speed * 2 + 1].map((time, index) => ({
+      ...MESSAGE_LINK.records[0]!, time, transmitEventId: `send-${index}`, sourceEventId: `receive-${index}`,
+    })) }
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: [link] })
+    const clock = (time: number, rate = speed) => controller.setFilePlayback({ time, speed: rate, playing: true, key: 'a' })
+    clock(0)
+    now = 1000
+    clock(speed)
+    const flow = groups.mock.results[2]!.value as L.LayerGroup
+    const path = (flow.getLayers()[0] as L.Polyline).getElement() as SVGPathElement
+    expect(path.style.animationDuration).toBe('1.4s')
+    expect(path.style.animationDelay).toBe('0ms') // 不能用十几秒的数据年龄跳过整颗流星。
+    const restart = vi.spyOn(path, 'getBoundingClientRect')
+    now = 1200
+    clock(speed, 1)
+    clock(speed, speed)
+    expect(restart).not.toHaveBeenCalled() // 在途切换倍速不改变流星进度。
+    clock(speed * 2)
+    expect(path.style.animationDuration).toBe('1.4s')
+    expect(path.style.animationDelay).toBe('-200ms') // 新消息合并，不重置在途亮头。
+    expect(flow.getLayers()).toHaveLength(4)
+    now = 2600
+    clock(speed * 3)
+    expect(path.style.animationDelay).toBe('0ms')
+    expect(path.style.animationDuration).toBe('1.4s')
+    expect(link.records).toHaveLength(3)
+    controller.destroy()
+  })
+
+  it('消息脉冲取配对证据的发送时刻，接收记录跨刷新边界不漏播也不重复触发', async () => {
+    vi.spyOn(performance, 'now').mockReturnValue(0)
+    const groups = vi.spyOn(L, 'layerGroup')
+    const earlier = { ...MESSAGE_LINK.records[0]!, time: 0.2, delayS: 0.1 }
+    const later = { ...earlier, time: 1.021, delayS: 0.121, transmitEventId: 'next-send', sourceEventId: 'next-receive' }
+    const visible = { ...MESSAGE_LINK, records: [earlier] }
+    const evidence = [{ ...visible, records: [earlier, later] }]
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: [visible] })
+    controller.setFilePlayback({ time: 0.5, playing: true, speed: 1, key: 'a' }, evidence)
+    controller.setFilePlayback({ time: 1, playing: true, speed: 1, key: 'a' }, evidence)
+    const flow = groups.mock.results[2]!.value as L.LayerGroup
+    const path = (flow.getLayers()[0] as L.Polyline).getElement() as SVGPathElement
+    expect(path.style.visibility).toBe('')
+    expect(parseFloat(path.style.animationDelay)).toBe(0) // 0.9 的发送已触发；展示从起点开始，不等待 1.021 的接收。
+    const restart = vi.spyOn(path, 'getBoundingClientRect')
+    controller.setFileMessageLinks(evidence)
+    controller.setFilePlayback({ time: 1.1, playing: true, speed: 1, key: 'a' }, evidence)
+    expect(restart).not.toHaveBeenCalled()
+    controller.destroy()
+  })
+
+  it('消息脉冲暂停冻结、恢复与倍速不重置进度，关闭再开启不补播已完成脉冲', async () => {
+    let now = 0
+    vi.spyOn(performance, 'now').mockImplementation(() => now)
+    const groups = vi.spyOn(L, 'layerGroup')
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: [MESSAGE_LINK] })
+    const clock = (time: number, playing = true, speed = 1) => controller.setFilePlayback({ time, playing, speed, key: 'a' })
+    clock(0)
+    now = 2000
+    clock(2)
+    const flow = groups.mock.results[2]!.value as L.LayerGroup
+    const path = () => (flow.getLayers()[0] as L.Polyline).getElement() as SVGPathElement
+    now = 2300
+    clock(2, false)
+    expect(path().style.animationPlayState).toBe('paused')
+    expect(parseFloat(path().style.animationDelay)).toBeCloseTo(-300)
+    now = 8000
+    clock(2, true, 2)
+    expect(path().style.animationPlayState).toBe('running')
+    expect(path().style.animationDuration).toBe('1.4s')
+    expect(parseFloat(path().style.animationDelay)).toBeCloseTo(-300)
+    controller.setLayerVisible('flow', false)
+    now = 10000
+    controller.setLayerVisible('flow', true)
+    expect(path().style.animationDelay).toBe('-1400ms') // 已播完，重挂载仍在不可见的尾帧。
+    controller.destroy()
+  })
+
+  it('定位、倒退、换源和暂停加载不补播旧消息，重新播放仅触发后续事件', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const controller = await createController({ initialNodes: SATELLITE_FILE_NODES, fileMessageLinks: [MESSAGE_LINK] })
+    const flow = groups.mock.results[2]!.value as L.LayerGroup
+    const hidden = () => ((flow.getLayers()[0] as L.Polyline).getElement() as SVGPathElement).style.visibility === 'hidden'
+    const clock = (time: number, playing: boolean, key = 'a') => controller.setFilePlayback({ time, playing, key, speed: 1 })
+    clock(2, false)
+    expect(hidden()).toBe(true)
+    clock(2, true)
+    expect(hidden()).toBe(true)
+    clock(0, true)
+    clock(2, true)
+    expect(hidden()).toBe(false)
+    clock(2805, true, 'a:seek-1')
+    expect(hidden()).toBe(true)
+    clock(0, false)
+    expect(hidden()).toBe(true)
+    clock(0, true)
+    clock(2, true)
+    expect(hidden()).toBe(false)
+    clock(2, true, 'b')
+    expect(hidden()).toBe(true)
+    controller.setFileMessageLinks([])
+    expect(flow.getLayers()).toHaveLength(0)
     controller.destroy()
   })
 
@@ -2757,7 +3022,7 @@ describe('Leaflet 控制器回归', () => {
         zoomSnap: MAP_CONFIG.zoom.snap,
       }),
     )
-    expect(MAP_CONFIG.defaults).toEqual({ theme: 'light', basemap: 'vector', zoom: 10, gridVisible: false })
+    expect(MAP_CONFIG.defaults).toEqual({ theme: 'dark', basemap: 'vector', basemapLabelsVisible: false, zoom: 10, gridVisible: false })
     expect(MAP_CONFIG.taskBounds).toEqual([[21.8, 117], [26.4, 123]])
     expect(MAP_CONFIG.fitPadding).toEqual([24, 24])
     expect(MAP_CONFIG.gridIntervalDegrees).toBe(0.5)
@@ -2863,10 +3128,37 @@ describe('Leaflet 控制器回归', () => {
     controller.destroy()
   })
 
+  it.each(['dark', 'light'] as const)('%s 主题默认隐藏底图文字，切换底图和缩放换肤不恢复文字，保留节点名称', async (initialTheme) => {
+    const mapSpy = vi.spyOn(L, 'map')
+    const node = { ...INITIAL_NODES.nodes[0]!, platformId: 'LABEL-TEST', name: '测试节点' }
+    const controller = await createController({ initialNodes: [node], initialTheme })
+    const { MAP_CONFIG: activeConfig } = await import('../../src/config/map.config')
+    const map = mapSpy.mock.results[0]!.value as L.Map
+    expect(activeConfig.defaults.basemapLabelsVisible).toBe(false)
+    expect(offlineLabelLayerMock.create).not.toHaveBeenCalled()
+    expect(container?.querySelector('[title="选择节点 测试节点"]')?.textContent).toContain('测试节点')
+
+    map.setView([24, 119], 9, { animate: false })
+    const alternateTheme = initialTheme === 'dark' ? 'light' : 'dark'
+    controller.setTheme(alternateTheme)
+    controller.setBasemap('satellite')
+    controller.setTheme(initialTheme)
+    controller.setBasemap('vector')
+    vi.spyOn(map, 'getZoom').mockReturnValue(7.5)
+    controller.setTheme(alternateTheme)
+
+    expect(offlineLabelLayerMock.create).not.toHaveBeenCalled()
+    expect(offlineLabelLayerMock.setTheme).not.toHaveBeenCalled()
+    expect(map.hasLayer(vectorGridLayer as MockVectorGridLayer)).toBe(true)
+    expect(container?.querySelector('[title="选择节点 测试节点"]')?.textContent).toContain('测试节点')
+    controller.destroy()
+    controller.destroy()
+  })
+
   it('整数缩放在同一 VectorGrid 上幂等重绘且保持视图与关闭的经纬网状态', async () => {
     const mapSpy = vi.spyOn(L, 'map')
     const layerGroupSpy = vi.spyOn(L, 'layerGroup')
-    const controller = await createController()
+    const controller = await createController({ basemapLabelsVisible: true, initialTheme: 'light' })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const gridGroup = layerGroupSpy.mock.results[5]?.value as L.LayerGroup
     expect(map.hasLayer(gridGroup)).toBe(false)
@@ -2981,7 +3273,7 @@ describe('Leaflet 控制器回归', () => {
 
   it('分数缩放换肤重挂同一可见瓦片层且保持中心和缩放不变', async () => {
     const mapSpy = vi.spyOn(L, 'map')
-    const controller = await createController()
+    const controller = await createController({ basemapLabelsVisible: true, initialTheme: 'light' })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const vectorLayer = vectorGridLayer as MockVectorGridLayer
     const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer & {
@@ -3023,7 +3315,7 @@ describe('Leaflet 控制器回归', () => {
     const tileLayerSpy = vi.spyOn(L, 'tileLayer')
     const layerGroupSpy = vi.spyOn(L, 'layerGroup')
     const fitBoundsSpy = vi.spyOn(L.Map.prototype, 'fitBounds')
-    const controller = await createController()
+    const controller = await createController({ basemapLabelsVisible: true, initialTheme: 'light' })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const vectorLayer = vectorGridLayer as MockVectorGridLayer
     const labelLayer = offlineLabelLayerMock.latestLayer as L.Layer & {
@@ -3114,7 +3406,7 @@ describe('Leaflet 控制器回归', () => {
   it('在卫星底图模式下销毁可重复调用且只清理一次地图', async () => {
     const mapSpy = vi.spyOn(L, 'map')
     const tileLayerSpy = vi.spyOn(L, 'tileLayer')
-    const controller = await createController()
+    const controller = await createController({ basemapLabelsVisible: true })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const satelliteLayer = tileLayerSpy.mock.results[0]?.value as L.TileLayer
     const mapRemoveSpy = vi.spyOn(map, 'remove')
@@ -3197,7 +3489,7 @@ describe('Leaflet 控制器回归', () => {
 
   it('按底图、离线标注和业务图层的顺序挂载，并在销毁时清理标注图层', async () => {
     const mapSpy = vi.spyOn(L, 'map')
-    const controller = await createController()
+    const controller = await createController({ basemapLabelsVisible: true })
     const map = mapSpy.mock.results[0]?.value as L.Map
     const tilePane = map.getPane('tilePane')
     const labelPane = map.getPane('offline-label-pane')

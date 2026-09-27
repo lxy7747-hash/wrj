@@ -39,6 +39,11 @@ const detectionRangeNm = computed<number | undefined>({
   /** 将用户输入的海里换算为合同米；清空留给确认校验，不自动覆盖旧超界距离。 */
   set: value => { if (editor.value) editor.value.detectionRange = typeof value === 'number' ? value * METERS_PER_NAUTICAL_MILE : Number.NaN },
 })
+const jammingRangeNm = computed<number | undefined>({
+  get: () => editor.value ? editor.value.jammingRange / METERS_PER_NAUTICAL_MILE : undefined,
+  /** 干扰有效作用距离；单位与探测范围一致（海里展示、合同米）。 */
+  set: value => { if (editor.value) editor.value.jammingRange = typeof value === 'number' ? value * METERS_PER_NAUTICAL_MILE : Number.NaN },
+})
 
 /** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
 function apply(): void {
@@ -74,13 +79,13 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-basic-title">
         <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
-          <el-form-item v-show="showIds" label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
-          <el-form-item label="干扰方式">
+          <el-form-item required v-show="showIds" label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
+          <el-form-item required label="干扰方式">
             <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
               <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item label="所属干扰节点">
+          <el-form-item required label="所属干扰节点">
             <el-select v-model="editor.platformId" filterable placeholder="请选择所属干扰节点" style="width: 100%" data-testid="jammer-platform">
               <el-option v-if="legacyPlatformId" :label="`${legacyPlatformName}（${legacyPlatformId}，旧归属待修正）`" :value="legacyPlatformId" disabled />
               <el-option v-for="platform in jammerPlatforms" :key="platform.id" :label="scenarioPlatformLabel(jammerPlatforms, platform.id, showIds)" :value="platform.id" />
@@ -95,20 +100,27 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
-          <el-form-item label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
-          <el-form-item label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
-          <el-form-item label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item required label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="0" controls-position="right" data-testid="jammer-power" /></el-form-item>
+          <el-form-item required label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
+          <el-form-item required label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
           <el-form-item label="干扰触发时间（仿真秒）"><el-input-number :model-value="editor.triggerTimeS" :min="0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
-          <el-form-item label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
-          <el-form-item label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
+          <el-form-item required label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
+          <el-form-item required label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
           <el-form-item label="启用"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
         </div>
       </section>
       <section class="link-editor-section" aria-labelledby="jammer-detection-title">
-        <h4 id="jammer-detection-title" class="link-editor-section__title">检测设置</h4>
+        <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>
         <div class="link-editor-grid">
           <el-form-item label="自动检测"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
-          <el-form-item label="探测距离（海里，1～24）"><el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" /></el-form-item>
+          <el-form-item required label="探测范围（海里，1～24）">
+            <el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" />
+            <small class="field-hint">自动探测发现目标的距离；合同单位为米。</small>
+          </el-form-item>
+          <el-form-item required label="干扰范围（海里，1～24）">
+            <el-input-number v-model="jammingRangeNm" controls-position="right" data-testid="jammer-jamming-range" />
+            <small class="field-hint">干扰有效作用距离；自动探测仅在此范围内启停干扰。候选脚本无 weapon 最大作用距离指令。</small>
+          </el-form-item>
         </div>
       </section>
     </el-form>

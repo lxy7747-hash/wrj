@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import type { BusinessInformationNodeType, Platform, PlatformType, SatelliteType } from '../../contracts/domain-models'
-import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS } from '../../features/scenarios/scenario-validation'
+import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS, waypointSpeedError } from '../../features/scenarios/scenario-validation'
 import { PLATFORM_POSITION_RULES } from '../../features/scenarios/platform-position-rules'
 import WaypointMapPicker, { type WaypointMapPoint } from './WaypointMapPicker.vue'
 
@@ -47,6 +47,7 @@ const waypointPickerIndex = ref<number | null>(null)
 const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
 const quantity = ref(1)
 const spacingKm = ref(1)
+const confirmationAttempted = ref(false)
 
 const selectedBusinessType = computed(() => {
   const type = editor.value?.type
@@ -71,6 +72,9 @@ const isForwardRelay = computed(() => editor.value?.type === 'FORWARD_RELAY_NODE
 const positionRule = computed(() => editor.value ? PLATFORM_POSITION_RULES[editor.value.type] : undefined)
 const waypointBounds = computed(() => editor.value?.type === 'AIRBORNE_MISSION_CLUSTER' ? positionRule.value : undefined)
 const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NODE' && !isForwardRelay.value)
+const hasInvalidWaypointSpeed = computed(() => supportsWaypoints.value && editor.value?.waypoints.some(point => waypointSpeedError(point.speed)) === true)
+const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE'
+  && editor.value.satelliteType !== 'TIANTONG' && editor.value.satelliteType !== 'SHENTONG')
 
 /**
  * 同步实体类型对应的卫星子类型和批量数量字段。
@@ -80,6 +84,7 @@ const supportsWaypoints = computed(() => editor.value?.type !== 'REAR_COMMAND_NO
  */
 function synchronizeTypeFields(type: PlatformType): void {
   if (editor.value === null) return
+  confirmationAttempted.value = false
   editor.value.category = PLATFORM_TYPE_DOMAINS[type]
   if (type !== 'COMMUNICATION_SATELLITE') delete editor.value.satelliteType
   if (type !== 'AIRBORNE_MISSION_CLUSTER') quantity.value = 1
@@ -116,6 +121,7 @@ function onSatelliteTypeChange(satelliteType: SatelliteType): void {
 }
 
 function addWaypoint(): void {
+  confirmationAttempted.value = false
   editor.value?.waypoints.push({ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 })
 }
 
@@ -147,13 +153,17 @@ function removeWaypoint(index: number): void {
 }
 
 function apply(): void {
-  if (editor.value === null || cannotAdd.value || invalidSpacing.value) return
+  if (editor.value === null || props.pending || props.locked || cannotAdd.value) return
+  confirmationAttempted.value = true
+  if (!editor.value.name?.trim() || invalidSpacing.value || hasInvalidWaypointSpeed.value) return
+  if (invalidSatelliteType.value) return
   if (!supportsWaypoints.value) editor.value.waypoints = []
   emit('apply', editor.value, quantity.value, spacingKm.value)
 }
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
+  confirmationAttempted.value = false
   editor.value = props.platform === null ? null : structuredClone(toRaw(props.platform))
   quantity.value = 1
   spacingKm.value = 1
@@ -179,13 +189,13 @@ watch(() => props.modelValue, (visible) => {
       <section class="platform-editor-section" aria-labelledby="platform-basic-title">
         <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
         <div class="platform-editor-grid">
-          <el-form-item v-show="showIds" label="场景实体 ID">
+          <el-form-item required v-show="showIds" label="场景实体 ID">
             <el-input v-model="editor.id" :disabled="editing" data-testid="platform-id" />
           </el-form-item>
-          <el-form-item label="名称">
+          <el-form-item label="名称" required :error="confirmationAttempted && !editor.name?.trim() ? '请填写名称。' : ''">
             <el-input v-model="editor.name" data-testid="platform-name" />
           </el-form-item>
-          <el-form-item label="场景实体类型">
+          <el-form-item required label="场景实体类型">
             <el-select v-model="editor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type" @change="synchronizeTypeFields">
               <el-option-group label="信息节点">
                 <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
@@ -198,12 +208,12 @@ watch(() => props.modelValue, (visible) => {
               当前 {{ businessTypeCounts[selectedBusinessType] }} / {{ businessTypeLimits[selectedBusinessType] }} 个{{ (props.businessNodeCount ?? 0) >= INFORMATION_NODE_LIMIT ? `（信息节点已达 ${INFORMATION_NODE_LIMIT} 个上限）` : '' }}
             </span>
           </el-form-item>
-          <el-form-item v-if="editor.type === 'COMMUNICATION_SATELLITE'" label="卫星类型">
+          <el-form-item v-if="editor.type === 'COMMUNICATION_SATELLITE'" label="卫星类型" required :error="confirmationAttempted && invalidSatelliteType ? '请选择天通卫星或神通卫星。' : ''">
             <el-select v-model="editor.satelliteType" placeholder="请选择卫星类型" style="width: 100%" data-testid="platform-satellite-type" @change="onSatelliteTypeChange">
               <el-option v-for="option in satelliteTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item v-if="showBatchQuantity" label="新增数量">
+          <el-form-item required v-if="showBatchQuantity" label="新增数量">
             <el-input-number v-model="quantity" :min="availableQuantity === 0 ? 0 : 1" :max="availableQuantity" :disabled="cannotAdd" :precision="0" controls-position="right" data-testid="platform-quantity" />
             <span class="platform-editor-field__hint">该类型还可新增 {{ availableQuantity }} 个，批量节点可在新增后逐个编辑。</span>
           </el-form-item>
@@ -217,12 +227,12 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
         <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <div class="position-grid">
-          <el-form-item label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="positionRule?.minLongitude ?? -180" :max="positionRule?.maxLongitude ?? 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-          <el-form-item label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="positionRule?.minLatitude ?? -90" :max="positionRule?.maxLatitude ?? 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
-          <el-form-item label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
+          <el-form-item required label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="positionRule?.minLongitude ?? -180" :max="positionRule?.maxLongitude ?? 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
+          <el-form-item required label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="positionRule?.minLatitude ?? -90" :max="positionRule?.maxLatitude ?? 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
+          <el-form-item required label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
         </div>
         <div v-if="showGridSpacing" class="position-grid">
-          <el-form-item label="节点间隔（km）" :error="invalidSpacing ? '节点间隔必须大于 0 km。' : ''">
+          <el-form-item required label="节点间隔（km）" :error="confirmationAttempted && invalidSpacing ? '节点间隔必须大于 0 km。' : ''">
             <el-input-number v-model="spacingKm" :min="0" :step="0.1" :disabled="cannotAdd" controls-position="right" data-testid="platform-spacing" />
           </el-form-item>
         </div>
@@ -249,12 +259,13 @@ watch(() => props.modelValue, (visible) => {
           <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ editor.waypoints.length }}）</h4>
           <el-button size="small" :disabled="pending || locked" data-testid="add-waypoint" @click="addWaypoint">新增航点</el-button>
         </div>
+        <p class="platform-editor-field__hint">航点非必填；固定节点无需新增。新增后各列均为必填，速度须大于 0，到达时间须严格递增且不超过场景时长。</p>
         <el-table :data="editor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
-          <el-table-column label="经度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="waypointBounds?.minLongitude ?? -180" :max="waypointBounds?.maxLongitude ?? 180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="纬度（°）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="waypointBounds?.minLatitude ?? -90" :max="waypointBounds?.maxLatitude ?? 90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="高度（m）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="速度（m/s）" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.speed" :min="0" controls-position="right" :data-testid="`waypoint-speed-${$index}`" /></template></el-table-column>
-          <el-table-column label="到达时间（s）" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
+          <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="waypointBounds?.minLongitude ?? -180" :max="waypointBounds?.maxLongitude ?? 180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
+          <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="waypointBounds?.minLatitude ?? -90" :max="waypointBounds?.maxLatitude ?? 90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
+          <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
+          <el-table-column label="速度（m/s）*" min-width="180"><template #default="{ row, $index }"><el-form-item required :error="confirmationAttempted ? waypointSpeedError(row.speed) : ''"><el-input-number v-model="row.speed" :min="0" placeholder="请输入大于 0 的速度" controls-position="right" :aria-invalid="confirmationAttempted && Boolean(waypointSpeedError(row.speed))" :data-testid="`waypoint-speed-${$index}`" /></el-form-item></template></el-table-column>
+          <el-table-column label="到达时间（s） *" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
           <el-table-column label="操作" width="140">
             <template #default="{ $index }">
               <el-button link type="primary" :disabled="pending || locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
@@ -266,7 +277,7 @@ watch(() => props.modelValue, (visible) => {
     </el-form>
     <template #footer>
       <el-button data-testid="cancel-platform" @click="emit('update:modelValue', false)">取消</el-button>
-      <el-button type="primary" :disabled="pending || locked || cannotAdd || invalidSpacing" data-testid="apply-platform" @click="apply">确认</el-button>
+      <el-button type="primary" :disabled="pending || locked || cannotAdd" data-testid="apply-platform" @click="apply">确认</el-button>
     </template>
   </el-dialog>
 
@@ -335,6 +346,10 @@ watch(() => props.modelValue, (visible) => {
 .platform-editor-form :deep(.el-form-item__label) {
   margin-bottom: 0.25rem;
   line-height: 1.25rem;
+}
+
+.platform-editor-form :deep(.el-form-item__error) {
+  position: static;
 }
 
 .platform-editor-form :deep(.el-input-number) {

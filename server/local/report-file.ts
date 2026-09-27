@@ -5,6 +5,7 @@ import type { LocalReportEvidence, LocalReportExportResult, Report } from '../..
 import { isLocalReport, localReportTables } from '../../src/features/reports/local-report.js'
 import { readAfsimLogFile, readLocalFileSnapshot } from './afsim-log-reader.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
+import type { MissionResultRecord } from '../../src/features/results/mission-result.js'
 
 /** 仅读取本机配置路径；摘要绑定原始文件，不把文件快照冒充场景或引擎运行编号。 */
 export async function readLocalReport(eventPath: string | undefined, positionPath: string | undefined): Promise<Report | null> {
@@ -47,13 +48,14 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': 
 const csvCell = (value: string) => `"${(/^[\s]*[=+@-]/.test(value) ? `'${value}` : value).replaceAll('"', '""')}"`
 
 /** 创建独占导出目录，失败仅清理本次文件；不允许客户端提供路径或正文。 */
-export async function exportLocalReport(directory: string, report: Report, format: 'HTML' | 'CSV', actor: string): Promise<LocalReportExportResult> {
+export async function exportLocalReport(directory: string, report: Report, format: 'HTML' | 'CSV', actor: string, source?: MissionResultRecord): Promise<LocalReportExportResult> {
   if (!isLocalReport(report) || !['HTML', 'CSV'].includes(format)) throw new Error('不支持的真实报告或导出格式。')
   const verifiedAt = new Date().toISOString()
   const watermark = `本地文件统计 · 二级 · 导出人 ${actor} · ${verifiedAt}`
   const tables = localReportTables(report.localEvidence)
   const notes = ['本报告只陈述文件记录；登记关联、设备启停、消息收发均不等于物理链路质量。', '没有 SNR、BER、接收功率或链路质量证据，不计算连通率、丢包率和干扰效果；不关联未经证实的场景/运行。']
   const metadata = [['报告编号', report.reportId], ['生成时刻', report.generatedTime], ['导出标记', watermark], ['事件文件', report.localEvidence.eventFile.fileName], ['事件文件 SHA-256', report.localEvidence.eventFile.sha256], ['位置文件', report.localEvidence.positionFile.fileName], ['位置文件 SHA-256', report.localEvidence.positionFile.sha256]]
+  if (source) metadata.unshift(['执行结果编号', source.resultId], ['场景编号', source.scenarioId], ['场景名称', source.scenarioName], ['场景修订', String(source.revision)], ['运行开始', source.startedAt], ['运行完成', source.completedAt])
   const sections = [{ title: '来源与范围', columns: ['项目', '值'], rows: metadata }, ...tables]
   const content = format === 'CSV'
     ? '\uFEFF' + [...notes.map(note => [note]), ...sections.flatMap(section => [[section.title], section.columns, ...section.rows, []])].map(row => row.map(csvCell).join(',')).join('\r\n')

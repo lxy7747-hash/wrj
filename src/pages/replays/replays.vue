@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { useRoute } from 'vue-router'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import ReplayTimeline from '../../components/replays/ReplayTimeline.vue'
+import MissionResults from '../../components/situation/MissionResults.vue'
 import type { ReplayState } from '../../contracts/domain-models'
 import { useReplayStore } from '../../stores/replay'
 import { selectReplayNodes } from '../../features/replays/local-replay'
@@ -13,6 +14,7 @@ import type { SituationMapFocusTarget } from '../../components/situation/situati
 const replayStore = useReplayStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
+const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
 const { replay, events, state, speed, selectedEventId, resultMessage, localSnapshot } = storeToRefs(replayStore)
 const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
 // 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联。
@@ -21,6 +23,7 @@ const focusTarget = ref<SituationMapFocusTarget | null>(null)
 const selectedNodeId = ref('')
 const sliderTime = ref(0)
 const sliderDragging = ref(false)
+const fileSeekRevision = ref(0)
 const loading = computed(() => state.value === 'LOADING')
 
 /** 将回放状态转换为中文。 */
@@ -60,6 +63,7 @@ async function togglePlayback(): Promise<void> {
  */
 async function seek(value: number | number[]): Promise<void> {
   if (Array.isArray(value)) return
+  fileSeekRevision.value += 1
   await replayStore.seek(value)
   sliderDragging.value = false
   sliderTime.value = replay.value?.currentTimeS ?? 0
@@ -82,7 +86,7 @@ async function changeSpeed(value: number): Promise<void> {
 async function reload(): Promise<void> {
   sliderDragging.value = false
   focusTarget.value = null
-  await replayStore.loadLocalFile(archiveId.value)
+  await replayStore.loadLocalFile(archiveId.value, resultId.value)
 }
 
 /** 选中节点仍存在时保留高亮；时间变化不自动重置视图或选择。 */
@@ -97,7 +101,7 @@ function locateFileNode(platformId: string): void {
 }
 
 onMounted(() => { void reload() })
-watch(archiveId, () => { void reload() })
+watch([archiveId, resultId], () => { void reload() })
 onBeforeUnmount(() => {
   replayStore.resetToSafeEmpty()
 })
@@ -105,6 +109,9 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="replays-page" aria-label="历史回放">
+    <div>
+    <MissionResults view="replay" />
+    <p v-if="!archiveId && !resultId">当前查看配置文件回放；可在上方选择一次已完成的仿真。</p>
     <header class="replays-page__header">
 <!--      <div>-->
 <!--        <p class="eyebrow">运行快照与事件复盘</p>-->
@@ -118,6 +125,7 @@ onBeforeUnmount(() => {
       </div>
       <el-button :loading="loading" :disabled="loading" @click="reload">重新加载</el-button>
     </header>
+    </div>
 
     <el-skeleton v-if="loading" class="replays-page__loading" :rows="10" animated />
     <el-result
@@ -140,6 +148,9 @@ onBeforeUnmount(() => {
           :file-message-links="localSnapshot.initial.messageLinks"
           :file-device-events="localSnapshot?.initial.deviceEvents"
           :file-time="replay?.currentTimeS ?? 0"
+          :file-playing="state === 'PLAYING'"
+          :file-speed="speed"
+          :file-seek-revision="fileSeekRevision"
           :links="[]"
           :selected-node-id="selectedNodeId"
           :focus-target="focusTarget"
@@ -165,6 +176,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <p v-if="archiveId" data-testid="replay-archive-source">归档：{{ archiveId }}；重新加载仍读取此快照，不切换到最新文件。</p>
+          <p v-else-if="resultId">当前为指定运行的完成快照；重新加载不会读取其他运行或配置文件。</p>
           <p v-else>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
           <p>按回放时刻展示位置及已登记的通信关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
@@ -204,6 +216,8 @@ onBeforeUnmount(() => {
             <el-option :value="2" label="×2" />
             <el-option :value="4" label="×4" />
             <el-option :value="8" label="×8" />
+            <el-option :value="16" label="×16" />
+            <el-option :value="32" label="×32" />
           </el-select>
         </div>
       </section>

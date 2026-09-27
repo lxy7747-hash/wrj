@@ -126,7 +126,7 @@ describe('链路补项保存与快照', () => {
     disabledLink!.enabled = false
     enabledLink!.enabled = true
     config.linkSettings.switchCooldownS = 12
-    config.linkSettings.priority = ['SAT', 'DATALINK', 'MICROWAVE', 'LASER']
+    config.linkSettings.priority = ['SAT', 'DATALINK', 'MICROWAVE', 'LASER', 'FIBER']
     const satellite = config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
     const link = config.links.find(l => l.type === 'SAT')!
     Object.assign(link, { antennaGainCorrectionDb: -2, coding: 'UNCODED', antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
@@ -168,7 +168,7 @@ describe('业务方向与独立启停保存', () => {
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
     Object.assign(config.informationDemand[0]!, { direction: 'FORWARD', enabled: false, volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
-    config.informationDemand.push({ ...config.informationDemand[0]!, id: 'INFO-VIDEO', direction: 'REVERSE', enabled: true, informationType: '视频', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
+    config.informationDemand.push({ ...config.informationDemand[0]!, id: 'INFO-VIDEO', direction: 'REVERSE', enabled: true, informationType: '侦察信息', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
@@ -195,7 +195,7 @@ describe('敌方干扰配置保存', () => {
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
     config.jammingEnabled = true
-    Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, defaultPower: 200, bandwidth: 20 })
+    Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, jammingRange: 24 * 1852, defaultPower: 200, bandwidth: 20 })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
@@ -205,7 +205,7 @@ describe('敌方干扰配置保存', () => {
     expect(reset.config.jammingEnabled).toBeUndefined()
     const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(undone.config).toEqual(config)
-    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 25 * 1852 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
+    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 25 * 1852 }, { jammingRange: 0 }, { jammingRange: 25 * 1852 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
       const invalid = structuredClone(config)
       Object.assign(invalid.jammers[0]!, mutation)
       await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)

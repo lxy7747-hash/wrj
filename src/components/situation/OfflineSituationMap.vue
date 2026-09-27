@@ -29,6 +29,9 @@ const props = defineProps<{
   fileMessageLinks?: FileMessageLink[]
   fileDeviceEvents?: FileDeviceEvent[]
   fileTime?: number
+  filePlaying?: boolean
+  fileSpeed?: number
+  fileSeekRevision?: number
   configuredLinks?: Link[]
   links: SituationLinkView[]
   selectedNodeId: string
@@ -54,6 +57,12 @@ const selectedMessageLinkId = ref('')
 const messageLinkDialogVisible = ref(false)
 const visibleMessageLinks = computed(() => !props.frame && !props.configuredLinks
   ? selectFileMessageLinks(props.fileMessageLinks ?? [], props.fileTime ?? 0) : [])
+const filePlayback = computed(() => ({
+  time: props.fileTime ?? 0,
+  playing: !!props.filePlaying && !props.frame && !props.configuredLinks,
+  speed: props.fileSpeed && Number.isFinite(props.fileSpeed) && props.fileSpeed > 0 ? props.fileSpeed : 1,
+  key: `${props.sourceKey ?? ''}:${props.fileSeekRevision ?? 0}`,
+}))
 const selectedMessageLink = computed(() => visibleMessageLinks.value.find(link => link.id === selectedMessageLinkId.value))
 const hasFileLinks = computed(() => !props.frame && !props.configuredLinks && (props.fileLinks?.length ?? 0) > 0)
 const hasFileMessageLinks = computed(() => visibleMessageLinks.value.length > 0)
@@ -312,6 +321,7 @@ onMounted(() => {
     onSelectLink: handleSelectLink,
     onZoomChange: handleZoomChange,
   })
+  mapController.value.setFilePlayback(filePlayback.value, props.fileMessageLinks ?? [])
   if (!layers.interference) mapController.value.setLayerVisible('interference', false)
   if (!layers.potential) mapController.value.setLayerVisible('potential', false)
   if (!layers.flow) mapController.value.setLayerVisible('flow', false)
@@ -346,6 +356,11 @@ watch(() => props.fileLinks, links => {
 watch(visibleMessageLinks, links => {
   mapController.value?.setFileMessageLinks(links)
 })
+
+// 消息/节点先同步，再提交播放时钟；同一时刻的重绘不会重复触发投递。
+watch([filePlayback, visibleMessageLinks], () => {
+  mapController.value?.setFilePlayback(filePlayback.value, props.fileMessageLinks ?? [])
+}, { flush: 'post' })
 
 watch(fileDeviceStates, states => {
   mapController.value?.setFileDeviceStates(states)
@@ -895,25 +910,8 @@ onBeforeUnmount(() => {
   text-shadow: 0 0 3px #06111d, 0 0 5px #06111d;
 }
 
-/* 业务方向单字标记：中文单字自带语义，因此不需要额外图例，也不参与交互。 */
-:deep(.situation-map-link-direction) {
-  background: transparent;
-  border: 0;
-  pointer-events: none;
-}
-
-:deep(.situation-map-link-direction__text) {
-  display: block;
-  color: #d7e8f3;
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-  text-shadow: 0 0 3px #06111d, 0 0 5px #06111d, 0 1px 2px #06111d;
-}
-
 /**
- * 单颗流星：暗尾到亮头共用相同速度，尾迹离开终点后再从起点发出。
+ * 单颗流星：一批新消息触发一次，尾迹离开终点后停住，不作无限循环。
  * 动画名必须写在 scoped 样式里 —— Vue 会给局部 @keyframes 加哈希重命名，
  * 只有在同一 scoped 块内引用才会被同步改写；行内样式里的名字不会被改写，会指向不存在的关键帧。
  * 位移量由控制器按归一化路径和尾迹比例写入 --situation-link-flow-shift，
@@ -932,7 +930,8 @@ onBeforeUnmount(() => {
 :deep(.situation-map-link-flow) {
   animation-name: situation-map-link-flow;
   animation-timing-function: linear;
-  animation-iteration-count: infinite;
+  animation-iteration-count: 1;
+  animation-fill-mode: both;
   animation-duration: 1.4s;
   pointer-events: none;
   filter: drop-shadow(0 0 1.5px rgba(160, 225, 255, .5));

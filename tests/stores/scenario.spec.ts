@@ -71,9 +71,9 @@ describe('链路新增参数边界', () => {
     expect(inspectScenarioConfig(config).result.valid).toBe(true)
     config.linkSettings = readLinkSettings(config)
     config.linkSettings.enabledSatellites.SHENTONG = true
-    config.linkSettings.enabledTypes = { SAT: 'true' as never, MICROWAVE: true, DATALINK: true, LASER: true }
+    config.linkSettings.enabledTypes = { SAT: 'true' as never, MICROWAVE: true, DATALINK: true, LASER: true, FIBER: true }
     config.linkSettings.switchCooldownS = -1
-    config.linkSettings.priority = ['SAT', 'SAT', 'LASER', 'MICROWAVE']
+    config.linkSettings.priority = ['SAT', 'SAT', 'LASER', 'MICROWAVE', 'FIBER']
     Object.assign(config.links[0]!, { enabled: 'true', antennaGainCorrectionDb: NaN, antiJammingGainDb: -1, spatialIsolationDb: Infinity, coding: 'bad\nscript' })
     const paths = inspectScenarioConfig(config).result.errors.map(e => e.fieldPath)
     expect(paths).toEqual(expect.arrayContaining([
@@ -88,7 +88,7 @@ it('单条启停优先于历史类型开关，同类型链路独立且不改写�
   expect(settings.enabledTypes).toBeUndefined()
   const [first, second] = config.links.filter(link => link.type === 'MICROWAVE')
   expect(readLinkEnabled(first!)).toBe(true)
-  settings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true }
+  settings.enabledTypes = { SAT: true, MICROWAVE: false, DATALINK: true, LASER: true, FIBER: true }
   expect(isConfiguredLinkEnabled(first!, settings, config.platforms)).toBe(false)
   first!.enabled = true
   expect(isConfiguredLinkEnabled(first!, settings, config.platforms)).toBe(true)
@@ -321,6 +321,22 @@ describe('P2-1 场景 Store', () => {
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
     sessionStorage.clear()
+  })
+
+  it.each([0, -1, undefined, NaN])('航点速度 %s 在写入前被共享校验拒绝，不发保存请求', async speed => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const value = scenarioDraft()
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success(value)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    await expect(store.loadScenario()).resolves.toBe(true)
+    store.draft!.config.platforms[3]!.waypoints = [{ ...value.config.platforms[3]!.initialPosition, speed: speed as number, arrivalTime: 10 }]
+    store.markDirty()
+    await expect(store.saveScenario()).resolves.toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(store.validation.errors).toContainEqual(expect.objectContaining({ code: 'SPEED_INVALID', fieldPath: 'platforms[3].waypoints[0].speed' }))
+    expect(store.dirty).toBe(true)
+    expect(store.draft!.revision).toBe(value.revision)
   })
 
   it('从 Node.js Mock 加载并校验场景草稿', async () => {
@@ -1708,6 +1724,7 @@ describe('P2-4 干扰设备字段校验', () => {
     config.jammers[0]!.triggerTimeS = 300
     for (const range of [1852, 44448]) {
       config.jammers[0]!.detectionRange = range
+      config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     }
     for (const range of [0, 1851, 44449, Number.NaN]) {
@@ -1718,6 +1735,25 @@ describe('P2-4 干扰设备字段校验', () => {
     expect(inspectScenarioConfig(config, 'read').result.valid).toBe(true)
     expect(config.jammers[0]!.detectionRange).toBe(150000)
     config.jammers[0]!.detectionRange = 44448
+    config.jammers[0]!.jammingRange = 44448
+    for (const range of [1852, 44448]) {
+      config.jammers[0]!.jammingRange = range
+      expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    }
+    for (const range of [0, 1851, 44449, Number.NaN]) {
+      config.jammers[0]!.jammingRange = range
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].jammingRange')
+    }
+    config.jammers[0]!.jammingRange = 44448
+    config.jammers[0]!.detectionRange = 1852
+    config.jammers[0]!.jammingRange = 44448
+    {
+      const inspected = inspectScenarioConfig(config, 'write')
+      expect(inspected.result.valid).toBe(true)
+      expect(inspected.result.warnings.some(issue => issue.code === 'JAMMER_RANGE_ORDER')).toBe(true)
+    }
+    config.jammers[0]!.detectionRange = 44448
+    config.jammers[0]!.jammingRange = 44448
     for (const trigger of [-1, config.scenario.duration + 1, Number.NaN]) {
       config.jammers[0]!.triggerTimeS = trigger
       expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].triggerTimeS')

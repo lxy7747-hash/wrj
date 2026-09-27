@@ -14,7 +14,7 @@ export const MAP_CONFIG = {
     vector: {
       /** 资源 TileJSON 中的西南、东北边界，每点为 [纬度, 经度]；范围外不请求不存在的瓦片。 */
       bounds: [[7.197594, 71.61502], [54.011569, 135.677601]],
-      tileUrl: 'http://127.0.0.1:4174/tiles/china-taiwan-260823/{z}/{x}/{y}',
+      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/china-taiwan-260823/{z}/{x}/{y}`,
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       /** 此矢量资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
@@ -23,7 +23,7 @@ export const MAP_CONFIG = {
     satellite: {
       /** 卫星包 TileJSON 覆盖范围；坐标顺序为 [纬度, 经度]，与矢量范围独立。 */
       bounds: [[-66.530768, -0.043945], [66.530768, 157.543945]],
-      tileUrl: 'http://127.0.0.1:4174/tiles/taiwan-strait-satellite/{z}/{x}/{y}',
+      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/taiwan-strait-satellite/{z}/{x}/{y}`,
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: 'VersaTiles - Satellite + Orthophotos',
       /** 此卫星资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
@@ -32,8 +32,10 @@ export const MAP_CONFIG = {
   },
   /** 界面与控制器的默认状态；任务视图随后会通过 fitBounds(taskBounds) 调整实际视图。 */
   defaults: {
-    theme: 'light',
+    theme: 'dark',
     basemap: 'vector',
+    /** 底图地名、道路及水域文字；不影响节点名称、图例和经纬网。 */
+    basemapLabelsVisible: false,
     zoom: 10,
     /** 是否默认显示经纬网，关闭后仍可通过图层按钮手动开启。 */
     gridVisible: false,
@@ -60,7 +62,7 @@ export const MAP_CONFIG = {
   fileInterferenceRadiusMeters: 24 * 1852,
   /** 单颗流星的尾迹占链路长度的比例，不随缩放增加流星数量。 */
   linkFlowTrailRatio: 0.12,
-  /** 单颗流星从起点进入到尾迹离开终点所需秒数；越小越快。 */
+  /** 单颗流星的现实展示时长，不随播放倍速变化；不是发送周期或真实传输时延。 */
   linkFlowCycleSeconds: 1.4,
   /**
    * 卫星位置来源开关：

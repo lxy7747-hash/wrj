@@ -13,6 +13,7 @@ const mapControllerMock = vi.hoisted(() => ({
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
     setFileMessageLinks: vi.fn(),
+    setFilePlayback: vi.fn(),
     setFileDeviceStates: vi.fn(),
     setConfiguredLinks: vi.fn(),
     setSelectedNodeId: vi.fn(),

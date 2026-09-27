@@ -140,11 +140,6 @@ function moduleForAction(action: string): string {
 export class AuthProjection {
   private runtimeState = createRuntimeState()
   private loginRevision = 0
-  private currentActor = 'admin'
-  private currentUserId = CURRENT_ADMIN_ID
-  private currentRole: Role = 'ADMIN'
-  actorId(): string { return this.currentUserId }
-  actorName(): string { return this.currentActor }
 
   constructor(private readonly storage?: AuthStorage) {
     if (storage) this.runtimeState.audit = []
@@ -153,12 +148,6 @@ export class AuthProjection {
 
   private refreshUsers(): void {
     if (this.storage) this.runtimeState.users = this.storage.list()
-  }
-
-  setActor(user: User): void {
-    this.currentActor = user.username
-    this.currentUserId = user.userId
-    this.currentRole = user.role
   }
 
   /**
@@ -264,7 +253,7 @@ export class AuthProjection {
    * @returns A cloned created user or a typed conflict failure.
    * @remarks Appends the user on success and records a SUCCESS/ERROR audit outcome.
    */
-  create(command: UserRoleCommand): ProjectionResult<User> {
+  create(command: UserRoleCommand, actor = 'admin'): ProjectionResult<User> {
     this.refreshUsers()
     if ((this.storage || command.password !== undefined)
       && (typeof command.password !== 'string' || !command.password.trim() || command.password.length < 6 || command.password.length > 32)) {
@@ -275,13 +264,13 @@ export class AuthProjection {
       (candidate) => candidate.userId === user.userId || candidate.username === user.username,
     ) || user.username === 'locked'
     if (duplicate) {
-      this.appendAudit('admin', 'ADMIN', 'USER_CREATE', user.userId, 'ERROR')
+      this.appendAudit(actor, 'ADMIN', 'USER_CREATE', user.userId, 'ERROR')
       return { ok: false, code: 'CONFLICT', status: 409 }
     }
 
     this.storage?.save(user, command.password)
     this.runtimeState.users.push(user)
-    this.appendAudit('admin', 'ADMIN', 'USER_CREATE', user.userId, 'SUCCESS')
+    this.appendAudit(actor, 'ADMIN', 'USER_CREATE', user.userId, 'SUCCESS')
     return { ok: true, data: structuredClone(user) }
   }
 
@@ -294,11 +283,11 @@ export class AuthProjection {
    * @remarks Replaces the in-memory user only after all guards pass and appends an audit record for
    * every terminal outcome; no external persistence occurs.
    */
-  update(userId: string, command: UserRoleCommand): ProjectionResult<User> {
+  update(userId: string, command: UserRoleCommand, actor = 'admin', actorId = CURRENT_ADMIN_ID): ProjectionResult<User> {
     this.refreshUsers()
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
-      this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
+      this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
       return { ok: false, code: 'NOT_FOUND', status: 404 }
     }
 
@@ -319,7 +308,7 @@ export class AuthProjection {
         next = { ...current, status: 'DISABLED' }
         break
       default:
-        this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
+        this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
         return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'operation' }
     }
 
@@ -327,19 +316,19 @@ export class AuthProjection {
       (candidate) => candidate.userId !== userId && candidate.username === next.username,
     ) || next.username === 'locked'
     if (duplicateUsername) {
-      this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
+      this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'ERROR')
       return { ok: false, code: 'CONFLICT', status: 409 }
     }
 
-    if (this.violatesAdminGuard(current, next)) {
-      this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'DENIED')
+    if (this.violatesAdminGuard(current, next, actorId)) {
+      this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'DENIED')
       return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
     }
 
     this.storage?.save(next)
     this.storage?.revokeUser(userId)
     this.runtimeState.users[index] = next
-    this.appendAudit('admin', 'ADMIN', `USER_${command.operation}`, userId, 'SUCCESS')
+    this.appendAudit(actor, 'ADMIN', `USER_${command.operation}`, userId, 'SUCCESS')
     return { ok: true, data: structuredClone(next) }
   }
 
@@ -350,11 +339,11 @@ export class AuthProjection {
    * @returns A typed deletion result or a not-found/admin-guard failure.
    * @remarks Removes one in-memory user only after guard approval and records the outcome in audit.
    */
-  delete(userId: string): ProjectionResult<{ deleted: boolean; objectId: string }> {
+  delete(userId: string, actor = 'admin', actorId = CURRENT_ADMIN_ID): ProjectionResult<{ deleted: boolean; objectId: string }> {
     this.refreshUsers()
     const index = this.runtimeState.users.findIndex((candidate) => candidate.userId === userId)
     if (index < 0) {
-      this.appendAudit('admin', 'ADMIN', 'USER_DELETE', userId, 'ERROR')
+      this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'ERROR')
       return { ok: false, code: 'NOT_FOUND', status: 404 }
     }
 
@@ -362,14 +351,14 @@ export class AuthProjection {
     if (current === undefined) {
       throw new Error('User index disappeared from the in-memory projection.')
     }
-    if (this.violatesAdminGuard(current, undefined)) {
-      this.appendAudit('admin', 'ADMIN', 'USER_DELETE', userId, 'DENIED')
+    if (this.violatesAdminGuard(current, undefined, actorId)) {
+      this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'DENIED')
       return { ok: false, code: 'LAST_ADMIN_GUARD', status: 409 }
     }
 
     this.storage?.delete(userId)
     this.runtimeState.users.splice(index, 1)
-    this.appendAudit('admin', 'ADMIN', 'USER_DELETE', userId, 'SUCCESS')
+    this.appendAudit(actor, 'ADMIN', 'USER_DELETE', userId, 'SUCCESS')
     return { ok: true, data: { deleted: true, objectId: userId } }
   }
 
@@ -423,7 +412,7 @@ export class AuthProjection {
    * @returns Whether the transition targets the current administrator or last active administrator.
    * @remarks This pure guard reads runtime users but does not mutate users or audit state.
    */
-  private violatesAdminGuard(current: User, next: User | undefined): boolean {
+  private violatesAdminGuard(current: User, next: User | undefined, actorId: string): boolean {
     if (current.role !== 'ADMIN') {
       return false
     }
@@ -439,7 +428,7 @@ export class AuthProjection {
       (candidate) => candidate.role === 'ADMIN' && candidate.status === 'ACTIVE',
     ).length
     // The fixture's current administrator is never deleted/demoted; no operation may remove the last active admin.
-    return current.userId === this.currentUserId || activeAdminCount <= 1
+    return current.userId === actorId || activeAdminCount <= 1
   }
 
   /**
@@ -461,7 +450,7 @@ export class AuthProjection {
     result: AuditRecord['result'],
   ): void {
     const record: Omit<AuditRecord, 'auditId'> = {
-      actor: this.storage && role === this.currentRole && (actor === 'admin' || actor === 'operator') && !action.startsWith('AUTH_') ? this.currentActor : actor,
+      actor,
       role,
       module: moduleForAction(action),
       action,

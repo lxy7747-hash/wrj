@@ -108,12 +108,16 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     } finally { scratch.close() }
   }
 
+  /** 恢复前备份与随后恢复写入必须属于同一锁定时点。 */
   private writeLocked(backupId: string, name: string): AdminResult<BackupRecord> {
+    return this.writeSnapshot(backupId, name, this.capture())
+  }
+
+  private writeSnapshot(backupId: string, name: string, tables: TableSnapshot[]): AdminResult<BackupRecord> {
     let created = false
     const path = this.file(backupId)
     try {
       if (this.catalog.prepare('SELECT 1 FROM system_backups WHERE backup_id=? UNION ALL SELECT 1 FROM backups WHERE backup_id=?').get(backupId, backupId)) return { ok: false, code: 'CONFLICT', status: 409, message: '备份编号已存在，未覆盖原备份。' }
-      const tables = this.capture()
       this.validate(tables)
       // 独占创建确保补偿只会删除本次创建的文件，已有同名文件绝不覆盖。
       try { closeSync(openSync(path, 'wx')); created = true } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, code: 'CONFLICT', status: 409, message: '备份文件已存在，未覆盖。' }; throw error }
@@ -139,12 +143,15 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   backup(backupId = `BACKUP-${randomUUID()}`, name = '手动备份'): AdminResult<BackupRecord> {
     if (!validId(backupId) || !validName(name)) return { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份编号或名称不正确。', fieldPath: 'name' }
     let transaction = false
+    let tables: TableSnapshot[]
     try {
-      // 在同一连接锁定所有业务库后读取，避免分别 VACUUM 产生不同时点的快照。
+      // 在同一写事务内物化所有业务库快照；耗时校验和文件 I/O 在释放写锁后进行。
       this.db.exec('BEGIN IMMEDIATE'); transaction = true
-      return this.writeLocked(backupId, name)
+      tables = this.capture()
+      this.db.exec('ROLLBACK'); transaction = false
     } catch { return unavailable() }
     finally { if (transaction) this.db.exec('ROLLBACK') }
+    return this.writeSnapshot(backupId, name, tables)
   }
 
   private readSnapshot(path: string): TableSnapshot[] {

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { AuditRecord } from '../../src/contracts/domain-models'
 
 const storagePath = '../../server/local/' + 'auth-sqlite.js'
 const serverPath = '../../server/' + 'app.js'
@@ -22,10 +23,10 @@ const cleanups: Array<() => void | Promise<void>> = []
 beforeEach(async () => { directory = await mkdtemp(join(tmpdir(), 'wrj-auth-test-')); path = join(directory, 'app.db') })
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); await rm(directory, { recursive: true, force: true }) })
 
-async function start(now?: () => number) {
+async function start(now?: () => number, extra: NonNullable<Parameters<typeof createMockServer>[0]> = {}) {
   const storage = new AuthSqliteStorage(path, PASSWORD, now)
   cleanups.push(() => storage.close())
-  const server = createMockServer({ authStorage: storage })
+  const server = createMockServer({ ...extra, authStorage: storage })
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   cleanups.push(() => server.close())
   const base = `http://127.0.0.1:${server.httpServer.address().port}`
@@ -33,6 +34,8 @@ async function start(now?: () => number) {
   const login = async (username = 'admin', password = PASSWORD) => {
     const result = await api.post('/api/v1/auth/login').set(headers).send({ username, passwordFixture: password })
     expect(result.status).toBe(200)
+    expect(result.headers['x-auth-mode']).toBe('sqlite')
+    expect(result.headers['access-control-expose-headers']).toBe('X-Auth-Mode')
     expect(result.body.data.sessionCreated).toBe(true)
     expect(result.headers['set-cookie'][0]).toContain('HttpOnly')
     expect(result.headers['set-cookie'][0]).toContain('SameSite=Strict')
@@ -42,6 +45,48 @@ async function start(now?: () => number) {
 }
 
 describe('SQLite authentication', () => {
+  it('交错完成的两个账号请求分别归属审计和一次性确认', async () => {
+    let releaseWrite!: (path: string) => void
+    let enteredWrite!: () => void
+    const entered = new Promise<void>(resolve => { enteredWrite = resolve })
+    const pendingWrite = new Promise<string>(resolve => { releaseWrite = resolve })
+    const { api, login, storage } = await start(undefined, {
+      writeScriptText: async () => { enteredWrite(); return pendingWrite },
+    })
+    storage.save({ userId: 'USR-SECOND-ADMIN', username: 'second-admin', role: 'ADMIN', status: 'ACTIVE' }, PASSWORD)
+    const firstCookie = await login()
+    const secondCookie = await login('second-admin')
+    const asUser = (cookie: string) => ({ ...headers, Cookie: cookie })
+    const draft = (await api.get('/api/v1/scenarios/SCN-001').set(asUser(firstCookie)).expect(200)).body.data
+    draft.config.scenario.environment.rainLossDbPerKm = 0.08
+    for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
+    await api.put('/api/v1/scenarios/SCN-001').set(asUser(firstCookie))
+      .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)
+    const script = (await api.post('/api/v1/scripts/preview').set(asUser(firstCookie))
+      .send({ scenarioId: 'SCN-001' }).expect(200)).body.data
+    const writing = api.post(`/api/v1/scripts/${script.scriptId}/local-file`).set(asUser(firstCookie))
+      .send({ checksum: script.checksum }).then((response: { status: number }) => response)
+    await entered
+    await api.get('/api/v1/admin/users').set(asUser(secondCookie)).expect(200)
+    expect(storage.readAudit().find((record: AuditRecord) => record.action === 'USER_LIST')?.actor).toBe('second-admin')
+    const second = (await api.post('/api/v1/confirmations').set(asUser(secondCookie))
+      .send({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' }).expect(201)).body.data
+    releaseWrite('C:/test-only/mission.txt')
+    await expect(writing).resolves.toMatchObject({ status: 200 })
+    expect(storage.readAudit().find((record: AuditRecord) => record.action === 'SCRIPT_FILE_WRITE' && record.result === 'SUCCESS')?.actor).toBe('admin')
+    expect(second.actor).toBe('second-admin')
+
+    const first = (await api.post('/api/v1/confirmations').set(asUser(firstCookie))
+      .send({ action: 'AUDIT_EXPORT', objectId: 'AUDIT-LOG' }).expect(201)).body.data
+    await api.post(`/api/v1/confirmations/${first.confirmationId}`).set(asUser(secondCookie)).send({ confirm: true }).expect(403)
+    await api.post(`/api/v1/confirmations/${first.confirmationId}`).set(asUser(firstCookie)).send({ confirm: true }).expect(200)
+    await api.post('/api/v1/admin/audit/export').set(asUser(secondCookie))
+      .send({ export: true, confirmationId: first.confirmationId }).expect(403)
+    await api.post('/api/v1/admin/audit/export').set(asUser(firstCookie))
+      .send({ export: true, confirmationId: first.confirmationId }).expect(200)
+    expect(storage.readAudit().filter((record: AuditRecord) => record.action === 'AUDIT_EXPORT').map((record: AuditRecord) => [record.actor, record.result]))
+      .toEqual(expect.arrayContaining([['second-admin', 'DENIED'], ['admin', 'SUCCESS']]))
+  })
   it('验证兼容既有哈希且不阻塞事件循环，最多两个在途验证并在完成后释放容量', async () => {
     const { storage, api } = await start()
     let completed = false
@@ -248,6 +293,8 @@ describe('SQLite authentication', () => {
     const operator = { userId: 'USR-W', username: 'worker', role: 'OPERATOR', status: 'ACTIVE' }
     await api.post('/api/v1/admin/users').set(headers).set('Cookie', cookie).send({ operation: 'CREATE', user: operator, password: PASSWORD })
     const worker = await login('worker')
+    await api.get('/api/v1/auth/permissions').set(headers).set('Cookie', worker).expect(200)
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ actor: 'worker', role: 'OPERATOR', action: 'AUTH_PERMISSIONS', result: 'SUCCESS' })
     expect((await api.get('/api/v1/admin/audit').set(headers).set('Cookie', worker)).status).toBe(403)
     expect(server.auditSnapshot().at(-1)).toMatchObject({ actor: 'worker', role: 'OPERATOR', result: 'DENIED', action: 'AUDIT_LIST' })
     await api.post('/api/v1/auth/logout').set(headers).set('Cookie', worker).send({ confirm: true })

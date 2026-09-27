@@ -5,6 +5,7 @@ const { DatabaseSync } = await import('node:' + 'sqlite')
 const { join } = await import('node:' + 'path')
 const { existsSync, readFileSync, writeFileSync } = await import('node:' + 'fs')
 const { createHash } = await import('node:' + 'crypto')
+const { Worker } = await import('node:' + 'worker_threads')
 const { RuntimeConfigSqliteStorage } = await import('../../server/local/' + 'runtime-config-sqlite.js')
 const { SystemBackupSqliteStorage } = await import('../../server/local/' + 'system-backup-sqlite.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
@@ -65,6 +66,108 @@ it('目录登记失败补偿本次文件，解锁后同编号重试成功', () =
     expect(existsSync(join(f.backup.directory, 'RETRY.system.db'))).toBe(false)
   } finally { catalog.exec('ROLLBACK'); catalog.close() }
   expect(f.backup.backup('RETRY').ok).toBe(true)
+})
+
+it('同一事务捕获多库快照后释放写锁，再做校验和文件写入', async () => {
+  const f = setup()
+  const marker = join(f.directory, 'snapshot-captured')
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads')
+    const { existsSync } = require('node:fs')
+    const { DatabaseSync } = require('node:sqlite')
+    while (!existsSync(workerData.marker)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10)
+    const start = performance.now()
+    const db = new DatabaseSync(workerData.path)
+    try {
+      db.exec('PRAGMA busy_timeout=1000')
+      db.prepare("UPDATE master_data SET data_json=json_set(data_json, '$.content.name', '并发新值')").run()
+      parentPort.postMessage({ ok: true, elapsedMs: performance.now() - start })
+    } catch (error) {
+      parentPort.postMessage({ ok: false, elapsedMs: performance.now() - start, message: String(error) })
+    } finally { db.close() }
+  `, { eval: true, workerData: { marker, path: join(f.directory, 'master-data.db') } })
+  const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
+    worker.once('message', resolve)
+    worker.once('error', reject)
+  })
+  const backup = f.backup as unknown as { validate(tables: unknown): void }
+  const validate = backup.validate.bind(backup)
+  let delayed = false
+  vi.spyOn(backup, 'validate').mockImplementation(tables => {
+    if (!delayed) {
+      delayed = true
+      writeFileSync(marker, 'captured')
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300)
+    }
+    validate(tables)
+  })
+  try {
+    expect(f.backup.backup('CONCURRENT')).toMatchObject({ ok: true, data: { status: 'VALID' } })
+    const write = await completed
+    console.info(`备份快照后并发写入耗时 ${write.elapsedMs.toFixed(1)} ms`)
+    expect(write).toMatchObject({ ok: true })
+    expect(write.elapsedMs).toBeLessThan(500)
+    expect(f.master.load()[0]?.content?.name).toBe('并发新值')
+    const snapshot = new DatabaseSync(join(f.backup.directory, 'CONCURRENT.system.db'), { readOnly: true })
+    try {
+      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload)) as Array<{ table: string; rows: Array<{ data_json: string }> }>
+      const saved = tables.find(table => table.table === 'master_data')?.rows[0]
+      expect(saved?.data_json).toContain('测试字典')
+      expect(saved?.data_json).not.toContain('并发新值')
+    } finally { snapshot.close() }
+  } finally { await worker.terminate() }
+})
+
+it('多库捕获期间并发写入等待同一快照事务，随后成功提交', async () => {
+  const f = setup()
+  const gate = new Int32Array(new SharedArrayBuffer(4))
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads')
+    const { DatabaseSync } = require('node:sqlite')
+    const gate = new Int32Array(workerData.gate)
+    Atomics.wait(gate, 0, 0)
+    const start = performance.now()
+    Atomics.store(gate, 0, 2)
+    Atomics.notify(gate, 0)
+    const db = new DatabaseSync(workerData.master)
+    try {
+      db.exec('PRAGMA busy_timeout=2000')
+      db.prepare('ATTACH DATABASE ? AS settings').run(workerData.settings)
+      db.exec('BEGIN IMMEDIATE')
+      db.prepare("UPDATE master_data SET data_json=json_set(data_json, '$.content.name', '事务后新值')").run()
+      db.prepare('UPDATE settings.runtime_config SET environment=environment').run()
+      db.exec('COMMIT')
+      parentPort.postMessage({ ok: true, elapsedMs: performance.now() - start })
+    } catch (error) {
+      parentPort.postMessage({ ok: false, elapsedMs: performance.now() - start, message: String(error) })
+    } finally { db.close() }
+  `, { eval: true, workerData: { gate: gate.buffer, master: join(f.directory, 'master-data.db'), settings: join(f.directory, 'runtime-config.db') } })
+  const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
+    worker.once('message', resolve)
+    worker.once('error', reject)
+  })
+  const backup = f.backup as unknown as { capture(): unknown }
+  const capture = backup.capture.bind(backup)
+  vi.spyOn(backup, 'capture').mockImplementation(() => {
+    Atomics.store(gate, 0, 1)
+    Atomics.notify(gate, 0)
+    Atomics.wait(gate, 0, 1, 1000)
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
+    return capture()
+  })
+  try {
+    expect(f.backup.backup('LOCK-WAIT')).toMatchObject({ ok: true, data: { status: 'VALID' } })
+    const write = await completed
+    console.info(`备份捕获期间并发写锁等待 ${write.elapsedMs.toFixed(1)} ms`)
+    expect(write).toMatchObject({ ok: true })
+    expect(write.elapsedMs).toBeGreaterThan(150)
+    expect(f.master.load()[0]?.content?.name).toBe('事务后新值')
+    const snapshot = new DatabaseSync(join(f.backup.directory, 'LOCK-WAIT.system.db'), { readOnly: true })
+    try {
+      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload)) as Array<{ table: string; rows: Array<{ data_json: string }> }>
+      expect(tables.find(table => table.table === 'master_data')?.rows[0]?.data_json).toContain('测试字典')
+    } finally { snapshot.close() }
+  } finally { await worker.terminate() }
 })
 
 it('损坏备份不可恢复，保留恢复前备份和当前数据；未知编号明确拒绝', () => {
