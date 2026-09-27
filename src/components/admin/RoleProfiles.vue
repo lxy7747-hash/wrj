@@ -5,6 +5,7 @@ import type { AccessControlConfig, Permission, RoleProfile, User } from '../../c
 import { isAccessControlConfig, isRoleProfile, MENU_LABELS, OPERATOR_PERMISSION_KEYS, PERMISSION_LABELS } from '../../features/admin/access-control'
 import { apiFetch } from '../../features/shared/api-fetch'
 import { useAuthStore } from '../../stores/auth'
+import { APP_CONFIG } from '../../config/app.config'
 
 defineProps<{ users: User[] }>()
 const auth = useAuthStore()
@@ -16,7 +17,23 @@ const editingId = ref<string | null>(null)
 let epoch = 0
 let controller: AbortController | undefined
 const permissions = computed(() => editor.value?.baseRole === 'OPERATOR' ? OPERATOR_PERMISSION_KEYS : Object.keys(PERMISSION_LABELS) as Permission[])
-const menus = computed(() => Object.entries(MENU_LABELS).filter(([path]) => editor.value?.baseRole === 'ADMIN' || !path.startsWith('/admin') || path === '/admin/data-exchange'))
+const menus = computed(() => {
+  const visibility: Record<string, boolean> = {
+    '/reports': APP_CONFIG.showReports,
+    // 与 App.vue 当前已隐藏的主导航入口一致；不删除已有角色授权或路由。
+    '/batches': false,
+    '/blueprint': false,
+    '/interactions': false,
+    '/traceability': false,
+    '/admin?section=master-data': APP_CONFIG.systemManagement.showMasterData,
+    '/admin?section=database-backup': APP_CONFIG.systemManagement.showDatabaseBackup,
+    '/admin?section=simulation-data': APP_CONFIG.systemManagement.showSimulationData,
+    '/admin?section=runtime-status': APP_CONFIG.systemManagement.showRuntimeStatus,
+    '/admin/data-exchange': APP_CONFIG.systemManagement.showDataExchange,
+  }
+  return Object.entries(MENU_LABELS).filter(([path]) => visibility[path] !== false
+    && (editor.value?.baseRole === 'ADMIN' || !path.startsWith('/admin') || path === '/admin/data-exchange'))
+})
 const ownProfileId = computed(() => config.value?.assignments.find(row => row.userId === auth.principal?.userId)?.profileId)
 async function request(save = false): Promise<void> {
   if (pending.value || (save && !config.value)) return
@@ -104,7 +121,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
         <el-form-item label="名称"><el-input v-model="editor.name" data-testid="profile-name" maxlength="64" /></el-form-item>
         <el-form-item label="基础角色"><el-select v-model="editor.baseRole" :disabled="!!editingId && !!config?.assignments.some(row => row.profileId === editingId)" @change="changeBase"><el-option label="操作员" value="OPERATOR" /><el-option label="管理员" value="ADMIN" /></el-select></el-form-item>
         <el-form-item label="操作权限"><el-checkbox-group v-model="editor.permissions"><el-checkbox v-for="permission in permissions" :key="permission" :value="permission">{{ PERMISSION_LABELS[permission] }}</el-checkbox></el-checkbox-group></el-form-item>
-        <el-form-item label="菜单权限"><el-checkbox-group v-model="editor.menuPaths"><el-checkbox v-for="[path, label] in menus" :key="path" :value="path">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
+        <el-form-item label="菜单权限"><el-checkbox-group v-model="editor.menuPaths" aria-label="菜单权限"><el-checkbox v-for="[path, label] in menus" :key="path" :value="path">{{ label }}</el-checkbox></el-checkbox-group></el-form-item>
         <el-alert v-if="error" :title="error" type="error" :closable="false" />
       </el-form>
       <template #footer><el-button @click="editor = null">取消</el-button><el-button type="primary" @click="confirmEdit">确认配置</el-button></template>

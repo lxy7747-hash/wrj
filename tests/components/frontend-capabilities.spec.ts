@@ -13,6 +13,7 @@ import { useAdminStore } from '../../src/stores/admin'
 import { SITUATION_LINKS_F00042 } from '../../src/features/situation/situation-model'
 import { LOCAL_REPORT } from '../fixtures/local-report'
 import { EQUIPMENT } from '../fixtures/equipment'
+import { APP_CONFIG } from '../../src/config/app.config'
 
 const response = (data: unknown) => new Response(JSON.stringify({ ok: true, data }))
 const dialogStub = { props: ['modelValue', 'title'], template: '<section v-if="modelValue"><h4>{{ title }}</h4><slot/><slot name="footer"/></section>' }
@@ -185,6 +186,83 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(ElMessageBox.confirm).toHaveBeenCalledTimes(1)
     expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ ...saved, version: 1 })
     expect(wrapper.text()).toContain('只读角色')
+  })
+  it('新增管理员角色的系统菜单只显示当前四项，操作员不获得管理员菜单', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ version: 1, profiles: [], assignments: [] })))
+    const wrapper = setup(RoleProfiles, { users: [] })
+    await flushPromises()
+    await button(wrapper, '新增角色').trigger('click')
+    const base = wrapper.findComponent(ElSelect)
+    base.vm.$emit('update:modelValue', 'ADMIN')
+    base.vm.$emit('change', 'ADMIN')
+    await flushPromises()
+    const choices = () => wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
+      .filter((row: VueWrapper<{ $props: { value: string } }>) => row.props('value').startsWith('/admin'))
+    expect(choices().map((row: VueWrapper) => row.text())).toEqual(['账号管理', '装备参数库', '场景模板维护', '操作审计日志'])
+    expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
+      .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '账号管理', '装备参数库', '场景模板维护', '操作审计日志'])
+    base.vm.$emit('update:modelValue', 'OPERATOR')
+    base.vm.$emit('change', 'OPERATOR')
+    await flushPromises()
+    expect(choices()).toHaveLength(0)
+    expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
+      .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放'])
+  })
+  it('角色菜单中的评估报表跟随主导航显隐配置', async () => {
+    const original = APP_CONFIG.showReports
+    try {
+      APP_CONFIG.showReports = false
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ version: 1, profiles: [], assignments: [] })))
+      const wrapper = setup(RoleProfiles, { users: [] })
+      await flushPromises()
+      await button(wrapper, '新增角色').trigger('click')
+      expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
+        .toEqual(['态势主界面', '场景配置', '历史回放'])
+    } finally { APP_CONFIG.showReports = original }
+  })
+  it.each([
+    ['showMasterData', '/admin?section=master-data'],
+    ['showDatabaseBackup', '/admin?section=database-backup'],
+    ['showSimulationData', '/admin?section=simulation-data'],
+    ['showRuntimeStatus', '/admin?section=runtime-status'],
+    ['showDataExchange', '/admin/data-exchange'],
+  ] as const)('角色菜单跟随 %s 开关，而非永久删除合同选项', async (flag, path) => {
+    const original = APP_CONFIG.systemManagement[flag]
+    try {
+      APP_CONFIG.systemManagement[flag] = true
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ version: 1, profiles: [], assignments: [] })))
+      const wrapper = setup(RoleProfiles, { users: [] })
+      await flushPromises()
+      await button(wrapper, '新增角色').trigger('click')
+      const base = wrapper.findComponent(ElSelect)
+      base.vm.$emit('update:modelValue', 'ADMIN')
+      base.vm.$emit('change', 'ADMIN')
+      await flushPromises()
+      const choices = wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
+      expect(choices.some((row: VueWrapper<{ $props: { value: string } }>) => row.props('value') === path)).toBe(true)
+    } finally { APP_CONFIG.systemManagement[flag] = original }
+  })
+  it('编辑并保存旧角色时保留未显示的菜单授权，不静默修改既有权限', async () => {
+    const profile = { profileId: 'CUSTOM', name: '旧角色', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin', '/admin?section=master-data', '/admin/data-exchange', '/batches', '/blueprint', '/interactions', '/traceability'] }
+    const config = { version: 1, profiles: [profile], assignments: [] }
+    const fetch = vi.fn().mockResolvedValueOnce(response(config)).mockImplementationOnce((_url, init) => Promise.resolve(response(JSON.parse(init.body))))
+    vi.stubGlobal('fetch', fetch)
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+    const wrapper = setup(RoleProfiles, { users: [] })
+    await flushPromises()
+    await button(wrapper, '编辑').trigger('click')
+    const menus = wrapper.get('[aria-label="菜单权限"]')
+    expect(menus.text()).not.toContain('主数据管理')
+    expect(menus.text()).not.toContain('数据交换与接口')
+    for (const hiddenLabel of ['批量仿真', '能力蓝图', '感知、干扰与选路', '需求追踪']) {
+      expect(menus.text()).not.toContain(hiddenLabel)
+    }
+    await wrapper.get('[data-testid="profile-name"]').setValue('修改名称')
+    await menus.findAllComponents({ name: 'ElCheckbox' }).find((row: VueWrapper<{ $props: { value: string } }>) => row.props('value') === '/admin?section=equipment-library')!.get('input').setValue(true)
+    await button(wrapper, '确认配置').trigger('click')
+    await button(wrapper, '保存权限配置').trigger('click')
+    await flushPromises()
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).profiles[0]).toEqual({ ...profile, name: '修改名称', menuPaths: [...profile.menuPaths, '/admin?section=equipment-library'] })
   })
   it('角色畸形响应显示错误；离页迟到响应不再改变视图或提示成功', async () => {
     let resolve!: (response: Response) => void

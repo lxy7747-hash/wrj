@@ -30,6 +30,7 @@ const DEFAULT_MESSAGES: Record<ApiErrorCode, string> = {
   ENCODING_INVALID: 'The encoding is invalid.',
   ATOMIC_REPLACE_FAILED: 'The atomic replacement failed.',
   START_FAILED: 'The operation could not be started.',
+  INTERNAL_ERROR: '服务端处理失败，请稍后重试。',
   TIMEOUT: 'The operation timed out.',
   EXIT_NONZERO: 'The operation exited unsuccessfully.',
   CORRUPT_FIXTURE: 'The deterministic fixture is corrupt.',

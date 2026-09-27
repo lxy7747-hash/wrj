@@ -28,6 +28,7 @@ const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
 const MAX_CLIENTS = 64
 const MAX_CLIENTS_PER_SOURCE = 8
 const HEARTBEAT_MS = 30_000
+const MAX_BUFFERED_BYTES = 1_048_576
 
 export interface RealtimeController {
   activeClientCount(): number
@@ -137,6 +138,7 @@ function trackClient(
   clients: Map<WebSocket, Set<WsTopic>>,
   projection: MockProjection,
   replayTopic: (client: WebSocket, topic: WsTopic) => void,
+  send: (client: WebSocket, message: string) => void,
 ): void {
   client.on('error', () => clients.delete(client))
   clients.set(client, new Set())
@@ -177,7 +179,7 @@ function trackClient(
       lastSequence,
       nextSequence: lastSequence + 1,
     }
-    client.send(JSON.stringify(acknowledgement))
+    send(client, JSON.stringify(acknowledgement))
 
     parsed.request.topics.forEach((topic) => replayTopic(client, topic))
   })
@@ -218,7 +220,7 @@ export function attachRealtimeServer(
   currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
   authorize?: (request: IncomingMessage) => boolean,
   publicOrigin?: string,
-  limits: { maxClients: number; maxPerSource: number; heartbeatMs: number } = {
+  limits: { maxClients: number; maxPerSource: number; heartbeatMs: number; maxBufferedBytes?: number } = {
     maxClients: MAX_CLIENTS,
     maxPerSource: MAX_CLIENTS_PER_SOURCE,
     heartbeatMs: HEARTBEAT_MS,
@@ -227,6 +229,17 @@ export function attachRealtimeServer(
   const clients = new Map<WebSocket, Set<WsTopic>>()
   const requests = new Map<WebSocket, IncomingMessage>()
   const alive = new Map<WebSocket, boolean>()
+  const send = (client: WebSocket, message: string): void => {
+    if (client.readyState !== WebSocket.OPEN) return
+    if (client.bufferedAmount + Buffer.byteLength(message) > (limits.maxBufferedBytes ?? MAX_BUFFERED_BYTES)) {
+      clients.delete(client)
+      requests.delete(client)
+      alive.delete(client)
+      client.terminate()
+      return
+    }
+    client.send(message)
+  }
   const sourceFor = (request: IncomingMessage) => request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown'
   const heartbeat = setInterval(() => {
     for (const client of clients.keys()) {
@@ -283,7 +296,7 @@ export function attachRealtimeServer(
       message = JSON.stringify(envelope)
       currentEnvelopes.set(topic, message)
     }
-    client.send(message)
+    send(client, message)
   }
 
   webSocketServer.on('connection', (client, request) => {
@@ -291,7 +304,7 @@ export function attachRealtimeServer(
     alive.set(client, true)
     client.on('pong', () => alive.set(client, true))
     client.once('close', () => { requests.delete(client); alive.delete(client) })
-    trackClient(client, clients, projection, replayTopic)
+    trackClient(client, clients, projection, replayTopic, send)
   })
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
@@ -354,7 +367,7 @@ export function attachRealtimeServer(
       )
       const message = JSON.stringify(envelope)
       currentEnvelopes.set('runtime.state', message)
-      subscribers.forEach(([client]) => client.send(message))
+      subscribers.forEach(([client]) => send(client, message))
     },
     publishJammerStatus: (status, frameId): void => {
       revalidateSessions()
@@ -369,7 +382,7 @@ export function attachRealtimeServer(
       const message = JSON.stringify(envelope)
       currentEnvelopes.set('jammer.event', message)
       for (const [client, topics] of clients) {
-        if (topics.has('jammer.event')) client.send(message)
+        if (topics.has('jammer.event')) send(client, message)
       }
     },
     invalidateForReset,

@@ -113,6 +113,22 @@ describe('真实 mission 命令边界', () => {
     await server.close()
     expect(handle.stop).toHaveBeenCalledTimes(1)
   })
+
+  it('停止超时的失败结果进入 ERROR 并解除配置锁，不回报 STOP 成功', async () => {
+    const { handle, result } = processHandle()
+    handle.stop = vi.fn(async () => {
+      result.resolve({ code: null, errorMessage: 'mission 停止超时，已请求强制终止。' })
+      throw new Error('mission 停止超时，已请求强制终止。')
+    })
+    const { api, command, run, server } = await apiFor(async () => handle)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+    await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+    await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(503)
+    expect(await run()).toMatchObject({ uiStatus: 'ERROR', configLocked: false,
+      canonical: { processId: null, errorMessage: expect.stringContaining('停止超时') } })
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', result: 'ERROR' })
+  })
 })
 
 function draftForMission(): ScenarioDraft {
@@ -524,6 +540,41 @@ describe('本机 mission 执行器', () => {
       await process.stop()
       expect(capture).not.toHaveBeenCalled()
     } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('进程已退出但 close 尚未触发时停止不误判 kill false', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-exit-window-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => false) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draftForMission())
+      child.emit('exit', 0)
+      const stopping = process.stop()
+      child.emit('close', 0)
+      await expect(stopping).resolves.toBeUndefined()
+      expect(child.kill).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('正常终止信号被忽略时限时强制终止，失败写入运行记录', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-timeout-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn((signal?: string) => {
+      if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close', null))
+      return true
+    }) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draftForMission())
+      vi.useFakeTimers()
+      const stopping = process.stop()
+      const rejection = expect(stopping).rejects.toThrow('停止超时')
+      await vi.advanceTimersByTimeAsync(5_001)
+      await rejection
+      expect(child.kill).toHaveBeenNthCalledWith(1)
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
+      expect((await process.completed).errorMessage).toContain('停止超时')
+      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toContain('停止超时')
+    } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
   })
 
   it('缺少可执行文件时保留诊断，拒绝相对路径；不触碰既有输出', async () => {

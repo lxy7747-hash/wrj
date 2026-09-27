@@ -255,6 +255,20 @@ describe('P3-2 遥测 Store', () => {
       ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'NOT_FOUND' } }),
     } as unknown as Response))
     await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({ frame: null, events: [], resultCode: 'TELEMETRY_LOAD_FAILED', resultMessage: '遥测请求失败。' })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'NOT_FOUND', message: '未找到指定遥测帧。', fieldPath: 'frameId' } }),
+    } as unknown as Response))
+    await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({ frame: null, events: [], capabilityState: 'ERROR', resultCode: 'NOT_FOUND',
+      resultMessage: '未找到指定遥测帧。', resultFieldPath: 'frameId' })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'UNKNOWN_CODE', message: '不可相信的错误。' } }),
+    } as unknown as Response))
+    await expect(store.loadFrame()).resolves.toBe(false)
+    expect(store).toMatchObject({ resultCode: 'TELEMETRY_LOAD_FAILED', resultMessage: '遥测请求失败。' })
   })
 
   it('拒绝无效调制、编码和质量模型版本并保留字段定位', async () => {

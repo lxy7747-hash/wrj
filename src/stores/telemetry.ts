@@ -1,7 +1,6 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import type {
-  ApiFailure,
   CapabilityState,
   ClosedLoopContext,
   DetectionEvent,
@@ -21,6 +20,7 @@ import type {
   WsTopic,
 } from '../contracts/domain-models'
 import { resolveLinkId, validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
+import { ERROR_GUIDANCE } from '../features/diagnostics'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -728,7 +728,15 @@ async function readSuccess<T>(
   findFieldError?: (value: unknown) => TelemetryFieldError | null,
 ): Promise<T> {
   const payload = await response.json() as unknown
-  if (!response.ok) throw payload as ApiFailure
+  if (!response.ok) {
+    if (isRecord(payload) && payload.ok === false && isRecord(payload.error)
+      && typeof payload.error.code === 'string' && Object.hasOwn(ERROR_GUIDANCE, payload.error.code)
+      && typeof payload.error.message === 'string' && payload.error.message.trim().length > 0
+      && (payload.error.fieldPath === undefined || typeof payload.error.fieldPath === 'string')) {
+      throw new TelemetryFieldError(payload.error.code, typeof payload.error.fieldPath === 'string' ? payload.error.fieldPath : '', payload.error.message)
+    }
+    throw new Error('遥测请求失败。')
+  }
   if (!isRecord(payload) || payload.ok !== true) throw new Error('遥测响应格式不正确。')
   const fieldError = findFieldError?.(payload.data)
   if (fieldError !== undefined && fieldError !== null) throw fieldError
@@ -1027,7 +1035,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.capabilityState = 'ERROR'
         this.resultCode = error instanceof TelemetryFieldError ? error.code : 'TELEMETRY_LOAD_FAILED'
         this.resultMessage = error instanceof Error ? error.message : '态势遥测加载失败。'
-        this.resultFieldPath = error instanceof TelemetryFieldError ? error.fieldPath : null
+        this.resultFieldPath = error instanceof TelemetryFieldError ? error.fieldPath || null : null
         return false
       }
     },

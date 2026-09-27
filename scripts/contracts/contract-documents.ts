@@ -69,6 +69,7 @@ const EXPECTED_ERROR_CODES = [
   'ENCODING_INVALID',
   'ATOMIC_REPLACE_FAILED',
   'START_FAILED',
+  'INTERNAL_ERROR',
   'TIMEOUT',
   'EXIT_NONZERO',
   'CORRUPT_FIXTURE',
@@ -473,7 +474,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SystemHealth/properties/database/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/SystemHealth/properties/channel/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/ArchiveRecord/properties/status/const', 'INDEXED'],
-  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
+  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','INTERNAL_ERROR','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
   ['#/components/schemas/ErrorEnvelope/properties/ok/const', false],
   ['#/components/schemas/AuthResult/properties/principal/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
@@ -1446,7 +1447,9 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
         const actualErrorStatuses = responseEntries
           .filter(([status]) => !/^[123]\d\d$/.test(status))
           .map(([status]) => status)
-        const expectedErrorStatuses = EXPECTED_OPENAPI_ERROR_STATUSES[expectedOperation.operationId]
+        const expectedErrorStatuses = isCanonicalUpgrade
+          ? EXPECTED_OPENAPI_ERROR_STATUSES[expectedOperation.operationId]
+          : [...EXPECTED_OPENAPI_ERROR_STATUSES[expectedOperation.operationId], '500']
         if (!sameStrings(actualErrorStatuses, expectedErrorStatuses)) {
           addFinding(
             findings,

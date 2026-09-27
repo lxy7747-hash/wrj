@@ -519,6 +519,7 @@ type LoopbackDecision =
 let createMockServer: (options?: {
   port?: number
   confirmationClock?: { now(): string; expiresAt(createdAt: string): string }
+  site?: (req: { path: string }, res: unknown, next: () => void) => void
 }) => MockServerInstance
 let assertLoopbackRequest: (request: {
   headers: { host?: string; origin?: string }
@@ -574,6 +575,7 @@ function waitForEvent(target: HttpServerInstance | WebSocketClient, event: strin
 
 async function startServer(options: {
   confirmationClock?: { now(): string; expiresAt(createdAt: string): string }
+  site?: (req: { path: string }, res: unknown, next: () => void) => void
 } = {}): Promise<{ server: MockServerInstance; baseUrl: string; wsUrl: string }> {
   const server = createMockServer({ port: 0, ...options })
   currentServer = server
@@ -786,6 +788,24 @@ describe('P0 deterministic mock server', () => {
       },
     })
     expect(second.body).toEqual(first.body)
+  })
+
+  it('仅将 JSON 解析错误返回 400，意外异常返回不泄露细节的 500', async () => {
+    const { baseUrl } = await startServer({ site: (req, _res, next) => {
+      if (req.path === '/api/v1/meta/capabilities') {
+        throw Object.assign(new Error('internal secret path'), { status: 400, type: 'other.failure' })
+      }
+      next()
+    } })
+    const api = request(baseUrl)
+    const malformed = await api.post('/api/v1/reset').set('Origin', ORIGIN)
+      .set('Content-Type', 'application/json').send('{').expect(400)
+    expect(malformed.body).toMatchObject({ ok: false, error: { code: 'INVALID_REQUEST' } })
+    expect(JSON.stringify(malformed.body)).not.toContain('Unexpected')
+
+    const unexpected = await api.get('/api/v1/meta/capabilities').set('Origin', ORIGIN).expect(500)
+    expect(unexpected.body).toMatchObject({ ok: false, error: { code: 'INTERNAL_ERROR' } })
+    expect(JSON.stringify(unexpected.body)).not.toContain('internal secret path')
   })
 
   it('returns the complete P5 contract catalogue without file or process side effects', async () => {
@@ -1548,7 +1568,7 @@ describe('P0 deterministic mock server', () => {
     expect(missing.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
   })
 
-  it('returns a typed error with parser details for malformed strict JSON', async () => {
+  it('returns a typed error without echoing malformed JSON details', async () => {
     const { baseUrl } = await startServer()
 
     const response = await request(baseUrl)
@@ -1561,8 +1581,25 @@ describe('P0 deterministic mock server', () => {
 
     expect(response.body).toMatchObject({
       ok: false,
-      error: { code: 'INVALID_REQUEST', details: expect.any(String) },
+      error: { code: 'INVALID_REQUEST', message: '请求 JSON 格式不正确。' },
     })
+    expect((response.body as { error: { details?: string } }).error.details).toBeUndefined()
+  })
+
+  it('maps JSON bodies above 256 KB to a sanitized 400 instead of an internal 500', async () => {
+    const { baseUrl } = await startServer()
+    const response = await request(baseUrl)
+      .post('/api/v1/reset')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'ADMIN')
+      .send({ padding: 'x'.repeat(256 * 1024) })
+      .expect(400)
+
+    expect(response.body).toMatchObject({
+      ok: false,
+      error: { code: 'INVALID_REQUEST', message: '请求体超过 256 KB 限制。' },
+    })
+    expect((response.body as { error: { details?: string } }).error.details).toBeUndefined()
   })
 
   it('accepts JSON bodies above 16KB and reaches reset validation', async () => {

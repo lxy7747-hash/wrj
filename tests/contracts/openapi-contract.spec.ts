@@ -319,6 +319,27 @@ describe('OpenAPI contract audit', () => {
     }))
   })
 
+  it('declares a sanitized 500 error envelope for every REST operation, but not the WebSocket upgrade', () => {
+    const { openApi } = loadContractDocuments()
+    const paths = asObject(asObject(openApi).paths)
+    for (const [path, pathValue] of Object.entries(paths)) {
+      for (const [method, operationValue] of Object.entries(asObject(pathValue))) {
+        if (!['get', 'post', 'put', 'patch', 'delete'].includes(method)) continue
+        const responses = asObject(asObject(operationValue).responses)
+        if (path === '/ws/v1') {
+          expect(responses['500']).toBeUndefined()
+          continue
+        }
+        expect(responseSchemaAt(openApi, path, method, '500')).toEqual({ $ref: '#/components/schemas/ErrorEnvelope' })
+      }
+    }
+    expect(asObject(schemaAt(openApi, 'ErrorCode')).enum).toContain('INTERNAL_ERROR')
+
+    const candidate = structuredClone(openApi)
+    delete asObject(operationAt(candidate, '/api/v1/meta/capabilities', 'get').responses)['500']
+    expect(auditOpenApi(candidate)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_ERROR_STATUS' }))
+  })
+
   it.each([
     ['/api/v1/simulations/{runId}/commands', '422'],
     ['/api/v1/simulations/{runId}/commands', '503'],

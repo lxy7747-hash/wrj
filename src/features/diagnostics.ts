@@ -12,7 +12,7 @@ export const ERROR_GUIDANCE: Record<ApiErrorCode, string> = {
   VERSION_CONFLICT: '数据版本已变化，请刷新。', FRAME_MISMATCH: '帧编号或时刻不一致，请重新同步。',
   HEADER_INVALID: 'CSV 表头不符合合同。', TYPE_INVALID: '字段类型错误，请按合同修正。',
   ENCODING_INVALID: '文本编码不符合合同。', ATOMIC_REPLACE_FAILED: '替换失败，原数据未覆盖。',
-  START_FAILED: '启动失败，请查看启动结果。', TIMEOUT: '响应超时，请重试。',
+  START_FAILED: '启动失败，请查看启动结果。', INTERNAL_ERROR: '服务端处理失败，请稍后重试。', TIMEOUT: '响应超时，请重试。',
   EXIT_NONZERO: '进程返回异常退出码，请查看错误详情。', CORRUPT_FIXTURE: '模拟数据损坏，请恢复基线。',
   OUT_OF_RANGE: '参数超出允许范围。', DEVICE_DISABLED: '设备已停用。',
   LOOPBACK_ONLY: '仅允许访问本机回环地址。', TOPIC_FORBIDDEN: '该消息主题未获允许。',

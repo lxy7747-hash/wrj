@@ -35,6 +35,12 @@ export class ConfirmationProjection {
 
   constructor(private readonly clock: ConfirmationClock = DEFAULT_CLOCK) {}
 
+  private clearExpired(now: string): void {
+    for (const [id, stored] of this.contexts) {
+      if (now >= stored.context.expiresAt) this.contexts.delete(id)
+    }
+  }
+
   /** 判断确认上下文是否已到期，并在到期时立即移除。 */
   private hasExpired(confirmationId: string, stored: StoredConfirmation): boolean {
     if (this.clock.now() < stored.context.expiresAt) return false
@@ -52,9 +58,10 @@ export class ConfirmationProjection {
    * @remarks 只写入内存，不访问系统时间或持久化介质。
    */
   create(action: ConfirmationAction, objectId: string, role: Role, owner?: { id: string; name: string }): ConfirmationContext {
+    const createdAt = this.clock.now()
+    this.clearExpired(createdAt)
     const confirmationId = `CONF-P2-${String(this.nextSequence).padStart(3, '0')}`
     this.nextSequence += 1
-    const createdAt = this.clock.now()
     const context: ConfirmationContext = {
       confirmationId,
       state: 'AWAITING_CONFIRMATION',

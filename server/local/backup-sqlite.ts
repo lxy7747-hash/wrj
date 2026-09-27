@@ -174,8 +174,14 @@ export class BackupSqliteStorage implements BackupStorage {
       return { ok: true, data: result }
     } catch { return unavailable() }
     finally {
-      if (inTransaction) this.db.exec('ROLLBACK')
-      if (attached) this.db.exec('DETACH DATABASE restore_source')
+      if (inTransaction) {
+        try { this.db.exec('ROLLBACK') }
+        catch (error) { console.error('恢复事务清理失败，请检查数据库连接。', error) }
+      }
+      if (attached) {
+        try { this.db.exec('DETACH DATABASE restore_source') }
+        catch (error) { console.error('恢复来源连接清理失败，请检查数据库连接。', error) }
+      }
     }
   }
 

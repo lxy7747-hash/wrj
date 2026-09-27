@@ -9,6 +9,8 @@ import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 
+const STOP_WAIT_MS = 5_000
+
 // mission 的脚本异常不一定反映在退出码中，必须同时复核日志，且不整文件读入内存。
 async function inspectExecutionLog(path: string): Promise<boolean> {
   const input = createReadStream(path, { encoding: 'utf8' })
@@ -42,18 +44,26 @@ export class LocalMissionRunner implements MissionExecution {
     })
     let exited = false
     let stopped = false
+    let stopError: string | undefined
     let processError: Error | undefined
     child.once('error', error => { processError = error })
+    child.once('exit', () => { exited = true })
+    let finish!: (code: number | null) => Promise<void>
     const completed = new Promise<MissionOutcome>(resolve => {
-      child.once('close', async code => {
+      let finalized = false
+      finish = async code => {
+        if (finalized) return
+        finalized = true
         exited = true
         const outcome: MissionOutcome = { code, completedAt: new Date().toISOString() }
         if (code !== 0 || processError) outcome.errorMessage = `mission 执行失败（${processError?.message ?? `退出码 ${code}`}），请查看 ${logPath}`
+        if (stopError) outcome.errorMessage = stopError
         try {
           await log.close()
           if (code === 0 && !await inspectExecutionLog(logPath)) {
             outcome.errorMessage = `mission 日志含运行错误或缺少完成证据，请查看 ${logPath}`
           }
+          if (stopError) outcome.errorMessage = stopError
           const receipt = {
             scenarioId: draft.config.scenario.id, revision: draft.revision, entryPath,
             executable: this.executable, pid: child.pid ?? null, startedAt, ...outcome,
@@ -67,10 +77,11 @@ export class LocalMissionRunner implements MissionExecution {
             }
           }
         } catch {
-          outcome.errorMessage = `mission 已结束，但运行记录写入失败，请检查 ${cwd}`
+          outcome.errorMessage = stopError ?? `mission 已结束，但运行记录写入失败，请检查 ${cwd}`
         }
         resolve(outcome)
-      })
+      }
+      child.once('close', code => { void finish(code) })
     })
     try {
       await new Promise<void>((resolve, reject) => {
@@ -85,8 +96,26 @@ export class LocalMissionRunner implements MissionExecution {
       pid: child.pid!, startedAt, entryPath, completed,
       stop: async () => {
         stopped = true
-        if (!exited && !child.kill()) throw new Error('mission 停止失败，请检查本机进程；配置仍保持锁定。')
-        await completed
+        if (!exited) { try { child.kill() } catch { /* 后续强制终止与运行记录仍需完成。 */ } }
+        const waitForClose = async (): Promise<boolean> => {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          try {
+            return await Promise.race([
+              completed.then(() => true),
+              new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), STOP_WAIT_MS) }),
+            ])
+          } finally { if (timer) clearTimeout(timer) }
+        }
+        if (!await waitForClose()) {
+          stopError = 'mission 停止超时，已请求强制终止；请检查本机进程与运行记录。'
+          if (!exited) { try { child.kill('SIGKILL') } catch { /* 超时后报告可能残留。 */ } }
+          if (!await waitForClose()) {
+            stopError = 'mission 强制终止后仍未关闭，可能残留进程；请检查本机进程与运行记录。'
+            await finish(null)
+          }
+        }
+        const outcome = await completed
+        if (stopError) throw new Error(outcome.errorMessage ?? stopError)
       },
     }
   }

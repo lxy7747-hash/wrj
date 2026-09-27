@@ -188,6 +188,29 @@ it.each(['INSERT INTO main.users SELECT * FROM restore_source.users', 'COMMIT'])
   expect(backups.restore('SOURCE')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
 })
 
+it('恢复清理的 ROLLBACK 与 DETACH 分别尝试，清理错误不覆盖原失败', () => {
+  const { db, backups } = setup()
+  expect(backups.backup('SOURCE').ok).toBe(true)
+  const before = db.prepare('SELECT * FROM scenarios').all()
+  const original = DatabaseSync.prototype.exec
+  const attempted: string[] = []
+  const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+  vi.spyOn(DatabaseSync.prototype, 'exec').mockImplementation(function (this: InstanceType<typeof DatabaseSync>, ...args: unknown[]) {
+    const sql = args[0]
+    if (sql === 'INSERT INTO main.users SELECT * FROM restore_source.users'
+      || sql === 'ROLLBACK' || sql === 'DETACH DATABASE restore_source') {
+      attempted.push(sql)
+      throw new Error('cleanup fault')
+    }
+    return original.call(this, sql as string)
+  })
+  expect(backups.restore('SOURCE')).toMatchObject({ ok: false, status: 503 })
+  expect(attempted).toContain('ROLLBACK')
+  expect(attempted).toContain('DETACH DATABASE restore_source')
+  expect(log).toHaveBeenCalled()
+  expect(db.prepare('SELECT * FROM scenarios').all()).toEqual(before)
+})
+
 it('预备份失败及外部写锁拒绝恢复，不触及业务数据', () => {
   const { path, db, backups } = setup()
   backups.backup('SOURCE')

@@ -2,13 +2,13 @@
 import { afterEach, expect, it, vi } from 'vitest'
 const { createServer } = await import('node:' + 'http')
 const { once } = await import('node:' + 'events')
-const { WebSocket } = await import('w' + 's')
+const { WebSocket, WebSocketServer } = await import('w' + 's')
 const { MockProjection } = await import('../../server/state/' + 'projection.js')
 const { attachRealtimeServer } = await import('../../server/ws/' + 'realtime.js')
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks() })
 
-async function setup(missing = false, authorize?: () => boolean, limits?: { maxClients: number; maxPerSource: number; heartbeatMs: number }) {
+async function setup(missing = false, authorize?: () => boolean, limits?: { maxClients: number; maxPerSource: number; heartbeatMs: number; maxBufferedBytes?: number }) {
   const projection = new MockProjection()
   if (missing) {
     const snapshot = projection.snapshot()
@@ -34,7 +34,7 @@ async function setup(missing = false, authorize?: () => boolean, limits?: { maxC
     client.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics }))
     return { client, messages }
   }
-  return { realtime, connect, port: http.address().port, clients }
+  return { realtime, projection, connect, port: http.address().port, clients }
 }
 
 it('缺失运行与事件时不伪造信封，仍返回可用的链路摘要；新订阅重放缓存快照', async () => {
@@ -104,4 +104,27 @@ it('心跳清理失活连接，健康连接继续占用名额', async () => {
   ;(stale.client as WebSocket & { _socket: { pause(): void } })._socket.pause()
   await vi.waitFor(() => expect(realtime.activeClientCount()).toBe(1), { timeout: 1000 })
   expect(healthy.client.readyState).toBe(WebSocket.OPEN)
+})
+
+it('慢连接缓冲超限后断开，健康订阅者仍收到广播', async () => {
+  const serverClients: InstanceType<typeof WebSocket>[] = []
+  const emit = WebSocketServer.prototype.emit
+  vi.spyOn(WebSocketServer.prototype, 'emit').mockImplementation(function (this: InstanceType<typeof WebSocketServer>, event, ...args) {
+    if (event === 'connection') serverClients.push(args[0] as InstanceType<typeof WebSocket>)
+    return emit.call(this, event, ...args)
+  })
+  const { connect, realtime, projection } = await setup(false, undefined,
+    { maxClients: 2, maxPerSource: 2, heartbeatMs: 30_000, maxBufferedBytes: 1_000 })
+  const slow = await connect(['runtime.state'])
+  const healthy = await connect(['runtime.state'])
+  await vi.waitFor(() => expect(serverClients).toHaveLength(2))
+  await vi.waitFor(() => expect(healthy.messages.some(message => message.topic === 'runtime.state')).toBe(true))
+  Object.defineProperty(serverClients[0], 'bufferedAmount', { configurable: true, value: 1_000 })
+  const before = healthy.messages.length
+  realtime.publishRuntimeState(projection.snapshot().run!)
+  await once(slow.client, 'close')
+  await vi.waitFor(() => expect(healthy.messages.length).toBe(before + 1))
+  expect(healthy.messages.at(-1)).toMatchObject({ topic: 'runtime.state' })
+  expect(healthy.client.readyState).toBe(WebSocket.OPEN)
+  expect(realtime.activeClientCount()).toBe(1)
 })

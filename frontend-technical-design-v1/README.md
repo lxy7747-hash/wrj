@@ -2,7 +2,18 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 场景读写兼容边界（2026-09-24，当前值）
+## 通用服务端异常响应（2026-09-27，当前冻结记录）
+
+经用户授权，OpenAPI 更新为 **1.8.4 / 83 操作 / 40 写操作**：82 条 REST 操作增加引用 `ErrorEnvelope` 的通用 500 响应；WebSocket 升级与关闭协议不变。意外服务端异常返回脱敏的 `INTERNAL_ERROR`，请求 JSON 解析错误仍为 400 `INVALID_REQUEST`，业务启动失败仍使用 `START_FAILED`。同步领域错误码、schema snapshot 和每操作错误状态审计；不修改业务数据模型、fixture 或存量数据。前后端同步升级；回退时同步恢复错误码和合同。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 完全一致） | `985F2BD4909B4AE3BBAEB68CCB5239174D1BDA27CF9C630C6F0759095F786EF1` |
+| `contracts/mock-api.openapi.yaml` | `21365D9872F5A1CEA20F106BDDFB8005A30233548EF23200E33E9B10B41DDC1E` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `0966E70BF66D085CF1B28F3E9E4D3EEB9C58C8BD008D87FD9123F51643866E78` |
+| `contracts/deterministic-fixtures.json`（未修改） | `C1BB07FCF492F44E9BC99D3BDF5E6D4540DDCBA790A767B9E0D6B6123ED91A6B` |
+
+## 场景读写兼容边界（2026-09-24，历史记录）
 
 用户授权最小读写合同拆分，OpenAPI **1.8.3 / 83 操作 / 40 写操作**：`InformationDemand` 读取保留历史非空文本，`ScenarioLinkSettings` 读取兼容无 FIBER 的完整旧四类优先级和 enabledTypes。新增 Write schema，由 `ScenarioConfigWrite` 强制四种业务枚举及完整五类设置。领域类型、运行时校验、schema snapshot 和冻结审计同步；fixture 不改，不迁移或重写存量数据库。
 

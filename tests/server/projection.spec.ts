@@ -318,4 +318,18 @@ describe('fixture projection', () => {
     expect(confirmations.consume(confirmed.confirmationId, 'SCENARIO_WARNING_CONTINUE', 'SCN-001', 'OPERATOR'))
       .toMatchObject({ ok: false, code: 'CONFIRMATION_EXPIRED' })
   })
+
+  it('新建确认时批量清理已过期上下文，不提前失效有效确认', () => {
+    let now = '2026-08-06T08:00:00Z'
+    const confirmations = new ConfirmationProjection({ now: () => now, expiresAt: created =>
+      new Date(Date.parse(created) + 300_000).toISOString() })
+    for (let index = 0; index < 200; index += 1) confirmations.create('SCENARIO_WARNING_CONTINUE', `SCN-${index}`, 'OPERATOR')
+    expect((confirmations as unknown as { contexts: Map<string, unknown> }).contexts.size).toBe(200)
+    now = '2026-08-06T08:05:00Z'
+    const valid = confirmations.create('SCENARIO_WARNING_CONTINUE', 'SCN-VALID', 'OPERATOR')
+    expect((confirmations as unknown as { contexts: Map<string, unknown> }).contexts.size).toBe(1)
+    expect(confirmations.confirm(valid.confirmationId, 'OPERATOR')).toMatchObject({ ok: true })
+    expect(confirmations.consume(valid.confirmationId, 'SCENARIO_WARNING_CONTINUE', 'SCN-VALID', 'OPERATOR'))
+      .toMatchObject({ ok: true })
+  })
 })

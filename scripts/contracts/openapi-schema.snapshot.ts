@@ -4923,6 +4923,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "ENCODING_INVALID",
       "ATOMIC_REPLACE_FAILED",
       "START_FAILED",
+      "INTERNAL_ERROR",
       "TIMEOUT",
       "EXIT_NONZERO",
       "CORRUPT_FIXTURE",

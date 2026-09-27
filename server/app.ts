@@ -1127,6 +1127,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         await mission.stop()
         mission = undefined
       } catch (error) {
+        const stoppedProcess = mission
+        mission = undefined
+        if (stoppedProcess) realtime.publishRuntimeState(simulations.finishMission(await stoppedProcess.completed))
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(503).json(failure('START_FAILED', 503, { message: error instanceof Error ? error.message : 'mission 停止失败。' }))
         return
@@ -2581,23 +2584,25 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(404).json(failure('NOT_FOUND', 404))
   })
 
-  /**
-   * Converts JSON parsing failures into the canonical invalid-request response.
-   *
-   * @param error - Parser error propagated by Express.
-   * @param _req - Request associated with the parser error.
-   * @param res - Response receiving the invalid-request envelope.
-   * @param _next - Express error continuation, intentionally unused because this handler responds.
-   * @returns Nothing.
-   * @remarks Sends one 400 JSON response and does not mutate projections.
-   */
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
-    if (options.authStorage && error instanceof SyntaxError && ['/api/v1/auth/login', '/api/v1/auth/logout'].includes(req.path)) {
+    const parserErrorType = typeof error === 'object' && error !== null && 'type' in error ? error.type : undefined
+    const parserStatus = typeof error === 'object' && error !== null && 'status' in error ? error.status : undefined
+    const parserClientError = typeof parserErrorType === 'string'
+      && typeof parserStatus === 'number' && parserStatus >= 400 && parserStatus < 500
+      && ['entity.parse.failed', 'entity.too.large', 'entity.verify.failed', 'request.aborted',
+        'request.size.invalid', 'charset.unsupported', 'encoding.unsupported', 'parameters.too.many']
+        .includes(parserErrorType)
+    if (parserClientError && options.authStorage && ['/api/v1/auth/login', '/api/v1/auth/logout'].includes(req.path)) {
       const user = options.authStorage.currentUser(req.headers.cookie)
       auth.recordError(user?.username ?? 'anonymous', user?.role ?? 'OPERATOR', req.path.endsWith('/login') ? 'AUTH_LOGIN' : 'AUTH_LOGOUT', user?.userId)
     }
-    const details = error instanceof Error ? error.message : 'Unknown JSON parsing error.'
-    res.status(400).json(failure('INVALID_REQUEST', 400, { details }))
+    if (parserClientError) {
+      const message = parserErrorType === 'entity.too.large' ? '请求体超过 256 KB 限制。'
+        : parserErrorType === 'entity.parse.failed' ? '请求 JSON 格式不正确。' : '请求体无法解析。'
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message }))
+      return
+    }
+    res.status(500).json(failure('INTERNAL_ERROR', 500, { message: '服务端处理失败，请稍后重试。' }))
   })
 
   const httpServer = createServer(app)

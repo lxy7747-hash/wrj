@@ -22,10 +22,12 @@ export async function readLocalReplay(initialPath: string, positionPath: string 
   const tracks = new Map<string, PositionUpdate[]>()
   let issueCount = 0
   let recordCount = 0
-  let durationS = Math.max(0, ...initial.nodes.map((node) => node.time), ...(initial.connections?.map((record) => record.time) ?? []),
-    ...(initial.deviceEvents?.map(event => event.time) ?? []),
-    // 平台删除时刻必须与 isLocalReplaySnapshot 的口径一致，否则真实回放会被自身校验拒绝。
-    ...(initial.platformDeletions?.map(deletion => deletion.time) ?? []))
+  let durationS = 0
+  for (const node of initial.nodes) durationS = Math.max(durationS, node.time)
+  for (const record of initial.connections ?? []) durationS = Math.max(durationS, record.time)
+  for (const event of initial.deviceEvents ?? []) durationS = Math.max(durationS, event.time)
+  // 平台删除时刻必须与 isLocalReplaySnapshot 的口径一致，否则真实回放会被自身校验拒绝。
+  for (const deletion of initial.platformDeletions ?? []) durationS = Math.max(durationS, deletion.time)
   const issues: LocalReplaySnapshot['issues'] = []
   for (let index = 1; index < lines.length; index += 1) {
     const line = lines[index]!.replace(/\r$/, '')

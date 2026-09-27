@@ -116,7 +116,8 @@ describe('P8 目录页面与重置入口', () => {
       await radio.get('input').setValue(true); await flushPromises()
       expect(wrapper.text()).toContain(`状态示例：${label}`)
     }
-    expect(wrapper.findAll('[data-testid="error-catalog"] .el-table__row')).toHaveLength(30)
+    expect(wrapper.findAll('[data-testid="error-catalog"] .el-table__row')).toHaveLength(31)
+    expect(wrapper.get('[data-testid="error-catalog"]').text()).toContain('INTERNAL_ERROR')
     wrapper.unmount()
   })
 })

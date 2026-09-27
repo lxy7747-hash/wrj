@@ -170,6 +170,47 @@ it('多库捕获期间并发写入等待同一快照事务，随后成功提交'
   } finally { await worker.terminate() }
 })
 
+it('测量恢复前预备份持锁期间的并发写入等待', async () => {
+  const f = setup()
+  expect(f.backup.backup('RESTORE-SOURCE').ok).toBe(true)
+  const gate = new Int32Array(new SharedArrayBuffer(4))
+  const worker = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads')
+    const { DatabaseSync } = require('node:sqlite')
+    const gate = new Int32Array(workerData.gate)
+    Atomics.wait(gate, 0, 0)
+    const start = performance.now()
+    Atomics.store(gate, 0, 2); Atomics.notify(gate, 0)
+    const db = new DatabaseSync(workerData.path)
+    try {
+      db.exec('PRAGMA busy_timeout=2000')
+      db.prepare("UPDATE master_data SET data_json=json_set(data_json, '$.content.name', '恢复后写入')").run()
+      parentPort.postMessage({ ok: true, elapsedMs: performance.now() - start })
+    } catch (error) { parentPort.postMessage({ ok: false, elapsedMs: performance.now() - start, message: String(error) }) }
+    finally { db.close() }
+  `, { eval: true, workerData: { gate: gate.buffer, path: join(f.directory, 'master-data.db') } })
+  const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
+    worker.once('message', resolve); worker.once('error', reject)
+  })
+  const backup = f.backup as unknown as { writeSnapshot(id: string, name: string, tables: unknown): unknown }
+  const writeSnapshot = backup.writeSnapshot.bind(backup)
+  vi.spyOn(backup, 'writeSnapshot').mockImplementation((id, name, tables) => {
+    if (id.startsWith('PREBACKUP-')) {
+      Atomics.store(gate, 0, 1); Atomics.notify(gate, 0)
+      Atomics.wait(gate, 0, 1, 1000)
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
+    }
+    return writeSnapshot(id, name, tables)
+  })
+  try {
+    expect(f.backup.restore('RESTORE-SOURCE')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+    const write = await completed
+    console.info(`恢复前预备份持锁时并发写入耗时 ${write.elapsedMs.toFixed(1)} ms`)
+    expect(write).toMatchObject({ ok: true })
+    expect(write.elapsedMs).toBeGreaterThan(150)
+  } finally { await worker.terminate() }
+})
+
 it('损坏备份不可恢复，保留恢复前备份和当前数据；未知编号明确拒绝', () => {
   const f = setup()
   f.backup.backup('CORRUPT')
