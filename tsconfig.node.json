@@ -21,6 +21,7 @@
     "scripts/**/*.ts",
     "server/**/*.ts",
     "src/contracts/domain-models.ts",
+    "src/config/app.config.ts",
     "src/features/data-exchange/afsim-event-log.ts",
     "src/features/data-exchange/local-monitor.ts",
     "src/features/situation/initial-nodes.ts",

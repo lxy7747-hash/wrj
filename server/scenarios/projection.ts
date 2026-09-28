@@ -134,12 +134,14 @@ class ScenarioDocument {
   private persisted: { id: string; revision: number } | undefined
 
   constructor(private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null) {
-    this.draft = storage ? storage.load() ?? null : initial
+    const loaded = storage ? storage.load() ?? null : initial
+    this.draft = loaded ? { ...loaded, config: withScenarioBasicDefaults(loaded.config) } : null
     this.persisted = this.draft && storage ? { id: this.draft.config.scenario.id, revision: this.draft.revision } : undefined
   }
 
   // 先提交数据库再更新内存和撤销栈，落盘失败不能留下“保存成功”的半成品。
   private commit(draft: ScenarioDraft, undo = false): ScenarioProjectionResult<ScenarioDraft> {
+    draft = { ...draft, config: withScenarioBasicDefaults(draft.config) }
     if (this.storage) {
       try {
         if (!this.storage.save(draft, this.persisted)) {
@@ -191,7 +193,7 @@ class ScenarioDocument {
         this.history = []
       }
       if (stored && (stored.revision !== this.persisted?.revision || stored.config.scenario.id !== this.persisted?.id)) {
-        this.draft = { ...stored, locked: this.draft?.locked ?? false }
+        this.draft = { ...stored, config: withScenarioBasicDefaults(stored.config), locked: this.draft?.locked ?? false }
         this.persisted = { id: stored.config.scenario.id, revision: stored.revision }
         this.history = []
       }
@@ -303,7 +305,10 @@ class ScenarioDocument {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '场景草稿更新结构不正确。' }
     }
     const update = value as unknown as ScenarioDraftUpdate
-    if (update.expectedRevision !== undefined && (!Number.isInteger(update.expectedRevision) || update.expectedRevision < 0 || update.expectedRevision !== (this.draft?.revision ?? 0))) {
+    if (!Number.isSafeInteger(update.expectedRevision) || update.expectedRevision < 0) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'expectedRevision', message: '请提供有效的预期修订号。' }
+    }
+    if (update.expectedRevision !== (this.draft?.revision ?? 0)) {
       return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景已被更新，请重新加载后再保存。' }
     }
     const candidate = withDerivedPlatformAssociations(update.config)

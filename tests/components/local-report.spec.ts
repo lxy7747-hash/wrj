@@ -12,7 +12,7 @@ import { LOCAL_REPORT, LOCAL_EXPORT } from '../fixtures/local-report'
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 describe('本地文件报告页面与信任边界', () => {
-  it('只有服务端已授予普通导出权限时允许打印当前视图，不伪造文件结果', async () => {
+  it('有导出权限时也不再提供打印或另存 PDF 入口，保留完整报告导出', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const principal = { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'ORDINARY_REPORT_EXPORT'] }
@@ -24,12 +24,15 @@ describe('本地文件报告页面与信任边界', () => {
     await router.push('/reports')
     const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus] } })
     await flushPromises()
-    await wrapper.get('[data-testid="report-print-pdf"]').trigger('click')
-    expect(print).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-testid="report-print-pdf"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('打印当前视图')
+    expect(wrapper.text()).not.toContain('另存 PDF')
+    expect(wrapper.get('[data-testid="report-export"]').text()).toBe('导出完整报告')
+    expect(print).not.toHaveBeenCalled()
     expect(useReportStore().exportResult).toBeNull()
     useAuthStore().resetToSafeEmpty()
     await flushPromises()
-    expect(wrapper.get('[data-testid="report-print-pdf"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="report-print-pdf"]').exists()).toBe(false)
     wrapper.unmount()
   })
   it('真实 Store 加载、各页签、浏览器下载；不请求 Mock 遥测或批次', async () => {

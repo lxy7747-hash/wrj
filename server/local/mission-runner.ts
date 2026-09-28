@@ -4,6 +4,7 @@ import { open, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
+import { configuredScenarioOutput } from '../../src/config/app.config.js'
 import type { MissionExecution, MissionOutcome, MissionProcess } from '../simulations/mission-execution.js'
 import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
@@ -32,7 +33,7 @@ export class LocalMissionRunner implements MissionExecution {
   }
 
   async start(draft: ScenarioDraft): Promise<MissionProcess> {
-    if (this.results && !draft.config.output.eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
+    if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
     const entryPath = await writeMissionPackage(this.directory, draft)
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')

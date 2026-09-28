@@ -3,6 +3,7 @@ import ElementPlus from 'element-plus'
 import { describe, expect, it, vi } from 'vitest'
 import type { CapabilityState, ValidationResult } from '../../src/contracts/domain-models'
 import ValidationPanel from '../../src/components/scenarios/ValidationPanel.vue'
+import ScriptPreview from '../../src/components/scenarios/ScriptPreview.vue'
 import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorDialog.vue'
 import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.vue'
 import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
@@ -35,6 +36,20 @@ function mountValidationPanel(overrides: Partial<{
 }
 
 describe('场景拆分面板', () => {
+  it('脚本预览不展示由系统配置维护的输出参数', () => {
+    const wrapper = mount(ScriptPreview, {
+      props: {
+        state: 'SUCCESS', resultMessage: '',
+        script: { scriptId: 'SCRIPT-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v1', target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-TEST', preview: '# 预览', generatedTime: '2026-09-28T00:00:00Z' },
+        preflight: emptyValidation, locked: false, dirty: false, preflightPassed: false,
+      },
+      global: { plugins: [ElementPlus] },
+    })
+    expect(wrapper.text()).toContain('配置版本')
+    expect(wrapper.text()).not.toContain('输出路径')
+    wrapper.unmount()
+  })
+
   it('干扰设备区分节点和方式，旧归属只提示不改绑，检测配置独立分组', async () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
     config.platforms.push({ ...structuredClone(config.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })

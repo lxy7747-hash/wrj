@@ -16,6 +16,7 @@ import type {
 } from '../contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
 import { createEmptyScenarioDraft, withScenarioBasicDefaults } from '../features/scenarios/scenario-basic'
+import { configuredScenarioOutput } from '../config/app.config.js'
 import { buildLocalSceneImport, type LocalSceneImport } from '../features/scenarios/local-scene-import'
 import { toRaw } from 'vue'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
@@ -273,7 +274,7 @@ export const useScenarioStore = defineStore('scenario', {
     prepareSceneCopy(config: ScenarioConfig, extensions: ScenarioDraft['uiExtensions'], name: string): boolean {
       if (!useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
       this.resetToSafeEmpty()
-      this.draft = { config: structuredClone(toRaw(config)), uiExtensions: structuredClone(toRaw(extensions)), revision: 0, locked: false, officialLibraryChanged: false }
+      this.draft = { config: withScenarioBasicDefaults(structuredClone(toRaw(config))), uiExtensions: structuredClone(toRaw(extensions)), revision: 0, locked: false, officialLibraryChanged: false }
       this.draft.config.scenario.id = `SCN-${crypto.randomUUID()}` as ScenarioId
       this.currentScenarioId = this.draft.config.scenario.id
       this.draft.config.scenario.name = name
@@ -425,6 +426,7 @@ export const useScenarioStore = defineStore('scenario', {
      */
     markDirty(): void {
       if (this.draft === null) return
+      this.draft.config.output = configuredScenarioOutput(this.draft.config.scenario.timeStep)
       this.dirty = true
       this.validation = { valid: true, errors: [], warnings: [] }
       this.panelState = 'SUCCESS'

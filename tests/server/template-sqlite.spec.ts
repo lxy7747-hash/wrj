@@ -81,7 +81,7 @@ describe('SQLite 模板持久化', () => {
     const first = await start(file)
     expect((await first.api.get('/api/v1/templates').set(headers).expect(200)).body.data).toEqual([])
     const initial = source()
-    const saved = (await first.api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: initial.config, uiExtensions: initial.uiExtensions }).expect(200)).body.data
+    const saved = (await first.api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: initial.config, uiExtensions: initial.uiExtensions, expectedRevision: 0 }).expect(200)).body.data
     const template = (await first.api.post('/api/v1/templates').set(headers).send(body()).expect(201)).body.data
     expect(template).toMatchObject({ version: '1', uiExtensions: initial.uiExtensions, config: initial.config })
     expect(first.scenarios.load()).toEqual(saved)
@@ -92,7 +92,7 @@ describe('SQLite 模板持久化', () => {
     expect(applied.uiExtensions).toEqual(initial.uiExtensions)
     expect(applied.config.scenario.name).toBe('从模板创建')
     applied.config.scenario.name = '只修改场景'
-    await second.api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: applied.config, uiExtensions: applied.uiExtensions }).expect(200)
+    await second.api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: applied.config, uiExtensions: applied.uiExtensions, expectedRevision: applied.revision }).expect(200)
     expect((await second.api.get(`/api/v1/templates/${template.templateId}`).set(headers).expect(200)).body.data).toEqual(template)
     await second.api.post('/api/v1/reset').set(headers).send({ confirm: true }).expect(200)
     expect(second.templates.load()).toEqual([template])

@@ -147,7 +147,7 @@ describe('fixture projection', () => {
     const valid = satelliteType === 'TIANTONG' || satelliteType === 'SHENTONG'
     const templates = new TemplateProjection()
     for (const [result, fieldPath] of [
-      [scenario.save('SCN-001', { config, uiExtensions: original.data.uiExtensions }), `platforms[${index}].satelliteType`],
+      [scenario.save('SCN-001', { config, uiExtensions: original.data.uiExtensions, expectedRevision: original.data.revision }), `platforms[${index}].satelliteType`],
       [scenario.importSnapshots({ items: [config] }), `items[0].platforms[${index}].satelliteType`],
       [scenario.copyTemplate(config, '卫星模板应用'), `platforms[${index}].satelliteType`],
       [templates.create({ name: '卫星模板新增', config }), `platforms[${index}].satelliteType`],
@@ -193,7 +193,7 @@ describe('fixture projection', () => {
       Object.entries(update.config.sensors[0]!).reverse(),
     ) as typeof update.config.sensors[number]
 
-    expect(scenario.save('SCN-001', { config: update.config, uiExtensions: update.uiExtensions }))
+    expect(scenario.save('SCN-001', { config: update.config, uiExtensions: update.uiExtensions, expectedRevision: current.data.revision }))
       .toMatchObject({ ok: true })
   })
 
@@ -209,13 +209,13 @@ describe('fixture projection', () => {
     ]
 
     malformedConfigs.forEach((config) => {
-      expect(scenario.save('SCN-001', { config, uiExtensions: current.data.uiExtensions }))
+      expect(scenario.save('SCN-001', { config, uiExtensions: current.data.uiExtensions, expectedRevision: current.data.revision }))
         .toMatchObject({ ok: false, code: 'VALIDATION_FAILED' })
     })
     expect(scenario.get('SCN-001')).toEqual(current)
   })
 
-  it('保存请求外壳必须只包含配置和界面扩展', () => {
+  it('保存请求外壳必须只包含配置、界面扩展和预期修订', () => {
     const scenario = new ScenarioProjection()
     const current = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
     const invalidRequests: unknown[] = [
@@ -223,7 +223,7 @@ describe('fixture projection', () => {
       [],
       { config: current.data.config },
       { uiExtensions: current.data.uiExtensions },
-      { config: current.data.config, uiExtensions: current.data.uiExtensions, extra: true },
+      { config: current.data.config, uiExtensions: current.data.uiExtensions, expectedRevision: current.data.revision, extra: true },
     ]
 
     invalidRequests.forEach((request) => {
@@ -237,27 +237,30 @@ describe('fixture projection', () => {
 
     const mismatched = structuredClone(current.data)
     mismatched.config.scenario.id = 'SCN-OTHER'
-    expect(scenario.save('SCN-001', { config: mismatched.config, uiExtensions: mismatched.uiExtensions }))
+    expect(scenario.save('SCN-001', { config: mismatched.config, uiExtensions: mismatched.uiExtensions, expectedRevision: current.data.revision }))
       .toMatchObject({ ok: false, fieldPath: 'scenario.id' })
 
     const changed = structuredClone(current.data)
     changed.config.sensors[0]!.detectionRange += 1
     changed.config.output.directory = './changed'
+    changed.config.output.writeInterval = 1
+    changed.config.output.linkQualityEnabled = true
+    changed.config.output.linkSwitchEnabled = true
     changed.config.informationDemand[0]!.maxLatencyMs += 1
     changed.uiExtensions.sensors[0]!.probability = 0.8
-    expect(scenario.save('SCN-001', { config: changed.config, uiExtensions: changed.uiExtensions }))
+    expect(scenario.save('SCN-001', { config: changed.config, uiExtensions: changed.uiExtensions, expectedRevision: current.data.revision }))
       .toMatchObject({ ok: true })
     expect(scenario.get('SCN-001')).toMatchObject({
       ok: true,
       data: {
-        config: { sensors: [{ detectionRange: changed.config.sensors[0]!.detectionRange }], output: { directory: './changed' }, informationDemand: [{ maxLatencyMs: changed.config.informationDemand[0]!.maxLatencyMs }] },
+        config: { sensors: [{ detectionRange: changed.config.sensors[0]!.detectionRange }], output: { directory: 'output', writeInterval: 5, linkQualityEnabled: false, linkSwitchEnabled: false }, informationDemand: [{ maxLatencyMs: changed.config.informationDemand[0]!.maxLatencyMs }] },
         uiExtensions: { sensors: [{ probability: 0.8 }] },
       },
     })
 
     const invalidDemand = structuredClone(changed)
     invalidDemand.config.informationDemand = []
-    expect(scenario.save('SCN-001', { config: invalidDemand.config, uiExtensions: invalidDemand.uiExtensions }))
+    expect(scenario.save('SCN-001', { config: invalidDemand.config, uiExtensions: invalidDemand.uiExtensions, expectedRevision: current.data.revision + 1 }))
       .toMatchObject({ ok: false, fieldPath: 'informationDemand' })
 
     const changedExtensions = structuredClone(changed)
@@ -271,6 +274,7 @@ describe('fixture projection', () => {
     expect(scenario.save('SCN-001', {
       config: changedExtensions.config,
       uiExtensions: changedExtensions.uiExtensions,
+      expectedRevision: current.data.revision + 1,
     })).toMatchObject({ ok: false, fieldPath: 'uiExtensions.sensors' })
   })
 

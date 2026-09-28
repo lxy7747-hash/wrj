@@ -17,6 +17,7 @@ import type {
 } from '../../src/contracts/domain-models'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
 import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
+import { configuredScenarioOutput } from '../../src/config/app.config'
 import { getLinkExclusionReason, isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -239,6 +240,7 @@ describe('P2-1 场景 Store', () => {
     expect(store.draft).toMatchObject({ revision: 0, locked: false, config: {
       scenario: { name: '', description: '', startTime: '' },
       platforms: [], links: [], jammers: [], sensors: [], informationDemand: [],
+      output: { linkQualityEnabled: false, eventsEnabled: true, linkSwitchEnabled: false },
     }, uiExtensions: { jammers: [], sensors: [] } })
     expect(store.draft!.config.scenario.id).toMatch(/^SCN-[a-f0-9-]{36}$/)
     expect(store.dirty).toBe(true)
@@ -422,7 +424,11 @@ describe('P2-1 场景 Store', () => {
       expect.objectContaining({
         method: 'PUT',
         body: JSON.stringify({
-          config: { ...scenarioDraft().config, scenario: { ...scenarioDraft().config.scenario, name: '台海通联验证场景' } },
+          config: {
+            ...scenarioDraft().config,
+            scenario: { ...scenarioDraft().config.scenario, name: '台海通联验证场景' },
+            output: configuredScenarioOutput(scenarioDraft().config.scenario.timeStep),
+          },
           uiExtensions: scenarioDraft().uiExtensions,
           expectedRevision: 4,
         }),

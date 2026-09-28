@@ -145,7 +145,7 @@ describe('deterministic fixture contract', () => {
         if (satelliteType !== undefined) satellite.satelliteType = satelliteType as never
         const request = name === 'ScenarioImportRequest' ? { items: [config] }
           : name === 'TemplateMutationRequest' ? { config, name: '卫星合同测试' }
-            : { config, uiExtensions: { jammers: [], sensors: [] } }
+            : { config, uiExtensions: { jammers: [], sensors: [] }, expectedRevision: 0 }
         expect(validate(request), `${name}: ${satelliteType}`).toBe(satelliteType === 'TIANTONG' || satelliteType === 'SHENTONG')
       }
     }

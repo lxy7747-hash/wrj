@@ -119,26 +119,28 @@ describe('P3-1 仿真服务端投影', () => {
 
   it('执行开始、暂停、单步、继续、倍速和受确认停止', () => {
     const { scenarios, simulations } = projections()
-    simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    const created = simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    if (!created.ok) throw new Error('创建运行失败')
+    const runId = created.data.runId
 
-    expect(simulations.command('RUN-001', { command: 'START', mode: 'INTERACTIVE_SINGLE' })).toMatchObject({
+    expect(simulations.command(runId, { command: 'START', mode: 'INTERACTIVE_SINGLE' })).toMatchObject({
       ok: true,
       data: { uiStatus: 'RUNNING', canonical: { status: 'RUNNING', processId: 2900 } },
     })
-    expect(simulations.command('RUN-001', { command: 'SET_SPEED', speedMultiplier: 4 })).toMatchObject({ ok: true })
-    expect(simulations.command('RUN-001', { command: 'PAUSE' })).toMatchObject({ ok: true, data: { uiStatus: 'PAUSED' } })
-    expect(simulations.command('RUN-001', { command: 'STEP', stepCount: 1 })).toMatchObject({
+    expect(simulations.command(runId, { command: 'SET_SPEED', speedMultiplier: 4 })).toMatchObject({ ok: true })
+    expect(simulations.command(runId, { command: 'PAUSE' })).toMatchObject({ ok: true, data: { uiStatus: 'PAUSED' } })
+    expect(simulations.command(runId, { command: 'STEP', stepCount: 1 })).toMatchObject({
       ok: true,
       data: { canonical: { currentTime: 1 } },
     })
-    expect(simulations.command('RUN-001', { command: 'RESUME' })).toMatchObject({ ok: true, data: { uiStatus: 'RUNNING' } })
-    simulations.command('RUN-001', { command: 'PAUSE' })
-    expect(simulations.command('RUN-001', { command: 'STOP' })).toMatchObject({
+    expect(simulations.command(runId, { command: 'RESUME' })).toMatchObject({ ok: true, data: { uiStatus: 'RUNNING' } })
+    simulations.command(runId, { command: 'PAUSE' })
+    expect(simulations.command(runId, { command: 'STOP' })).toMatchObject({
       ok: false,
       code: 'CONFIRMATION_REQUIRED',
       status: 428,
     })
-    expect(simulations.command('RUN-001', { command: 'STOP', confirmationId: 'CONF-P2-001' }, true)).toMatchObject({
+    expect(simulations.command(runId, { command: 'STOP', confirmationId: 'CONF-P2-001' }, true)).toMatchObject({
       ok: true,
       data: { uiStatus: 'STOPPED', configLocked: false, canonical: { status: 'IDLE', currentTime: 0, progress: 0, processId: null } },
     })
@@ -154,12 +156,15 @@ describe('P3-1 仿真服务端投影', () => {
     expect(scenarios.save('SCN-001', {
       config: draft.data.config,
       uiExtensions: draft.data.uiExtensions,
+      expectedRevision: draft.data.revision,
     })).toMatchObject({ ok: true })
 
-    simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
-    simulations.command('RUN-001', { command: 'START', mode: 'INTERACTIVE_SINGLE' })
-    simulations.command('RUN-001', { command: 'PAUSE' })
-    expect(simulations.command('RUN-001', { command: 'STEP', stepCount: 1 })).toMatchObject({
+    const created = simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    if (!created.ok) throw new Error('创建运行失败')
+    const runId = created.data.runId
+    simulations.command(runId, { command: 'START', mode: 'INTERACTIVE_SINGLE' })
+    simulations.command(runId, { command: 'PAUSE' })
+    expect(simulations.command(runId, { command: 'STEP', stepCount: 1 })).toMatchObject({
       ok: true,
       data: {
         uiStatus: 'COMPLETED',
@@ -177,9 +182,14 @@ describe('P3-1 仿真服务端投影', () => {
     if (first === undefined) throw new Error('冻结运行不存在')
     first.uiStatus = 'ERROR'
     expect(simulations.list()[0]?.uiStatus).toBe('COMPLETED')
-    simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    const created = simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    if (!created.ok) throw new Error('创建运行失败')
     simulations.reset()
     expect(simulations.get('RUN-001')).toMatchObject({ ok: true, data: { uiStatus: 'COMPLETED', configLocked: false } })
+    const next = simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    expect(next).toMatchObject({ ok: true })
+    if (!next.ok) throw new Error('再次创建运行失败')
+    expect(next.data.runId).not.toBe(created.data.runId)
   })
 
   it('执行合法 RF 干扰命令并返回确定性生效帧', () => {

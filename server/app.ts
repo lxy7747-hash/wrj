@@ -1570,6 +1570,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         req.body.scenarioId,
         role,
         confirmationOwner(req)?.id,
+        draft.data.revision,
       )
       if (!confirmation.ok) {
         auth.recordError(actorForRequest(req, role), role, 'SCRIPT_PREVIEW', req.body.scenarioId)
@@ -1924,7 +1925,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     if (!requireConfirmationPermission(req, role, req.body.action, req.body.objectId, res, auth)) return
-    const result = confirmations.create(req.body.action, req.body.objectId, role, confirmationOwner(req))
+    const scenario = req.body.action === 'SCENARIO_WARNING_CONTINUE' ? scenarios.get(req.body.objectId) : undefined
+    if (scenario && !scenario.ok) {
+      res.status(scenario.status).json(failure(scenario.code, scenario.status, {
+        requestId, generatedAt: P1_GENERATED_AT, message: scenario.message,
+      }))
+      return
+    }
+    const result = confirmations.create(req.body.action, req.body.objectId, role, confirmationOwner(req), scenario?.ok ? scenario.data.revision : undefined)
     res.status(201).json(success(result, pageMeta(requestId)))
   })
 

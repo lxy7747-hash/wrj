@@ -1,4 +1,5 @@
 import type { Platform, ScenarioConfig, ScenarioDraft, ScenarioId } from '../../contracts/domain-models'
+import { configuredScenarioOutput } from '../../config/app.config.js'
 
 /** 默认按名称展示；同名或失效引用保留编号，避免隐藏后无法区分对象。 */
 export function scenarioPlatformLabel(platforms: readonly Pick<Platform, 'id' | 'name'>[], id: string, showIds = false): string {
@@ -31,7 +32,7 @@ export function createEmptyScenarioDraft(id: ScenarioId): ScenarioDraft {
         },
       },
       platforms: [], links: [], jammers: [], sensors: [], informationDemand: [],
-      output: { directory: '', writeInterval: 5, linkQualityEnabled: true, eventsEnabled: true, linkSwitchEnabled: true },
+      output: configuredScenarioOutput(1),
     }),
     uiExtensions: { jammers: [], sensors: [] },
     revision: 0,
@@ -41,13 +42,14 @@ export function createEmptyScenarioDraft(id: ScenarioId): ScenarioDraft {
 }
 
 /**
- * 为旧场景补齐新增环境字段，不覆盖已有值、时长或物理环境参数。
+ * 补齐环境字段并采用系统输出设置，不覆盖场景时长或物理环境参数。
  * @param config 已通过场景校验的配置，原对象保持不变。
  * @returns 可供当前表单保存的配置副本。
  */
 export function withScenarioBasicDefaults(config: ScenarioConfig): ScenarioConfig {
   return {
     ...config,
+    output: configuredScenarioOutput(config.scenario.timeStep),
     scenario: {
       ...config.scenario,
       environment: {

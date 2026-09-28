@@ -136,7 +136,7 @@ function formatField(field: ContractField): string {
  * @sideEffects 请求本机遥测接口并替换当前帧或进入安全错误态。
  */
 function reload(): Promise<boolean> {
-  return telemetryStore.loadFrame('RUN-001', 'F-00042')
+  return telemetryStore.loadFrame()
 }
 
 onMounted(async () => {

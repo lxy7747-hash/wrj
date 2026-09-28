@@ -1544,7 +1544,7 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.getByRole('link', { name: '场景配置', exact: true }).click()
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
-  await page.getByRole('tab', { name: '传感器与输出' }).click()
+  await page.getByRole('tab', { name: '传感器', exact: true }).click()
 
   await page.getByTestId('sensor-frequency-min-0').locator('input').fill('2100')
   await page.getByTestId('sensor-frequency-max-0').locator('input').fill('5200')
@@ -1554,9 +1554,8 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.getByTestId('sensor-direction-0').locator('input').fill('90')
   await page.getByTestId('sensor-probability-0').locator('input').fill('0.88')
   await page.getByTestId('sensor-enabled-0').click()
-  await page.getByTestId('output-directory').fill('./tasks/TASK-001/e2e-full')
-  await page.getByTestId('output-write-interval').locator('input').fill('2')
-  await page.getByTestId('output-events').click()
+  await expect(page.getByTestId('output-directory')).toHaveCount(0)
+  await expect(page.getByTestId('output-events')).toHaveCount(0)
   await page.getByRole('tab', { name: '链路配置' }).click()
   await page.getByTestId('edit-link-0').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
@@ -1588,12 +1587,12 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   await page.reload()
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await reloadedResponse).status()).toBe(200)
-  await page.getByRole('tab', { name: '传感器与输出' }).click()
+  await page.getByRole('tab', { name: '传感器', exact: true }).click()
   await expect(page.getByTestId('sensor-frequency-min-0').locator('input')).toHaveValue('2100')
   await expect(page.getByTestId('sensor-direction-mode-0')).toContainText('定向')
   await expect(page.getByTestId('sensor-direction-0').locator('input')).toHaveValue('90')
-  await expect(page.getByTestId('output-directory')).toHaveValue('./tasks/TASK-001/e2e-full')
-  await expect(page.getByTestId('output-write-interval').locator('input')).toHaveValue('2')
+  await expect(page.getByTestId('output-directory')).toHaveCount(0)
+  await expect(page.getByTestId('output-write-interval')).toHaveCount(0)
   await page.getByRole('tab', { name: '链路配置' }).click()
   await page.getByTestId('edit-link-0').click()
   await expect(page.getByTestId('demand-type')).toContainText('目标指令')
@@ -1604,13 +1603,7 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
   const persisted = await loadScenarioDraft(request)
   expect(persisted.config.sensors[0]).toMatchObject({ frequencyRange: { min: 2100, max: 5200 }, detectionRange: 160000 })
   expect(persisted.uiExtensions.sensors[0]).toMatchObject({ direction: 90, probability: 0.88, enabled: false })
-  expect(persisted.config.output).toEqual({
-    directory: './tasks/TASK-001/e2e-full',
-    writeInterval: 2,
-    linkQualityEnabled: true,
-    eventsEnabled: false,
-    linkSwitchEnabled: true,
-  })
+  expect(persisted.config.output).toEqual(APP_CONFIG.scenarioOutput)
   expect(persisted.config.informationDemand.find(item => item.linkId === baseline.config.links[0]!.id)).toMatchObject({
     informationType: '目标指令', direction: 'FORWARD', volumeMb: 3, frequencyHz: 2, priority: 'NORMAL', maxLatencyMs: 250, minDataRateMbps: 6,
   })
@@ -1636,10 +1629,12 @@ test('OPERATOR checks fields on save without a separate script preview or prefli
   expect((await loaded).status()).toBe(200)
 
   await page.getByTestId('scenario-time-step').locator('input').fill('6')
+  await page.getByTestId('scenario-name').fill('')
   await page.getByTestId('save-scenario').click()
   await expect(page.getByTestId('validation-panel')).toBeVisible()
-  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'output.writeInterval' }).click()
-  await expect(page.getByLabel('输出参数').getByText('输出写入间隔不能小于场景时间步长。', { exact: true })).toBeVisible()
+  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'scenario.name' }).click()
+  await expect(page.getByTestId('scenario-name')).toBeFocused()
+  await expect(page.getByTestId('validation-panel')).not.toContainText('output.writeInterval')
   await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('script-preview-panel')).toHaveCount(0)
 

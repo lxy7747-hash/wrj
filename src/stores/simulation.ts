@@ -247,7 +247,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (requestEpoch !== this.requestEpoch || runtimeSyncEpoch !== this.runtimeSyncEpoch) return true
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const runs = readRuns(payload)
-        const run = runs?.find((candidate) => candidate.runId === 'RUN-001')
+        const run = runs?.[0]
         if (run === undefined) throw new InvalidSimulationResponseError()
         this.applyRun(run)
         this.runtimeSyncRequired = false
@@ -275,7 +275,7 @@ export const useSimulationStore = defineStore('simulation', {
     },
 
     /**
-     * 从 Mock 服务恢复冻结的 RUN-001 投影。
+     * 从服务端恢复当前单实例运行投影。
      * @returns 加载成功时返回 `true`，否则返回 `false`。
      * @sideEffects 更新运行、锁状态和能力反馈。
      */
@@ -295,7 +295,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (!response.ok) throw readApiFailure(payload) ?? new InvalidSimulationResponseError()
         const runs = readRuns(payload)
         if (runs === undefined) throw new InvalidSimulationResponseError()
-        const run = runs.find((candidate) => candidate.runId === 'RUN-001')
+        const run = runs[0]
         if (run === undefined) {
           // 无运行不等于退出会话，不能使正在恢复的场景选择失效。
           this.run = null
@@ -327,7 +327,7 @@ export const useSimulationStore = defineStore('simulation', {
     },
 
     /**
-     * 创建 RUN-001 并由服务端锁定当前场景。
+     * 创建新运行并由服务端锁定当前场景。
      * @returns 创建成功时返回 `true`，否则返回 `false`。
      * @sideEffects 更新能力状态、当前运行和场景配置锁投影。
      */

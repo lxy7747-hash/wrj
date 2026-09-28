@@ -776,7 +776,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      '场景基础', '节点配置', '链路配置', '干扰设备', '传感器与输出',
+      '场景基础', '节点配置', '链路配置', '干扰设备', '传感器',
     ])
     expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('当前草稿已保存')
 
@@ -944,11 +944,11 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     await wrapper.get('[data-testid="delete-sensor-1"]').trigger('click')
 
-    await wrapper.get('[data-testid="output-directory"]').setValue('./edited-output')
-    component('ElInputNumber', 'output-write-interval').vm.$emit('update:modelValue', 2)
-    for (const testId of ['output-link-quality', 'output-events', 'output-link-switch']) {
-      component('ElSwitch', testId).vm.$emit('change', false)
-    }
+    expect(wrapper.find('[data-testid="output-directory"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="output-write-interval"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="output-link-quality"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('输出参数')
+    expect(scenario.draft?.config.output).toEqual(withScenarioBasicDefaults(scenario.draft!.config).output)
     expect(wrapper.get('#pane-data').find('[data-testid="information-demand-table"]').exists()).toBe(false)
     await wrapper.get('#tab-links').trigger('click')
     await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
@@ -1298,17 +1298,10 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(wrapper.find('[data-testid="scenario-name"]').exists()).toBe(true)
 
-    const originalWriteInterval = scenario.draft!.config.output.writeInterval
-    await wrapper.get('[data-testid="scenario-name"]').setValue('输出间隔定位验证')
+    await wrapper.get('[data-testid="scenario-name"]').setValue('系统输出间隔验证')
     await wrapper.get('[data-testid="scenario-time-step"] input').setValue('6')
-    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
-    await flushPromises()
-    const outputIssueIndex = scenario.validation.errors.findIndex((issue) => issue.fieldPath === 'output.writeInterval')
-    expect(outputIssueIndex).toBeGreaterThanOrEqual(0)
-    await wrapper.get(`[data-testid="locate-validation-issue-${outputIssueIndex}"]`).trigger('click')
-    await flushPromises()
-    expect(scenario.draft?.config.output.writeInterval).toBe(originalWriteInterval)
-    expect(scenario.validation.errors.some((issue) => issue.fieldPath === 'output.writeInterval')).toBe(true)
+    expect(scenario.draft?.config.output.writeInterval).toBe(6)
+    expect(inspectScenarioConfig(scenario.draft?.config, 'write').result.errors.some((issue) => issue.fieldPath === 'output.writeInterval')).toBe(false)
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 

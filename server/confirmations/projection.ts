@@ -14,6 +14,7 @@ interface StoredConfirmation {
   action: ConfirmationAction
   objectId: string
   owner?: string
+  revision?: number
 }
 
 const DEFAULT_NOW = '2026-08-06T08:00:00Z'
@@ -54,10 +55,11 @@ export class ConfirmationProjection {
    * @param objectId 动作对应的业务对象编号。
    * @param role 发起确认的当前角色。
    * @param owner 已认证请求的账号身份；纯 Mock 可省略。
+   * @param revision 可变场景在创建确认时的修订号。
    * @returns 等待确认的确定性上下文。
    * @remarks 只写入内存，不访问系统时间或持久化介质。
    */
-  create(action: ConfirmationAction, objectId: string, role: Role, owner?: { id: string; name: string }): ConfirmationContext {
+  create(action: ConfirmationAction, objectId: string, role: Role, owner?: { id: string; name: string }, revision?: number): ConfirmationContext {
     const createdAt = this.clock.now()
     this.clearExpired(createdAt)
     const confirmationId = `CONF-P2-${String(this.nextSequence).padStart(3, '0')}`
@@ -70,7 +72,7 @@ export class ConfirmationProjection {
       createdAt,
       expiresAt: this.clock.expiresAt(createdAt),
     }
-    this.contexts.set(confirmationId, { context, action, objectId, ...(owner ? { owner: owner.id } : {}) })
+    this.contexts.set(confirmationId, { context, action, objectId, ...(owner ? { owner: owner.id } : {}), ...(revision === undefined ? {} : { revision }) })
     return structuredClone(context)
   }
 
@@ -101,6 +103,7 @@ export class ConfirmationProjection {
    * @param objectId 受控对象编号。
    * @param role 当前请求角色。
    * @param ownerId 当前已认证账号编号。
+   * @param revision 消费确认时可变场景的当前修订号。
    * @returns 上下文匹配时返回成功，否则返回失效错误。
    * @remarks 成功后立即删除上下文，防止重复使用。
    */
@@ -110,11 +113,13 @@ export class ConfirmationProjection {
     objectId: string,
     role: Role,
     ownerId?: string,
+    revision?: number,
   ): ConfirmationProjectionResult<true> {
     const stored = this.contexts.get(confirmationId)
     if (stored === undefined || this.hasExpired(confirmationId, stored) || stored.context.state !== 'CONFIRMED'
       || stored.action !== action
-      || stored.objectId !== objectId) {
+      || stored.objectId !== objectId
+      || (stored.revision !== undefined && stored.revision !== revision)) {
       return { ok: false, code: 'CONFIRMATION_EXPIRED', status: 409, message: '二次确认已失效。' }
     }
     if (stored.context.role !== role || (stored.owner !== undefined && stored.owner !== ownerId)) {

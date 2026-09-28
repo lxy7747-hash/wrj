@@ -9,13 +9,10 @@ import { ElMessage } from 'element-plus'
 import type { ReportExportRequest } from '../../contracts/domain-models'
 import { useBatchStore } from '../../stores/batch'
 import { useReportStore } from '../../stores/report'
-import { useAuthStore } from '../../stores/auth'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { formatDateTime } from '../../features/shared/date-time'
 
 const reportStore = useReportStore()
-const authStore = useAuthStore()
-const canPrint = computed(() => authStore.principal !== null && authStore.permissions.includes('ORDINARY_REPORT_EXPORT'))
 const batchStore = useBatchStore()
 const telemetryStore = useTelemetryStore()
 const route = useRoute()
@@ -86,10 +83,6 @@ async function confirmExport(): Promise<void> {
   await reportStore.confirmExport()
 }
 
-/** 使用浏览器打印当前真实报告视图，不声称服务端已生成 PDF 文件。 */
-function printReport(): void {
-  if (!pending.value && canPrint.value && selectedReport.value?.localEvidence) window.print()
-}
 </script>
 
 <template>
@@ -127,7 +120,6 @@ function printReport(): void {
           @click="requestExport"
         >{{ selectedReport?.localEvidence ? '导出完整报告' : '验证导出' }}</el-button>
         <el-button :disabled="pending" @click="reload">重新加载</el-button>
-        <el-button v-if="selectedReport?.localEvidence" :disabled="pending || !canPrint" data-testid="report-print-pdf" @click="printReport">打印当前视图／另存 PDF</el-button>
       </div>
     </header>
     </div>
@@ -313,18 +305,5 @@ function printReport(): void {
   .reports-page__actions {
     flex-wrap: wrap;
   }
-}
-</style>
-
-<style>
-@media print {
-  body * { visibility: hidden; }
-  .reports-page, .reports-page * { visibility: visible; }
-  .reports-page { position: absolute; inset: 0; height: auto !important; overflow: visible !important; background: white !important; color: black !important; --console-text: #111; --console-text-muted: #444; --console-cyan: #087f9c; --console-border: #ccc; --el-text-color-primary: #111; --el-text-color-regular: #111; --el-text-color-secondary: #444; --el-fill-color-blank: white; --el-bg-color: white; }
-  .reports-page__header, .reports-page .el-tabs__header, .reports-page .report-filters, .reports-page .el-pagination { display: none !important; }
-  .reports-page .el-scrollbar__wrap { max-height: none !important; overflow: visible !important; }
-  .reports-page .el-table, .reports-page .el-table__inner-wrapper, .reports-page .el-table__body-wrapper, .reports-page .el-scrollbar, .reports-page .el-scrollbar__wrap { height: auto !important; max-height: none !important; }
-  .reports-page .reports-page__content { border: 0; background: white !important; }
-  .reports-page .reports-page__content, .reports-page .local-report, .reports-page .report-tabs, .reports-page .el-tabs, .reports-page .el-tabs__content, .reports-page .el-tab-pane { height: auto !important; overflow: visible !important; flex: none !important; }
 }
 </style>

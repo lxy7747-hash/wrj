@@ -4134,7 +4134,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "additionalProperties": false,
     "required": [
       "config",
-      "uiExtensions"
+      "uiExtensions",
+      "expectedRevision"
     ],
     "properties": {
       "config": {

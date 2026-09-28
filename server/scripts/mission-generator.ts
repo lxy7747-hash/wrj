@@ -1,4 +1,5 @@
 import type { SatelliteType, ScenarioDraft } from '../../src/contracts/domain-models.js'
+import { configuredScenarioOutput } from '../../src/config/app.config.js'
 import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
 import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
 
@@ -182,8 +183,8 @@ function formatStartDateTime(iso: string): { date: string; time: string } {
 }
 
 /** 编译已核实语法的静态节点、微波设备、干扰器和航点路线，不复制候选脚本中的任务剧情。 */
-export function buildMissionPackage(draft: ScenarioDraft) {
-  const { config } = draft
+export function buildMissionPackage(draft: ScenarioDraft, output = configuredScenarioOutput(draft.config.scenario.timeStep)) {
+  const config = { ...draft.config, output }
   const inspection = inspectScenarioConfig(config, 'write')
   const issue = inspection.result.errors[0]
   if (issue) throw new MissionGenerationError(issue.fieldPath ?? 'config', issue.message)

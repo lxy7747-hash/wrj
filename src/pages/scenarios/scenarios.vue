@@ -1020,8 +1020,6 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.simClockSpeed': 'scenario-sim-clock-speed',
     'scenario.environment.transmissionDistance': 'scenario-trans-distance',
     'scenario.environment.rainCloudAttenuation': 'scenario-rain-cloud-atten',
-    'output.directory': 'output-directory',
-    'output.writeInterval': 'output-write-interval',
   }
   return directTargets[fieldPath]
 }
@@ -1564,7 +1562,7 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="传感器与输出" name="data">
+        <el-tab-pane label="传感器" name="data">
           <section class="console-panel scenario-section" aria-labelledby="scenario-sensor-title">
             <div class="section-heading">
 <!--              <div>-->
@@ -1599,18 +1597,7 @@ watch(activeTab, (tab) => {
               <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
             </el-table>
           </section>
-
-          <section class="console-panel scenario-section" aria-labelledby="scenario-output-title">
-            <div class="section-heading"><div><p class="section-kicker">结果配置</p><h3 id="scenario-output-title">输出参数</h3></div></div>
-            <div class="form-grid form-grid--basic">
-              <el-form-item data-field-path="output.directory" required label="输出目录" :error="issueMessage('output.directory')"><el-input v-model="draft.config.output.directory" data-testid="output-directory" @update:model-value="markDirty" /></el-form-item>
-              <el-form-item data-field-path="output.writeInterval" required label="写入间隔（秒）" :error="issueMessage('output.writeInterval')"><el-input-number v-model="draft.config.output.writeInterval" :min="draft.config.scenario.timeStep" :step="0.001" controls-position="right" data-testid="output-write-interval" @update:model-value="markDirty" /></el-form-item>
-              <el-form-item label="链路质量"><el-switch v-model="draft.config.output.linkQualityEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-quality" @change="markDirty" /></el-form-item>
-              <el-form-item label="事件"><el-switch v-model="draft.config.output.eventsEnabled" active-text="输出" inactive-text="关闭" data-testid="output-events" @change="markDirty" /></el-form-item>
-              <el-form-item label="链路切换"><el-switch v-model="draft.config.output.linkSwitchEnabled" active-text="输出" inactive-text="关闭" data-testid="output-link-switch" @change="markDirty" /></el-form-item>
-            </div>
-          </section>
-
+          <!-- 输出参数由 app.config.ts 管理，不在场景表单中展示。 -->
         </el-tab-pane>
 
       </el-tabs>

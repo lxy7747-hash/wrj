@@ -8,7 +8,6 @@ const props = defineProps<{
   resultMessage: string
   script: ScriptContract | null
   preflight: ValidationResult
-  outputDirectory: string
   locked: boolean
   dirty: boolean
   preflightPassed: boolean
@@ -53,7 +52,6 @@ function scriptLocation(fieldPath: string): string {
       <el-descriptions :column="2" border>
         <el-descriptions-item label="目标版本">{{ script.target }}</el-descriptions-item>
         <el-descriptions-item label="配置版本">{{ script.configVersion }}</el-descriptions-item>
-        <el-descriptions-item label="输出路径">{{ outputDirectory }}</el-descriptions-item>
         <el-descriptions-item label="校验和">{{ script.checksum }}</el-descriptions-item>
         <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
         <el-descriptions-item label="生成时间">{{ formatDateTime(script.generatedTime) }}</el-descriptions-item>

@@ -85,7 +85,7 @@ const errorMessage = computed(() => {
 async function reload(): Promise<boolean> {
   const [scenarioLoaded, frameLoaded] = await Promise.all([
     scenarioStore.loadScenario('SCN-001'),
-    telemetryStore.loadFrame('RUN-001', 'F-00042'),
+    telemetryStore.loadFrame(),
   ])
   if (frameLoaded) telemetryStore.connect()
   return scenarioLoaded && frameLoaded

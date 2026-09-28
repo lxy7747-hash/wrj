@@ -127,10 +127,10 @@ function readCommand(value: unknown): SimulationCommand | undefined {
   return undefined
 }
 
-/** 创建一次新的确定性运行投影。 */
-function createIdleRun(request: SimulationCreateRequest, totalDuration: number): SimulationRun {
+/** 创建一次不复用编号的运行投影，状态内容仍由 Mock 投影维护。 */
+function createIdleRun(request: SimulationCreateRequest, totalDuration: number, runId: SimulationRun['runId']): SimulationRun {
   return {
-    runId: 'RUN-001',
+    runId,
     taskId: request.taskId,
     scenarioId: request.scenarioId,
     uiStatus: 'IDLE',
@@ -150,8 +150,17 @@ export function ownsFixedEvidence(run: SimulationRun | undefined): boolean {
   return run?.scenarioId === loadFixtureProjection().scenario.scenario.id
 }
 
+/** 固定演示帧只替换运行身份；测量与业务证据仍来自同一冻结夹具。 */
+export function fixedFrameForRun(runId: SimulationRun['runId']): TelemetryFrame {
+  const frame = structuredClone(loadFixtureProjection().frame)
+  frame.runId = runId
+  frame.evidence.routeDecisions.forEach(decision => { decision.runId = runId })
+  return frame
+}
+
 export class SimulationProjection {
   private run = structuredClone(loadFixtureProjection().run)
+  private nextRunSequence = 2
   private readonly processedClosedLoops = new Set<string>()
   private readonly jammerParameterVersions = new Map<string, number>()
 
@@ -216,7 +225,7 @@ export class SimulationProjection {
   getFrame(runId: string, frameId: string): SimulationProjectionResult<TelemetryFrame> {
     const frame = loadFixtureProjection().frame
     return ownsFixedEvidence(this.run) && runId === this.run.runId && frameId === frame.frameId
-      ? { ok: true, data: structuredClone(frame) }
+      ? { ok: true, data: fixedFrameForRun(runId) }
       : { ok: false, code: 'NOT_FOUND', status: 404, message: '未找到指定遥测帧。' }
   }
 
@@ -253,7 +262,11 @@ export class SimulationProjection {
     const locked = this.scenarios.setLocked(request.scenarioId, true)
     if (!locked.ok) return locked
 
-    this.run = createIdleRun(request, locked.data.config.scenario.duration)
+    const runId: SimulationRun['runId'] = `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
+    this.nextRunSequence += 1
+    this.run = createIdleRun(request, locked.data.config.scenario.duration, runId)
+    this.processedClosedLoops.clear()
+    this.jammerParameterVersions.clear()
     return { ok: true, data: structuredClone(this.run) }
   }
 

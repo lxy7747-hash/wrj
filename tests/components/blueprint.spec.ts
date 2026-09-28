@@ -123,6 +123,6 @@ describe('P3-3 同帧链路计算合同', () => {
     mount(LinkCalculatorContractCard, { global: { plugins: [ElementPlus] } })
 
     expect(loadFrame).toHaveBeenCalledOnce()
-    expect(loadFrame).toHaveBeenCalledWith('RUN-001', 'F-00042')
+    expect(loadFrame).toHaveBeenCalledWith()
   })
 })

@@ -14,7 +14,7 @@ import type {
 } from '../../src/contracts/domain-models.js'
 import { assertLoopbackRequest, assertLanRequest } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
-import { ownsFixedEvidence } from '../simulations/projection.js'
+import { fixedFrameForRun, ownsFixedEvidence } from '../simulations/projection.js'
 
 const CANONICAL_TOPICS = new Set<WsTopic>([
   'simulation.frame',
@@ -262,6 +262,7 @@ export function attachRealtimeServer(
     }
   }
   const currentEnvelopes = new Map<WsTopic, string>()
+  let publishedRunId = currentRun()?.runId
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_TRANSPORT_PAYLOAD_BYTES,
@@ -279,7 +280,8 @@ export function attachRealtimeServer(
       const snapshot = projection.snapshot()
       let envelope: RealtimeEnvelope<unknown> | undefined
       if (topic === 'simulation.frame') {
-        envelope = createEnvelope(projection, topic, snapshot.frame, snapshot.frame.simulationTime, snapshot.frame.frameId)
+        const frame = fixedFrameForRun(run?.runId ?? snapshot.frame.runId)
+        envelope = createEnvelope(projection, topic, frame, frame.simulationTime, frame.frameId)
       } else if (topic === 'link.metric') {
         envelope = createEnvelope(projection, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
       } else if (topic === 'runtime.state') {
@@ -354,20 +356,31 @@ export function attachRealtimeServer(
     revalidateSessions,
     publishRuntimeState: (run): void => {
       revalidateSessions()
-      const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
-      if (subscribers.length === 0) {
-        currentEnvelopes.delete('runtime.state')
-        return
+      const runChanged = publishedRunId !== run.runId
+      if (runChanged) {
+        publishedRunId = run.runId
+        currentEnvelopes.clear()
       }
-      const envelope: RealtimeEnvelope<SimulationState> = createEnvelope(
-        projection,
-        'runtime.state',
-        run.canonical,
-        run.canonical.currentTime,
-      )
-      const message = JSON.stringify(envelope)
-      currentEnvelopes.set('runtime.state', message)
-      subscribers.forEach(([client]) => send(client, message))
+      const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
+      if (subscribers.length === 0) currentEnvelopes.delete('runtime.state')
+      else {
+        const envelope: RealtimeEnvelope<SimulationState> = createEnvelope(
+          projection,
+          'runtime.state',
+          run.canonical,
+          run.canonical.currentTime,
+        )
+        const message = JSON.stringify(envelope)
+        currentEnvelopes.set('runtime.state', message)
+        subscribers.forEach(([client]) => send(client, message))
+      }
+      if (runChanged) {
+        for (const [client, topics] of clients) {
+          for (const topic of topics) {
+            if (topic !== 'runtime.state') replayTopic(client, topic)
+          }
+        }
+      }
     },
     publishJammerStatus: (status, frameId): void => {
       revalidateSessions()

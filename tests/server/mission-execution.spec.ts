@@ -32,15 +32,17 @@ function processHandle() {
 }
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const servers: Array<ReturnType<typeof createMockServer>> = []
+let activeRunId = ''
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); vi.mocked(childProcess.spawn).mockReset(); vi.restoreAllMocks() })
 async function apiFor(start: (draft: ScenarioDraft) => Promise<MissionProcess>) {
   const server = createMockServer({ port: 0, missionExecution: { start } })
   servers.push(server)
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
-  await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
-  const command = (body: object) => api.post('/api/v1/simulations/RUN-001/commands').set(headers).send(body)
-  const run = async () => (await api.get('/api/v1/simulations/RUN-001').set(headers).expect(200)).body.data
+  const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+  activeRunId = created.body.data.runId
+  const command = (body: object) => api.post(`/api/v1/simulations/${activeRunId}/commands`).set(headers).send(body)
+  const run = async () => (await api.get(`/api/v1/simulations/${activeRunId}`).set(headers).expect(200)).body.data
   return { api, command, run, server }
 }
 
@@ -51,16 +53,16 @@ describe('真实 mission 命令边界', () => {
     const { api, command, run, server } = await apiFor(start)
     const draft = (await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
     await command({ command: 'START', mode: 'PARAMETER_SCAN' }).expect(409)
-    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: 'RUN-001', result: 'ERROR' })
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     expect((await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data)
       .toMatchObject({ uiStatus: 'RUNNING', canonical: { processId: 7654 }, configLocked: true })
     expect(start).toHaveBeenCalledExactlyOnceWith(draft)
     await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(409)
-    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: 'RUN-001', result: 'ERROR' })
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     await command({ command: 'PAUSE' }).expect(409)
-    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: 'RUN-001', result: 'ERROR' })
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     await command({ command: 'SET_SPEED', speedMultiplier: 2 }).expect(409)
-    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: 'RUN-001', result: 'ERROR' })
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     await api.post('/api/v1/reset').set(headers).send({ confirm: true }).expect(409)
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SCENARIO_RESET', result: 'ERROR' })
     expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(true)
@@ -99,7 +101,7 @@ describe('真实 mission 命令边界', () => {
     expect((await pending).status).toBe(200)
     await command({ command: 'STOP' }).expect(428)
     expect(handle.stop).not.toHaveBeenCalled()
-    const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+    const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: activeRunId }).expect(201)).body.data
     await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(200)
     expect(handle.stop).toHaveBeenCalledTimes(1)
@@ -122,7 +124,7 @@ describe('真实 mission 命令边界', () => {
     })
     const { api, command, run, server } = await apiFor(async () => handle)
     await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
-    const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+    const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: activeRunId }).expect(201)).body.data
     await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(503)
     expect(await run()).toMatchObject({ uiStatus: 'ERROR', configLocked: false,
@@ -136,7 +138,7 @@ describe('真实 mission 命令边界', () => {
     const { api, command, run } = await apiFor(async () => handle)
     await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
     const context = (await api.post('/api/v1/confirmations').set(headers)
-      .send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+      .send({ action: 'SIMULATION_STOP', objectId: activeRunId }).expect(201)).body.data
     await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     await command({ command: 'STOP', confirmationId: context.confirmationId }).expect(503)
     expect(await run()).toMatchObject({ uiStatus: 'ERROR', configLocked: true,
@@ -493,11 +495,12 @@ describe('本机 mission 执行器', () => {
         .send({ checksum: script.checksum }).expect(200)).body.data
       const savedPlatforms = await readFile(join(dirname(generated.path), 'platforms.txt'), 'utf8')
       expect(savedPlatforms).toContain('SendMessage')
-      await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
-      const started = (await api.post('/api/v1/simulations/RUN-001/commands').set(headers)
+      const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+      const runId = created.body.data.runId
+      const started = (await api.post(`/api/v1/simulations/${runId}/commands`).set(headers)
         .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data
       expect(started.canonical.processId).toBeGreaterThan(0)
-      await expect.poll(async () => (await api.get('/api/v1/simulations/RUN-001').set(headers)).body.data,
+      await expect.poll(async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers)).body.data,
         { timeout: 10_000 }).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false, canonical: { processId: null, currentTime: 3, progress: 100 } })
       const directory = join(root, 'runs', (await readdir(join(root, 'runs')))[0]!)
       expect(await readFile(join(directory, 'platforms.txt'), 'utf8')).toBe(savedPlatforms)
@@ -543,7 +546,7 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it('停止的任务不发布结果；关闭事件输出时启动前明确阻断', async () => {
+  it('停止的任务不发布结果；旧草稿关闭事件输出不覆盖系统配置', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-cancel-'))
     const capture = vi.fn(async () => {})
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => { child.emit('close', 0); return true }) })
@@ -552,8 +555,8 @@ describe('本机 mission 执行器', () => {
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, { capture })
       const disabled = draftForMission()
       disabled.config.output.eventsEnabled = false
-      await expect(runner.start(disabled)).rejects.toThrow('启用事件输出')
-      const process = await runner.start(draftForMission())
+      const process = await runner.start(disabled)
+      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'mapping.json'), 'utf8')).output.eventsEnabled).toBe(true)
       await appendFile(join(dirname(process.entryPath), 'mission-console.log'), 'Simulation complete\n')
       await process.stop()
       expect(capture).not.toHaveBeenCalled()

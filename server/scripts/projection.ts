@@ -6,6 +6,7 @@ import type {
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
 import { isConfiguredLinkEnabled, LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
+import { configuredScenarioOutput } from '../../src/config/app.config.js'
 
 export type ScriptProjectionResult<T> =
   | { ok: true; data: T }
@@ -25,7 +26,7 @@ function fnv1aMockChecksum(value: string): string {
 
 /** 从当前完整草稿生成不访问文件或进程的 AFSIM 文本预览。 */
 function buildPreview(draft: ScenarioDraft): string {
-  const config = draft.config
+  const config = { ...draft.config, output: configuredScenarioOutput(draft.config.scenario.timeStep) }
   const linkSettings = readLinkSettings(config)
   const lines = [
     '# AFSIM 2.9.0 场景脚本预览；仅内存生成',

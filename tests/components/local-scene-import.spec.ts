@@ -95,7 +95,7 @@ describe('本地场景导入候选', () => {
     expect(result.config!.links.at(-1)).toMatchObject({ id: 'FILE-MW', type: 'MICROWAVE', sourcePlatformId: 'FILE-B', targetPlatformId: 'FILE-A', frequency: 2000 })
     expect(result.config!.informationDemand.at(-1)).toMatchObject({ linkId: 'FILE-MW', sourcePlatformId: 'FILE-B', destinationPlatformIds: ['FILE-A'] })
     expect(result.config!.platforms.find(p => p.id === 'FILE-A')!.linkIds).toEqual(['FILE-MW'])
-    expect(projection.save('SCN-001', { config: result.config, uiExtensions: draft.data.uiExtensions }).ok).toBe(true)
+    expect(projection.save('SCN-001', { config: result.config, uiExtensions: draft.data.uiExtensions, expectedRevision: draft.data.revision }).ok).toBe(true)
     const loaded = projection.get('SCN-001')
     expect(loaded.ok && loaded.data.config).toEqual(result.config)
     expect(buildLocalSceneImport(result.config!, input).errors[0]!.message).toContain('已占用')

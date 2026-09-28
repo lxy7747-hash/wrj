@@ -52,8 +52,8 @@ function draft(): ScenarioDraft {
   return new ScenarioProjection().get('SCN-001').data
 }
 
-function update(value: ScenarioDraft) {
-  return { config: value.config, uiExtensions: value.uiExtensions }
+function update(value: ScenarioDraft, expectedRevision = 0) {
+  return { config: value.config, uiExtensions: value.uiExtensions, expectedRevision }
 }
 
 afterEach(async () => {
@@ -72,11 +72,11 @@ describe('SQLite 场景开发持久化', () => {
     const saved = (await api.put(endpoint).set(headers).send(update(value)).expect(200)).body.data
     const platform = value.config.platforms[3]!
     platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 10 }]
-    const failed = await api.put(endpoint).set(headers).send(update(value)).expect(422)
+    const failed = await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(422)
     expect(failed.body.error).toMatchObject({ fieldPath: 'platforms[3].waypoints[0].speed', message: expect.stringContaining('必须大于 0') })
     expect(storage.load()).toEqual(saved)
     platform.waypoints[0]!.speed = 20
-    await api.put(endpoint).set(headers).send(update(value)).expect(200)
+    await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(200)
     expect(storage.load().config.platforms[3].waypoints[0].speed).toBe(20)
   })
 
@@ -87,7 +87,7 @@ describe('SQLite 场景开发持久化', () => {
     const saved = (await first.api.put(endpoint).set(headers).send(update(current)).expect(200)).body.data
     const legacy = structuredClone(current)
     Reflect.deleteProperty(legacy.config.jammers[0]!, 'jammingRange')
-    const rejected = await first.api.put(endpoint).set(headers).send(update(legacy)).expect(422)
+    const rejected = await first.api.put(endpoint).set(headers).send(update(legacy, saved.revision)).expect(422)
     expect(rejected.body.error).toMatchObject({ fieldPath: 'jammers[0].jammingRange', message: expect.stringContaining('不支持该旧格式') })
     legacy.config.scenario.id = 'SCN-LEGACY-JAMMER'
     const created = await first.api.post('/api/v1/scenarios').set(headers).send(update(legacy)).expect(422)
@@ -229,7 +229,7 @@ describe('SQLite 场景开发持久化', () => {
     const valid = draft()
     const saved = (await api.put(endpoint).set(headers).send(update(valid)).expect(200)).body.data
     valid.config.scenario.duration = -1
-    await api.put(endpoint).set(headers).send(update(valid)).expect(422)
+    await api.put(endpoint).set(headers).send(update(valid, saved.revision)).expect(422)
     await api.put(endpoint).set({ ...headers, 'X-Demo-Role': 'UNKNOWN' }).send(update(draft())).expect(403)
     expect(storage.load()).toEqual(saved)
   })
@@ -240,9 +240,9 @@ describe('SQLite 场景开发持久化', () => {
     const first = structuredClone(original)
     first.config.scenario.name = '第一次保存'
     await api.put(endpoint).set(headers).send(update(original)).expect(200)
-    await api.put(endpoint).set(headers).send(update(first)).expect(200)
+    await api.put(endpoint).set(headers).send(update(first, 1)).expect(200)
     const failedWrite = vi.spyOn(storage, 'save').mockImplementationOnce(() => { throw new Error('secret.db disk failure') })
-    const failed = await api.put(endpoint).set(headers).send(update(original)).expect(503)
+    const failed = await api.put(endpoint).set(headers).send(update(original, 2)).expect(503)
     expect(failed.body.error.code).toBe('ATOMIC_REPLACE_FAILED')
     expect(JSON.stringify(failed.body)).not.toContain('secret.db')
     expect(storage.load().config.scenario.name).toBe('第一次保存')
@@ -263,7 +263,7 @@ describe('SQLite 场景开发持久化', () => {
     await second.api.put(endpoint).set(headers).send({ ...update(stale), expectedRevision: stale.revision }).expect(409)
     const refreshed = (await second.api.get(endpoint).set(headers).expect(200)).body.data as ScenarioDraft
     refreshed.config.scenario.name = '重新加载后修改'
-    await second.api.put(endpoint).set(headers).send(update(refreshed)).expect(200)
+    await second.api.put(endpoint).set(headers).send(update(refreshed, refreshed.revision)).expect(200)
     expect(first.storage.load().config.scenario.name).toBe('重新加载后修改')
   })
 
@@ -307,7 +307,7 @@ describe('SQLite 场景开发持久化', () => {
     expect(storage.load().locked).toBe(false)
     const second = await start(path)
     expect((await second.api.get(endpoint).set(headers).expect(200)).body.data.config).toEqual(legacy.config)
-    await second.api.put(endpoint).set(headers).send(update(legacy)).expect(422)
+    await second.api.put(endpoint).set(headers).send(update(legacy, legacy.revision)).expect(422)
   })
 
   it('已有数据库损坏配置不回退、不覆盖，启动拒绝，运行中 GET 返回可见错误', async () => {
@@ -330,7 +330,7 @@ describe('SQLite 场景开发持久化', () => {
     const saved = (await api.put(endpoint).set(headers).send(update(draft())).expect(200)).body.data
     const db = new DatabaseSync(path)
     try { db.exec("CREATE TRIGGER fail_update BEFORE UPDATE ON scenarios BEGIN SELECT RAISE(ABORT, 'test disk failure'); END") } finally { db.close() }
-    await api.put(endpoint).set(headers).send(update(draft())).expect(503)
+    await api.put(endpoint).set(headers).send(update(draft(), saved.revision)).expect(503)
     expect(storage.load()).toEqual(saved)
   })
 

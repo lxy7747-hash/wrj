@@ -2,7 +2,20 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-## 已接通设备参数写入边界（2026-09-27，当前冻结记录）
+当前前端需求基线为 **V1.1.47**，SHA-256：`D8B09CCB3AB92F0569A3831DAA810C2284BAF389EB9E1C0797FC8D44A4CA458B`。本次仅将输出参数的操作权移至项目配置文件；下方历史冻结记录的旧哈希保持原样，机器合同未因此变更。
+
+## 场景修订与运行编号（2026-09-28，当前冻结记录）
+
+经用户授权，OpenAPI 更新为 **1.8.6 / 83 操作 / 40 写操作**：场景 `PUT` 的 `ScenarioDraftUpdate.expectedRevision` 必填，缺失返回 422，不匹配当前修订返回 409；新建运行不复用编号，初始夹具 `RUN-001` 保留为演示读取证据，不代表后续创建结果。可变场景的警告确认绑定创建时修订号，旧修订确认不能用于新脚本预览。同步领域类型、schema snapshot 与合同负例测试；fixture、数据库结构和其他业务合同未改。旧客户端须先升级为携带当前修订号再写入；回退时须同步恢复写入合同与服务端判定。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `743512B23EDB971F1CF62F9713AE00AFA2A71EDE42D10FD099209284A3856E90` |
+| `contracts/mock-api.openapi.yaml` | `B9D80DE10F9E150075208DD8C2B89ED36F061DC785098B5940A64D5496831583` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `7CB1C293F8C051FC44C930AF5C95B6D69E77D0C29DAE21B700692CFD7F37C580` |
+| `contracts/deterministic-fixtures.json`（未修改） | `C1BB07FCF492F44E9BC99D3BDF5E6D4540DDCBA790A767B9E0D6B6123ED91A6B` |
+
+## 已接通设备参数写入边界（2026-09-27，历史冻结记录）
 
 经用户授权，OpenAPI 更新为 **1.8.5 / 83 操作 / 40 写操作**：写入场景中的 `jammers[].defaultPower` 与 `sensors[].detectionRange` 必须大于 0，读取旧场景仍允许 0；仅 `ScenarioConfigWrite` 收紧，不修改设备读取模型、业务夹具或数据库。写入方须同步升级；回退时须同步恢复写入 schema 与校验规则。
 

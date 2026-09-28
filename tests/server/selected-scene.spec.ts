@@ -25,14 +25,15 @@ it('已保存非默认场景创建单实例 Mock：时长/步长/锁一致，不
     await api.post('/api/v1/scenarios').set(headers).send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: 0 }).expect(201)
     await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-MISSING' }).expect(404)
     const created = (await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-B' }).expect(201)).body.data
+    const runId = created.runId
     expect(created).toMatchObject({ scenarioId: 'SCN-B', configLocked: true, canonical: { totalDuration: 8000 } })
     await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(409)
     expect((await api.get('/api/v1/scenarios/SCN-B').set(headers).expect(200)).body.data.locked).toBe(true)
-    await api.get('/api/v1/simulations/RUN-001/frames/F-00042').set(headers).expect(404)
-    await api.get('/api/v1/simulations/RUN-001/events').set(headers).expect(404)
+    await api.get(`/api/v1/simulations/${runId}/frames/F-00042`).set(headers).expect(404)
+    await api.get(`/api/v1/simulations/${runId}/events`).set(headers).expect(404)
     const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
     for (const [path, body] of [
-      ['/api/v1/simulations/RUN-001/events', { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }],
+      [`/api/v1/simulations/${runId}/events`, { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }],
       ['/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands', parameters],
       ['/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters', { version: 5, effectiveFrameId: 'F-00042', parameters }],
     ] as const) {
@@ -52,12 +53,12 @@ it('已保存非默认场景创建单实例 Mock：时长/步长/锁一致，不
     await received
     expect(messages.filter(value => value.type === 'event').map(value => value.topic)).toEqual(['runtime.state'])
     for (const command of [{ command: 'START', mode: 'INTERACTIVE_SINGLE' }, { command: 'PAUSE' }, { command: 'STEP', stepCount: 1 }]) {
-      await api.post('/api/v1/simulations/RUN-001/commands').set(headers).send(command).expect(200)
+      await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send(command).expect(200)
     }
-    expect((await api.get('/api/v1/simulations/RUN-001').set(headers).expect(200)).body.data.canonical.currentTime).toBe(2)
-    const confirmation = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' }).expect(201)).body.data
+    expect((await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data.canonical.currentTime).toBe(2)
+    const confirmation = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)).body.data
     await api.post(`/api/v1/confirmations/${confirmation.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
-    await api.post('/api/v1/simulations/RUN-001/commands').set(headers).send({ command: 'STOP', confirmationId: confirmation.confirmationId }).expect(200)
+    await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'STOP', confirmationId: confirmation.confirmationId }).expect(200)
     expect((await api.get('/api/v1/scenarios/SCN-B').set(headers).expect(200)).body.data.locked).toBe(false)
   } finally {
     socket?.terminate()

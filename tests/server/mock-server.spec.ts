@@ -14,7 +14,7 @@ describe('集群航点写入范围', () => {
       const config = structuredClone(original.config)
       const index = config.platforms.findIndex(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')
       config.platforms[index]!.waypoints = [{ longitude, latitude, altitude: 0, speed: 1, arrivalTime: 1 }]
-      const response = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(valid ? 200 : 422)
+      const response = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(valid ? 200 : 422)
       if (valid) {
         expect((response.body as ApiSuccess<ScenarioDraft>).data.config.platforms[index]!.waypoints).toEqual(config.platforms[index]!.waypoints)
       } else {
@@ -37,7 +37,7 @@ describe('单链路业务配置', () => {
     const config = structuredClone(original.config)
     const link = config.links.find(item => item.id === 'L-LASER-04')!
     Object.assign(config.informationDemand[0]!, { linkId: link.id, direction: link.direction, volumeMb: 3 })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
     const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)
@@ -60,7 +60,7 @@ describe('单链路业务配置', () => {
     if (mutation === 'source') demand.sourcePlatformId = 'GCC-01'
     if (mutation === 'destination') demand.destinationPlatformIds = ['GCC-01']
     if (mutation === 'direction') demand.direction = 'REVERSE'
-    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(422)
     expect(rejected.body).toMatchObject({ error: { code: 'VALIDATION_FAILED', fieldPath: expect.stringMatching(/^informationDemand\[/) } })
     await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
     await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '非法关联', config }).expect(422)
@@ -78,7 +78,7 @@ describe('机载干扰支撑实体', () => {
     const config = structuredClone(original.config)
     config.jammers[0]!.platformId = 'CMD-01'
     config.platforms.forEach(platform => { platform.jammerIds = platform.id === 'CMD-01' ? [config.jammers[0]!.id] : [] })
-    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(422)
     const error = (rejected.body as { error: { fieldPath: string; message: string } }).error
     expect(error).toMatchObject({ fieldPath: 'jammers[0].platformId' })
     expect(error.message).toContain('干扰节点')
@@ -99,12 +99,12 @@ describe('机载干扰支撑实体', () => {
     jammer.platformId = 'AJ-001'
     config.platforms.push({ id: 'AJ-001', name: '机载干扰测试', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air',
       initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 }, waypoints: [], linkIds: [], sensorIds: [], jammerIds: [jammer.id] })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
     const invalid = structuredClone(config)
     invalid.platforms.at(-1)!.category = 'ground'
-    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: saved.revision }).expect(422)
     expect(rejected.body).toMatchObject({ error: { code: 'VALIDATION_FAILED', fieldPath: `platforms[${config.platforms.length - 1}].category` } })
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(saved)
     const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)
@@ -130,7 +130,7 @@ describe('链路补项保存与快照', () => {
     const satellite = config.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!
     const link = config.links.find(l => l.type === 'SAT')!
     Object.assign(link, { antennaGainCorrectionDb: -2, coding: 'UNCODED', antiJammingGainDb: 6, spatialIsolationDb: 3, relayPlatformId: satellite.id })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config.linkSettings).toEqual(config.linkSettings)
     expect(saved.config.links).toEqual(config.links)
     expect(saved.config.links.find(link => link.id === disabledLink!.id)?.enabled).toBe(false)
@@ -148,12 +148,12 @@ describe('链路补项保存与快照', () => {
     expect((undone.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
     const invalid = structuredClone(saved.config)
     invalid.links.find(l => l.id === link.id)!.relayPlatformId = config.platforms[0]!.id
-    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+    const rejected = await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: (undone.body as ApiSuccess<ScenarioDraft>).data.revision }).expect(422)
     expect((rejected.body as { error: { fieldPath: string } }).error.fieldPath).toMatch(/relayPlatformId$/)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(saved.config)
     const cleared = structuredClone(saved.config)
     cleared.links.find(l => l.id === link.id)!.coding = null
-    const clearedResult = await request(baseUrl).put(path).set(headers).send({ config: cleared, uiExtensions: original.uiExtensions }).expect(200)
+    const clearedResult = await request(baseUrl).put(path).set(headers).send({ config: cleared, uiExtensions: original.uiExtensions, expectedRevision: (undone.body as ApiSuccess<ScenarioDraft>).data.revision }).expect(200)
     expect((clearedResult.body as ApiSuccess<ScenarioDraft>).data.config.links.find(l => l.id === link.id)?.coding).toBeNull()
     const reloaded = await request(baseUrl).get(path).set(headers).expect(200)
     expect((reloaded.body as ApiSuccess<ScenarioDraft>).data.config).toEqual(cleared)
@@ -169,7 +169,7 @@ describe('业务方向与独立启停保存', () => {
     const config = structuredClone(original.config)
     Object.assign(config.informationDemand[0]!, { direction: 'FORWARD', enabled: false, volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
     config.informationDemand.push({ ...config.informationDemand[0]!, id: 'INFO-VIDEO', direction: 'REVERSE', enabled: true, informationType: '侦察信息', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
     const imported = ((await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)).body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
@@ -181,7 +181,7 @@ describe('业务方向与独立启停保存', () => {
     for (const invalid of [{ enabled: 'false' }, { direction: 'INVALID' }]) {
       const candidate = structuredClone(config)
       Object.assign(candidate.informationDemand[0]!, invalid)
-      await request(baseUrl).put(path).set(headers).send({ config: candidate, uiExtensions: original.uiExtensions }).expect(422)
+      await request(baseUrl).put(path).set(headers).send({ config: candidate, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)
       expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
     }
   })
@@ -196,7 +196,7 @@ describe('敌方干扰配置保存', () => {
     const config = structuredClone(original.config)
     config.jammingEnabled = true
     Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, jammingRange: 24 * 1852, defaultPower: 200, bandwidth: 20 })
-    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
     const imported = ((await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(200)).body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
@@ -208,9 +208,9 @@ describe('敌方干扰配置保存', () => {
     for (const mutation of [{ detectionRange: 0 }, { detectionRange: 25 * 1852 }, { jammingRange: 0 }, { jammingRange: 25 * 1852 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
       const invalid = structuredClone(config)
       Object.assign(invalid.jammers[0]!, mutation)
-      await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions }).expect(422)
+      await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)
     }
-    await request(baseUrl).put(path).set(headers).send({ config: { ...config, jammingEnabled: 'true' }, uiExtensions: original.uiExtensions }).expect(422)
+    await request(baseUrl).put(path).set(headers).send({ config: { ...config, jammingEnabled: 'true' }, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
   })
 })
@@ -259,7 +259,7 @@ describe('卫星子类型写入边界', () => {
     const index = config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
     delete config.platforms[index]!.satelliteType
     if (satelliteType !== undefined) config.platforms[index]!.satelliteType = satelliteType as never
-    const put = await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: original.uiExtensions }).expect(422)
+    const put = await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(422)
     expect(put.body).toMatchObject({ error: { fieldPath: `platforms[${index}].satelliteType` } })
     const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
     expect(imported.body).toMatchObject({ error: { fieldPath: `items[0].platforms[${index}].satelliteType` } })
@@ -302,7 +302,7 @@ describe('P8 元数据与确定性重置', () => {
     const initialMessages = await initial
     const draft = (first.scene as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(draft.config); config.scenario.name = 'P8 临时修改'
-    await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: draft.uiExtensions }).expect(200)
+    await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)
     const broadcast = nextJsonMessage(client)
     await request(baseUrl).post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
     expect(await broadcast).toMatchObject({ sequence: 2 })
@@ -907,7 +907,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: changed, uiExtensions: original.uiExtensions })
+      .send({ config: changed, uiExtensions: original.uiExtensions, expectedRevision: original.revision })
       .expect(200)
     expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 5,
@@ -925,7 +925,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'ADMIN')
-      .send({ config: invalid, uiExtensions: original.uiExtensions })
+      .send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: (saved.body as { data: ScenarioDraft }).data.revision })
       .expect(422)
     expect(rejected.body).toMatchObject({
       ok: false,
@@ -938,7 +938,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: platformMutation, uiExtensions: original.uiExtensions })
+      .send({ config: platformMutation, uiExtensions: original.uiExtensions, expectedRevision: (saved.body as { data: ScenarioDraft }).data.revision })
       .expect(200)
     const platformSavedDraft = (platformSaved.body as { data: ScenarioDraft }).data
     expect(platformSavedDraft.revision).toBe(6)
@@ -950,7 +950,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: linkMutation, uiExtensions: original.uiExtensions })
+      .send({ config: linkMutation, uiExtensions: original.uiExtensions, expectedRevision: platformSavedDraft.revision })
       .expect(200)
     const linkSavedDraft = (linkSaved.body as { data: ScenarioDraft }).data
     expect(linkSavedDraft.revision).toBe(7)
@@ -965,7 +965,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: jammerMutation, uiExtensions: original.uiExtensions })
+      .send({ config: jammerMutation, uiExtensions: original.uiExtensions, expectedRevision: linkSavedDraft.revision })
       .expect(200)
     const jammerSavedDraft = (jammerSaved.body as { data: ScenarioDraft }).data
     expect(jammerSavedDraft.revision).toBe(8)
@@ -982,7 +982,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: invalidJammer, uiExtensions: original.uiExtensions })
+      .send({ config: invalidJammer, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
       .expect(422)
     expect(invalidJammerRejected.body).toMatchObject({
       ok: false,
@@ -995,7 +995,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: invalidPower, uiExtensions: original.uiExtensions })
+      .send({ config: invalidPower, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
       .expect(422)
     expect(invalidPowerRejected.body).toMatchObject({
       ok: false,
@@ -1006,14 +1006,14 @@ describe('P0 deterministic mock server', () => {
     zeroPower.jammers[0]!.defaultPower = 0
     const zeroPowerRejected = await request(baseUrl).put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
-      .send({ config: zeroPower, uiExtensions: original.uiExtensions }).expect(422)
+      .send({ config: zeroPower, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision }).expect(422)
     expect((zeroPowerRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('jammers[0].defaultPower')
 
     const zeroRange = structuredClone(jammerMutation)
     zeroRange.sensors[0]!.detectionRange = 0
     const zeroRangeRejected = await request(baseUrl).put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
-      .send({ config: zeroRange, uiExtensions: original.uiExtensions }).expect(422)
+      .send({ config: zeroRange, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision }).expect(422)
     expect((zeroRangeRejected.body as { error: { fieldPath: string } }).error.fieldPath).toBe('sensors[0].detectionRange')
 
     const invalidLink = structuredClone(linkMutation)
@@ -1022,7 +1022,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: invalidLink, uiExtensions: original.uiExtensions })
+      .send({ config: invalidLink, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
       .expect(422)
     expect(invalidLinkRejected.body).toMatchObject({
       ok: false,
@@ -1045,7 +1045,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: overLimit, uiExtensions: original.uiExtensions })
+      .send({ config: overLimit, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
       .expect(422)
     expect(limitRejected.body).toMatchObject({
       ok: false,
@@ -1062,13 +1062,13 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: completeMutation, uiExtensions: completeExtensions })
+      .send({ config: completeMutation, uiExtensions: completeExtensions, expectedRevision: jammerSavedDraft.revision })
       .expect(200)
     expect((completeSaved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 9,
       config: {
         sensors: [{ detectionRange: 120000 }],
-        output: { directory: './scene-output' },
+        output: { directory: 'output' },
         informationDemand: [{ maxLatencyMs: 800 }],
       },
       uiExtensions: { sensors: [{ probability: 0.8 }] },
@@ -1126,7 +1126,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: changed, uiExtensions: undoneDraft.uiExtensions })
+      .send({ config: changed, uiExtensions: undoneDraft.uiExtensions, expectedRevision: undoneDraft.revision })
       .expect(200)
     const savedDraft = (saved.body as { data: ScenarioDraft }).data
     const reset = await request(baseUrl)
@@ -1304,6 +1304,41 @@ describe('P0 deterministic mock server', () => {
     expect((afterValidation.body as { data: ScenarioDraft }).data).toEqual(original)
   })
 
+  it('场景保存必须携带当前修订，交错保存只能有一次成功', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const body = { config: original.config, uiExtensions: original.uiExtensions }
+    const missing = await request(baseUrl).put(path).set(headers).send(body).expect(422)
+    expect(missing.body).toMatchObject({ error: { fieldPath: 'expectedRevision' } })
+    const stale = await request(baseUrl).put(path).set(headers).send({ ...body, expectedRevision: original.revision - 1 }).expect(409)
+    expect(stale.body).toMatchObject({ error: { fieldPath: 'expectedRevision' } })
+    const responses = await Promise.all([
+      request(baseUrl).put(path).set(headers).send({ ...body, expectedRevision: original.revision }) as unknown as Promise<{ status: number }>,
+      request(baseUrl).put(path).set(headers).send({ ...body, expectedRevision: original.revision }) as unknown as Promise<{ status: number }>,
+    ])
+    expect(responses.map(response => response.status).sort()).toEqual([200, 409])
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.revision).toBe(original.revision + 1)
+  })
+
+  it('场景修订变化后旧的脚本警告确认不能继续使用', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const confirmation = (await request(baseUrl).post('/api/v1/confirmations').set(headers)
+      .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' }).expect(201)).body as ApiSuccess<ConfirmationContext>
+    const confirmationId = confirmation.data.confirmationId
+    await request(baseUrl).post(`/api/v1/confirmations/${confirmationId}`).set(headers)
+      .send({ confirm: true }).expect(200)
+    await request(baseUrl).put(path).set(headers)
+      .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)
+    const rejected = await request(baseUrl).post('/api/v1/scripts/preview').set(headers)
+      .send({ scenarioId: 'SCN-001', warningConfirmationId: confirmationId }).expect(409)
+    expect(rejected.body).toMatchObject({ error: { code: 'CONFIRMATION_EXPIRED' } })
+  })
+
   it('按角色完成模板七类动作并保护被引用模板', async () => {
     const { baseUrl } = await startServer()
     const operator = (chain: RequestChain) => chain.set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
@@ -1458,7 +1493,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: inconsistent, uiExtensions: original.data.uiExtensions })
+      .send({ config: inconsistent, uiExtensions: original.data.uiExtensions, expectedRevision: original.data.revision })
       .expect(200)
     const saved = (response.body as { data: ScenarioDraft }).data
     expect(saved.revision).toBe(original.data.revision + 1)
@@ -1478,7 +1513,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: malformed, uiExtensions: saved.uiExtensions })
+      .send({ config: malformed, uiExtensions: saved.uiExtensions, expectedRevision: saved.revision })
       .expect(422)
     expect(rejected.body).toMatchObject({
       ok: false,
@@ -1512,7 +1547,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: mismatchedIdConfig, uiExtensions: original.uiExtensions })
+      .send({ config: mismatchedIdConfig, uiExtensions: original.uiExtensions, expectedRevision: original.revision })
       .expect(422)
     expect(mismatchedId.body).toMatchObject({
       ok: false,
@@ -1530,7 +1565,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: original.config, uiExtensions: changedExtensions })
+      .send({ config: original.config, uiExtensions: changedExtensions, expectedRevision: original.revision })
       .expect(200)
     const saved = (savedResponse.body as { data: ScenarioDraft }).data
     expect(saved.revision).toBe(original.revision + 1)
@@ -1558,7 +1593,7 @@ describe('P0 deterministic mock server', () => {
         .put('/api/v1/scenarios/SCN-001')
         .set('Origin', ORIGIN)
         .set('X-Demo-Role', 'OPERATOR')
-        .send({ config: saved.config, uiExtensions: invalid.uiExtensions })
+        .send({ config: saved.config, uiExtensions: invalid.uiExtensions, expectedRevision: saved.revision })
         .expect(422)
       expect(rejected.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', fieldPath: invalid.fieldPath } })
       expect(((await load().expect(200)).body as { data: ScenarioDraft }).data).toEqual(saved)
@@ -1779,6 +1814,26 @@ describe('P0 deterministic mock server', () => {
       topic: 'runtime.state', sequence: 2, payload: { status: 'IDLE' },
     })
     client.close()
+  })
+
+  it('新运行后已订阅和新订阅客户端均收到同一运行编号的固定帧投影', async () => {
+    const { baseUrl, wsUrl } = await startServer()
+    const subscribe = { type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['simulation.frame'], lastSequence: 0 }
+    const first = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const initial = nextJsonMessages(first, 2)
+    first.send(JSON.stringify(subscribe))
+    expect((await initial)[1]).toMatchObject({ topic: 'simulation.frame', payload: { runId: 'RUN-001' } })
+    const changed = nextJsonMessage(first)
+    const created = await request(baseUrl).post('/api/v1/simulations').set({ Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' })
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+    const runId = (created.body as ApiSuccess<{ runId: string }>).data.runId
+    await expect(changed).resolves.toMatchObject({ topic: 'simulation.frame', payload: { runId } })
+    const second = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const replay = nextJsonMessages(second, 2)
+    second.send(JSON.stringify(subscribe))
+    expect((await replay)[1]).toMatchObject({ topic: 'simulation.frame', payload: { runId } })
+    first.close()
+    second.close()
   })
 
   it('destroys upgrades for non-canonical WebSocket paths', async () => {
@@ -2054,7 +2109,9 @@ describe('P0 deterministic mock server', () => {
       .set(headers)
       .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
       .expect(201)
-    expect(created.body).toMatchObject({ data: { runId: 'RUN-001', uiStatus: 'IDLE', configLocked: true } })
+    const runId = (created.body as { data: { runId: string } }).data.runId
+    expect(runId).not.toBe('RUN-001')
+    expect(created.body).toMatchObject({ data: { uiStatus: 'IDLE', configLocked: true } })
 
     const lockedScenario = await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)
     expect((lockedScenario.body as { data: ScenarioDraft }).data.locked).toBe(true)
@@ -2065,22 +2122,22 @@ describe('P0 deterministic mock server', () => {
       .expect(409)
 
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' })
       .expect(200)
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'PAUSE' })
       .expect(200)
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'STEP', stepCount: 1 })
       .expect(200)
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'STOP' })
       .expect(428)
@@ -2088,7 +2145,7 @@ describe('P0 deterministic mock server', () => {
     const awaitingResponse = await request(baseUrl)
       .post('/api/v1/confirmations')
       .set(headers)
-      .send({ action: 'SIMULATION_STOP', objectId: 'RUN-001' })
+      .send({ action: 'SIMULATION_STOP', objectId: runId })
       .expect(201)
     const awaiting = (awaitingResponse.body as { data: ConfirmationContext }).data
     await request(baseUrl)
@@ -2097,7 +2154,7 @@ describe('P0 deterministic mock server', () => {
       .send({ confirm: true })
       .expect(200)
     const stopped = await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'STOP', confirmationId: awaiting.confirmationId })
       .expect(200)
@@ -2146,18 +2203,19 @@ describe('P0 deterministic mock server', () => {
       .send({ command: 'PAUSE' })
       .expect(409)
 
-    await request(baseUrl)
+    const created = await request(baseUrl)
       .post('/api/v1/simulations')
       .set(headers)
       .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
       .expect(201)
+    const runId = (created.body as { data: { runId: string } }).data.runId
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' })
       .expect(200)
     await request(baseUrl)
-      .post('/api/v1/simulations/RUN-001/commands')
+      .post(`/api/v1/simulations/${runId}/commands`)
       .set(headers)
       .send({ command: 'STOP', confirmationId: 'CONF-MISSING' })
       .expect(409)
@@ -2198,6 +2256,40 @@ describe('P0 deterministic mock server', () => {
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'SUCCESS' }),
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'ERROR' }),
     ]))
+  })
+
+  it('新运行不复用编号，旧运行的停止确认不能停止新运行', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const create = async () => ((await request(baseUrl).post('/api/v1/simulations').set(headers)
+      .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)).body as ApiSuccess<{ runId: string }>).data.runId
+    const confirmStop = async (runId: string) => {
+      const context = ((await request(baseUrl).post('/api/v1/confirmations').set(headers)
+        .send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)).body as ApiSuccess<ConfirmationContext>).data
+      await request(baseUrl).post(`/api/v1/confirmations/${context.confirmationId}`).set(headers)
+        .send({ confirm: true }).expect(200)
+      return context.confirmationId
+    }
+    const first = await create()
+    await request(baseUrl).post(`/api/v1/simulations/${first}/commands`).set(headers)
+      .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const oldConfirmationId = await confirmStop(first)
+    const stopConfirmationId = await confirmStop(first)
+    await request(baseUrl).post(`/api/v1/simulations/${first}/commands`).set(headers)
+      .send({ command: 'STOP', confirmationId: stopConfirmationId }).expect(200)
+    const second = await create()
+    expect(second).not.toBe(first)
+    expect(second).not.toBe('RUN-001')
+    const frame = await request(baseUrl).get(`/api/v1/simulations/${second}/frames/F-00042`).set(headers).expect(200)
+    expect(frame.body).toMatchObject({ data: { runId: second } })
+    expect((frame.body as ApiSuccess<{ evidence: { routeDecisions: Array<{ runId: string }> } }>).data.evidence.routeDecisions
+      .every(decision => decision.runId === second)).toBe(true)
+    await request(baseUrl).post(`/api/v1/simulations/${second}/commands`).set(headers)
+      .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const rejected = await request(baseUrl).post(`/api/v1/simulations/${second}/commands`).set(headers)
+      .send({ command: 'STOP', confirmationId: oldConfirmationId }).expect(409)
+    expect(rejected.body).toMatchObject({ error: { code: 'CONFIRMATION_EXPIRED' } })
+    expect((await request(baseUrl).get(`/api/v1/simulations/${second}`).set(headers).expect(200)).body).toMatchObject({ data: { uiStatus: 'RUNNING' } })
   })
 
   it('执行 P4 闭环幂等和干扰参数版本同步', async () => {

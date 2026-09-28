@@ -267,12 +267,15 @@ describe('OpenAPI contract audit', () => {
     })
     expect(schemaAt(openApi, 'ScenarioDraftUpdate')).toMatchObject({
       additionalProperties: false,
-      required: ['config', 'uiExtensions'],
+      required: ['config', 'uiExtensions', 'expectedRevision'],
       properties: {
         config: { $ref: '#/components/schemas/ScenarioConfigWrite' },
         uiExtensions: { $ref: '#/components/schemas/ScenarioUiExtensions' },
       },
     })
+    const weakened = structuredClone(openApi)
+    schemaAt(weakened, 'ScenarioDraftUpdate').required = ['config', 'uiExtensions']
+    expect(auditOpenApi(weakened).map(finding => finding.code)).toContain('OPENAPI_SCHEMA_SNAPSHOT')
   })
 
   it('rejects a duplicate operationId', () => {

@@ -559,7 +559,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const draft = minimalDraft()
     draft.config.links[0]!.enabled = false
     draft.config.output.eventsEnabled = false
-    const { files, manifest } = buildMissionPackage(draft)
+    const { files, manifest } = buildMissionPackage(draft, { ...draft.config.output, eventsEnabled: false })
     expect(files['mission.txt']).not.toContain('csv_event_output')
     expect(files['platforms.txt']).not.toContain('  comm ')
     expect(manifest.devices).toEqual([])
@@ -627,7 +627,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const draft = minimalDraft()
     draft.config.output.directory = 'custom_out'
     draft.config.output.eventsEnabled = true
-    const generated = buildMissionPackage(draft)
+    const generated = buildMissionPackage(draft, draft.config.output)
     expect(generated.files['mission.txt']).toContain('file custom_out/scenario_events.csv')
     expect(generated.files['observers.txt']).toContain('custom_out/position.csv')
     expect(generated.files['platforms.txt']).not.toContain('link_quality.csv')
@@ -637,21 +637,21 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       resolvedDirectory: 'custom_out', linkQualityEnabled: false, linkSwitchEnabled: false, linkSwitchStatsEmitted: false,
     })
     draft.config.output.linkQualityEnabled = true
-    expect(() => buildMissionPackage(draft)).toThrow('output.linkQualityEnabled')
+    expect(() => buildMissionPackage(draft, draft.config.output)).toThrow('output.linkQualityEnabled')
     draft.config.output.linkQualityEnabled = false
     draft.config.output.linkSwitchEnabled = true
-    expect(() => buildMissionPackage(draft)).toThrow('output.linkSwitchEnabled')
+    expect(() => buildMissionPackage(draft, draft.config.output)).toThrow('output.linkSwitchEnabled')
   })
 
   it.each(['../outside', 'nested/../../outside', '/outside', 'C:\\outside', '\\\\host\\share', 'a/CON', 'a"/b'])('拒绝包外或非法输出目录 %s，保留草稿', directory => {
     const draft = minimalDraft()
     draft.config.output.directory = directory
     const original = structuredClone(draft)
-    expect(() => buildMissionPackage(draft)).toThrow('output.directory')
+    expect(() => buildMissionPackage(draft, draft.config.output)).toThrow('output.directory')
     expect(draft).toEqual(original)
   })
 
-  it.each(['linkQualityEnabled', 'linkSwitchEnabled'] as const)('多平台多业务开启 %s 时拒绝落盘，不创建或截断 CSV', async flag => {
+  it.each(['linkQualityEnabled', 'linkSwitchEnabled'] as const)('旧场景开启 %s 时仍按系统配置落盘，不生成伪造 CSV', async flag => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-unsupported-output-'))
     try {
       const draft = minimalDraft()
@@ -662,9 +662,10 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       draft.config.output[flag] = true
       const original = structuredClone(draft)
       await writeFile(join(root, 'keep.csv'), 'previous run')
-      await expect(writeScriptText(root, new ScriptProjection().preview(draft), draft.revision, draft))
-        .rejects.toMatchObject({ fieldPath: `output.${flag}` })
-      expect(await readdir(root)).toEqual(['keep.csv'])
+      const entry = await writeScriptText(root, new ScriptProjection().preview(draft), draft.revision, draft)
+      const manifest = JSON.parse(await readFile(join(dirname(entry), 'mapping.json'), 'utf8'))
+      expect(manifest.output).toMatchObject({ linkQualityEnabled: false, linkSwitchEnabled: false })
+      expect(await readdir(root)).toContain('keep.csv')
       expect(await readFile(join(root, 'keep.csv'), 'utf8')).toBe('previous run')
       expect(draft).toEqual(original)
     } finally { await rm(root, { recursive: true, force: true }) }

@@ -639,6 +639,46 @@ describe('P3-2 遥测 Store', () => {
     expect(store.events).toHaveLength(4)
   })
 
+  it('默认读取当前新运行的固定帧，不回退请求旧 RUN-001', async () => {
+    const runId = 'RUN-NEW-001'
+    useSimulationStore().applyRun({ ...(fixtureSource.run as SimulationRun), runId })
+    const currentFrame = structuredClone(frame)
+    currentFrame.runId = runId
+    currentFrame.evidence.routeDecisions.forEach(decision => { decision.runId = runId })
+    const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => Promise.resolve(
+      successResponse(String(input).endsWith('/events') ? fixtureSource.events : currentFrame),
+    ))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useTelemetryStore()
+    await expect(store.loadFrame()).resolves.toBe(true)
+    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining(`/simulations/${runId}/frames/F-00042`), expect.any(Object))
+    expect(store.frame?.runId).toBe(runId)
+  })
+
+  it('直接进入能力页时旧运行不存在，恢复当前运行后重新读取固定帧', async () => {
+    const runId = 'RUN-002'
+    const currentRun = { ...(fixtureSource.run as SimulationRun), runId }
+    const currentFrame = structuredClone(frame)
+    currentFrame.runId = runId
+    currentFrame.evidence.routeDecisions.forEach(decision => { decision.runId = runId })
+    const fetchSpy = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/simulations/RUN-001/frames/')) return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'NOT_FOUND', message: '运行不存在。' } }),
+      } as unknown as Response)
+      if (url === 'http://127.0.0.1:4173/api/v1/simulations') return Promise.resolve(successResponse([currentRun]))
+      return Promise.resolve(successResponse(url.endsWith('/events') ? fixtureSource.events : currentFrame))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+
+    await expect(useTelemetryStore().loadFrame()).resolves.toBe(true)
+    expect(useSimulationStore().run?.runId).toBe(runId)
+    expect(useTelemetryStore().frame?.runId).toBe(runId)
+    expect(fetchSpy).toHaveBeenCalledWith(expect.stringContaining(`/simulations/${runId}/frames/F-00042`), expect.any(Object))
+  })
+
   it('正式加载入口接受机载干扰支撑实体，仍拒绝未知平台类型', async () => {
     const candidate = structuredClone(frame)
     const node = candidate.platforms.find(p => p.type === 'GROUND_JAMMER_DETECTION_STATION')!

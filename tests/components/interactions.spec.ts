@@ -309,7 +309,7 @@ describe('P3-4 传播损耗固定算例', () => {
     telemetryStore.resetToSafeEmpty()
     const loadFrame = vi.spyOn(telemetryStore, 'loadFrame').mockResolvedValue(true)
     mount(CompositeLossExample, { global: { plugins: [ElementPlus] } })
-    expect(loadFrame).toHaveBeenCalledWith('RUN-001', 'F-00042')
+    expect(loadFrame).toHaveBeenCalledWith()
   })
 })
 
@@ -417,6 +417,6 @@ describe('P3-5 SNR/BER 固定算例', () => {
     telemetryStore.resetToSafeEmpty()
     const loadFrame = vi.spyOn(telemetryStore, 'loadFrame').mockResolvedValue(true)
     mount(SnrBerExample, { global: { plugins: [ElementPlus] } })
-    expect(loadFrame).toHaveBeenCalledWith('RUN-001', 'F-00042')
+    expect(loadFrame).toHaveBeenCalledWith()
   })
 })

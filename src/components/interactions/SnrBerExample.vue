@@ -82,7 +82,7 @@ function formatBer(value: number): string {
  * @sideEffects 请求本机固定帧接口并替换当前遥测快照。
  */
 function reload(): Promise<boolean> {
-  return telemetryStore.loadFrame('RUN-001', 'F-00042')
+  return telemetryStore.loadFrame()
 }
 
 onMounted(() => {

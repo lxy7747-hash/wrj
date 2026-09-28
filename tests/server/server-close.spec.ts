@@ -27,8 +27,8 @@ it.each(['mission', 'realtime', 'both'])('%s 关闭失败仍关闭 HTTP，保留
   try {
     await once(server.httpServer, 'listening')
     const api = request(server.httpServer)
-    await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
-    await api.post('/api/v1/simulations/RUN-001/commands').set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+    await api.post(`/api/v1/simulations/${created.body.data.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
     const first = server.close()
     expect(server.close()).toBe(first)
     if (failure === 'both') await expect(first).rejects.toMatchObject({ errors: [missionError, realtimeError] })

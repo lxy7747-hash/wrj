@@ -34,7 +34,7 @@ async function setup(persistent = true) {
   for (const id of persistent ? ['SCN-001', 'SCN-SECOND'] as const : ['SCN-SECOND'] as const) {
     const draft = structuredClone(source)
     draft.config.scenario.id = id
-    await api.post('/api/v1/scenarios').set(headers).send({ config: draft.config, uiExtensions: draft.uiExtensions }).expect(201)
+    await api.post('/api/v1/scenarios').set(headers).send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: 0 }).expect(201)
   }
   await api.post('/api/v1/admin/equipment').set(headers).send(record).expect(201)
   for (const id of ['SCN-001', 'SCN-SECOND']) await api.put(`${equipmentUrl}/reference`).set(headers).send({

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.8.5",
+    "version": "1.8.6",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; other simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -3441,7 +3441,7 @@
         "tags": [
           "simulations"
         ],
-        "summary": "Create RUN-001 projection and lock configuration; no process",
+        "summary": "Create a unique run projection and lock configuration; no process",
         "x-rbac": "SIMULATION_CONTROL",
         "responses": {
           "201": {
@@ -11236,7 +11236,8 @@
         "additionalProperties": false,
         "required": [
           "config",
-          "uiExtensions"
+          "uiExtensions",
+          "expectedRevision"
         ],
         "properties": {
           "config": {

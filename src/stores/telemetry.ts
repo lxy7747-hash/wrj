@@ -994,22 +994,29 @@ export const useTelemetryStore = defineStore('telemetry', {
 
     /**
      * 原子加载固定帧及其事件。
-     * @param runId 仿真运行编号，默认 RUN-001。
+     * @param runId 仿真运行编号，默认当前运行（尚未加载运行时先请求冻结 RUN-001）。
      * @param frameId 遥测帧编号，默认 F-00042。
      * @returns 两个接口均成功且同帧时返回 `true`。
      * @sideEffects 成功时替换帧和事件；失败时清空旧数据，避免展示过期结果。
      */
-    async loadFrame(runId = 'RUN-001', frameId = 'F-00042'): Promise<boolean> {
+    async loadFrame(runId?: string, frameId = 'F-00042'): Promise<boolean> {
       const epoch = this.requestEpoch
+      const currentRunId = runId ?? useSimulationStore().run?.runId ?? 'RUN-001'
       this.capabilityState = 'LOADING'
       this.resultFieldPath = null
       try {
         const headers = { 'X-Demo-Role': useAuthStore().role }
         const [frameResponse, eventResponse] = await Promise.all([
-          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/frames/${encodeURIComponent(frameId)}`, { headers }),
-          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(currentRunId)}/frames/${encodeURIComponent(frameId)}`, { headers }),
+          apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(currentRunId)}/events`, { headers }),
         ])
         if (epoch !== this.requestEpoch) return false
+        if (runId === undefined && useSimulationStore().run === null && frameResponse.status === 404) {
+          const restored = await useSimulationStore().resetProjection()
+          if (epoch !== this.requestEpoch) return false
+          const restoredRunId = useSimulationStore().run?.runId
+          if (restored && restoredRunId && restoredRunId !== currentRunId) return this.loadFrame(restoredRunId, frameId)
+        }
         this.capabilityState = 'VALIDATING'
         const frame = await readSuccess(frameResponse, isTelemetryFrame, findTelemetryFieldError)
         if (epoch !== this.requestEpoch) return false
@@ -1018,7 +1025,7 @@ export const useTelemetryStore = defineStore('telemetry', {
           (value): value is SituationEvent[] => Array.isArray(value) && value.every(isSituationEvent),
         )
         if (epoch !== this.requestEpoch) return false
-        if (frame.runId !== runId || frame.frameId !== frameId) throw new Error('返回的遥测帧与请求不一致。')
+        if (frame.runId !== currentRunId || frame.frameId !== frameId) throw new Error('返回的遥测帧与请求不一致。')
         const eventError = findEventCollectionError(frame, events)
         if (eventError !== null) throw eventError
         this.frame = structuredClone(frame)
