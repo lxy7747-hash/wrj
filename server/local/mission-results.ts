@@ -32,7 +32,7 @@ export class LocalMissionResults implements MissionResults {
       const stat = await lstat(path)
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('结果文件不是普通文件。')
     }
-    const [replay, report] = await Promise.all([readLocalReplay(eventPath, positionPath), readLocalReport(eventPath, positionPath)])
+    const [replay, report] = await Promise.all([readLocalReplay(eventPath, positionPath, true), readLocalReport(eventPath, positionPath)])
     const record: MissionResultRecord = {
       resultId: `RESULT-${randomUUID()}`, scenarioId: draft.config.scenario.id,
       scenarioName: draft.config.scenario.name, revision: draft.revision, startedAt, completedAt,

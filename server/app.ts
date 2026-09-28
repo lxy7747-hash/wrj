@@ -588,6 +588,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const auth = new AuthProjection(options.authStorage)
   const scenarios = new ScenarioProjection(options.scenarioStorage)
   const simulations = new SimulationProjection(scenarios)
+  const missionSafety = () => options.missionExecution?.safetyStatus?.() ?? null
+  const unresolvedMission = missionSafety()
+  if (unresolvedMission?.scenarioId) scenarios.setLocked(unresolvedMission.scenarioId, true)
   let mission: MissionProcess | undefined
   let missionStarting: Promise<MissionProcess> | undefined
   let missionStopping = false
@@ -740,6 +743,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       } else if (path.startsWith('/scenarios')) {
         menu = '/scenarios'
         if (req.method !== 'GET') permission = 'SCENARIO_DRAFT_WRITE'
+      } else if (path.startsWith('/templates') && req.method === 'GET') {
+        menu = principal.menuPaths.includes('/scenarios') ? '/scenarios' : '/admin?section=scenario-templates'
+      } else if (path.startsWith('/simulations')) {
+        menu = '/situation'
+        if (req.method !== 'GET') permission = 'SIMULATION_CONTROL'
+      } else if (path.startsWith('/batches')) {
+        menu = '/batches'
+        if (req.method !== 'GET') permission = 'SIMULATION_CONTROL'
+      } else if (path.startsWith('/replays')) {
+        menu = '/replays'
       } else if (req.method !== 'GET') {
         if (/^\/(?:scenarios|scripts)/.test(path)) { permission = 'SCENARIO_DRAFT_WRITE'; menu = '/scenarios' }
         if (/^\/templates\/[^/]+\/copy$/.test(path)) { permission = 'SCENARIO_DRAFT_WRITE'; menu = '/scenarios' }
@@ -760,6 +773,23 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       next()
     } catch { res.status(403).json(failure('PERMISSION_DENIED', 403, { message: '角色配置不可用，请联系管理员。' })) }
+  })
+
+  // 重启后的未结清真实运行不能依赖内存锁；损坏记录无法确定场景时保守阻断全部场景写入。
+  app.use('/api/v1', (req, res, next) => {
+    const safety = missionSafety()
+    if (!safety || req.method === 'GET') { next(); return }
+    const path = req.path
+    let target: unknown
+    if (path === '/scenarios') target = req.body?.config?.scenario?.id
+    else if (path === '/scenarios/import') target = req.body?.items?.[0]?.scenario?.id
+    else if (path.startsWith('/scenarios/')) target = path.split('/')[2]
+    else if (/^\/templates\/[^/]+\/copy$/.test(path)) target = req.body?.scenarioId ?? 'SCN-001'
+    else if (path === '/reset' || path === '/admin/restore'
+      || path.startsWith('/admin/equipment/') || path.startsWith('/admin/master-data/')) target = safety.scenarioId
+    else { next(); return }
+    if (safety.scenarioId && target !== safety.scenarioId) { next(); return }
+    res.status(409).json(failure('CONFIG_LOCKED', 409, { message: safety.message }))
   })
 
   /**
@@ -977,6 +1007,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const requestId = 'REQ-P3-SIMULATION-CREATE'
     const role = requireDemoRole(req, res, auth, 'SIMULATION_CREATE')
     if (role === undefined) return
+    const safety = missionSafety()
+    if (safety) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: safety.message })); return }
     const result = simulations.create(req.body)
     if (!result.ok) {
       auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE')
@@ -1052,6 +1084,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const requestId = 'REQ-P3-SIMULATION-COMMAND'
     const role = requireDemoRole(req, res, auth, 'SIMULATION_COMMAND', runId)
     if (role === undefined) return
+    const safety = missionSafety()
+    if (safety && req.body?.command === 'START') {
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: safety.message }))
+      return
+    }
     if (missionStarting || missionStopping || closing) {
       auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
       res.status(409).json(failure('INVALID_TRANSITION', 409, { message: 'mission 正在启动或停止，请稍后重试。' }))
@@ -1083,7 +1120,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       try {
-        missionStarting = options.missionExecution.start(draft.data)
+        missionStarting = options.missionExecution.start(draft.data, runId)
         const process = await missionStarting
         mission = process
         missionCompletedWhileStopping = undefined
@@ -1092,7 +1129,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           if (mission !== process || closing) return
           if (missionStopping) { missionCompletedWhileStopping = outcome; return }
           mission = undefined
-          const finished = simulations.finishMission(outcome)
+          const safety = missionSafety()
+          const finished = safety ? simulations.markMissionStopUncertain(safety.message) : simulations.finishMission(outcome)
           realtime.publishRuntimeState(finished)
           if (finished.uiStatus === 'ERROR') auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         })
@@ -1101,7 +1139,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         res.status(200).json(success(started, pageMeta(requestId)))
       } catch (error) {
         const message = error instanceof Error ? error.message : 'mission 启动失败，请检查本机配置。'
-        realtime.publishRuntimeState(simulations.finishMission({ code: null, errorMessage: message }))
+        const safety = missionSafety()
+        realtime.publishRuntimeState(safety
+          ? simulations.markMissionStopUncertain(message)
+          : simulations.finishMission({ code: null, errorMessage: message }))
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(error instanceof MissionGenerationError ? 422 : 503).json(failure(
           error instanceof MissionGenerationError ? 'VALIDATION_FAILED' : 'START_FAILED',
@@ -1142,7 +1183,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         mission = undefined
       } catch (error) {
         const message = error instanceof Error ? error.message : 'mission 停止失败。'
-        if (missionCompletedWhileStopping) {
+        if (missionCompletedWhileStopping && !missionSafety()) {
           mission = undefined
           realtime.publishRuntimeState(simulations.finishMission(missionCompletedWhileStopping))
         } else {
@@ -1153,7 +1194,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       } finally {
         missionStopping = false
-        if (mission && missionCompletedWhileStopping) {
+        if (mission && missionCompletedWhileStopping && !missionSafety()) {
           mission = undefined
           realtime.publishRuntimeState(simulations.finishMission(missionCompletedWhileStopping))
         }

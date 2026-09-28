@@ -10,7 +10,8 @@ import type { MissionResultRecord } from '../../src/features/results/mission-res
 /** 仅读取本机配置路径；摘要绑定原始文件，不把文件快照冒充场景或引擎运行编号。 */
 export async function readLocalReport(eventPath: string | undefined, positionPath: string | undefined): Promise<Report | null> {
   if (!eventPath || !positionPath) return null
-  const [replay, log] = await Promise.all([readLocalReplay(eventPath, positionPath), readAfsimLogFile(eventPath)])
+  const log = await readAfsimLogFile(eventPath)
+  const replay = await readLocalReplay(eventPath, positionPath, log.summary.simulationComplete)
   if (!log.valid || !log.summary.timeRange || log.source.sha256 !== replay.initial.sha256) throw new Error('事件文件快照不一致或无有效事件。')
   // 两份文件分别读取后再次比对，拒绝读到正在替换的文件；不修改源文件或回放游标。
   const latest = await Promise.all([readLocalFileSnapshot(eventPath), readLocalFileSnapshot(positionPath)])

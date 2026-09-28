@@ -243,21 +243,6 @@ watch(() => props.modelValue, (visible) => {
         <span v-if="showGridSpacing" class="platform-editor-field__hint">以编队原点为中心方形平铺，默认相邻节点间隔 1 km；不足一行时居中排列，高度保持一致。</span>
       </section>
 
-      <section class="platform-editor-section" aria-labelledby="platform-relation-title">
-        <h4 id="platform-relation-title" class="platform-editor-section__title">关联资源</h4>
-        <div class="position-grid">
-          <el-form-item label="链路">
-            <el-input :model-value="showIds ? editor.linkIds.join(', ') : `${editor.linkIds.length} 条关联链路`" readonly placeholder="由链路端点自动生成" data-testid="platform-link-ids" />
-          </el-form-item>
-          <el-form-item label="传感器">
-            <el-input :model-value="editor.sensorIds.join(', ')" readonly placeholder="由传感器归属自动生成" data-testid="platform-sensor-ids" />
-          </el-form-item>
-          <el-form-item label="干扰器">
-            <el-input :model-value="showIds ? editor.jammerIds.join(', ') : `${editor.jammerIds.length} 台干扰设备`" readonly placeholder="由干扰设备归属自动生成" data-testid="platform-jammer-ids" />
-          </el-form-item>
-        </div>
-      </section>
-
       <section v-if="showWaypoints" class="platform-editor-section" aria-labelledby="platform-waypoint-title">
         <div class="waypoint-heading">
           <h4 id="platform-waypoint-title" class="platform-editor-section__title">航点配置（{{ editor.waypoints.length }}）</h4>

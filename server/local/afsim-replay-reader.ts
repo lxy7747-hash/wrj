@@ -8,14 +8,15 @@ import { readInitialNodes, readLocalFileSnapshot } from './afsim-log-reader.js'
  * @param initialPath 初始化日志的本机路径。
  * @param positionPath 持续追加位置 CSV 的本机路径；未配置时拒绝回退 Mock。
  */
-export async function readLocalReplay(initialPath: string, positionPath: string | undefined): Promise<LocalReplaySnapshot> {
+export async function readLocalReplay(initialPath: string, positionPath: string | undefined, completed = false): Promise<LocalReplaySnapshot> {
   if (!positionPath) throw new Error('尚未配置位置文件。')
   const [initial, file] = await Promise.all([readInitialNodes(initialPath), readLocalFileSnapshot(positionPath)])
   const end = file.bytes.lastIndexOf(10) + 1
   // 完整换行以前才是已提交记录，尾部即使截在 UTF-8 字符中间也留待下次加载。
   const text = new TextDecoder('utf-8', { fatal: true }).decode(file.bytes.subarray(0, end))
   const lines = text.split('\n').slice(0, -1)
-  if (lines.length && parseCsvLine(lines[0]!.trim())?.map((cell) => cell.trim()).join(',') !== POSITION_HEADER) {
+  if ((completed || lines.length > 0)
+    && parseCsvLine(lines[0]?.trim() ?? '')?.map((cell) => cell.trim()).join(',') !== POSITION_HEADER) {
     throw new Error('位置文件表头不正确。')
   }
   const nodes = new Map(initial.nodes.map((node) => [node.platformId, node]))
@@ -51,6 +52,7 @@ export async function readLocalReplay(initialPath: string, positionPath: string 
     recordCount += 1
     durationS = Math.max(durationS, update.time)
   }
+  if (completed && recordCount === 0) throw new Error('已完成运行的位置文件没有通过节点关联校验的有效位置记录。')
   return {
     initial, fileName: file.source.fileName, sha256: file.source.sha256, durationS, recordCount,
     tracks: [...tracks].map(([platformId, positions]) => ({ platformId, positions })),

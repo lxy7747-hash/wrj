@@ -106,6 +106,71 @@ function confirmation(): ConfirmationContext {
 }
 
 describe('P2-1 场景管理页面', () => {
+  it('关联资源只在节点详情展示，查看不修改草稿，锁定仍可查看且切换草稿关闭详情', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore()
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS', dirty: false })
+    const original = JSON.stringify(scenario.draft)
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-platforms').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="detail-platform-0"]').trigger('click')
+    await flushPromises()
+    const details = () => document.querySelector<HTMLElement>('[data-testid="platform-details"]')!
+    expect(details().textContent).toContain(scenario.draft!.config.platforms[0]!.name)
+    expect(details().querySelector('[data-testid="platform-link-ids"]')!.textContent)
+      .toContain(`${scenario.draft!.config.platforms[0]!.linkIds.length} 条关联链路`)
+    expect(details().querySelector('[data-testid="platform-sensor-ids"]')!.textContent).toBe('暂无关联传感器')
+    expect(details().querySelector('input')).toBeNull()
+    expect(JSON.stringify(scenario.draft)).toBe(original)
+    expect(scenario.dirty).toBe(false)
+    document.querySelector<HTMLElement>('[data-testid="close-platform-details"]')!.click()
+    await flushPromises()
+    await wrapper.get('[data-testid="show-scenario-ids"] input').setValue(true)
+    await wrapper.get('[data-testid="detail-platform-7"]').trigger('click')
+    await flushPromises()
+    const station = scenario.draft!.config.platforms[7]!
+    expect(details().querySelector('[data-testid="platform-sensor-ids"]')!.textContent).toContain('ESM-01')
+    expect(details().querySelector('[data-testid="platform-jammer-ids"]')!.textContent).toBe(station.jammerIds.join('、'))
+    expect(details().querySelector('[data-testid="platform-link-ids"]')!.textContent).toBe('暂无关联链路')
+    scenario.projectRuntimeLock(scenario.draft!.config.scenario.id, true)
+    document.querySelector<HTMLElement>('[data-testid="close-platform-details"]')!.click()
+    await flushPromises()
+    expect(wrapper.get('[data-testid="detail-platform-0"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="detail-platform-0"]').trigger('click')
+    await flushPromises()
+    expect(details().querySelector('[data-testid="platform-link-ids"]')!.textContent)
+      .toBe(scenario.draft!.config.platforms[0]!.linkIds.join('、'))
+    scenario.draft!.config.platforms[0]!.linkIds = []
+    await nextTick()
+    expect(details().querySelector('[data-testid="platform-link-ids"]')!.textContent).toBe('暂无关联链路')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(draft(5))))
+    await expect(scenario.loadScenario()).resolves.toBe(true)
+    await flushPromises()
+    expect(document.querySelector('[data-testid="platform-details"]')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('新增和编辑节点弹框不再包含关联资源', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore()
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-platforms').trigger('click')
+    for (const action of ['add-platform', 'edit-platform-3']) {
+      await wrapper.get(`[data-testid="${action}"]`).trigger('click')
+      await flushPromises()
+      const editor = document.querySelector<HTMLElement>('[data-testid="platform-dialog"]')!
+      expect(editor.textContent).not.toContain('关联资源')
+      expect(editor.querySelector('[data-testid="platform-link-ids"]')).toBeNull()
+      document.querySelector<HTMLElement>('[data-testid="cancel-platform"]')!.click()
+      await flushPromises()
+    }
+    wrapper.unmount()
+  })
+
   it('默认显示参数界面，无配置参数按钮，辅助面板仍可通过页签返回', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -778,7 +843,10 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
       '场景基础', '节点配置', '链路配置', '干扰设备', '传感器',
     ])
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('当前草稿已保存')
+    expect(wrapper.find('.scenario-workflow-hint').exists()).toBe(false)
+    expect(wrapper.get('.scenario-workflow-bar').text()).toContain('已就绪')
+    expect(wrapper.get('.scenario-workflow-bar .scenario-required-hint').text()).toContain('* 为必填项')
+    expect(wrapper.find('.scenario-workflow-bar [data-testid="save-scenario"]').exists()).toBe(true)
 
     await wrapper.get('[data-testid="scenario-name"]').setValue(saved.config.scenario.name)
     expect(scenario.dirty).toBe(true)
@@ -787,7 +855,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="workflow-validation"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="next-validation"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="next-script"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('点击“保存”将自动检查并保存')
+    expect(wrapper.get('.scenario-workflow-bar').text()).toContain('未保存')
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
 
@@ -803,7 +871,6 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="script-preview-panel"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="preflight-script"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).not.toContain('预检')
   })
 
   it('按文档展示五项环境配置，分钟换算后保存且不提交重复时长字段', async () => {
@@ -991,11 +1058,10 @@ describe('P2-1 场景管理页面', () => {
     scenario.scriptResultCode = 'PREFLIGHT_SUCCESS'
     scenario.preflight = { valid: true, errors: [], warnings: [] }
     await nextTick()
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).not.toContain('预检')
     expect(wrapper.find('[data-testid="script-next-step"]').exists()).toBe(false)
     await wrapper.get('#tab-scenario').trigger('click')
     await wrapper.get('[data-testid="scenario-name"]').setValue('重新编辑场景')
-    expect(wrapper.get('[data-testid="scenario-next-step"]').text()).toContain('未保存修改')
+    expect(wrapper.get('.scenario-workflow-bar').text()).toContain('未保存')
     expect(wrapper.find('[data-testid="script-preview"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="workflow-script"]').exists()).toBe(false)
   })
@@ -1825,11 +1891,8 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
     await flushPromises()
-    const linkIds = document.querySelector<HTMLInputElement>('[data-testid="platform-link-ids"]')!
-    expect(linkIds.readOnly).toBe(true)
-    expect(linkIds.value).toContain('L-MW-05')
-    const jammerIds = document.querySelector<HTMLInputElement>('[data-testid="platform-jammer-ids"]')!
-    expect(jammerIds.readOnly).toBe(true)
+    expect(document.querySelector('[data-testid="platform-link-ids"]')).toBeNull()
+    expect(document.querySelector('[data-testid="platform-jammer-ids"]')).toBeNull()
     document.querySelector<HTMLElement>('[data-testid="delete-waypoint-0"]')!.click()
     const editName = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
     editName.value = '空中无人作业集群（编辑）'

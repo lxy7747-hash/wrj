@@ -11,11 +11,13 @@
 | 场景开始时刻、时长，平台初始位置、航点路线与卫星轨道模板 | 真实引擎已验证的有限样例 | 生成 `start_date/start_time/end_time`、平台/运动脚本；实机用例核对起始时刻、末时刻、航点位置与卫星高度。`arrivalTime` 没有引擎硬约束，不把配置到达时刻当实测到达时刻。 |
 | 微波、数传、卫星、光纤通信设备，业务周期发送，多目标与同目标备选链路，高空/卫星单跳转发 | 真实引擎已验证的有限样例 | 生成设备与消息脚本；实机用例核对收发、两跳转发与目标接收。频率、带宽、功率、速率、天线增益写入设备参数；这些用例不证明物理层质量、BER 或任意组合的性能。优先级在生成期选择主链路，不是运行时质量选路。 |
 | 雷达侦测候选、干扰设备、定时启停与距离门控、海况和降雨 | 写入脚本；部分实机样例验证 | 生成 `WSF_RADAR_SENSOR`、干扰 weapon/processor、`global_environment` 等。实机已核对定时启停和部分事件；没有验证所有天气/干扰参数的物理效果、探测概率或真实 SNR/BER。 |
-| `scenario.timeStep`、`output.writeInterval`、`environment.simClockSpeed` | 写入脚本，但效果边界受限 | 前两者分别用于 mover `update_interval` 和位置观察器间隔，不能声称实现独立时间步进或所有事件的采样间隔。`clock_rate` 虽写入，在当前 mission `-es` 模式下不改变墙钟倍速。 |
+| `scenario.timeStep`、`output.writeInterval`、`environment.simClockSpeed` | 写入脚本，但效果边界受限 | `scenario.timeStep` 映射为 mover `update_interval`；`position.csv` 由 `MOVER_UPDATED` 触发写入。`output.writeInterval` 当前写入业务发送处理器的 `update_interval`，**不独立控制位置采样周期**。位置记录实际间隔须以 AFSIM 2.9.0 的同平台 CSV 实测为准，不能据配置值推断。`clock_rate` 虽写入，在当前 mission `-es` 模式下不改变墙钟倍速。 |
 | 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、冷却时间、ESM 扩展方向/概率 | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。 |
 | 链路质量 CSV、链路切换 CSV；激光通信、信道编码及非零增益修正等 | 当前不支持或明确阻断 | 缺完整真实测量时，开启 `output.linkQualityEnabled` 或 `output.linkSwitchEnabled` 即按字段路径拒绝生成；不输出伪造的规范 CSV。其他未核实的设备/参数按生成器字段级校验拒绝，不静默改写成替代模型。 |
 
 参数生效的唯一运行证据链为：保存的场景修订 → 生成包的 `input.json`/`mapping.json` 与脚本 → 本次独占运行的 `execution.json` 和日志 → 实际输出文件。`RUN-001`、`F-00042` 属冻结演示证据，不是后续每次新建运行的固定编号或真实测量。
+
+2026-09-28 本机 AFSIM 2.9.0 隔离实验：同一平台 `AIR-01`、时长 20 秒，分别生成 `(timeStep, writeInterval)=(1,5)、(2,5)、(1,10)` 的独立脚本并运行，三次均正常退出。脚本中两台 mover 的 `update_interval` 分别为 1/2/1 秒，业务发送处理器分别为 5/5/10 秒，位置观察器均为 `MOVER_UPDATED`；三份原始 `position.csv` 中该平台的 `TIME` 均为整数秒 0～20，且 0～19 秒后各有约 0.0008 秒的额外记录，不能视为稳定的 5 秒或 10 秒位置采样。该有限样例也不能推出所有运动模型和场景的统一采样周期。原始脚本、引擎日志、CSV 和逐项摘要保存在本机 Git 忽略的 `output/afsim-sampling-20260928/`，不属于冻结合同。
 
 ## 1. 范围与结论
 
@@ -30,7 +32,7 @@
 
 ## 2. 节点与位置
 
-位置输出依据 `observers.txt` 中的 `MoverUpdated`，字段固定为 `TIME,NAME,LON,LAT,ALT,SPEED,HEADING`。节点实例定义主要位于 `comm_platform_INS.txt`，模型定义位于各 `comm_platform_*.txt`。
+位置输出依据 `observers.txt` 中的 `MoverUpdated`；现行生成脚本使用 `MOVER_UPDATED` 观察器触发写入，字段固定为 `TIME,NAME,LON,LAT,ALT,SPEED,HEADING`。这不是由 `output.writeInterval` 独立定时的位置采样器，实际相邻 `TIME` 间隔须用 AFSIM 2.9.0 实测。节点实例定义主要位于 `comm_platform_INS.txt`，模型定义位于各 `comm_platform_*.txt`。
 
 | 含义 | 脚本来源 | position.csv | scenario_events.csv | 对应程度与处理规则 |
 |---|---|---|---|---|
@@ -109,7 +111,7 @@
 | 含义 | 脚本来源 | CSV 对应 | 对应程度与处理规则 |
 |---|---|---|---|
 | 仿真起止日期与时刻 | `start_date/start_time/end_time` | `SIMULATION_STARTING/COMPLETE` 中的 `time/year/month/day/hour/minute/second` | 结果对应；CSV 未声明时区，不能直接追加 UTC 标记或自行认定北京时间 |
-| 位置采样机制 | 运动器 `update_interval`、`MOVER_UPDATED` 观察器 | 相邻位置记录的 `TIME` | 结果对应；记录间隔不是采样配置字段本身 |
+| 位置采样机制 | `scenario.timeStep` → 运动器 `update_interval`；`MOVER_UPDATED` 观察器写出位置 | 同一平台相邻位置记录的 `TIME` | 结果对应；`output.writeInterval` 不独立控制该回调，实际记录间隔须以 AFSIM 2.9.0 实测为准 |
 | 海况、降雨、云层等 | `global_environment` | 两个 CSV 当前没有完整配置字段 | 未提供；仍以输入配置为准 |
 | 输出文件位置 | `csv_event_output.file`、观察器 `mOutputFile` | 文件本身 | CSV 数据行不保存完整文件路径；生成与读取端需要另行约定 |
 | 实际链路质量 | 引擎或质量计算模块 | 当前两个 CSV 没有可用的完整 SNR/BER 时序 | 未提供；设备开启、消息收到、登记关联均不能替代 SNR/BER |
@@ -149,7 +151,7 @@
 | `scenario.id/name/description`：场景编号、名称、描述 | `simulation_name` 可承载名称；编号、描述需保留元数据 | 当前无可靠的场景编号／名称回显 | 输出编号、名称，未输出描述 | 不用为适配 CSV 删除这些管理字段；运行结果与场景绑定需另有记录 |
 | `scenario.startTime`：开始时间，界面按 UTC+8 编辑、配置存 UTC | `start_date/start_time` | 仿真开始、结束事件的日期字段 | 原样输出 ISO 字符串 | 有字段可转换；脚本日期时区口径仍须确认，不能直接丢弃时区 |
 | `scenario.duration`：界面分钟、配置秒 | `end_time` | `SIMULATION_COMPLETE.time` | 输出 `duration ...s` | 有字段可转换；改为真实脚本的结束时间规则，不改界面单位 |
-| `scenario.timeStep`：时间步长 | 运动器、处理器更新间隔等，不存在已确认的单一等价项 | 位置和事件时间间隔仅为结果 | 输出 `time_step` | 不能将所有运动器、传感器、消息周期统一替换成这个值 |
+| `scenario.timeStep`：时间步长 | 当前生成器映射为 mover `update_interval` | 位置和事件时间间隔仅为结果 | 历史候选曾写 `time_step`；现行生成器写 mover `update_interval` | 不能将所有运动器、传感器、消息周期统一替换成这个值，也不能据此直接宣称 position.csv 的实测记录间隔 |
 | `scenario.environment.simClockSpeed`：时钟倍速 | `clock_rate` | 不直接回显 | 未输出 | 已有字段但生成遗漏；具备候选映射，待执行语义验证 |
 | `scenario.environment.seaState/rainRateMmPerHour` | `global_environment.sea_state/rain_rate` | 当前无完整回显 | 输出到自定义 `environment` 行 | 有字段可转换；需生成真实环境区段和单位 |
 | `scenario.environment.temperatureC/humidityPercent/rainLossDbPerKm/multipathEnabled` | 候选脚本未提供同义逐项赋值规则；传播模型与这些值不能简单画等号 | 当前无完整回显 | 输出到自定义 `environment` 行 | 输入已有，物理模型绑定待确认，不能声称已生效 |
@@ -208,7 +210,7 @@
 | 当前配置字段／界面含义 | 候选脚本对应位置 | CSV 输出对应 | 当前生成器处理 | 对接判断 |
 |---|---|---|---|---|
 | `output.directory` | 事件 `file`、观察器 `mOutputFile` | 文件所在位置，不在数据列中 | 输出自定义路径字段 | 需生成统一运行输出目录；不是预览 TXT 落盘目录，不能混用 |
-| `output.writeInterval` | 位置观察器或其他输出机制的采样规则 | 记录时间间隔仅为结果 | 输出 `interval` | 需实现采样规则；不能把它直接当作所有引擎事件的发生间隔 |
+| `output.writeInterval` | 现行生成器的业务发送处理器 `update_interval`；非位置观察器周期 | 位置记录时间间隔仅为结果 | 写入业务处理器 `update_interval`，未给 `MOVER_UPDATED` 观察器设置独立周期 | 当前不独立控制 position.csv 位置采样；实际间隔须按同平台 `TIME` 实测，不能把它当作所有引擎事件的发生间隔 |
 | `output.eventsEnabled` | `csv_event_output` 事件开关 | 实际存在的事件类型 | 输出自定义布尔值 | 已有开关、真实事件配置未生成 |
 | `output.linkQualityEnabled/linkSwitchEnabled` | 需要明确的质量及切换证据输出 | 当前两个 CSV 不提供完整质量与决策证据 | 输出自定义布尔值 | 不能用设备启停代替质量判定或完整切换决策 |
 | `schemaVersion`、草稿 `revision/locked/officialLibraryChanged`、确认与脚本编号 | 应用管理元数据 | 当前 CSV 未携带 | 版本、修订部分写入预览和文件头 | 不要求用户为 CSV 补填；正式运行需另建场景修订与产物绑定，不伪造输出中的场景／运行编号 |
@@ -418,7 +420,7 @@
 | 中继转发（固定单跳） | 已落地 | `SAT` + `relayPlatformId` 指向通信卫星时生成源/星/目标三端设备与两跳网络，卫星 `on_message` 转发到目标；高空中继平台仍只标注 `relayRole`，不自动转发 |
 | 业务四枚举 | 已落地 | 合同 `InformationType` 限定为态势信息/目标指令/侦察信息/状态信息；界面与校验同步；生成拒绝自由文本与视频 |
 | 输出路径与质量/切换标志 | 部分落地 | `csv_event_output`/`position.csv` 使用配置 `output.directory`；`linkQualityEnabled` 复用 MESSAGE/SENSOR 事件作代理；`linkSwitchEnabled` 仅记录标志，无专用切换统计事件 |
-| timeStep | 部分落地 | `timeStep>0` 映射为运动器 `update_interval`；输出采样仍用 `writeInterval` |
+| timeStep | 部分落地 | `timeStep>0` 映射为运动器 `update_interval`；本行原称“输出采样仍用 writeInterval”不适用于位置输出，现行 `position.csv` 由 `MOVER_UPDATED` 触发；有限场景的实际间隔见文首 AFSIM 2.9.0 实测，不泛化到所有场景 |
 | 光纤 | 已落地（生成） | `LinkType` 增加 `FIBER`，生成 `WSF_COMM_TRANSCEIVER` + `WSF_COMM_NETWORK_P2P`；**未做引擎实机验证** |
 | 通信参数已核实项 | 部分落地 | 数传 `bit_error_probability` 等既有映射保留；调制/`berThreshold`/编码/增益修正仍只进 mapping 或阻断 |
 

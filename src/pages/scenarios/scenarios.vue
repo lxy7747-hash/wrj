@@ -69,6 +69,10 @@ const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
 const platformEditorError = ref('')
+const detailPlatformId = ref<string | null>(null)
+const detailPlatform = computed(() => draft.value?.config.platforms.find(platform => platform.id === detailPlatformId.value) ?? null)
+// 重载或切换草稿时关闭详情，避免同编号节点串到另一场景。
+watch(draft, () => { detailPlatformId.value = null }, { flush: 'sync' })
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
 const linkSettingsVisible = ref(false)
@@ -166,25 +170,6 @@ const canMaintainTemplates = computed(() => authStore.authorize('OFFICIAL_TEMPLA
 
 // 校验资格只属于当前草稿；编辑、重载或替换草稿后失效，不把“已保存”等同于“已校验”。
 watch([draft, dirty], () => { draftReviewed.value = false }, { flush: 'sync' })
-
-/** 保存统一检查配置，不再要求用户进入独立的脚本预览或预检步骤。 */
-const workflowMessage = computed(() => {
-  if (draft.value === null) return panelState.value === 'EMPTY'
-    ? '暂无场景，可新建场景，也可导入完整快照或选择场景模板。'
-    : '加载场景后配置参数，点击“保存”即可自动检查并保存。'
-  if (draft.value.locked) return '场景运行中，配置已锁定。请先停止仿真，再修改配置或生成脚本。'
-  if (pending.value || scriptPending.value) return '正在处理当前操作，请稍候。'
-  if (validation.value.errors.length > 0) return '请在检查结果中点击问题定位；修正参数后重新保存。'
-  if (panelState.value === 'ERROR') return `${resultMessage.value} 请处理后重试。`
-  if (configurationTab.value) return dirty.value ? '参数有未保存修改，点击“保存”将自动检查并保存，然后生成 TXT 脚本。' : '当前草稿已保存；再次点击“保存”可重新生成 TXT，不重复写入配置。'
-  if (activeTab.value === 'validation') {
-    if (dirty.value) return '参数有未保存修改，点击“保存”将自动检查并保存。'
-    if (draftReviewed.value) return '当前配置检查通过且已保存。'
-    return '请处理检查结果后重新点击“保存”。'
-  }
-  if (dirty.value) return '参数有未保存修改，请点击“保存”自动检查并保存。'
-  return '选择场景模板应用，或选择下方参数页签继续编辑并保存。'
-})
 
 const BEIJING_UTC_OFFSET_MS = 8 * 60 * 60 * 1000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
@@ -1247,7 +1232,7 @@ watch(activeTab, (tab) => {
     </header>
 
     <div class="scenario-workflow-bar">
-      <p class="scenario-workflow-hint" role="status" data-testid="scenario-next-step">{{ workflowMessage }}</p>
+      <p v-if="draft" class="scenario-required-hint">* 为必填项。航点可不配置，新增后须完整填写。</p>
       <div class="scenario-header__actions">
         <el-tag :type="panelState === 'ERROR' ? 'danger' : dirty ? 'warning' : 'success'">
           {{ dirty ? '未保存' : stateLabels[panelState] }}
@@ -1292,9 +1277,8 @@ watch(activeTab, (tab) => {
       @change.capture="touchField"
       @focusout="touchField"
     >
-      <div class="scenario-validation-notices">
-        <p class="scenario-required-hint">* 为必填项。航点可不配置，新增后须完整填写。</p>
-        <el-alert v-if="showValidationSummary && liveValidation.errors.length > 0" type="error" :closable="false" show-icon data-testid="scenario-live-validation">
+      <div v-if="showValidationSummary && liveValidation.errors.length > 0" class="scenario-validation-notices">
+        <el-alert type="error" :closable="false" show-icon data-testid="scenario-live-validation">
           <template #title>当前有 {{ liveValidation.errors.length }} 项配置错误，不能保存。</template>
           {{ liveValidation.errors[0]?.fieldPath }}：{{ liveValidation.errors[0]?.message }}
           <el-button link type="primary" @click="locateValidationIssue(liveValidation.errors[0]!)">定位首个问题</el-button>
@@ -1454,8 +1438,9 @@ watch(activeTab, (tab) => {
               <el-table-column label="航点" width="70" align="center">
                 <template #default="{ row }">{{ row.waypoints.length }}</template>
               </el-table-column>
-              <el-table-column label="操作" fixed="right" width="140">
+              <el-table-column label="操作" fixed="right" width="190">
                 <template #default="{ row, $index }">
+                  <el-button link type="primary" :disabled="false" :data-testid="`detail-platform-${$index}`" @click="detailPlatformId = row.id">详情</el-button>
                   <el-button link type="primary" :disabled="pending || draft.locked" :data-testid="`edit-platform-${$index}`" @click="openPlatformEditor(row, $index)">编辑</el-button>
                   <el-popconfirm title="确认删除该场景实体？" confirm-button-text="删除" cancel-button-text="取消" @confirm="removePlatform(row, $index)">
                     <template #reference><el-button link type="danger" :disabled="pending || draft.locked" :data-testid="`delete-platform-${$index}`">删除</el-button></template>
@@ -1652,6 +1637,31 @@ watch(activeTab, (tab) => {
       </el-empty>
     </div>
 
+    <el-dialog
+      :model-value="detailPlatform !== null"
+      title="节点详情"
+      width="min(620px, calc(100vw - 2rem))"
+      append-to-body
+      destroy-on-close
+      @update:model-value="!$event && (detailPlatformId = null)"
+    >
+      <div v-if="detailPlatform" data-testid="platform-details">
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="名称">{{ detailPlatform.name }}</el-descriptions-item>
+          <el-descriptions-item v-if="showIds" label="场景实体 ID">{{ detailPlatform.id }}</el-descriptions-item>
+          <el-descriptions-item label="场景实体类型">{{ platformTypeLabel(detailPlatform) }}</el-descriptions-item>
+          <el-descriptions-item label="部署域">{{ deploymentDomainLabels[detailPlatform.category] }}</el-descriptions-item>
+        </el-descriptions>
+        <h4>关联资源</h4>
+        <el-descriptions :column="1" border>
+          <el-descriptions-item label="链路"><span data-testid="platform-link-ids">{{ showIds ? detailPlatform.linkIds.join('、') || '暂无关联链路' : `${detailPlatform.linkIds.length} 条关联链路` }}</span></el-descriptions-item>
+          <el-descriptions-item label="传感器"><span data-testid="platform-sensor-ids">{{ detailPlatform.sensorIds.join('、') || '暂无关联传感器' }}</span></el-descriptions-item>
+          <el-descriptions-item label="干扰器"><span data-testid="platform-jammer-ids">{{ showIds ? detailPlatform.jammerIds.join('、') || '暂无关联干扰设备' : `${detailPlatform.jammerIds.length} 台干扰设备` }}</span></el-descriptions-item>
+        </el-descriptions>
+      </div>
+      <template #footer><el-button data-testid="close-platform-details" @click="detailPlatformId = null">关闭</el-button></template>
+    </el-dialog>
+
     <PlatformEditorDialog
       :show-ids="showIds"
       v-model="platformDialogVisible"
@@ -1744,15 +1754,8 @@ watch(activeTab, (tab) => {
 
 .scenario-workflow-bar {
   flex-wrap: wrap;
+  justify-content: flex-end;
   padding: 0.75rem;
-}
-
-.scenario-workflow-hint {
-  flex: 1 1 22rem;
-  margin: 0;
-  color: var(--console-text-muted);
-  font-size: 13px;
-  line-height: 1.6;
 }
 
 .scenario-stage-content {
@@ -1790,6 +1793,7 @@ watch(activeTab, (tab) => {
 }
 
 .scenario-required-hint {
+  flex: 1 1 20rem;
   margin: 0;
   color: var(--console-text-muted);
   font-size: 12px;
@@ -1797,7 +1801,6 @@ watch(activeTab, (tab) => {
 }
 
 .scenario-validation-notices .el-alert {
-  margin-top: 0.5rem;
   color: var(--console-danger);
   background: color-mix(in srgb, var(--console-danger) 10%, var(--console-surface));
 }

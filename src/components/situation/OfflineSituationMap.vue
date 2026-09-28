@@ -95,9 +95,9 @@ const nodes = computed(() => props.frame?.platforms ?? props.initialNodes ?? [])
 const fileDeviceStates = computed(() => !props.frame && !props.configuredLinks
   ? selectFileDeviceStates(props.fileDeviceEvents ?? [], props.fileTime ?? 0) : [])
 
-function fileEndpointLabel(platformId: string): string {
+function fileEndpointLabel(platformId: string, includeId = true): string {
   const name = nodes.value.find(node => node.platformId === platformId)?.name
-  return name && name !== platformId ? `${name}（${platformId}）` : platformId
+  return name && name !== platformId ? (includeId ? `${name}（${platformId}）` : name) : platformId
 }
 
 const selectedNode = computed(() => (
@@ -144,8 +144,9 @@ function deviceStateLabel(event: FileDeviceEvent): string {
   return event.kind === 'JAMMING' ? (event.active ? '干扰请求进行中' : '干扰已停止') : (event.active ? '已开启' : '已关闭')
 }
 
-function communicationStateLabel(platformId: string, deviceId: string): string {
+function communicationStateLabel(platformId: string, deviceId: string, includeEvidence = true): string {
   const event = fileDeviceStates.value.find(event => event.kind === 'COMMUNICATION' && event.platformId === platformId && event.deviceId === deviceId)
+  if (!includeEvidence) return event ? deviceStateLabel(event) : '未知'
   return event ? `${deviceStateLabel(event)} · ${event.time} 秒 · ${event.sourceEventId}` : '启停未知（无对应事件）'
 }
 
@@ -654,17 +655,41 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="fileLinkDialogVisible" title="通信关联明细" width="min(52rem, calc(100vw - 2rem))" :close-on-click-modal="false">
       <div v-if="selectedFileLink" data-testid="file-link-details">
-        <p>{{ FILE_COMMUNICATION_LABELS[selectedFileLink.type] }} · {{ fileEndpointLabel(selectedFileLink.sourcePlatformId) }} — {{ fileEndpointLabel(selectedFileLink.targetPlatformId) }}</p>
-        <p class="selected-node-dialog__notice">链路状态未知：连线仅为登记关联，不代表物理链路已接通，不表示当前正在转发；设备启停按 {{ fileTime ?? 0 }} 秒的事件显示，不提供 SNR、BER。</p>
+        <p class="selected-node-dialog__notice">登记关联，不代表当前正在传输。</p>
         <el-table :data="selectedFileLink.records" max-height="340">
-          <el-table-column label="登记时间（秒）" prop="time" width="125" />
-          <el-table-column label="发送端" min-width="230">
-            <template #default="{ row }">{{ fileEndpointLabel(row.source.platformName) }} / {{ row.source.communicationName }}<br>{{ row.sourceType }} · {{ row.source.address }}<br>{{ communicationStateLabel(row.source.platformName, row.source.communicationName) }}</template>
+          <el-table-column type="expand" label="详情" width="60">
+            <template #default="{ row }">
+              <el-descriptions class="file-association-evidence" data-testid="file-association-evidence" :column="1" border>
+                <el-descriptions-item label="源节点编号">{{ row.source.platformName }}</el-descriptions-item>
+                <el-descriptions-item label="源端设备编号">{{ row.source.communicationName }}</el-descriptions-item>
+                <el-descriptions-item label="源端设备类型">{{ row.sourceType }}</el-descriptions-item>
+                <el-descriptions-item label="源端通信地址">{{ row.source.address }}</el-descriptions-item>
+                <el-descriptions-item label="源端启停依据">{{ communicationStateLabel(row.source.platformName, row.source.communicationName) }}</el-descriptions-item>
+                <el-descriptions-item label="目标节点编号">{{ row.target.platformName }}</el-descriptions-item>
+                <el-descriptions-item label="目标端设备编号">{{ row.target.communicationName }}</el-descriptions-item>
+                <el-descriptions-item label="目标端设备类型">{{ row.targetType }}</el-descriptions-item>
+                <el-descriptions-item label="目标端通信地址">{{ row.target.address }}</el-descriptions-item>
+                <el-descriptions-item label="目标端启停依据">{{ communicationStateLabel(row.target.platformName, row.target.communicationName) }}</el-descriptions-item>
+                <el-descriptions-item label="登记时间（秒）">{{ row.time }}</el-descriptions-item>
+                <el-descriptions-item label="源记录">{{ row.sourceEventId }}</el-descriptions-item>
+              </el-descriptions>
+            </template>
           </el-table-column>
-          <el-table-column label="接收端" min-width="230">
-            <template #default="{ row }">{{ fileEndpointLabel(row.target.platformName) }} / {{ row.target.communicationName }}<br>{{ row.targetType }} · {{ row.target.address }}<br>{{ communicationStateLabel(row.target.platformName, row.target.communicationName) }}</template>
+          <el-table-column label="源节点" min-width="120">
+            <template #default="{ row }">{{ fileEndpointLabel(row.source.platformName, false) }}</template>
           </el-table-column>
-          <el-table-column label="源记录" prop="sourceEventId" width="120" />
+          <el-table-column label="目标节点" min-width="120">
+            <template #default="{ row }">{{ fileEndpointLabel(row.target.platformName, false) }}</template>
+          </el-table-column>
+          <el-table-column label="通信类型" min-width="130">
+            <template #default>{{ FILE_COMMUNICATION_LABELS[selectedFileLink.type] }}</template>
+          </el-table-column>
+          <el-table-column label="源端设备" min-width="100">
+            <template #default="{ row }">{{ communicationStateLabel(row.source.platformName, row.source.communicationName, false) }}</template>
+          </el-table-column>
+          <el-table-column label="目标端设备" min-width="100">
+            <template #default="{ row }">{{ communicationStateLabel(row.target.platformName, row.target.communicationName, false) }}</template>
+          </el-table-column>
         </el-table>
       </div>
     </el-dialog>
@@ -832,6 +857,11 @@ onBeforeUnmount(() => {
   color: var(--console-amber);
   font-size: var(--console-font-size-min);
   line-height: 1.4;
+}
+
+.file-association-evidence {
+  margin: 0.5rem 1rem;
+  overflow-wrap: anywhere;
 }
 
 .offline-map__legend {

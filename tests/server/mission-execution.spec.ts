@@ -7,11 +7,13 @@ vi.mock('node:child_process', { spy: true })
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const { LocalMissionRunner } = await import('../../server/local/' + 'mission-runner.js')
+const { MissionGuard } = await import('../../server/local/' + 'mission-guard.js')
+const { ScenarioSqliteStorage } = await import('../../server/local/' + 'scenario-sqlite.js')
 const { writeScriptText } = await import('../../server/local/' + 'script-file.js')
 const { MissionGenerationError } = await import('../../server/scripts/' + 'mission-generator.js')
 const { default: request } = await import('super' + 'test')
 const { once, EventEmitter } = await import('node:' + 'events')
-const { mkdtemp, readFile, readdir, rm, appendFile } = await import('node:' + 'fs/promises')
+const { mkdtemp, mkdir, readFile, readdir, rm, appendFile, writeFile } = await import('node:' + 'fs/promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join, dirname } = await import('node:' + 'path')
 const childProcess = await import('node:' + 'child_process')
@@ -56,7 +58,7 @@ describe('真实 mission 命令边界', () => {
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     expect((await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data)
       .toMatchObject({ uiStatus: 'RUNNING', canonical: { processId: 7654 }, configLocked: true })
-    expect(start).toHaveBeenCalledExactlyOnceWith(draft)
+    expect(start).toHaveBeenCalledExactlyOnceWith(draft, activeRunId)
     await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(409)
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     await command({ command: 'PAUSE' }).expect(409)
@@ -170,8 +172,100 @@ function draftForMission(): ScenarioDraft {
 }
 
 describe('本机 mission 执行器', () => {
+  it('spawn 前记录场景和修订，spawn 后补记 PID；真实 close 后才解除拦截', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-guard-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => child)
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
+      const draft = draftForMission()
+      const pending = runner.start(draft, 'RUN-123')
+      await expect.poll(() => vi.mocked(childProcess.spawn).mock.calls.length).toBe(1)
+      const marker = join(root, '.mission-active', 'record.json')
+      expect(JSON.parse(await readFile(marker, 'utf8'))).toMatchObject({ runId: 'RUN-123', scenarioId: 'SCN-001', revision: draft.revision })
+      expect(new LocalMissionRunner(join(root, 'mission.exe'), root).safetyStatus()?.scenarioId).toBe('SCN-001')
+      child.emit('spawn')
+      const process = await pending
+      expect(JSON.parse(await readFile(marker, 'utf8'))).toMatchObject({ pid: 8765, startedAt: process.startedAt, runDirectory: dirname(process.entryPath) })
+      child.emit('close', 1)
+      await process.completed
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('未结清记录写入失败不得 spawn；损坏记录也保持拦截', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-guard-fail-'))
+    try {
+      const marker = join(root, '.mission-active')
+      await mkdir(marker)
+      await writeFile(join(marker, 'record.json'), '{invalid')
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
+      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('未结清') })
+      await expect(runner.start(draftForMission(), 'RUN-123')).rejects.toThrow()
+      expect(childProcess.spawn).not.toHaveBeenCalled()
+      const server = createMockServer({ port: 0, missionExecution: runner })
+      try {
+        if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+        const api = request(server.httpServer)
+        await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(409)
+        await api.put('/api/v1/scenarios/SCN-001').set(headers).send({}).expect(409)
+      } finally { await server.close() }
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('准备启动记录写入失败时不启动进程且保留保守拦截', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-guard-write-'))
+    const guard = MissionGuard.prototype as unknown as { write: (record: unknown) => Promise<void> }
+    vi.spyOn(guard, 'write').mockRejectedValueOnce(new Error('disk full'))
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
+      await expect(runner.start(draftForMission(), 'RUN-123')).rejects.toThrow('disk full')
+      expect(childProcess.spawn).not.toHaveBeenCalled()
+      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('未结清') })
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('新的服务实例拒绝未结清 Mission 的 CREATE/START 和关联场景写入，关闭后恢复', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-restart-'))
+    const db = join(root, 'scenarios.db')
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => { child.emit('close', null); return true }) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    const storageA = new ScenarioSqliteStorage(db)
+    const storageB = new ScenarioSqliteStorage(db)
+    const runnerA = new LocalMissionRunner(join(root, 'mission.exe'), join(root, 'runs'))
+    const first = createMockServer({ port: 0, scenarioStorage: storageA, missionExecution: runnerA })
+    try {
+      if (!first.httpServer.listening) await once(first.httpServer, 'listening')
+      const firstApi = request(first.httpServer)
+      const draft = draftForMission()
+      const createdScene = await firstApi.post('/api/v1/scenarios').set(headers)
+        .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: 0 }).expect(201)
+      const run = await firstApi.post('/api/v1/simulations').set(headers)
+        .send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+      await firstApi.post(`/api/v1/simulations/${run.body.data.runId}/commands`).set(headers)
+        .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+
+      const second = createMockServer({ port: 0, scenarioStorage: storageB,
+        missionExecution: new LocalMissionRunner(join(root, 'mission.exe'), join(root, 'runs')) })
+      try {
+        if (!second.httpServer.listening) await once(second.httpServer, 'listening')
+        const api = request(second.httpServer)
+        expect((await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data.locked).toBe(true)
+        await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(409)
+        await api.post('/api/v1/simulations/RUN-001/commands').set(headers)
+          .send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(409)
+        await api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: draft.config,
+          uiExtensions: draft.uiExtensions, expectedRevision: createdScene.body.data.revision }).expect(409)
+        await api.delete(`/api/v1/scenarios/SCN-001?expectedRevision=${createdScene.body.data.revision}`).set(headers).expect(409)
+      } finally { await second.close() }
+      child.emit('close', 1)
+      await expect.poll(() => runnerA.safetyStatus()).toBeNull()
+      expect((await firstApi.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data.locked).toBe(false)
+    } finally { await first.close(); storageA.close(); storageB.close(); await rm(root, { recursive: true, force: true }) }
+  })
+
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each(['./tasks/TASK-001/output', 'custom/nested/results'])(
-    '真实引擎：输出目录 %s 可用，重复运行不覆盖旧结果', async directory => {
+    '真实引擎：旧草稿目录 %s 不覆盖系统托管输出，重复运行相互隔离', async directory => {
       const root = await mkdtemp(join(tmpdir(), 'wrj-mission-output-'))
       try {
         const draft = draftForMission()
@@ -181,7 +275,10 @@ describe('本机 mission 执行器', () => {
         const firstOutcome = await first.completed
         expect(firstOutcome.code).toBe(0)
         expect(firstOutcome.errorMessage).toBeUndefined()
-        const output = join(dirname(first.entryPath), directory, 'scenario_events.csv')
+        const firstDirectory = dirname(first.entryPath)
+        const firstMapping = JSON.parse(await readFile(join(firstDirectory, 'mapping.json'), 'utf8'))
+        expect(firstMapping.output.resolvedDirectory).toBe('output')
+        const output = join(firstDirectory, firstMapping.output.resolvedDirectory, 'scenario_events.csv')
         const original = await readFile(output, 'utf8')
         expect(original).toContain('SIMULATION_COMPLETE')
         const second = await runner.start(draft)
@@ -190,7 +287,9 @@ describe('本机 mission 执行器', () => {
         expect(secondOutcome.errorMessage).toBeUndefined()
         expect(second.entryPath).not.toBe(first.entryPath)
         expect(await readFile(output, 'utf8')).toBe(original)
-        expect(await readFile(join(dirname(second.entryPath), directory, 'scenario_events.csv'), 'utf8')).toContain('SIMULATION_COMPLETE')
+        const secondDirectory = dirname(second.entryPath)
+        const secondMapping = JSON.parse(await readFile(join(secondDirectory, 'mapping.json'), 'utf8'))
+        expect(await readFile(join(secondDirectory, secondMapping.output.resolvedDirectory, 'scenario_events.csv'), 'utf8')).toContain('SIMULATION_COMPLETE')
       } finally { await rm(root, { recursive: true, force: true }) }
     },
   )
@@ -603,7 +702,8 @@ describe('本机 mission 执行器', () => {
     const child = Object.assign(new EventEmitter(), { pid: 8766, kill: vi.fn(() => true) })
     vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
     try {
-      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draftForMission())
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
+      const process = await runner.start(draftForMission())
       let completed = false
       void process.completed.then(() => { completed = true })
       vi.useFakeTimers()
@@ -612,10 +712,26 @@ describe('本机 mission 执行器', () => {
       await vi.advanceTimersByTimeAsync(10_002)
       await rejection
       expect(completed).toBe(false)
+      expect(runner.safetyStatus()?.scenarioId).toBe('SCN-001')
       expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
       child.emit('close', null)
       expect((await process.completed).errorMessage).toContain('仍未关闭')
+      expect(runner.safetyStatus()).toBeNull()
     } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('进程已关闭但结果捕获失败时标记 ERROR 并解除进程拦截', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-capture-fail-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, { capture: async () => { throw new Error('result write failed') } })
+      const process = await runner.start(draftForMission())
+      await appendFile(join(dirname(process.entryPath), 'mission-console.log'), 'Simulation complete\n')
+      child.emit('close', 0)
+      expect((await process.completed).errorMessage).toContain('结果保存失败')
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { await rm(root, { recursive: true, force: true }) }
   })
 
   it('缺少可执行文件时保留诊断，拒绝相对路径；不触碰既有输出', async () => {

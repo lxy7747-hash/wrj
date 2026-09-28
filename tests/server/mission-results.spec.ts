@@ -64,6 +64,32 @@ describe('真实仿真结果闭环', () => {
     expect(await results.list()).toEqual([])
   })
 
+  it.each([
+    ['缺失', null],
+    ['零字节', ''],
+    ['只有表头', 'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n'],
+    ['全部节点无效', 'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n3,UNKNOWN,-79,32,20,20,175\n'],
+  ])('已完成 Mission 的位置文件%s时不发布结果或 READY 报告', async (_case, content) => {
+    const { output, entry, draft, results } = await setup()
+    const position = join(output, 'position.csv')
+    if (content === null) await rm(position)
+    else await writeFile(position, content)
+    await expect(results.capture(entry, draft, start, end)).rejects.toThrow()
+    await expect((await import('../../server/local/' + 'report-file.js')).readLocalReport(join(output, 'scenario_events.csv'), position)).rejects.toThrow()
+    expect(await results.list()).toEqual([])
+  })
+
+  it('已完成 Mission 至少一条合法位置记录时正常发布', async () => {
+    const { output, entry, draft, results } = await setup()
+    await writeFile(join(output, 'position.csv'), 'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n3,A,-79,32,20,20,175\n3,UNKNOWN,-79,32,20,20,175\n')
+    await results.capture(entry, draft, start, end)
+    const records = await results.list()
+    expect(records).toHaveLength(1)
+    const snapshot = await results.get(records[0]!.resultId)
+    expect(snapshot?.replay).toMatchObject({ recordCount: 1, issueCount: 1 })
+    expect(snapshot?.report).toMatchObject({ status: 'READY', localEvidence: { positionCount: 1 } })
+  })
+
   it('认证读取与 HTML/CSV 附件下载绑定同一次结果；拒绝错报告、错来源和无权限', async () => {
     const { root, entry, draft, results } = await setup()
     await results.capture(entry, draft, start, end)
@@ -125,12 +151,13 @@ describe('真实仿真结果闭环', () => {
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
     const api = request(server.httpServer)
     const saved = (await api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: c, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)).body.data
-    await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
-    const started = (await api.post('/api/v1/simulations/RUN-001/commands').set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data
-    await expect.poll(async () => (await api.get('/api/v1/simulations/RUN-001').set(headers)).body.data.uiStatus, { timeout: 10000 }).not.toBe('RUNNING')
-    const finished = (await api.get('/api/v1/simulations/RUN-001').set(headers)).body.data
+    const created = (await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)).body.data
+    const started = (await api.post(`/api/v1/simulations/${created.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data
+    await expect.poll(async () => (await api.get(`/api/v1/simulations/${created.runId}`).set(headers)).body.data.uiStatus, { timeout: 10000 }).not.toBe('RUNNING')
+    const finished = (await api.get(`/api/v1/simulations/${created.runId}`).set(headers)).body.data
     const directory = join(root, 'runs', (await readdir(join(root, 'runs')))[0])
-    const parsed = await readAfsimLogFile(join(directory, 'custom/results/scenario_events.csv'))
+    const mapping = JSON.parse(await readFile(join(directory, 'mapping.json'), 'utf8'))
+    const parsed = await readAfsimLogFile(join(directory, mapping.output.resolvedDirectory, 'scenario_events.csv'))
     expect(finished, JSON.stringify({ finished, issues: parsed.issues })).toMatchObject({ uiStatus: 'COMPLETED' })
     const records = (await api.get('/api/v1/mission-results').set(headers).expect(200)).body.data
     expect(records).toHaveLength(1)

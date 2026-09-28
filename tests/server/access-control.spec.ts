@@ -35,6 +35,72 @@ async function start() {
 }
 
 describe('兼容角色配置与服务端权限', () => {
+  it('已注册接口按角色、操作权限和页面菜单共同收窄', async () => {
+    const { api, login, access, auth } = await start()
+    const users = [
+      { userId: 'USR-VIEW', username: 'view-only', role: 'OPERATOR' as const },
+      { userId: 'USR-SCENE-ONLY', username: 'scene-only', role: 'OPERATOR' as const },
+      { userId: 'USR-BATCH-READ', username: 'batch-reader', role: 'OPERATOR' as const },
+      { userId: 'USR-REPORT-READ', username: 'report-viewer', role: 'OPERATOR' as const },
+      { userId: 'USR-ADMIN-SCOPE', username: 'admin-scope', role: 'ADMIN' as const },
+    ]
+    for (const user of users) auth.save({ ...user, status: 'ACTIVE' }, password)
+    auth.save({ userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', status: 'ACTIVE' }, password)
+    const profiles = [
+      { profileId: 'VIEW', name: '仅态势查看', baseRole: 'OPERATOR' as const, permissions: ['BUSINESS_READ' as const], menuPaths: ['/situation'] },
+      { profileId: 'SCENE-ONLY', name: '仅场景编辑', baseRole: 'OPERATOR' as const, permissions: ['BUSINESS_READ' as const, 'SCENARIO_DRAFT_WRITE' as const], menuPaths: ['/scenarios'] },
+      { profileId: 'BATCH-READ', name: '仅批次查看', baseRole: 'OPERATOR' as const, permissions: ['BUSINESS_READ' as const], menuPaths: ['/batches'] },
+      { profileId: 'REPORT-READ', name: '仅报告查看', baseRole: 'OPERATOR' as const, permissions: ['BUSINESS_READ' as const], menuPaths: ['/reports'] },
+      { profileId: 'ADMIN-SCOPE', name: '仅账号管理', baseRole: 'ADMIN' as const, permissions: ['BUSINESS_READ' as const, 'USER_ROLE_MAINTAIN' as const], menuPaths: ['/admin'] },
+    ]
+    expect(access.save({ version: 2, profiles, assignments: users.map((user, index) => ({ userId: user.userId, profileId: profiles[index]!.profileId })) }, 1)).toBe(true)
+    const roleHeaders = async (username: string) => ({ ...headers, Cookie: (await login(username)).cookie })
+    const admin = await roleHeaders('admin')
+    const operator = await roleHeaders('operator')
+    const view = await roleHeaders('view-only')
+    const scene = await roleHeaders('scene-only')
+    const batchReader = await roleHeaders('batch-reader')
+    const reportReader = await roleHeaders('report-viewer')
+    const scopedAdmin = await roleHeaders('admin-scope')
+
+    for (const path of ['/api/v1/scenarios', '/api/v1/templates', '/api/v1/reports', '/api/v1/simulations', '/api/v1/batches', '/api/v1/replays', '/api/v1/mission-results']) {
+      await api.get(path).set(admin).expect(200)
+      await api.get(path).set(operator).expect(200)
+    }
+    await api.post('/api/v1/scripts/preview').set(admin).send({}).expect(422)
+    await api.post('/api/v1/scripts/preview').set(operator).send({}).expect(422)
+    await api.post('/api/v1/simulations').set(admin).send({}).expect(422)
+    await api.post('/api/v1/simulations').set(operator).send({}).expect(422)
+    const deniedReads = ['/api/v1/scenarios', '/api/v1/templates', '/api/v1/reports', '/api/v1/batches', '/api/v1/replays', '/api/v1/mission-results']
+    expect(await Promise.all(deniedReads.map(async path => [path, (await api.get(path).set(view)).status]))).toEqual(deniedReads.map(path => [path, 403]))
+    await api.get('/api/v1/simulations').set(view).expect(200)
+    await api.post('/api/v1/simulations').set(view).send({}).expect(403)
+    await api.post('/api/v1/batches').set(view).send({}).expect(403)
+    await api.post('/api/v1/replays/REPLAY-001/commands').set(view).send({}).expect(403)
+    await api.post('/api/v1/scripts/preview').set(view).send({}).expect(403)
+    await api.post('/api/v1/templates/TPL-SCN-001/copy').set(view).send({ name: '副本' }).expect(403)
+    await api.post('/api/v1/scripts/preview').set(scene).send({}).expect(422)
+    await api.get('/api/v1/templates').set(scene).expect(200)
+    await api.get('/api/v1/scenarios').set(scene).expect(200)
+    await api.get('/api/v1/simulations').set(scene).expect(403)
+    await api.get('/api/v1/batches').set(batchReader).expect(200)
+    await api.post('/api/v1/batches').set(batchReader).send({}).expect(403)
+    await api.get('/api/v1/reports').set(reportReader).expect(200)
+    await api.get('/api/v1/mission-results').set(reportReader).expect(200)
+    await api.post('/api/v1/reports/RPT-001/export').set(reportReader).send({ reportId: 'RPT-001', format: 'PDF' }).expect(403)
+    await api.get('/api/v1/admin/users').set(operator).expect(403)
+    await api.get('/api/v1/admin/users').set(admin).expect(200)
+    await api.get('/api/v1/admin/audit').set(operator).expect(403)
+    await api.get('/api/v1/admin/audit').set(admin).expect(200)
+    await api.post('/api/v1/templates').set(operator).send({}).expect(403)
+    await api.post('/api/v1/templates').set(admin).send({}).expect(422)
+    await api.get('/api/v1/admin/users').set(scopedAdmin).expect(200)
+    await api.get('/api/v1/admin/audit').set(scopedAdmin).expect(403)
+    await api.get('/api/v1/admin/master-data').set(scopedAdmin).expect(403)
+    await api.post('/api/v1/templates').set(scopedAdmin).send({}).expect(403)
+    await api.post('/api/v1/reports/RPT-001/export').set(scopedAdmin).send({ reportId: 'RPT-001', format: 'PDF' }).expect(403)
+  })
+
   it('场景读取按菜单限制、模板复制按草稿权限；报告等级只取服务端报告', async () => {
     const { api, login, access, auth } = await start()
     const users = [

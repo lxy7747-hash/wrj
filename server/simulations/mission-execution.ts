@@ -14,6 +14,12 @@ export interface MissionProcess {
   stop(): Promise<void>
 }
 
+export interface MissionSafetyStatus {
+  scenarioId?: string
+  message: string
+}
+
 export interface MissionExecution {
-  start(draft: ScenarioDraft): Promise<MissionProcess>
+  start(draft: ScenarioDraft, runId: string): Promise<MissionProcess>
+  safetyStatus?(): MissionSafetyStatus | null
 }

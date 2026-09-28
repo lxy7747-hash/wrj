@@ -9,6 +9,7 @@ import type { MissionExecution, MissionOutcome, MissionProcess } from '../simula
 import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
+import { MissionGuard } from './mission-guard.js'
 
 const STOP_WAIT_MS = 5_000
 
@@ -28,27 +29,48 @@ async function inspectExecutionLog(path: string): Promise<boolean> {
 
 /** 仅执行服务端生成的独占包；不用 shell，不读取浏览器传入的命令或路径。 */
 export class LocalMissionRunner implements MissionExecution {
+  private readonly guard: MissionGuard
+
   constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults) {
     if (!isAbsolute(executable)) throw new Error('MISSION_EXECUTABLE_PATH 必须为绝对路径。')
+    this.guard = new MissionGuard(directory)
   }
 
-  async start(draft: ScenarioDraft): Promise<MissionProcess> {
+  safetyStatus() { return this.guard.status() }
+
+  async start(draft: ScenarioDraft, runId = 'RUN-LOCAL'): Promise<MissionProcess> {
     if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
     const entryPath = await writeMissionPackage(this.directory, draft)
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
     const startedAt = new Date().toISOString()
+    const record = { runId, scenarioId: draft.config.scenario.id, revision: draft.revision }
+    try { await this.guard.claim(this.directory, record) }
+    catch (error) { await log.close(); throw error }
     // -es 为非实时事件推进：脚本中的 clock_rate / 前端倍速在此模式下不改变墙钟速度；改实时推进需另批确认。
-    const child = spawn(this.executable, ['-es', 'mission.txt'], {
-      cwd, shell: false, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
-    })
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(this.executable, ['-es', 'mission.txt'], {
+        cwd, shell: false, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
+      })
+    } catch (error) {
+      await log.close()
+      await this.guard.clearAfterClose()
+      throw error
+    }
     let exited = false
     let stopped = false
     let stopError: string | undefined
     let processError: Error | undefined
     child.once('error', error => { processError = error })
     child.once('exit', () => { exited = true })
+    const spawned = new Promise<void>((resolve, reject) => {
+      child.once('spawn', () => {
+        void this.guard.spawned({ ...record, pid: child.pid, startedAt, runDirectory: cwd }).then(resolve, reject)
+      })
+      child.once('error', reject)
+    })
     let finish!: (code: number | null) => Promise<void>
     const completed = new Promise<MissionOutcome>(resolve => {
       let finalized = false
@@ -80,18 +102,28 @@ export class LocalMissionRunner implements MissionExecution {
         } catch {
           outcome.errorMessage = stopError ?? `mission 已结束，但运行记录写入失败，请检查 ${cwd}`
         }
+        try { await this.guard.clearAfterClose() }
+        catch { outcome.errorMessage = `${outcome.errorMessage ?? 'mission 已关闭'}；未结清记录清理失败，请管理员检查 ${cwd}` }
         resolve(outcome)
       }
-      child.once('close', code => { void finish(code) })
+      child.once('close', code => { void spawned.catch(() => undefined).then(() => finish(code)) })
     })
     try {
-      await new Promise<void>((resolve, reject) => {
-        child.once('spawn', resolve)
-        child.once('error', reject)
-      })
+      await spawned
     } catch {
-      const outcome = await completed
-      throw new Error(outcome.errorMessage)
+      if (!exited) { try { child.kill() } catch { /* 未确认退出时保留未结清记录。 */ } }
+      if (!child.pid) {
+        const outcome = await completed
+        throw new Error(outcome.errorMessage ?? 'mission 启动失败。')
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const outcome = await Promise.race([
+        completed,
+        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), STOP_WAIT_MS) }),
+      ])
+      if (timer) clearTimeout(timer)
+      if (outcome) throw new Error(outcome.errorMessage ?? 'mission 启动失败。')
+      throw new Error('mission 启动未确认；请检查本机进程与未结清记录。')
     }
     return {
       pid: child.pid!, startedAt, entryPath, completed,
@@ -117,6 +149,7 @@ export class LocalMissionRunner implements MissionExecution {
         }
         const outcome = await completed
         if (stopError) throw new Error(outcome.errorMessage ?? stopError)
+        if (this.safetyStatus()) throw new Error(outcome.errorMessage ?? 'mission 已关闭，但未结清记录未清除。')
       },
     }
   }

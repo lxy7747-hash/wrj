@@ -57,7 +57,7 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
       config: config as ScenarioConfig,
       uiExtensions: { jammers: extensions.jammers!, sensors: extensions.sensors! },
       revision: Number(row.revision),
-      // 仿真锁属于本次进程，不能在重启后恢复已不存在运行的锁。
+      // 运行期锁不写入场景库；真实 Mission 的未结清记录由服务启动层恢复保护。
       locked: false,
       officialLibraryChanged: false,
     }

@@ -127,6 +127,10 @@ describe('AFSIM 追加位置读取', () => {
     await expect(readLocalReplay(initialPath, path)).rejects.toThrow('表头')
     await writeFile(path, '')
     expect(await readLocalReplay(initialPath, path)).toMatchObject({ recordCount: 0, durationS: 0, tracks: [] })
+    await expect(readLocalReplay(initialPath, path, true)).rejects.toThrow('表头')
+    await writeFile(path, HEADER)
+    expect((await readLocalReplay(initialPath, path)).recordCount).toBe(0)
+    await expect(readLocalReplay(initialPath, path, true)).rejects.toThrow('有效位置记录')
   })
 
   it('回放只读接口校验角色和路径输入，纯 Mock 未配置，失败不泄露路径', async () => {
