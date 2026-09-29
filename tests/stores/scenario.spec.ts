@@ -197,6 +197,46 @@ function deferred<T>(): {
 }
 
 describe('P2-1 场景 Store', () => {
+  it.each([true, false])('randomUUID 可用=%s 时，新建、复制和模板应用均可生成独立场景编号', async (hasRandomUUID) => {
+    const browserCrypto = globalThis.crypto
+    const getRandomValues = vi.fn(browserCrypto.getRandomValues.bind(browserCrypto))
+    const randomUUID = vi.fn(browserCrypto.randomUUID.bind(browserCrypto))
+    vi.stubGlobal('crypto', { getRandomValues, ...(hasRandomUUID ? { randomUUID } : {}) })
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(init.body as string)
+      const copied = scenarioDraft()
+      copied.config.scenario.id = request.scenarioId
+      copied.config.scenario.name = request.name
+      return jsonResponse(success(copied))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    const ids: string[] = []
+    for (let index = 0; index < 3; index++) {
+      expect(store.createScenario()).toBe(true)
+      ids.push(store.draft!.config.scenario.id)
+      expect(store.currentScenarioId).toBe(ids.at(-1))
+      store.resetToSafeEmpty()
+    }
+    const source = scenarioDraft()
+    const original = structuredClone(source)
+    expect(store.prepareSceneCopy(source.config, source.uiExtensions, '场景副本')).toBe(true)
+    ids.push(store.draft!.config.scenario.id)
+    expect(source).toEqual(original)
+    expect(store.draft!.revision).toBe(0)
+    expect(fetchSpy).not.toHaveBeenCalled()
+    store.resetToSafeEmpty()
+    expect(await store.copyTemplate('TPL-SCN-001', '模板副本')).toBe(true)
+    ids.push(store.draft!.config.scenario.id)
+    expect(fetchSpy).toHaveBeenCalledOnce()
+    expect(JSON.parse(fetchSpy.mock.calls[0]![1].body as string).scenarioId).toBe(ids.at(-1))
+    expect(ids.every(id => /^SCN-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id))).toBe(true)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(randomUUID).toHaveBeenCalledTimes(hasRandomUUID ? ids.length : 0)
+    expect(getRandomValues).toHaveBeenCalledTimes(hasRandomUUID ? 0 : ids.length)
+  })
+
   it('失败重试保留目标编号；切换、新建、复制和返回列表重置不会沿用旧编号', async () => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const sceneB = scenarioDraft()

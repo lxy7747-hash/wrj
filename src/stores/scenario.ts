@@ -22,6 +22,16 @@ import { toRaw } from 'vue'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { resolveMockOrigin, useAuthStore } from './auth'
 
+/** 局域网 HTTP 不提供 randomUUID；用仍可用的安全随机字节生成同格式的 UUID v4。 */
+function createScenarioId(): ScenarioId {
+  if (typeof globalThis.crypto.randomUUID === 'function') return `SCN-${globalThis.crypto.randomUUID()}` as ScenarioId
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80
+  const hex = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')
+  return `SCN-${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}` as ScenarioId
+}
+
 class InvalidScenarioResponseError extends Error {
   /**
    * 创建场景响应不符合合同的标记错误。
@@ -275,7 +285,7 @@ export const useScenarioStore = defineStore('scenario', {
       if (!useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
       this.resetToSafeEmpty()
       this.draft = { config: withScenarioBasicDefaults(structuredClone(toRaw(config))), uiExtensions: structuredClone(toRaw(extensions)), revision: 0, locked: false, officialLibraryChanged: false }
-      this.draft.config.scenario.id = `SCN-${crypto.randomUUID()}` as ScenarioId
+      this.draft.config.scenario.id = createScenarioId()
       this.currentScenarioId = this.draft.config.scenario.id
       this.draft.config.scenario.name = name
       this.dirty = true
@@ -295,7 +305,7 @@ export const useScenarioStore = defineStore('scenario', {
       this.invalidateLocalFileImport()
       this.clearScriptPreview()
       this.lastConfirmation = null
-      this.draft = createEmptyScenarioDraft(`SCN-${crypto.randomUUID()}`)
+      this.draft = createEmptyScenarioDraft(createScenarioId())
       this.currentScenarioId = this.draft.config.scenario.id
       this.dirty = true
       this.validation = { valid: true, errors: [], warnings: [] }
@@ -849,7 +859,7 @@ export const useScenarioStore = defineStore('scenario', {
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/templates/${encodeURIComponent(templateId)}/copy`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ name, scenarioId: this.draft?.config.scenario.id ?? `SCN-${crypto.randomUUID()}` }),
+          body: JSON.stringify({ name, scenarioId: this.draft?.config.scenario.id ?? createScenarioId() }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.templateState = 'VALIDATING'

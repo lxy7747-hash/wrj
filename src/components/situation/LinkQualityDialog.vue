@@ -81,7 +81,6 @@ function reasonLabel(reason: string): string {
         <div><dt>数据速率</dt><dd>{{ configuredLink.dataRate }} Mbps</dd></div>
         <div v-for="label in ['干信比', '信噪比 SNR', '误码率 BER', '接收功率', '路径损耗', '时延', '可用率', '界面状态', '规范状态', '质量测量时刻']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
       </dl>
-      <p class="link-quality-dialog__notice">以上为已保存配置；尚无当前运行结果，未使用历史数据。</p>
     </div>
     <el-empty v-else-if="!link" description="未找到所选链路，未显示历史数据" :image-size="64" data-testid="link-detail-missing" />
     <el-alert
@@ -125,9 +124,6 @@ function reasonLabel(reason: string): string {
         <template v-else><div v-for="label in ['传输距离', '频率', '带宽', '接收功率', '路径损耗', '调制方式']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div></template>
       </dl>
 
-      <p v-if="!link.detailed" class="link-quality-dialog__notice">
-        当前帧仅提供摘要；距离、频率、功率和路径损耗等详细遥测未提供。
-      </p>
     </div>
   </el-dialog>
 </template>
@@ -210,12 +206,4 @@ function reasonLabel(reason: string): string {
   color: var(--console-danger) !important;
 }
 
-.link-quality-dialog__notice {
-  margin: 0.7rem 0 0;
-  padding: 0.55rem 0.65rem;
-  border-left: 3px solid var(--console-amber);
-  color: var(--console-text-muted);
-  background: rgba(246, 184, 75, 0.08);
-  font-size: var(--console-font-size-min);
-}
 </style>

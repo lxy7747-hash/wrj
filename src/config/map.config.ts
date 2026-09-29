@@ -60,6 +60,11 @@ export const MAP_CONFIG = {
   activeInterferenceRadiusMeters: 12000,
   /** 文件干扰节点范围圈的半径（显示约定，非 CSV 遥测、非引擎参数）：24 海里 × 1852 米/海里。 */
   fileInterferenceRadiusMeters: 24 * 1852,
+  /** 指定文件节点的探测半径，单位米；仅地图示意，不代表 CSV 侦测证据或引擎参数。 */
+  fileDetectionRadiiMeters: {
+    jammer_station_01: 50_000,
+    jammer_airborne_01: 50_000,
+  } as Readonly<Record<string, number>>,
   /** 单颗流星的尾迹占链路长度的比例，不随缩放增加流星数量。 */
   linkFlowTrailRatio: 0.12,
   /** 单颗流星的现实展示时长，不随播放倍速变化；不是发送周期或真实传输时延。 */

@@ -658,7 +658,7 @@ describe('态势主界面', () => {
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('高空中继节点')
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('77.9617°W')
     expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('HIGH_ALT_COMMS_PLATFORM')
-    expect(document.querySelector('.selected-node-dialog')?.textContent).toContain('离线底图覆盖范围之外')
+    expect(document.querySelector('.selected-node-dialog .selected-node-dialog__notice')).toBeNull()
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(fetchSpy).toHaveBeenCalledTimes(1)
@@ -897,6 +897,33 @@ describe('态势主界面', () => {
     }
   })
 
+  it.each(['jammer_station_01', 'jammer_airborne_01', 'UNKNOWN'])('文件节点 %s 的指定探测范围独立于干扰事件，详情显示 50 公里且可单独开关', async (id) => {
+    const nodes = [{ ...INITIAL_NODES.nodes[0]!, platformId: id, name: '地面干扰站01' }]
+    const wrapper = mount(OfflineSituationMap, {
+      props: { frame: null, initialNodes: nodes, fileDeviceEvents: [], fileTime: 0, links: [], selectedNodeId: id, focusTarget: null },
+      global: { plugins: [ElementPlus] }, attachTo: document.body,
+    })
+    mountedWrapper = wrapper
+    const button = wrapper.findAll('[aria-label="态势图层"] button').find(b => b.text() === '探测范围')!
+    expect(button.attributes('disabled') !== undefined).toBe(id === 'UNKNOWN')
+    expect(wrapper.find('.legend-line--detection').exists()).toBe(id !== 'UNKNOWN')
+    mapControllerMock.latestOptions?.onSelectNode(id)
+    await flushPromises()
+    const detail = document.querySelector('[data-testid="selected-node-dialog"]')!.textContent!
+    expect(detail.includes('探测范围（半径）50 公里（指定范围）')).toBe(id !== 'UNKNOWN')
+    expect(detail).not.toContain('干扰范围（半径）')
+    if (id !== 'UNKNOWN') {
+      expect(button.attributes('aria-pressed')).toBe('true')
+      await button.trigger('click')
+      expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('detection', false)
+      await button.trigger('click')
+      expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('detection', true)
+    }
+    await mountedWrapper.setProps({ configuredLinks: [] })
+    expect(button.attributes('disabled')).toBeDefined()
+    expect(wrapper.find('.legend-line--detection').exists()).toBe(false)
+  })
+
   it('流向动画默认跟随系统的减少动态效果偏好，并把初值同步给地图控制器', async () => {
     const mountWith = async (reduced: boolean) => {
       vi.stubGlobal('matchMedia', () => ({ matches: reduced }))
@@ -1002,7 +1029,8 @@ describe('态势主界面', () => {
     expect(text).toContain('1.5 – 1.5 秒')
     expect(text).toContain('CMD_ORDER')
     expect(text).toContain('121.000 毫秒（0.121 秒）')
-    expect(text).toContain('不提供 SNR、BER、丢包率')
+    expect(text).not.toContain('不提供 SNR、BER、丢包率')
+    expect(document.querySelector('[data-testid="message-link-details"] .selected-node-dialog__notice')).toBeNull()
     expect(text).toContain('LOG-L20')
     // 游标早于首次投递时不显示任何业务链路，也不泄露未来投递。
     mapControllerMock.controller.setFileMessageLinks.mockClear()
@@ -1105,7 +1133,7 @@ describe('态势主界面', () => {
     expect(association()).toContain('已关闭 · 2301.17 秒 · LOG-L2')
     expect(association()).toContain('启停未知（无对应事件）')
     expect(association()).toContain('LOG-L20')
-    expect(association()).toContain('登记关联，不代表当前正在传输')
+    expect(association()).not.toContain('登记关联，不代表当前正在传输')
     expect(association()).not.toMatch(/正常|劣化|中断/)
     expect(mapControllerMock.latestOptions?.fileLinks).toEqual(links)
     expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith(selectFileDeviceStates(events, 2301.17))
@@ -1127,7 +1155,7 @@ describe('态势主界面', () => {
     expect(details()).not.toContain('干扰请求进行中')
     await wrapper.setProps({ fileDeviceEvents: [] })
     await flushPromises()
-    expect(details()).toContain('当前时刻无设备启停或干扰请求记录，状态未知')
+    expect(details()).toContain('设备事件：暂无数据')
     expect(association()).not.toContain('已开启')
     expect(association()).toContain('启停未知（无对应事件）')
     expect(mapControllerMock.controller.setFileDeviceStates).toHaveBeenLastCalledWith([])
@@ -1176,7 +1204,7 @@ describe('态势主界面', () => {
     mapControllerMock.latestOptions?.onSelectFileLink?.(links[0]!)
     await flushPromises()
     const details = document.querySelector('[data-testid="file-link-details"]')
-    expect(details?.querySelector('p')?.textContent).toBe('登记关联，不代表当前正在传输。')
+    expect(details?.querySelector('.selected-node-dialog__notice')).toBeNull()
     expect(details?.querySelector('thead')?.textContent).toBe('详情源节点目标节点通信类型源端设备目标端设备')
     const row = details?.querySelector('.el-table__body tbody tr')
     expect(row?.textContent).toContain(sourceName)
@@ -1281,7 +1309,8 @@ describe('态势主界面', () => {
     mapControllerMock.latestOptions!.onSelectConfiguredLink!(configured.find(link => link.id === 'L-MW-01')!)
     await flushPromises()
     const detail = document.querySelector('[data-testid="link-detail-configured"]')
-    expect(detail?.textContent).toContain('尚无当前运行结果')
+    expect(detail?.textContent).not.toContain('尚无当前运行结果')
+    expect(detail?.querySelector('.link-quality-dialog__notice')).toBeNull()
     expect(detail?.textContent).toContain(`${config.links.find(link => link.id === 'L-MW-01')!.frequency} MHz`)
     expect(detail?.textContent).toContain('规范状态暂无数据')
     expect(detail?.textContent).not.toMatch(/固定帧|正常|劣化|中断/)
@@ -1652,7 +1681,8 @@ describe('态势主界面', () => {
     await flushPromises()
     await wrapper.get('tr[data-link-id="L-SAT-02"]').trigger('click')
     await flushPromises()
-    expect(document.body.textContent).toContain('当前帧仅提供摘要')
+    expect(document.body.textContent).not.toContain('当前帧仅提供摘要')
+    expect(document.querySelector('.link-quality-dialog__notice')).toBeNull()
   })
 
   it('展示同帧候选快照并识别空集合和过期结果', async () => {
@@ -1819,10 +1849,8 @@ describe('态势主界面', () => {
     if (realPosition) {
       expect(text).not.toContain('地图临时示意位置')
       expect(text).not.toContain('120.82767°E / 26.018571°N')
-      expect(text).toContain(`二维地图按卫星${configured ? '配置' : '遥测'}经纬度显示`)
     } else {
       expect(text).toContain('地图临时示意位置120.82767°E / 26.018571°N')
-      expect(text).toContain('不是遥测或配置原值')
       expect(text).not.toContain('二维地图按卫星')
     }
     expect(JSON.stringify(frame)).toBe(original)
@@ -1835,8 +1863,8 @@ describe('态势主界面', () => {
     expect(options).not.toBeNull()
     const layerbar = wrapper.get('[aria-label="态势图层"]')
     const layerButtons = layerbar.findAll('button')
-    expect(layerButtons).toHaveLength(5)
-    expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '流向动画', '干扰范围', '经纬网'])
+    expect(layerButtons).toHaveLength(6)
+    expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '流向动画', '干扰范围', '经纬网', '探测范围'])
     const gridButton = layerButtons[4]
     expect(gridButton.attributes('aria-pressed')).toBe('false')
     expect(gridButton.classes()).not.toContain('active')
@@ -1934,7 +1962,8 @@ describe('态势主界面', () => {
     expect(satelliteDialog?.textContent).toContain('地图临时示意位置120.82767°E / 26.018571°N')
     expect(satelliteDialog?.textContent).toContain('高度35786000 m')
     expect(satelliteDialog?.textContent).toContain('速度0 m/s')
-    expect(satelliteDialog?.textContent).toContain('地图临时示意位置仅用于展示，不是遥测或配置原值；高度不按地图比例呈现。')
+    expect(satelliteDialog?.querySelector('.selected-node-dialog__notice')).toBeNull()
+    expect(satelliteDialog?.style.getPropertyValue('--el-dialog-margin-top')).toBe('5vh')
 
     document.querySelector<HTMLElement>('.selected-node-dialog .el-dialog__headerbtn')?.click()
     await flushPromises()
@@ -2028,6 +2057,40 @@ describe('Leaflet 控制器回归', () => {
   }
 
 
+  it('两类指定节点的探测圈半径为 50 公里，移动和倒退复用圆，切换数据源移除，其他节点不冒用范围', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const nodes: SituationMapNode[] = ['jammer_station_01', 'jammer_airborne_01', 'UNKNOWN'].map(platformId => ({
+      ...INITIAL_NODES.nodes[0]!, platformId, name: '地面干扰站01',
+    }))
+    const controller = await createController({ initialNodes: nodes })
+    const detection = groups.mock.results[6]!.value as L.LayerGroup
+    const ranges = detection.getLayers() as L.Circle[]
+    expect(ranges).toHaveLength(2)
+    for (const circle of ranges) {
+      expect(circle.getRadius()).toBe(50_000)
+      expect(circle.options).toMatchObject({ color: '#f5c542', dashArray: '8 6', fill: true, fillColor: '#f5c542', fillOpacity: 0.08, interactive: false })
+      expect(circle.getTooltip()).toBeUndefined()
+    }
+    controller.setNodes(nodes.map(node => ({ ...node, latitude: node.latitude + 0.2 })))
+    expect(detection.getLayers()).toEqual(ranges)
+    expect(ranges[1]!.getLatLng().lat).toBe(nodes[1]!.latitude + 0.2)
+    controller.setNodes(nodes)
+    expect(ranges[1]!.getLatLng().lat).toBe(nodes[1]!.latitude)
+    controller.setFileDeviceStates([])
+    expect(detection.getLayers()).toEqual(ranges)
+    controller.setNodes(nodes.slice(1))
+    expect(detection.getLayers()).toEqual([ranges[1]])
+    controller.setFrame(structuredClone(SITUATION_FRAME_F00042))
+    expect(detection.getLayers()).toHaveLength(0)
+    controller.setFrame(null)
+    controller.setNodes(nodes)
+    expect(detection.getLayers()).toHaveLength(2)
+    controller.setConfiguredLinks([])
+    expect(detection.getLayers()).toHaveLength(0)
+    controller.destroy()
+    expect(detection.getLayers()).toHaveLength(0)
+  })
+
   it('文件范围按干扰事件启停并随回放移动，回退和重载清除未来范围，不推断通信关联通断', async () => {
     const groups = vi.spyOn(L, 'layerGroup')
     const circles = vi.spyOn(L, 'circle')
@@ -2038,6 +2101,9 @@ describe('Leaflet 控制器回归', () => {
     ]
     const controller = await createController({ initialNodes: nodes })
     const interferenceGroup = groups.mock.results[4]!.value as L.LayerGroup
+    // 固定探测示意圈不依赖干扰事件，以下仅检查原有干扰圈。
+    expect(circles).toHaveBeenCalledTimes(2)
+    circles.mockClear()
     expect(circles).not.toHaveBeenCalled()
     const events: FileDeviceEvent[] = nodes.slice(0, 2).map((node, index) => ({
       platformId: node.platformId, deviceId: `jammer-${index}`, kind: 'JAMMING', active: true,

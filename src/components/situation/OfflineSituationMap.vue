@@ -68,6 +68,8 @@ const hasFileLinks = computed(() => !props.frame && !props.configuredLinks && (p
 const hasFileMessageLinks = computed(() => visibleMessageLinks.value.length > 0)
 const hasFileInterference = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => fileJammerRadiusMeters(node.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined))
+const hasFileDetection = computed(() => !props.frame && !props.configuredLinks
+  && props.initialNodes?.some(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined))
 const themeToggleLabel = computed(() => (
   theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
 ))
@@ -89,6 +91,7 @@ const layers = reactive<Record<MapLayer, boolean>>({
   potential: !hasFileMessageLinks.value,
   interference: props.frame !== null || !!hasFileInterference.value,
   grid: MAP_CONFIG.defaults.gridVisible,
+  detection: true,
 })
 
 const nodes = computed(() => props.frame?.platforms ?? props.initialNodes ?? [])
@@ -130,6 +133,7 @@ function formatDelay(seconds: number): string {
  * @returns 当前数据源没有任何内容可绘制时为 true。
  */
 function layerDisabled(layer: MapLayer): boolean {
+  if (layer === 'detection') return !hasFileDetection.value
   if (props.frame) return false
   if (layer === 'links' || layer === 'flow') return !hasFileMessageLinks.value && !props.configuredLinks?.length
   if (layer === 'potential') return !hasFileLinks.value
@@ -138,6 +142,8 @@ function layerDisabled(layer: MapLayer): boolean {
 }
 const selectedFileInterferenceRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
   ? fileJammerRadiusMeters(selectedNode.value.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) : undefined)
+const selectedFileDetectionRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
+  ? MAP_CONFIG.fileDetectionRadiiMeters[selectedNode.value.platformId] : undefined)
 const selectedFileDevices = computed(() => fileDeviceStates.value.filter(event => event.platformId === selectedNode.value?.platformId))
 
 function deviceStateLabel(event: FileDeviceEvent): string {
@@ -161,14 +167,6 @@ const selectedNodePosition = computed(() => {
   return resolvePlatformCoordinates(selectedNode.value, nodes.value)
 })
 const usesTemporarySatellitePosition = computed(() => isSatellitePlatform(selectedNode.value) && !MAP_CONFIG.useSatelliteDataPosition)
-
-/** 使用当前底图包的覆盖范围提示坐标越界，不改写或裁剪节点位置。 */
-const nodeOutsideBasemap = computed(() => {
-  if (!selectedNode.value) return false
-  const [[south, west], [north, east]] = MAP_CONFIG.resources[basemap.value].bounds
-  const { longitude, latitude } = selectedNodePosition.value
-  return longitude < west || longitude > east || latitude < south || latitude > north
-})
 
 /**
  * 向父组件转发节点选择事件。
@@ -439,6 +437,7 @@ onBeforeUnmount(() => {
             ['flow', '流向动画'],
             ['interference', '干扰范围'],
             ['grid', '经纬网'],
+            ['detection', '探测范围'],
           ] as const)"
           :key="layer[0]"
           type="button"
@@ -546,6 +545,7 @@ onBeforeUnmount(() => {
     <el-dialog
       v-model="selectedNodeDialogVisible"
       width="min(38rem, calc(100vw - 2rem))"
+      top="5vh"
       class="selected-node-dialog"
       :close-on-click-modal="false"
     >
@@ -568,9 +568,9 @@ onBeforeUnmount(() => {
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ configuredLinks ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
           <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（指定范围）</dd></div>
+          <div v-if="selectedFileDetectionRadius !== undefined"><dt>探测范围（半径）</dt><dd>{{ selectedFileDetectionRadius / 1000 }} 公里（指定范围）</dd></div>
         </dl>
         <template v-if="!frame && !configuredLinks">
-          <p class="selected-node-dialog__notice">设备状态截至 {{ fileTime ?? 0 }} 秒；范围圈仅表示有进行中的干扰请求，不证明实际干扰效果。</p>
           <el-table v-if="selectedFileDevices.length" :data="selectedFileDevices" data-testid="file-device-states" max-height="260">
             <el-table-column prop="deviceId" label="设备标识" min-width="150" />
             <el-table-column label="事件状态" min-width="160">
@@ -583,9 +583,8 @@ onBeforeUnmount(() => {
               <template #default="{ row }">{{ row.time }} 秒 · {{ row.sourceEventId }}</template>
             </el-table-column>
           </el-table>
-          <p v-else data-testid="file-device-empty" class="selected-node-dialog__notice">当前时刻无设备启停或干扰请求记录，状态未知。</p>
+          <p v-else data-testid="file-device-empty" class="selected-node-dialog__empty">设备事件：暂无数据</p>
           <template v-if="selectedNodeMessageLinks.length">
-            <p class="selected-node-dialog__notice">业务链路：由消息收发证据推导，表示已发生的投递及其方向，不表示链路质量。</p>
             <el-table :data="selectedNodeMessageLinks" max-height="240" data-testid="node-message-links">
               <el-table-column label="业务链路" min-width="240">
                 <template #default="{ row }">{{ FILE_COMMUNICATION_LABELS[row.type as keyof typeof FILE_COMMUNICATION_LABELS] }} · {{ fileEndpointLabel(row.sourcePlatformId) }} → {{ fileEndpointLabel(row.targetPlatformId) }}</template>
@@ -599,9 +598,8 @@ onBeforeUnmount(() => {
             </el-table>
           </template>
           <template v-if="selectedNodeFileLinks.length">
-            <p class="selected-node-dialog__notice">登记的通信关联（含地图未绘制的关联），不表示当前正在转发，也不证明节点间存在业务。</p>
             <el-table :data="selectedNodeFileLinks" max-height="240" data-testid="node-file-associations">
-              <el-table-column label="关联" min-width="240">
+              <el-table-column label="登记关联" min-width="240">
                 <template #default="{ row }">{{ FILE_COMMUNICATION_LABELS[row.type as keyof typeof FILE_COMMUNICATION_LABELS] }} · {{ fileEndpointLabel(row.sourcePlatformId) }} — {{ fileEndpointLabel(row.targetPlatformId) }}</template>
               </el-table-column>
               <el-table-column label="明细" width="85">
@@ -610,15 +608,6 @@ onBeforeUnmount(() => {
             </el-table>
           </template>
         </template>
-        <p v-if="nodeOutsideBasemap" class="selected-node-dialog__notice">
-          该节点位于当前离线底图覆盖范围之外，坐标按原值显示。
-        </p>
-        <p
-          v-if="isSatellitePlatform(selectedNode)"
-          class="selected-node-dialog__notice"
-        >
-          {{ usesTemporarySatellitePosition ? '地图临时示意位置仅用于展示，不是遥测或配置原值；高度不按地图比例呈现。' : configuredLinks ? '二维地图按卫星配置经纬度显示，高度不按地图比例呈现。' : '二维地图按卫星遥测经纬度显示，高度不按地图比例呈现。' }}
-        </p>
       </div>
     </el-dialog>
 
@@ -634,7 +623,6 @@ onBeforeUnmount(() => {
           <div><dt>业务方向</dt><dd>{{ selectedMessageLink.direction ? FILE_MESSAGE_DIRECTION_LABELS[selectedMessageLink.direction] : '未判定（同一链路承载多类业务）' }}</dd></div>
           <div><dt>投递时延中位</dt><dd>{{ formatDelay(selectedMessageLink.medianDelayS) }}</dd></div>
         </dl>
-        <p class="selected-node-dialog__notice">连线表示已发生的消息投递，箭头表示投递方向；不表示链路质量，也不提供 SNR、BER、丢包率。设备状态按 {{ fileTime ?? 0 }} 秒的事件显示。</p>
         <el-table :data="selectedMessageLink.records" max-height="320">
           <el-table-column label="接收时刻（秒）" prop="time" width="130" />
           <el-table-column label="发送端" min-width="200">
@@ -655,7 +643,6 @@ onBeforeUnmount(() => {
 
     <el-dialog v-model="fileLinkDialogVisible" title="通信关联明细" width="min(52rem, calc(100vw - 2rem))" :close-on-click-modal="false">
       <div v-if="selectedFileLink" data-testid="file-link-details">
-        <p class="selected-node-dialog__notice">登记关联，不代表当前正在传输。</p>
         <el-table :data="selectedFileLink.records" max-height="340">
           <el-table-column type="expand" label="详情" width="60">
             <template #default="{ row }">
@@ -702,6 +689,7 @@ onBeforeUnmount(() => {
       <div><i class="legend-line legend-line--unavailable"></i>受干扰 / 失效链路</div>
       <div><i class="legend-line legend-line--fiber"></i>光纤链路</div>
       <div v-if="hasFileMessageLinks"><i class="legend-arrow" aria-hidden="true">▲</i>消息投递方向</div>
+      <div v-if="hasFileDetection"><i class="legend-line legend-line--detection"></i>探测范围</div>
     </div>
 
   </section>
@@ -811,6 +799,35 @@ onBeforeUnmount(() => {
   font-size: var(--console-font-size-min);
 }
 
+:global(.el-dialog.selected-node-dialog) {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  margin-bottom: 0;
+  overflow: hidden;
+}
+
+:global(.selected-node-dialog > .el-dialog__header) {
+  flex-shrink: 0;
+}
+
+:global(.selected-node-dialog > .el-dialog__body) {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.selected-node-dialog__body {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.selected-node-dialog__empty {
+  margin: 0;
+  color: var(--console-text-muted);
+}
+
 .selected-node-dialog__header {
   display: grid;
   gap: 0.15rem;
@@ -825,6 +842,7 @@ onBeforeUnmount(() => {
 .selected-node-dialog__header strong {
   color: var(--console-cyan);
   font-size: var(--console-font-size-min);
+  overflow-wrap: anywhere;
 }
 
 .selected-node-dialog__grid dt {
@@ -850,13 +868,6 @@ onBeforeUnmount(() => {
   font-size: var(--console-font-size-min);
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.selected-node-dialog__notice {
-  margin: 0.45rem 0 0;
-  color: var(--console-amber);
-  font-size: var(--console-font-size-min);
-  line-height: 1.4;
 }
 
 .file-association-evidence {
@@ -891,6 +902,11 @@ onBeforeUnmount(() => {
 .legend-line {
   width: 1.625rem;
   border-top: 3px solid;
+}
+
+.legend-line--detection {
+  border-color: #f5c542;
+  border-top-style: dashed;
 }
 
 .legend-line--satellite {

@@ -18,7 +18,7 @@ import {
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 
-export type MapLayer = 'nodes' | 'links' | 'flow' | 'potential' | 'interference' | 'grid'
+export type MapLayer = 'nodes' | 'links' | 'flow' | 'potential' | 'interference' | 'grid' | 'detection'
 
 /** 文件播放时钟；定位/换源必须更新 key，不把跳过的消息补播。 */
 export interface FileLinkPlayback {
@@ -468,6 +468,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     potential: L.layerGroup(),
     interference: L.layerGroup(),
     grid: L.layerGroup(),
+    detection: L.layerGroup(),
   }
   const layerVisibility: Record<MapLayer, boolean> = {
     nodes: true,
@@ -478,6 +479,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
     potential: true,
     interference: true,
     grid: MAP_CONFIG.defaults.gridVisible,
+    detection: true,
   }
 
   /**
@@ -507,6 +509,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
 
   /** 根据当前联动目标重绘节点、链路和干扰范围的唯一高亮态。 */
   const renderBusinessLayers = (): void => {
+    renderFileDetection(layerGroups.detection, currentFrame || configuredLinks ? [] : currentNodes)
     // 底图复用后，切到场景或遥测源必须同步移除文件专属的登记关联和流向动画。
     if (currentFrame || configuredLinks) renderConnections(layerGroups.potential, [], layerGroups.flow)
     let highlightedNodeId = selectedNodeId
@@ -589,7 +592,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   renderGrid(layerGroups.grid, currentTheme)
   renderBusinessLayers()
 
-  const layerOrder: MapLayer[] = ['grid', 'potential', 'interference', 'flow', 'links', 'nodes']
+  const layerOrder: MapLayer[] = ['grid', 'detection', 'potential', 'interference', 'flow', 'links', 'nodes']
   layerOrder.forEach((layer) => {
     if (layerVisibility[layer]) layerGroups[layer].addTo(map as L.Map)
   })
@@ -851,6 +854,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         connectionLayers.delete(group)
         flowLayers.delete(group)
         interferenceLayers.delete(group)
+        detectionLayers.delete(group)
       })
       currentLinks = []
     },
@@ -1485,6 +1489,34 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
 }
 
 const interferenceLayers = new WeakMap<L.LayerGroup, Map<string, { circle: L.Circle; selected: boolean }>>()
+
+const detectionLayers = new WeakMap<L.LayerGroup, Map<string, L.Circle>>()
+
+/** 固定半径示意随文件节点移动；不依赖干扰事件，也不产生侦测结果。 */
+function renderFileDetection(group: L.LayerGroup, nodes: SituationMapNode[]): void {
+  const entries = detectionLayers.get(group) ?? new Map<string, L.Circle>()
+  detectionLayers.set(group, entries)
+  const platforms = nodes.filter(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined)
+  const ids = new Set(platforms.map(node => node.platformId))
+  for (const [id, circle] of entries) {
+    if (!ids.has(id)) { group.removeLayer(circle); entries.delete(id) }
+  }
+  for (const platform of platforms) {
+    const radius = MAP_CONFIG.fileDetectionRadiiMeters[platform.platformId]!
+    const position = pointForPlatform(platform, nodes)
+    const circle = entries.get(platform.platformId)
+    if (circle) {
+      if (!circle.getLatLng().equals(position)) circle.setLatLng(position)
+      if (circle.getRadius() !== radius) circle.setRadius(radius)
+    } else {
+      entries.set(platform.platformId, L.circle(position, {
+        radius, color: '#f5c542', weight: 1.5, opacity: 0.9,
+        dashArray: '8 6', fill: true, fillColor: '#f5c542', fillOpacity: 0.08,
+        interactive: false, className: 'situation-map-detection',
+      }).addTo(group))
+    }
+  }
+}
 
 /** 复用范围圈，文字说明留在详情；不由范围推断设备启停或链路质量。 */
 function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string, fileNodes: SituationMapNode[] = [], fileDeviceStates: FileDeviceEvent[] = [], nodes = frame?.platforms ?? fileNodes): void {
