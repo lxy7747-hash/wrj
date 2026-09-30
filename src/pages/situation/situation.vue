@@ -86,7 +86,7 @@ const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
-const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'ERROR'>('LOADING')
+const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'EMPTY' | 'ERROR'>('LOADING')
 const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL')
 const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
@@ -124,7 +124,7 @@ const mapNodes = computed(() => selectedScene.value
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
 const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
 
-/** 按本机配置加载初始位置；未配置时保留原有 Mock 流程，读取失败不回退假数据。 */
+/** 按本机配置加载初始位置；本地模式未配置时显示空态，仅 Mock 服务加载固定帧，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
   const epoch = ++sourceEpoch
   if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
@@ -181,6 +181,22 @@ async function initializeSituation(): Promise<void> {
   }
   const simulationLoaded = await simulationStore.resetProjection()
   if (unmounted || epoch !== sourceEpoch || !simulationLoaded) return
+  if (useAuthStore().runtimeMode === 'LOCAL') {
+    // 本地模式不加载固定遥测帧；有运行时恢复其场景，否则提示配置数据源。
+    const run = simulationStore.run
+    if (run) {
+      const loaded = await simulationStore.selectScene(run.scenarioId)
+      if (unmounted || epoch !== sourceEpoch) return
+      if (loaded) { await initializeSituation(); return }
+      sourceState.value = 'ERROR'
+      sourceMessage.value = `运行场景 ${run.scenarioId} 加载失败：${simulationStore.resultMessage}`
+      return
+    }
+    telemetryStore.disconnectAndReset()
+    sourceState.value = 'EMPTY'
+    sourceMessage.value = '未配置态势数据源：请在场景配置中选择场景，或配置事件文件后重新加载。'
+    return
+  }
   if (simulationStore.run && simulationStore.run.scenarioId !== 'SCN-001') {
     if (await simulationStore.selectScene(simulationStore.run.scenarioId) && !unmounted && epoch === sourceEpoch) await initializeSituation()
     return
@@ -1010,7 +1026,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <div v-if="!hasMapData" class="telemetry-empty" role="status" aria-label="态势数据加载状态" aria-live="polite">
         <strong>{{ sourceState === 'LOADING' || telemetryCapabilityState === 'LOADING' || telemetryCapabilityState === 'VALIDATING' ? '正在加载态势遥测' : '暂无可用态势遥测' }}</strong>
         <p>{{ sourceState === 'MOCK' ? telemetryFeedback : sourceMessage }}</p>
-        <el-button v-if="sourceState === 'ERROR' || telemetryCapabilityState === 'ERROR'" link type="primary" @click="retryTelemetry">重新加载</el-button>
+        <el-button v-if="sourceState === 'ERROR' || sourceState === 'EMPTY' || telemetryCapabilityState === 'ERROR'" link type="primary" @click="retryTelemetry">重新加载</el-button>
       </div>
     </div>
 
@@ -1027,7 +1043,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">{{ selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
+      <p class="stop-dialog-copy">{{ realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
         <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>

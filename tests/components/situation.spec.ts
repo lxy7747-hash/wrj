@@ -267,6 +267,20 @@ describe('态势主界面', () => {
     expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/mission-results'))).toBe(false)
   })
 
+  it('本地模式未配置数据源且无运行时显示空态，不加载固定遥测帧', async () => {
+    const fetchSpy = situationFetch()
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(fetchSpy.mock.calls.some(([url]) => String(url).includes('/frames/'))).toBe(false)
+    expect(useTelemetryStore().frame).toBeNull()
+    const empty = wrapper.get('.telemetry-empty')
+    expect(empty.text()).toContain('暂无可用态势遥测')
+    expect(empty.text()).toContain('未配置态势数据源')
+    expect(empty.text()).not.toContain('F-00042')
+    expect(empty.find('button').text()).toBe('重新加载')
+    expect(wrapper.find('.situation-footer').exists()).toBe(false)
+  })
+
   it('质量指标位于右侧页签而非弹框，联动选中链路且来回切换保留筛选', async () => {
     const wrapper = await mountSituationPage()
     const panel = wrapper.get('.telemetry-panel')
@@ -336,6 +350,12 @@ describe('态势主界面', () => {
 
     await mountSituationPage('SCN-001', 'LOCAL')
     expect(mountedWrapper!.findComponent({ name: 'SimulationToolbar' }).props('realMission')).toBe(true)
+    // 真实 mission 停止确认不再引用 Mock 运行或固定遥测帧。
+    ;(mountedWrapper!.vm as unknown as { stopDialogVisible: boolean }).stopDialogVisible = true
+    await flushPromises()
+    const copy = document.querySelector('.stop-dialog-copy')?.textContent ?? ''
+    expect(copy).toContain('停止当前 mission 运行')
+    expect(copy).not.toMatch(/Mock|F-00042/)
   })
 
   it.each(['MOCK', 'LOCAL', 'UNKNOWN'] as const)('延迟后台同步时 %s 工具栏保持对应能力，不随轮询禁用', async mode => {
