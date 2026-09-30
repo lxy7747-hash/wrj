@@ -48,16 +48,13 @@ onBeforeUnmount(() => { epoch++ })
         :label="`${record.scenarioName} · 修订 ${record.revision} · ${formatDateTime(record.completedAt)}`" />
     </el-select>
     <el-button :loading="loading" @click="load">刷新结果</el-button>
-    <router-link v-if="current" :to="{ path: '/replays', query: { resultId: current.resultId } }">查看回放</router-link>
-    <router-link v-if="current" :to="{ path: '/reports', query: { resultId: current.resultId } }">查看报告／下载</router-link>
+    <el-button v-if="current && view !== 'replay'" @click="router.push({ path: '/replays', query: { resultId: current.resultId } })">查看回放</el-button>
+    <el-button v-if="current && view !== 'report'" @click="router.push({ path: '/reports', query: { resultId: current.resultId } })">查看报告／下载</el-button>
     <span v-if="error" role="alert">{{ error }}</span>
     <span v-else-if="!loading && records.length === 0">暂无已完成的运行结果</span>
-    <small v-if="current">{{ current.resultId }}</small>
   </div>
 </template>
 
 <style scoped>
 .mission-results { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; padding: 10px; min-width: 0; }
-.mission-results a { color: var(--console-cyan, #47cce8); }
-.mission-results small { overflow-wrap: anywhere; }
 </style>

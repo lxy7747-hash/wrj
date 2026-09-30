@@ -23,6 +23,27 @@ const { ScenarioProjection } = await import(projectionModule)
 const { createMockServer } = await import(appModule)
 const { default: request } = await import(requestModule)
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' }
+
+it('撤销历史最多保留最近 50 次修改，超限后仍按顺序撤销', () => {
+  const projection = new ScenarioProjection()
+  const initial = projection.get('SCN-001')
+  if (!initial.ok) throw new Error('缺少演示场景')
+  let current = initial.data
+  for (let index = 1; index <= 55; index += 1) {
+    const config = structuredClone(current.config)
+    config.scenario.name = `历史修改 ${index}`
+    const saved = projection.save('SCN-001', { config, uiExtensions: current.uiExtensions, expectedRevision: current.revision })
+    if (!saved.ok) throw new Error(saved.message)
+    current = saved.data
+  }
+  for (let index = 54; index >= 5; index -= 1) {
+    const undone = projection.undo('SCN-001', { expectedRevision: current.revision })
+    if (!undone.ok) throw new Error(undone.message)
+    current = undone.data
+    expect(current.config.scenario.name).toBe(`历史修改 ${index}`)
+  }
+  expect(projection.undo('SCN-001', { expectedRevision: current.revision })).toMatchObject({ ok: false, fieldPath: 'history' })
+})
 const endpoint = '/api/v1/scenarios/SCN-001'
 let directory = ''
 const resources: Array<() => Promise<void> | void> = []

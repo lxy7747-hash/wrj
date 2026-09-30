@@ -51,7 +51,8 @@ export const useUiStore = defineStore('ui', {
      */
     async resetAllProjections(): Promise<boolean> {
       const auth = useAuthStore()
-      if (this.resetState === 'EXECUTING' || auth.principal === null) return false
+      if (this.resetState === 'EXECUTING' || auth.role !== 'ADMIN' || auth.principal === null
+        || !auth.permissions.includes('USER_ROLE_MAINTAIN')) return false
       const epoch = ++this.resetEpoch
       const telemetry = useTelemetryStore()
       this.resetState = 'EXECUTING'

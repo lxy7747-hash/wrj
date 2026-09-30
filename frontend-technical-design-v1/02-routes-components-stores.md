@@ -57,7 +57,7 @@
 
 P8 已由 `src/stores/ui.ts` 实施该协调流程，`App.vue` 登出清理复用同一安全清空入口；旧账号、审计、报告和实时连接响应均有失效保护。`traceabilityStore` 原子读取四类既有元数据合同，蓝图与追踪页复用同一目录。数据交换 Store 在全局 reset 时清空，进入数据交换页再加载；操作员的 `adminStore.loadAll()` 清空受限数据而不访问管理接口。全局 reset 失败/执行中禁止实时重连。
 
-`uiStore.resetAllProjections()` 是 `POST /api/v1/reset` 的唯一前端协调 action。它按以下固定顺序执行：
+`uiStore.resetAllProjections()` 是仅 ADMIN 可用的 `POST /api/v1/reset` 唯一前端协调 action。权限拒绝时不得先清空本地投影；获准后按以下固定顺序执行：
 
 1. 将 reset 状态置为 EXECUTING；调用 `telemetryStore.disconnectAndReset()` 关闭并标记旧 WS，调用 `simulationStore.clearTimers()` 与 `replayStore.stopPlaybackTimer()` 清理计时器。
 2. 调用 `reportStore.invalidateConfirmation()` 与 `adminStore.invalidateConfirmation()`，取消所有一次性确认上下文。

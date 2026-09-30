@@ -766,7 +766,7 @@ describe('P0 deterministic mock server', () => {
     const sendReset = () => request(baseUrl)
       .post('/api/v1/reset')
       .set('Origin', ORIGIN)
-      .set('X-Demo-Role', 'OPERATOR')
+      .set('X-Demo-Role', 'ADMIN')
       .send({ confirm: true })
 
     const first = await sendReset().expect(200)
@@ -788,6 +788,20 @@ describe('P0 deterministic mock server', () => {
       },
     })
     expect(second.body).toEqual(first.body)
+  })
+
+  it('仅管理员可全局重置；操作员拒绝后投影保持不变并留下审计', async () => {
+    const { baseUrl, server } = await startServer()
+    const before = server.projection.snapshot()
+    const denied = await request(baseUrl).post('/api/v1/reset')
+      .set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
+      .send({ confirm: true }).expect(403)
+    expect(denied.body).toMatchObject({ ok: false, error: { code: 'PERMISSION_DENIED' } })
+    expect(server.projection.snapshot()).toEqual(before)
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ actor: 'operator', action: 'SCENARIO_RESET', result: 'DENIED' })
+    await request(baseUrl).post('/api/v1/reset')
+      .set('Origin', ORIGIN).set('X-Demo-Role', 'ADMIN')
+      .send({ confirm: true }).expect(200)
   })
 
   it('仅将 JSON 解析错误返回 400，意外异常返回不泄露细节的 500', async () => {

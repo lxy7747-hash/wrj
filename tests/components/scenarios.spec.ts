@@ -821,6 +821,7 @@ describe('P2-1 场景管理页面', () => {
 
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
     const messageSpy = vi.spyOn(ElMessage, 'success')
+    const warningSpy = vi.spyOn(ElMessage, 'warning')
     const pinia = createPinia()
     setActivePinia(pinia)
     const auth = useAuthStore(pinia)
@@ -862,7 +863,8 @@ describe('P2-1 场景管理页面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(scenario.draft?.revision).toBe(5)
     expect(messageSpy).not.toHaveBeenCalled()
-    expect(ElMessageBox.alert).toHaveBeenCalledExactlyOnceWith('TXT 已生成并写入：H:\\output\\SCN-001-r5.txt\n文本生成不等于 mission 执行验证，请以生成文件中的支持范围说明为准。', '场景保存成功', { confirmButtonText: '知道了' })
+    expect(ElMessageBox.alert).not.toHaveBeenCalled()
+    expect(warningSpy).toHaveBeenCalledExactlyOnceWith('场景与 TXT 已保存（H:\\output\\SCN-001-r5.txt），但未自动运行：当前账号没有仿真控制权限。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')

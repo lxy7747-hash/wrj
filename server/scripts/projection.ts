@@ -92,8 +92,17 @@ export function inspectScriptPreview(preview: string): ValidationResult {
   if (!lines.some((line) => /^scenario "SCN-[^"]+" \{$/.test(line))) addError('SCRIPT_SCENARIO_INVALID', '缺少有效场景结构。', 3)
   const outputLine = lines.findIndex((line) => /^  output path=".+" interval=/.test(line))
   if (outputLine < 0) addError('SCRIPT_OUTPUT_PATH_INVALID', '缺少有效输出路径合同。', Math.max(1, lines.length - 1))
-  const openBraces = [...preview].filter((character) => character === '{').length
-  const closeBraces = [...preview].filter((character) => character === '}').length
+  let openBraces = 0
+  let closeBraces = 0
+  let quoted = false
+  let escaped = false
+  for (const character of preview) {
+    if (escaped) { escaped = false; continue }
+    if (quoted && character === '\\') { escaped = true; continue }
+    if (character === '"') { quoted = !quoted; continue }
+    if (!quoted && character === '{') openBraces += 1
+    if (!quoted && character === '}') closeBraces += 1
+  }
   if (openBraces !== closeBraces) addError('SCRIPT_STRUCTURE_INVALID', '脚本结构括号不匹配。', lines.length, (lines.at(-1)?.length ?? 0) + 1)
   return { valid: errors.length === 0, errors, warnings: [] }
 }

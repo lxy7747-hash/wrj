@@ -2620,11 +2620,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @remarks On success resets realtime and authentication projections before writing the response.
    */
   app.post('/api/v1/reset', (req, res) => {
-    const role = readDemoRole(req)
-    if (role === undefined) {
-      res.status(403).json(failure('PERMISSION_DENIED', 403))
-      return
-    }
+    if (!requireAdmin(req, res, auth, 'SCENARIO_RESET')) return
+    const role = 'ADMIN'
 
     if (!isResetRequest(req.body)) {
       res.status(400).json(failure('INVALID_REQUEST', 400, { fieldPath: 'confirm' }))

@@ -132,6 +132,16 @@ describe('T-XQ-008 脚本结构预检', () => {
     }))
   })
 
+  it('字符串字面量中的单侧花括号和转义引号不参与结构预检', () => {
+    const result = new ScenarioProjection().get('SCN-001')
+    if (!result.ok) throw new Error('缺少场景夹具')
+    result.data.config.scenario.name = '名称包含 { 和 \\"转义引号'
+    const preview = new ScriptProjection().preview(result.data).preview
+    expect(inspectScriptPreview(preview).valid).toBe(true)
+    const broken = inspectScriptPreview(preview.slice(0, preview.lastIndexOf('\n}')))
+    expect(broken.errors).toContainEqual(expect.objectContaining({ code: 'SCRIPT_STRUCTURE_INVALID', fieldPath: expect.stringMatching(/^preview\[\d+:\d+\]$/) }))
+  })
+
   it('生成完整预览并覆盖未知脚本、校验和和重置分支', () => {
     const scenario = new ScenarioProjection().get('SCN-001')
     expect(scenario.ok).toBe(true)

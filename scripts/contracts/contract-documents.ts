@@ -341,7 +341,7 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminRestore: ['401', '403', '404', '409', '422', '428', '503'],
   getapiV1AdminHealth: ['401', '403'],
   getapiV1AdminArchives: ['401', '403'],
-  postapiV1Reset: ['401', '409'],
+  postapiV1Reset: ['401', '403', '409'],
   getwsV1: ['401', '400', '403'],
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
@@ -1303,6 +1303,9 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
 
       operationCount += 1
       const operationPath = `$.paths[${JSON.stringify(route)}].${method}`
+      if (route === '/api/v1/reset' && method === 'post' && operation['x-rbac'] !== 'ADMIN') {
+        addFinding(findings, 'OPENAPI_RESET_RBAC', `${operationPath}.x-rbac`, 'Global reset must require ADMIN')
+      }
       const publicAuth = ['/api/v1/auth/login', '/api/v1/auth/session', '/api/v1/auth/logout'].includes(route)
       if (JSON.stringify(operation.security) !== JSON.stringify(publicAuth ? [] : [{ SessionCookie: [] }])) {
         addFinding(findings, 'OPENAPI_SESSION_SECURITY', `${operationPath}.security`, 'Local authentication must use the frozen session cookie requirement')

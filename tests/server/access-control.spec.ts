@@ -31,12 +31,12 @@ async function start() {
     const result = await api.post('/api/v1/auth/login').set(headers).send({ username, passwordFixture: password }).expect(200)
     return { cookie: result.headers['set-cookie'][0].split(';')[0], principal: result.body.data.principal }
   }
-  return { api, login, access, auth, file }
+  return { api, login, access, auth, file, server }
 }
 
 describe('兼容角色配置与服务端权限', () => {
   it('已注册接口按角色、操作权限和页面菜单共同收窄', async () => {
-    const { api, login, access, auth } = await start()
+    const { api, login, access, auth, server } = await start()
     const users = [
       { userId: 'USR-VIEW', username: 'view-only', role: 'OPERATOR' as const },
       { userId: 'USR-SCENE-ONLY', username: 'scene-only', role: 'OPERATOR' as const },
@@ -98,6 +98,10 @@ describe('兼容角色配置与服务端权限', () => {
     await api.get('/api/v1/admin/audit').set(scopedAdmin).expect(403)
     await api.get('/api/v1/admin/master-data').set(scopedAdmin).expect(403)
     await api.post('/api/v1/templates').set(scopedAdmin).send({}).expect(403)
+    const beforeReset = await api.get('/api/v1/scenarios/SCN-001').set(admin).expect(200)
+    await api.post('/api/v1/reset').set(scene).send({ confirm: true }).expect(403)
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ actor: 'scene-only', result: 'DENIED' })
+    expect((await api.get('/api/v1/scenarios/SCN-001').set(admin).expect(200)).body).toEqual(beforeReset.body)
     await api.post('/api/v1/reports/RPT-001/export').set(scopedAdmin).send({ reportId: 'RPT-001', format: 'PDF' }).expect(403)
   })
 

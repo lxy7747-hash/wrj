@@ -92,9 +92,6 @@ defineEmits<{
     <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
       <small>运行模式尚未确认，暂不开放暂停、继续及倍速控制。</small>
     </div>
-    <div v-else-if="realMission" class="simulation-toolbar__runtime" aria-live="polite">
-      <small>真实 mission 模式仅支持开始和停止；暂停、继续、单步及倍速控制未接入。</small>
-    </div>
   </header>
 </template>
 

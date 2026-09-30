@@ -25,6 +25,7 @@ import {
 import { JAMMER_TYPE_LABELS, LINK_TYPE_LABELS, PLATFORM_TYPE_LABELS } from '../../features/situation/situation-model'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
+import { useSimulationStore } from '../../stores/simulation'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
@@ -37,6 +38,7 @@ const scenarioStore = useScenarioStore()
 const props = defineProps<{ managed?: boolean }>()
 const emit = defineEmits<{ saved: []; back: [] }>()
 const authStore = useAuthStore()
+const simulationStore = useSimulationStore()
 const {
   draft,
   dirty,
@@ -64,7 +66,8 @@ watch(() => draft.value?.config.scenario.id, () => {
   touchedFields.value.clear()
 }, { flush: 'sync' })
 let active = true
-onBeforeUnmount(() => { active = false })
+const executionLifetime = new AbortController()
+onBeforeUnmount(() => { active = false; executionLifetime.abort() })
 const platformDialogVisible = ref(false)
 const editingPlatformIndex = ref<number | null>(null)
 const platformEditor = ref<Platform | null>(null)
@@ -1112,7 +1115,7 @@ async function saveAsTemplate(): Promise<void> {
 /**
  * 保存当前场景草稿并通过浮层消息反馈结果。
  * @returns 保存流程结束后兑现且不返回值的 Promise。
- * @sideEffects 进入校验阶段；保存成功后开放脚本入口，失败时展示问题以便定位。
+ * @sideEffects 校验并保存、生成 TXT，全部成功后自动启动已保存场景；失败时停止后续阶段。
  */
 async function saveScenario(): Promise<void> {
   if (savingScript.value || pending.value || scriptPending.value) return
@@ -1131,12 +1134,14 @@ async function saveScenario(): Promise<void> {
   savingScript.value = true
   draftReviewed.value = false
   try {
-    // 未修改的已保存草稿仍须检查后开放脚本入口，但不重复 PUT 或增加修订号。
+    // 未修改的已保存草稿仍须校验和生成脚本，但不重复 PUT 或增加修订号。
     if (await (saved ? scenarioStore.validateScenario() : scenarioStore.saveScenario())) {
       if (!active || epoch !== scenarioStore.requestEpoch || userId !== authStore.principal?.userId || !draft.value) return
       const savedDraft = draft.value
-      const current = () => active && epoch === scenarioStore.requestEpoch && userId === authStore.principal?.userId
-        && draft.value === savedDraft && !dirty.value && !savedDraft.locked
+      const simulationEpoch = simulationStore.requestEpoch
+      const current = (allowLocked = false) => active && epoch === scenarioStore.requestEpoch
+        && simulationEpoch === simulationStore.requestEpoch && userId === authStore.principal?.userId
+        && draft.value === savedDraft && !dirty.value && (allowLocked || !savedDraft.locked)
       draftReviewed.value = true
       activeTab.value = validation.value.warnings.length > 0 ? 'validation' : 'scenario'
       const generated = await generateScriptPreview()
@@ -1146,15 +1151,46 @@ async function saveScenario(): Promise<void> {
         ElMessage.warning(`场景配置已保存，但 TXT 未生成。${!generated ? scriptResultMessage.value : '脚本版本与当前场景不一致。'} 请重试保存。`)
         return
       }
+      const scriptEpoch = scenarioStore.scriptEpoch
+      let path: string
       try {
-        const path = await saveScriptText(script.value)
-        if (!current()) return
-        await ElMessageBox.alert(`TXT 已生成并写入：${path}\n文本生成不等于 mission 执行验证，请以生成文件中的支持范围说明为准。`, '场景保存成功', { confirmButtonText: '知道了' }).catch(() => {})
+        path = await saveScriptText(script.value)
         if (!current()) return
       } catch (error) {
         if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
         return
       }
+      const canContinue = () => current(true) && scriptEpoch === scenarioStore.scriptEpoch
+      if (!canContinue()) return
+      const startFailed = (message: string) => ElMessage.warning(`场景与 TXT 已保存（${path}），但未自动运行：${message}`)
+      if (!authStore.authorize('SIMULATION_CONTROL').allowed) {
+        startFailed('当前账号没有仿真控制权限。')
+        return
+      }
+      if (simulationStore.pending || simulationStore.selectingScene) {
+        startFailed('运行控制正在处理中，请稍后重试。')
+        return
+      }
+      // 重新读取运行和保存版本，不沿用先前选中的其他场景，也不恢复已有暂停任务。
+      const selected = await simulationStore.selectScene(savedDraft.config.scenario.id, executionLifetime.signal)
+      if (!canContinue()) return
+      if (!selected) { startFailed(simulationStore.resultMessage); return }
+      if (simulationStore.run?.configLocked || ['RUNNING', 'PAUSED'].includes(simulationStore.uiStatus)) {
+        startFailed('已有仿真任务，请先停止当前任务。')
+        return
+      }
+      if (simulationStore.selectedScene?.revision !== savedDraft.revision) {
+        startFailed('场景版本已变化，请重新加载并保存。')
+        return
+      }
+      const created = await simulationStore.create()
+      // create 会给本场景加锁；自己的运行锁不是草稿失效，但离页／登出／编辑仍会中止。
+      if (!canContinue()) return
+      if (!created) { startFailed(simulationStore.resultMessage); return }
+      const started = await simulationStore.start()
+      if (!canContinue()) return
+      if (!started) { startFailed(simulationStore.resultMessage); return }
+      ElMessage.success(`场景已保存，TXT 已写入：${path}；仿真已启动。可前往态势主界面查看运行。`)
       if (!saved && props.managed) emit('saved')
     } else {
       if (active && epoch === scenarioStore.requestEpoch) activeTab.value = 'validation'
@@ -1246,6 +1282,7 @@ watch(activeTab, (tab) => {
           :disabled="draft === null || draft?.locked || pending || scriptPending || savingScript"
           :loading="pending || savingScript"
           data-testid="save-scenario"
+          title="保存并成功生成 TXT 后自动运行"
           @click="saveScenario"
         >
           保存

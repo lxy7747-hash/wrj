@@ -111,7 +111,6 @@ onBeforeUnmount(() => {
   <section class="replays-page" aria-label="历史回放">
     <div>
     <MissionResults view="replay" />
-    <p v-if="!archiveId && !resultId">当前查看配置文件回放；可在上方选择一次已完成的仿真。</p>
     <header class="replays-page__header">
 <!--      <div>-->
 <!--        <p class="eyebrow">运行快照与事件复盘</p>-->

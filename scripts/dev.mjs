@@ -31,7 +31,15 @@ function stopAll(exitCode) {
     if (!child.pid) { child.kill(); return }
     if (process.platform !== 'win32') {
       try { process.kill(-child.pid, 'SIGTERM') } catch { child.kill() }
-      setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL') } catch { /* 进程组已经退出。 */ } }, 5_000)
+      const groupCheck = setInterval(() => {
+        try { process.kill(-child.pid, 0) } catch (error) {
+          if (error?.code === 'ESRCH') { clearInterval(groupCheck); clearTimeout(timeout) }
+        }
+      }, 100)
+      const timeout = setTimeout(() => {
+        clearInterval(groupCheck)
+        try { process.kill(-child.pid, 'SIGKILL') } catch { /* 进程组已经退出。 */ }
+      }, 5_000)
       return
     }
     // Windows 上只结束 cmd 外壳会遗留本次 npm 启动的服务进程。

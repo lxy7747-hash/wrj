@@ -36,7 +36,7 @@ async function reset(): Promise<void> {
         <h2 id="interactions-title">感知、干扰与选路</h2>
         <p class="interactions-page__summary">集中展示侦测、干扰控制、参数同步、逐帧闭环、正反向选路及切换决策的完整可追溯证据。</p>
       </div>
-      <el-button :disabled="auth.principal === null" :loading="ui.resetState === 'EXECUTING'" data-testid="reset-all" @click="reset">{{ ui.resetState === 'ERROR' ? '重试重置' : '重置模拟数据' }}</el-button>
+      <el-button :disabled="auth.role !== 'ADMIN' || !auth.permissions.includes('USER_ROLE_MAINTAIN')" :loading="ui.resetState === 'EXECUTING'" data-testid="reset-all" @click="reset">{{ ui.resetState === 'ERROR' ? '重试重置' : '重置模拟数据' }}</el-button>
     </header>
 
     <el-alert v-if="ui.resetMessage" :title="ui.resetMessage" :type="ui.resetState === 'ERROR' ? 'error' : ui.resetState === 'SUCCESS' ? 'success' : 'info'" :closable="false" data-testid="reset-feedback">

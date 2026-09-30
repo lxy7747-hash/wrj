@@ -129,6 +129,7 @@ function withDerivedPlatformAssociations(value: unknown): unknown {
 }
 
 class ScenarioDocument {
+  private static readonly HISTORY_LIMIT = 50
   private draft: ScenarioDraft | null
   private history: ScenarioDraft[] = []
   private persisted: { id: string; revision: number } | undefined
@@ -153,7 +154,10 @@ class ScenarioDocument {
       this.persisted = { id: draft.config.scenario.id, revision: draft.revision }
     }
     if (undo) this.history.pop()
-    else if (this.draft) this.history.push(structuredClone(this.draft))
+    else if (this.draft) {
+      this.history.push(structuredClone(this.draft))
+      if (this.history.length > ScenarioDocument.HISTORY_LIMIT) this.history.shift()
+    }
     this.draft = structuredClone(draft)
     return { ok: true, data: structuredClone(this.draft) }
   }

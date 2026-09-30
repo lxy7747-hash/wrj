@@ -20,7 +20,7 @@ export function isFileDeviceEvent(value: unknown, platformIds: ReadonlySet<strin
     && platformIds.has(event.platformId) && Number.isFinite(event.time) && event.time >= 0
     && ['COMMUNICATION', 'JAMMING'].includes(event.kind) && typeof event.active === 'boolean'
     && (event.kind === 'JAMMING'
-      ? (!event.active && event.frequencyHz === undefined && event.bandwidthHz === undefined)
+      ? (event.frequencyHz === undefined && event.bandwidthHz === undefined)
         || [event.frequencyHz, event.bandwidthHz].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0)
       : event.frequencyHz === undefined && event.bandwidthHz === undefined)
 }
@@ -47,8 +47,8 @@ export function buildFileDeviceEvents(events: AfsimLogEvent[], platformIds: Read
     }
     // 设备关闭事件没有频率和带宽，不继承旧请求参数伪装成该事件的测量值。
     if (jamming) {
-      state.frequencyHz = event.fields.frequency?.trim() ? Number(event.fields.frequency) : NaN
-      state.bandwidthHz = event.fields.bandwidth?.trim() ? Number(event.fields.bandwidth) : NaN
+      if (Object.hasOwn(event.fields, 'frequency')) state.frequencyHz = Number(event.fields.frequency)
+      if (Object.hasOwn(event.fields, 'bandwidth')) state.bandwidthHz = Number(event.fields.bandwidth)
     }
     if (!isFileDeviceEvent(state, platformIds)) throw new Error(`第 ${event.sourceLine} 行设备事件身份或参数无效。`)
     result.push(state)

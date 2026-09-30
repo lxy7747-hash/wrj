@@ -17,7 +17,7 @@ import App from '../../src/App.vue'
 const stubs = Object.fromEntries(['LinkCalculatorContractCard', 'EsmSensorPanel', 'RfJammerPanel', 'ClosedLoopStepper', 'JammerSyncPanel', 'CompositeLossExample', 'SnrBerExample', 'RouteRankingPanel', 'SwitchDecisionPanel'].map((name) => [name, true]))
 beforeEach(() => {
   setActivePinia(createPinia()); Element.prototype.scrollIntoView = vi.fn()
-  useAuthStore().$patch({ principal: { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', permissions: [] }, role: 'ADMIN' })
+  useAuthStore().$patch({ principal: { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', permissions: ['USER_ROLE_MAINTAIN'] }, role: 'ADMIN', permissions: ['USER_ROLE_MAINTAIN'] })
 })
 afterEach(() => { vi.restoreAllMocks(); document.body.innerHTML = '' })
 

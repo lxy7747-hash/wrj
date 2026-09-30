@@ -99,7 +99,7 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
 
 test('P8 重置失败清空业务面板并允许从头重试', async ({ page }) => {
   await page.goto('/login')
-  await page.getByTestId('login-username').fill('operator')
+  await page.getByTestId('login-username').fill('admin')
   await page.getByTestId('login-password').fill('123456')
   await page.getByTestId('login-submit').click()
   await page.waitForURL('**/situation')

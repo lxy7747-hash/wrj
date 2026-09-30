@@ -436,7 +436,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     if (!Number.isFinite(sendRequests) || sendRequests > 1_000_000) {
       throw new MissionGenerationError(`${path}.frequencyHz`, '本次执行的预计发送请求超过 100 万次，请降低频次或缩短场景时长。')
     }
-    const canFailover = routes.length === 1 && routes[0]!.ordered.length > 1
     return [{ demandId: demand.id, sourcePlatformId: demand.sourcePlatformId, messageType: demand.informationType,
       candidateMessageType: INFORMATION_TYPE_CANDIDATE[demand.informationType as InformationTypeEnum],
       sizeBits, frequencyHz: demand.frequencyHz,
@@ -446,10 +445,9 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
         orderedLinkIds: item.ordered.map(device => device.linkId),
         orderedLinkTypes: item.ordered.map(device => device.linkType),
       })),
-      failoverEnabled: canFailover,
-      failoverRoutes: canFailover ? routes[0]!.ordered : null,
+      failoverEnabled: false,
       processorId: `business_${token(demand.id)}`,
-      switchProcessorId: canFailover ? `link_switch_${token(demand.id)}` : null,
+      switchProcessorId: null,
       constraints: { priority: demand.priority, maxLatencyMs: demand.maxLatencyMs, minDataRateMbps: demand.minDataRateMbps, engineEnforced: false } }]
   })
   // 输出路径提前计算，供平台处理器写入专用 CSV。
@@ -621,21 +619,16 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       }
     }
     for (const business of businesses.filter(item => item.sourcePlatformId === platform.platformId)) {
-      const emitRoutes = business.failoverRoutes ?? business.routes
       definitions.push(`  processor ${business.processorId} WSF_SCRIPT_PROCESSOR`,
         `    update_interval ${config.output.writeInterval} sec`,
         '    script_variables',
         '      double emissionIndex = 0;',
-        '      int activeRouteIndex = 0;',
         '    end_script_variables',
         '    script void EmitBusiness()', '    {', `      if (TIME_NOW >= ${config.scenario.duration}) return;`)
-      emitRoutes.forEach((route, index) => {
+      business.routes.forEach((route) => {
         const destPlatform = route.relay ? route.relay.platformId : route.target.platformId
         const destDevice = route.relay ? route.relay.ingressDeviceId : route.target.deviceId
-        if (business.failoverEnabled) {
-          definitions.push(index === 0 ? '      if (activeRouteIndex == 0)' : `      else if (activeRouteIndex == ${index})`)
-        }
-        // 多目标各发送一次；只有同一目标的备选链路才按活动路由互斥发送。
+        // 多目标各发送一次；同一目标的备选链路只选优先级最高的主链路。
         definitions.push('      {')
         definitions.push(
           '        WsfMessage message = WsfMessage();',

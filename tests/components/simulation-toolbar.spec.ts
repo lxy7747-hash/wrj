@@ -51,7 +51,8 @@ describe('仿真工具栏', () => {
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('title')).toContain('未接入暂停')
     expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
     expect(wrapper.get('[aria-label="仿真倍速"]').attributes('title')).toContain('未接入倍速')
-    expect(wrapper.text()).toContain('真实 mission 模式仅支持开始和停止')
+    expect(wrapper.text()).not.toContain('真实 mission 模式仅支持开始和停止')
+    expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
 
     await wrapper.setProps({ realMission: false })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()

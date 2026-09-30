@@ -59,13 +59,15 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
 describe('保存后由 Node 写入 TXT', () => {
   it('保存、生成、落盘依次请求，显示服务端路径，不触发浏览器下载', async () => {
     const { wrapper, store, fetchSpy, alert, click, save } = await setup()
+    const warning = vi.spyOn(ElMessage, 'warning')
     await save()
     expect(fetchSpy.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${String(url).split('/api/v1/')[1]}`))
       .toEqual(['GET scenarios/SCN-001', 'PUT scenarios/SCN-001', 'POST scenarios/SCN-001/validate', 'POST scripts/preview', 'POST scripts/SCRIPT-P2-001/local-file'])
     expect(JSON.parse(String(fetchSpy.mock.calls.at(-1)![1]?.body))).toEqual({ checksum: store.script!.checksum })
-    expect(alert).toHaveBeenCalledWith(`TXT 已生成并写入：${path}\n文本生成不等于 mission 执行验证，请以生成文件中的支持范围说明为准。`, '场景保存成功', { confirmButtonText: '知道了' })
+    expect(alert).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledExactlyOnceWith(`场景与 TXT 已保存（${path}），但未自动运行：当前账号没有仿真控制权限。`)
     expect(click).not.toHaveBeenCalled()
-    expect(wrapper.emitted('saved')).toHaveLength(1)
+    expect(wrapper.emitted('saved')).toBeUndefined()
   })
 
   it('保存失败不生成、不写文件', async () => {
@@ -131,12 +133,16 @@ describe('保存后由 Node 写入 TXT', () => {
     const { fetchSpy, alert, save, persisted } = await setup(async () => ++attempts < 3
       ? { ok: false, json: async () => ({ ok: false, error: { code: 'CONFIRMATION_REQUIRED', message: '存在警告。' } }) } as Response
       : reply(new ScriptProjection().preview(persisted())), undefined, true)
+    const warning = vi.spyOn(ElMessage, 'warning')
     vi.spyOn(ElMessageBox, 'confirm').mockRejectedValueOnce('cancel').mockResolvedValueOnce('confirm' as never)
     await save()
     expect(alert).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledExactlyOnceWith('场景配置已保存，但 TXT 未生成。存在警告。 请重试保存。')
+    warning.mockClear()
     await save()
     expect(fetchSpy.mock.calls.slice(-4).map(([url]) => String(url).split('/api/v1/')[1]))
       .toEqual(['confirmations', 'confirmations/CONF-TXT', 'scripts/preview', 'scripts/SCRIPT-P2-001/local-file'])
-    expect(alert).toHaveBeenCalledOnce()
+    expect(alert).not.toHaveBeenCalled()
+    expect(warning).toHaveBeenCalledExactlyOnceWith(`场景与 TXT 已保存（${path}），但未自动运行：当前账号没有仿真控制权限。`)
   })
 })

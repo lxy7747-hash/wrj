@@ -64,7 +64,8 @@ describe('文件设备事件投影', () => {
     expect(selectFileDeviceStates(events, 2806.178)).toEqual([events[0], off])
     expect(selectFileDeviceStates(events, 1666.178)).toEqual(events.slice(0, 2))
     expect(isFileDeviceEvent(off, new Set(['A', 'B']))).toBe(true)
-    for (const change of [{ active: true }, { frequencyHz: 2.4e9 }, { bandwidthHz: 5e7 }, { frequencyHz: -1, bandwidthHz: 5e7 }]) {
+    expect(isFileDeviceEvent({ ...off, active: true }, new Set(['A', 'B']))).toBe(true)
+    for (const change of [{ frequencyHz: 2.4e9 }, { bandwidthHz: 5e7 }, { frequencyHz: -1, bandwidthHz: 5e7 }]) {
       expect(isFileDeviceEvent({ ...off, ...change }, new Set(['A', 'B']))).toBe(false)
     }
     expect(read(csv.replace('Weapon,prophet_jammer,WSF_RF_JAMMER', 'Weapon,missile,WSF_EXPLICIT_WEAPON'))).toHaveLength(2)
@@ -83,6 +84,19 @@ describe('文件设备事件投影', () => {
     expect(selectFileDeviceStates(events, 0)).toEqual(events.slice(0, 2))
     expect(selectFileDeviceStates([], 5400)).toEqual([])
     expect(JSON.stringify(events)).not.toMatch(/"(?:snr|ber|linkStatus|targetPlatformId)":/)
+  })
+
+  it('缺少干扰频率和带宽列时只保留请求证据，非法现值仍拒绝', () => {
+    const withoutColumns = [
+      '! JAMMING_REQUEST_INITIATED,time<time>,event<string>,platform<string>,weapon<string>,current_mode<string>,active_requests_(eM_Xmtrs)<int>,target_platform<string>',
+      '0,JAMMING_REQUEST_INITIATED,B,jammer,broadband_jamming,1,',
+    ].join('\n')
+    const [event] = read(withoutColumns)
+    expect(event).toEqual({ sourceEventId: 'LOG-L2', time: 0, platformId: 'B', deviceId: 'jammer', kind: 'JAMMING', active: true })
+    expect(selectFileDeviceStates([event!], 0)).toEqual([event])
+    expect(isInitialNodeSnapshot({ ...LOCAL_REPLAY.initial, deviceEvents: [event] })).toBe(true)
+    expect(isFileDeviceEvent({ ...event, frequencyHz: 0 }, new Set(['A', 'B']))).toBe(false)
+    expect(() => read(CSV.replace(',2.4e9,2e7,', ',not-a-number,2e7,'))).toThrow(/第 .* 行/)
   })
 
   it('不同设备独立，乱序按时刻选择，同刻按源文件顺序，重算不修改原始数据', () => {

@@ -1283,12 +1283,13 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     ['response', 'json'].map((boundary) => ({ operation, stage, boundary })),
   )))('确认 $stage/$boundary 在途时 $operation 不得恢复旧确认或继续预览', async ({ operation, stage, boundary }) => {
     const auth = useAuthStore()
-    auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const principal = operation === 'reset' ? ADMIN : OPERATOR
+    auth.$patch({ principal, role: principal.role, permissions: [...principal.permissions, ...(operation === 'reset' ? ['USER_ROLE_MAINTAIN' as const] : [])] })
     const confirmation = deferred<unknown>()
     const entered = deferred<void>()
     const resetResponse = deferred<Response>()
     const awaiting: ConfirmationContext = {
-      confirmationId: 'CONF-P2-LATE', state: 'AWAITING_CONFIRMATION', actor: 'operator', role: 'OPERATOR',
+      confirmationId: 'CONF-P2-LATE', state: 'AWAITING_CONFIRMATION', actor: principal.username, role: principal.role,
       createdAt: META.generatedAt, expiresAt: '2026-08-06T08:05:00Z',
     }
     const fetchSpy = vi.fn()

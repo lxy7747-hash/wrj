@@ -452,9 +452,12 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.platforms[1]!.linkIds.push('L-C')
     // 同端点多链路：按 priority 自动选主路由，不再拒绝。
     const multi = buildMissionPackage(draft)
-    expect(multi.manifest.businesses[0].failoverEnabled).toBe(true)
+    expect(multi.manifest.businesses[0].failoverEnabled).toBe(false)
     expect(multi.manifest.businesses[0].routePlans[0].orderedLinkIds).toEqual(
       expect.arrayContaining(['L-A', 'L-C']))
+    expect(multi.manifest.businesses[0].routes).toHaveLength(1)
+    expect(multi.files['platforms.txt'].match(/SendMessage\(/g)).toHaveLength(1)
+    expect(multi.files['platforms.txt']).not.toContain('activeRouteIndex')
   })
 
   it.each([
@@ -750,11 +753,12 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     demand.destinationPlatformIds = ['AIR-01']
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.businesses[0]).toMatchObject({
-      failoverEnabled: true,
+      failoverEnabled: false,
       routes: [expect.objectContaining({ linkId: 'L-DL', linkType: 'DATALINK' })],
       routePlans: [expect.objectContaining({ orderedLinkIds: ['L-DL', 'L-MW'] })],
     })
     expect(generated.files['platforms.txt']).not.toContain('FailoverToNextRoute')
+    expect(generated.files['platforms.txt']).not.toContain('activeRouteIndex')
     expect(generated.files['platforms.txt']).not.toContain('link_switch.csv')
     expect(generated.files['platforms.txt']).not.toContain('link_quality.csv')
     expect(generated.manifest.output.linkSwitchStatsEmitted).toBe(false)

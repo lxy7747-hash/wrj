@@ -240,6 +240,15 @@ describe('OpenAPI contract audit', () => {
     expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(83)
   })
 
+  it('冻结全局重置的管理员权限及 403 拒绝响应', () => {
+    const { openApi } = loadContractDocuments()
+    expect(operationAt(openApi, '/api/v1/reset', 'post')['x-rbac']).toBe('ADMIN')
+    expect(asObject(operationAt(openApi, '/api/v1/reset', 'post').responses)['403']).toBeDefined()
+    const weakened = structuredClone(openApi)
+    operationAt(weakened, '/api/v1/reset', 'post')['x-rbac'] = 'AUTHENTICATED'
+    expect(auditOpenApi(weakened)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_RESET_RBAC' }))
+  })
+
   it('binds the P4 closed-loop and versioned jammer synchronization contracts', () => {
     const { openApi } = loadContractDocuments()
     expect(requestSchemaAt(openApi, '/api/v1/simulations/{runId}/events', 'post')).toEqual({

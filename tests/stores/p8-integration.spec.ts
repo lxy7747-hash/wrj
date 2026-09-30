@@ -14,7 +14,7 @@ import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 import { useTraceabilityStore } from '../../src/stores/traceability'
 
-const principal = { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN' as const, permissions: [] }
+const principal = { userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN' as const, permissions: ['USER_ROLE_MAINTAIN' as const] }
 const resetResult = { requestId: 'REQ-RESET-001', generatedAt: fixtures.epoch, nextSequence: 1 }
 
 /** 保持传输信封结构，允许测试注入无效业务载荷。 */
@@ -57,11 +57,27 @@ function expectEmpty() {
 beforeEach(() => {
   sessionStorage.clear()
   setActivePinia(createPinia())
-  useAuthStore().$patch({ principal, role: 'ADMIN' })
+  useAuthStore().$patch({ principal, role: 'ADMIN', permissions: [...principal.permissions] })
 })
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.useRealTimers() })
 
 describe('P8 全局重置', () => {
+  it('操作员和缺少管理员权限的 Profile 不请求重置，也不清理本地投影', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const ui = useUiStore()
+    const clear = vi.spyOn(ui, 'clearBusinessProjections')
+    useScenarioStore().dirty = true
+    const auth = useAuthStore()
+    auth.$patch({ role: 'OPERATOR', permissions: ['SCENARIO_DRAFT_WRITE'] })
+    expect(await ui.resetAllProjections()).toBe(false)
+    auth.$patch({ role: 'ADMIN', permissions: ['BUSINESS_READ'] })
+    expect(await ui.resetAllProjections()).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(clear).not.toHaveBeenCalled()
+    expect(useScenarioStore().dirty).toBe(true)
+    expect(ui.resetState).toBe('EMPTY')
+  })
   it('清理和确认失效在单次 reset 前完成，随后顺序加载，禁止重复提交', async () => {
     const actions = loads()
     const close = vi.spyOn(useTelemetryStore(), 'disconnectAndReset')
