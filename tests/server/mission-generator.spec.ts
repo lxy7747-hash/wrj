@@ -12,6 +12,15 @@ const { tmpdir } = await import('node:' + 'os')
 const { join, dirname } = await import('node:' + 'path')
 const { once } = await import('node:' + 'events')
 
+// 对接示例拆分：平台定义分布在公共定义与 5 个平台类型文件中，入口与实例分别在 SimSetup 与 INS。
+const TYPE_FILES = ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt',
+  'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt']
+function typeText(files: Record<string, string>): string { return TYPE_FILES.map(name => files[name] ?? '').join('\n') }
+function setupText(files: Record<string, string>): string { return `${files['comm_SimSetup.txt']}\n${files['comm_platform_INS.txt']}` }
+
+// 通信设备按示例写 on；常开断言只针对干扰 weapon 段。
+function weaponBlocks(text: string): string { return (text.match(/ {2}weapon [\s\S]*? {2}end_weapon/g) ?? []).join('\n') }
+
 function minimalDraft(): ScenarioDraft {
   const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
   const config = draft.config
@@ -90,8 +99,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       type: 'BARRAGE', mode: 'broadband_jamming', frequencyMHz: 2200, frequencyHz: 2_200_000_000,
       bandwidthMHz: 40, bandwidthHz: 40_000_000, powerW: 72, configuredEnabled: true, startsOn: true,
       startTimeS: 0.001, stopTimeS: 120.001, activation: 'SCHEDULED' })
-    expect(generated.files['mission.txt']).toContain(`platform STN-01 ${platform.generatedType}`)
-    const text = generated.files['platforms.txt']
+    expect(setupText(generated.files)).toContain(`platform STN-01 ${platform.generatedType}`)
+    const text = typeText(generated.files)
     expect(text).toContain(`platform_type ${platform.generatedType} WSF_PLATFORM`)
     expect(text).toContain('mover WSF_SURFACE_MOVER')
     expect(text).toContain(`weapon ${jammer.weaponId} WSF_RF_JAMMER`)
@@ -103,14 +112,14 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(text).toContain('mode sweep_jamming')
     expect(text).toContain(`jammer.SelectMode("${jammer.mode}")`)
     // 启停完全由带时刻的处理器驱动，weapon 不写常开 on。
-    expect(text).not.toContain('\n    on\n')
+    expect(weaponBlocks(text)).not.toContain('\n    on\n')
     expect(text).toContain(`processor ${jammer.processorId} WSF_SCRIPT_PROCESSOR`)
     expect(text).toContain('execute at_time 0.001 sec absolute')
     expect(text).toContain('execute at_time 120.001 sec absolute')
     expect(text).toContain('jammer.TurnOn();')
     expect(text).toContain('jammer.TurnOff();')
-    expect(generated.files['mission.txt']).toContain('enable JAMMING_REQUEST_INITIATED')
-    expect(generated.files['mission.txt']).toContain('enable JAMMING_REQUEST_CANCELED')
+    expect(setupText(generated.files)).toContain('enable JAMMING_REQUEST_INITIATED')
+    expect(setupText(generated.files)).toContain('enable JAMMING_REQUEST_CANCELED')
     expect(draft).toEqual(original)
   })
 
@@ -120,12 +129,12 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.uiExtensions.jammers[0]!.duration = 60
     const scheduled = buildMissionPackage(draft)
     expect(scheduled.manifest.jammers[0]).toMatchObject({ activation: 'SCHEDULED', startTimeS: 300, stopTimeS: 360 })
-    expect(scheduled.files['platforms.txt']).toContain('execute at_time 300 sec absolute')
-    expect(scheduled.files['platforms.txt']).toContain('execute at_time 360 sec absolute')
+    expect(typeText(scheduled.files)).toContain('execute at_time 300 sec absolute')
+    expect(typeText(scheduled.files)).toContain('execute at_time 360 sec absolute')
     draft.uiExtensions.jammers[0]!.duration = draft.config.scenario.duration
     const beyond = buildMissionPackage(draft)
     expect(beyond.manifest.jammers[0]).toMatchObject({ startTimeS: 300, stopTimeS: null, durationS: 1200 })
-    expect(beyond.files['platforms.txt']).not.toContain('jammer.TurnOff();')
+    expect(typeText(beyond.files)).not.toContain('jammer.TurnOff();')
   })
 
   it('自动探测按 detectionRange 对全部平台做距离判断并生成启停', () => {
@@ -134,7 +143,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.jammers[0]).toMatchObject({ autoDetect: true, activation: 'AUTO_DETECT_RANGE',
       startsOn: true, startTimeS: null, stopTimeS: null, detectionRangeM: 44448, jammingRangeM: 44448, directionDeg: 360 })
-    const platforms = generated.files['platforms.txt']
+    const platforms = typeText(generated.files)
     expect(platforms).toContain('jammer_proc_')
     expect(platforms).toContain('SlantRangeTo')
     expect(platforms).toContain('44448')
@@ -152,7 +161,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.jammers[0]!.jammingRange = 18520
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.jammers[0]).toMatchObject({ detectionRangeM: 44448, jammingRangeM: 18520 })
-    const platforms = generated.files['platforms.txt']
+    const platforms = typeText(generated.files)
     expect(platforms).toContain('rangeM <= 44448 && rangeM <= 18520')
     expect(platforms).not.toContain('maximum_range')
     expect(generated.manifest.engineValidated).toBe(false)
@@ -170,8 +179,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.jammers[0]).toMatchObject({ triggerTimeS: null, activation: 'TRIGGER_NOT_CONFIGURED',
       startsOn: false, startTimeS: null })
-    expect(generated.files['platforms.txt']).toContain('WSF_RF_JAMMER')
-    expect(generated.files['platforms.txt']).not.toContain('jammer_proc_')
+    expect(typeText(generated.files)).toContain('WSF_RF_JAMMER')
+    expect(typeText(generated.files)).not.toContain('jammer_proc_')
   })
 
   it.each([
@@ -181,7 +190,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.jammers[0]!.type = type
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.jammers[0]!.mode).toBe(mode)
-    expect(generated.files['platforms.txt']).toContain(`mode ${mode}`)
+    expect(typeText(generated.files)).toContain(`mode ${mode}`)
   })
 
   it('总开关或单设备关闭时保留 weapon 配置但不生成任何启停动作', () => {
@@ -191,10 +200,10 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.jammers[0]).toMatchObject({ configuredEnabled: false, startsOn: false,
       startTimeS: null, stopTimeS: null, activation: 'DISABLED' })
-    expect(generated.files['platforms.txt']).toContain('WSF_RF_JAMMER')
-    expect(generated.files['platforms.txt']).not.toContain('jammer_proc_')
-    expect(generated.files['platforms.txt']).not.toContain('TurnOn')
-    expect(generated.files['platforms.txt']).not.toContain('\n    on\n')
+    expect(typeText(generated.files)).toContain('WSF_RF_JAMMER')
+    expect(typeText(generated.files)).not.toContain('jammer_proc_')
+    expect(typeText(generated.files)).not.toContain('TurnOn')
+    expect(weaponBlocks(typeText(generated.files))).not.toContain('\n    on\n')
   })
 
   it('拒绝 AFSIM 不接受的零功率干扰 weapon', () => {
@@ -209,10 +218,10 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.platforms[1]!.category = 'ground'
     const { files, manifest } = buildMissionPackage(draft)
     const platform = manifest.platforms.find((item: { platformId: string }) => item.platformId === 'AIR-01')!
-    expect(platform).toMatchObject({ referenceModel: 'COMMAND_VEHICLE_PLATFORM', mover: 'WSF_GROUND_MOVER' })
+    expect(platform).toMatchObject({ referenceModel: 'COMMAND_VEHICLE_PLATFORM', mover: 'WSF_SURFACE_MOVER' })
     expect(platform.generatedType).toContain('COMMAND_VEHICLE_PLATFORM')
-    expect(files['platforms.txt']).toContain(`platform_type ${platform.generatedType} WSF_PLATFORM`)
-    expect(files['mission.txt']).toContain(`platform AIR-01 ${platform.generatedType}`)
+    expect(typeText(files)).toContain(`platform_type ${platform.generatedType} WSF_PLATFORM`)
+    expect(setupText(files)).toContain(`platform AIR-01 ${platform.generatedType}`)
   })
 
   it('通信卫星按子类型生成候选模型与轨道模板，历元取开始时刻且不写配置坐标', () => {
@@ -222,7 +231,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const satellite = manifest.platforms.find((item: { platformId: string }) => item.platformId === 'SAT-01')!
     expect(satellite).toMatchObject({ satelliteType: 'TIANTONG', referenceModel: 'TIAN_TONG_SAT',
       mover: 'WSF_SPACE_MOVER', orbitalTemplate: 'CANDIDATE_MODEL' })
-    const text = files['platforms.txt']
+    const text = typeText(files)
     expect(text).toContain(`platform_type ${satellite.generatedType} WSF_PLATFORM`)
     expect(text).toContain('mover WSF_SPACE_MOVER')
     expect(text).toContain('    oblate_earth true')
@@ -231,20 +240,26 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(text).toContain('      inclination 0 deg')
     expect(text).toContain('    end_orbital_state')
     expect(text).not.toContain('7000 km')
+    // 示例固定值：天通接收机噪声系数 2 dB、卫星链路不启用 ITU 衰减、RCS 取 SAT_SIG。
+    expect(files['comm_platform_SAT.txt']).toContain('      noise_figure 2 dB')
+    expect(files['comm_platform_SAT.txt']).toContain('      attenuation_model none')
+    expect(files['comm_platform_SAT.txt']).toContain('  radar_signature SAT_SIG')
     // 卫星位置由轨道决定，实例不写 position 与 altitude，避免配置坐标看起来生效。
-    expect(files['mission.txt']).toContain(`platform SAT-01 ${satellite.generatedType}\nend_platform\n`)
+    expect(setupText(files)).toContain(`platform SAT-01 ${satellite.generatedType}\n  side blue\n  icon satellite\n  creation_time 0 sec\nend_platform\n`)
     expect(manifest.devices[0]).toMatchObject({ linkType: 'SAT' })
     expect(draft).toEqual(original)
   })
 
-  it('神通卫星使用 LEO 轨道模板，两个子类型不互相套用', () => {
+  it('神通卫星按已确认口径使用与天通相同的 GEO 轨道，并套用神通参考模型', () => {
     const draft = satelliteDraft()
     draft.config.platforms[2]!.satelliteType = 'SHENTONG'
-    const text = buildMissionPackage(draft).files['platforms.txt']
-    expect(text).toContain('      semi_major_axis 7000 km')
-    expect(text).toContain('      inclination 60 deg')
-    expect(text).toContain('      raan 80 deg')
-    expect(text).not.toContain('42164 km')
+    const { files, manifest } = buildMissionPackage(draft)
+    const text = typeText(files)
+    expect(manifest.platforms[2]).toMatchObject({ referenceModel: 'SHEN_TONG_SAT' })
+    expect(text).toContain('      semi_major_axis 42164 km')
+    expect(text).toContain('      inclination 0 deg')
+    expect(text).toContain('      raan 120 deg')
+    expect(text).not.toContain('7000 km')
   })
 
   it('高空中继复用无人机模型生成并标注中继角色，不新增独立模型', () => {
@@ -255,7 +270,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const relay = manifest.platforms.find((item: { platformId: string }) => item.platformId === 'AIR-01')!
     expect(relay).toMatchObject({ referenceModel: 'MISSION_UAV_PLATFORM', mover: 'WSF_AIR_MOVER', relayRole: true })
     expect(manifest.platforms[0]).toMatchObject({ relayRole: false })
-    expect(files['platforms.txt']).toContain('mover WSF_AIR_MOVER')
+    expect(typeText(files)).toContain('mover WSF_AIR_MOVER')
   })
 
   it('侦测设备生成主动雷达，频率取范围中心、带宽取上下限之差', () => {
@@ -269,7 +284,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(sensor).toMatchObject({ sensorId: 'ESM-01', platformId: 'CMD-01', model: 'WSF_RADAR_SENSOR',
       uiType: 'ESM', frequencyMHz: 3500, bandwidthMHz: 3000, detectionRangeM: 150000,
       directionDeg: null, probability: 0.95, enabled: true })
-    const text = files['platforms.txt']
+    const text = typeText(files)
     expect(text).toContain(`sensor ${sensor.deviceId} WSF_RADAR_SENSOR`)
     expect(text).toContain('          frequency 3.5 GHz')
     expect(text).toContain('          bandwidth 3000 MHz')
@@ -286,7 +301,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.uiExtensions.sensors = [{ sensorId: 'ESM-01', type: 'ESM', direction: 90, probability: 0.5, enabled: false }]
     const off = buildMissionPackage(draft)
     expect(off.manifest.sensors[0]).toMatchObject({ directionDeg: 90, enabled: false })
-    expect(off.files['platforms.txt']).not.toContain('    on\n  end_sensor')
+    expect(typeText(off.files)).not.toContain('    on\n  end_sensor')
     draft.config.sensors[0]!.frequencyRange = { min: 5000, max: 2000 }
     expect(() => buildMissionPackage(draft)).toThrow('sensors[0].frequencyRange')
     draft.config.sensors[0]!.frequencyRange = { min: 2000, max: 5000 }
@@ -302,15 +317,26 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const forward = buildMissionPackage(draft)
     expect(forward.manifest.devices[0]).toMatchObject({ linkType: 'DATALINK', band: 'C', role: 'UPLINK',
       bitErrorProbability: 0.00001 })
-    expect(forward.files['platforms.txt']).toContain('    bit_error_probability 0.00001')
+    const forwardText = typeText(forward.files)
+    expect(forwardText).toContain('      bit_error_probability 0.00001')
+    // 示例 C 波段定向天线：俯仰 88°、下倾 3°；上行接前向时延处理器。
+    expect(forwardText).toContain('    elevation_beamwidth 88 deg')
+    expect(forwardText).toContain('      antenna_tilt -3 deg')
+    expect(forwardText).toContain('    internal_link forward_delay')
     link.direction = 'REVERSE'
     draft.config.informationDemand[0]!.direction = 'REVERSE'
-    expect(buildMissionPackage(draft).manifest.devices[0]).toMatchObject({ role: 'DOWNLINK' })
-    // 微波链路没有误码概率参数，也不带波段与角色。
+    const reverse = buildMissionPackage(draft)
+    expect(reverse.manifest.devices[0]).toMatchObject({ role: 'DOWNLINK' })
+    expect(typeText(reverse.files)).toContain('    internal_link return_delay')
+    // 微波不带波段与角色；误码概率按示例写在公共介质的 mode 中，所有无线链路一致。
     link.type = 'MICROWAVE'
     const microwave = buildMissionPackage(draft)
     expect(microwave.manifest.devices[0]).toMatchObject({ band: null, role: null, bitErrorProbability: null })
-    expect(microwave.files['platforms.txt']).not.toContain('bit_error_probability')
+    const microwaveText = typeText(microwave.files)
+    expect(microwaveText).toContain('      bit_error_probability 0.00001')
+    expect(microwaveText).not.toContain('antenna_tilt')
+    expect(microwaveText).not.toContain('WSF_DELAY_PROCESSOR')
+    expect(microwaveText).toContain('      polarization horizontal')
   })
 
   it('航点生成可推进 route，首点固定为初始位置，arrivalTime 不作为引擎约束', () => {
@@ -322,7 +348,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       { longitude: 120.3, latitude: 23.7, altitude: 8200, speed: 250, arrivalTime: 120 },
     ]
     const { files, manifest } = buildMissionPackage(draft)
-    const entry = files['mission.txt']
+    const entry = setupText(files)
     expect(entry).toContain('  route\n')
     expect(entry).toContain('    position 23.5n 120.1e altitude 8000 m speed 200 m/s\n')
     expect(entry).toContain('    position 23.6n 120.2e altitude 8100 m speed 250 m/s\n')
@@ -339,12 +365,18 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.scenario.environment.simClockSpeed = 4
     draft.config.scenario.startTime = '2026-09-23T00:00:00.000Z'
     const { files, manifest } = buildMissionPackage(draft)
-    const entry = files['mission.txt']
+    const entry = setupText(files)
     expect(entry).toContain('clock_rate 4')
-    expect(entry).toContain('global_environment')
-    expect(entry).toContain('  sea_state 3')
-    expect(entry).toContain('  rain_rate 12.5 mm/hr')
-    expect(entry).toContain('end_global_environment')
+    expect(entry).toContain('multi_thread')
+    // 环境按示例写在 comm_PerDefinition.txt；雨区高度与云层取示例固定值。
+    const definition = files['comm_PerDefinition.txt']
+    expect(definition).toContain('global_environment')
+    expect(definition).toContain('  sea_state 3')
+    expect(definition).toContain('  rain_rate 12.5 mm/hr')
+    expect(definition).toContain('  rain_altitude_limit 3000 m')
+    expect(definition).toContain('  cloud_altitude_limits 500 m 2000 m')
+    expect(definition).toContain('  cloud_water_density 0.5 g/m3')
+    expect(definition).toContain('end_global_environment')
     // 引擎只接受“三字母月份 两位日 四位年”；脚本无时区标记，按存储的 UTC 分量原样写入。
     expect(entry).toContain('start_date sep 23 2026')
     expect(entry).toContain('start_time 00:00:00.000')
@@ -358,8 +390,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const draft = minimalDraft()
     draft.config.scenario.startTime = '2025-01-05T23:59:59.500Z'
     const { files } = buildMissionPackage(draft)
-    expect(files['mission.txt']).toContain('start_date jan 05 2025')
-    expect(files['mission.txt']).toContain('start_time 23:59:59.500')
+    expect(setupText(files)).toContain('start_date jan 05 2025')
+    expect(setupText(files)).toContain('start_time 23:59:59.500')
   })
 
   it('业务保留类型和编号，按位数/周期生成真实发送且不改草稿', () => {
@@ -376,14 +408,14 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(business).toMatchObject({ demandId: demand.id, messageType: demand.informationType, sizeBits: 2048, frequencyHz: 3,
       constraints: { engineEnforced: false, minDataRateMbps: demand.minDataRateMbps } })
     expect(business.routes).toEqual([manifest.devices[0]])
-    expect(files['platforms.txt']).toContain(`SetType("${demand.informationType}")`)
-    expect(files['platforms.txt']).toContain(`SetSubType("${demand.id}")`)
-    expect(files['platforms.txt']).toContain('SetSizeInBits(2048)')
-    expect(files['platforms.txt']).toContain('emissionIndex / 3.00000000000000000e+0')
-    expect(files['platforms.txt']).toContain('ExecuteScriptAtTime(0, "QueueBusiness")')
-    expect(files['platforms.txt']).toContain('ExecuteScriptAtTime(TIME_NOW, "EmitBusiness")')
-    expect(files['platforms.txt']).toContain(`TIME_NOW >= ${draft.config.scenario.duration}`)
-    expect(files['platforms.txt']).toContain(`SendMessage(message, "AIR-01", "${manifest.devices[0].target.deviceId}")`)
+    expect(typeText(files)).toContain(`SetType("${demand.informationType}")`)
+    expect(typeText(files)).toContain(`SetSubType("${demand.id}")`)
+    expect(typeText(files)).toContain('SetSizeInBits(2048)')
+    expect(typeText(files)).toContain('emissionIndex / 3.00000000000000000e+0')
+    expect(typeText(files)).toContain('ExecuteScriptAtTime(0, "QueueBusiness")')
+    expect(typeText(files)).toContain('ExecuteScriptAtTime(TIME_NOW, "EmitBusiness")')
+    expect(typeText(files)).toContain(`TIME_NOW >= ${draft.config.scenario.duration}`)
+    expect(typeText(files)).toContain(`SendMessage(message, "AIR-01", "${manifest.devices[0].target.deviceId}")`)
     expect(draft).toEqual(original)
   })
 
@@ -421,7 +453,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       if (action === 'frequency') changed.config.informationDemand[0]!.frequencyHz = 0
       const generated = buildMissionPackage(changed)
       expect(generated.manifest.businesses).toEqual([])
-      expect(generated.files['platforms.txt']).not.toContain('SendMessage')
+      expect(typeText(generated.files)).not.toContain('SendMessage')
       expect(changed.config.informationDemand).toHaveLength(1)
     }
     delete demand.enabled
@@ -439,7 +471,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     demand.destinationPlatformIds.push('AIR-02')
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.businesses[0].routes.map((route: { linkId: string }) => route.linkId)).toEqual(['L-A', 'L-B'])
-    expect(generated.files['platforms.txt'].match(/SendMessage\(/g)).toHaveLength(2)
+    expect(typeText(generated.files).match(/SendMessage\(/g)).toHaveLength(2)
     draft.config.links[1]!.enabled = false
     expect(() => buildMissionPackage(draft)).toThrow('informationDemand[0].destinationPlatformIds[1]')
     draft.config.links[1]!.enabled = true
@@ -456,8 +488,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(multi.manifest.businesses[0].routePlans[0].orderedLinkIds).toEqual(
       expect.arrayContaining(['L-A', 'L-C']))
     expect(multi.manifest.businesses[0].routes).toHaveLength(1)
-    expect(multi.files['platforms.txt'].match(/SendMessage\(/g)).toHaveLength(1)
-    expect(multi.files['platforms.txt']).not.toContain('activeRouteIndex')
+    expect(typeText(multi.files).match(/SendMessage\(/g)).toHaveLength(1)
+    expect(typeText(multi.files)).not.toContain('activeRouteIndex')
   })
 
   it.each([
@@ -473,20 +505,39 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const original = structuredClone(draft)
     const { files, manifest } = buildMissionPackage(draft)
     expect(draft).toEqual(original)
-    expect(files['mission.txt']).toContain('include_once platforms.txt')
-    expect(files['mission.txt']).toContain('include_once observers.txt')
-    expect(files['mission.txt']).toContain(`end_time ${draft.config.scenario.duration} sec`)
+    // 入口与文件拆分同对接示例：SimSetup 依次包含 5 个平台类型文件、实例与观察者；类型文件引用公共定义。
+    expect(manifest.entry).toBe('comm_SimSetup.txt')
+    expect(files['comm_SimSetup.txt']).toContain(['include_once comm_platform_COMMAND_VEHICLE.txt',
+      'include_once comm_platform_MISSION_UAV.txt', 'include_once comm_platform_JAMMER.txt',
+      'include_once comm_platform_REAR.txt', 'include_once comm_platform_SAT.txt',
+      'include_once comm_platform_INS.txt', 'include_once observers.txt'].join('\n'))
+    for (const name of TYPE_FILES.slice(1)) expect(files[name]).toMatch(/^include_once comm_PerDefinition\.txt\n/)
+    expect(files['comm_SimSetup.txt']).toContain('simulation_name "MultiMethod_UAV_Comm_Scenario"')
+    expect(files['comm_SimSetup.txt']).toContain('event_pipe\n   file output/scenario_events.aer\nend_event_pipe')
+    expect(Object.keys(files)).not.toContain('mission.txt')
+    expect(Object.keys(files)).not.toContain('platforms.txt')
+    expect(setupText(files)).toContain(`end_time ${draft.config.scenario.duration} sec`)
     for (const platform of draft.config.platforms) {
-      expect(files['mission.txt']).toContain(`platform ${platform.id} `)
-      expect(files['mission.txt']).toContain(`position ${platform.initialPosition.latitude}n ${platform.initialPosition.longitude}e`)
-      expect(files['mission.txt']).toContain(`altitude ${platform.initialPosition.altitude} m`)
+      expect(setupText(files)).toContain(`platform ${platform.id} `)
+      expect(setupText(files)).toContain(`position ${platform.initialPosition.latitude}n ${platform.initialPosition.longitude}e`)
+      expect(setupText(files)).toContain(`altitude ${platform.initialPosition.altitude} m`)
     }
-    const text = files['platforms.txt']
+    const text = typeText(files)
     expect(text.match(/  comm /g)).toHaveLength(2)
     expect(text.match(/frequency 4500 MHz/g)).toHaveLength(4)
     expect(text.match(/bandwidth 20 MHz/g)).toHaveLength(4)
     expect(text.match(/power 100 W/g)).toHaveLength(2)
-    expect(text.match(/transfer_rate 20 mbits\/sec/g)).toHaveLength(2)
+    expect(text.match(/transfer_rate constant 20 mbits\/sec/g)).toHaveLength(2)
+    // 每台设备独立介质，避免共享介质被逐台改写；参数与示例介质一致。
+    expect(text.match(/    add medium medium_comm_/g)).toHaveLength(2)
+    expect(text.match(/^medium medium_comm_\S+ WSF_COMM_MEDIUM_UNGUIDED$/gm)).toHaveLength(2)
+    expect(text).not.toContain('add medium UAV_MESH_MEDIUM')
+    // 示例固定值：接收机噪声系数、RCS 与 ITU 衰减。
+    expect(text.match(/noise_figure 3 dB/g)).toHaveLength(2)
+    expect(text.match(/attenuation_model itu/g)).toHaveLength(2)
+    expect(text).toContain('medium UAV_MESH_MEDIUM WSF_COMM_MEDIUM_UNGUIDED')
+    expect(text).toContain('radar_signature COMMAND_VEHICLE_SIG')
+    expect(setupText(files)).toContain('  side blue')
     expect(text).toContain('peak_gain 18 dB')
     expect(text).toContain('peak_gain 12 dB')
     expect(text).toContain('update_interval 2 sec')
@@ -499,8 +550,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(files['README.txt']).toContain('不是完整业务仿真脚本')
     expect(files['README.txt']).toContain('按 priority 自动选主链路')
     expect(JSON.parse(files['input.json'])).toEqual(draft)
-    for (const forbidden of ['side blue', 'noise_figure', 'SendMessage', '17:30', 'H:\\', 'scenario "']) {
-      expect(files['mission.txt'] + text + files['observers.txt']).not.toContain(forbidden)
+    // 不复制示例剧情（硬编码平台名与阶段），也不泄露本机路径。
+    for (const forbidden of ['mission_uav_0', 'PHASE', 'SendMessage', '17:30', 'H:\\', 'scenario "']) {
+      expect(setupText(files) + text + files['observers.txt']).not.toContain(forbidden)
     }
   })
 
@@ -512,14 +564,14 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const mappings = generated.manifest.devices
     expect(new Set(mappings.flatMap((m: { source: { deviceId: string }; target: { deviceId: string } }) => [m.source.deviceId, m.target.deviceId])).size).toBe(4)
     expect(mappings[0].network).not.toBe(mappings[1].network)
-    expect(generated.files['platforms.txt']).toContain('frequency 8000 MHz')
-    expect(generated.files['platforms.txt']).toContain('frequency 4500 MHz')
+    expect(typeText(generated.files)).toContain('frequency 8000 MHz')
+    expect(typeText(generated.files)).toContain('frequency 4500 MHz')
     draft.config.links[0]!.enabled = false
     draft.config.informationDemand[0]!.enabled = true
     const stopped = buildMissionPackage(draft)
     expect(stopped.manifest.devices).toEqual([mappings[1]])
     expect(stopped.manifest.excludedLinkIds).toEqual(['L-A'])
-    expect(stopped.files['platforms.txt']).not.toContain(mappings[0].source.deviceId)
+    expect(typeText(stopped.files)).not.toContain(mappings[0].source.deviceId)
     expect(draft.config.informationDemand).toHaveLength(1)
     draft.config.links[0]!.enabled = true
     draft.config.informationDemand[0]!.enabled = false
@@ -558,13 +610,176 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(() => buildMissionPackage(draft)).toThrow(fieldPath)
   })
 
+  it('后方节点挂载 link_calc：参数结构同示例，由场景配置汇总，JSON 内层引号不转义', () => {
+    const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
+    draft.config.links.find(link => link.type === 'LASER')!.enabled = false
+    draft.config.informationDemand[0]!.enabled = false
+    draft.config.output.linkQualityEnabled = false
+    draft.config.output.linkSwitchEnabled = false
+    const { files, manifest } = buildMissionPackage(draft)
+    const rear = manifest.platforms.find((item: { referenceModel: string }) => item.referenceModel === 'REAR_COMM_PLATFORM')!
+    expect(manifest.linkCalc).toMatchObject({ emitted: true, hostPlatformId: rear.platformId })
+    const rearText = files['comm_platform_REAR.txt']
+    const block = rearText.slice(rearText.indexOf('  add processor link_calc WSF_LINK_CALC_PROCESSOR'))
+    expect(rearText.match(/add processor link_calc/g)).toHaveLength(1)
+    expect(block).toContain('    update_interval 3.0 sec\n    emergency_threshold 0.80\n    warning_threshold   0.50\n')
+    const value = (name: string) => {
+      const line = block.split('\n').find((item: string) => item.trimStart().startsWith(`${name} `))!
+      const raw = line.trim().slice(name.length).trim()
+      // 示例写法：外层双引号直接包裹 JSON，内层双引号不转义。
+      expect(raw.startsWith('"') && raw.endsWith('"')).toBe(true)
+      expect(raw).not.toContain('\\"')
+      return JSON.parse(raw.slice(1, -1))
+    }
+    const relayIds = manifest.platforms.filter((item: { relayRole: boolean }) => item.relayRole).map((item: { platformId: string }) => item.platformId)
+    expect(value('relay_uav_names')).toEqual(relayIds)
+    const forward = manifest.devices.filter((item: { direction: string }) => item.direction === 'FORWARD')
+    const hotForward = value('hot_link_fw')
+    expect(Object.keys(hotForward)).toHaveLength(forward.length)
+    expect(hotForward.link1[0]).toEqual({ platform: forward[0].source.platformId, inPort: '', outPort: forward[0].source.deviceId })
+    expect(hotForward.link1.at(-1)).toEqual({ platform: forward[0].target.platformId, inPort: forward[0].target.deviceId, outPort: '' })
+    expect(Object.keys(value('hot_link_ret'))).toHaveLength(manifest.devices.length - forward.length)
+    // port_params 由实际设备参数生成，平台类型名与设备编号能在生成的脚本中找到。
+    const allText = typeText(files)
+    for (const entry of value('port_params')) {
+      expect(allText).toContain(`platform_type ${entry.platform_type} WSF_PLATFORM`)
+      for (const comm of entry.comm_params) expect(allText).toContain(`  comm ${comm.comm_name} `)
+    }
+    const environment = value('natural_environment')
+    expect(environment.sea_state.sea_state_level).toBe(draft.config.scenario.environment.seaState)
+    expect(environment.rain.rain_rate_mm_hr).toBe(draft.config.scenario.environment.rainRateMmPerHour)
+    // 未框选海面区域时不写坐标；海况是否计入跟随“海面多径衰落”开关。
+    expect(environment.sea_state.sea_polygon).toEqual([])
+    expect(environment.sea_state.enabled).toBe(draft.config.scenario.environment.multipathEnabled)
+  })
+
+  it('海面多径衰落：框选区域写入 sea_polygon，开关写入 sea_state.enabled', () => {
+    const draft = minimalDraft()
+    draft.config.scenario.environment.multipathEnabled = false
+    draft.config.scenario.environment.seaPolygon = [{ longitude: 118.5, latitude: 24.1 }, { longitude: 120, latitude: 24.2 }, { longitude: 119.6, latitude: 25.3 }]
+    const text = buildMissionPackage(draft).files['comm_platform_REAR.txt']
+    expect(text).toContain('"sea_state":{"enabled":false,"sea_state_level":')
+    expect(text).toContain('"sea_polygon":[{"lat":24.1,"lon":118.5},{"lat":24.2,"lon":120},{"lat":25.3,"lon":119.6}]')
+  })
+
+  it('云层参数与 L 波段取自场景配置：L 波段不下倾、全向俯仰波束', () => {
+    const draft = minimalDraft()
+    Object.assign(draft.config.scenario.environment, { cloudAltitudeMinM: 800, cloudAltitudeMaxM: 2500, cloudWaterDensityGM3: 0.3 })
+    Object.assign(draft.config.links[0]!, { type: 'DATALINK', direction: 'FORWARD', band: 'L' })
+    const { files, manifest } = buildMissionPackage(draft)
+    expect(files['comm_PerDefinition.txt']).toContain('  cloud_altitude_limits 800 m 2500 m\n  cloud_water_density 0.3 g/m3\n')
+    expect(files['comm_platform_REAR.txt']).toContain('"cloud":{"enabled":true,"cloud_altitude_min_m":800,"cloud_altitude_max_m":2500,"cloud_water_density_g_m3":0.3}')
+    expect(manifest.devices[0]).toMatchObject({ band: 'L', role: 'UPLINK' })
+    const text = typeText(files)
+    expect(text).not.toContain('antenna_tilt')
+    expect(text).not.toContain('elevation_beamwidth 88 deg\n  end_uniform_pattern\nend_antenna_pattern\nantenna_pattern comm_')
+    expect(text).toContain('    internal_link forward_delay')
+  })
+
+  it('阶段切换规则：按列表顺序判断距离与干扰条件，受滞回时间约束切换发送设备', () => {
+    const draft = jammerDraft()
+    const config = draft.config
+    config.links.push({ ...config.links[0]!, id: 'L-B', frequency: 8200 })
+    config.platforms[0]!.linkIds.push('L-B')
+    config.platforms[1]!.linkIds.push('L-B')
+    Object.assign(config.informationDemand[0]!, { enabled: true, frequencyHz: 0.5 })
+    config.linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 7,
+      priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'], switchRules: [
+        { id: 'RULE-JAM', trigger: 'JAMMING_ACTIVE', jammerId: 'JAM-WB-01-TX', sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-B' },
+        { id: 'RULE-CLR', trigger: 'JAMMING_STOPPED', jammerId: 'JAM-WB-01-TX', sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-A' },
+        { id: 'RULE-FAR', trigger: 'DISTANCE_ABOVE', distanceThresholdM: 200000, sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-B' },
+        { id: 'RULE-OFF', enabled: false, trigger: 'DISTANCE_BELOW', distanceThresholdM: 1, sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-A' },
+      ] }
+    const { files, manifest } = buildMissionPackage(draft)
+    const business = manifest.businesses[0]
+    expect(business.failoverEnabled).toBe(true)
+    expect(business.routePlans[0].switchRuleIds).toEqual(['RULE-JAM', 'RULE-CLR', 'RULE-FAR'])
+    const text = files['comm_platform_REAR.txt']
+    const linkA = manifest.devices.find((item: { linkId: string }) => item.linkId === 'L-A')
+    const linkB = manifest.devices.find((item: { linkId: string }) => item.linkId === 'L-B')
+    expect(text).toContain(`      string routeComm_0 = "${linkA.source.deviceId}";`)
+    expect(text).toContain('PLATFORM.Comm(routeComm_0).SendMessage(message, routePlatform_0, routeDevice_0);')
+    expect(text).toContain('    execute at_interval_of 3 sec')
+    expect(text).toContain(`          WsfWeapon jammer = jammerPlatform.Weapon("${manifest.jammers[0].weaponId}");`.replace(/^ {10}/, '            '))
+    expect(text).toContain('              condition = jammer.IsTurnedOn();')
+    expect(text).toContain('              condition = jammerSeenOn_0_1 && !jammer.IsTurnedOn();')
+    expect(text).toContain('if (peer.IsValid()) condition = PLATFORM.SlantRangeTo(peer) > 200000;')
+    expect(text).toContain(`            nextComm = "${linkB.source.deviceId}";`)
+    expect(text).toContain('          && TIME_NOW - routeSwitchedAt_0 >= 7)')
+    expect(text).toContain('writeln("LINK_SWITCH time=", TIME_NOW, " business=')
+    // 停用的规则不生成；规则顺序即优先顺序（干扰规则在距离规则之前判断）。
+    expect(text).not.toContain('RULE-OFF')
+    expect(text.indexOf('ruleId = "RULE-JAM"')).toBeLessThan(text.indexOf('ruleId = "RULE-FAR"'))
+  })
+
+  it('切换规则只作用于同方向业务：返向目标链路不挂到前向路由', () => {
+    const draft = jammerDraft()
+    const config = draft.config
+    config.links.push({ ...config.links[0]!, id: 'L-REV', direction: 'REVERSE', frequency: 8200 })
+    config.platforms[0]!.linkIds.push('L-REV')
+    config.platforms[1]!.linkIds.push('L-REV')
+    Object.assign(config.informationDemand[0]!, { enabled: true, frequencyHz: 0.5 })
+    config.linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
+      priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'], switchRules: [
+        { id: 'RULE-REV', trigger: 'DISTANCE_ABOVE', distanceThresholdM: 1000, sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-REV' },
+      ] }
+    // 只有前向业务时，共享校验阻断并定位到规则目标链路。
+    expect(() => buildMissionPackage(draft)).toThrow('linkSettings.switchRules[0].toLinkId')
+    // 不限方向的旧业务可通过校验；按优先级选出前向主链路后，返向规则不挂到该路由。
+    const demand = config.informationDemand[0]!
+    delete demand.linkId
+    delete demand.direction
+    const business = buildMissionPackage(draft).manifest.businesses[0]
+    expect(business.routePlans[0]).toMatchObject({ orderedLinkIds: ['L-A', 'L-REV'], switchRuleIds: [] })
+    expect(business.failoverEnabled).toBe(false)
+  })
+
+  it('切换目标链路停用时阻断生成并定位到规则', () => {
+    const draft = minimalDraft()
+    draft.config.links.push({ ...draft.config.links[0]!, id: 'L-B', enabled: false })
+    draft.config.platforms.forEach(platform => platform.linkIds.push('L-B'))
+    draft.config.linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
+      priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'], switchRules: [
+        { id: 'RULE-1', trigger: 'DISTANCE_ABOVE', distanceThresholdM: 1000, sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-B' },
+      ] }
+    expect(() => buildMissionPackage(draft)).toThrow('linkSettings.switchRules[0].toLinkId')
+  })
+
+  it('无后方节点时不生成 link_calc，并在映射中说明', () => {
+    const draft = minimalDraft()
+    draft.config.platforms[0]!.type = 'GROUND_CLUSTER_COMMAND_NODE'
+    const { files, manifest } = buildMissionPackage(draft)
+    expect(typeText(files)).not.toContain('link_calc')
+    expect(manifest.linkCalc).toMatchObject({ emitted: false, hostPlatformId: null })
+  })
+
+  it('数传经高空中继时，中继入口使用独立时延处理器再转发，不与其他链路共用', () => {
+    const draft = minimalDraft()
+    const relay = structuredClone(draft.config.platforms[1]!)
+    relay.id = 'RLY-01'
+    relay.type = 'FORWARD_RELAY_NODE'
+    relay.linkIds = ['L-A']
+    draft.config.platforms.push(relay)
+    Object.assign(draft.config.links[0]!, { type: 'DATALINK', direction: 'FORWARD', relayPlatformId: 'RLY-01' })
+    const { files, manifest } = buildMissionPackage(draft)
+    const device = manifest.devices[0]
+    const text = files['comm_platform_MISSION_UAV.txt']
+    const delayId = text.match(/processor (forward_delay_[0-9a-f_]+) WSF_DELAY_PROCESSOR/)![1]
+    expect(text).toContain(`  comm ${device.relay.ingressDeviceId} WSF_RADIO_TRANSCEIVER`)
+    expect(text).toContain(`    internal_link ${delayId}\n  end_comm`)
+    expect(text).toContain(`    time_distribution constant time 1.0 sec\n    internal_link ${device.relay.processorId}\n  end_processor`)
+    // 端点（后方节点、目标无人机）使用共用的 forward_delay → script_proc。
+    expect(files['comm_platform_REAR.txt']).toContain('  processor forward_delay WSF_DELAY_PROCESSOR')
+    expect(files['comm_platform_REAR.txt']).toContain('  processor script_proc WSF_SCRIPT_PROCESSOR')
+  })
+
   it('关闭事件输出时不写事件配置；无链路仍能生成节点且不伪造设备', () => {
     const draft = minimalDraft()
     draft.config.links[0]!.enabled = false
     draft.config.output.eventsEnabled = false
     const { files, manifest } = buildMissionPackage(draft, { ...draft.config.output, eventsEnabled: false })
-    expect(files['mission.txt']).not.toContain('csv_event_output')
-    expect(files['platforms.txt']).not.toContain('  comm ')
+    expect(setupText(files)).not.toContain('csv_event_output')
+    expect(typeText(files)).not.toContain('  comm ')
     expect(manifest.devices).toEqual([])
   })
 
@@ -576,13 +791,13 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       const first = await writeScriptText(root, script, draft.revision, draft)
       const second = await writeScriptText(root, script, draft.revision, draft)
       expect(first).not.toBe(second)
-      expect(first.endsWith('mission.txt')).toBe(true)
+      expect(first.endsWith('comm_SimSetup.txt')).toBe(true)
       expect(await readFile(first, 'utf8')).toBe(await readFile(second, 'utf8'))
       expect(await readdir(join(dirname(first), draft.config.output.directory))).toEqual([])
       expect(await readFile(join(dirname(first), `SCN-001-r${draft.revision}.txt`), 'utf8')).toContain(script.preview)
       const manifest = JSON.parse(await readFile(join(dirname(first), 'mapping.json'), 'utf8'))
       expect(manifest).toMatchObject({ scenarioId: 'SCN-001', revision: draft.revision, engineValidated: false })
-      for (const dependency of ['platforms.txt', 'observers.txt', 'input.json', 'README.txt']) {
+      for (const dependency of [...TYPE_FILES, 'comm_platform_INS.txt', 'observers.txt', 'input.json', 'README.txt']) {
         expect((await readFile(join(dirname(first), dependency), 'utf8')).length).toBeGreaterThan(0)
       }
       const directories = await readdir(root)
@@ -603,8 +818,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.links[0]!.type = 'FIBER'
     const generated = buildMissionPackage(draft)
     expect(generated.manifest.devices[0]).toMatchObject({ linkType: 'FIBER', commModel: 'WSF_COMM_TRANSCEIVER' })
-    expect(generated.files['platforms.txt']).toContain('WSF_COMM_TRANSCEIVER')
-    expect(generated.files['platforms.txt']).toContain('WSF_COMM_NETWORK_P2P')
+    expect(typeText(generated.files)).toContain('WSF_COMM_TRANSCEIVER')
+    expect(typeText(generated.files)).toContain('WSF_COMM_NETWORK_P2P')
   })
 
   it('卫星单跳中继生成源→卫星→目标转发', () => {
@@ -621,9 +836,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const device = generated.manifest.devices[0]!
     expect(device.relayPlatformId).toBe('SAT-01')
     expect(device.relay).toMatchObject({ platformId: 'SAT-01' })
-    expect(generated.files['platforms.txt']).toContain('on_message')
-    expect(generated.files['platforms.txt']).toContain('relay_proc_')
-    expect(generated.files['platforms.txt']).toContain('comm_')
+    expect(typeText(generated.files)).toContain('on_message')
+    expect(typeText(generated.files)).toContain('relay_proc_')
+    expect(typeText(generated.files)).toContain('comm_')
   })
 
   it('输出目录写入包内 csv 路径；缺少真实质量和切换测量时明确阻断', () => {
@@ -631,9 +846,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.output.directory = 'custom_out'
     draft.config.output.eventsEnabled = true
     const generated = buildMissionPackage(draft, draft.config.output)
-    expect(generated.files['mission.txt']).toContain('file custom_out/scenario_events.csv')
+    expect(setupText(generated.files)).toContain('file custom_out/scenario_events.csv')
     expect(generated.files['observers.txt']).toContain('custom_out/position.csv')
-    expect(generated.files['platforms.txt']).not.toContain('link_quality.csv')
+    expect(typeText(generated.files)).not.toContain('link_quality.csv')
     expect(generated.manifest.output.linkQualityCsvPath).toBeNull()
     expect(generated.manifest.output.linkSwitchCsvPath).toBeNull()
     expect(generated.manifest.output).toMatchObject({
@@ -707,11 +922,11 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       relayKind: 'FORWARD_RELAY_UAV', relayPlatformId: 'RELAY-01',
     })
     expect(generated.manifest.platforms.find((p: { platformId: string }) => p.platformId === 'RELAY-01')).toMatchObject({ relayRole: true })
-    expect(generated.files['platforms.txt']).toContain('relay_proc_')
-    expect(generated.files['platforms.txt']).toContain('on_message')
-    expect(generated.files['mission.txt']).toContain('platform RELAY-01 ')
-    expect(generated.files['platforms.txt']).toContain(`internal_link ${generated.manifest.devices[0]!.relay!.processorId}`)
-    expect(generated.files['platforms.txt']).toContain('on_message\n      default')
+    expect(typeText(generated.files)).toContain('relay_proc_')
+    expect(typeText(generated.files)).toContain('on_message')
+    expect(setupText(generated.files)).toContain('platform RELAY-01 ')
+    expect(typeText(generated.files)).toContain(`internal_link ${generated.manifest.devices[0]!.relay!.processorId}`)
+    expect(typeText(generated.files)).toContain('on_message\n      default')
   })
 
   it('多链路按 priority 选主路由；不输出无测量的切换与质量 CSV', () => {
@@ -757,10 +972,10 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       routes: [expect.objectContaining({ linkId: 'L-DL', linkType: 'DATALINK' })],
       routePlans: [expect.objectContaining({ orderedLinkIds: ['L-DL', 'L-MW'] })],
     })
-    expect(generated.files['platforms.txt']).not.toContain('FailoverToNextRoute')
-    expect(generated.files['platforms.txt']).not.toContain('activeRouteIndex')
-    expect(generated.files['platforms.txt']).not.toContain('link_switch.csv')
-    expect(generated.files['platforms.txt']).not.toContain('link_quality.csv')
+    expect(typeText(generated.files)).not.toContain('FailoverToNextRoute')
+    expect(typeText(generated.files)).not.toContain('activeRouteIndex')
+    expect(typeText(generated.files)).not.toContain('link_switch.csv')
+    expect(typeText(generated.files)).not.toContain('link_quality.csv')
     expect(generated.manifest.output.linkSwitchStatsEmitted).toBe(false)
   })
 
@@ -781,7 +996,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
         .send({ scenarioId: 'SCN-001', warningConfirmationId: context.confirmationId }).expect(200)).body.data
       const result = (await api.post(`/api/v1/scripts/${script.scriptId}/local-file`).set(headers)
         .send({ checksum: script.checksum }).expect(200)).body.data
-      expect(result.path.endsWith('mission.txt')).toBe(true)
+      expect(result.path.endsWith('comm_SimSetup.txt')).toBe(true)
       expect(JSON.parse(await readFile(join(dirname(result.path), 'input.json'), 'utf8'))).toEqual(saved)
       saved.config.informationDemand[0].enabled = true
       saved.config.informationDemand[0].volumeMb = 1000

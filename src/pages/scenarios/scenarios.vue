@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, toRaw, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import type { BusinessInformationNodeType, CapabilityState, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
+import type { BusinessInformationNodeType, CapabilityState, GeoPoint, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
@@ -31,6 +31,7 @@ import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
+import SeaAreaMapPicker from '../../components/scenarios/SeaAreaMapPicker.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
@@ -79,6 +80,7 @@ watch(draft, () => { detailPlatformId.value = null }, { flush: 'sync' })
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
 const linkSettingsVisible = ref(false)
+const seaAreaVisible = ref(false)
 const linkEditorLink = ref<Link | null>(null)
 const linkEditorError = ref('')
 const linkFrequencyBelowMinimum = ref(false)
@@ -259,6 +261,13 @@ function touchField(event: Event): void {
  */
 function markDirty(): void {
   scenarioStore.markDirty()
+}
+
+/** 保存地图框选的海面区域；polygon 为确认后的顶点副本。 */
+function applySeaArea(polygon: GeoPoint[]): void {
+  if (!draft.value || draft.value.locked) return
+  draft.value.config.scenario.environment.seaPolygon = polygon
+  markDirty()
 }
 
 /**
@@ -986,9 +995,11 @@ function validationTargetId(fieldPath: string): string | undefined {
     enabled: 'link-enabled',
     antennaGainCorrectionDb: 'link-gain-correction', coding: 'link-coding',
     antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
-    berThreshold: 'link-ber-threshold',
+    berThreshold: 'link-ber-threshold', band: 'link-band',
   } as Record<string, string>)[linkField]
   if (fieldPath.startsWith('linkSettings.enabledSatellites')) return 'link-relay-satellite'
+  const ruleField = /^linkSettings\.switchRules\[(\d+)\](?:\.(\w+))?/.exec(fieldPath)
+  if (ruleField) return ruleField[2] ? `switch-rule-${ruleField[1]}-${ruleField[2]}` : 'link-switch-rules'
   const directTargets: Record<string, string> = {
     'linkSettings.switchCooldownS': 'link-switch-cooldown',
     'linkSettings.priority': 'link-priority-0',
@@ -1004,6 +1015,10 @@ function validationTargetId(fieldPath: string): string | undefined {
     'scenario.environment.rainRateMmPerHour': 'scenario-rain-rate',
     'scenario.environment.rainLossDbPerKm': 'scenario-rain-loss',
     'scenario.environment.multipathEnabled': 'scenario-multipath',
+    'scenario.environment.cloudAltitudeMinM': 'scenario-cloud-min',
+    'scenario.environment.cloudAltitudeMaxM': 'scenario-cloud-max',
+    'scenario.environment.cloudWaterDensityGM3': 'scenario-cloud-water',
+    'scenario.environment.seaPolygon': 'open-sea-area',
 
     'scenario.environment.simClockSpeed': 'scenario-sim-clock-speed',
     'scenario.environment.transmissionDistance': 'scenario-trans-distance',
@@ -1410,8 +1425,28 @@ watch(activeTab, (tab) => {
                 data-testid="scenario-multipath"
                 @update:model-value="markDirty"
             />
+            <template v-if="draft.config.scenario.environment.multipathEnabled">
+              <el-button size="small" class="sea-area-button" :disabled="pending || draft.locked" data-testid="open-sea-area" @click="seaAreaVisible = true">
+                框选海面区域
+              </el-button>
+              <span class="sea-area-summary" data-testid="sea-area-summary">
+                {{ draft.config.scenario.environment.seaPolygon?.length
+                  ? `已框选 ${draft.config.scenario.environment.seaPolygon.length} 个顶点`
+                  : '未框选海面区域' }}
+              </span>
+            </template>
+            <SeaAreaMapPicker v-model="seaAreaVisible" :polygon="draft.config.scenario.environment.seaPolygon" @confirm="applySeaArea" />
           </el-form-item>
           <!-- 保留原有环境参数；不从气象档位推算这些数值。 -->
+          <el-form-item data-field-path="scenario.environment.cloudAltitudeMinM" label="云层下限高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMinM')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :min="0" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.cloudAltitudeMaxM" label="云层上限高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMaxM')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :min="0" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.cloudWaterDensityGM3" label="云中液态水密度（g/m³）" :error="issueMessage('scenario.environment.cloudWaterDensityGM3')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :min="0" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
+          </el-form-item>
           <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
             <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
           </el-form-item>
@@ -1502,6 +1537,7 @@ watch(activeTab, (tab) => {
               </div>
               <div class="platform-actions">
                 <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
+                  :links="draft.config.links" :jammers="draft.config.jammers"
                   :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
                 <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
               </div>
@@ -1997,6 +2033,17 @@ watch(activeTab, (tab) => {
 .multipath-field :deep(.el-form-item__content) {
   min-height: 32px;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.sea-area-button {
+  margin-left: 0.25rem;
+}
+
+.sea-area-summary {
+  color: var(--console-text-muted);
+  font-size: 0.75rem;
 }
 
 @media (max-width: 960px) {

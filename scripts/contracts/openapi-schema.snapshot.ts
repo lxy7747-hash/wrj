@@ -1977,6 +1977,50 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         ],
         "default": "lightRain"
       },
+      "cloudAltitudeMinM": {
+        "type": "number",
+        "minimum": 0,
+        "default": 500,
+        "description": "云层下限高度，单位 m。"
+      },
+      "cloudAltitudeMaxM": {
+        "type": "number",
+        "minimum": 0,
+        "default": 2000,
+        "description": "云层上限高度，单位 m，须高于下限。"
+      },
+      "cloudWaterDensityGM3": {
+        "type": "number",
+        "minimum": 0,
+        "default": 0.5,
+        "description": "云中液态水密度，单位 g/m³。"
+      },
+      "seaPolygon": {
+        "type": "array",
+        "minItems": 3,
+        "maxItems": 64,
+        "description": "海面多径衰落启用后在地图上框选的海面区域顶点，按绘制顺序首尾闭合；缺省表示未框选，脚本不写坐标。",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "longitude",
+            "latitude"
+          ],
+          "properties": {
+            "longitude": {
+              "type": "number",
+              "minimum": -180,
+              "maximum": 180
+            },
+            "latitude": {
+              "type": "number",
+              "minimum": -90,
+              "maximum": 90
+            }
+          }
+        }
+      },
       "seaState": {
         "type": "number",
         "minimum": 0
@@ -2087,8 +2131,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "type": "array",
             "items": {
               "allOf": [
-                { "$ref": "#/components/schemas/Jammer" },
-                { "properties": { "defaultPower": { "type": "number", "exclusiveMinimum": 0 } } }
+                {
+                  "$ref": "#/components/schemas/Jammer"
+                },
+                {
+                  "properties": {
+                    "defaultPower": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  }
+                }
               ]
             }
           },
@@ -2096,8 +2149,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "type": "array",
             "items": {
               "allOf": [
-                { "$ref": "#/components/schemas/Sensor" },
-                { "properties": { "detectionRange": { "type": "number", "exclusiveMinimum": 0 } } }
+                {
+                  "$ref": "#/components/schemas/Sensor"
+                },
+                {
+                  "properties": {
+                    "detectionRange": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    }
+                  }
+                }
               ]
             }
           },
@@ -2371,6 +2433,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             }
           }
         }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "DATALINK"
+            }
+          }
+        },
+        "else": {
+          "not": {
+            "required": [
+              "band"
+            ]
+          }
+        }
       }
     ],
     "type": "object",
@@ -2421,6 +2499,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "null"
         ],
         "minLength": 1
+      },
+      "band": {
+        "type": "string",
+        "enum": [
+          "C",
+          "L"
+        ],
+        "default": "C",
+        "description": "数传波段，仅 DATALINK 使用；缺省为 C 波段。"
       },
       "id": {
         "type": "string",
@@ -2722,6 +2809,96 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     ]
   },
+  "LinkSwitchRule": {
+    "allOf": [
+      {
+        "if": {
+          "required": [
+            "trigger"
+          ],
+          "properties": {
+            "trigger": {
+              "enum": [
+                "DISTANCE_ABOVE",
+                "DISTANCE_BELOW"
+              ]
+            }
+          }
+        },
+        "then": {
+          "required": [
+            "distanceThresholdM"
+          ],
+          "not": {
+            "required": [
+              "jammerId"
+            ]
+          }
+        },
+        "else": {
+          "required": [
+            "jammerId"
+          ],
+          "not": {
+            "required": [
+              "distanceThresholdM"
+            ]
+          }
+        }
+      }
+    ],
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "trigger",
+      "sourcePlatformId",
+      "targetPlatformId",
+      "toLinkId"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+      },
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "trigger": {
+        "type": "string",
+        "enum": [
+          "DISTANCE_ABOVE",
+          "DISTANCE_BELOW",
+          "JAMMING_ACTIVE",
+          "JAMMING_STOPPED"
+        ]
+      },
+      "sourcePlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "targetPlatformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "toLinkId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "切换目标链路，须连接同一对源、目标平台。"
+      },
+      "distanceThresholdM": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "距离条件的阈值，单位 m；仅 DISTANCE_ABOVE/DISTANCE_BELOW 使用。"
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1,
+        "description": "干扰条件引用的干扰设备；仅 JAMMING_ACTIVE/JAMMING_STOPPED 使用。"
+      }
+    }
+  },
   "ScenarioLinkSettingsWrite": {
     "allOf": [
       {
@@ -2927,6 +3104,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "default": 5
+      },
+      "switchRules": {
+        "type": "array",
+        "description": "阶段切换规则；按列表顺序，第一条条件成立的规则决定源到目标的当前链路。",
+        "items": {
+          "$ref": "#/components/schemas/LinkSwitchRule"
+        }
       },
       "priority": {
         "type": "array",

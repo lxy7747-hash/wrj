@@ -1,15 +1,18 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
+import type { Jammer, Link, LinkSwitchRule, LinkSwitchTrigger, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
 import { readLinkSettings } from '../../features/scenarios/link-settings'
+import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue?: ScenarioLinkSettings
   dialogVisible?: boolean
   platforms: Platform[]
+  links?: Link[]
+  jammers?: Jammer[]
   disabled: boolean
   typeOptions: readonly { value: LinkType; label: string }[]
-}>()
+}>(), { links: () => [], jammers: () => [] })
 const emit = defineEmits<{
   'update:modelValue': [value: ScenarioLinkSettings]
   'update:dialogVisible': [visible: boolean]
@@ -65,13 +68,70 @@ function resetDrag(): void {
   draggedType.value = null
   dropTarget.value = null
 }
+
+const triggerOptions: readonly { value: LinkSwitchTrigger; label: string }[] = [
+  { value: 'DISTANCE_ABOVE', label: '两端距离大于阈值' },
+  { value: 'DISTANCE_BELOW', label: '两端距离小于阈值' },
+  { value: 'JAMMING_ACTIVE', label: '干扰设备开启' },
+  { value: 'JAMMING_STOPPED', label: '干扰设备关闭' },
+]
+const rules = computed(() => settings.value.switchRules ?? [])
+const isDistance = (trigger: LinkSwitchTrigger) => trigger === 'DISTANCE_ABOVE' || trigger === 'DISTANCE_BELOW'
+
+/** 写回整组规则；next 为新的规则列表，空列表时移除字段以保持旧场景结构。 */
+function emitRules(next: LinkSwitchRule[]): void {
+  if (props.disabled) return
+  const rest: ScenarioLinkSettings = { ...settings.value }
+  delete rest.switchRules
+  emit('update:modelValue', next.length > 0 ? { ...rest, switchRules: next } : rest)
+}
+
+/** 新增一条距离规则，默认取第一条链路的端点，编号取未占用的最小序号。 */
+function addRule(): void {
+  const first = props.links[0]
+  let index = rules.value.length + 1
+  while (rules.value.some(rule => rule.id === `RULE-${index}`)) index += 1
+  emitRules([...rules.value, {
+    id: `RULE-${index}`, enabled: true, trigger: 'DISTANCE_ABOVE',
+    sourcePlatformId: first?.sourcePlatformId ?? '', targetPlatformId: first?.targetPlatformId ?? '',
+    toLinkId: first?.id ?? '', distanceThresholdM: 200_000,
+  }])
+}
+
+/** 修改第 index 条规则；切换条件类型时清除另一类条件的参数，端点变化后清除不再匹配的目标链路。 */
+function updateRule(index: number, patch: Partial<LinkSwitchRule>): void {
+  const next = rules.value.map(rule => ({ ...rule }))
+  const rule = { ...next[index]!, ...patch }
+  if (patch.trigger !== undefined) {
+    if (isDistance(patch.trigger)) { delete rule.jammerId; rule.distanceThresholdM ??= 200_000 }
+    else { delete rule.distanceThresholdM; rule.jammerId ??= props.jammers[0]?.id ?? '' }
+  }
+  if ((patch.sourcePlatformId !== undefined || patch.targetPlatformId !== undefined)
+    && !candidateLinks(rule).some(link => link.id === rule.toLinkId)) rule.toLinkId = candidateLinks(rule)[0]?.id ?? ''
+  next[index] = rule
+  emitRules(next)
+}
+
+function removeRule(index: number): void {
+  emitRules(rules.value.filter((_, position) => position !== index))
+}
+
+/** 切换目标只能是连接同一对源、目标平台的链路。 */
+function candidateLinks(rule: LinkSwitchRule): Link[] {
+  return props.links.filter(link => link.sourcePlatformId === rule.sourcePlatformId && link.targetPlatformId === rule.targetPlatformId)
+}
+
+function linkLabel(link: Link): string {
+  const type = props.typeOptions.find(option => option.value === link.type)?.label ?? link.type
+  return `${type}（${link.id}）`
+}
 </script>
 
 <template>
   <div data-testid="link-settings">
     <el-button size="small" :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
-  <el-dialog :model-value="dialogVisible" title="链路设置" width="min(680px, calc(100vw - 2rem))"
+  <el-dialog :model-value="dialogVisible" title="链路设置" width="min(760px, calc(100vw - 2rem))"
     destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="emit('update:dialogVisible', $event)">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
       <div class="link-settings__strategy">
@@ -107,6 +167,60 @@ function resetDrag(): void {
         <el-input-number :model-value="settings.switchCooldownS" :min="0" :step="1" controls-position="right"
           data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
       </el-form-item>
+      <section class="link-settings__rules" data-testid="link-switch-rules" aria-labelledby="link-switch-rules-title">
+        <div class="link-settings__heading">
+          <span id="link-switch-rules-title">阶段切换规则</span>
+          <small>条件满足时，源到目标的业务改走指定链路；两次切换间隔不少于滞回时间</small>
+        </div>
+        <p v-if="rules.length === 0" class="link-settings__empty">未配置规则时，仿真全程使用优先级最高的链路。</p>
+        <div v-for="(rule, index) in rules" :key="rule.id" class="link-settings__rule" :data-testid="`switch-rule-${index}`">
+          <div class="link-settings__rule-head">
+            <strong>{{ rule.id }}</strong>
+            <el-switch :model-value="rule.enabled !== false" active-text="启用" inactive-text="停用"
+              :data-testid="`switch-rule-${index}-enabled`" @update:model-value="updateRule(index, { enabled: Boolean($event) })" />
+            <el-button link type="danger" :data-testid="`switch-rule-${index}-remove`" @click="removeRule(index)">删除</el-button>
+          </div>
+          <div class="link-settings__rule-grid">
+            <el-form-item label="切换条件">
+              <el-select :model-value="rule.trigger" :data-testid="`switch-rule-${index}-trigger`"
+                @update:model-value="updateRule(index, { trigger: $event })">
+                <el-option v-for="option in triggerOptions" :key="option.value" :value="option.value" :label="option.label" />
+              </el-select>
+            </el-form-item>
+            <el-form-item v-if="isDistance(rule.trigger)" label="距离阈值（km）">
+              <el-input-number :model-value="rule.distanceThresholdM === undefined ? undefined : rule.distanceThresholdM / 1000"
+                :min="0" :step="10" controls-position="right" :data-testid="`switch-rule-${index}-distanceThresholdM`"
+                @update:model-value="updateRule(index, { distanceThresholdM: $event === undefined || $event === null ? Number.NaN : $event * 1000 })" />
+            </el-form-item>
+            <el-form-item v-else label="干扰设备">
+              <el-select :model-value="rule.jammerId" placeholder="请选择干扰设备" :data-testid="`switch-rule-${index}-jammerId`"
+                @update:model-value="updateRule(index, { jammerId: $event })">
+                <el-option v-for="jammer in jammers" :key="jammer.id" :value="jammer.id"
+                  :label="`${jammer.id}（${scenarioPlatformLabel(platforms, jammer.platformId)}）`" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="源平台">
+              <el-select :model-value="rule.sourcePlatformId" filterable :data-testid="`switch-rule-${index}-sourcePlatformId`"
+                @update:model-value="updateRule(index, { sourcePlatformId: $event })">
+                <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="目标平台">
+              <el-select :model-value="rule.targetPlatformId" filterable :data-testid="`switch-rule-${index}-targetPlatformId`"
+                @update:model-value="updateRule(index, { targetPlatformId: $event })">
+                <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
+              </el-select>
+            </el-form-item>
+            <el-form-item class="link-settings__rule-wide" label="切换到链路">
+              <el-select :model-value="rule.toLinkId" placeholder="该源、目标平台之间没有链路" :data-testid="`switch-rule-${index}-toLinkId`"
+                @update:model-value="updateRule(index, { toLinkId: $event })">
+                <el-option v-for="link in candidateLinks(rule)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </div>
+        <el-button size="small" :disabled="disabled || links.length === 0" data-testid="add-switch-rule" @click="addRule">新增规则</el-button>
+      </section>
     </el-form>
     <template #footer>
       <el-button type="primary" data-testid="close-link-settings" @click="emit('update:dialogVisible', false)">完成</el-button>
@@ -129,4 +243,16 @@ function resetDrag(): void {
 .link-settings__drag-handle { width: 16px; height: 20px; flex-shrink: 0; color: var(--console-text-muted); }
 .link-settings__rank { min-width: 1.25rem; color: var(--console-cyan); font-variant-numeric: tabular-nums; }
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
+.link-settings__rules { display: grid; gap: 0.75rem; min-width: 0; }
+.link-settings__empty { margin: 0; color: var(--console-text-muted); font-size: 12px; }
+.link-settings__rule { min-width: 0; padding: 0.65rem 0.75rem 0.25rem; border: 1px solid var(--console-border); border-radius: 4px; }
+.link-settings__rule-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+.link-settings__rule-head .el-button { margin-left: auto; }
+.link-settings__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+.link-settings__rule-grid :deep(.el-select) { width: 100%; }
+.link-settings__rule-wide { grid-column: 1 / -1; }
+@media (max-width: 600px) {
+  .link-settings__rule-grid { grid-template-columns: 1fr; }
+  .link-settings__rule-wide { grid-column: auto; }
+}
 </style>

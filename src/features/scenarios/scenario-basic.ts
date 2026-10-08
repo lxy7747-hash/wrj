@@ -15,6 +15,10 @@ export const SCENARIO_BASIC_DEFAULTS = {
   simClockSpeed: 2,
   transmissionDistance: 300,
   rainCloudAttenuation: 'lightRain',
+  // 对接示例 comm_PerDefinition.txt 的云层典型值。
+  cloudAltitudeMinM: 500,
+  cloudAltitudeMaxM: 2000,
+  cloudWaterDensityGM3: 0.5,
 } as const
 
 /** 仅创建待填写的浏览器草稿，不导入 Mock 实体；通过完整写入校验后才能入库。 */
@@ -56,6 +60,9 @@ export function withScenarioBasicDefaults(config: ScenarioConfig): ScenarioConfi
         simClockSpeed: SCENARIO_BASIC_DEFAULTS.simClockSpeed,
         transmissionDistance: SCENARIO_BASIC_DEFAULTS.transmissionDistance,
         rainCloudAttenuation: SCENARIO_BASIC_DEFAULTS.rainCloudAttenuation,
+        cloudAltitudeMinM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMinM,
+        cloudAltitudeMaxM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMaxM,
+        cloudWaterDensityGM3: SCENARIO_BASIC_DEFAULTS.cloudWaterDensityGM3,
         ...config.scenario.environment,
       },
     },

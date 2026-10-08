@@ -1,4 +1,4 @@
-import type { SatelliteType, ScenarioDraft } from '../../src/contracts/domain-models.js'
+import type { LinkSwitchTrigger, SatelliteType, ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { configuredScenarioOutput } from '../../src/config/app.config.js'
 import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
 import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
@@ -60,7 +60,8 @@ const NOTICE = '候选 AFSIM 节点/微波/干扰设备验证包；生成成功�
 // 已核实候选模型映射（映射表 13.1）。高空中继按已确认选择复用无人机模型，不新增独立模型。
 const MODELS = {
   REAR_COMMAND_NODE: { reference: 'REAR_COMM_PLATFORM', mover: 'WSF_GROUND_MOVER' },
-  GROUND_CLUSTER_COMMAND_NODE: { reference: 'COMMAND_VEHICLE_PLATFORM', mover: 'WSF_GROUND_MOVER' },
+  // 已确认选择：指挥车运动器与对接示例一致。
+  GROUND_CLUSTER_COMMAND_NODE: { reference: 'COMMAND_VEHICLE_PLATFORM', mover: 'WSF_SURFACE_MOVER' },
   AIRBORNE_MISSION_CLUSTER: { reference: 'MISSION_UAV_PLATFORM', mover: 'WSF_AIR_MOVER' },
   FORWARD_RELAY_NODE: { reference: 'MISSION_UAV_PLATFORM', mover: 'WSF_AIR_MOVER' },
   GROUND_JAMMER_DETECTION_STATION: { reference: 'GROUND_JAMMER_STATION', mover: 'WSF_SURFACE_MOVER' },
@@ -83,9 +84,202 @@ const SATELLITE_MODELS: Record<SatelliteType, { reference: string; orbital: read
   TIANTONG: { reference: 'TIAN_TONG_SAT', orbital: [
     '      semi_major_axis 42164 km', '      eccentricity 0.0', '      inclination 0 deg',
     '      raan 120 deg', '      argument_of_periapsis 0 deg', '      mean_anomaly 0 deg'] },
+  // 已确认选择：神通与天通使用相同的 GEO 轨道要素。
   SHENTONG: { reference: 'SHEN_TONG_SAT', orbital: [
-    '      semi_major_axis 7000 km', '      eccentricity 0.0', '      inclination 60 deg',
-    '      raan 80 deg', '      argument_of_periapsis 0 deg', '      mean_anomaly 0 deg'] },
+    '      semi_major_axis 42164 km', '      eccentricity 0.0', '      inclination 0 deg',
+    '      raan 120 deg', '      argument_of_periapsis 0 deg', '      mean_anomaly 0 deg'] },
+}
+
+/**
+ * 对接示例的文件拆分与平台类型固定值（已确认：文件名必须一致，界面没有的参数按示例写死）。
+ * file 决定平台类型定义写入哪个示例文件；其余字段写入平台类型或实例。
+ */
+const REFERENCE_PROFILES: Record<string, {
+  file: string; signature: string; side: 'blue' | 'red'; icon: string | null; heading: boolean; createdAtStart: boolean
+}> = {
+  COMMAND_VEHICLE_PLATFORM: { file: 'comm_platform_COMMAND_VEHICLE.txt', signature: 'COMMAND_VEHICLE_SIG', side: 'blue', icon: '737', heading: true, createdAtStart: false },
+  MISSION_UAV_PLATFORM: { file: 'comm_platform_MISSION_UAV.txt', signature: 'DRONE_SIG', side: 'blue', icon: 'F-18', heading: true, createdAtStart: false },
+  GROUND_JAMMER_STATION: { file: 'comm_platform_JAMMER.txt', signature: 'COMMAND_VEHICLE_SIG', side: 'red', icon: 'triangle', heading: false, createdAtStart: true },
+  AIRBORNE_JAMMER_PLATFORM: { file: 'comm_platform_JAMMER.txt', signature: 'DRONE_SIG', side: 'red', icon: 'triangle', heading: false, createdAtStart: true },
+  REAR_COMM_PLATFORM: { file: 'comm_platform_REAR.txt', signature: 'COMM_VEHICLE_SIG', side: 'blue', icon: null, heading: false, createdAtStart: false },
+  TIAN_TONG_SAT: { file: 'comm_platform_SAT.txt', signature: 'SAT_SIG', side: 'blue', icon: 'satellite', heading: false, createdAtStart: true },
+  SHEN_TONG_SAT: { file: 'comm_platform_SAT.txt', signature: 'SAT_SIG', side: 'blue', icon: 'satellite', heading: false, createdAtStart: true },
+}
+/** 与示例 comm_SimSetup.txt 的 include 顺序一致；无对应平台的文件也照常生成。 */
+const PLATFORM_TYPE_FILES = ['comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt',
+  'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt'] as const
+const DEFINITION_FILE = 'comm_PerDefinition.txt'
+const INSTANCE_FILE = 'comm_platform_INS.txt'
+const ENTRY_FILE = 'comm_SimSetup.txt'
+
+// 示例固定值：通信设备的公共介质、信道数与接收机参数。
+const COMM_MEDIUM = 'UAV_MESH_MEDIUM'
+const COMM_CHANNELS = 4
+const RECEIVER_NOISE_FIGURE_DB = 3
+const TIANTONG_NOISE_FIGURE_DB = 2
+const BIT_ERROR_PROBABILITY = 0.00001
+// 示例 C 波段定向天线：俯仰波束 88°，下倾 3°。
+const DATALINK_C_ELEVATION_BEAMWIDTH_DEG = 88
+const DATALINK_C_ANTENNA_TILT_DEG = -3
+// 示例时延处理器：先进先出、10 个服务台、固定 1 秒。
+const DELAY_TEMPLATE = ['    queuing_method first_in_first_out', '    number_of_servers 10',
+  '    time_distribution constant time 1.0 sec'] as const
+// 示例 link_calc 的固定参数；海域多边形取自场景框选，不再使用示例坐标。
+const LINK_CALC_TEMPLATE = {
+  updateIntervalS: 3.0, emergencyThreshold: 0.80, warningThreshold: 0.50,
+  rainAltitudeLimitM: 3000,
+  cloud: { minM: 500, maxM: 2000, waterDensityGM3: 0.5 },
+} as const
+const SIMULATION_NAME = 'MultiMethod_UAV_Comm_Scenario'
+
+// 以下固定段落原样取自对接示例 comm_PerDefinition.txt。
+const GLOBAL_SCRIPT_VARIABLES = ['script_variables',
+  '  string INFO_TYPE_FORWARD_SITUATION = "forward_situation";',
+  '  string INFO_TYPE_FORWARD_TARGET    = "forward_target";',
+  '  string INFO_TYPE_BACK_RECON        = "back_recon";',
+  '  string INFO_TYPE_BACK_STATUS       = "back_status";',
+  '  double FORWARD_SITUATION_FREQ_SEC  = 1.0;', '  double FORWARD_TARGET_FREQ_SEC     = 1.0;',
+  '  double BACK_RECON_FREQ_SEC         = 10.0;', '  double BACK_STATUS_FREQ_SEC        = 5.0;',
+  '  double FORWARD_SITUATION_DELAY_SEC = 1.0;', '  double FORWARD_TARGET_DELAY_SEC    = 1.0;',
+  '  double BACK_RECON_DELAY_SEC        = 2.0;', '  double BACK_STATUS_DELAY_SEC       = 5.0;',
+  'end_script_variables'] as const
+
+function uniformAntenna(name: string, gainDb: number, azimuthDeg: number, elevationDeg: number): string[] {
+  return [`antenna_pattern ${name}`, '  uniform_pattern', `    peak_gain ${gainDb} dB`,
+    `    azimuth_beamwidth ${azimuthDeg} deg`, `    elevation_beamwidth ${elevationDeg} deg`,
+    '  end_uniform_pattern', 'end_antenna_pattern']
+}
+const FIXED_ANTENNA_PATTERNS = [
+  ...uniformAntenna('OMNI_ANTENNA', 0, 360, 180),
+  ...uniformAntenna('OMNI_ANTENNA_HIGHGAIN', 8, 360, 180),
+  ...uniformAntenna('C_BAND_DIRECTIONAL_ANTENNA', 25, 360, 88),
+  ...uniformAntenna('SAT_COMM_ANTENNA', 25, 360, 180),
+  ...uniformAntenna('LASER_COMM_ANTENNA', 40, 5, 5),
+]
+const FIXED_RADAR_SIGNATURES = [['DRONE_SIG', 1.0], ['COMMAND_VEHICLE_SIG', 10.0], ['COMM_VEHICLE_SIG', 8.0], ['SAT_SIG', 0.5]]
+  .flatMap(([name, area]) => [`radar_signature ${name}`, `  constant ${Number(area).toFixed(1)} m^2`, 'end_radar_signature'])
+const COMM_MEDIUM_DEFINITION = [`medium ${COMM_MEDIUM} WSF_COMM_MEDIUM_UNGUIDED`, `    channels ${COMM_CHANNELS}`,
+  '    default_mode_name "default"', '    mode "default"', '      propagation_speed constant 299792458 m/sec',
+  '      transfer_rate constant 4000000 bit/s', '      packet_loss_time constant 0 sec', '    end_mode', 'end_medium'] as const
+
+// 对接示例 comm_SimSetup.txt 的事件开关，去掉重复与注释项，保持首次出现顺序。
+const CSV_EVENTS = ['PLATFORM_ADDED', 'PLATFORM_INITIALIZED', 'COMM_TURNED_ON', 'COMM_TURNED_OFF',
+  'MESSAGE_TRANSMITTED', 'MESSAGE_RECEIVED', 'JAMMING_REQUEST_INITIATED', 'JAMMING_REQUEST_CANCELED',
+  'JAMMING_REQUEST_UPDATED', 'WEAPON_FIRED', 'SENSOR_DETECTION_CHANGED', 'WEAPON_TURNED_ON',
+  'WEAPON_MODE_ACTIVATED', 'WEAPON_MODE_DEACTIVATED', 'PLATFORM_DELETED', 'PLATFORM_BROKEN', 'PLATFORM_OMITTED',
+  'SIMULATION_STARTING', 'SIMULATION_COMPLETE', 'LINK_ADDED_TO_MANAGER', 'LINK_ENABLED_ON_MANAGER',
+  'LINK_DISABLED_ON_MANAGER', 'LINK_REMOVED_FROM_MANAGER', 'MESSAGE_HOP', 'COMM_FREQUENCY_CHANGED',
+  'LOCAL_TRACK_INITIATED', 'LOCAL_TRACK_UPDATED', 'LOCAL_TRACK_DROPPED', 'SENSOR_TRACK_INITIATED',
+  'SENSOR_TRACK_UPDATED', 'SENSOR_TRACK_DROPPED', 'EXCHANGE_COMPLETED', 'LINK_ENABLED_ON_LOCAL',
+  'LINK_DISABLED_ON_LOCAL', 'WEAPON_TURNED_OFF', 'MOVER_TURNED_ON'] as const
+
+// 切换规则检查周期取自示例指挥车脚本（每 3 秒判断一次距离与干扰状态）。
+const SWITCH_CHECK_INTERVAL_S = 3
+
+type SendDevice = {
+  source: { deviceId: string }
+  relay: { platformId: string; ingressDeviceId: string } | null
+  target: { platformId: string; deviceId: string }
+}
+
+/** 业务消息从源设备发出；经中继时先发到中继入口，否则直接发到目标设备。 */
+function sendTarget(device: SendDevice): { comm: string; platform: string; device: string } {
+  return { comm: device.source.deviceId,
+    platform: device.relay ? device.relay.platformId : device.target.platformId,
+    device: device.relay ? device.relay.ingressDeviceId : device.target.deviceId }
+}
+
+type SwitchPlan = {
+  ruleId: string; trigger: LinkSwitchTrigger; targetPlatformId: string; distanceThresholdM: number | null
+  jammer: { platformId: string; weaponId: string } | null; device: SendDevice
+}
+
+/**
+ * 生成单个业务目标的切换判断：按规则列表顺序，第一条满足条件的规则决定当前链路；
+ * 与当前链路不同且距上次切换不少于滞回时间时才切换，并输出 LINK_SWITCH 日志。
+ * “干扰设备关闭”只在该设备开启过之后成立，避免仿真起点误判为干扰解除。
+ */
+function buildSwitchCheck(demandId: string, routeIndex: number, rules: SwitchPlan[], cooldownS: number): string[] {
+  const lines = ['      {', '        bool matched = false;', '        string ruleId = "";',
+    `        string nextComm = routeComm_${routeIndex};`, `        string nextPlatform = routePlatform_${routeIndex};`,
+    `        string nextDevice = routeDevice_${routeIndex};`]
+  const jammerState = (rule: SwitchPlan, body: string[]) => [
+    `          WsfPlatform jammerPlatform = WsfSimulation.FindPlatform("${rule.jammer!.platformId}");`,
+    '          if (jammerPlatform.IsValid())', '          {',
+    `            WsfWeapon jammer = jammerPlatform.Weapon("${rule.jammer!.weaponId}");`,
+    '            if (jammer.IsValid())', '            {', ...body, '            }', '          }']
+  // 先更新各“干扰关闭”规则的开启记录，前面的规则命中时也不能漏记。
+  rules.forEach((rule, ruleIndex) => {
+    if (rule.trigger !== 'JAMMING_STOPPED') return
+    lines.push('        {', ...jammerState(rule, [`              if (jammer.IsTurnedOn()) jammerSeenOn_${routeIndex}_${ruleIndex} = true;`]), '        }')
+  })
+  rules.forEach((rule, ruleIndex) => {
+    const send = sendTarget(rule.device)
+    lines.push('        if (!matched)', '        {', '          bool condition = false;')
+    if (rule.trigger === 'DISTANCE_ABOVE' || rule.trigger === 'DISTANCE_BELOW') {
+      lines.push(`          WsfPlatform peer = WsfSimulation.FindPlatform("${rule.targetPlatformId}");`,
+        `          if (peer.IsValid()) condition = PLATFORM.SlantRangeTo(peer) ${rule.trigger === 'DISTANCE_ABOVE' ? '>' : '<'} ${rule.distanceThresholdM};`)
+    } else {
+      lines.push(...jammerState(rule, [rule.trigger === 'JAMMING_ACTIVE'
+        ? '              condition = jammer.IsTurnedOn();'
+        : `              condition = jammerSeenOn_${routeIndex}_${ruleIndex} && !jammer.IsTurnedOn();`]))
+    }
+    lines.push('          if (condition)', '          {', '            matched = true;', `            ruleId = "${rule.ruleId}";`,
+      `            nextComm = "${send.comm}";`, `            nextPlatform = "${send.platform}";`, `            nextDevice = "${send.device}";`,
+      '          }', '        }')
+  })
+  lines.push(`        if (matched && (nextComm != routeComm_${routeIndex} || nextPlatform != routePlatform_${routeIndex} || nextDevice != routeDevice_${routeIndex})`,
+    `          && TIME_NOW - routeSwitchedAt_${routeIndex} >= ${cooldownS})`, '        {',
+    `          writeln("LINK_SWITCH time=", TIME_NOW, " business=${demandId} rule=", ruleId, " from=", routeComm_${routeIndex}, " to=", nextComm);`,
+    `          routeComm_${routeIndex} = nextComm;`, `          routePlatform_${routeIndex} = nextPlatform;`,
+    `          routeDevice_${routeIndex} = nextDevice;`, `          routeSwitchedAt_${routeIndex} = TIME_NOW;`, '        }', '      }')
+  return lines
+}
+
+type LinkCalcDevice = {
+  direction: 'FORWARD' | 'REVERSE'
+  source: { platformId: string; deviceId: string }
+  relay: { platformId: string; ingressDeviceId: string; egressDeviceId: string } | null
+  target: { platformId: string; deviceId: string }
+}
+
+/**
+ * 生成对接方程序读取的 link_calc 总配置（已确认 D-02）。
+ * JSON 按示例原样包在双引号中、内层不转义（已确认 A-03）；平台与设备编号均已限定为安全字符。
+ */
+function buildLinkCalcProcessor(input: {
+  relayUavNames: string[]; devices: LinkCalcDevice[]; portParams: Map<string, Array<Record<string, unknown>>>
+  rainRateMmPerHour: number; seaState: number; cloud: { minM: number; maxM: number; waterDensityGM3: number }
+  multipathEnabled: boolean; seaPolygon: ReadonlyArray<{ lat: number; lon: number }>
+}): string[] {
+  const hotLinks = (direction: LinkCalcDevice['direction']) => Object.fromEntries(input.devices
+    .filter(device => device.direction === direction)
+    .map((device, index) => [`link${index + 1}`, [
+      { platform: device.source.platformId, inPort: '', outPort: device.source.deviceId },
+      ...(device.relay === null ? [] : [{ platform: device.relay.platformId, inPort: device.relay.ingressDeviceId, outPort: device.relay.egressDeviceId }]),
+      { platform: device.target.platformId, inPort: device.target.deviceId, outPort: '' },
+    ]]))
+  const template = LINK_CALC_TEMPLATE
+  const naturalEnvironment = {
+    rain: { enabled: input.rainRateMmPerHour > 0, rain_rate_mm_hr: input.rainRateMmPerHour, rain_altitude_limit_m: template.rainAltitudeLimitM },
+    cloud: { enabled: true, cloud_altitude_min_m: input.cloud.minM, cloud_altitude_max_m: input.cloud.maxM, cloud_water_density_g_m3: input.cloud.waterDensityGM3 },
+    atmosphere: { enabled: true, model: 'ITU-R_P676', simplified_attenuation_db_per_km: 0.02 },
+    misc_loss_db: { polarization_mismatch_db: 0.0, pointing_error_db: 0.0, rain_attenuation_db: 0.0 },
+    sea_state: { enabled: input.multipathEnabled, sea_state_level: input.seaState, low_altitude_threshold_m: 300, path_over_sea_threshold_km: 30,
+      use_reflection_geometry: false, sea_polygon: input.seaPolygon },
+  }
+  const portParams = [...input.portParams].map(([platformType, commParams]) => ({ platform_type: platformType, comm_params: commParams }))
+  const raw = (value: unknown) => `"${JSON.stringify(value)}"`
+  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR',
+    `    update_interval ${template.updateIntervalS.toFixed(1)} sec`,
+    `    emergency_threshold ${template.emergencyThreshold.toFixed(2)}`,
+    `    warning_threshold   ${template.warningThreshold.toFixed(2)}`,
+    `    relay_uav_names         ${raw(input.relayUavNames)}`,
+    `    hot_link_ret            ${raw(hotLinks('REVERSE'))}`,
+    `    hot_link_fw             ${raw(hotLinks('FORWARD'))}`,
+    `    port_params             ${raw(portParams)}`,
+    `    natural_environment     ${raw(naturalEnvironment)}`,
+    '  end_processor']
 }
 
 // 已接通候选设备语法的链路类型；激光没有可用设备，数传按已确认选择固定 C 波段。
@@ -367,7 +561,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     return {
       linkId: link.id, linkType: link.type, network, hop1Network: hop1, hop2Network: hop2,
       direction: link.direction,
-      band: datalink ? DATALINK_BAND : null,
+      band: datalink ? link.band ?? DATALINK_BAND : null,
       role: datalink ? (link.direction === 'FORWARD' ? 'UPLINK' : 'DOWNLINK') : null,
       bitErrorProbability: datalink ? DATALINK_BIT_ERROR_PROBABILITY : null,
       commModel: fiber ? FIBER_COMM_MODEL : 'WSF_RADIO_TRANSCEIVER',
@@ -393,6 +587,22 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       } : null,
       target: { platformId: link.targetPlatformId, deviceId: `comm_${token(link.id)}_dst` },
     }
+  })
+  // 已确认 D-05：阶段切换规则来自场景配置；结构已由共享校验保证，这里只核对目标链路与干扰设备是否参与本次生成。
+  const switchRules = (settings.switchRules ?? []).flatMap((rule, index) => {
+    if (rule.enabled === false) return []
+    const path = `linkSettings.switchRules[${index}]`
+    const device = devices.find(item => item.linkId === rule.toLinkId)
+    if (device === undefined) {
+      throw new MissionGenerationError(`${path}.toLinkId`, '切换目标链路已停用或未参与本次场景，请启用该链路或停用此规则。')
+    }
+    const jamming = rule.trigger === 'JAMMING_ACTIVE' || rule.trigger === 'JAMMING_STOPPED'
+    const jammer = jamming ? jammers.find(item => item.jammerId === rule.jammerId) : undefined
+    if (jamming && jammer === undefined) throw new MissionGenerationError(`${path}.jammerId`, '干扰条件引用的干扰设备不存在。')
+    return [{ ruleId: rule.id, trigger: rule.trigger, sourcePlatformId: rule.sourcePlatformId, targetPlatformId: rule.targetPlatformId,
+      toLinkId: rule.toLinkId, distanceThresholdM: rule.distanceThresholdM ?? null,
+      jammer: jammer === undefined ? null : { jammerId: jammer.jammerId, platformId: jammer.platformId, weaponId: jammer.weaponId },
+      device }]
   })
   let sendRequests = 0
   const businesses = config.informationDemand.flatMap((demand, index) => {
@@ -429,7 +639,11 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
         const rightOrder = rightRank < 0 ? linkPriority.length : rightRank
         return leftOrder - rightOrder || left.linkId.localeCompare(right.linkId)
       })
-      return { targetPlatformId: target, ordered, primary: ordered[0]! }
+      const primary = ordered[0]!
+      // 规则只作用于同方向业务：前向业务不得切到返向链路，反之亦然。
+      const rules = switchRules.filter(rule => rule.sourcePlatformId === demand.sourcePlatformId && rule.targetPlatformId === target
+        && rule.device.direction === primary.direction)
+      return { targetPlatformId: target, ordered, primary, rules }
     })
     // 本机执行预算，不是业务速率约束；防止合法有限数值组合生成无界发送任务。
     sendRequests += Math.ceil(config.scenario.duration * demand.frequencyHz) * routes.length
@@ -440,12 +654,14 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       candidateMessageType: INFORMATION_TYPE_CANDIDATE[demand.informationType as InformationTypeEnum],
       sizeBits, frequencyHz: demand.frequencyHz,
       routes: routes.map(item => item.primary),
+      switchPlans: routes.map(item => item.rules),
       routePlans: routes.map(item => ({
         targetPlatformId: item.targetPlatformId,
         orderedLinkIds: item.ordered.map(device => device.linkId),
         orderedLinkTypes: item.ordered.map(device => device.linkType),
+        switchRuleIds: item.rules.map(rule => rule.ruleId),
       })),
-      failoverEnabled: false,
+      failoverEnabled: routes.some(item => item.rules.length > 0),
       processorId: `business_${token(demand.id)}`,
       switchProcessorId: null,
       constraints: { priority: demand.priority, maxLatencyMs: demand.maxLatencyMs, minDataRateMbps: demand.minDataRateMbps, engineEnforced: false } }]
@@ -457,7 +673,10 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const linkSwitchEnabled = config.output.linkSwitchEnabled === true
   if (linkSwitchEnabled) throw new MissionGenerationError('output.linkSwitchEnabled', '当前引擎尚无切换前后真实 BER 测量，请关闭切换输出；不会以空值或配置值生成规范 CSV。')
   const antennas: string[] = []
-  const definitions: string[] = []
+  // 平台类型按参考模型写入对接示例的同名文件；definitions 指向当前平台所属文件。
+  const typeFiles = new Map<string, string[]>(PLATFORM_TYPE_FILES.map(name => [name, []]))
+  let definitions: string[] = []
+  let linkCalcSlot: { bucket: string[]; index: number } | null = null
   const networkDeclarations: string[] = []
   const declaredNetworks = new Set<string>()
   /** 声明候选网络类型；光纤用 P2P，其余直连仍只写 network_name（与既有微波/数传一致）。 */
@@ -466,34 +685,65 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     declaredNetworks.add(name)
     networkDeclarations.push(`network ${name} ${model}`, 'end_network')
   }
-  /** 为端点生成独立通信设备；光纤无射频收发参数，只写有线收发器与速率。 */
+  /** link_calc 的 port_params 由实际生成的设备参数汇总，保证与设备定义一致（已确认 C-01）。 */
+  const portParams = new Map<string, Array<Record<string, unknown>>>()
+  const mediums: string[] = []
+  /**
+   * 为端点生成独立通信设备；收发机固定值取自对接示例（极化、衰减模型、噪声系数、介质与信道数）。
+   * 光纤无射频收发参数，只写有线收发器与速率。
+   */
   function pushCommDevice(
     deviceId: string,
     networkName: string,
     link: (typeof links)[number],
     mapping: (typeof devices)[number],
+    platform: (typeof platforms)[number],
     receiverProcessorId?: string,
   ): void {
+    const receiver = receiverProcessorId ? [`    internal_link ${receiverProcessorId}`] : []
     if (mapping.commModel === FIBER_COMM_MODEL) {
       ensureNetwork(networkName, FIBER_NETWORK_MODEL)
-      definitions.push(`  comm ${deviceId} ${FIBER_COMM_MODEL}`, `    network_name ${networkName}`,
-        `    transfer_rate ${link.dataRate} mbits/sec`, '  end_comm')
+      definitions.push(`  comm ${deviceId} ${FIBER_COMM_MODEL}`, '    on', `    network_name ${networkName}`,
+        `    transfer_rate ${link.dataRate} mbits/sec`, `    channels ${COMM_CHANNELS}`, ...receiver, '  end_comm')
       return
     }
+    const cBandDatalink = mapping.linkType === 'DATALINK' && mapping.band === 'C'
+    const elevationBeamwidth = cBandDatalink ? DATALINK_C_ELEVATION_BEAMWIDTH_DEG : 180
+    const tilt = cBandDatalink ? [`      antenna_tilt ${DATALINK_C_ANTENNA_TILT_DEG} deg`] : []
+    // 示例：微波水平极化，其余链路垂直极化；卫星链路不启用 ITU 大气衰减。
+    const polarization = mapping.linkType === 'MICROWAVE' ? 'horizontal' : 'vertical'
+    const attenuation = mapping.linkType === 'SAT' ? 'none' : 'itu'
+    const noiseFigure = platform.satelliteType === 'TIANTONG' ? TIANTONG_NOISE_FIGURE_DB : RECEIVER_NOISE_FIGURE_DB
     for (const side of ['tx', 'rx'] as const) {
       antennas.push(`antenna_pattern ${deviceId}_${side}`, '  uniform_pattern',
         `    peak_gain ${link.antennaGain[side]} dB`, '    azimuth_beamwidth 360 deg',
-        '    elevation_beamwidth 180 deg', '  end_uniform_pattern', 'end_antenna_pattern')
+        `    elevation_beamwidth ${elevationBeamwidth} deg`, '  end_uniform_pattern', 'end_antenna_pattern')
     }
-    definitions.push(`  comm ${deviceId} ${mapping.commModel}`, `    network_name ${networkName}`,
-      `    transfer_rate ${link.dataRate} mbits/sec`,
-      ...(mapping.bitErrorProbability === null ? [] : [`    bit_error_probability ${mapping.bitErrorProbability}`]),
+    // 示例在 comm 内改写共享介质 UAV_MESH_MEDIUM，引擎会告警“Medium is shared”，且最后一次改写覆盖全部设备的速率。
+    // 因此每台设备独立定义介质类型（参数同示例），再在 comm 中引用，速率互不覆盖。
+    const medium = `medium_${deviceId}`
+    mediums.push(`medium ${medium} WSF_COMM_MEDIUM_UNGUIDED`, `    channels ${COMM_CHANNELS}`,
+      '    default_mode_name "default"', '    mode "default"', '      propagation_speed constant 299792458 m/sec',
+      `      transfer_rate constant ${link.dataRate} mbits/sec`,
+      `      bit_error_probability ${BIT_ERROR_PROBABILITY}`,
+      '      packet_loss_time constant 0 sec', '    end_mode', 'end_medium')
+    definitions.push(`  comm ${deviceId} ${mapping.commModel}`, '    on', `    network_name ${networkName}`,
+      `    add medium ${medium}`, '    end_medium',
       '    transmitter',
       `      frequency ${link.frequency} MHz`, `      bandwidth ${link.bandwidth} MHz`,
-      `      power ${link.txPower} W`, `      antenna_pattern ${deviceId}_tx`, '    end_transmitter',
+      `      power ${link.txPower} W`, `      polarization ${polarization}`,
+      `      antenna_pattern ${deviceId}_tx`, ...tilt,
+      `      attenuation_model ${attenuation}`, '      end_attenuation_model', '    end_transmitter',
       '    receiver', `      frequency ${link.frequency} MHz`, `      bandwidth ${link.bandwidth} MHz`,
-      `      antenna_pattern ${deviceId}_rx`, '    end_receiver',
-      ...(receiverProcessorId ? [`    internal_link ${receiverProcessorId}`] : []), '  end_comm')
+      `      polarization ${polarization}`, `      antenna_pattern ${deviceId}_rx`, ...tilt,
+      `      noise_figure ${noiseFigure} dB`, '    end_receiver',
+      ...receiver, '  end_comm')
+    const frequency = link.frequency < 1000 ? { frequency_mhz: link.frequency } : { frequency_ghz: Number((link.frequency / 1000).toPrecision(12)) }
+    const params = portParams.get(platform.generatedType) ?? []
+    params.push({ comm_name: deviceId,
+      transmitter: { ...frequency, bandwidth_mhz: link.bandwidth, power_w: link.txPower, peak_gain_dB: link.antennaGain.tx, 'information_rate_mbits/sec': link.dataRate },
+      receiver: { ...frequency, bandwidth_mhz: link.bandwidth, peak_gain_dB: link.antennaGain.rx, 'information_rate_mbits/sec': link.dataRate, noise_figure_dB: noiseFigure } })
+    portParams.set(platform.generatedType, params)
   }
   if (jammers.length > 0) {
     // 候选干扰模型明确使用全向天线；不把通信链路天线增益借用到干扰设备。
@@ -504,8 +754,12 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   // timeStep 映射为运动器 update_interval；输出采样仍用 writeInterval。无已核实的独立 time_step 指令。
   const moverUpdateInterval = config.scenario.timeStep > 0 ? config.scenario.timeStep : config.output.writeInterval
   const otherPlatformIds = platforms.map(item => item.platformId)
+  const linkCalcHost = platforms.find(item => item.referenceModel === 'REAR_COMM_PLATFORM') ?? null
   for (const platform of platforms) {
+    const profile = REFERENCE_PROFILES[platform.referenceModel]!
+    definitions = typeFiles.get(profile.file)!
     definitions.push(`platform_type ${platform.generatedType} WSF_PLATFORM`,
+      `  radar_signature ${profile.signature}`,
       `  mover ${platform.mover}`, `    update_interval ${moverUpdateInterval} sec`)
     if (platform.orbital !== null) {
       // 轨道要素取自候选模型，历元取配置的仿真开始时刻，使轨道与 start_date 使用同一日期口径。
@@ -514,17 +768,31 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
         ...platform.orbital, '    end_orbital_state')
     }
     definitions.push('  end_mover')
+    // 已确认 B-05：数传上行接前向时延、下行接返向时延，时延处理器再交给 script_proc；其余链路直连 script_proc。
+    const receiverFor = (mapping: (typeof devices)[number]) =>
+      mapping.role === 'UPLINK' ? 'forward_delay' : mapping.role === 'DOWNLINK' ? 'return_delay' : 'script_proc'
+    let endpointCount = 0
+    let datalinkEndpoint = false
     devices.forEach((mapping, index) => {
       const link = links[index]!
-      if (mapping.source.platformId === platform.platformId) {
-        pushCommDevice(mapping.source.deviceId, mapping.hop1Network, link, mapping)
-      }
-      if (mapping.target.platformId === platform.platformId) {
-        pushCommDevice(mapping.target.deviceId, mapping.hop2Network ?? mapping.hop1Network, link, mapping)
+      for (const [endpoint, network] of [[mapping.source, mapping.hop1Network],
+        [mapping.target, mapping.hop2Network ?? mapping.hop1Network]] as const) {
+        if (endpoint.platformId !== platform.platformId) continue
+        endpointCount += 1
+        datalinkEndpoint ||= mapping.role !== null
+        pushCommDevice(endpoint.deviceId, network, link, mapping, platform, receiverFor(mapping))
       }
       if (mapping.relay && mapping.relay.platformId === platform.platformId) {
-        pushCommDevice(mapping.relay.ingressDeviceId, mapping.hop1Network, link, mapping, mapping.relay.processorId)
-        pushCommDevice(mapping.relay.egressDeviceId, mapping.hop2Network!, link, mapping)
+        // 中继入口各链路独立时延处理器，避免多条中继链路共用后把消息转发到彼此的出口。
+        const relayDelay = mapping.role === null ? null
+          : `${mapping.role === 'UPLINK' ? 'forward' : 'return'}_delay_${token(mapping.linkId)}`
+        pushCommDevice(mapping.relay.ingressDeviceId, mapping.hop1Network, link, mapping, platform,
+          relayDelay ?? mapping.relay.processorId)
+        pushCommDevice(mapping.relay.egressDeviceId, mapping.hop2Network!, link, mapping, platform)
+        if (relayDelay !== null) {
+          definitions.push(`  processor ${relayDelay} WSF_DELAY_PROCESSOR`, ...DELAY_TEMPLATE,
+            `    internal_link ${mapping.relay.processorId}`, '  end_processor')
+        }
         // 固定单跳：中继（卫星或高空 UAV）收到源消息后经第二跳发往目标；不复制候选硬编码平台名。
         // default 是兜底处理指令；type default 只匹配名为 default 的消息。
         definitions.push(`  processor ${mapping.relay.processorId} WSF_SCRIPT_PROCESSOR`,
@@ -533,6 +801,19 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
           '        end_script', '    end_on_message', '  end_processor')
       }
     })
+    if (datalinkEndpoint) {
+      for (const name of ['forward_delay', 'return_delay']) {
+        definitions.push(`  processor ${name} WSF_DELAY_PROCESSOR`, ...DELAY_TEMPLATE, '    internal_link script_proc', '  end_processor')
+      }
+    }
+    if (endpointCount > 0) {
+      // 端点接收日志，与示例 script_proc 的 default 分支一致；不复制示例中的阶段剧情。
+      definitions.push('  processor script_proc WSF_SCRIPT_PROCESSOR', '    on_message', '      default', '        script',
+        '          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());',
+        '        end_script', '    end_on_message', '  end_processor')
+    }
+    // port_params 需要全部平台的设备参数，先记录插入位置，循环结束后再写入。
+    if (platform === linkCalcHost) linkCalcSlot = { bucket: definitions, index: definitions.length }
     for (const sensor of sensors.filter(item => item.platformId === platform.platformId)) {
       // 波束视场、帧周期、发射功率、噪声系数与最小距离沿用候选模型给定值，配置里没有对应输入项。
       // ESM/direction/probability 仅留在 mapping.json：引擎无概率输入指令，缺虚警率假设。
@@ -619,23 +900,35 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       }
     }
     for (const business of businesses.filter(item => item.sourcePlatformId === platform.platformId)) {
+      // 有切换规则的目标用脚本变量保存当前发送设备与目的地，其余目标仍固定发往主链路。
+      const switched = business.switchPlans.flatMap((rules, routeIndex) => rules.length > 0 ? [routeIndex] : [])
+      const routeVariables = switched.flatMap(routeIndex => {
+        const send = sendTarget(business.routes[routeIndex]!)
+        return [`      string routeComm_${routeIndex} = "${send.comm}";`, `      string routePlatform_${routeIndex} = "${send.platform}";`,
+          `      string routeDevice_${routeIndex} = "${send.device}";`, `      double routeSwitchedAt_${routeIndex} = -1.0e9;`,
+          ...business.switchPlans[routeIndex]!.flatMap((rule, ruleIndex) => rule.trigger === 'JAMMING_STOPPED'
+            ? [`      bool jammerSeenOn_${routeIndex}_${ruleIndex} = false;`] : [])]
+      })
       definitions.push(`  processor ${business.processorId} WSF_SCRIPT_PROCESSOR`,
         `    update_interval ${config.output.writeInterval} sec`,
         '    script_variables',
         '      double emissionIndex = 0;',
+        ...routeVariables,
         '    end_script_variables',
         '    script void EmitBusiness()', '    {', `      if (TIME_NOW >= ${config.scenario.duration}) return;`)
-      business.routes.forEach((route) => {
-        const destPlatform = route.relay ? route.relay.platformId : route.target.platformId
-        const destDevice = route.relay ? route.relay.ingressDeviceId : route.target.deviceId
-        // 多目标各发送一次；同一目标的备选链路只选优先级最高的主链路。
+      business.routes.forEach((route, routeIndex) => {
+        const send = sendTarget(route)
+        const call = switched.includes(routeIndex)
+          ? `PLATFORM.Comm(routeComm_${routeIndex}).SendMessage(message, routePlatform_${routeIndex}, routeDevice_${routeIndex});`
+          : `PLATFORM.Comm("${send.comm}").SendMessage(message, "${send.platform}", "${send.device}");`
+        // 多目标各发送一次；无切换规则时只用优先级最高的主链路。
         definitions.push('      {')
         definitions.push(
           '        WsfMessage message = WsfMessage();',
           `        message.SetType(${formatAfsimString(business.messageType)});`,
           `        message.SetSubType(${formatAfsimString(business.demandId)});`,
           `        message.SetSizeInBits(${business.sizeBits});`,
-          `        PLATFORM.Comm("${route.source.deviceId}").SendMessage(message, "${destPlatform}", "${destDevice}");`,
+          `        ${call}`,
         )
         definitions.push('      }')
       })
@@ -645,6 +938,13 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
         '    }', '    end_script',
         '    script void QueueBusiness()', '    {', '      PROCESSOR.ExecuteScriptAtTime(TIME_NOW, "EmitBusiness");',
         '    }', '    end_script')
+      if (switched.length > 0) {
+        definitions.push(`    execute at_interval_of ${SWITCH_CHECK_INTERVAL_S} sec`, '    {')
+        for (const routeIndex of switched) {
+          definitions.push(...buildSwitchCheck(business.demandId, routeIndex, business.switchPlans[routeIndex]!, settings.switchCooldownS))
+        }
+        definitions.push('    }', '    end_execute')
+      }
 
       definitions.push('    on_initialize2',
         '      PROCESSOR.ExecuteScriptAtTime(0, "QueueBusiness");', '    end_on_initialize2', '  end_processor')
@@ -652,18 +952,38 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
 
     definitions.push('end_platform_type')
   }
-  // 网络声明放在平台类型之前，供光纤 P2P 等需要显式 network 的设备引用。
-  if (networkDeclarations.length > 0) definitions.unshift(...networkDeclarations, '')
+  const environment = config.scenario.environment
+  // 已确认 D-04：云层参数来自场景配置；旧场景缺省时使用示例典型值。
+  const cloud = {
+    minM: environment.cloudAltitudeMinM ?? LINK_CALC_TEMPLATE.cloud.minM,
+    maxM: environment.cloudAltitudeMaxM ?? LINK_CALC_TEMPLATE.cloud.maxM,
+    waterDensityGM3: environment.cloudWaterDensityGM3 ?? LINK_CALC_TEMPLATE.cloud.waterDensityGM3,
+  }
+  if (linkCalcSlot !== null) {
+    linkCalcSlot.bucket.splice(linkCalcSlot.index, 0, ...buildLinkCalcProcessor({
+      relayUavNames: platforms.filter(item => item.relayRole).map(item => item.platformId),
+      devices, portParams, rainRateMmPerHour: environment.rainRateMmPerHour, seaState: environment.seaState, cloud,
+      // 海面多径衰落开关决定是否计入海况；地图框选的区域写入 sea_polygon，未框选时不写坐标（空列表）。
+      multipathEnabled: environment.multipathEnabled,
+      seaPolygon: environment.seaPolygon?.map(point => ({ lat: point.latitude, lon: point.longitude })) ?? [],
+    }))
+  }
 
   const instances = config.platforms.flatMap((platform, index) => {
     const generated = platforms[index]!
+    const profile = REFERENCE_PROFILES[generated.referenceModel]!
     const position = platform.initialPosition
+    // 阵营、图标、朝向与创建时刻按示例实例写死（已确认 D-03）。
+    const header = [`platform ${platform.id} ${generated.generatedType}`, `  side ${profile.side}`,
+      ...(profile.icon === null ? [] : [`  icon ${profile.icon}`]),
+      ...(profile.createdAtStart ? ['  creation_time 0 sec'] : [])]
     // 卫星位置由轨道决定；写 position 会与轨道冲突，也会让配置坐标看起来生效。
     const lines = generated.orbital === null
-      ? [`platform ${platform.id} ${generated.generatedType}`,
+      ? [...header,
         `  position ${formatPosition(position.latitude, position.longitude)}`,
-        `  altitude ${position.altitude} m`]
-      : [`platform ${platform.id} ${generated.generatedType}`]
+        `  altitude ${position.altitude} m`,
+        ...(profile.heading ? ['  heading 90 deg'] : [])]
+      : header
     const waypoints = generated.waypoints
     if (waypoints.length > 0) {
       // 路线首点固定为配置的初始位置：运动器会把起点设成路线首点，不写就会丢掉配置的初始位置。
@@ -679,7 +999,6 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     lines.push('end_platform')
     return lines
   })
-  const environment = config.scenario.environment
   const clockRate = environment.simClockSpeed
   const clockRateEmitted = typeof clockRate === 'number' && Number.isFinite(clockRate) && clockRate > 0
   const environmentEmitted = Number.isFinite(environment.seaState) && environment.seaState >= 0
@@ -688,50 +1007,67 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const outputDirectory = outputDirectoryEarly
   const eventsCsvPath = joinOutputPath(outputDirectory, 'scenario_events.csv')
   const positionCsvPath = joinOutputPath(outputDirectory, 'position.csv')
+  const aerPath = joinOutputPath(outputDirectory, 'scenario_events.aer')
   const linkSettings = settings
-  const globals = [
+  // comm_PerDefinition.txt：环境、全局变量、天线、RCS、网络与介质，结构同对接示例。
+  const perDefinition = [
+    ...(environmentEmitted ? ['global_environment',
+      `  rain_rate ${environment.rainRateMmPerHour} mm/hr`,
+      `  rain_altitude_limit ${LINK_CALC_TEMPLATE.rainAltitudeLimitM} m`,
+      `  cloud_altitude_limits ${cloud.minM} m ${cloud.maxM} m`,
+      `  cloud_water_density ${cloud.waterDensityGM3} g/m3`,
+      `  sea_state ${environment.seaState}`, 'end_global_environment', ''] : []),
+    ...GLOBAL_SCRIPT_VARIABLES, '',
+    ...FIXED_ANTENNA_PATTERNS, ...antennas, '',
+    ...FIXED_RADAR_SIGNATURES, '',
+    ...networkDeclarations, ...(networkDeclarations.length > 0 ? [''] : []),
+    ...COMM_MEDIUM_DEFINITION, ...(mediums.length > 0 ? ['', ...mediums] : []),
+  ]
+  const setup = ['// ' + NOTICE,
+    ...[...PLATFORM_TYPE_FILES, INSTANCE_FILE, 'observers.txt'].map(name => `include_once ${name}`), '',
     `start_date ${startDateTime.date}`,
     `start_time ${startDateTime.time}`,
+    `end_time ${config.scenario.duration} sec`,
     ...(clockRateEmitted ? [`clock_rate ${clockRate}`] : []),
-    ...(environmentEmitted ? ['global_environment', `  sea_state ${environment.seaState}`,
-      `  rain_rate ${environment.rainRateMmPerHour} mm/hr`, 'end_global_environment'] : []),
-  ]
-  const entry = ['# ' + NOTICE, 'include_once platforms.txt', 'include_once observers.txt',
-    `end_time ${config.scenario.duration} sec`, ...globals, ...instances]
+    'multi_thread', '',
+    `simulation_name "${SIMULATION_NAME}"`, '',
+    'event_pipe', `   file ${aerPath}`, 'end_event_pipe']
   if (config.output.eventsEnabled) {
-    entry.push('csv_event_output', `  file ${eventsCsvPath}`,
-      // 起止事件自带年月日时分秒，是运行结果与配置开始时刻绑定的唯一证据。
-      '  enable SIMULATION_STARTING', '  enable SIMULATION_COMPLETE',
-      '  enable PLATFORM_ADDED', '  enable PLATFORM_INITIALIZED',
-      '  enable COMM_TURNED_ON', '  enable COMM_TURNED_OFF',
-      '  enable MESSAGE_TRANSMITTED', '  enable MESSAGE_RECEIVED')
-    if (jammers.length > 0 || sensors.length > 0) entry.push('  enable SENSOR_DETECTION_CHANGED')
-    if (jammers.length > 0) entry.push(
-      '  enable WEAPON_TURNED_ON', '  enable WEAPON_TURNED_OFF',
-      '  enable WEAPON_MODE_ACTIVATED', '  enable WEAPON_MODE_DEACTIVATED',
-      '  enable JAMMING_REQUEST_INITIATED', '  enable JAMMING_REQUEST_UPDATED',
-      '  enable JAMMING_REQUEST_CANCELED')
-    // 专用 link_quality/link_switch CSV 由平台处理器写入；此处 events 仍保留收发与干扰事件。
-    entry.push('end_csv_event_output')
+    // 事件开关取对接示例的完整清单（去重）；起止事件自带年月日时分秒，是结果与开始时刻绑定的证据。
+    setup.push('', 'csv_event_output', `  file ${eventsCsvPath}`,
+      ...CSV_EVENTS.map(event => `  enable ${event}`), 'end_csv_event_output')
   }
   const limitations = [
     NOTICE,
     '生成静态初始节点、独立微波/数传/卫星/光纤设备、雷达侦测、干扰启停、航点、卫星/高空中继单跳转发、按 priority 自动选主链路与业务发送。',
     '高空中继：FORWARD_RELAY_NODE 作 relayPlatformId 时生成源→UAV→目标两跳与 on_message 转发（同卫星单跳模式）；仅标注 relayRole 但未引用为中继的节点仍不转发。',
     '自动选路：未指定 linkId 且存在多条同端点链路时，按 linkSettings.priority 选用最高优先链路；显式 linkId 仍绑定该链路。',
-    '链路切换：缺少切换前后真实 BER 测量，开启 linkSwitchEnabled 时阻断生成；当前只按优先级选择主链路，不执行伪造质量的切换。',
+    '链路切换：按 linkSettings.switchRules 每 3 秒判断距离/干扰条件，列表中第一条成立的规则决定当前链路，受滞回时间约束并写 LINK_SWITCH 日志；未配置规则时只用优先级最高的主链路。',
+    '切换输出：缺少切换前后真实 BER 测量，开启 linkSwitchEnabled 时仍阻断生成，不输出伪造质量的切换 CSV。',
+    '数传波段：C 波段使用 88° 俯仰波束与 -3° 下倾，L 波段使用全向波束（示例固定值）。',
     '链路质量：缺少完整真实测量，开启 linkQualityEnabled 时阻断生成，不输出规范质量 CSV。',
     '侦测仍为 WSF_RADAR_SENSOR；ESM/激光/编码与增益修正等未核实项保持阻断或仅 mapping 注解。',
     '干扰：探测范围 detectionRange 用于自动探测发现；干扰范围 jammingRange 门控 TurnOn（SlantRangeTo，候选 weapon 无 maximum_range）；定时启停不按距离门控。',
     'clock_rate 在 -es 下不生效；arrivalTime 无引擎约束；业务 QoS engineEnforced=false。',
-    `包内输出目录 ${outputDirectory}：scenario_events.csv（按开关输出） / position.csv。`,
+    `包内输出目录 ${outputDirectory}：scenario_events.csv（按开关输出） / scenario_events.aer / position.csv。`,
+    `文件拆分与命名同对接示例，入口为 ${ENTRY_FILE}；平台类型名仍按场景平台独立生成。`,
+    '数传上行经 forward_delay、下行经 return_delay（固定 1 秒）交给 script_proc；微波、卫星、光纤直连 script_proc。',
+    'link_calc 挂在第一个后方指挥节点上，参数由场景配置汇总；本地引擎未包含 WSF_LINK_CALC_PROCESSOR，本地运行会在读取输入时报错。',
     '生成阶段不运行 mission，engineValidated 保持 false。',
   ]
 
   const manifest = {
     scope: 'CANDIDATE_NODES_MICROWAVE_DATALINK_SAT_FIBER_JAMMER_UAV_RELAY_ROUTING',
     engineValidated: false,
-    scenarioId: config.scenario.id, revision: draft.revision, entry: 'mission.txt',
+    scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE,
+    scriptFiles: [ENTRY_FILE, DEFINITION_FILE, ...PLATFORM_TYPE_FILES, INSTANCE_FILE, 'observers.txt'],
+    linkCalc: {
+      emitted: linkCalcSlot !== null,
+      hostPlatformId: linkCalcHost?.platformId ?? null,
+      note: linkCalcSlot === null
+        ? '场景中没有后方指挥节点，未生成 link_calc。'
+        : 'WSF_LINK_CALC_PROCESSOR 由对接方程序读取；本地 Release 与 部署/Windows 引擎未包含该处理器，会在读取输入时报错。',
+    },
     platforms, devices, businesses, jammers, sensors,
     environment: { seaState: environment.seaState, rainRateMmPerHour: environment.rainRateMmPerHour, engineEmitted: environmentEmitted },
     clockRate: {
@@ -769,9 +1105,13 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     },
     excludedLinkIds: [...excluded], limitations,
   }
+  const typeFileTexts = Object.fromEntries(PLATFORM_TYPE_FILES.map(name =>
+    [name, [`include_once ${DEFINITION_FILE}`, '', ...typeFiles.get(name)!].join('\n') + '\n']))
   return { manifest, files: {
-    'mission.txt': entry.join('\n') + '\n',
-    'platforms.txt': [...antennas, ...definitions].join('\n') + '\n',
+    [ENTRY_FILE]: setup.join('\n') + '\n',
+    [DEFINITION_FILE]: perDefinition.join('\n') + '\n',
+    ...typeFileTexts,
+    [INSTANCE_FILE]: instances.join('\n') + '\n',
     'observers.txt': buildPositionObserver(positionCsvPath),
     'mapping.json': JSON.stringify(manifest, null, 2) + '\n',
     'input.json': JSON.stringify(draft, null, 2) + '\n',

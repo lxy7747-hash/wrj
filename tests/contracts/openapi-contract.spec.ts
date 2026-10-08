@@ -83,6 +83,32 @@ describe('OpenAPI contract audit', () => {
     expect(write(zeroRange)).toBe(false)
   })
 
+  it('波段仅数传链路可带；切换规则按触发类型强制对应参数，与运行时校验一致', () => {
+    const { openApi, fixtures } = loadContractDocuments()
+    const ajv = new Ajv2020({ strict: false })
+    addFormats(ajv)
+    ajv.addSchema({ $id: 'link-conditions', components: asObject(openApi).components })
+    const link = ajv.compile({ $ref: 'link-conditions#/components/schemas/Link' })
+    const rule = ajv.compile({ $ref: 'link-conditions#/components/schemas/LinkSwitchRule' })
+    const links = structuredClone(asObject(asObject(fixtures).scenario).links) as Array<Record<string, unknown>>
+    const datalink = links.find(item => item.type === 'DATALINK')!
+    const other = links.find(item => item.type !== 'DATALINK' && item.type !== 'SAT')!
+    expect(link({ ...datalink, band: 'L' })).toBe(true)
+    expect(link(other)).toBe(true)
+    expect(link({ ...other, band: 'C' })).toBe(false)
+    const base = { id: 'RULE-1', sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', toLinkId: 'L-A' }
+    for (const trigger of ['DISTANCE_ABOVE', 'DISTANCE_BELOW']) {
+      expect(rule({ ...base, trigger, distanceThresholdM: 1000 })).toBe(true)
+      expect(rule({ ...base, trigger })).toBe(false)
+      expect(rule({ ...base, trigger, distanceThresholdM: 1000, jammerId: 'JAM-1' })).toBe(false)
+    }
+    for (const trigger of ['JAMMING_ACTIVE', 'JAMMING_STOPPED']) {
+      expect(rule({ ...base, trigger, jammerId: 'JAM-1' })).toBe(true)
+      expect(rule({ ...base, trigger })).toBe(false)
+      expect(rule({ ...base, trigger, jammerId: 'JAM-1', distanceThresholdM: 1000 })).toBe(false)
+    }
+  })
+
   it('读取保留历史业务及四类优先级，写入只接受四枚举及完整五类优先级', () => {
     const document = loadContractDocuments().openApi
     const ajv = new Ajv2020({ strict: false })

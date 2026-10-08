@@ -36,11 +36,19 @@ const ENVIRONMENT_KEYS = [
   'rainLossDbPerKm',
   'multipathEnabled',
 ] as const
-const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation'] as const
+const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation',
+  'cloudAltitudeMinM', 'cloudAltitudeMaxM', 'cloudWaterDensityGM3', 'seaPolygon'] as const
+const GEO_POINT_KEYS = ['longitude', 'latitude'] as const
+/** 海面区域至少需要 3 个顶点才能围成多边形；上限防止误操作生成过大的脚本参数。 */
+export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const OPTIONAL_PLATFORM_KEYS = ['satelliteType'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
-const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId'] as const
+const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band'] as const
+export const DATALINK_BANDS = ['C', 'L'] as const
+export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
+const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId', 'toLinkId'] as const
+const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange', 'jammingRange'] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
@@ -319,6 +327,9 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
       addError(errors, 'LINK_RELAY_INVALID', '中继仅可用于卫星/微波/数传链路，且必须引用场景中已有平台。', `${path}.relayPlatformId`)
     }
   }
+  if (Object.hasOwn(value, 'band') && (value.type !== 'DATALINK' || !(DATALINK_BANDS as readonly unknown[]).includes(value.band))) {
+    addError(errors, 'LINK_BAND_INVALID', '波段仅用于数传链路，请选择 C 或 L 波段。', `${path}.band`)
+  }
 }
 
 /**
@@ -327,8 +338,9 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  * @param platforms 未受信任的场景实体集合，用于核对卫星类型。
  * @param errors 接收错误的数组；错误路径用于页面定位。
  */
-function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write'): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes'])) {
+function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
+  links: unknown = [], jammers: unknown = [], demands: unknown = []): void {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -358,6 +370,81 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     || value.priority.some((type) => !(priorityTypes as readonly unknown[]).includes(type))) {
     addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含五类链路且不能重复；读取兼容历史四类。', 'linkSettings.priority')
   }
+  if (Object.hasOwn(value, 'switchRules')) inspectSwitchRules(value.switchRules, platforms, links, jammers, demands, errors)
+}
+
+/**
+ * 校验阶段切换规则：端点、目标链路与干扰设备都须引用当前场景，且目标链路连接同一对端点。
+ * @param value 未受信任的规则数组。
+ * @param platforms 场景实体，用于核对端点。
+ * @param links 场景链路，用于核对切换目标。
+ * @param jammers 场景干扰设备，用于核对干扰条件。
+ * @param demands 场景信息需求；生成器只把规则用于同方向业务，端点上有启用业务却无同方向业务时阻断，避免规则静默失效。
+ * @param errors 接收错误的数组；路径指向具体规则字段。
+ */
+function inspectSwitchRules(value: unknown, platforms: unknown, links: unknown, jammers: unknown, demands: unknown, errors: ValidationIssue[]): void {
+  if (!Array.isArray(value)) {
+    addError(errors, 'SWITCH_RULES_INVALID', '链路切换规则必须是列表。', 'linkSettings.switchRules')
+    return
+  }
+  const ids = (items: unknown) => new Set(Array.isArray(items)
+    ? items.flatMap(item => typeof item === 'object' && item !== null && typeof (item as { id?: unknown }).id === 'string' ? [(item as { id: string }).id] : [])
+    : [])
+  const platformIds = ids(platforms)
+  const jammerIds = ids(jammers)
+  const linkList = Array.isArray(links) ? links.filter((link): link is Record<string, unknown> => typeof link === 'object' && link !== null) : []
+  const demandList = Array.isArray(demands)
+    ? demands.filter((demand): demand is Record<string, unknown> => typeof demand === 'object' && demand !== null && demand.enabled !== false) : []
+  /** 业务方向：显式方向优先，其次取所属链路方向；均缺省表示不限方向。 */
+  const demandDirection = (demand: Record<string, unknown>) => demand.direction ?? linkList.find(item => item.id === demand.linkId)?.direction
+  const seen = new Set<string>()
+  value.forEach((rule, index) => {
+    const path = `linkSettings.switchRules[${index}]`
+    if (!isClosedObject(rule, SWITCH_RULE_KEYS, OPTIONAL_SWITCH_RULE_KEYS)) {
+      addError(errors, 'SWITCH_RULE_SHAPE_INVALID', '链路切换规则结构不正确。', path)
+      return
+    }
+    if (typeof rule.id !== 'string' || !/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(rule.id)) {
+      addError(errors, 'SWITCH_RULE_ID_INVALID', '规则编号须以英文字母开头，仅含字母、数字、下划线或连字符。', `${path}.id`)
+    } else if (seen.has(rule.id)) {
+      addError(errors, 'SWITCH_RULE_ID_DUPLICATED', '规则编号不能重复。', `${path}.id`)
+    } else seen.add(rule.id)
+    if (Object.hasOwn(rule, 'enabled') && typeof rule.enabled !== 'boolean') addError(errors, 'SWITCH_RULE_ENABLED_INVALID', '规则启用状态必须为布尔值。', `${path}.enabled`)
+    const trigger = rule.trigger
+    if (!(LINK_SWITCH_TRIGGERS as readonly unknown[]).includes(trigger)) addError(errors, 'SWITCH_RULE_TRIGGER_INVALID', '请选择切换条件。', `${path}.trigger`)
+    for (const key of ['sourcePlatformId', 'targetPlatformId'] as const) {
+      if (typeof rule[key] !== 'string' || !platformIds.has(rule[key])) {
+        addError(errors, 'SWITCH_RULE_ENDPOINT_INVALID', `${key === 'sourcePlatformId' ? '源' : '目标'}平台必须引用当前场景实体。`, `${path}.${key}`)
+      }
+    }
+    if (rule.sourcePlatformId === rule.targetPlatformId) addError(errors, 'SWITCH_RULE_ENDPOINT_DUPLICATED', '源平台和目标平台不能相同。', `${path}.targetPlatformId`)
+    const link = linkList.find(item => item.id === rule.toLinkId)
+    if (link === undefined) {
+      addError(errors, 'SWITCH_RULE_LINK_INVALID', '切换目标链路必须引用当前场景链路。', `${path}.toLinkId`)
+    } else if (link.sourcePlatformId !== rule.sourcePlatformId || link.targetPlatformId !== rule.targetPlatformId) {
+      addError(errors, 'SWITCH_RULE_LINK_MISMATCH', '切换目标链路必须连接规则中的源平台与目标平台。', `${path}.toLinkId`)
+    } else if (rule.enabled !== false) {
+      const covered = demandList.filter(demand => demand.sourcePlatformId === rule.sourcePlatformId
+        && Array.isArray(demand.destinationPlatformIds) && demand.destinationPlatformIds.includes(rule.targetPlatformId))
+      if (covered.length > 0 && !covered.some(demand => [undefined, link.direction].includes(demandDirection(demand)))) {
+        addError(errors, 'SWITCH_RULE_DIRECTION_MISMATCH', '切换目标链路方向与该端点业务方向不一致：前向业务只能切到前向链路，返向同理。', `${path}.toLinkId`)
+      }
+    }
+    const distanceTrigger = trigger === 'DISTANCE_ABOVE' || trigger === 'DISTANCE_BELOW'
+    if (distanceTrigger && !isPositiveFiniteNumber(rule.distanceThresholdM)) {
+      addError(errors, 'SWITCH_RULE_DISTANCE_INVALID', '距离阈值必须大于 0 m。', `${path}.distanceThresholdM`)
+    }
+    if (!distanceTrigger && Object.hasOwn(rule, 'distanceThresholdM')) {
+      addError(errors, 'SWITCH_RULE_DISTANCE_UNUSED', '干扰条件不使用距离阈值，请清除。', `${path}.distanceThresholdM`)
+    }
+    const jammingTrigger = trigger === 'JAMMING_ACTIVE' || trigger === 'JAMMING_STOPPED'
+    if (jammingTrigger && (typeof rule.jammerId !== 'string' || !jammerIds.has(rule.jammerId))) {
+      addError(errors, 'SWITCH_RULE_JAMMER_INVALID', '干扰条件必须引用当前场景的干扰设备。', `${path}.jammerId`)
+    }
+    if (!jammingTrigger && Object.hasOwn(rule, 'jammerId')) {
+      addError(errors, 'SWITCH_RULE_JAMMER_UNUSED', '距离条件不使用干扰设备，请清除。', `${path}.jammerId`)
+    }
+  })
 }
 
 /**
@@ -603,7 +690,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (!Array.isArray(value.sensors)) addError(errors, 'SENSORS_INVALID', '传感器配置格式不正确。', 'sensors')
   if (typeof value.output !== 'object' || value.output === null || Array.isArray(value.output)) addError(errors, 'OUTPUT_INVALID', '输出配置格式不正确。', 'output')
   if (!Array.isArray(value.informationDemand) || value.informationDemand.length === 0) addError(errors, 'INFORMATION_DEMAND_INVALID', '场景至少需要一项信息需求。', 'informationDemand')
-  if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode)
+  if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode, value.links, value.jammers, value.informationDemand)
   if (Object.hasOwn(value, 'jammingEnabled') && typeof value.jammingEnabled !== 'boolean') addError(errors, 'JAMMING_ENABLED_INVALID', '干扰总开关必须为布尔值。', 'jammingEnabled')
 
   if (!isClosedObject(value.scenario, SCENARIO_KEYS)) {
@@ -632,6 +719,25 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Object.hasOwn(environment, 'rainCloudAttenuation')
     && !['none', 'lightRain', 'moderateRain', 'heavyRain'].includes(environment.rainCloudAttenuation as string)) {
     addError(errors, 'WEATHER_INVALID', '云雨气象衰减请选择无、小雨、中雨或大雨。', 'scenario.environment.rainCloudAttenuation')
+  }
+  for (const [key, label] of [['cloudAltitudeMinM', '云层下限高度'], ['cloudAltitudeMaxM', '云层上限高度'], ['cloudWaterDensityGM3', '云中液态水密度']] as const) {
+    if (Object.hasOwn(environment, key) && !isFiniteNumber(environment[key], 0)) {
+      addError(errors, 'CLOUD_INVALID', `${label}必须为非负有限数值。`, `scenario.environment.${key}`)
+    }
+  }
+  if (isFiniteNumber(environment.cloudAltitudeMinM, 0) && isFiniteNumber(environment.cloudAltitudeMaxM, 0)
+    && environment.cloudAltitudeMaxM <= environment.cloudAltitudeMinM) {
+    addError(errors, 'CLOUD_RANGE_INVALID', '云层上限高度必须高于下限高度。', 'scenario.environment.cloudAltitudeMaxM')
+  }
+  if (Object.hasOwn(environment, 'seaPolygon')) {
+    const polygon = environment.seaPolygon
+    if (!Array.isArray(polygon) || polygon.length < SEA_POLYGON_LIMITS.minPoints || polygon.length > SEA_POLYGON_LIMITS.maxPoints) {
+      addError(errors, 'SEA_POLYGON_INVALID', `海面区域需要 ${SEA_POLYGON_LIMITS.minPoints}～${SEA_POLYGON_LIMITS.maxPoints} 个顶点，请在地图上重新框选。`, 'scenario.environment.seaPolygon')
+    } else polygon.forEach((point, index) => {
+      if (!isClosedObject(point, GEO_POINT_KEYS) || !isFiniteNumber(point.longitude, -180, 180) || !isFiniteNumber(point.latitude, -90, 90)) {
+        addError(errors, 'SEA_POLYGON_POINT_INVALID', '海面区域顶点的经纬度不正确。', `scenario.environment.seaPolygon[${index}]`)
+      }
+    })
   }
   if (!isFiniteNumber(environment.seaState, 0)) addError(errors, 'SEA_STATE_INVALID', '海况等级不能小于 0。', 'scenario.environment.seaState')
   if (!isFiniteNumber(environment.temperatureC)) addError(errors, 'TEMPERATURE_INVALID', '温度必须是有效数值。', 'scenario.environment.temperatureC')

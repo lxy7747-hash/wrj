@@ -21,6 +21,13 @@ const { env } = await import('node:' + 'process')
 type MissionOutcome = { code: number | null; completedAt?: string; errorMessage?: string }
 type MissionProcess = { pid: number; startedAt: string; entryPath: string; completed: Promise<MissionOutcome>; stop(): Promise<void> }
 
+// 对接示例拆分：平台定义分布在公共定义与 5 个平台类型文件中。
+const TYPE_FILES = ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt',
+  'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt']
+async function readTypeFiles(directory: string): Promise<string> {
+  return (await Promise.all(TYPE_FILES.map(name => readFile(join(directory, name), 'utf8')))).join(String.fromCharCode(10))
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => { resolve = done })
@@ -517,7 +524,7 @@ describe('本机 mission 执行器', () => {
       expect(outcome).toMatchObject({ code: 0 })
       expect(outcome.errorMessage).toBeUndefined()
       const directory = dirname(process.entryPath)
-      const platforms = await readFile(join(directory, 'platforms.txt'), 'utf8')
+      const platforms = await readTypeFiles(directory)
       expect(platforms).toContain('mover WSF_SPACE_MOVER')
       expect(platforms).toContain('      epoch_date_time aug 06 2026 08:00:00')
       expect(platforms).toContain('      semi_major_axis 42164 km')
@@ -552,10 +559,10 @@ describe('本机 mission 执行器', () => {
       expect(outcome).toMatchObject({ code: 0 })
       expect(outcome.errorMessage).toBeUndefined()
       const directory = dirname(process.entryPath)
-      const platforms = await readFile(join(directory, 'platforms.txt'), 'utf8')
+      const platforms = await readTypeFiles(directory)
       expect(platforms).toContain('sensor radar_')
       expect(platforms).toContain('WSF_RADAR_SENSOR')
-      expect(platforms).toContain('    bit_error_probability 0.00001')
+      expect(platforms).toContain('      bit_error_probability 0.00001')
       expect(platforms).toContain('mover WSF_SPACE_MOVER')
       expect(platforms).toContain('mover WSF_AIR_MOVER')
       const manifest = JSON.parse(await readFile(join(directory, 'mapping.json'), 'utf8'))
@@ -592,7 +599,7 @@ describe('本机 mission 执行器', () => {
         .send({ scenarioId: 'SCN-001', warningConfirmationId: confirmation.confirmationId }).expect(200)).body.data
       const generated = (await api.post(`/api/v1/scripts/${script.scriptId}/local-file`).set(headers)
         .send({ checksum: script.checksum }).expect(200)).body.data
-      const savedPlatforms = await readFile(join(dirname(generated.path), 'platforms.txt'), 'utf8')
+      const savedPlatforms = await readTypeFiles(dirname(generated.path))
       expect(savedPlatforms).toContain('SendMessage')
       const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
       const runId = created.body.data.runId
@@ -602,7 +609,7 @@ describe('本机 mission 执行器', () => {
       await expect.poll(async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers)).body.data,
         { timeout: 10_000 }).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false, canonical: { processId: null, currentTime: 3, progress: 100 } })
       const directory = join(root, 'runs', (await readdir(join(root, 'runs')))[0]!)
-      expect(await readFile(join(directory, 'platforms.txt'), 'utf8')).toBe(savedPlatforms)
+      expect(await readTypeFiles(directory)).toBe(savedPlatforms)
       const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
       expect(receipt).toMatchObject({ code: 0, scenarioId: 'SCN-001', revision: saved.revision, pid: started.canonical.processId })
       expect(await readFile(join(directory, 'mission-console.log'), 'utf8')).toContain('Simulation complete')
@@ -629,7 +636,7 @@ describe('本机 mission 执行器', () => {
       const capture = vi.fn(async () => {})
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, { capture })
       const process = await runner.start(draftForMission())
-      expect(spawn).toHaveBeenCalledWith(join(root, 'mission.exe'), ['-es', 'mission.txt'], expect.objectContaining({
+      expect(spawn).toHaveBeenCalledWith(join(root, 'mission.exe'), ['-es', 'comm_SimSetup.txt'], expect.objectContaining({
         cwd: dirname(process.entryPath), shell: false, windowsHide: true,
       }))
       expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'input.json'), 'utf8'))).toEqual(draftForMission())

@@ -2,9 +2,9 @@
 
 整理日期：2026-09-22。
 
-## 当前权威口径（2026-09-28）
+## 当前权威口径（2026-09-28，2026-10-08 补充）
 
-以下按现行 `server/scripts/mission-generator.ts`、包内 `mapping.json` 与 `tests/server/mission-execution.spec.ts` 判定。后文第 1～19 节记录历次候选和历史缺口，出现矛盾时以本节及第 20～21 节的现行实现为准。**写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应 `execution.json`、日志和实际 CSV 为证。
+以下按现行 `server/scripts/mission-generator.ts`、包内 `mapping.json` 与 `tests/server/mission-execution.spec.ts` 判定。后文第 1～19 节记录历次候选和历史缺口，出现矛盾时以本节及第 20～22 节的现行实现为准。**2026-10-08 起生成包按对接示例拆分文件、入口改为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选，详见第 22 节；本节表格中与第 22 节冲突的内容以第 22 节为准。****本机部署限制：本机两套 AFSIM 引擎均缺少 `WSF_LINK_CALC_PROCESSOR` 插件，含后方指挥节点的场景生成的 Mission 在本机必然报错退出，安装对接方插件前无法原样运行（见 22.5）；去掉 `link_calc` 的实测与自动化测试通过均不等于原样实机验收通过。****写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应 `execution.json`、日志和实际 CSV 为证。
 
 | 参数或能力 | 当前分类 | 具体边界与证据 |
 |---|---|---|
@@ -12,7 +12,7 @@
 | 微波、数传、卫星、光纤通信设备，业务周期发送，多目标与同目标备选链路，高空/卫星单跳转发 | 真实引擎已验证的有限样例 | 生成设备与消息脚本；实机用例核对收发、两跳转发与目标接收。频率、带宽、功率、速率、天线增益写入设备参数；这些用例不证明物理层质量、BER 或任意组合的性能。优先级在生成期选择主链路，不是运行时质量选路。 |
 | 雷达侦测候选、干扰设备、定时启停与距离门控、海况和降雨 | 写入脚本；部分实机样例验证 | 生成 `WSF_RADAR_SENSOR`、干扰 weapon/processor、`global_environment` 等。实机已核对定时启停和部分事件；没有验证所有天气/干扰参数的物理效果、探测概率或真实 SNR/BER。 |
 | `scenario.timeStep`、`output.writeInterval`、`environment.simClockSpeed` | 写入脚本，但效果边界受限 | `scenario.timeStep` 映射为 mover `update_interval`；`position.csv` 由 `MOVER_UPDATED` 触发写入。`output.writeInterval` 当前写入业务发送处理器的 `update_interval`，**不独立控制位置采样周期**。位置记录实际间隔须以 AFSIM 2.9.0 的同平台 CSV 实测为准，不能据配置值推断。`clock_rate` 虽写入，在当前 mission `-es` 模式下不改变墙钟倍速。 |
-| 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、冷却时间、ESM 扩展方向/概率 | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。 |
+| 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、ESM 扩展方向/概率（冷却时间自 2026-10-08 起用于阶段切换规则，见第 22 节） | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。 |
 | 链路质量 CSV、链路切换 CSV；激光通信、信道编码及非零增益修正等 | 当前不支持或明确阻断 | 缺完整真实测量时，开启 `output.linkQualityEnabled` 或 `output.linkSwitchEnabled` 即按字段路径拒绝生成；不输出伪造的规范 CSV。其他未核实的设备/参数按生成器字段级校验拒绝，不静默改写成替代模型。 |
 
 参数生效的唯一运行证据链为：保存的场景修订 → 生成包的 `input.json`/`mapping.json` 与脚本 → 本次独占运行的 `execution.json` 和日志 → 实际输出文件。`RUN-001`、`F-00042` 属冻结演示证据，不是后续每次新建运行的固定编号或真实测量。
@@ -491,3 +491,104 @@
 - 校验：写模式两字段均须在 1～24 海里；`jammingRange > detectionRange` 仅 **WARNING** `JAMMER_RANGE_ORDER`，非硬错误。默认值均为最大（24 海里）。
 - 态势图：本批（2026-09-24）未新增距离圈；后续文件态势显示已变化，见本节开头的当前说明。
 - `engineValidated` 保持 `false`（未对本次改动跑 mission.exe）。
+
+## 22. 对齐对接示例脚本（2026-10-08）
+
+依据：`H:/Project/newWrj/场景配置参数对接/` 下的 8 个示例 txt 与同目录 `observers.txt`，以及与对接方逐条确认的 27 项结论（同目录 `场景脚本示例确认清单.html`）。示例是“保存后应生成成什么样”的验收参照；其中写死的平台名、剧情时刻（如 `mission_uav_02`、2220 s）不照抄，改为按场景配置生成。
+
+### 22.1 文件拆分与入口（D-01：必须一致）
+
+| 文件 | 内容 |
+|---|---|
+| `comm_SimSetup.txt` | **入口**。依次 `include_once` 5 个平台类型文件、`comm_platform_INS.txt`、`observers.txt`；`start_date/start_time/end_time`、`clock_rate`、`multi_thread`、`simulation_name "MultiMethod_UAV_Comm_Scenario"`、`event_pipe`（`scenario_events.aer`）、`csv_event_output` |
+| `comm_PerDefinition.txt` | `global_environment`、全局信息类型 `script_variables`、示例固定天线方向图与各设备天线、`radar_signature`、网络声明、公共介质与各设备介质 |
+| `comm_platform_COMMAND_VEHICLE/MISSION_UAV/JAMMER/REAR/SAT.txt` | 按参考模型归入对应文件的平台类型定义；每个文件首行 `include_once comm_PerDefinition.txt`；场景中没有该类平台时文件仍生成 |
+| `comm_platform_INS.txt` | 平台实例（`side`、`icon`、`creation_time`、`position/altitude`、`heading`、航点路线） |
+| `observers.txt` | 位置输出，字段与对接方提供的 `observers.txt` 一致 |
+
+- `mission-runner` 改为按 `mapping.json.entry`（`comm_SimSetup.txt`）启动：`mission.exe -es comm_SimSetup.txt`。**第 14、15 节中的 `mission.txt`、`platforms.txt` 均已废止。**
+- `mapping.json` 新增 `scriptFiles`（全部脚本文件名）与 `linkCalc`（是否生成、宿主平台、说明）。
+- 平台类型名仍为 `GEN_<参考模型>_<编码>`，按场景平台逐个生成，不使用示例中的 `MISSION_UAV_PLATFORM` 等共享类型名。
+
+### 22.2 按示例写死的固定值（D-03）
+
+| 位置 | 固定值 |
+|---|---|
+| 收发机 | `on`；极化：微波 `horizontal`，其余 `vertical`；衰减模型：卫星 `attenuation_model none`，其余 `itu`；`noise_figure`：天通 2 dB，其余 3 dB；`channels 4`；`bit_error_probability 0.00001`（所有无线链路） |
+| 数传 C 波段 | 天线俯仰波束 88°，收发 `antenna_tilt -3 deg`；L 波段为全向 180°，不下倾 |
+| 平台类型 | `radar_signature`：无人机/空中干扰 `DRONE_SIG`，指挥车/地面干扰站 `COMMAND_VEHICLE_SIG`，后方 `COMM_VEHICLE_SIG`，卫星 `SAT_SIG` |
+| 平台实例 | `side`：干扰平台 red，其余 blue；`icon`：指挥车 737、无人机 F-18、干扰 triangle、卫星 satellite、后方不写；`heading 90 deg`（指挥车、无人机）；`creation_time 0 sec`（干扰平台、卫星） |
+| 运动器 | 指挥车 `WSF_SURFACE_MOVER`（D-06，原为 `WSF_GROUND_MOVER`） |
+| 卫星轨道 | 神通与天通相同 GEO：半长轴 42164 km、倾角 0°、升交点 120°（C-05，原神通为 7000 km/60° LEO 模板） |
+| 环境 | `rain_altitude_limit 3000 m` |
+| 事件开关 | 示例 `comm_SimSetup.txt` 的完整清单去重后 36 项（含 `MESSAGE_HOP`、`SENSOR_TRACK_*`、`LOCAL_TRACK_*`、`LINK_*_ON_MANAGER/LOCAL`、`PLATFORM_DELETED/BROKEN/OMITTED` 等）；项目解析器读取示例实测输出 6333 条事件，无告警 |
+
+### 22.3 与示例写法有意不同之处
+
+- **每台设备独立介质**：示例在每个 `comm` 中 `add medium UAV_MESH_MEDIUM` 并改写 `transfer_rate`。本机引擎对每处报 `WARNING: Medium is shared, and edits will apply changes across all mediums of this type.`，最后一次改写会覆盖全部设备速率。生成器为每台设备在 `comm_PerDefinition.txt` 定义 `medium medium_<设备> WSF_COMM_MEDIUM_UNGUIDED`（传播速度、误码率、丢包时间同示例，速率取链路 `dataRate`，`transfer_rate constant`），`comm` 中仅引用；改后告警消失。公共 `UAV_MESH_MEDIUM` 仍按示例声明。
+- 示例中的阶段剧情、硬编码平台名与定时阶段不生成，由 22.6 的可配置规则替代。
+
+### 22.4 时延处理器（B-05：需要生效）
+
+- 数传上行收发机 `internal_link forward_delay`，下行 `internal_link return_delay`；两者为 `WSF_DELAY_PROCESSOR`（先进先出、10 个服务台、固定 1.0 s，示例值），再 `internal_link script_proc`。
+- 微波、卫星、光纤直连 `script_proc`；`script_proc` 的 `on_message default` 输出 `RECV <类型> from <来源>`。
+- 高空中继入口按链路生成独立的 `forward_delay_<链路>`/`return_delay_<链路>`，再交给该链路的中继转发处理器，避免多条中继链路共用后串到别的出口。
+- 业务的 `maxLatencyMs` 不改变 1 s 固定时延，仍只记在 `mapping.json`。
+
+### 22.5 `link_calc`（D-02：按示例结构生成）
+
+`WSF_LINK_CALC_PROCESSOR` 是对接方程序读取的链路参数总配置，挂在第一个后方指挥节点（`REAR_COMM_PLATFORM`）上；场景没有后方节点时不生成，`mapping.json.linkCalc.emitted=false`。JSON 按示例原样包在双引号中、内层不转义（A-03）。
+
+| 参数 | 来源 |
+|---|---|
+| `update_interval 3.0 sec`、`emergency_threshold 0.80`、`warning_threshold 0.50` | 示例固定值 |
+| `relay_uav_names` | 场景中的 `FORWARD_RELAY_NODE` 编号 |
+| `hot_link_fw` / `hot_link_ret` | 前向/返向链路逐条生成 `linkN`，逐跳 `{platform,inPort,outPort}`（含中继跳） |
+| `port_params` | 由实际生成的设备参数汇总（C-01），按平台类型分组 |
+| `natural_environment.rain/cloud` | 场景降雨率、云层参数；雨区高度 3000 m |
+| `natural_environment.atmosphere/misc_loss_db` | 示例固定值 |
+| `natural_environment.sea_state` | `enabled` 跟随“海面多径衰落”开关，`sea_state_level` 取海况等级，`sea_polygon` 取地图框选区域（22.7）；`low_altitude_threshold_m 300`、`path_over_sea_threshold_km 30`、`use_reflection_geometry false` 为示例固定值 |
+
+**本机限制**：`Release/Release/` 与 `部署/Windows/engine/` 两套引擎均无该处理器，实测报 `ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR` 并 `FATAL`。按已确认选择始终生成，因此含后方节点的场景在本机运行必然失败，需安装对接方插件。去掉 `link_calc` 后，示例脚本与生成包均可完整运行。该处理器的输出文件格式尚未提供，链路质量与切换 CSV 仍保持阻断。
+
+### 22.6 场景配置新增字段
+
+| 字段 | 界面 | 生成 |
+|---|---|---|
+| `scenario.environment.cloudAltitudeMinM/cloudAltitudeMaxM/cloudWaterDensityGM3` | 场景环境：云层下限/上限高度、云中液态水密度；缺省 500 m / 2000 m / 0.5 g/m³；上限须高于下限 | `cloud_altitude_limits`、`cloud_water_density` 及 `link_calc` 的 `cloud` |
+| `scenario.environment.seaPolygon` | 见 22.7 | `link_calc` 的 `sea_polygon` |
+| `links[].band`（`C`/`L`，仅 `DATALINK`） | 链路编辑：数传波段；旧链路缺省 C | C/L 天线与下倾差异，见 22.2 |
+| `linkSettings.switchRules[]` | 链路设置：阶段切换规则 | 见下 |
+
+阶段切换规则（D-05）：每条规则含 `trigger`（`DISTANCE_ABOVE`/`DISTANCE_BELOW`/`JAMMING_ACTIVE`/`JAMMING_STOPPED`）、源/目标平台、`toLinkId`（须连接同一对平台，且与该端点业务方向一致）、`distanceThresholdM` 或 `jammerId`、`enabled`。
+
+- 业务处理器为有规则的目标保存当前发送设备，每 3 s（示例周期）按列表顺序判断，第一条成立的规则决定当前链路；与当前不同且距上次切换不少于 `switchCooldownS` 时切换，并 `writeln("LINK_SWITCH time=… business=… rule=… from=… to=…")`。
+- 干扰条件读取对应干扰 weapon 的 `IsTurnedOn()`；“干扰关闭”只在该设备开启过之后成立。
+- 目标链路停用或未参与本次场景时阻断生成，错误定位到 `linkSettings.switchRules[i].toLinkId`。
+- 规则只作用于同方向业务：前向业务只能切到前向链路，返向同理。共享校验在该端点有启用业务、却没有与目标链路同方向的业务时报 `SWITCH_RULE_DIRECTION_MISMATCH`（定位 `toLinkId`；停用规则和未设方向的旧业务不阻断）；生成器只把规则挂到方向与主链路一致的路由上，未设方向的旧业务也不会被切到反向链路。
+- 规则字段与执行方式由项目侧拟定，尚待对接方确认；`mapping.json` 的 `routePlans[].switchRuleIds`、`failoverEnabled` 记录绑定关系。
+
+### 22.7 海面区域框选
+
+- “海面多径衰落”启用后，场景环境出现“框选海面区域”，在离线卫星地图上依次单击放置顶点（3～64 个），首尾闭合，可撤销、清空；组件 `src/components/scenarios/SeaAreaMapPicker.vue`。
+- 保存为 `environment.seaPolygon: [{longitude, latitude}]`，生成为 `sea_polygon: [{lat, lon}]`。**未框选时写空列表 `[]`，不再使用示例的台湾海峡 4 点坐标。**
+- 温度、湿度在示例中无对应语句，仍只保存不写入脚本；多径开关现通过 `sea_state.enabled` 进入 `link_calc`。
+
+### 22.8 合同与校验
+
+- `src/contracts/domain-models.ts` 与 `frontend-technical-design-v1/contracts/domain-models.ts` 同步新增 `GeoPoint`、`DatalinkBand`、`LinkSwitchTrigger`、`LinkSwitchRule` 及上述可选字段（两份保持逐字节一致）。
+- `mock-api.openapi.yaml` 新增对应 schema 与 `LinkSwitchRule` 组件；`scripts/contracts/openapi-schema.snapshot.ts` 按新 schema 重新生成（仅新增，另有 4 行等值格式变化）；`contract-documents.ts` 登记 `band`、`trigger` 枚举字面量。
+- 共享校验 `scenario-validation.ts` 覆盖云层范围、`seaPolygon` 顶点数与经纬度、`band` 只用于数传、规则引用闭合、条件参数互斥与业务方向一致；全部为可选字段，旧场景不受影响。
+- OpenAPI 升至 1.8.8：`Link.band` 仅 `DATALINK` 可带；`LinkSwitchRule` 按触发类型条件约束（距离条件必带 `distanceThresholdM`、不得带 `jammerId`，干扰条件反之），与运行时校验一致并补合同负例。方向一致性涉及跨对象引用，只由共享校验执行。冻结哈希见 `frontend-technical-design-v1/README.md`。
+
+### 22.9 对示例文件本身的修改
+
+按确认清单修改了对接目录中的示例（A-02、A-04、A-05、B-02、B-03、B-05、B-07、B-09 及 C 类注释），原文件备份在 `newWrj/_archive/场景配置参数对接-备份-20261008*`。修改后的示例在本机（去掉 `link_calc`）完整运行：干扰在 UAV-03 进入 30 海里时开启、离开后关闭，中继机在两架任务机恢复直连后返航。
+
+### 22.10 验证
+
+- 2026-10-08 完整门禁 `npm run p0:check` 通过：类型检查、构建、契约校验、组件/单元 986、契约 140、服务端 527 通过（15 个跳过，其中 10 个需设置 `MISSION_SMOKE_EXECUTABLE` 的真实引擎用例）；覆盖率语句 93.86% / 分支 90.66% / 函数 95.25% / 行 97.53%，`src/components/scenarios/*.vue` 分支 91.08%，均达门槛且未调低。
+- E2E 未运行（本机 4173/5173 端口被现有服务占用），本轮结果不代表浏览器验收或原样实机验收通过。
+- 本机 AFSIM 2.9.0（去掉 `link_calc`）实测生成包：无错误、无告警；数传上下行业务 240 条全部经时延处理器接收；切换规则样例在干扰开启（884.5 s）后 886.8 s 切到微波、关闭（1004.5 s）后 1006.8 s 切回数传，期间 24 条走微波、216 条走数传，240 条全部接收；L 波段与云层参数按配置写出。
+- 10 个真实引擎用例未重跑：其场景含后方节点，安装插件前会因 `link_calc` 失败。其中读取平台定义的断言已改为读取 6 个拆分文件，但未经实机执行确认。
+- `engineValidated` 仍为 `false`。

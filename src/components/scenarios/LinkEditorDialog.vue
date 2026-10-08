@@ -34,9 +34,12 @@ const emit = defineEmits<{
 const editor = ref<Link | null>(null)
 const business = ref<InformationDemand | null>(null)
 
-/** 改为非卫星链路时清除旧版中继引用；type 为新类型，新链路不生成此历史字段。 */
+/** 改为非卫星链路时清除旧版中继引用；数传默认 C 波段，其他类型不保留波段。type 为新类型。 */
 function changeType(type: LinkType): void {
-  if (editor.value?.relayPlatformId && type !== 'SAT') editor.value.relayPlatformId = null
+  if (!editor.value) return
+  if (editor.value.relayPlatformId && type !== 'SAT') editor.value.relayPlatformId = null
+  if (type === 'DATALINK') editor.value.band ??= 'C'
+  else delete editor.value.band
 }
 
 /** 保存编码选择；空字符串转为“未指定”，value 为选项或用户录入的后端编码标识。 */
@@ -60,6 +63,8 @@ function apply(): void {
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.link === null ? null : { ...LINK_PARAMETER_DEFAULTS, ...structuredClone(toRaw(props.link)) }
+  // 旧数传链路缺省波段时按 C 波段展示，与生成器的缺省口径一致。
+  if (editor.value?.type === 'DATALINK') editor.value.band ??= 'C'
   business.value = props.demand ? { enabled: true, ...structuredClone(toRaw(props.demand)) } : null
 }, { immediate: true })
 
@@ -93,6 +98,11 @@ watch(() => editor.value?.direction, direction => {
           </el-form-item>
           <el-form-item label="当前链路">
             <el-switch v-model="editor.enabled" active-text="启用" inactive-text="停用" data-testid="link-enabled" />
+          </el-form-item>
+          <el-form-item v-if="editor.type === 'DATALINK'" required label="数传波段">
+            <el-select v-model="editor.band" style="width: 100%" data-testid="link-band">
+              <el-option label="C 波段" value="C" /><el-option label="L 波段" value="L" />
+            </el-select>
           </el-form-item>
           <el-form-item required v-show="showIds" label="链路 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="link-id" /></el-form-item>
         </div>

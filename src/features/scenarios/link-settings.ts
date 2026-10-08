@@ -19,6 +19,7 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
     ...(config.linkSettings.enabledTypes === undefined ? {} : { enabledTypes: { ...config.linkSettings.enabledTypes } }),
     enabledSatellites: { ...config.linkSettings.enabledSatellites },
     priority: [...config.linkSettings.priority],
+    ...(config.linkSettings.switchRules === undefined ? {} : { switchRules: config.linkSettings.switchRules.map(rule => ({ ...rule })) }),
   } : {
     enabledSatellites: {
       TIANTONG: config.platforms.some((p) => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === 'TIANTONG'),

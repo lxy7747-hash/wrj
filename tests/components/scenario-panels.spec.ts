@@ -8,6 +8,7 @@ import PlatformEditorDialog from '../../src/components/scenarios/PlatformEditorD
 import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.vue'
 import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
 import JammerEditorDialog from '../../src/components/scenarios/JammerEditorDialog.vue'
+import SeaAreaMapPicker from '../../src/components/scenarios/SeaAreaMapPicker.vue'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import type { Link, ScenarioConfig, ScenarioLinkSettings } from '../../src/contracts/domain-models'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
@@ -161,6 +162,144 @@ describe('场景拆分面板', () => {
     wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 20)
     expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
     expect(config.linkSettings).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('阶段切换规则可新增、切换条件类型与删除，目标链路限定为同一对端点', async () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const typeOptions = [{ value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' },
+      { value: 'DATALINK', label: '数传' }, { value: 'LASER', label: '激光' }, { value: 'FIBER', label: '光纤链路' }] as const
+    const wrapper = mount(LinkSettingsPanel, {
+      props: { modelValue: readLinkSettings(config), dialogVisible: true, platforms: config.platforms, links: config.links,
+        jammers: config.jammers, disabled: false, typeOptions },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
+    })
+    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings } }>
+    const latest = () => wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    expect(wrapper.text()).toContain('未配置规则时，仿真全程使用优先级最高的链路。')
+    await wrapper.get('[data-testid="add-switch-rule"]').trigger('click')
+    const first = config.links[0]!
+    expect(latest().switchRules).toEqual([{ id: 'RULE-1', enabled: true, trigger: 'DISTANCE_ABOVE',
+      sourcePlatformId: first.sourcePlatformId, targetPlatformId: first.targetPlatformId, toLinkId: first.id, distanceThresholdM: 200_000 }])
+    await typedWrapper.setProps({ modelValue: latest() })
+    const select = (id: string) => wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === id)!
+    // 距离阈值按 km 展示、按 m 保存。
+    const distance = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === 'switch-rule-0-distanceThresholdM')!
+    expect(distance.props('modelValue')).toBe(200)
+    distance.vm.$emit('update:modelValue', 150)
+    expect(latest().switchRules![0]!.distanceThresholdM).toBe(150_000)
+    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'JAMMING_ACTIVE')
+    const jamming = latest().switchRules![0]!
+    expect(jamming).toMatchObject({ trigger: 'JAMMING_ACTIVE', jammerId: config.jammers[0]!.id })
+    expect(jamming).not.toHaveProperty('distanceThresholdM')
+    await typedWrapper.setProps({ modelValue: latest() })
+    const options = select('switch-rule-0-toLinkId').findAllComponents({ name: 'ElOption' })
+    expect(options.map(option => option.props('value'))).toEqual(config.links
+      .filter(link => link.sourcePlatformId === first.sourcePlatformId && link.targetPlatformId === first.targetPlatformId).map(link => link.id))
+    await wrapper.get('[data-testid="switch-rule-0-remove"]').trigger('click')
+    expect(latest()).not.toHaveProperty('switchRules')
+    wrapper.unmount()
+  })
+
+  it('阶段切换规则：编号避让、启停、干扰设备、端点变化重选目标链路，禁用时不写回', async () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const first = config.links[0]!
+    const typeOptions = [{ value: 'SAT', label: '卫星' }] as const
+    const existing = { id: 'RULE-2', trigger: 'JAMMING_STOPPED' as const, jammerId: config.jammers[0]!.id,
+      sourcePlatformId: first.sourcePlatformId, targetPlatformId: first.targetPlatformId, toLinkId: first.id }
+    const wrapper = mount(LinkSettingsPanel, {
+      props: { modelValue: { ...readLinkSettings(config), switchRules: [existing] }, dialogVisible: true, platforms: config.platforms,
+        links: config.links, jammers: config.jammers, disabled: false, typeOptions },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
+    })
+    const typedWrapper = wrapper as unknown as VueWrapper<{ $props: { modelValue?: ScenarioLinkSettings; disabled?: boolean } }>
+    const latest = () => wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+    const select = (id: string) => wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === id)!
+    // 未在类型选项中的链路类型以原值展示。
+    const labels = select('switch-rule-0-toLinkId').findAllComponents({ name: 'ElOption' }).map(option => option.props('label'))
+    expect(labels).toContain(first.type === 'SAT' ? `卫星（${first.id}）` : `${first.type}（${first.id}）`)
+    // 已有 RULE-2 时新增规则编号顺延，避免重复。
+    await wrapper.get('[data-testid="add-switch-rule"]').trigger('click')
+    expect(latest().switchRules!.map(rule => rule.id)).toEqual(['RULE-2', 'RULE-3'])
+    wrapper.findAllComponents({ name: 'ElSwitch' }).find(c => c.attributes('data-testid') === 'switch-rule-0-enabled')!.vm.$emit('update:modelValue', false)
+    expect(latest().switchRules![0]!.enabled).toBe(false)
+    select('switch-rule-0-jammerId').vm.$emit('update:modelValue', 'JAM-OTHER')
+    expect(latest().switchRules![0]!.jammerId).toBe('JAM-OTHER')
+    select('switch-rule-0-toLinkId').vm.$emit('update:modelValue', 'L-X')
+    expect(latest().switchRules![0]!.toLinkId).toBe('L-X')
+    // 干扰条件改回距离条件时恢复默认阈值并清除干扰设备。
+    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'DISTANCE_BELOW')
+    expect(latest().switchRules![0]).toMatchObject({ trigger: 'DISTANCE_BELOW', distanceThresholdM: 200_000 })
+    expect(latest().switchRules![0]).not.toHaveProperty('jammerId')
+    await typedWrapper.setProps({ modelValue: latest() })
+    const distance = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === 'switch-rule-0-distanceThresholdM')!
+    distance.vm.$emit('update:modelValue', null)
+    expect(latest().switchRules![0]!.distanceThresholdM).toBeNaN()
+    // 端点改为无链路的组合时清空目标；改回原端点且目标仍匹配时保留目标。
+    select('switch-rule-0-sourcePlatformId').vm.$emit('update:modelValue', first.targetPlatformId)
+    expect(latest().switchRules![0]!.toLinkId).toBe('')
+    select('switch-rule-0-targetPlatformId').vm.$emit('update:modelValue', first.targetPlatformId)
+    expect(latest().switchRules![0]!.toLinkId).toBe(first.id)
+    const count = wrapper.emitted('update:modelValue')!.length
+    await typedWrapper.setProps({ disabled: true })
+    select('switch-rule-0-trigger').vm.$emit('update:modelValue', 'JAMMING_ACTIVE')
+    await wrapper.get('[data-testid="switch-rule-0-remove"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
+    wrapper.unmount()
+  })
+
+  it('海面区域框选：至少 3 个顶点才能确认，可撤销与清空，确认提交顶点副本', async () => {
+    const saved = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
+    const wrapper = mount(SeaAreaMapPicker, {
+      props: { modelValue: true, polygon: saved },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    const confirm = () => wrapper.get('[data-testid="confirm-sea-area"]')
+    expect(wrapper.get('[data-testid="sea-area-count"]').text()).toBe('已放置 3 个顶点')
+    expect(confirm().attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="sea-area-undo"]').trigger('click')
+    expect(wrapper.get('[data-testid="sea-area-count"]').text()).toBe('已放置 2 个顶点')
+    expect(confirm().attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('还需 1 个才能围成区域')
+    await wrapper.get('[data-testid="sea-area-clear"]').trigger('click')
+    expect(wrapper.get('[data-testid="sea-area-count"]').text()).toBe('已放置 0 个顶点')
+    // 重新打开恢复已保存区域，确认提交副本，不改写传入的数组。
+    const typed = wrapper as unknown as VueWrapper<{ $props: { modelValue: boolean } }>
+    await typed.setProps({ modelValue: false })
+    await typed.setProps({ modelValue: true })
+    await confirm().trigger('click')
+    const emitted = wrapper.emitted('confirm')![0]![0] as typeof saved
+    expect(emitted).toEqual(saved)
+    expect(emitted).not.toBe(saved)
+    expect(wrapper.emitted('update:modelValue')!.at(-1)).toEqual([false])
+    wrapper.unmount()
+  })
+
+  it('数传链路显示波段选择，旧链路缺省为 C 波段；改为其他类型时移除波段', async () => {
+    const link = structuredClone(fixtureSource.scenario.links.find(l => l.type === 'DATALINK')) as Link
+    delete link.band
+    const wrapper = mount(LinkEditorDialog, {
+      props: { modelValue: true, link, editing: true, error: '', pending: false, locked: false,
+        platforms: fixtureSource.scenario.platforms as Platform[], linkTypeOptions: [
+          { value: 'SAT', label: '卫星' }, { value: 'MICROWAVE', label: '微波' }, { value: 'DATALINK', label: '数传' },
+        ],
+        linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    const select = (id: string) => wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === id)
+    expect(select('link-band')!.props('modelValue')).toBe('C')
+    select('link-band')!.vm.$emit('update:modelValue', 'L')
+    await flushPromises()
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ band: 'L' })
+    expect(link).not.toHaveProperty('band')
+    const type = select('link-type')!
+    type.vm.$emit('update:modelValue', 'MICROWAVE')
+    type.vm.$emit('change', 'MICROWAVE')
+    await flushPromises()
+    expect(select('link-band')).toBeUndefined()
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).not.toHaveProperty('band')
     wrapper.unmount()
   })
 

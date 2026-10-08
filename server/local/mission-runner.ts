@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { open, writeFile } from 'node:fs/promises'
-import { dirname, isAbsolute, join } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { configuredScenarioOutput } from '../../src/config/app.config.js'
@@ -51,7 +51,7 @@ export class LocalMissionRunner implements MissionExecution {
     // -es 为非实时事件推进：脚本中的 clock_rate / 前端倍速在此模式下不改变墙钟速度；改实时推进需另批确认。
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(this.executable, ['-es', 'mission.txt'], {
+      child = spawn(this.executable, ['-es', basename(entryPath)], {
         cwd, shell: false, windowsHide: true, stdio: ['ignore', log.fd, log.fd],
       })
     } catch (error) {

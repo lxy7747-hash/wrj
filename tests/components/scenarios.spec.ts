@@ -889,8 +889,16 @@ describe('P2-1 场景管理页面', () => {
     expect(fields.findAll('.el-form-item__label').map((item) => item.text())).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
       '仿真总时长（min）', '仿真时钟倍速（倍）', '海峡宽度（km）', '云雨气象衰减', '海面多径衰落',
+      '云层下限高度（m）', '云层上限高度（m）', '云中液态水密度（g/m³）',
       '海况等级', '温度（℃）', '相对湿度（%）', '降雨率（mm/h）', '雨衰（dB/km）', '场景描述',
     ])
+    // 海面多径衰落启用时可框选海面区域；未框选时脚本不写坐标。
+    expect(fields.get('[data-testid="sea-area-summary"]').text()).toBe('未框选海面区域')
+    expect(fields.find('[data-testid="open-sea-area"]').exists()).toBe(true)
+    // 旧场景缺省云层参数时按对接示例典型值补齐。
+    expect(fields.get('[data-testid="scenario-cloud-min"] input').attributes('aria-valuenow')).toBe('500')
+    expect(fields.get('[data-testid="scenario-cloud-max"] input').attributes('aria-valuenow')).toBe('2000')
+    expect(fields.get('[data-testid="scenario-cloud-water"] input').attributes('aria-valuenow')).toBe('0.5')
     expect(wrapper.findAll('[data-testid="scenario-duration"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="scenario-sim-total-time"]').exists()).toBe(false)
     expect(wrapper.findAll('[data-testid="scenario-multipath"]')).toHaveLength(1)

@@ -66,7 +66,14 @@ export interface Environment {
   transmissionDistance?: number;
   /** 气象档位仅作为配置保存，不自动换算成物理雨衰值。 */
   rainCloudAttenuation?: 'none' | 'lightRain' | 'moderateRain' | 'heavyRain';
+  /** 云层高度范围（m）与云中液态水密度（g/m³）；旧场景缺省时采用对接示例值 500/2000/0.5。 */
+  cloudAltitudeMinM?: Meters;
+  cloudAltitudeMaxM?: Meters;
+  cloudWaterDensityGM3?: number;
+  /** 海面多径衰落启用后在地图上框选的海面区域顶点（至少 3 个，按绘制顺序）；缺省表示未框选，脚本不写坐标。 */
+  seaPolygon?: GeoPoint[];
 }
+export interface GeoPoint { longitude: Degrees; latitude: Degrees; }
 export interface ScenarioIdentity {
   id: ScenarioId; name: string; description: string; startTime: Iso8601Utc;
   duration: Seconds; timeStep: Seconds; environment: Environment;
@@ -92,6 +99,20 @@ export interface Link {
   spatialIsolationDb?: Decibels;
   /** 单跳中继实体：SAT 链路引用通信卫星；微波/数传可引用 FORWARD_RELAY_NODE；缺省或 null 表示无额外中继跳。 */
   relayPlatformId?: Identifier | null;
+  /** 数传波段，仅 DATALINK 使用；旧链路缺省为 C 波段。 */
+  band?: DatalinkBand;
+}
+export type DatalinkBand = 'C' | 'L';
+/** 链路切换触发条件：两端距离超过/低于阈值，或指定干扰设备开启/关闭。 */
+export type LinkSwitchTrigger = 'DISTANCE_ABOVE' | 'DISTANCE_BELOW' | 'JAMMING_ACTIVE' | 'JAMMING_STOPPED';
+/**
+ * 场景级链路切换规则：条件满足时，源→目标的业务改走 toLinkId。
+ * 距离条件使用 distanceThresholdM；干扰条件使用 jammerId。多条规则按冷却时间防止往复切换。
+ */
+export interface LinkSwitchRule {
+  id: Identifier; enabled?: boolean; trigger: LinkSwitchTrigger;
+  sourcePlatformId: Identifier; targetPlatformId: Identifier; toLinkId: Identifier;
+  distanceThresholdM?: Meters; jammerId?: Identifier;
 }
 /** 场景级卫星启用与链路切换策略；单条链路开关保存在 Link.enabled。 */
 export interface ScenarioLinkSettings {
@@ -100,6 +121,8 @@ export interface ScenarioLinkSettings {
   enabledSatellites: Record<SatelliteType, boolean>;
   switchCooldownS: Seconds;
   priority: LinkType[];
+  /** 可配置的阶段切换规则；缺省表示只按优先级选主链路，不在仿真中切换。 */
+  switchRules?: LinkSwitchRule[];
 }
 export interface Jammer {
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;

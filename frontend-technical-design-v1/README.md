@@ -4,7 +4,18 @@
 
 当前前端需求基线为 **V1.1.47**，SHA-256：`D8B09CCB3AB92F0569A3831DAA810C2284BAF389EB9E1C0797FC8D44A4CA458B`。本次仅将输出参数的操作权移至项目配置文件；下方历史冻结记录的旧哈希保持原样，机器合同未因此变更。
 
-## 全局重置权限（2026-09-29，当前冻结记录）
+## 环境参数、数传波段与阶段切换规则（2026-10-08，当前冻结记录）
+
+OpenAPI 更新至 **1.8.8**（83 操作 / 40 写操作不变），仅扩展组件 schema：`Environment` 新增云层高度、云中液态水密度与海面区域 `seaPolygon`；`Link.band`（C/L）仅允许 `DATALINK` 携带；`ScenarioLinkSettings.switchRules` 引用新组件 `LinkSwitchRule`，距离条件必须带 `distanceThresholdM` 且不得带 `jammerId`，干扰条件反之。新字段均可缺省，旧场景读取不受影响。运行时校验另行要求规则目标链路与端点业务同方向，该约束跨对象引用，不在 schema 中表达。同步领域类型、schema snapshot 与合同负例；fixture 未改。回退须同时恢复合同、领域类型与共享校验。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `D2F28B2ED31448351C69AFD62B73313BF14A4327DEAF6AAE4A78C915A4CB8921` |
+| `contracts/mock-api.openapi.yaml` | `5EB5BD5C88E25460B439E6610667027FB873FCAFA1F26ACDF04998A5BA6CE00B` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `A21625FC9F02523170D69F361C2D6ACAAD13B10FA7FFB548380B05C3898D697F` |
+| `contracts/deterministic-fixtures.json`（未修改） | `C1BB07FCF492F44E9BC99D3BDF5E6D4540DDCBA790A767B9E0D6B6123ED91A6B` |
+
+## 全局重置权限（2026-09-29，历史冻结记录）
 
 按已确认产品口径，`POST /api/v1/reset` 仅 ADMIN 可调用；OPERATOR 返回 403 并记录拒绝审计。OpenAPI 更新至 **1.8.7**，`x-rbac` 与 403 错误响应同步冻结；schema snapshot 仅包含组件 schema，本次不变。旧客户端即使显示重置入口也会被服务端拒绝，升级后在清理本地投影前判断权限。回退须同时恢复前后端权限口径与合同。
 

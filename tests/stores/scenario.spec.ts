@@ -82,6 +82,73 @@ describe('链路新增参数边界', () => {
       'links[0].enabled', 'links[0].antennaGainCorrectionDb', 'links[0].antiJammingGainDb', 'links[0].spatialIsolationDb', 'links[0].coding',
     ]))
   })
+
+  it('校验云层参数、数传波段与阶段切换规则，旧场景缺省字段仍有效', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const datalink = config.links.findIndex(link => link.type === 'DATALINK')
+    const microwave = config.links.findIndex(link => link.type === 'MICROWAVE')
+    const target = config.links[datalink]!
+    Object.assign(config.scenario.environment, { cloudAltitudeMinM: 500, cloudAltitudeMaxM: 2000, cloudWaterDensityGM3: 0.5 })
+    config.links[datalink]!.band = 'L'
+    config.linkSettings = readLinkSettings(config)
+    config.linkSettings.switchRules = [
+      { id: 'RULE-1', trigger: 'DISTANCE_ABOVE', distanceThresholdM: 200_000, sourcePlatformId: target.sourcePlatformId,
+        targetPlatformId: target.targetPlatformId, toLinkId: target.id },
+      { id: 'RULE-2', enabled: false, trigger: 'JAMMING_ACTIVE', jammerId: config.jammers[0]!.id, sourcePlatformId: target.sourcePlatformId,
+        targetPlatformId: target.targetPlatformId, toLinkId: target.id },
+    ]
+    const baseline = inspectScenarioConfig(structuredClone(fixtureSource.scenario) as ScenarioConfig, 'write').result.errors
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(baseline)
+    config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }, { longitude: 119, latitude: 25 }]
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(baseline)
+    config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 200, latitude: 24 }, { longitude: 119, latitude: 25 }]
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(e => e.fieldPath)).toContain('scenario.environment.seaPolygon[1]')
+    config.scenario.environment.seaPolygon = [{ longitude: 118, latitude: 24 }, { longitude: 119, latitude: 24 }]
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(e => e.fieldPath)).toContain('scenario.environment.seaPolygon')
+    delete config.scenario.environment.seaPolygon
+    Object.assign(config.scenario.environment, { cloudAltitudeMinM: 3000, cloudWaterDensityGM3: -1 })
+    config.links[microwave]!.band = 'C'
+    const otherEndpoints = config.links.find(link => link.sourcePlatformId !== target.sourcePlatformId || link.targetPlatformId !== target.targetPlatformId)!
+    config.linkSettings.switchRules = [
+      { id: 'RULE-1', trigger: 'DISTANCE_ABOVE', sourcePlatformId: target.sourcePlatformId, targetPlatformId: target.targetPlatformId,
+        toLinkId: otherEndpoints.id, jammerId: config.jammers[0]!.id },
+      { id: 'RULE-1', trigger: 'JAMMING_STOPPED', jammerId: 'NO-SUCH', sourcePlatformId: 'NO-SUCH', targetPlatformId: target.targetPlatformId,
+        toLinkId: 'NO-SUCH', distanceThresholdM: 5 },
+    ]
+    const paths = inspectScenarioConfig(config, 'write').result.errors.map(e => e.fieldPath)
+    expect(paths).toEqual(expect.arrayContaining([
+      'scenario.environment.cloudAltitudeMaxM', 'scenario.environment.cloudWaterDensityGM3', `links[${microwave}].band`,
+      'linkSettings.switchRules[0].distanceThresholdM', 'linkSettings.switchRules[0].jammerId', 'linkSettings.switchRules[0].toLinkId',
+      'linkSettings.switchRules[1].id', 'linkSettings.switchRules[1].sourcePlatformId', 'linkSettings.switchRules[1].toLinkId',
+      'linkSettings.switchRules[1].jammerId', 'linkSettings.switchRules[1].distanceThresholdM',
+    ]))
+  })
+
+  it('切换规则目标链路须与端点业务同方向：前向业务切到返向链路被阻断', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const forward = config.links[0]!
+    forward.direction = 'FORWARD'
+    const reverse = { ...structuredClone(forward), id: 'L-REV', direction: 'REVERSE' as const, frequency: forward.frequency + 10 }
+    config.links.push(reverse)
+    config.platforms.filter(p => p.id === forward.sourcePlatformId || p.id === forward.targetPlatformId).forEach(p => p.linkIds.push(reverse.id))
+    config.informationDemand = [{ ...config.informationDemand[0]!, id: 'D-FWD', sourcePlatformId: forward.sourcePlatformId,
+      destinationPlatformIds: [forward.targetPlatformId], linkId: forward.id, direction: 'FORWARD', enabled: true }]
+    config.linkSettings = readLinkSettings(config)
+    const rule = { id: 'RULE-REV', trigger: 'DISTANCE_ABOVE' as const, distanceThresholdM: 1000,
+      sourcePlatformId: forward.sourcePlatformId, targetPlatformId: forward.targetPlatformId, toLinkId: reverse.id }
+    config.linkSettings.switchRules = [rule]
+    const issues = () => inspectScenarioConfig(config, 'write').result.errors.filter(e => e.code === 'SWITCH_RULE_DIRECTION_MISMATCH')
+    expect(issues().map(e => e.fieldPath)).toEqual(['linkSettings.switchRules[0].toLinkId'])
+    // 同方向目标、停用规则、或存在不限方向的旧业务时均不阻断。
+    config.linkSettings.switchRules = [{ ...rule, toLinkId: forward.id }]
+    expect(issues()).toEqual([])
+    config.linkSettings.switchRules = [{ ...rule, enabled: false }]
+    expect(issues()).toEqual([])
+    config.linkSettings.switchRules = [rule]
+    const { linkId: _linkId, direction: _direction, ...legacy } = config.informationDemand[0]!
+    config.informationDemand = [{ ...legacy, id: 'D-OLD' }]
+    expect(issues()).toEqual([])
+  })
 })
 it('单条启停优先于历史类型开关，同类型链路独立且不改写原快照', () => {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
