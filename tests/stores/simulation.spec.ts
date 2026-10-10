@@ -180,6 +180,7 @@ describe('P3-1 仿真 Store', () => {
     vi.stubGlobal('fetch', fetcher)
     const store = useSimulationStore()
     expect(await store.selectScene('SCN-B')).toBe(true)
+    expect(store.resultMessage).toBe('已选择保存的场景配置。')
     draft.revision = 5
     draft.config.scenario.name = '最新保存名称'
     expect(await store.start()).toBe(true)
@@ -198,7 +199,7 @@ describe('P3-1 仿真 Store', () => {
     expect(await store.selectScene('SCN-001')).toBe(true)
     expect(await store.selectScene('SCN-B')).toBe(false)
     expect(store.selectedScene?.config.scenario.id).toBe('SCN-001')
-    expect(store.resultMessage).toContain('先停止')
+    expect(store.resultMessage).toBe('请先停止当前仿真运行，再切换场景。')
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse([run('STOPPED')])).mockResolvedValueOnce(successResponse({})))
     expect(await store.selectScene('SCN-B')).toBe(false)
     expect(store.selectedScene?.config.scenario.id).toBe('SCN-001')

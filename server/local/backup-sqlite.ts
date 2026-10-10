@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { BackupRecord, RestoreResult } from '../../src/contracts/domain-models.js'
 import type { AdminResult, BackupStorage } from '../admin/projection.js'
 import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime } from '../../src/features/scenarios/scenario-validation.js'
+import { BackupValidationCache } from './backup-validation-cache.js'
 
 const RESTORED_TABLES = ['scenarios', 'scenario_templates', 'users'] as const
 const ALL_TABLES = [...RESTORED_TABLES, 'audit_logs']
@@ -17,8 +18,10 @@ export class BackupSqliteStorage implements BackupStorage {
   private readonly db: DatabaseSync
   private readonly catalog: DatabaseSync
   readonly directory: string
+  private readonly validationCache: BackupValidationCache
 
   constructor(path: string) {
+    this.validationCache = new BackupValidationCache()
     if (!isAbsolute(path)) throw new Error('备份数据库路径必须为绝对路径。')
     const databasePath = realpathSync(path)
     this.directory = join(dirname(databasePath), 'backups')
@@ -56,11 +59,22 @@ export class BackupSqliteStorage implements BackupStorage {
   }
 
   listBackups(): BackupRecord[] {
-    return this.catalog.prepare('SELECT * FROM backups ORDER BY created_at, backup_id').all().map(row => {
+    const paths = new Set<string>()
+    const records = this.catalog.prepare('SELECT * FROM backups ORDER BY created_at, backup_id').all().map(row => {
       const record: BackupRecord = { backupId: String(row.backup_id), createdAt: String(row.created_at), checksum: String(row.checksum), status: 'INVALID' }
-      try { if (this.checksum(this.file(record.backupId)) === record.checksum) record.status = 'VALID' } catch { /* 缺失或损坏的文件保留目录记录，不能展示为可恢复。 */ }
+      try {
+        const path = this.file(record.backupId)
+        paths.add(path)
+        if (this.validationCache.isValid(path, record.checksum, () => {
+          if (this.checksum(path) !== record.checksum) throw new Error('备份摘要不一致。')
+          const snapshot = new DatabaseSync(path, { readOnly: true })
+          try { this.validate(snapshot) } finally { snapshot.close() }
+        })) record.status = 'VALID'
+      } catch { /* 缺失或损坏的文件保留目录记录，不能展示为可恢复。 */ }
       return record
     })
+    this.validationCache.retain(paths)
+    return records
   }
 
   backup(backupId = `BACKUP-${randomUUID()}`): AdminResult<BackupRecord> {

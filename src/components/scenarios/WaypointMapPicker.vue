@@ -14,6 +14,7 @@ const props = defineProps<{
   modelValue: boolean
   longitude: number
   latitude: number
+  purpose?: 'waypoint' | 'satellite'
   bounds?: NonNullable<(typeof PLATFORM_POSITION_RULES)['AIRBORNE_MISSION_CLUSTER']>
 }>()
 
@@ -25,6 +26,7 @@ const emit = defineEmits<{
 const mapContainer = ref<HTMLElement | null>(null)
 const selectedPoint = ref<WaypointMapPoint | null>(null)
 const selectionError = ref('')
+const isSatellitePosition = computed(() => props.purpose === 'satellite')
 const rangeHint = computed(() => props.bounds
   ? `选点范围：经度 ${props.bounds.minLongitude}°E～${props.bounds.maxLongitude}°E，纬度 ${props.bounds.minLatitude}°N～${props.bounds.maxLatitude}°N。`
   : '')
@@ -155,7 +157,7 @@ function destroyMap(): void {
 /**
  * 确认当前地图选点。
  * @returns 无返回值。
- * @sideEffects 向父组件提交经纬度并关闭弹窗；高度由父组件统一设置为 0。
+ * @sideEffects 向父组件提交经纬度并关闭弹窗；高度由父组件按选点用途处理。
  */
 function confirmPoint(): void {
   if (selectedPoint.value === null || !isAllowedPoint(selectedPoint.value.longitude, selectedPoint.value.latitude)) return
@@ -178,7 +180,7 @@ onBeforeUnmount(destroyMap)
   <el-dialog
     :model-value="modelValue"
     class="waypoint-map-dialog"
-    title="地图选取航点"
+    :title="isSatellitePosition ? '地图选取卫星位置' : '地图选取航点'"
     width="min(760px, calc(100vw - 2rem))"
     append-to-body
     destroy-on-close
@@ -187,21 +189,21 @@ onBeforeUnmount(destroyMap)
     @opened="initializeMap"
     @closed="destroyMap"
   >
-    <p class="waypoint-map-dialog__hint">单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。</p>
+    <p class="waypoint-map-dialog__hint">{{ isSatellitePosition ? '单击地图选择卫星经纬度；高度保持不变。' : '单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。' }}</p>
     <p v-if="rangeHint" class="waypoint-map-dialog__hint" data-testid="waypoint-range-hint">{{ rangeHint }}</p>
     <el-alert v-if="selectionError" :title="selectionError" type="error" :closable="false" show-icon data-testid="waypoint-range-error" />
     <div
       ref="mapContainer"
       class="waypoint-map-dialog__map"
       role="application"
-      aria-label="航点离线地图选点"
+      :aria-label="isSatellitePosition ? '卫星位置离线地图选点' : '航点离线地图选点'"
       data-testid="waypoint-map"
     />
     <div class="waypoint-map-dialog__selection" aria-live="polite">
       <template v-if="selectedPoint">
-        经度 {{ selectedPoint.longitude.toFixed(6) }}° · 纬度 {{ selectedPoint.latitude.toFixed(6) }}° · 高度 0 m
+        经度 {{ selectedPoint.longitude.toFixed(6) }}° · 纬度 {{ selectedPoint.latitude.toFixed(6) }}°<template v-if="!isSatellitePosition"> · 高度 0 m</template>
       </template>
-      <template v-else>尚未选择航点</template>
+      <template v-else>{{ isSatellitePosition ? '尚未选择卫星位置' : '尚未选择航点' }}</template>
     </div>
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>

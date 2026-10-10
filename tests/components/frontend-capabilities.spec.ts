@@ -187,26 +187,31 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ ...saved, version: 1 })
     expect(wrapper.text()).toContain('只读角色')
   })
-  it('新增管理员角色的系统菜单只显示当前四项，操作员不获得管理员菜单', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ version: 1, profiles: [], assignments: [] })))
-    const wrapper = setup(RoleProfiles, { users: [] })
-    await flushPromises()
-    await button(wrapper, '新增角色').trigger('click')
-    const base = wrapper.findComponent(ElSelect)
-    base.vm.$emit('update:modelValue', 'ADMIN')
-    base.vm.$emit('change', 'ADMIN')
-    await flushPromises()
-    const choices = () => wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
-      .filter((row: VueWrapper<{ $props: { value: string } }>) => row.props('value').startsWith('/admin'))
-    expect(choices().map((row: VueWrapper) => row.text())).toEqual(['账号管理', '装备参数库', '场景模板维护', '操作审计日志'])
-    expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-      .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '账号管理', '装备参数库', '场景模板维护', '操作审计日志'])
-    base.vm.$emit('update:modelValue', 'OPERATOR')
-    base.vm.$emit('change', 'OPERATOR')
-    await flushPromises()
-    expect(choices()).toHaveLength(0)
-    expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-      .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放'])
+  it.each([true, false])('备份入口开启=%s 时管理员菜单遵循配置，操作员不获得管理员菜单', async enabled => {
+    const original = APP_CONFIG.systemManagement.showDatabaseBackup
+    APP_CONFIG.systemManagement.showDatabaseBackup = enabled
+    try {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response({ version: 1, profiles: [], assignments: [] })))
+      const wrapper = setup(RoleProfiles, { users: [] })
+      await flushPromises()
+      await button(wrapper, '新增角色').trigger('click')
+      const base = wrapper.findComponent(ElSelect)
+      base.vm.$emit('update:modelValue', 'ADMIN')
+      base.vm.$emit('change', 'ADMIN')
+      await flushPromises()
+      const choices = () => wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
+        .filter((row: VueWrapper<{ $props: { value: string } }>) => row.props('value').startsWith('/admin'))
+      const adminMenus = ['账号管理', '装备参数库', '场景模板维护', '操作审计日志', ...(enabled ? ['备份恢复'] : [])]
+      expect(choices().map((row: VueWrapper) => row.text())).toEqual(adminMenus)
+      expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', ...adminMenus])
+      base.vm.$emit('update:modelValue', 'OPERATOR')
+      base.vm.$emit('change', 'OPERATOR')
+      await flushPromises()
+      expect(choices()).toHaveLength(0)
+      expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放'])
+    } finally { APP_CONFIG.systemManagement.showDatabaseBackup = original }
   })
   it('角色菜单中的评估报表跟随主导航显隐配置', async () => {
     const original = APP_CONFIG.showReports

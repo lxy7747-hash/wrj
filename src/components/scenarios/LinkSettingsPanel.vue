@@ -22,7 +22,7 @@ const satellites = [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHEN
 const draggedType = ref<LinkType | null>(null)
 const dropTarget = ref<LinkType | null>(null)
 
-/** 单选中继卫星；type 为天通或神通，同步两个底层开关且不删除卫星实体。 */
+/** 单选本场景使用的卫星；type 为天通或神通，同步两个底层开关且不删除卫星实体。 */
 function selectSatellite(type: SatelliteType): void {
   if (props.disabled || !props.platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === type)) return
   emit('update:modelValue', { ...settings.value, enabledSatellites: { TIANTONG: type === 'TIANTONG', SHENTONG: type === 'SHENTONG' } })
@@ -156,9 +156,9 @@ function linkLabel(link: Link): string {
           </li>
         </ol>
       </div>
-      <el-form-item label="中继卫星选择">
+      <el-form-item label="本场景选用卫星">
         <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
-          placeholder="请先在节点配置中配置卫星" aria-label="中继卫星选择" data-testid="link-relay-satellite" @change="selectSatellite">
+          placeholder="请先在节点配置中配置卫星" aria-label="本场景选用卫星" data-testid="link-relay-satellite" @change="selectSatellite">
           <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
             :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
         </el-select>

@@ -141,7 +141,7 @@ async function connect(): Promise<void> {
       <article v-for="card in [
         { label: '本地服务', value: serviceLabel, tone: serviceTone, path: 'M4 3h16v7H4z M4 14h16v7H4z M7 6h1 M7 17h1 M11 6h6 M11 17h6' },
         { label: 'WebSocket', value: connectionLabel, tone: connectionTone, path: 'M8 5h11v11 M19 5l-6 6 M16 19H5V8 M5 19l6-6' },
-        { label: 'AFSIM 引擎', value: '未接入', tone: 'muted', path: 'M9 3h6l1 4 4 2v6l-4 2-1 4H9l-1-4-4-2V9l4-2z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0' },
+        { label: 'AFSIM 引擎', value: '本页未监测', tone: 'muted', path: 'M9 3h6l1 4 4 2v6l-4 2-1 4H9l-1-4-4-2V9l4-2z M9 12a3 3 0 1 0 6 0a3 3 0 1 0-6 0' },
         { label: 'SQLite', value: databaseLabel, tone: store.monitor?.database === 'HEALTHY' ? 'success' : store.monitor?.database === 'ERROR' ? 'danger' : 'muted', path: 'M4 6a8 3 0 1 0 16 0a8 3 0 1 0-16 0 M4 6v12a8 3 0 0 0 16 0V6 M4 12a8 3 0 0 0 16 0' },
         { label: '接收速率', value: `${rate.toFixed(1)} KB/s`, tone: 'accent', path: 'M2 12h5l3-8 4 16 3-8h5' },
         { label: '本页收包数', value: received, tone: 'accent', path: 'M4 20V10h3v10 M11 20V4h3v16 M18 20v-7h3v7' },
@@ -228,7 +228,7 @@ async function connect(): Promise<void> {
     </section>
 
     <section class="monitor-panel monitor-connection" aria-label="连接详情">
-      <header><h3>连接详情</h3><span class="panel-caption">Mock 数据通道</span></header>
+      <header><h3>连接详情</h3><span class="panel-caption">本页遥测通道</span></header>
       <div class="connection-content">
         <dl>
           <div><dt>本地服务</dt><dd>{{ resolveMockOrigin() }}</dd></div>
@@ -243,7 +243,7 @@ async function connect(): Promise<void> {
         </div>
       </div>
     </section>
-    <p class="monitor-footnote">消息统计仅含本页 Mock 遥测通道；大小为 JSON 文本估算，耗时为同步校验与投影耗时（非网络时延）。SQLite 为只读健康检查，文件记录来自本机实际读取并存入独立 SQLite 记录库，重启保留；AFSIM 引擎未接入。</p>
+    <p class="monitor-footnote">消息统计仅含本页 Mock 测试遥测通道；大小为 JSON 文本估算，耗时为同步校验与投影耗时（非网络时延）。本机模式下，SQLite 为只读健康检查，文件读取记录存入独立 SQLite 记录库，重启保留。本页不监测 mission／AFSIM 进程状态。</p>
   </div>
 </template>
 

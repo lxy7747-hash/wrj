@@ -192,15 +192,15 @@ it('测量恢复前预备份持锁期间的并发写入等待', async () => {
   const completed = new Promise<{ ok: boolean; elapsedMs: number; message?: string }>((resolve, reject) => {
     worker.once('message', resolve); worker.once('error', reject)
   })
-  const backup = f.backup as unknown as { writeSnapshot(id: string, name: string, tables: unknown): unknown }
+  const backup = f.backup as unknown as { writeSnapshot(id: string, name: string, tables: unknown, mode?: string): unknown }
   const writeSnapshot = backup.writeSnapshot.bind(backup)
-  vi.spyOn(backup, 'writeSnapshot').mockImplementation((id, name, tables) => {
+  vi.spyOn(backup, 'writeSnapshot').mockImplementation((id, name, tables, mode) => {
     if (id.startsWith('PREBACKUP-')) {
       Atomics.store(gate, 0, 1); Atomics.notify(gate, 0)
       Atomics.wait(gate, 0, 1, 1000)
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250)
     }
-    return writeSnapshot(id, name, tables)
+    return writeSnapshot(id, name, tables, mode)
   })
   try {
     expect(f.backup.restore('RESTORE-SOURCE')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
@@ -220,6 +220,135 @@ it('损坏备份不可恢复，保留恢复前备份和当前数据；未知编�
   expect(f.master.load()[0]?.content?.name).toBe('测试字典')
   expect(f.backup.listBackups()).toHaveLength(2)
   expect(f.backup.restore('UNKNOWN')).toMatchObject({ ok: false, status: 404 })
+})
+
+it('当前库业务不合规仍保存原始预备份并恢复有效来源，原始预备份不能作为有效来源', () => {
+  const f = setup()
+  expect(f.backup.backup('VALID-SOURCE').ok).toBe(true)
+  const db = new DatabaseSync(join(f.directory, 'master-data.db'))
+  try {
+    db.exec("UPDATE master_data SET data_json='{}'")
+    const restored = f.backup.restore('VALID-SOURCE')
+    expect(restored).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true } })
+    if (!restored.ok) throw new Error('恢复失败。')
+    expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+    const raw = f.backup.listBackups().find((row: { backupId: string }) => row.backupId === restored.data.prebackupId)!
+    expect(raw.status).toBe('INVALID')
+    const snapshot = new DatabaseSync(join(f.backup.directory, `${raw.backupId}.system.db`), { readOnly: true })
+    try {
+      const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()?.payload))
+      expect(tables.find((table: { table: string }) => table.table === 'master_data').rows[0].data_json).toBe('{}')
+    } finally { snapshot.close() }
+    expect(f.backup.restore(raw.backupId)).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
+    expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+  } finally { db.close() }
+})
+
+it.each(['source', 'write'])('当前库业务不合规且 %s 失败时保留当前原始内容', mode => {
+  const f = setup()
+  expect(f.backup.backup('SOURCE').ok).toBe(true)
+  const master = new DatabaseSync(join(f.directory, 'master-data.db'))
+  const settings = new DatabaseSync(join(f.directory, 'runtime-config.db'))
+  try {
+    master.exec("UPDATE master_data SET data_json='{}'")
+    const before = master.prepare('SELECT * FROM master_data').all()
+    if (mode === 'source') writeFileSync(join(f.backup.directory, 'SOURCE.system.db'), 'broken')
+    else settings.exec("CREATE TRIGGER fail_restore BEFORE INSERT ON runtime_config BEGIN SELECT RAISE(ABORT, 'test-only'); END")
+    expect(f.backup.restore('SOURCE')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: mode === 'write', rolledBack: mode === 'write' } })
+    expect(master.prepare('SELECT * FROM master_data').all()).toEqual(before)
+    expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId.startsWith('PREBACKUP-'))?.status).toBe('INVALID')
+  } finally { settings.close(); master.close() }
+})
+
+it('完整系统列表沿用登记校验结果、重启后不重算，文件变化立即失效；恢复不复用列表结果', () => {
+  const f = setup()
+  expect(f.backup.backup('CACHED').ok).toBe(true)
+  const checksum = vi.spyOn(f.backup as unknown as { checksum(path: string): string }, 'checksum')
+  expect(f.backup.listBackups()[0]?.status).toBe('VALID')
+  f.advance(24 * 3600_000)
+  f.backup.listBackups()
+  expect(checksum).not.toHaveBeenCalled()
+  const reopened = new SystemBackupSqliteStorage(f.path)
+  try {
+    const reopenedChecksum = vi.spyOn(reopened as unknown as { checksum(path: string): string }, 'checksum')
+    expect(reopened.listBackups()[0]?.status).toBe('VALID')
+    expect(reopenedChecksum).not.toHaveBeenCalled()
+  } finally { reopened.close() }
+  writeFileSync(join(f.backup.directory, 'CACHED.system.db'), 'broken')
+  expect(f.backup.restore('CACHED')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
+  expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId === 'CACHED')?.status).toBe('INVALID')
+  expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+})
+
+it('恢复前预备份持锁时只做一次结构校验，首次列出时完成业务校验并登记，之后可作为撤销来源', () => {
+  const f = setup()
+  expect(f.backup.backup('SOURCE').ok).toBe(true)
+  const internals = f.backup as unknown as { validate(tables: unknown, mode?: string): void; checksum(path: string): string }
+  const validate = vi.spyOn(internals, 'validate')
+  const restored = f.backup.restore('SOURCE')
+  expect(restored).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  if (!restored.ok) throw new Error('恢复失败。')
+  // 预备份回读一次结构校验，来源回读一次完整校验；预备份不再额外做业务校验。
+  expect(validate.mock.calls.map(call => call[1] ?? 'restore')).toEqual(['raw', 'restore'])
+  const checksum = vi.spyOn(internals, 'checksum')
+  expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId === restored.data.prebackupId)?.status).toBe('VALID')
+  expect(checksum).toHaveBeenCalledTimes(1)
+  f.backup.listBackups()
+  expect(checksum).toHaveBeenCalledTimes(1)
+  expect(f.backup.restore(restored.data.prebackupId)).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+})
+
+it('有效备份首次校验遇到独占锁只本次不可用，不登记失败；解锁后刷新和重启均为 VALID', () => {
+  const f = setup()
+  expect(f.backup.backup('LOCKED').ok).toBe(true)
+  // 清除创建时登记的结果，模拟首次列出时才完成校验。
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try { catalog.exec("UPDATE system_backups SET fingerprint=NULL, validation_key=NULL, valid=NULL WHERE backup_id='LOCKED'") } finally { catalog.close() }
+  const holder = new DatabaseSync(join(f.backup.directory, 'LOCKED.system.db'))
+  holder.exec('BEGIN EXCLUSIVE')
+  try {
+    expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId === 'LOCKED')?.status).toBe('INVALID')
+  } finally { holder.exec('ROLLBACK'); holder.close() }
+  const check = new DatabaseSync(join(f.backup.directory, 'catalog.db'), { readOnly: true })
+  try { expect(check.prepare("SELECT valid FROM system_backups WHERE backup_id='LOCKED'").get()?.valid).toBeNull() } finally { check.close() }
+  expect(f.backup.listBackups().find((row: { backupId: string }) => row.backupId === 'LOCKED')?.status).toBe('VALID')
+  const reopened = new SystemBackupSqliteStorage(f.path)
+  try { expect(reopened.listBackups().find((row: { backupId: string }) => row.backupId === 'LOCKED')?.status).toBe('VALID') } finally { reopened.close() }
+})
+
+it('旧备份目录自动补登记列，已有备份首次列出完整校验一次后沿用', () => {
+  const f = setup()
+  expect(f.backup.backup('OLD').ok).toBe(true)
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try { for (const column of ['valid', 'validation_key', 'fingerprint']) catalog.exec(`ALTER TABLE system_backups DROP COLUMN ${column}`) }
+  finally { catalog.close() }
+  const reopened = new SystemBackupSqliteStorage(f.path)
+  try {
+    const checksum = vi.spyOn(reopened as unknown as { checksum(path: string): string }, 'checksum')
+    expect(reopened.listBackups()[0]?.status).toBe('VALID')
+    reopened.listBackups()
+    expect(checksum).toHaveBeenCalledTimes(1)
+    expect(reopened.backup('NEW').ok).toBe(true)
+  } finally { reopened.close() }
+})
+
+it('直接 HTTP 请求无效正式来源返回原有 FAILURE 和预备份，不修改业务数据', async () => {
+  const f = setup()
+  expect(f.backup.backup('INVALID-SOURCE').ok).toBe(true)
+  writeFileSync(join(f.backup.directory, 'INVALID-SOURCE.system.db'), 'broken')
+  const server = createMockServer({ port: 0, backupStorage: f.backup })
+  try {
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+    const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' }
+    const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'BACKUP_RESTORE', objectId: 'RESTORE:INVALID-SOURCE' }).expect(201)
+    const confirmationId = context.body.data.confirmationId
+    await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+    const result = await api.post('/api/v1/admin/restore').set(headers).send({ operation: 'RESTORE', backupId: 'INVALID-SOURCE', confirmationId }).expect(200)
+    expect(result.body.data).toMatchObject({ result: 'FAILURE', integrityValid: false, prebackupId: expect.stringMatching(/^PREBACKUP-/) })
+    expect(f.master.load()[0]?.content?.name).toBe('测试字典')
+    expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'BACKUP_RESTORE', result: 'ERROR' })
+  } finally { await server.close() }
 })
 
 it('恢复中后序库插入失败，前序库修改一起回滚', () => {
@@ -311,6 +440,22 @@ it('计划默认关闭，启用后按间隔执行，重启补一次、失败可�
   f.backup.start(); f.backup.start()
   expect(vi.getTimerCount()).toBe(1)
   vi.advanceTimersByTime(60000)
+})
+
+it('仅改计划名称保留执行时点，新启用、改间隔和停用按各自规则更新', () => {
+  const f = setup()
+  const save = (changes: Partial<ReturnType<typeof f.backup.planStatus>['plan']>) => {
+    expect(f.backup.savePlan({ ...f.backup.planStatus().plan, ...changes }).ok).toBe(true)
+    return f.backup.planStatus()
+  }
+  expect(save({ enabled: true, intervalMinutes: 60 }).nextRunAt).toBe('2026-09-21T01:00:00.000Z')
+  f.advance(30 * 60_000)
+  expect(save({ name: '仅改名称' }).nextRunAt).toBe('2026-09-21T01:00:00.000Z')
+  expect(save({ intervalMinutes: 120 }).nextRunAt).toBe('2026-09-21T02:30:00.000Z')
+  expect(save({ enabled: false }).nextRunAt).toBeNull()
+  expect(save({ name: '停用后改名' }).nextRunAt).toBeNull()
+  f.advance(30 * 60_000)
+  expect(save({ enabled: true }).nextRunAt).toBe('2026-09-21T03:00:00.000Z')
 })
 
 it('配置白名单拒绝凭据，恢复值重启保留，管理员修改环境路径后采用新路径', () => {

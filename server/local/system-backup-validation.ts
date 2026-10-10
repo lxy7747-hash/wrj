@@ -18,12 +18,17 @@ export const SYSTEM_TABLES = {
 export type BackupScope = keyof typeof SYSTEM_TABLES
 export const SYSTEM_SCOPES = Object.keys(SYSTEM_TABLES) as BackupScope[]
 
-/** 校验备份内的业务内容及跨表身份；不把 SQLite integrity_check 当成业务校验。 */
-export function validateSystemSnapshot(db: DatabaseSync): void {
+/** 原始预备份也必须具备完整的 SQLite 结构和外键关系。 */
+export function validateSystemSnapshotStructure(db: DatabaseSync): void {
   for (const scope of SYSTEM_SCOPES) {
     const integrity = db.prepare(`PRAGMA ${scope}.integrity_check`).all()
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok' || db.prepare(`PRAGMA ${scope}.foreign_key_check`).all().length) throw new Error('数据库完整性校验失败。')
   }
+}
+
+/** 校验恢复来源的业务内容及跨表身份。 */
+export function validateSystemSnapshot(db: DatabaseSync): void {
+  validateSystemSnapshotStructure(db)
   const users = db.prepare('SELECT * FROM main.users').all()
   if (!users.some(row => row.role === 'ADMIN' && row.status === 'ACTIVE')) throw new Error('缺少启用的管理员。')
   for (const row of users) {

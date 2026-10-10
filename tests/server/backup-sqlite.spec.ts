@@ -121,6 +121,23 @@ it('真实备份含所有表、SHA-256、WAL 已提交数据，目录重开后�
   expect(existsSync(join(directory, 'outside.db'))).toBe(false)
 })
 
+it('旧主库列表复用校验结果且不按时间到期，文件修改后失效且恢复仍实时拒绝', () => {
+  vi.useFakeTimers()
+  try {
+    const { backups } = setup()
+    expect(backups.backup('CACHED').ok).toBe(true)
+    const checksum = vi.spyOn(backups as unknown as { checksum(path: string): string }, 'checksum')
+    expect(backups.listBackups()[0]?.status).toBe('VALID')
+    backups.listBackups()
+    vi.advanceTimersByTime(24 * 3600_000)
+    backups.listBackups()
+    expect(checksum).toHaveBeenCalledTimes(1)
+    writeFileSync(join(backups.directory, 'CACHED.db'), 'broken')
+    expect(backups.restore('CACHED')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
+    expect(backups.listBackups().find((row: { backupId: string }) => row.backupId === 'CACHED')?.status).toBe('INVALID')
+  } finally { vi.useRealTimers() }
+})
+
 it('恢复真实场景、模板和账号，保留当前审计及恢复前快照；已打开连接读取恢复结果', async () => {
   const { db, auth, scenes, templates, backups } = setup()
   const original = Object.fromEntries(['scenarios', 'scenario_templates', 'users'].map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]))

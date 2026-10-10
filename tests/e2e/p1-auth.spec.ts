@@ -403,7 +403,8 @@ test('P7 ADMIN restores backups and opens archives without the removed scenario 
     await panel.getByTestId('backup-table').locator('.el-table__row').filter({ hasText: backupId })
       .getByRole('button', { name: '选择恢复' }).click()
     await expect(panel.getByTestId('restore-result')).toHaveCount(0)
-    await expect(panel.getByTestId('backup-feedback')).toContainText('恢复来源已切换')
+    await expect(page.locator('.el-message').filter({ hasText: '恢复来源已切换，请确认后执行恢复。' }).last()).toBeVisible()
+    await expect(panel.getByTestId('backup-feedback')).toHaveCount(0)
     await panel.getByTestId('backup-restore').click()
     const restored = page.waitForResponse((response) => response.request().method() === 'POST'
       && new URL(response.url()).pathname === '/api/v1/admin/restore')

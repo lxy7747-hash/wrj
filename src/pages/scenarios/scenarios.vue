@@ -368,6 +368,12 @@ function openPlatformEditor(platform: Platform, index: number): void {
   platformDialogVisible.value = true
 }
 
+/** 确认失败用非阻塞消息展示原因，不自动应用草稿。 */
+function showEditorValidationMessage(message: string): false {
+  ElMessage.warning({ message, showClose: true })
+  return false
+}
+
 /**
  * 将平台编辑副本写入当前场景草稿。
  * @param editor 由平台编辑弹窗提交的独立编辑副本。
@@ -378,16 +384,15 @@ function openPlatformEditor(platform: Platform, index: number): void {
  */
 function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boolean {
   if (draft.value === null) return false
+  platformEditorError.value = ''
   editor.id = editor.id.trim()
   editor.name = editor.name.trim()
   if (editor.id === '' || editor.name === '') {
-    platformEditorError.value = '场景实体 ID 和名称均为必填项。'
-    return false
+    return showEditorValidationMessage('场景实体 ID 和名称均为必填项。')
   }
   if (editor.type === 'COMMUNICATION_SATELLITE') {
     if (editor.satelliteType !== 'TIANTONG' && editor.satelliteType !== 'SHENTONG') {
-      platformEditorError.value = '请选择天通卫星或神通卫星。'
-      return false
+      return showEditorValidationMessage('请选择天通卫星或神通卫星。')
     }
   } else {
     delete editor.satelliteType
@@ -396,8 +401,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
   const batchQuantity = addingAirborneBatch ? quantity : 1
   const available = INFORMATION_NODE_TYPE_LIMITS.AIRBORNE_MISSION_CLUSTER - businessNodeTypeCounts.value.AIRBORNE_MISSION_CLUSTER
   if (addingAirborneBatch && (!Number.isSafeInteger(batchQuantity) || batchQuantity < 1 || batchQuantity > available)) {
-    platformEditorError.value = `空中无人作业集群当前还可新增 ${Math.max(0, available)} 个。`
-    return false
+    return showEditorValidationMessage(`空中无人作业集群当前还可新增 ${Math.max(0, available)} 个。`)
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const editedPlatform = structuredClone(toRaw(editor))
@@ -406,8 +410,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
     try {
       gridPositions = createPlatformGrid(editedPlatform.initialPosition, batchQuantity, spacingKm)
     } catch (error) {
-      platformEditorError.value = (error as Error).message
-      return false
+      return showEditorValidationMessage((error as Error).message)
     }
   }
   if (editingPlatformIndex.value === null) {
@@ -427,8 +430,7 @@ function applyPlatformEditor(editor: Platform, quantity = 1, spacingKm = 1): boo
     || item.fieldPath.endsWith('.relayPlatformId') || item.fieldPath.startsWith('linkSettings.enabledSatellites')
   ))
   if (issue !== undefined) {
-    platformEditorError.value = issue.message
-    return false
+    return showEditorValidationMessage(issue.message)
   }
 
   draft.value.config.platforms = candidate.platforms
@@ -591,44 +593,45 @@ function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): voi
  */
 function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): boolean {
   if (draft.value === null || pending.value || draft.value.locked) return false
+  linkEditorError.value = ''
   if (linkFrequencyBelowMinimum.value) {
-    linkEditorError.value = '链路频率必须大于 0 MHz。'
-    return false
+    return showEditorValidationMessage('链路频率必须大于 0 MHz。')
   }
   if (linkBandwidthBelowMinimum.value) {
-    linkEditorError.value = '链路带宽必须大于 0 MHz。'
-    return false
+    return showEditorValidationMessage('链路带宽必须大于 0 MHz。')
   }
   linkEditor.id = linkEditor.id.trim()
   if (linkEditor.id === '') {
-    linkEditorError.value = '链路 ID 为必填项。'
-    return false
+    return showEditorValidationMessage('链路 ID 为必填项。')
+  }
+  if (linkEditor.type === 'SAT' && !draft.value.config.platforms.some(platform => (
+    platform.type === 'COMMUNICATION_SATELLITE'
+    && (platform.id === linkEditor.sourcePlatformId || platform.id === linkEditor.targetPlatformId)
+  ))) {
+    return showEditorValidationMessage('卫星链路的源平台或目标平台至少有一端必须选择通信卫星。')
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const editedLink = structuredClone(toRaw(linkEditor))
   if (editingLinkIndex.value === null) candidate.links.push(editedLink)
   else candidate.links[editingLinkIndex.value] = editedLink
   if (!demand) {
-    linkEditorError.value = '请填写该链路的业务参数。'
-    return false
+    return showEditorValidationMessage('请填写该链路的业务参数。')
   }
   const demandIndex = candidate.informationDemand.findIndex(item => item.id === demand.id)
   const previous = candidate.informationDemand[demandIndex]
   if (previous?.linkId && previous.linkId !== editedLink.id) {
-    linkEditorError.value = '该业务已关联其他链路。'
-    return false
+    return showEditorValidationMessage('该业务已关联其他链路。')
   }
   const editedDemand = { ...structuredClone(toRaw(demand)), linkId: editedLink.id,
     sourcePlatformId: editedLink.sourcePlatformId, destinationPlatformIds: [editedLink.targetPlatformId], direction: editedLink.direction }
   if (demandIndex < 0) candidate.informationDemand.push(editedDemand)
   else candidate.informationDemand[demandIndex] = editedDemand
   synchronizePlatformLinkIds(candidate, editedLink.id)
-  const issue = inspectScenarioConfig(candidate).result.errors.find((item) => (
+  const issue = inspectScenarioConfig(candidate, 'write').result.errors.find((item) => (
     item.fieldPath.startsWith('links') || item.fieldPath.endsWith('.linkIds') || item.fieldPath.startsWith('informationDemand')
   ))
   if (issue !== undefined) {
-    linkEditorError.value = issue.message
-    return false
+    return showEditorValidationMessage(issue.message)
   }
 
   draft.value.config.links = candidate.links
@@ -789,18 +792,16 @@ function synchronizePlatformJammerIds(config: ScenarioConfig, jammerId: string):
  */
 function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtension): boolean {
   if (draft.value === null) return false
+  jammerEditorError.value = ''
   if (jammerFrequencyBelowMinimum.value) {
-    jammerEditorError.value = '干扰频率必须大于 0 MHz。'
-    return false
+    return showEditorValidationMessage('干扰频率必须大于 0 MHz。')
   }
   if (jammerBandwidthBelowMinimum.value) {
-    jammerEditorError.value = '干扰带宽必须大于 0 MHz。'
-    return false
+    return showEditorValidationMessage('干扰带宽必须大于 0 MHz。')
   }
   jammerEditor.id = jammerEditor.id.trim()
   if (jammerEditor.id === '') {
-    jammerEditorError.value = '干扰设备 ID 为必填项。'
-    return false
+    return showEditorValidationMessage('干扰设备 ID 为必填项。')
   }
   const candidate = structuredClone(toRaw(draft.value.config))
   const candidateExtensions = structuredClone(toRaw(draft.value.uiExtensions))
@@ -826,8 +827,7 @@ function applyJammerEditor(jammerEditor: Jammer, jammerUiEditor: JammerUiExtensi
     return item.fieldPath.startsWith('jammers') || item.fieldPath.endsWith('.jammerIds') || item.fieldPath.startsWith('uiExtensions.jammers')
   })
   if (issue !== undefined) {
-    jammerEditorError.value = issue.message
-    return false
+    return showEditorValidationMessage(issue.message)
   }
 
   draft.value.config.jammers = candidate.jammers
@@ -1534,6 +1534,7 @@ watch(activeTab, (tab) => {
               <div class="platform-counts" aria-label="链路类型覆盖">
                 <el-tag type="primary">链路 {{ draft.config.links.length }}</el-tag>
                 <el-tag :type="linkTypeCount === 5 ? 'success' : 'warning'">已配置 {{ linkTypeCount }} / 5 类</el-tag>
+                <el-tag type="info" data-testid="scenario-selected-satellite">选用卫星：{{ linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : '未选择' }}</el-tag>
               </div>
               <div class="platform-actions">
                 <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
@@ -1551,7 +1552,6 @@ watch(activeTab, (tab) => {
                   {{ readLinkEnabled(row, linkSettings) ? '启用' : '停用' }}
                 </el-tag>
               </template></el-table-column>
-              <el-table-column label="中继卫星" min-width="140"><template #default>{{ linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : '—' }}</template></el-table-column>
               <el-table-column label="源平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.sourcePlatformId, showIds) }}</template></el-table-column>
               <el-table-column label="目标平台" min-width="150"><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.targetPlatformId, showIds) }}</template></el-table-column>
               <el-table-column prop="frequency" label="频率（MHz）" min-width="110" />
@@ -1752,6 +1752,7 @@ watch(activeTab, (tab) => {
       :suggest-platform-id="suggestPlatformId"
       :deployment-domain-labels="deploymentDomainLabels"
       @apply="applyPlatformEditor"
+      @invalid="showEditorValidationMessage"
     />
 
     <LinkEditorDialog

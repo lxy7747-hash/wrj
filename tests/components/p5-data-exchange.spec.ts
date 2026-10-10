@@ -11,6 +11,7 @@ import WebSocketContractCard from '../../src/components/data-exchange/WebSocketC
 import type { Principal, ScenarioDraft, SimulationRun, TelemetryFrame } from '../../src/contracts/domain-models'
 import DataExchangePage from '../../src/pages/admin-data-exchange/admin-data-exchange.vue'
 import { useAuthStore } from '../../src/stores/auth'
+import { useDataExchangeStore } from '../../src/stores/data-exchange'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
@@ -62,6 +63,9 @@ describe('P5 数据交换页面', () => {
     const wrapper = mount(ExchangeMonitor, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     expect(wrapper.text()).toContain('本机服务正常')
+    expect(wrapper.text()).toContain('AFSIM 引擎本页未监测')
+    expect(wrapper.text()).not.toContain('AFSIM 引擎未接入')
+    expect(wrapper.text()).toContain('本页不监测 mission／AFSIM 进程状态')
     expect(wrapper.text()).toContain('SQLite检查通过')
     expect(wrapper.text()).toContain('SQLite 历史最近 50 次')
     expect(wrapper.text()).toContain('重启保留')
@@ -91,8 +95,11 @@ describe('P5 数据交换页面', () => {
     await flushPromises()
     const monitorTimer = intervalSpy.mock.results[intervalSpy.mock.calls.findIndex((call) => call[1] === 1000)].value
     expect(wrapper.findAll('.monitor-status')).toHaveLength(6)
-    expect(wrapper.text()).toContain('AFSIM 引擎未接入')
+    expect(wrapper.text()).toContain('AFSIM 引擎本页未监测')
     expect(wrapper.text()).toContain('SQLite未接入（Mock）')
+    expect(wrapper.text()).toContain('Mock 服务可达')
+    expect(wrapper.text()).toContain('Mock 测试遥测通道')
+    expect(wrapper.findAll('.panel-caption').some(caption => caption.text() === '本页遥测通道')).toBe(true)
     expect(wrapper.findAll('.monitor-curve')).toHaveLength(0)
     const envelope = { type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId: 'TASK-001', sequence: 43,
       frameId: fixtureSource.frame.frameId, simulationTime: fixtureSource.frame.simulationTime, payload: fixtureSource.frame }
@@ -127,9 +134,18 @@ describe('P5 数据交换页面', () => {
     const wrapper = mount(DataExchangePage, { global: { plugins: [ElementPlus, router] } })
     await flushPromises()
     expect(wrapper.get('[data-testid="exchange-monitor"]').isVisible()).toBe(true)
+    expect(wrapper.get('.data-exchange-page__header .el-tag').text()).toBe('Mock 监控')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      service: 'HEALTHY', database: 'HEALTHY', recordStorage: 'HEALTHY', checkedAt: '2026-09-12T00:00:00Z', records: [],
+    })))
+    await useDataExchangeStore().loadMonitor()
+    await flushPromises()
+    expect(wrapper.get('.data-exchange-page__header .el-tag').text()).toBe('本机监控')
     expect(wrapper.find('[data-testid="csv-contract-card"]').exists()).toBe(false)
     await wrapper.get('[data-testid="open-exchange-tools"]').trigger('click')
     await flushPromises()
+    expect(wrapper.get('.el-drawer').text()).toContain('接口工具：合同校验与流程验证')
+    expect(wrapper.get('.el-drawer').text()).not.toContain('零真实文件 / 零真实进程')
     await wrapper.get('[data-testid="csv-text"]').setValue('尚未提交的文本')
     await wrapper.get('.el-drawer__close-btn').trigger('click')
     await wrapper.get('[data-testid="open-exchange-tools"]').trigger('click')

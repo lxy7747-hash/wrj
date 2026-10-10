@@ -39,12 +39,15 @@ const DEFAULT_TYPE_NAMES: Record<PlatformType, string> = {
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
   apply: [platform: Platform, quantity: number, spacingKm: number]
+  invalid: [message: string]
 }>()
 
 const editor = ref<Platform | null>(null)
 const waypointPickerVisible = ref(false)
 const waypointPickerIndex = ref<number | null>(null)
 const waypointPickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
+const satellitePickerVisible = ref(false)
+const satellitePickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 })
 const quantity = ref(1)
 const spacingKm = ref(1)
 const confirmationAttempted = ref(false)
@@ -86,6 +89,7 @@ const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATIO
  */
 function synchronizeTypeFields(type: PlatformType): void {
   if (editor.value === null) return
+  resetMapPickers()
   confirmationAttempted.value = false
   editor.value.category = PLATFORM_TYPE_DOMAINS[type]
   if (type !== 'COMMUNICATION_SATELLITE') delete editor.value.satelliteType
@@ -146,9 +150,24 @@ function applyWaypointMapPoint(point: WaypointMapPoint): void {
   waypointPickerVisible.value = false
 }
 
-function resetWaypointPicker(): void {
+function openSatellitePicker(): void {
+  if (!props.modelValue || props.pending || props.locked || !isSatellite.value || editor.value === null) return
+  const { longitude, latitude } = editor.value.initialPosition
+  satellitePickerPoint.value = { longitude, latitude }
+  satellitePickerVisible.value = true
+}
+
+function applySatelliteMapPoint(point: WaypointMapPoint): void {
+  if (!satellitePickerVisible.value || !props.modelValue || props.pending || props.locked || !isSatellite.value || editor.value === null) return
+  editor.value.initialPosition.longitude = point.longitude
+  editor.value.initialPosition.latitude = point.latitude
+  satellitePickerVisible.value = false
+}
+
+function resetMapPickers(): void {
   waypointPickerVisible.value = false
   waypointPickerIndex.value = null
+  satellitePickerVisible.value = false
 }
 
 function removeWaypoint(index: number): void {
@@ -158,21 +177,28 @@ function removeWaypoint(index: number): void {
 function apply(): void {
   if (editor.value === null || props.pending || props.locked || cannotAdd.value) return
   confirmationAttempted.value = true
-  if (!editor.value.name?.trim() || invalidSpacing.value || hasInvalidWaypointSpeed.value) return
-  if (invalidSatelliteType.value) return
-  if (isSatellite.value && editor.value.waypoints.length > 0) return
+  let message = ''
+  if (!editor.value.name?.trim()) message = '请填写名称。'
+  else if (invalidSpacing.value) message = '节点间隔必须大于 0 km。'
+  else if (hasInvalidWaypointSpeed.value) message = waypointSpeedError(editor.value.waypoints.find(point => waypointSpeedError(point.speed))!.speed)
+  else if (invalidSatelliteType.value) message = '请选择天通卫星或神通卫星。'
+  else if (isSatellite.value && editor.value.waypoints.length > 0) message = '通信卫星不能配置航点，请先清除历史航点。'
+  if (message) {
+    emit('invalid', message)
+    return
+  }
   if (!supportsWaypoints.value && !isSatellite.value) editor.value.waypoints = []
   emit('apply', editor.value, quantity.value, spacingKm.value)
 }
 
 watch(() => props.modelValue, (visible) => {
+  resetMapPickers()
   if (!visible) return
   confirmationAttempted.value = false
   editor.value = props.platform === null ? null : structuredClone(toRaw(props.platform))
   quantity.value = 1
   spacingKm.value = 1
   if (editor.value !== null) synchronizeTypeFields(editor.value.type)
-  resetWaypointPicker()
 }, { immediate: true })
 </script>
 
@@ -186,7 +212,7 @@ watch(() => props.modelValue, (visible) => {
     append-to-body
     data-testid="platform-dialog"
     @update:model-value="emit('update:modelValue', $event)"
-    @closed="resetWaypointPicker"
+    @closed="resetMapPickers"
   >
     <el-alert v-if="error" class="platform-feedback" type="error" :closable="false" :title="error" show-icon />
     <el-form v-if="editor" class="platform-editor-form" :model="editor" label-position="top" :disabled="pending || locked">
@@ -228,7 +254,10 @@ watch(() => props.modelValue, (visible) => {
       </section>
 
       <section class="platform-editor-section" aria-labelledby="platform-position-title">
-        <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
+        <div class="waypoint-heading">
+          <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
+          <el-button v-if="isSatellite" size="small" :disabled="pending || locked" data-testid="pick-satellite-position" @click="openSatellitePicker">地图选点</el-button>
+        </div>
         <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <div class="position-grid">
           <el-form-item required label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="positionRule?.minLongitude ?? -180" :max="positionRule?.maxLongitude ?? 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
@@ -279,6 +308,14 @@ watch(() => props.modelValue, (visible) => {
     :latitude="waypointPickerPoint.latitude"
     :bounds="waypointBounds"
     @confirm="applyWaypointMapPoint"
+  />
+  <WaypointMapPicker
+    v-if="isSatellite"
+    v-model="satellitePickerVisible"
+    :longitude="satellitePickerPoint.longitude"
+    :latitude="satellitePickerPoint.latitude"
+    purpose="satellite"
+    @confirm="applySatelliteMapPoint"
   />
 </template>
 

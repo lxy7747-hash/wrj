@@ -6,7 +6,8 @@ import type { BackupRecord, BackupPlan, BackupPlanStatus, BackupExecution, Resto
 import type { AdminResult, BackupStorage } from '../admin/projection.js'
 import { isBackupPlan, isBackupPlanStatus } from '../../src/features/admin/backup-plan.js'
 import { BackupSqliteStorage } from './backup-sqlite.js'
-import { SYSTEM_SCOPES, SYSTEM_TABLES, validateSystemSnapshot, type BackupScope } from './system-backup-validation.js'
+import { SYSTEM_SCOPES, SYSTEM_TABLES, validateSystemSnapshot, validateSystemSnapshotStructure, type BackupScope } from './system-backup-validation.js'
+import { BackupValidationCache, fileFingerprint } from './backup-validation-cache.js'
 
 type TableSnapshot = { scope: BackupScope; table: string; sql: string; rows: Record<string, SQLInputValue>[] }
 const files = { equipment: 'equipment.db', access: 'access-control.db', master: 'master-data.db', archives: 'archives.db', settings: 'runtime-config.db' }
@@ -14,6 +15,8 @@ const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id)
 const validName = (name: string) => typeof name === 'string' && name.trim().length > 0 && name.length <= 80
 const unavailable = (message = '备份存储不可用或被占用，操作未成功；请检查磁盘和数据库后重试。'): AdminResult<never> => ({ ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message })
 const schemaQuery = "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name"
+/** 校验规则变化时递增，使已登记的列表校验结果全部重检；2 起不再登记临时读取失败。 */
+const VALIDATION_VERSION = 2
 
 /** 一个受控 SQLite 包保存所有业务库；恢复只复制表数据，不替换正在使用的数据库文件。 */
 export class SystemBackupSqliteStorage implements BackupStorage {
@@ -23,6 +26,8 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   readonly directory: string
   private readonly schema = new Map<string, string>()
   private timer: ReturnType<typeof setInterval> | undefined
+  private readonly validationCache = new BackupValidationCache()
+  private validationKey = ''
 
   constructor(path: string, private readonly now: () => Date = () => new Date()) {
     this.legacy = new BackupSqliteStorage(path)
@@ -42,12 +47,18 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         for (const row of rows) this.schema.set(`${scope}.${row.name}`, String(row.sql))
         this.db.exec(`PRAGMA ${scope}.synchronous=FULL`)
       }
+      this.validationKey = createHash('sha256').update(JSON.stringify([VALIDATION_VERSION, ...this.schema])).digest('hex')
       catalog = new DatabaseSync(join(this.directory, 'catalog.db'))
       this.catalog = catalog
       catalog.exec(`PRAGMA busy_timeout=1000;
         CREATE TABLE IF NOT EXISTS system_backups (backup_id TEXT PRIMARY KEY, name TEXT NOT NULL, checksum TEXT NOT NULL, created_at TEXT NOT NULL) STRICT;
         CREATE TABLE IF NOT EXISTS backup_plan (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL, next_run TEXT) STRICT;
         CREATE TABLE IF NOT EXISTS backup_executions (id INTEGER PRIMARY KEY, value TEXT NOT NULL) STRICT;`)
+      // 登记校验结果供列表复用；旧目录补列，尚无登记结果的备份在首次列出时完整校验一次。
+      const columns = new Set(catalog.prepare('PRAGMA table_info(system_backups)').all().map(row => String(row.name)))
+      for (const [column, type] of [['fingerprint', 'TEXT'], ['validation_key', 'TEXT'], ['valid', 'INTEGER']]) {
+        if (!columns.has(column)) catalog.exec(`ALTER TABLE system_backups ADD COLUMN ${column} ${type}`)
+      }
       catalog.prepare('INSERT OR IGNORE INTO backup_plan VALUES (1, ?, NULL)').run(JSON.stringify({ version: 1, enabled: false, name: '定时备份', intervalMinutes: 1440 }))
       this.planStatus()
     } catch (error) { catalog?.close(); this.db.close(); this.legacy.close(); throw error }
@@ -63,12 +74,37 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   }
   private checksum(path: string): string { this.requireRegularFile(path); return createHash('sha256').update(readFileSync(path)).digest('hex').toUpperCase() }
 
+  private recordKey(checksum: string): string { return `${this.validationKey}:${checksum}` }
+
+  /** 文件指纹、登记摘要和校验规则均未变化时沿用登记结果；否则完整校验并回写。恢复不使用此结果。 */
+  private listedValid(path: string, row: Record<string, SQLInputValue>): boolean {
+    const checksum = String(row.checksum)
+    const fingerprint = fileFingerprint(path)
+    if (row.fingerprint === fingerprint && row.validation_key === this.recordKey(checksum) && (row.valid === 0 || row.valid === 1)) return row.valid === 1
+    const result = this.validationCache.check(path, checksum, () => {
+      if (this.checksum(path) !== checksum) throw new Error('备份摘要不一致。')
+      this.readSnapshot(path)
+    })
+    // 锁冲突等临时失败本次显示不可用，但不登记，下次列出重新完整校验。
+    if (result === 'UNKNOWN') return false
+    try {
+      if (fileFingerprint(path) === fingerprint) this.catalog.prepare('UPDATE system_backups SET fingerprint=?, validation_key=?, valid=? WHERE backup_id=? AND checksum=?').run(fingerprint, this.recordKey(checksum), result === 'VALID' ? 1 : 0, String(row.backup_id), checksum)
+    } catch { /* 登记失败只影响下次是否重检，内存缓存仍有效。 */ }
+    return result === 'VALID'
+  }
+
   listBackups(): BackupRecord[] {
+    const paths = new Set<string>()
     const records: BackupRecord[] = this.catalog.prepare('SELECT * FROM system_backups ORDER BY created_at, backup_id').all().map(row => {
       const record: BackupRecord = { backupId: String(row.backup_id), name: String(row.name), checksum: String(row.checksum), createdAt: String(row.created_at), status: 'INVALID', format: 'SYSTEM_SQLITE_V1' }
-      try { if (this.checksum(this.file(record.backupId)) === record.checksum) record.status = 'VALID' } catch { /* 保留损坏或缺失目录记录，不能当成有效备份。 */ }
+      try {
+        const path = this.file(record.backupId)
+        paths.add(path)
+        if (this.listedValid(path, row)) record.status = 'VALID'
+      } catch { /* 保留损坏或缺失目录记录，不能当成有效备份。 */ }
       return record
     })
+    this.validationCache.retain(paths)
     return [...this.legacy.listBackups().map(row => ({ ...row, format: 'MAIN_SQLITE_V1' as const })), ...records]
   }
 
@@ -91,7 +127,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     }
   }
 
-  private validate(tables: TableSnapshot[]): void {
+  private validate(tables: TableSnapshot[], mode: 'restore' | 'raw' = 'restore'): void {
     if (!Array.isArray(tables) || tables.length !== this.schema.size || new Set(tables.map(row => `${row.scope}.${row.table}`)).size !== this.schema.size) throw new Error('备份范围不完整。')
     const scratch = new DatabaseSync(':memory:')
     try {
@@ -104,21 +140,23 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         scratch.exec(sql.replace(/^CREATE TABLE\s+(?:IF NOT EXISTS\s+)?\S+\s*\(/i, `CREATE TABLE ${key} (`))
         this.insertRows(scratch, key, table.rows)
       }
-      validateSystemSnapshot(scratch)
+      if (mode === 'raw') validateSystemSnapshotStructure(scratch)
+      else validateSystemSnapshot(scratch)
     } finally { scratch.close() }
   }
 
   /** 恢复前备份与随后恢复写入必须属于同一锁定时点。 */
   private writeLocked(backupId: string, name: string): AdminResult<BackupRecord> {
-    return this.writeSnapshot(backupId, name, this.capture())
+    return this.writeSnapshot(backupId, name, this.capture(), 'raw')
   }
 
-  private writeSnapshot(backupId: string, name: string, tables: TableSnapshot[]): AdminResult<BackupRecord> {
+  private writeSnapshot(backupId: string, name: string, tables: TableSnapshot[], mode: 'restore' | 'raw' = 'restore'): AdminResult<BackupRecord> {
     let created = false
     const path = this.file(backupId)
     try {
       if (this.catalog.prepare('SELECT 1 FROM system_backups WHERE backup_id=? UNION ALL SELECT 1 FROM backups WHERE backup_id=?').get(backupId, backupId)) return { ok: false, code: 'CONFLICT', status: 409, message: '备份编号已存在，未覆盖原备份。' }
-      this.validate(tables)
+      // 恢复前原始备份在写锁内只做写入后回读的一次结构校验，业务校验推迟到列表展示时。
+      if (mode === 'restore') this.validate(tables)
       // 独占创建确保补偿只会删除本次创建的文件，已有同名文件绝不覆盖。
       try { closeSync(openSync(path, 'wx')); created = true } catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') return { ok: false, code: 'CONFLICT', status: 409, message: '备份文件已存在，未覆盖。' }; throw error }
       const snapshot = new DatabaseSync(path)
@@ -127,9 +165,12 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         snapshot.prepare('INSERT INTO snapshot VALUES (1, ?, ?)').run('SYSTEM_SQLITE_V1', JSON.stringify(tables))
       } finally { snapshot.close() }
       const checksum = this.checksum(path)
-      this.readSnapshot(path)
-      const record: BackupRecord = { backupId, name, status: 'VALID', checksum, createdAt: this.now().toISOString(), format: 'SYSTEM_SQLITE_V1' }
-      this.catalog.prepare('INSERT INTO system_backups VALUES (?, ?, ?, ?)').run(backupId, name, checksum, record.createdAt)
+      this.readSnapshot(path, mode)
+      // 原始备份尚未完成业务校验，登记为待校验，在列表完成校验前不能作为恢复来源。
+      const validated = mode === 'restore'
+      const record: BackupRecord = { backupId, name, status: validated ? 'VALID' : 'INVALID', checksum, createdAt: this.now().toISOString(), format: 'SYSTEM_SQLITE_V1' }
+      this.catalog.prepare('INSERT INTO system_backups (backup_id, name, checksum, created_at, fingerprint, validation_key, valid) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(backupId, name, checksum, record.createdAt, fileFingerprint(path), validated ? this.recordKey(checksum) : null, validated ? 1 : null)
       return { ok: true, data: record }
     } catch {
       if (created) {
@@ -154,7 +195,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     return this.writeSnapshot(backupId, name, tables)
   }
 
-  private readSnapshot(path: string): TableSnapshot[] {
+  private readSnapshot(path: string, mode: 'restore' | 'raw' = 'restore'): TableSnapshot[] {
     this.requireRegularFile(path)
     const snapshot = new DatabaseSync(path, { readOnly: true })
     try {
@@ -162,7 +203,7 @@ export class SystemBackupSqliteStorage implements BackupStorage {
       const rows = snapshot.prepare('SELECT * FROM snapshot').all()
       if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok' || rows.length !== 1 || rows[0]?.id !== 1 || rows[0]?.format !== 'SYSTEM_SQLITE_V1') throw new Error('备份包不正确。')
       const tables = JSON.parse(String(rows[0].payload)) as TableSnapshot[]
-      this.validate(tables)
+      this.validate(tables, mode)
       return tables
     } finally { snapshot.close() }
   }
@@ -217,9 +258,11 @@ export class SystemBackupSqliteStorage implements BackupStorage {
   savePlan(plan: BackupPlan): AdminResult<BackupPlanStatus> {
     if (!isBackupPlan(plan)) return { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '备份计划参数不正确。', fieldPath: 'plan' }
     try {
-      const current = this.planStatus().plan
-      if (current.version !== plan.version) return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '备份计划已变化，请刷新后重试。', fieldPath: 'version' }
-      const saved = this.catalog.prepare("UPDATE backup_plan SET value=?, next_run=? WHERE id=1 AND json_extract(value, '$.version')=?").run(JSON.stringify({ ...plan, version: plan.version + 1 }), plan.enabled ? new Date(this.now().getTime() + plan.intervalMinutes * 60000).toISOString() : null, plan.version)
+      const current = this.planStatus()
+      if (current.plan.version !== plan.version) return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '备份计划已变化，请刷新后重试。', fieldPath: 'version' }
+      const nextRunAt = !plan.enabled ? null : current.plan.enabled && current.plan.intervalMinutes === plan.intervalMinutes
+        ? current.nextRunAt : new Date(this.now().getTime() + plan.intervalMinutes * 60000).toISOString()
+      const saved = this.catalog.prepare("UPDATE backup_plan SET value=?, next_run=? WHERE id=1 AND json_extract(value, '$.version')=?").run(JSON.stringify({ ...plan, version: plan.version + 1 }), nextRunAt, plan.version)
       if (saved.changes !== 1) return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '备份计划已变化，请刷新后重试。', fieldPath: 'version' }
       return { ok: true, data: this.planStatus() }
     } catch { return unavailable('备份计划保存失败，请刷新核实。') }

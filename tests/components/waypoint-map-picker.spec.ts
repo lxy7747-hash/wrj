@@ -149,4 +149,25 @@ describe('航点地图选点', () => {
     expect(leafletMocks.map.remove).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
+
+  it('卫星位置选点提交经纬度，不显示航点或高度清零提示', async () => {
+    const wrapper = mount(WaypointMapPicker, {
+      attachTo: document.body,
+      props: { modelValue: true, longitude: 120, latitude: 25, purpose: 'satellite' },
+      global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    wrapper.getComponent({ name: 'ElDialog' }).vm.$emit('opened')
+    await nextTick()
+    expect(document.body.textContent).toContain('地图选取卫星位置')
+    expect(document.body.textContent).toContain('高度保持不变')
+    expect(document.body.textContent).not.toContain('高度设置为 0')
+    expect(document.body.textContent).not.toContain('高度 0 m')
+    expect(document.querySelector('[data-testid="waypoint-map"]')?.getAttribute('aria-label')).toBe('卫星位置离线地图选点')
+    leafletMocks.state.clickHandler?.({ latlng: { lng: 120.82767, lat: 26.018571 } })
+    await nextTick()
+    document.querySelector<HTMLElement>('[data-testid="confirm-waypoint-point"]')!.click()
+    expect(wrapper.emitted('confirm')).toEqual([[{ longitude: 120.82767, latitude: 26.018571 }]])
+    wrapper.unmount()
+  })
 })

@@ -172,7 +172,7 @@ export const useSimulationStore = defineStore('simulation', {
       try {
         if (!await this.resetProjection() || epoch !== this.requestEpoch || signal?.aborted || userId !== useAuthStore().principal?.userId) return false
         if ((this.run?.configLocked || this.uiStatus === 'RUNNING' || this.uiStatus === 'PAUSED') && id !== this.run?.scenarioId) {
-          this.showError(undefined, '请先停止当前 Mock 运行，再切换场景。')
+          this.showError(undefined, '请先停止当前仿真运行，再切换场景。')
           return false
         }
         if (!id) { this.selectedScene = null; clearSelectedScene(); return true }
@@ -188,7 +188,7 @@ export const useSimulationStore = defineStore('simulation', {
         if (!scene || scene.config.scenario.id !== id) throw new InvalidSimulationResponseError()
         this.selectedScene = scene
         try { window.sessionStorage.setItem(SELECTED_SCENE_KEY, JSON.stringify({ userId, scenarioId: id })) } catch { /* 禁用存储时本次选用仍有效。 */ }
-        if (this.run?.uiStatus !== 'ERROR') this.resultMessage = '已选择保存的场景配置；Mock 运行不生成真实遥测。'
+        if (this.run?.uiStatus !== 'ERROR') this.resultMessage = '已选择保存的场景配置。'
         return true
       } catch (error) {
         if (epoch === this.requestEpoch && !signal?.aborted && userId === useAuthStore().principal?.userId) this.showError(error, '场景选择失败。')

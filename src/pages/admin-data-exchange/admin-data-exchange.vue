@@ -31,7 +31,7 @@ watch(() => route.hash, locateInterface)
 /**
  * 加载 P5 页面所需的四组规范合同。
  * @returns 合同加载结束后无返回值。
- * @sideEffects 通过本机 Mock 更新数据交换 Store，不访问真实文件或操作系统进程。
+ * @sideEffects 通过本机服务更新合同目录，不读写业务文件或启动仿真进程。
  */
 async function loadContracts(): Promise<void> {
   await store.loadContracts()
@@ -52,7 +52,7 @@ onUnmounted(() => {
         <h2 id="data-exchange-title">数据交换与接口</h2>
       </div>
       <div class="data-exchange-page__status">
-        <el-tag type="warning" effect="plain">{{ store.monitor ? '本机监控 / Mock 遥测' : store.monitorState === 'SUCCESS' ? 'Mock 监控' : '监控待确认' }}</el-tag>
+        <el-tag type="warning" effect="plain">{{ store.monitor ? '本机监控' : store.monitorState === 'SUCCESS' ? 'Mock 监控' : '监控待确认' }}</el-tag>
         <el-button data-testid="open-exchange-tools" @click="openTools()">接口工具</el-button>
       </div>
     </header>
@@ -70,7 +70,7 @@ onUnmounted(() => {
 
     <el-drawer v-model="toolsVisible" title="接口工具" size="min(1120px, 94vw)" :close-on-click-modal="false">
       <div class="data-exchange-page__status">
-        <el-tag type="warning" effect="plain">零真实文件 / 零真实进程</el-tag>
+        <el-tag type="warning" effect="plain">接口工具：合同校验与流程验证</el-tag>
         <el-button :loading="store.loadState === 'LOADING'" @click="loadContracts">重新加载合同</el-button>
       </div>
       <div class="data-exchange-page__capabilities">

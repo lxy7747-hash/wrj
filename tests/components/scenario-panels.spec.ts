@@ -98,7 +98,9 @@ describe('场景拆分面板', () => {
     await typedWrapper.setProps({ dialogVisible: true })
     expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(5)
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-priority-"]')).toHaveLength(0)
-    expect(wrapper.find('[aria-label="中继卫星选择"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="本场景选用卫星"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('本场景选用卫星')
+    expect(wrapper.text()).not.toContain('中继卫星选择')
     expect(baseline.enabledSatellites).toEqual({ TIANTONG: true, SHENTONG: false })
     expect(wrapper.get('[data-testid="link-settings-dialog"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
@@ -442,6 +444,61 @@ describe('场景拆分面板', () => {
     await dialogWrapper.setProps({ modelValue: true })
     await flushPromises()
     expect(wrapper.text()).not.toContain('请填写名称。')
+    wrapper.unmount()
+  })
+
+  it.each(['TIANTONG', 'SHENTONG'] as const)('新增 %s 卫星可地图选点，取消不回填，确认仅改经纬度且原对象不被修改', async satelliteType => {
+    const platform = structuredClone(fixtureSource.scenario.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!) as Platform
+    platform.satelliteType = satelliteType
+    platform.initialPosition = { longitude: 120, latitude: 25, altitude: 550000 }
+    const original = structuredClone(platform)
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: false, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'AIRBORNE_MISSION_CLUSTER', label: '空中无人作业集群' }],
+        supportingTypeOptions: [{ value: 'COMMUNICATION_SATELLITE', label: '通信卫星' }],
+        satelliteTypeOptions: [{ value: 'TIANTONG', label: '天通卫星' }, { value: 'SHENTONG', label: '神通卫星' }],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '空间' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
+    })
+    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
+    const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
+    expect(picker.props()).toMatchObject({ modelValue: true, longitude: 120, latitude: 25, purpose: 'satellite' })
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    picker.vm.$emit('update:modelValue', false)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="platform-longitude"] input').element).toHaveProperty('value', '120')
+    expect(wrapper.get('[data-testid="platform-latitude"] input').element).toHaveProperty('value', '25')
+    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
+    picker.vm.$emit('confirm', { longitude: 120.82767, latitude: 26.018571 })
+    await flushPromises()
+    expect(picker.props('modelValue')).toBe(false)
+    expect(wrapper.get('[data-testid="platform-longitude"] input').element).toHaveProperty('value', '120.82767')
+    expect(wrapper.get('[data-testid="platform-latitude"] input').element).toHaveProperty('value', '26.018571')
+    expect(wrapper.get('[data-testid="platform-altitude"] input').element).toHaveProperty('value', '550000')
+    expect(platform).toEqual(original)
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toHaveLength(1)
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({
+      satelliteType, category: 'space', waypoints: [],
+      initialPosition: { longitude: 120.82767, latitude: 26.018571, altitude: 550000 },
+    })
+    const dialog = wrapper as unknown as VueWrapper<{ $props: { modelValue: boolean; locked: boolean } }>
+    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
+    await dialog.setProps({ modelValue: false })
+    expect(picker.props('modelValue')).toBe(false)
+    picker.vm.$emit('confirm', { longitude: 121, latitude: 26 })
+    await dialog.setProps({ modelValue: true, locked: true })
+    expect(wrapper.get('[data-testid="pick-satellite-position"]').attributes('disabled')).toBeDefined()
+    picker.vm.$emit('confirm', { longitude: 121, latitude: 26 })
+    await dialog.setProps({ locked: false })
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: original.initialPosition })
+    expect(platform).toEqual(original)
     wrapper.unmount()
   })
 
