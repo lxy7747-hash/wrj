@@ -1656,6 +1656,20 @@ describe('P2-2 平台与航点字段校验', () => {
     }))
   })
 
+  it.each([1, 2, 3])('中继节点数量为 %s：最多允许 2 个，第 3 个被拒绝', count => {
+    const config = scenarioDraft().config
+    const source = config.platforms.find(platform => platform.type === 'FORWARD_RELAY_NODE')!
+    for (let index = 1; index < count; index += 1) {
+      config.platforms.push({ ...structuredClone(source), id: `RELAY-${index + 1}`, name: `中继节点 ${index + 1}`,
+        linkIds: [], sensorIds: [], jammerIds: [] })
+    }
+    const result = inspectScenarioConfig(config).result
+    expect(result.valid).toBe(count <= 2)
+    if (count === 3) expect(result.errors).toContainEqual(expect.objectContaining({
+      code: 'NODE_TYPE_LIMIT_EXCEEDED', message: '高空前出中继节点当前场景不能超过 2 个。', fieldPath: 'platforms',
+    }))
+  })
+
   it('校验节点类型数量上限及通信卫星子类型', () => {
     const duplicateRear = scenarioDraft().config
     const source = structuredClone(duplicateRear.platforms[0]!)

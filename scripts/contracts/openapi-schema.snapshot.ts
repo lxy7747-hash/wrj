@@ -3186,7 +3186,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         ],
         "x-business-information-node-limits": {
           "REAR_COMMAND_NODE": 1,
-          "FORWARD_RELAY_NODE": 1,
+          "FORWARD_RELAY_NODE": 2,
           "GROUND_CLUSTER_COMMAND_NODE": 1,
           "AIRBORNE_MISSION_CLUSTER": 47
         },

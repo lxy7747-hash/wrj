@@ -2,9 +2,18 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.47**，SHA-256：`D8B09CCB3AB92F0569A3831DAA810C2284BAF389EB9E1C0797FC8D44A4CA458B`。本次仅将输出参数的操作权移至项目配置文件；下方历史冻结记录的旧哈希保持原样，机器合同未因此变更。
+当前前端需求基线为 **V1.1.48**，SHA-256：`B0BA633B1D41F2D51F5D3E7800BE0D51BDE84FAD65F6CD7228B67F9C3360D6AF`。本次按用户确认将高空前出中继节点数量上限由 1 放开至 2；下方历史冻结记录的旧哈希保持原样。
 
-## 环境参数、数传波段与阶段切换规则（2026-10-08，当前冻结记录）
+## 高空前出中继节点数量上限（2026-10-13，当前冻结记录）
+
+OpenAPI 更新至 **1.8.9**（83 操作 / 40 写操作不变），`ScenarioConfig.platforms` 数量元数据与共享运行时校验统一允许最多 2 个 `FORWARD_RELAY_NODE`。默认配置仍为 1 个，其位置只读约束、其他类型上限和信息节点总容量 50 个不变；新增、改型、保存及导入共用此规则。领域类型、fixture 和存量数据库未修改；数量语义仍由共享运行时校验执行，schema snapshot 同步更新。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/mock-api.openapi.yaml` | `E1539F2E1A9A6E191898201B90D7A3D295D80F8E6AF358B0088B63E35C7BD951` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `5FC376A1AAC8A51D7DA06AAF58824FC8C3D5FC1D2B6B01E9B6CB8D3BCDE17F88` |
+
+## 环境参数、数传波段与阶段切换规则（2026-10-08，历史冻结记录）
 
 OpenAPI 更新至 **1.8.8**（83 操作 / 40 写操作不变），仅扩展组件 schema：`Environment` 新增云层高度、云中液态水密度与海面区域 `seaPolygon`；`Link.band`（C/L）仅允许 `DATALINK` 携带；`ScenarioLinkSettings.switchRules` 引用新组件 `LinkSwitchRule`，距离条件必须带 `distanceThresholdM` 且不得带 `jammerId`，干扰条件反之。新字段均可缺省，旧场景读取不受影响。运行时校验另行要求规则目标链路与端点业务同方向，该约束跨对象引用，不在 schema 中表达。同步领域类型、schema snapshot 与合同负例；fixture 未改。回退须同时恢复合同、领域类型与共享校验。
 

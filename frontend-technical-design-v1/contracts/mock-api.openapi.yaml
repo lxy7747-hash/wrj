@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.8.8",
+    "version": "1.8.9",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; other simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -10274,7 +10274,7 @@
             ],
             "x-business-information-node-limits": {
               "REAR_COMMAND_NODE": 1,
-              "FORWARD_RELAY_NODE": 1,
+              "FORWARD_RELAY_NODE": 2,
               "GROUND_CLUSTER_COMMAND_NODE": 1,
               "AIRBORNE_MISSION_CLUSTER": 47
             },

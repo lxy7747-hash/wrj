@@ -5,6 +5,7 @@ import type { ValidateFunction } from 'ajv'
 
 import type { CapabilityState, DeterministicFixtureSet } from '../../src/contracts/domain-models.js'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
+import { INFORMATION_NODE_LIMIT, INFORMATION_NODE_TYPE_LIMITS } from '../../src/features/scenarios/scenario-validation'
 
 type JsonObject = Record<string, unknown>
 type ValidationFinding = { code: string; path: string; message: string }
@@ -47,6 +48,14 @@ describe('deterministic fixture contract', () => {
   it('validates the entire authoritative fixture and its semantic closure', () => {
     expect(validateFixture(fixtures), JSON.stringify(validateFixture.errors)).toBe(true)
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
+  })
+
+  it('合同数量规则与共享校验一致，中继上限为 2，总容量仍为 50', () => {
+    const schemas = asObject(asObject(buildDeterministicFixtureSchema(openApi)).$defs)
+    const platforms = asObject(asObject(asObject(schemas.ScenarioConfig).properties).platforms)
+    expect(platforms['x-business-information-node-limits']).toEqual(INFORMATION_NODE_TYPE_LIMITS)
+    expect(asObject(platforms['x-business-information-node-limits']).FORWARD_RELAY_NODE).toBe(2)
+    expect(platforms['x-max-business-information-nodes']).toBe(INFORMATION_NODE_LIMIT)
   })
 
   it('模板合同兼容旧配置，支持完整 UI 扩展并拒绝额外或非法字段', () => {

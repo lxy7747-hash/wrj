@@ -87,6 +87,24 @@ afterEach(async () => {
 })
 
 describe('SQLite 场景开发持久化', () => {
+  it('两个中继可保存并重载，第三个被拒绝且不改已有配置和修订', async () => {
+    const { api, storage } = await start(await databasePath())
+    const value = draft()
+    const relay = value.config.platforms.find(platform => platform.type === 'FORWARD_RELAY_NODE')!
+    value.config.platforms.push({ ...structuredClone(relay), id: 'RELAY-02', name: '中继节点 2',
+      linkIds: [], sensorIds: [], jammerIds: [] })
+    const saved = (await api.put(endpoint).set(headers).send(update(value)).expect(200)).body.data
+    const reloaded = (await api.get(endpoint).set(headers).expect(200)).body.data
+    expect(reloaded).toEqual(saved)
+    expect(reloaded.config.platforms.filter((platform: { type: string }) => platform.type === 'FORWARD_RELAY_NODE')).toHaveLength(2)
+    value.config.platforms.push({ ...structuredClone(relay), id: 'RELAY-03', name: '中继节点 3',
+      linkIds: [], sensorIds: [], jammerIds: [] })
+    const rejected = await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(422)
+    expect(rejected.body.error).toMatchObject({ fieldPath: 'platforms', message: '高空前出中继节点当前场景不能超过 2 个。' })
+    expect(storage.load()).toEqual(saved)
+    expect((await api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
+  })
+
   it('零速度航点在保存前返回字段错误，不写入或增加修订；正速度可保存', async () => {
     const { api, storage } = await start(await databasePath())
     const value = draft()

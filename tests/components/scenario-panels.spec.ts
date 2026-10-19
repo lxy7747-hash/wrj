@@ -13,6 +13,7 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import type { Link, ScenarioConfig, ScenarioLinkSettings } from '../../src/contracts/domain-models'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Platform } from '../../src/contracts/domain-models'
+import { INFORMATION_NODE_TYPE_LIMITS } from '../../src/features/scenarios/scenario-validation'
 
 const emptyValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
 
@@ -572,6 +573,30 @@ describe('场景拆分面板', () => {
     }
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled') !== undefined).toBe(disabled)
     expect(wrapper.findAllComponents({ name: 'ElOptionGroup' }).map((group) => group.props('label'))).toEqual(['信息节点', '支撑实体（不计入50个信息节点）'])
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')?.length ?? 0).toBe(disabled ? 0 : 1)
+    wrapper.unmount()
+  })
+
+  it.each([[false, 1], [false, 2], [true, 2]] as const)('中继数量额度：编辑=%s，已有=%s，上限为 2', async (editing, count) => {
+    const platform = structuredClone(fixtureSource.scenario.platforms.find(item => item.type === 'FORWARD_RELAY_NODE')) as Platform
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: 'FORWARD_RELAY_NODE', label: '高空前出中继节点' }],
+        supportingTypeOptions: [], satelliteTypeOptions: [],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: count, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: INFORMATION_NODE_TYPE_LIMITS,
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '空间' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain(`当前 ${count} / 2 个`)
+    const disabled = !editing && count === 2
+    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled') !== undefined).toBe(disabled)
+    expect(wrapper.get('[data-testid="platform-longitude"] input').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')?.length ?? 0).toBe(disabled ? 0 : 1)
     wrapper.unmount()
