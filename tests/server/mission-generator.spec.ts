@@ -619,6 +619,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const { files, manifest } = buildMissionPackage(draft)
     const rear = manifest.platforms.find((item: { referenceModel: string }) => item.referenceModel === 'REAR_COMM_PLATFORM')!
     expect(manifest.linkCalc).toMatchObject({ emitted: true, hostPlatformId: rear.platformId })
+    expect(manifest.requiredProcessors).toEqual(['WSF_LINK_CALC_PROCESSOR'])
+    expect(manifest.linkCalc.note).toContain('当前环境是否兼容须由实际运行确认')
+    expect(manifest.engineValidated).toBe(false)
     const rearText = files['comm_platform_REAR.txt']
     const block = rearText.slice(rearText.indexOf('  add processor link_calc WSF_LINK_CALC_PROCESSOR'))
     expect(rearText.match(/add processor link_calc/g)).toHaveLength(1)
@@ -751,6 +754,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const { files, manifest } = buildMissionPackage(draft)
     expect(typeText(files)).not.toContain('link_calc')
     expect(manifest.linkCalc).toMatchObject({ emitted: false, hostPlatformId: null })
+    expect(manifest.requiredProcessors).toEqual([])
+    expect(manifest.engineValidated).toBe(false)
   })
 
   it('数传经高空中继时，中继入口使用独立时延处理器再转发，不与其他链路共用', () => {

@@ -4,7 +4,7 @@ import type { ScenarioDraft, ScriptContract } from '../../src/contracts/domain-m
 import { buildMissionPackage } from '../scripts/mission-generator.js'
 
 /** 每次执行重新生成已保存修订的独占包，禁止复用旧输出或接受客户端脚本路径。 */
-export async function writeMissionPackage(directory: string, draft: ScenarioDraft): Promise<string> {
+export async function writeMissionPackage(directory: string, draft: ScenarioDraft) {
   const generated = buildMissionPackage(draft)
   await mkdir(resolve(directory), { recursive: true })
   const owned = await mkdtemp(join(resolve(directory), 'mission-'))
@@ -13,7 +13,7 @@ export async function writeMissionPackage(directory: string, draft: ScenarioDraf
     for (const [name, content] of Object.entries(generated.files)) {
       await writeFile(join(owned, name), content, { encoding: 'utf8', flag: 'wx' })
     }
-    return join(owned, generated.manifest.entry)
+    return { entryPath: join(owned, generated.manifest.entry), requiredProcessors: generated.manifest.requiredProcessors }
   } catch (error) {
     await rm(owned, { recursive: true, force: true })
     throw error

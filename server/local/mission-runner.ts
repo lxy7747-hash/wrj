@@ -10,20 +10,25 @@ import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 import { MissionGuard } from './mission-guard.js'
+import { inspectMissionDependencies, LINK_CALC_DEPENDENCY_NOTE } from './mission-dependencies.js'
 
 const STOP_WAIT_MS = 5_000
 
 // mission 的脚本异常不一定反映在退出码中，必须同时复核日志，且不整文件读入内存。
-async function inspectExecutionLog(path: string): Promise<boolean> {
+async function inspectExecutionLog(path: string) {
   const input = createReadStream(path, { encoding: 'utf8' })
   const lines = createInterface({ input, crlfDelay: Infinity })
   let completed = false
+  let hasError = false
+  let missingLinkCalc = false
   try {
     for await (const line of lines) {
-      if (/^\s*\*{5}\s+(ERROR|FATAL):/.test(line)) return false
+      if (/^\s*\*{5}\s+(ERROR|FATAL):/.test(line)) hasError = true
+      // 只识别引擎明确报告的缺失，不将一般加载错误或普通处理器名称回显当作缺失证据。
+      if (/^\s*(?:\*{5}\s*)?(?:ERROR:\s*)?Could not find processor\s+(?:(?:of\s+)?type\s*:?\s*)?["']?WSF_LINK_CALC_PROCESSOR["']?(?=\s|[.;:]|$)/i.test(line)) missingLinkCalc = true
       if (line.trim() === 'Simulation complete') completed = true
     }
-    return completed
+    return { completed, hasError, missingLinkCalc }
   } finally { lines.close(); input.destroy() }
 }
 
@@ -31,7 +36,8 @@ async function inspectExecutionLog(path: string): Promise<boolean> {
 export class LocalMissionRunner implements MissionExecution {
   private readonly guard: MissionGuard
 
-  constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults) {
+  constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults,
+    private readonly dependencies: { linkCalcPluginPath?: string } = {}) {
     if (!isAbsolute(executable)) throw new Error('MISSION_EXECUTABLE_PATH 必须为绝对路径。')
     this.guard = new MissionGuard(directory)
   }
@@ -40,8 +46,13 @@ export class LocalMissionRunner implements MissionExecution {
 
   async start(draft: ScenarioDraft, runId = 'RUN-LOCAL'): Promise<MissionProcess> {
     if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
-    const entryPath = await writeMissionPackage(this.directory, draft)
+    const { entryPath, requiredProcessors } = await writeMissionPackage(this.directory, draft)
     const cwd = dirname(entryPath)
+    const dependencyCheck = await inspectMissionDependencies(requiredProcessors, this.dependencies.linkCalcPluginPath)
+    await writeFile(join(cwd, 'dependency-check.json'), JSON.stringify(dependencyCheck, null, 2), { flag: 'wx' })
+    if (dependencyCheck.status === 'configured-file-unavailable') {
+      throw new Error(`${dependencyCheck.message} 诊断记录：${join(cwd, 'dependency-check.json')}`)
+    }
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
     const startedAt = new Date().toISOString()
@@ -83,13 +94,19 @@ export class LocalMissionRunner implements MissionExecution {
         if (stopError) outcome.errorMessage = stopError
         try {
           await log.close()
-          if (code === 0 && !await inspectExecutionLog(logPath)) {
+          const evidence = await inspectExecutionLog(logPath)
+          if (code === 0 && (evidence.hasError || !evidence.completed)) {
             outcome.errorMessage = `mission 日志含运行错误或缺少完成证据，请查看 ${logPath}`
+          }
+          if (evidence.missingLinkCalc) {
+            outcome.errorMessage = `当前 Mission 报告找不到 WSF_LINK_CALC_PROCESSOR，未能加载或注册该处理器。${LINK_CALC_DEPENDENCY_NOTE} 请查看 ${logPath}`
+          } else if (outcome.errorMessage && requiredProcessors.length > 0) {
+            outcome.errorMessage += ` 依赖说明（未认定为本次失败原因）：${dependencyCheck.message}`
           }
           if (stopError) outcome.errorMessage = stopError
           const receipt = {
             scenarioId: draft.config.scenario.id, revision: draft.revision, entryPath,
-            executable: this.executable, pid: child.pid ?? null, startedAt, ...outcome,
+            executable: this.executable, pid: child.pid ?? null, startedAt, dependencyCheck, ...outcome,
           }
           await writeFile(join(cwd, 'execution.json'), JSON.stringify(receipt, null, 2), { flag: 'wx' })
           if (code === 0 && !outcome.errorMessage && !stopped && this.results) {

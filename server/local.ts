@@ -70,6 +70,7 @@ const server = createMockServer({
       lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url))),
       lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url)),
       missionResults,
+      { linkCalcPluginPath: process.env.MISSION_LINK_CALC_PLUGIN_PATH?.trim() || undefined },
     ),
   writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {

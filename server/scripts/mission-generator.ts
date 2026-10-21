@@ -1052,7 +1052,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     `包内输出目录 ${outputDirectory}：scenario_events.csv（按开关输出） / scenario_events.aer / position.csv。`,
     `文件拆分与命名同对接示例，入口为 ${ENTRY_FILE}；平台类型名仍按场景平台独立生成。`,
     '数传上行经 forward_delay、下行经 return_delay（固定 1 秒）交给 script_proc；微波、卫星、光纤直连 script_proc。',
-    'link_calc 挂在第一个后方指挥节点上，参数由场景配置汇总；本地引擎未包含 WSF_LINK_CALC_PROCESSOR，本地运行会在读取输入时报错。',
+    '含后方指挥节点时，link_calc 挂在第一个后方指挥节点上，要求当前 Mission 注册 WSF_LINK_CALC_PROCESSOR；生成阶段不检测部署环境的插件。无后方节点时不需要该处理器。',
     '生成阶段不运行 mission，engineValidated 保持 false。',
   ]
 
@@ -1061,12 +1061,13 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     engineValidated: false,
     scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE,
     scriptFiles: [ENTRY_FILE, DEFINITION_FILE, ...PLATFORM_TYPE_FILES, INSTANCE_FILE, 'observers.txt'],
+    requiredProcessors: linkCalcSlot === null ? [] : ['WSF_LINK_CALC_PROCESSOR'],
     linkCalc: {
       emitted: linkCalcSlot !== null,
       hostPlatformId: linkCalcHost?.platformId ?? null,
       note: linkCalcSlot === null
         ? '场景中没有后方指挥节点，未生成 link_calc。'
-        : 'WSF_LINK_CALC_PROCESSOR 由对接方程序读取；本地 Release 与 部署/Windows 引擎未包含该处理器，会在读取输入时报错。',
+        : '需要当前 Mission 注册 WSF_LINK_CALC_PROCESSOR；请安装与引擎版本和架构匹配的对接方插件并按其加载要求配置。插件文件存在不等于处理器已注册，当前环境是否兼容须由实际运行确认。',
     },
     platforms, devices, businesses, jammers, sensors,
     environment: { seaState: environment.seaState, rainRateMmPerHour: environment.rainRateMmPerHour, engineEmitted: environmentEmitted },
