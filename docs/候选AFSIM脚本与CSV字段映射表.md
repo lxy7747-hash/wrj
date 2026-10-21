@@ -2,9 +2,9 @@
 
 整理日期：2026-09-22。
 
-## 当前权威口径（2026-09-28，2026-10-08 补充）
+## 当前权威口径（2026-09-28，2026-10-21 补充）
 
-以下按现行 `server/scripts/mission-generator.ts`、包内 `mapping.json` 与 `tests/server/mission-execution.spec.ts` 判定。后文第 1～19 节记录历次候选和历史缺口，出现矛盾时以本节及第 20～22 节的现行实现为准。**2026-10-08 起生成包按对接示例拆分文件、入口改为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选，详见第 22 节；本节表格中与第 22 节冲突的内容以第 22 节为准。****本机部署限制：本机两套 AFSIM 引擎均缺少 `WSF_LINK_CALC_PROCESSOR` 插件，含后方指挥节点的场景生成的 Mission 在本机必然报错退出，安装对接方插件前无法原样运行（见 22.5）；去掉 `link_calc` 的实测与自动化测试通过均不等于原样实机验收通过。****写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应 `execution.json`、日志和实际 CSV 为证。
+以下按现行 `server/scripts/mission-generator.ts`、包内 `mapping.json` 与 `tests/server/mission-execution.spec.ts` 判定。后文第 1～19 节记录历次候选和历史缺口，出现矛盾时以本节及第 20～23 节的现行实现为准。**2026-10-08 起生成包按对接示例拆分文件、入口改为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选，详见第 22 节。****历史环境限制：2026-10-08 记录的两套开发机引擎缺少 `WSF_LINK_CALC_PROCESSOR`，不能据此判断其他或当前部署环境；启动依赖检查边界以第 23 节为准。去掉 `link_calc` 的实测与自动化测试通过均不等于原样实机验收通过。****写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应 `execution.json`、日志和实际 CSV 为证。
 
 | 参数或能力 | 当前分类 | 具体边界与证据 |
 |---|---|---|
@@ -549,7 +549,7 @@
 | `natural_environment.atmosphere/misc_loss_db` | 示例固定值 |
 | `natural_environment.sea_state` | `enabled` 跟随“海面多径衰落”开关，`sea_state_level` 取海况等级，`sea_polygon` 取地图框选区域（22.7）；`low_altitude_threshold_m 300`、`path_over_sea_threshold_km 30`、`use_reflection_geometry false` 为示例固定值 |
 
-**本机限制**：`Release/Release/` 与 `部署/Windows/engine/` 两套引擎均无该处理器，实测报 `ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR` 并 `FATAL`。按已确认选择始终生成，因此含后方节点的场景在本机运行必然失败，需安装对接方插件。去掉 `link_calc` 后，示例脚本与生成包均可完整运行。该处理器的输出文件格式尚未提供，链路质量与切换 CSV 仍保持阻断。
+**2026-10-08 历史本机限制**：当时 `Release/Release/` 与 `部署/Windows/engine/` 两套引擎均无该处理器，实测报 `ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR` 并 `FATAL`。按已确认选择始终生成，因此含后方节点的场景在当时本机运行必然失败，需安装对接方插件。这不代表当前部署情况。去掉 `link_calc` 后，示例脚本与生成包均可完整运行。该处理器的输出文件格式尚未提供，链路质量与切换 CSV 仍保持阻断。
 
 ### 22.6 场景配置新增字段
 
@@ -592,3 +592,35 @@
 - 本机 AFSIM 2.9.0（去掉 `link_calc`）实测生成包：无错误、无告警；数传上下行业务 240 条全部经时延处理器接收；切换规则样例在干扰开启（884.5 s）后 886.8 s 切到微波、关闭（1004.5 s）后 1006.8 s 切回数传，期间 24 条走微波、216 条走数传，240 条全部接收；L 波段与云层参数按配置写出。
 - 10 个真实引擎用例未重跑：其场景含后方节点，安装插件前会因 `link_calc` 失败。其中读取平台定义的断言已改为读取 6 个拆分文件，但未经实机执行确认。
 - `engineValidated` 仍为 `false`。
+
+## 23. Mission 插件依赖与失败处理（2026-10-21）
+
+### 23.1 源码确认与检测边界
+
+- `link_calc` 的生成条件仍是存在后方指挥节点（`REAR_COMMAND_NODE` → `REAR_COMM_PLATFORM`），只挂在第一个后方节点上。它不以阶段切换开关、规则列表或业务是否启用作为条件；无后方节点时不生成。阶段切换规则、优先级、3 秒检查周期、冷却时间和处理器参数生成逻辑均未修改。
+- `mapping.json.requiredProcessors` 与实际 `linkCalc.emitted` 来自同一次生成，含后方节点时声明 `WSF_LINK_CALC_PROCESSOR`，否则为空。删除了生成说明中对当前环境“必然缺插件”的硬编码断言。
+- 目前没有经核实的处理器枚举接口或固定插件文件名。服务端可选配置 `MISSION_LINK_CALC_PLUGIN_PATH`，只能可靠检查指定路径的绝对性、普通文件属性和可读性。文件缺失、权限不足或路径无效时，在打开日志、领取运行锁和 spawn 之前阻断；不能将此结论扩大为机器上没有该处理器。
+- 路径未配置时记为 `unknown`，不误拦截静态注册或其他加载方式；可读时记为 `file-readable`，不宣称处理器已注册或 ABI 已兼容。两者都保留准确依赖说明并允许引擎验证。此变量不负责配置引擎加载路径。无后方节点时跳过检查。
+- 引擎日志明确报告找不到 `WSF_LINK_CALC_PROCESSOR` 时，运行器提供专门诊断；普通初始化错误或仅回显处理器名称不据此认定插件缺失。无论退出码是否为零，都检查日志；不因缺插件而删除 `link_calc` 或降级运行。
+
+### 23.2 状态与资源
+
+预检阻断返回 `START_FAILED`（503），运行进入 ERROR、PID 为空、场景解锁，无子进程、日志句柄或新增未结清记录；保留独占生成包和 `dependency-check.json` 供检查，不伪造 `execution.json`。修正部署后，按现有状态机创建新运行重试。
+
+引擎运行失败时，在实际 `close` 之后关闭日志、写 `execution.json` 并清除 `.mission-active`；API 进入 ERROR、清空 PID 并解锁场景，不捕获或发布结果。缺少关闭确认时，原有停止超时与未结清拦截行为保留。
+
+### 23.3 本轮自动化验证与待验收项
+
+本轮在 Linux / Node.js 24.19.0 执行：
+
+| 检查 | 实际结果 |
+|---|---|
+| `npm run typecheck` | 通过 |
+| `npm run test:server` | 546 通过，23 跳过；其中 16 个依赖真实 Mission，7 个依赖本地真实日志 |
+| `npm run test:contracts` | 141 通过 |
+| `node --import tsx scripts/validate-contracts.ts` | OpenAPI、夹具结构/引用闭合与 CSV 契约通过；原 `npm run validate:contracts` 因当前环境拒绝 tsx CLI 的 IPC socket 而失败，改用相同入口直接加载执行 |
+| `npm run build:lan` | 前端与服务端发布构建通过 |
+
+新增用例覆盖：指定插件文件缺失/非文件/不可读/相对路径、未配置时保持未知、文件可读时放行、文件存在但引擎未注册时的明确诊断、无后方节点忽略失效插件路径、零退出码错误日志、其他错误不误判缺插件，以及失败状态/解锁/PID/未结清记录/日志关闭/结果不发布/修正后重试。文件操作和 HTTP API 实际执行；引擎成功、缺处理器和进程关闭由受控进程事件与日志模拟，不是插件实机结果。
+
+本轮未配置 `MISSION_SMOKE_EXECUTABLE`，未执行真实引擎或真实插件；新增的无后方节点实机用例也如实跳过。浏览器 E2E、覆盖率门禁未执行。仍须在配套 Mission 与插件环境运行原样生成包，核对处理器加载、阶段切换与输出证据；实际插件文件可读、模拟测试通过、历史删去 `link_calc` 的实测均不能替代此项验收。`engineValidated` 保持 `false`。

@@ -43,7 +43,7 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const servers: Array<ReturnType<typeof createMockServer>> = []
 let activeRunId = ''
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); vi.mocked(childProcess.spawn).mockReset(); vi.restoreAllMocks() })
-async function apiFor(start: (draft: ScenarioDraft) => Promise<MissionProcess>) {
+async function apiFor(start: (draft: ScenarioDraft, runId: string) => Promise<MissionProcess>) {
   const server = createMockServer({ port: 0, missionExecution: { start } })
   servers.push(server)
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
@@ -179,6 +179,138 @@ function draftForMission(): ScenarioDraft {
 }
 
 describe('本机 mission 执行器', () => {
+  it('配置的插件文件缺失时 START 提前失败并解锁，未创建子进程、日志或未结清记录；修正后可重试', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-plugin-preflight-'))
+    try {
+      const pluginPath = join(root, 'vendor.dll')
+      const capture = vi.fn(async () => {})
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), join(root, 'runs'), { capture }, { linkCalcPluginPath: pluginPath })
+      const { command, run, api } = await apiFor((_, runId) => runner.start(draftForMission(), runId))
+      const response = await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(503)
+      expect(response.body.error).toMatchObject({ code: 'START_FAILED', message: expect.stringContaining('插件文件不可用') })
+      expect(await run()).toMatchObject({ uiStatus: 'ERROR', configLocked: false, canonical: { processId: null } })
+      expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(false)
+      expect(childProcess.spawn).not.toHaveBeenCalled()
+      expect(capture).not.toHaveBeenCalled()
+      expect(runner.safetyStatus()).toBeNull()
+      const [owned] = await readdir(join(root, 'runs'))
+      const directory = join(root, 'runs', owned!)
+      expect(JSON.parse(await readFile(join(directory, 'dependency-check.json'), 'utf8'))).toMatchObject({ status: 'configured-file-unavailable' })
+      expect(await readdir(directory)).not.toContain('mission-console.log')
+      expect(await readdir(directory)).not.toContain('execution.json')
+      // 保留原样生成包供排查；不把预检失败写成已执行或篡改脚本绕过依赖。
+      expect(await readTypeFiles(directory)).toContain('add processor link_calc WSF_LINK_CALC_PROCESSOR')
+      await writeFile(pluginPath, 'configured file; registration is tested by engine')
+      const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+      vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+      const retried = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+      activeRunId = retried.body.data.runId
+      await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+      const pending = (await readdir(join(root, 'runs'))).find((name: string) => name.startsWith('mission-') && name !== owned)!
+      await appendFile(join(root, 'runs', pending, 'mission-console.log'), 'Simulation complete\n')
+      child.emit('close', 0)
+      await expect.poll(run).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false, canonical: { processId: null } })
+      expect(capture).toHaveBeenCalledTimes(1)
+      expect(runner.safetyStatus()).toBeNull()
+      expect(JSON.parse(await readFile(join(root, 'runs', pending, 'execution.json'), 'utf8')).dependencyCheck.status).toBe('file-readable')
+      expect(JSON.parse(await readFile(join(root, 'runs', pending, 'mapping.json'), 'utf8')).engineValidated).toBe(false)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each([false, true])('引擎明确报告处理器缺失（插件文件配置=%s）时保留专门诊断，失败状态和资源正确清理', async configured => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-plugin-runtime-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const pluginPath = join(root, 'vendor.dll')
+      if (configured) await writeFile(pluginPath, 'exists but not registered')
+      const capture = vi.fn(async () => {})
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), join(root, 'runs'), { capture }, { linkCalcPluginPath: configured ? pluginPath : undefined })
+      const { command, run, api } = await apiFor((_, runId) => runner.start(draftForMission(), runId))
+      await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+      const owned = (await readdir(join(root, 'runs'))).find((name: string) => name.startsWith('mission-'))!
+      const directory = join(root, 'runs', owned)
+      expect(JSON.parse(await readFile(join(directory, 'dependency-check.json'), 'utf8')).status).toBe(configured ? 'file-readable' : 'unknown')
+      await appendFile(join(directory, 'mission-console.log'), '***** ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR\n***** FATAL: Input failed\n')
+      child.emit('close', 1)
+      await expect.poll(run).toMatchObject({ uiStatus: 'ERROR', configLocked: false,
+        canonical: { processId: null, errorMessage: expect.stringContaining('未能加载或注册') } })
+      expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(false)
+      expect(runner.safetyStatus()).toBeNull()
+      expect(await readdir(join(root, 'runs'))).not.toContain('.mission-active')
+      expect(capture).not.toHaveBeenCalled()
+      const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
+      expect(receipt).toMatchObject({ code: 1, errorMessage: expect.stringContaining('WSF_LINK_CALC_PROCESSOR') })
+      // Windows 下未关闭的文件句柄会使删除失败；结束后日志可移除，停止也不会再 kill。
+      await rm(join(directory, 'mission-console.log'))
+      expect(child.kill).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('无后方节点时忽略失效插件路径，原样运行并保留无需插件的证据', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-no-rear-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const capture = vi.fn(async () => {})
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, { capture }, { linkCalcPluginPath: join(root, 'missing.dll') })
+      const draft = draftForMission()
+      draft.config.platforms[0]!.type = 'GROUND_CLUSTER_COMMAND_NODE'
+      const process = await runner.start(draft)
+      const directory = dirname(process.entryPath)
+      expect(await readTypeFiles(directory)).not.toContain('link_calc')
+      expect(JSON.parse(await readFile(join(directory, 'dependency-check.json'), 'utf8')).status).toBe('not-required')
+      await appendFile(join(directory, 'mission-console.log'), 'Simulation complete\n')
+      child.emit('close', 0)
+      expect(await process.completed).toMatchObject({ code: 0 })
+      expect((await process.completed).errorMessage).toBeUndefined()
+      expect(capture).toHaveBeenCalledTimes(1)
+      expect(runner.safetyStatus()).toBeNull()
+      await process.stop()
+      expect(child.kill).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each([
+    ['***** ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR\nSimulation complete\n', true],
+    ['***** ERROR: Could not find processor of type: "WSF_LINK_CALC_PROCESSOR"\nSimulation complete\n', true],
+    ['***** ERROR: Failed to initialize WSF_LINK_CALC_PROCESSOR\nSimulation complete\n', false],
+    ['***** ERROR: Could not find processor WSF_LINK_CALC_PROCESSOR_OTHER\nSimulation complete\n', false],
+    ['***** ERROR: other error\ninfo: WSF_LINK_CALC_PROCESSOR\nSimulation complete\n', false],
+  ])('日志诊断仅按明确缺失证据判断，退出码为零也不误报完成：%s', async (log, missing) => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-plugin-log-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    try {
+      const capture = vi.fn(async () => {})
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, { capture })
+      const process = await runner.start(draftForMission())
+      await appendFile(join(dirname(process.entryPath), 'mission-console.log'), log)
+      child.emit('close', 0)
+      const outcome = await process.completed
+      expect(outcome.errorMessage).toBeTruthy()
+      expect(outcome.errorMessage!.includes('未能加载或注册')).toBe(missing)
+      if (!missing) expect(outcome.errorMessage).toContain('未认定为本次失败原因')
+      expect(capture).not.toHaveBeenCalled()
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：无后方节点的原样生成包无需 link_calc 插件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-no-rear-engine-'))
+    try {
+      const draft = draftForMission()
+      draft.config.platforms[0]!.type = 'GROUND_CLUSTER_COMMAND_NODE'
+      const runner = new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, { linkCalcPluginPath: join(root, 'missing.dll') })
+      const process = await runner.start(draft)
+      const outcome = await process.completed
+      expect(outcome).toMatchObject({ code: 0 })
+      expect(outcome.errorMessage).toBeUndefined()
+      expect(await readTypeFiles(dirname(process.entryPath))).not.toContain('link_calc')
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it('spawn 前记录场景和修订，spawn 后补记 PID；真实 close 后才解除拦截', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-guard-'))
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
