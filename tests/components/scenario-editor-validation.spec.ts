@@ -54,6 +54,33 @@ async function loadPage() {
 }
 
 describe('场景实体弹框确认校验', () => {
+  it('切换页签只挂载当前列表，传感器数字输入保留实例及待修正值', async () => {
+    const { wrapper, store } = await loadPage()
+    for (const [tab, table] of [['platforms', 'platform-table'], ['links', 'link-table'], ['jammers', 'jammer-table']] as const) {
+      expect(wrapper.find(`[data-testid="${table}"]`).exists()).toBe(false)
+      await wrapper.get(`#tab-${tab}`).trigger('click')
+      await flushPromises()
+      expect(wrapper.find(`[data-testid="${table}"]`).exists()).toBe(true)
+      await wrapper.get('#tab-scenario').trigger('click')
+      expect(wrapper.find(`[data-testid="${table}"]`).exists()).toBe(false)
+    }
+    await wrapper.get('#tab-data').trigger('click')
+    await flushPromises()
+    const frequency = wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find(item => item.attributes('data-testid') === 'sensor-frequency-min-0')!
+    await frequency.get('input').setValue('')
+    await frequency.get('input').trigger('blur')
+    await flushPromises()
+    expect(store.draft!.config.sensors[0]!.frequencyRange.min).toBeNull()
+    const before = structuredClone(toRaw(store.draft!))
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get('#tab-data').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })
+      .find(item => item.attributes('data-testid') === 'sensor-frequency-min-0')!.vm).toBe(frequency.vm)
+    expect(store.draft).toEqual(before)
+  })
+
   it.each(['source', 'target'])('卫星链路两端非卫星时阻止新增；选择%s端卫星后才写入草稿，编辑同样校验', async endpoint => {
     const { wrapper, store, fetch, select, confirm } = await loadPage()
     const original = structuredClone(toRaw(store.draft!))

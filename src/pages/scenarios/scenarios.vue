@@ -1377,7 +1377,8 @@ watch(activeTab, (tab) => {
           <el-button link type="primary" @click="locateValidationIssue(liveValidation.errors[0]!)">定位首个问题</el-button>
         </el-alert>
       </div>
-      <!-- 保留参数组件实例，避免切换阶段时数字输入重新挂载并按最小值改写待修正参数。 -->
+      <!-- 平台、链路、干扰表格在可见时挂载，避免零宽布局。 -->
+      <!-- 基础、传感器数字输入保留实例，避免重挂载按最小值改写待修正参数。 -->
       <el-tabs v-model="activeTab" class="scenario-tabs" :class="{ 'scenario-tabs--navigation-only': !configurationTab }" aria-label="参数分类">
         <el-tab-pane label="场景基础" name="scenario">
       <section class="console-panel scenario-section" aria-label="场景基础">
@@ -1586,7 +1587,7 @@ watch(activeTab, (tab) => {
                 <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-platform" @click="openNewPlatform()">新增节点</el-button>
               </div>
             </div>
-            <el-table :data="draft.config.platforms" stripe data-testid="platform-table">
+            <el-table v-if="activeTab === 'platforms'" :data="draft.config.platforms" stripe data-testid="platform-table">
               <el-table-column v-if="showIds" prop="id" label="场景实体 ID" min-width="130" />
               <el-table-column label="名称" min-width="180" show-overflow-tooltip><template #default="{ row }">{{ scenarioPlatformLabel(draft.config.platforms, row.id) }}</template></el-table-column>
               <el-table-column label="分类" width="120">
@@ -1636,7 +1637,7 @@ watch(activeTab, (tab) => {
                 <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
               </div>
             </div>
-            <el-table :data="draft.config.links" stripe data-testid="link-table">
+            <el-table v-if="activeTab === 'links'" :data="draft.config.links" stripe data-testid="link-table">
               <el-table-column v-if="showIds" prop="id" label="链路 ID" min-width="120" />
               <el-table-column v-else type="index" label="序号" width="65" />
               <el-table-column label="类型" min-width="130"><template #default="{ row }">{{ linkTypeLabel(row.type) }}</template></el-table-column>
@@ -1681,7 +1682,7 @@ watch(activeTab, (tab) => {
                 <small v-if="!hasJammerPlatform" data-testid="jammer-node-required">请先在节点配置中新增干扰节点。</small>
               </div>
             </div>
-            <el-table :data="draft.config.jammers" stripe data-testid="jammer-table">
+            <el-table v-if="activeTab === 'jammers'" :data="draft.config.jammers" stripe data-testid="jammer-table">
               <el-table-column v-if="showIds" prop="id" label="设备 ID"/>
               <el-table-column v-else type="index" label="序号" width="65" />
               <el-table-column label="类型" ><template #default="{ row }">{{ jammerTypeLabel(row.type) }}</template></el-table-column>
@@ -1714,7 +1715,7 @@ watch(activeTab, (tab) => {
           </section>
         </el-tab-pane>
 
-        <el-tab-pane label="传感器" name="data">
+        <el-tab-pane label="传感器" name="data" lazy>
           <section class="console-panel scenario-section" aria-labelledby="scenario-sensor-title">
             <div class="section-heading">
 <!--              <div>-->
@@ -2024,6 +2025,8 @@ watch(activeTab, (tab) => {
 }
 
 .scenario-section {
+  /* Grid 子项须允许收缩，表格的整数列宽不能反向撑大页签。 */
+  min-width: 0;
   padding: 1.1rem;
 }
 

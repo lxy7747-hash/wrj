@@ -48,6 +48,8 @@ describe('P3 报表内容', () => {
     expect(wrapper.text()).toContain('RUN-001 · 0分0秒～0分42秒')
     expect(wrapper.text()).toContain('2026-08-06 18:06:30')
     expect(wrapper.text()).toContain('单位：dB')
+    expect(wrapper.get('#tab-summary').attributes('aria-selected')).toBe('true')
+    expect(wrapper.find('[data-testid="report-time-series-table"]').exists()).toBe(false)
     expect(wrapper.findAll('.el-tabs__item').map((tab) => tab.text())).toEqual([
       '汇总', '分链路', '干扰影响', '切换事件', '批量对比', '时序曲线', '柱状图', '雷达图', '事件时间线',
     ])
@@ -72,6 +74,11 @@ describe('P3 报表内容', () => {
     expect(wrapper.findAll('[data-testid="report-time-series-table"] .el-table__row')).toHaveLength(3)
     expect(wrapper.text()).toContain('L-MW-01 · UAV-01 → GCC-01')
     expect(wrapper.text()).toContain('3.2e-7')
+    await wrapper.get('#tab-summary').trigger('click')
+    expect(wrapper.find('[data-testid="report-time-series-table"]').exists()).toBe(false)
+    await wrapper.get('#tab-timeline').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="report-time-series-table"] .el-table__row')).toHaveLength(3)
   })
 
   it('批量报告只使用 12 次批量运行生成聚合和对比数据', async () => {

@@ -22,6 +22,7 @@ const props = withDefaults(defineProps<{
 }>(), { batchRuns: () => [], frame: null, events: () => [] })
 
 const isBatch = computed(() => props.report.batchId !== undefined)
+const activeTab = ref('summary')
 const batchRuns = computed(() => isBatch.value ? props.batchRuns : [])
 const ordinaryFrame = computed(() => isBatch.value ? null : props.frame)
 const node = ref('')
@@ -106,7 +107,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-form-item label="任务阶段"><el-select disabled placeholder="暂无数据" style="width: 140px" /></el-form-item><el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
     </el-form>
     <el-alert v-if="rangeError" title="开始时刻不得晚于结束时刻。" type="error" :closable="false" />
-    <el-tabs class="report-tabs__body" data-testid="report-content-tabs">
+    <el-tabs v-model="activeTab" class="report-tabs__body" data-testid="report-content-tabs">
       <el-tab-pane label="汇总" name="summary">
         <div v-if="kpis" class="report-kpis">
           <article><span>连通率</span><strong>{{ kpis.connectivityRate.toFixed(1) }}%</strong><small>单位：%</small></article>
@@ -186,7 +187,8 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       </el-tab-pane>
 
       <el-tab-pane label="时序曲线" name="timeline">
-        <div v-if="series.length" class="report-series">
+        <!-- 自动行高表格只在可见时挂载，避免从零宽恢复时在尺寸回调中改写表头高度。 -->
+        <div v-if="activeTab === 'timeline' && series.length" class="report-series">
           <article v-for="series in series" :key="series.linkId" data-testid="report-time-series">
             <h4>{{ series.linkId }} · {{ series.sourcePlatformId }} → {{ series.targetPlatformId }}</h4>
             <div class="report-curves">

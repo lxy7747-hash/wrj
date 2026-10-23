@@ -819,6 +819,18 @@ test('态势链路标题不再展示异常数量和候选入口', async ({ page 
 
 test('P3 reports atomically switch sources and enforce Level II/III export paths', async ({ page }) => {
   const audit = auditConsole(page)
+  // 原生布局循环是 window.error 事件，不能只依赖 pageerror 或 console。
+  await page.context().addInitScript(() => {
+    const warnings: string[] = []
+    Object.assign(window, { reportResizeWarnings: warnings })
+    window.addEventListener('error', event => {
+      if (event.message.includes('ResizeObserver')) warnings.push(event.message)
+    })
+  })
+  const expectStableLayout = async (target: Page) => {
+    await target.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
+    expect(await target.evaluate(() => (window as unknown as { reportResizeWarnings: string[] }).reportResizeWarnings)).toEqual([])
+  }
   await loginAs(page, 'operator')
   const reportList = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports')
   await page.goto('/reports')
@@ -829,6 +841,11 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   await page.getByRole('tab', { name: '时序曲线', exact: true }).click()
   await expect(page.getByRole('img', { name: 'L-MW-01 snrDb 时序曲线', exact: true })).toBeVisible()
   await expect(page.getByTestId('report-time-series-table').locator('.el-table__row')).toHaveCount(3)
+  await expectStableLayout(page)
+  for (const tab of ['汇总', '分链路', '切换事件', '干扰影响', '时序曲线', '汇总', '时序曲线']) {
+    await page.getByRole('tab', { name: tab, exact: true }).click()
+    await expectStableLayout(page)
+  }
 
   const batchLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001')
   await page.getByTestId('report-source').click()
@@ -863,6 +880,9 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
   await dialog.getByTestId('confirm-report-export').click()
   expect((await aggregateExport).status()).toBe(200)
   await expect(adminPage.locator('.reports-page__export-result')).toContainText('2026-08-06 18:08:00')
+
+  await expectStableLayout(page)
+  await expectStableLayout(adminPage)
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
@@ -1302,7 +1322,10 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByTestId('apply-jammer').click()
 
   await page.getByTestId('delete-jammer-0').click()
-  await page.getByRole('button', { name: '删除', exact: true }).last().click()
+  const jammerDeleteConfirmation = page.getByRole('tooltip').filter({ hasText: '确认删除该干扰设备？' })
+  await expect(jammerDeleteConfirmation).toBeVisible()
+  await jammerDeleteConfirmation.getByRole('button', { name: '删除', exact: true }).click()
+  await expect(jammerDeleteConfirmation).toBeHidden()
   await expect(page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-WB-01-TX' })).toHaveCount(0)
 
   await page.getByRole('tab', { name: '节点配置' }).click()

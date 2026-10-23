@@ -489,6 +489,7 @@ describe('P2-1 场景管理页面', () => {
     expect(persisted.revision).toBe(5)
     expect(await scenario.loadScenario()).toBe(true)
     await flushPromises()
+    await wrapper.get('#tab-platforms').trigger('click')
     expect(wrapper.get('[data-testid="platform-table"]').text()).toContain('机载干扰设备')
     expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ type: 'AIRBORNE_JAMMER_PLATFORM', initialPosition: { longitude: 120.5, latitude: 26, altitude: 5000 } })
     await wrapper.get('#tab-jammers').trigger('click')
@@ -801,12 +802,13 @@ describe('P2-1 场景管理页面', () => {
     expect(await scenario.loadScenario()).toBe(true)
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     const pairs = [
-      ['add-platform', 'platform-table'],
-      ['add-link', 'link-table'],
-      ['add-jammer', 'jammer-table'], ['add-sensor', 'sensor-table'],
+      ['platforms', 'add-platform', 'platform-table'],
+      ['links', 'add-link', 'link-table'],
+      ['jammers', 'add-jammer', 'jammer-table'], ['data', 'add-sensor', 'sensor-table'],
     ] as const
-    const checkPosition = () => {
-      for (const [buttonId, tableId] of pairs) {
+    const checkPosition = async () => {
+      for (const [tab, buttonId, tableId] of pairs) {
+        await wrapper.get(`#tab-${tab}`).trigger('click')
         const buttons = wrapper.findAll(`[data-testid="${buttonId}"]`)
         expect(buttons).toHaveLength(1)
         const heading = buttons[0]!.element.closest('.platform-actions')?.parentElement
@@ -816,12 +818,12 @@ describe('P2-1 场景管理页面', () => {
           .toBe(wrapper.get(`[data-testid="${tableId}"]`).element)
       }
     }
-    checkPosition()
+    await checkPosition()
     await wrapper.get('#tab-data').trigger('click')
     const previousCount = scenario.draft!.config.sensors.length
     await wrapper.get('[data-testid="add-sensor"]').trigger('click')
     expect(scenario.draft!.config.sensors).toHaveLength(previousCount + 1)
-    checkPosition()
+    await checkPosition()
   })
 
   it('展示完整基础、时序和环境字段并保存中文草稿', async () => {
@@ -1794,6 +1796,7 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
+    await wrapper.get('#tab-platforms').trigger('click')
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const quantity = wrapper.findAllComponents({ name: 'ElInputNumber' })
@@ -1873,6 +1876,7 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
+    await wrapper.get('#tab-platforms').trigger('click')
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
     const typeSelect = wrapper.findAllComponents({ name: 'ElSelect' })
@@ -1997,6 +2001,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.dirty).toBe(false)
     expect(await scenario.loadScenario()).toBe(true)
     expect(scenario.draft?.config.links[0]?.coding).toBeNull()
+    await wrapper.get('#tab-links').trigger('click')
     await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
     await flushPromises()
     expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.props('modelValue')).toBe('')
