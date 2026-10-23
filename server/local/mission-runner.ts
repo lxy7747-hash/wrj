@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { createReadStream } from 'node:fs'
-import { open, writeFile } from 'node:fs/promises'
+import { mkdtemp, open, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 import { createInterface } from 'node:readline'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
@@ -10,6 +11,7 @@ import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 import { MissionGuard } from './mission-guard.js'
+import { MissionPositionReader } from './mission-position-reader.js'
 
 const STOP_WAIT_MS = 5_000
 
@@ -27,20 +29,59 @@ async function inspectExecutionLog(path: string): Promise<boolean> {
   } finally { lines.close(); input.destroy() }
 }
 
+const LINK_CALC_PROBE = [
+  'platform_type LINK_CALC_PROBE WSF_PLATFORM',
+  '  add processor link_calc WSF_LINK_CALC_PROCESSOR',
+  '  end_processor',
+  'end_platform_type',
+  'end_time 1 sec',
+  '',
+].join('\n')
+const LINK_CALC_MISSING = 'Could not find processor WSF_LINK_CALC_PROCESSOR'
+const PROBE_TIMEOUT_MS = 15_000
+
+/**
+ * 用最小脚本探测引擎是否注册了对接方插件处理器 WSF_LINK_CALC_PROCESSOR。
+ * 只有引擎明确报“找不到该处理器”才返回 false；其他失败（超时、启动失败等）按“有”处理，
+ * 不擅自删段，让正式运行暴露真实错误。
+ */
+export async function engineHasLinkCalc(executable: string): Promise<boolean> {
+  const directory = await mkdtemp(join(tmpdir(), 'wrj-link-calc-probe-'))
+  try {
+    await writeFile(join(directory, 'probe.txt'), LINK_CALC_PROBE, 'utf8')
+    const output = await new Promise<string>(resolve => {
+      execFile(executable, ['-es', 'probe.txt'], { cwd: directory, shell: false, windowsHide: true, timeout: PROBE_TIMEOUT_MS },
+        (_error, stdout, stderr) => resolve(`${stdout}\n${stderr}`))
+    })
+    return !output.includes(LINK_CALC_MISSING)
+  } finally { await rm(directory, { recursive: true, force: true }) }
+}
+
 /** 仅执行服务端生成的独占包；不用 shell，不读取浏览器传入的命令或路径。 */
 export class LocalMissionRunner implements MissionExecution {
   private readonly guard: MissionGuard
+  private readonly positions = new MissionPositionReader()
+  /** 引擎路径在服务进程内不变，探测结果缓存；探测异常时下次重试。 */
+  private linkCalcSupport?: Promise<boolean>
 
-  constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults) {
+  constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults,
+    private readonly probeLinkCalc: (executable: string) => Promise<boolean> = engineHasLinkCalc) {
     if (!isAbsolute(executable)) throw new Error('MISSION_EXECUTABLE_PATH 必须为绝对路径。')
     this.guard = new MissionGuard(directory)
   }
 
   safetyStatus() { return this.guard.status() }
 
+  private hasLinkCalc(): Promise<boolean> {
+    this.linkCalcSupport ??= this.probeLinkCalc(this.executable).catch(() => { this.linkCalcSupport = undefined; return true })
+    return this.linkCalcSupport
+  }
+
   async start(draft: ScenarioDraft, runId = 'RUN-LOCAL'): Promise<MissionProcess> {
     if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
-    const entryPath = await writeMissionPackage(this.directory, draft)
+    // 引擎有 WSF_LINK_CALC_PROCESSOR 时原样运行；找不到才在本次运行包中去掉 link_calc 段。
+    const entryPath = await writeMissionPackage(this.directory, draft, !await this.hasLinkCalc())
+    this.positions.attach(runId, draft, entryPath)
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
@@ -126,7 +167,7 @@ export class LocalMissionRunner implements MissionExecution {
       throw new Error('mission 启动未确认；请检查本机进程与未结清记录。')
     }
     return {
-      pid: child.pid!, startedAt, entryPath, completed,
+      pid: child.pid!, startedAt, entryPath, readPositions: () => this.positions.read(runId), completed,
       stop: async () => {
         stopped = true
         if (!exited) { try { child.kill() } catch { /* 后续强制终止与运行记录仍需完成。 */ } }

@@ -205,7 +205,7 @@ describe('敌方干扰配置保存', () => {
     expect(reset.config.jammingEnabled).toBeUndefined()
     const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(undone.config).toEqual(config)
-    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 25 * 1852 }, { jammingRange: 0 }, { jammingRange: 25 * 1852 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
+    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 100_001 }, { jammingRange: 0 }, { jammingRange: 100_001 }, { releaseRange: 100 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
       const invalid = structuredClone(config)
       Object.assign(invalid.jammers[0]!, mutation)
       await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)

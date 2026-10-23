@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import * as vueCompiler from 'vue/compiler-sfc'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
@@ -10,7 +11,9 @@ const uiPort = 5173
 
 export default defineConfig(({ mode }) => ({
   plugins: [
-    vue(),
+    // 显式传入编译器：plugin-vue 默认在 buildStart（listen 时）才解析，此前 watcher 若收到文件变更，
+    // handleHotUpdate 会读取空 compiler 并把错误缓存给首个页面，形成登录页错误遮罩。
+    vue({ compiler: vueCompiler }),
     AutoImport({ resolvers: [ElementPlusResolver()], dts: false }),
     Components({ resolvers: [ElementPlusResolver()], dts: false }),
     createVersaTilesPlugin(),

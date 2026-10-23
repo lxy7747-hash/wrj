@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Jammer, Link, LinkSwitchRule, LinkSwitchTrigger, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
-import { readLinkSettings } from '../../features/scenarios/link-settings'
+import type { HotLinkSettings, Jammer, Link, LinkCalcSettings, LinkSwitchRule, LinkSwitchTrigger, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
+import { isConfiguredLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
+import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 const props = withDefaults(defineProps<{
@@ -69,6 +71,65 @@ function resetDrag(): void {
   dropTarget.value = null
 }
 
+const linkCalc = computed(() => readLinkCalcSettings(settings.value.linkCalc))
+const thresholdFields = [
+  { key: 'emergencyThreshold', label: '紧急阈值（BER）' },
+  { key: 'warningThreshold', label: '告警阈值（BER）' },
+  { key: 'valueThresholdBer', label: '质量阈值（BER）' },
+] as const
+
+/** 写回 link_calc 全局设置；首次编辑时把文档默认值一并写入。 */
+function updateLinkCalc(patch: Partial<LinkCalcSettings>): void {
+  if (!props.disabled) emit('update:modelValue', { ...settings.value, linkCalc: { ...linkCalc.value, ...patch } })
+}
+
+/** 误码率按文本输入以支持 1e-7 这类科学计数；无法解析时写入 NaN 交给整体校验阻断。 */
+function setThreshold(key: (typeof thresholdFields)[number]['key'], text: string): void {
+  updateLinkCalc({ [key]: text.trim() === '' ? Number.NaN : Number(text) })
+}
+
+const hotEndLabels: Record<HotLinkSettings['endPlatformType'], string> = {
+  REAR_COMMAND_NODE: '后方指挥节点（REAR_COMM_PLATFORM）',
+  GROUND_CLUSTER_COMMAND_NODE: '地面集群指挥节点（COMMAND_VEHICLE_PLATFORM）',
+  AIRBORNE_MISSION_CLUSTER: '空中任务集群（MISSION_UAV_PLATFORM）',
+}
+const hotDirections = [{ key: 'forward', direction: 'FORWARD', label: '前向热链（hot_link_fw）' },
+  { key: 'reverse', direction: 'REVERSE', label: '返向热链（hot_link_ret）' }] as const
+const enabledLinks = computed(() => props.links.filter(link => isConfiguredLinkEnabled(link, settings.value, props.platforms)))
+const hotLinks = computed(() => readHotLinks(settings.value.hotLinks, enabledLinks.value, settings.value.priority))
+
+/** 写回整份热链配置；首次编辑时把当前自动串联结果一并固化为自定义配置。 */
+function emitHotLinks(next: HotLinkSettings | undefined): void {
+  if (props.disabled) return
+  const rest: ScenarioLinkSettings = { ...settings.value }
+  delete rest.hotLinks
+  emit('update:modelValue', next === undefined ? rest : { ...rest, hotLinks: next })
+}
+
+function updateChain(key: 'forward' | 'reverse', index: number, chain: string[] | null): void {
+  const next = readHotLinks(settings.value.hotLinks, enabledLinks.value, settings.value.priority)
+  if (chain === null) next[key].splice(index, 1)
+  else if (index >= next[key].length) next[key].push(chain)
+  else next[key][index] = chain
+  emitHotLinks(next)
+}
+
+/** 热链路径文字：源平台 →（链路类型）→ 目标平台，便于核对首尾是否相接。 */
+function chainPath(chain: readonly string[]): string {
+  const parts: string[] = []
+  chain.forEach((id, position) => {
+    const link = props.links.find(item => item.id === id)
+    if (!link) return
+    if (position === 0) parts.push(scenarioPlatformLabel(props.platforms, link.sourcePlatformId))
+    parts.push(`→（${typeLabel(link.type)}）→ ${scenarioPlatformLabel(props.platforms, link.targetPlatformId)}`)
+  })
+  return parts.join(' ')
+}
+
+function typeLabel(type: LinkType): string {
+  return props.typeOptions.find(option => option.value === type)?.label ?? type
+}
+
 const triggerOptions: readonly { value: LinkSwitchTrigger; label: string }[] = [
   { value: 'DISTANCE_ABOVE', label: '两端距离大于阈值' },
   { value: 'DISTANCE_BELOW', label: '两端距离小于阈值' },
@@ -131,9 +192,11 @@ function linkLabel(link: Link): string {
   <div data-testid="link-settings">
     <el-button size="small" :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
-  <el-dialog :model-value="dialogVisible" title="链路设置" width="min(760px, calc(100vw - 2rem))"
+  <el-dialog :model-value="dialogVisible" class="link-settings-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
     destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="emit('update:dialogVisible', $event)">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
+      <!-- 左列：选路策略与全局计算参数；右列：热链与切换规则（可增删的列表，内容较长）。 -->
+      <div class="link-settings__column" data-testid="link-settings-left">
       <div class="link-settings__strategy">
         <div class="link-settings__heading">链路优先级 <small>拖拽排序，越靠上优先级越高</small></div>
         <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
@@ -167,6 +230,67 @@ function linkLabel(link: Link): string {
         <el-input-number :model-value="settings.switchCooldownS" :min="0" :step="1" controls-position="right"
           data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
       </el-form-item>
+      <section class="link-settings__rules" data-testid="channel-encoding-settings" aria-labelledby="channel-encoding-title">
+        <div class="link-settings__heading">
+          <span id="channel-encoding-title">编码方案（全局）</span>
+          <small>channel_encoding_scheme，用于链路计算中的干扰余量</small>
+        </div>
+        <el-form-item label="信道编码">
+          <el-select :model-value="linkCalc.channelEncodingScheme" data-testid="link-calc-channelEncodingScheme"
+            @update:model-value="updateLinkCalc({ channelEncodingScheme: $event })">
+            <el-option v-for="option in CHANNEL_ENCODING_OPTIONS" :key="option.value" :value="option.value" :label="option.label" />
+          </el-select>
+        </el-form-item>
+      </section>
+      <section class="link-settings__rules" data-testid="link-calc-settings" aria-labelledby="link-calc-title">
+        <div class="link-settings__heading">
+          <span id="link-calc-title">链路计算阈值（全局）</span>
+          <small>写入后方节点 link_calc，供对接方链路计算使用</small>
+        </div>
+        <div class="link-settings__rule-grid">
+          <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label">
+            <el-input :model-value="String(linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
+              @change="setThreshold(field.key, $event)" />
+          </el-form-item>
+          <el-form-item :label="`干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}）`">
+            <el-input-number :model-value="linkCalc.jammingRangeKm" :min="JAMMING_RANGE_KM.min" :max="JAMMING_RANGE_KM.max" controls-position="right"
+              data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
+          </el-form-item>
+        </div>
+      </section>
+      </div>
+      <div class="link-settings__column" data-testid="link-settings-right">
+      <section class="link-settings__rules" data-testid="hot-link-settings" aria-labelledby="hot-link-title">
+        <div class="link-settings__heading">
+          <span id="hot-link-title">热链配置（全局）</span>
+          <small data-testid="hot-link-state">{{ settings.hotLinks ? '已手动调整' : '自动生成' }}</small>
+          <el-button v-if="settings.hotLinks" link type="primary" data-testid="hot-link-reset" @click="emitHotLinks(undefined)">恢复自动串联</el-button>
+        </div>
+        <el-form-item label="热链终点平台类型（end_platform_type）">
+          <el-select :model-value="hotLinks.endPlatformType" data-testid="hot-link-end-type"
+            @update:model-value="emitHotLinks({ ...hotLinks, endPlatformType: $event })">
+            <el-option v-for="type in HOT_LINK_END_PLATFORM_TYPES" :key="type" :value="type" :label="hotEndLabels[type]" />
+          </el-select>
+        </el-form-item>
+        <div v-for="group in hotDirections" :key="group.key" class="link-settings__hot-group" :data-testid="`hot-link-${group.key}`">
+          <div class="link-settings__heading"><span>{{ group.label }}</span></div>
+          <p v-if="hotLinks[group.key].length === 0" class="link-settings__empty">没有同方向的已启用链路。</p>
+          <div v-for="(chain, index) in hotLinks[group.key]" :key="`${group.key}-${index}`" class="link-settings__rule">
+            <div class="link-settings__rule-head">
+              <strong>link{{ index + 1 }}</strong>
+              <el-button link type="danger" :data-testid="`hot-link-${group.key}-${index}-remove`" @click="updateChain(group.key, index, null)">删除</el-button>
+            </div>
+            <el-select :model-value="chain" multiple placeholder="按路径顺序选择链路" style="width: 100%" :data-testid="`hot-link-${group.key}-${index}`"
+              @update:model-value="updateChain(group.key, index, $event)">
+              <el-option v-for="link in links.filter(item => item.direction === group.direction)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
+            </el-select>
+            <small class="link-settings__empty">{{ chainPath(chain) }}</small>
+            <small v-if="hotLinkChainError(chain, links, group.direction)" class="link-settings__error">{{ hotLinkChainError(chain, links, group.direction) }}</small>
+          </div>
+          <el-button size="small" :disabled="disabled || !links.some(item => item.direction === group.direction)"
+            :data-testid="`hot-link-${group.key}-add`" @click="updateChain(group.key, hotLinks[group.key].length, [])">新增热链</el-button>
+        </div>
+      </section>
       <section class="link-settings__rules" data-testid="link-switch-rules" aria-labelledby="link-switch-rules-title">
         <div class="link-settings__heading">
           <span id="link-switch-rules-title">阶段切换规则</span>
@@ -221,6 +345,7 @@ function linkLabel(link: Link): string {
         </div>
         <el-button size="small" :disabled="disabled || links.length === 0" data-testid="add-switch-rule" @click="addRule">新增规则</el-button>
       </section>
+      </div>
     </el-form>
     <template #footer>
       <el-button type="primary" data-testid="close-link-settings" @click="emit('update:dialogVisible', false)">完成</el-button>
@@ -229,6 +354,11 @@ function linkLabel(link: Link): string {
 </template>
 
 <style scoped>
+/* 弹框高度不超过视口，标题与底部按钮固定，内容区单独滚动。 */
+:global(.link-settings-dialog) { display: flex; flex-direction: column; max-height: 90vh; }
+:global(.link-settings-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
+.link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 2rem; }
+.link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
 .link-settings__strategy { min-width: 0; margin-bottom: 1rem; }
 .link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
 .link-settings__heading small, .link-settings__priority-item small { color: var(--console-text-muted); font-size: 12px; }
@@ -245,12 +375,18 @@ function linkLabel(link: Link): string {
 .link-settings__fields :deep(.el-input-number) { width: 100%; }
 .link-settings__rules { display: grid; gap: 0.75rem; min-width: 0; }
 .link-settings__empty { margin: 0; color: var(--console-text-muted); font-size: 12px; }
+.link-settings__error { color: var(--el-color-danger); font-size: 12px; }
+.link-settings__hot-group { display: grid; gap: 0.5rem; min-width: 0; }
+.link-settings__hot-group .link-settings__rule small { display: block; margin: 0.25rem 0; }
 .link-settings__rule { min-width: 0; padding: 0.65rem 0.75rem 0.25rem; border: 1px solid var(--console-border); border-radius: 4px; }
 .link-settings__rule-head { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
 .link-settings__rule-head .el-button { margin-left: auto; }
 .link-settings__rule-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
 .link-settings__rule-grid :deep(.el-select) { width: 100%; }
 .link-settings__rule-wide { grid-column: 1 / -1; }
+@media (max-width: 960px) {
+  .link-settings__fields { grid-template-columns: 1fr; }
+}
 @media (max-width: 600px) {
   .link-settings__rule-grid { grid-template-columns: 1fr; }
   .link-settings__rule-wide { grid-column: auto; }

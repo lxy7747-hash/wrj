@@ -15,6 +15,8 @@ import type {
 } from '../../contracts/domain-models'
 
 import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
+import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
+import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES } from './platform-position-rules'
 
 const ROOT_KEYS = [
@@ -37,14 +39,32 @@ const ENVIRONMENT_KEYS = [
   'multipathEnabled',
 ] as const
 const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation',
-  'cloudAltitudeMinM', 'cloudAltitudeMaxM', 'cloudWaterDensityGM3', 'seaPolygon'] as const
+  'cloudAltitudeMinM', 'cloudAltitudeMaxM', 'cloudWaterDensityGM3', 'seaPolygon',
+  'rainEnabled', 'rainAltitudeLimitM', 'rainAttenuationDb', 'cloudEnabled', 'atmosphereModel', 'simplifiedAttenuationDbPerKm',
+  'polarizationMismatchDb', 'pointingErrorDb', 'seaLowAltitudeThresholdM', 'seaPathOverSeaThresholdKm', 'seaModel',
+  'seaPolarization', 'seaWaterTempC', 'seaSurfaceRoughnessM'] as const
+const POLARIZATIONS = ['vertical', 'horizontal'] as const
+/** natural_environment 数值字段：键、中文名、下限、上限（文档给出的取值范围）。 */
+const NATURAL_ENVIRONMENT_NUMBERS = [
+  ['rainAltitudeLimitM', '雨区顶部高度', 0, 30000],
+  ['rainAttenuationDb', '固定雨衰兜底值', 0, Infinity],
+  ['simplifiedAttenuationDbPerKm', '简化大气衰减率', 0, Infinity],
+  ['polarizationMismatchDb', '极化失配损耗', 0, Infinity],
+  ['pointingErrorDb', '指向误差损耗', 0, Infinity],
+  ['seaLowAltitudeThresholdM', '贴海飞行高度阈值', 0, Infinity],
+  ['seaPathOverSeaThresholdKm', '跨海距离阈值', 0, Infinity],
+  ['seaWaterTempC', '海水温度', -2, 30],
+  ['seaSurfaceRoughnessM', '海面高度标准差', 0, 5],
+] as const
+const LINK_CALC_KEYS = ['emergencyThreshold', 'warningThreshold', 'valueThresholdBer', 'jammingRangeKm', 'channelEncodingScheme'] as const
 const GEO_POINT_KEYS = ['longitude', 'latitude'] as const
 /** 海面区域至少需要 3 个顶点才能围成多边形；上限防止误操作生成过大的脚本参数。 */
 export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 const OPTIONAL_PLATFORM_KEYS = ['satelliteType'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
-const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band'] as const
+const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
+  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb'] as const
 export const DATALINK_BANDS = ['C', 'L'] as const
 export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
 const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId', 'toLinkId'] as const
@@ -94,6 +114,12 @@ const INFORMATION_NODE_TYPE_LABELS = {
 const DEPLOYMENT_DOMAINS = ['ground', 'air', 'space'] as const
 export const LINK_TYPES = ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'] as const
 export const INFORMATION_TYPES = ['态势信息', '目标指令', '侦察信息', '状态信息'] as const
+type InformationTypeName = (typeof INFORMATION_TYPES)[number]
+/** 四类业务类型的既定方向：态势、目标指令为前向；侦察、状态为返向。写入校验与脚本生成共用。 */
+export const INFORMATION_TYPE_DIRECTIONS: Readonly<Record<InformationTypeName, 'FORWARD' | 'REVERSE'>> = {
+  '态势信息': 'FORWARD', '目标指令': 'FORWARD', '侦察信息': 'REVERSE', '状态信息': 'REVERSE',
+}
+const directionLabel = (direction: 'FORWARD' | 'REVERSE') => (direction === 'FORWARD' ? '前向' : '返向')
 export const JAMMER_TYPES = ['BARRAGE', 'SPOT', 'SWEEP'] as const
 export const LINK_MHZ_MINIMUM_STEP = 0.001
 const MODULATIONS = ['BPSK', 'QPSK'] as const
@@ -330,6 +356,15 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   if (Object.hasOwn(value, 'band') && (value.type !== 'DATALINK' || !(DATALINK_BANDS as readonly unknown[]).includes(value.band))) {
     addError(errors, 'LINK_BAND_INVALID', '波段仅用于数传链路，请选择 C 或 L 波段。', `${path}.band`)
   }
+  for (const [key, label] of [['rxFrequency', '接收频率'], ['rxBandwidth', '接收带宽']] as const) {
+    if (Object.hasOwn(value, key) && !isPositiveFiniteNumber(value[key])) addError(errors, 'LINK_RX_INVALID', `${label}必须大于 0 MHz。`, `${path}.${key}`)
+  }
+  for (const [key, label] of [['txPolarization', '发射极化'], ['rxPolarization', '接收极化']] as const) {
+    if (Object.hasOwn(value, key) && !(POLARIZATIONS as readonly unknown[]).includes(value[key])) addError(errors, 'LINK_POLARIZATION_INVALID', `${label}请选择垂直或水平极化。`, `${path}.${key}`)
+  }
+  if (Object.hasOwn(value, 'noiseFigureDb') && !isFiniteNumber(value.noiseFigureDb, 0, 100)) {
+    addError(errors, 'LINK_NOISE_FIGURE_INVALID', '接收机噪声系数必须在 0～100 dB 之间。', `${path}.noiseFigureDb`)
+  }
 }
 
 /**
@@ -340,7 +375,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
   links: unknown = [], jammers: unknown = [], demands: unknown = []): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules'])) {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules', 'linkCalc', 'hotLinks'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -371,6 +406,48 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含五类链路且不能重复；读取兼容历史四类。', 'linkSettings.priority')
   }
   if (Object.hasOwn(value, 'switchRules')) inspectSwitchRules(value.switchRules, platforms, links, jammers, demands, errors)
+  if (Object.hasOwn(value, 'linkCalc')) inspectLinkCalc(value.linkCalc, errors)
+  if (Object.hasOwn(value, 'hotLinks')) inspectHotLinks(value.hotLinks, links, errors)
+}
+
+/** 校验热链配置：每条热链首尾相接、方向与所在列表一致，终点平台类型为可选枚举。 */
+function inspectHotLinks(value: unknown, links: unknown, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, ['forward', 'reverse', 'endPlatformType'])) {
+    addError(errors, 'HOT_LINKS_INVALID', '热链配置结构不正确。', 'linkSettings.hotLinks')
+    return
+  }
+  if (!(HOT_LINK_END_PLATFORM_TYPES as readonly unknown[]).includes(value.endPlatformType)) {
+    addError(errors, 'HOT_LINK_END_TYPE_INVALID', '热链终点平台类型请选择后方指挥节点、地面集群指挥节点或空中任务集群。', 'linkSettings.hotLinks.endPlatformType')
+  }
+  const knownLinks = Array.isArray(links) ? links.filter((link): link is Link => typeof link === 'object' && link !== null) : []
+  for (const [key, direction] of [['forward', 'FORWARD'], ['reverse', 'REVERSE']] as const) {
+    const chains = value[key]
+    if (!Array.isArray(chains) || chains.some(chain => !Array.isArray(chain) || chain.some(id => typeof id !== 'string'))) {
+      addError(errors, 'HOT_LINKS_INVALID', '热链须为链路编号列表。', `linkSettings.hotLinks.${key}`)
+      continue
+    }
+    chains.forEach((chain: string[], index) => {
+      const reason = hotLinkChainError(chain, knownLinks, direction)
+      if (reason !== null) addError(errors, 'HOT_LINK_CHAIN_INVALID', reason, `linkSettings.hotLinks.${key}[${index}]`)
+    })
+  }
+}
+
+/** 校验 link_calc 全局阈值、干扰圈半径与信道编码。 */
+function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, LINK_CALC_KEYS)) {
+    addError(errors, 'LINK_CALC_INVALID', '链路计算阈值结构不正确。', 'linkSettings.linkCalc')
+    return
+  }
+  for (const [key, label] of [['emergencyThreshold', '紧急阈值'], ['warningThreshold', '告警阈值'], ['valueThresholdBer', '质量阈值']] as const) {
+    if (!isFiniteNumber(value[key], 0, 1) || value[key] === 0) addError(errors, 'LINK_CALC_THRESHOLD_INVALID', `${label}必须是大于 0、不大于 1 的误码率。`, `linkSettings.linkCalc.${key}`)
+  }
+  if (!isFiniteNumber(value.jammingRangeKm, JAMMING_RANGE_KM.min, JAMMING_RANGE_KM.max)) {
+    addError(errors, 'LINK_CALC_JAMMING_RANGE_INVALID', `干扰圈半径必须在 ${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max} km 之间。`, 'linkSettings.linkCalc.jammingRangeKm')
+  }
+  if (!CHANNEL_ENCODING_OPTIONS.some(option => option.value === value.channelEncodingScheme)) {
+    addError(errors, 'LINK_CALC_ENCODING_INVALID', '信道编码请选择 -1、0、5.0、6.5、3.5 或 8.0。', 'linkSettings.linkCalc.channelEncodingScheme')
+  }
 }
 
 /**
@@ -462,7 +539,7 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
     addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '缺少必填的干扰范围 jammingRange，不支持该旧格式，请使用新版场景数据。', `${path}.jammingRange`)
     return
   }
-  if (!isClosedObject(value, JAMMER_KEYS, ['triggerTimeS'])) {
+  if (!isClosedObject(value, JAMMER_KEYS, ['triggerTimeS', 'releaseRange'])) {
     addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
     return
   }
@@ -477,11 +554,15 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
   if (typeof value.autoDetect !== 'boolean') addError(errors, 'JAMMER_AUTO_DETECT_INVALID', '自动检测开关格式不正确。', `${path}.autoDetect`)
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '探测范围不能小于 0 m。', `${path}.detectionRange`)
-  else if (mode === 'write' && !isFiniteNumber(value.detectionRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RANGE_INVALID', '干扰探测范围必须在 1～24 海里之间。', `${path}.detectionRange`)
+  else if (mode === 'write' && !isFiniteNumber(value.detectionRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RANGE_INVALID', '干扰探测范围必须在 1～100 km 之间。', `${path}.detectionRange`)
   if (!isFiniteNumber(value.jammingRange, 0)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围不能小于 0 m。', `${path}.jammingRange`)
-  else if (mode === 'write' && !isFiniteNumber(value.jammingRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围必须在 1～24 海里之间。', `${path}.jammingRange`)
+  else if (mode === 'write' && !isFiniteNumber(value.jammingRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围必须在 1～100 km 之间。', `${path}.jammingRange`)
   else if (isFiniteNumber(value.detectionRange, 0) && value.jammingRange > value.detectionRange) {
     warnings.push({ severity: 'WARNING', code: 'JAMMER_RANGE_ORDER', message: '干扰范围大于探测范围；自动探测仍先按探测范围发现目标，仅在干扰范围内启停干扰。', fieldPath: `${path}.jammingRange` })
+  }
+  if (Object.hasOwn(value, 'releaseRange')) {
+    if (!isFiniteNumber(value.releaseRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RELEASE_RANGE_INVALID', '释放范围必须在 1～100 km 之间。', `${path}.releaseRange`)
+    else if (isFiniteNumber(value.jammingRange, 0) && value.releaseRange < value.jammingRange) addError(errors, 'JAMMER_RELEASE_RANGE_INVALID', '释放范围不能小于干扰范围。', `${path}.releaseRange`)
   }
   // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
   if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
@@ -539,6 +620,9 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
     return
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'INFORMATION_DEMAND_ID_INVALID', '信息需求 ID 为必填项。', `${path}.id`)
+  const explicitDirection = Object.hasOwn(value, 'direction')
+  const expectedDirection = mode === 'write' && typeof value.informationType === 'string' && Object.hasOwn(INFORMATION_TYPE_DIRECTIONS, value.informationType)
+    ? INFORMATION_TYPE_DIRECTIONS[value.informationType as InformationTypeName] : undefined
   if (Object.hasOwn(value, 'linkId')) {
     const link = links.find(item => item?.id === value.linkId)
     if (typeof value.linkId !== 'string' || !value.linkId.trim() || !link) {
@@ -550,7 +634,9 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
         || value.destinationPlatformIds.length !== 1 || value.destinationPlatformIds[0] !== link.targetPlatformId) {
         addError(errors, 'INFORMATION_DEMAND_LINK_ENDPOINT_MISMATCH', '业务端点必须与所属链路一致。', `${path}.destinationPlatformIds`)
       }
-      if (value.direction !== link.direction) addError(errors, 'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', '业务方向必须与所属链路一致。', `${path}.direction`)
+      // 未填方向且类型与链路方向冲突时只报下方的类型方向错误，避免同一问题重复提示。
+      const reportedAsTypeConflict = !explicitDirection && expectedDirection !== undefined && link.direction !== expectedDirection
+      if (value.direction !== link.direction && !reportedAsTypeConflict) addError(errors, 'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', '业务方向必须与所属链路一致。', `${path}.direction`)
     }
   }
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
@@ -564,6 +650,14 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
   else if (/[\u0000-\u001f\u007f"\\]/.test(value.informationType)) addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', 'AFSIM 字符串不支持双引号、反斜杠或控制字符，无法无损生成。', `${path}.informationType`)
   else if (mode === 'write' && !(INFORMATION_TYPES as readonly string[]).includes(value.informationType)) addError(errors, 'INFORMATION_DEMAND_TYPE_INVALID', '信息类型须为态势信息、目标指令、侦察信息或状态信息。', `${path}.informationType`)
   if (Object.hasOwn(value, 'direction') && value.direction !== 'FORWARD' && value.direction !== 'REVERSE') addError(errors, 'INFORMATION_DEMAND_DIRECTION_INVALID', '业务方向必须为前向或返向。', `${path}.direction`)
+  // 有效方向取显式业务方向，未指定时取已关联链路方向；均缺省的旧业务由生成器按实际主路由兜底。
+  if (expectedDirection !== undefined) {
+    const effective = explicitDirection ? value.direction : Object.hasOwn(value, 'linkId') ? links.find(item => item?.id === value.linkId)?.direction : undefined
+    if ((effective === 'FORWARD' || effective === 'REVERSE') && effective !== expectedDirection) {
+      addError(errors, 'INFORMATION_DEMAND_TYPE_DIRECTION_MISMATCH',
+        `${value.informationType}须使用${directionLabel(expectedDirection)}，当前业务方向为${directionLabel(effective)}。`, `${path}.${explicitDirection ? 'direction' : 'linkId'}`)
+    }
+  }
   if (Object.hasOwn(value, 'enabled') && typeof value.enabled !== 'boolean') addError(errors, 'INFORMATION_DEMAND_ENABLED_INVALID', '业务启用状态必须为布尔值。', `${path}.enabled`)
   if (!isFiniteNumber(value.volumeMb, 0)) addError(errors, 'INFORMATION_DEMAND_VOLUME_INVALID', '数据量不能小于 0 MB。', `${path}.volumeMb`)
   if (!isFiniteNumber(value.frequencyHz, 0)) addError(errors, 'INFORMATION_DEMAND_FREQUENCY_INVALID', '发送频率不能小于 0 Hz。', `${path}.frequencyHz`)
@@ -716,9 +810,28 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Object.hasOwn(environment, 'transmissionDistance') && !isFiniteNumber(environment.transmissionDistance, 150, 410)) {
     addError(errors, 'STRAIT_WIDTH_INVALID', '海峡宽度必须在 150～410 km 之间。', 'scenario.environment.transmissionDistance')
   }
-  if (Object.hasOwn(environment, 'rainCloudAttenuation')
-    && !['none', 'lightRain', 'moderateRain', 'heavyRain'].includes(environment.rainCloudAttenuation as string)) {
-    addError(errors, 'WEATHER_INVALID', '云雨气象衰减请选择无、小雨、中雨或大雨。', 'scenario.environment.rainCloudAttenuation')
+  if (Object.hasOwn(environment, 'rainCloudAttenuation') && !Object.hasOwn(RAIN_TIER_RATES, environment.rainCloudAttenuation as string)) {
+    addError(errors, 'WEATHER_INVALID', '雨强档位请选择无雨、小雨、中雨、大雨或暴雨。', 'scenario.environment.rainCloudAttenuation')
+  }
+  for (const key of ['rainEnabled', 'cloudEnabled'] as const) {
+    if (Object.hasOwn(environment, key) && typeof environment[key] !== 'boolean') addError(errors, 'NATURAL_ENVIRONMENT_SWITCH_INVALID', '开关格式不正确。', `scenario.environment.${key}`)
+  }
+  for (const [key, label, minimum, maximum] of NATURAL_ENVIRONMENT_NUMBERS) {
+    if (Object.hasOwn(environment, key) && !isFiniteNumber(environment[key], minimum, maximum)) {
+      addError(errors, 'NATURAL_ENVIRONMENT_INVALID', maximum === Infinity ? `${label}必须为非负有限数值。` : `${label}必须在 ${minimum}～${maximum} 之间。`, `scenario.environment.${key}`)
+    }
+  }
+  if (Object.hasOwn(environment, 'atmosphereModel') && !['itu', 'simplified', 'auto'].includes(environment.atmosphereModel as string)) {
+    addError(errors, 'ATMOSPHERE_MODEL_INVALID', '大气模型请选择 itu、simplified 或 auto。', 'scenario.environment.atmosphereModel')
+  }
+  if (Object.hasOwn(environment, 'seaModel') && !['coarse', 'fine'].includes(environment.seaModel as string)) {
+    addError(errors, 'SEA_MODEL_INVALID', '海况损耗模式请选择经验模型或多径模型。', 'scenario.environment.seaModel')
+  }
+  if (Object.hasOwn(environment, 'seaPolarization') && !(POLARIZATIONS as readonly unknown[]).includes(environment.seaPolarization)) {
+    addError(errors, 'SEA_POLARIZATION_INVALID', '反射系数极化请选择垂直或水平极化。', 'scenario.environment.seaPolarization')
+  }
+  if (isFiniteNumber(environment.rainRateMmPerHour, 0) && environment.rainRateMmPerHour > RAIN_RATE_MAX) {
+    warnings.push({ severity: 'WARNING', code: 'RAIN_RATE_CAPPED', message: `降雨强度超过 ${RAIN_RATE_MAX} mm/h，链路计算按 ${RAIN_RATE_MAX} 封顶。`, fieldPath: 'scenario.environment.rainRateMmPerHour' })
   }
   for (const [key, label] of [['cloudAltitudeMinM', '云层下限高度'], ['cloudAltitudeMaxM', '云层上限高度'], ['cloudWaterDensityGM3', '云中液态水密度']] as const) {
     if (Object.hasOwn(environment, key) && !isFiniteNumber(environment[key], 0)) {
@@ -740,6 +853,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     })
   }
   if (!isFiniteNumber(environment.seaState, 0)) addError(errors, 'SEA_STATE_INVALID', '海况等级不能小于 0。', 'scenario.environment.seaState')
+  else if (mode === 'write' && !(Number.isInteger(environment.seaState) && environment.seaState <= SEA_STATE_MAX)) {
+    addError(errors, 'SEA_STATE_INVALID', `海况等级须为 0～${SEA_STATE_MAX} 的整数，0 表示不启用海况损耗。`, 'scenario.environment.seaState')
+  }
   if (!isFiniteNumber(environment.temperatureC)) addError(errors, 'TEMPERATURE_INVALID', '温度必须是有效数值。', 'scenario.environment.temperatureC')
   if (!isFiniteNumber(environment.humidityPercent, 0, 100)) addError(errors, 'HUMIDITY_INVALID', '相对湿度必须在 0 至 100 之间。', 'scenario.environment.humidityPercent')
   if (!isFiniteNumber(environment.rainRateMmPerHour, 0)) addError(errors, 'RAIN_RATE_INVALID', '降雨率不能小于 0。', 'scenario.environment.rainRateMmPerHour')

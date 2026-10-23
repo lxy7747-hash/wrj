@@ -132,4 +132,5 @@ server.httpServer.once('listening', () => {
   backupStorage.start()
   console.log(`接口已启动：${lan?.publicOrigin ?? `http://127.0.0.1:${port}`}；初始位置来源：${logPath ? '配置的事件文件' : '尚未配置事件文件'}`)
   if (scenarioStorage) console.log('场景与模板存储：SQLite 开发验证（未加密，仅限非敏感测试数据）。')
+  if (lan && process.connected) process.send?.({ type: 'ready' }, () => {})
 })

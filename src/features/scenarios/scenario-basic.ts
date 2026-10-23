@@ -1,5 +1,6 @@
 import type { Platform, ScenarioConfig, ScenarioDraft, ScenarioId } from '../../contracts/domain-models'
 import { configuredScenarioOutput } from '../../config/app.config.js'
+import { NATURAL_ENVIRONMENT_DEFAULTS, RAIN_TIER_RATES } from './link-calc-defaults'
 
 /** 默认按名称展示；同名或失效引用保留编号，避免隐藏后无法区分对象。 */
 export function scenarioPlatformLabel(platforms: readonly Pick<Platform, 'id' | 'name'>[], id: string, showIds = false): string {
@@ -31,8 +32,9 @@ export function createEmptyScenarioDraft(id: ScenarioId): ScenarioDraft {
         duration: SCENARIO_BASIC_DEFAULTS.duration,
         timeStep: 1,
         environment: {
-          seaState: 0, temperatureC: 0, humidityPercent: 0,
-          rainRateMmPerHour: 0, rainLossDbPerKm: 0, multipathEnabled: false,
+          // 海况 3 级、小雨 10 mm/h 为《与前端字段确认说明》默认值。
+          seaState: 3, temperatureC: 0, humidityPercent: 0,
+          rainRateMmPerHour: RAIN_TIER_RATES[SCENARIO_BASIC_DEFAULTS.rainCloudAttenuation], rainLossDbPerKm: 0, multipathEnabled: false,
         },
       },
       platforms: [], links: [], jammers: [], sensors: [], informationDemand: [],
@@ -63,6 +65,7 @@ export function withScenarioBasicDefaults(config: ScenarioConfig): ScenarioConfi
         cloudAltitudeMinM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMinM,
         cloudAltitudeMaxM: SCENARIO_BASIC_DEFAULTS.cloudAltitudeMaxM,
         cloudWaterDensityGM3: SCENARIO_BASIC_DEFAULTS.cloudWaterDensityGM3,
+        ...NATURAL_ENVIRONMENT_DEFAULTS,
         ...config.scenario.environment,
       },
     },

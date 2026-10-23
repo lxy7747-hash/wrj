@@ -9079,9 +9079,11 @@
               "none",
               "lightRain",
               "moderateRain",
-              "heavyRain"
+              "heavyRain",
+              "stormRain"
             ],
-            "default": "lightRain"
+            "default": "lightRain",
+            "description": "雨强档位：无雨 0、小雨 10、中雨 25、大雨 50、暴雨 100 mm/h；界面选择后同步降雨强度。"
           },
           "cloudAltitudeMinM": {
             "type": "number",
@@ -9126,6 +9128,93 @@
                 }
               }
             }
+          },
+          "rainEnabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "rainAltitudeLimitM": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 30000,
+            "default": 3000,
+            "description": "雨区顶部高度，单位 m。"
+          },
+          "rainAttenuationDb": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "固定雨衰兜底值，单位 dB；仅雨强为 0 时生效。"
+          },
+          "cloudEnabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "atmosphereModel": {
+            "type": "string",
+            "enum": [
+              "itu",
+              "simplified",
+              "auto"
+            ],
+            "default": "itu"
+          },
+          "simplifiedAttenuationDbPerKm": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0,
+            "description": "简化大气衰减率，单位 dB/km；大于 0 时优先于 ITU 模型。"
+          },
+          "polarizationMismatchDb": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "pointingErrorDb": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0
+          },
+          "seaLowAltitudeThresholdM": {
+            "type": "number",
+            "minimum": 0,
+            "default": 100,
+            "description": "贴海飞行高度阈值，单位 m。"
+          },
+          "seaPathOverSeaThresholdKm": {
+            "type": "number",
+            "minimum": 0,
+            "default": 30,
+            "description": "跨海距离阈值，单位 km。"
+          },
+          "seaModel": {
+            "type": "string",
+            "enum": [
+              "coarse",
+              "fine"
+            ],
+            "default": "coarse"
+          },
+          "seaPolarization": {
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ],
+            "default": "vertical"
+          },
+          "seaWaterTempC": {
+            "type": "number",
+            "minimum": -2,
+            "maximum": 30,
+            "default": 20
+          },
+          "seaSurfaceRoughnessM": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 5,
+            "default": 0,
+            "description": "海面高度标准差 σh，单位 m；不大于 0 时按海况等级推导。"
           },
           "seaState": {
             "type": "number",
@@ -9597,6 +9686,36 @@
             "default": "C",
             "description": "数传波段，仅 DATALINK 使用；缺省为 C 波段。"
           },
+          "rxFrequency": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "接收频率，单位 MHz；缺省与发射频率相同。"
+          },
+          "rxBandwidth": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "description": "接收带宽，单位 MHz；缺省与发射带宽相同。"
+          },
+          "txPolarization": {
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ]
+          },
+          "rxPolarization": {
+            "type": "string",
+            "enum": [
+              "vertical",
+              "horizontal"
+            ]
+          },
+          "noiseFigureDb": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100,
+            "description": "接收机噪声系数，单位 dB；缺省时天通卫星 2 dB，其余 3 dB。"
+          },
           "id": {
             "type": "string",
             "minLength": 1
@@ -9716,7 +9835,12 @@
           "jammingRange": {
             "type": "number",
             "minimum": 0,
-            "description": "干扰有效作用距离，单位 m；界面按海里编辑。"
+            "description": "干扰有效作用距离（触发半径），单位 m；界面按 km 编辑。"
+          },
+          "releaseRange": {
+            "type": "number",
+            "minimum": 0,
+            "description": "干扰机离开后的释放距离，单位 m；缺省为干扰范围加 5 海里。"
           }
         }
       },
@@ -10198,6 +10322,100 @@
             "description": "阶段切换规则；按列表顺序，第一条条件成立的规则决定源到目标的当前链路。",
             "items": {
               "$ref": "#/components/schemas/LinkSwitchRule"
+            }
+          },
+          "linkCalc": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "link_calc 全局阈值与信道编码；缺省时按《与前端字段确认说明》默认值生成。",
+            "required": [
+              "emergencyThreshold",
+              "warningThreshold",
+              "valueThresholdBer",
+              "jammingRangeKm",
+              "channelEncodingScheme"
+            ],
+            "properties": {
+              "emergencyThreshold": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "default": 0.00001
+              },
+              "warningThreshold": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "default": 0.000001
+              },
+              "valueThresholdBer": {
+                "type": "number",
+                "exclusiveMinimum": 0,
+                "maximum": 1,
+                "default": 1e-7
+              },
+              "jammingRangeKm": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 30,
+                "description": "干扰圈半径，单位 km。"
+              },
+              "channelEncodingScheme": {
+                "type": "number",
+                "enum": [
+                  -1,
+                  0,
+                  5,
+                  6.5,
+                  3.5,
+                  8
+                ],
+                "default": 0,
+                "description": "信道编码增益 dB：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。"
+              }
+            }
+          },
+          "hotLinks": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "热链配置（全局）；每条热链为首尾相接的链路编号序列。缺省时按已启用链路自动串联。",
+            "required": [
+              "forward",
+              "reverse",
+              "endPlatformType"
+            ],
+            "properties": {
+              "forward": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "reverse": {
+                "type": "array",
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "endPlatformType": {
+                "type": "string",
+                "enum": [
+                  "REAR_COMMAND_NODE",
+                  "GROUND_CLUSTER_COMMAND_NODE",
+                  "AIRBORNE_MISSION_CLUSTER"
+                ],
+                "default": "REAR_COMMAND_NODE",
+                "description": "热链终点平台类型；脚本 end_platform_type 写对应参考模型名。"
+              }
             }
           },
           "priority": {

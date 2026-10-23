@@ -187,6 +187,8 @@ async function resetMock(request: APIRequestContext): Promise<void> {
   expect(response.status()).toBe(200)
 }
 
+const SIMULATION_COMMAND_PATH = /^\/api\/v1\/simulations\/RUN-\d{3}\/commands$/
+
 async function loadScenarioDraft(request: APIRequestContext): Promise<ScenarioDraft> {
   const response = await request.get(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
     headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
@@ -1092,7 +1094,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
 
     const acceptedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: { config: fiftyConfig, uiExtensions: baseline.uiExtensions },
+      data: { config: fiftyConfig, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision },
     })
     expect(acceptedResponse.status()).toBe(200)
     const acceptedDraft = ((await acceptedResponse.json()) as ApiSuccess<ScenarioDraft>).data
@@ -1113,7 +1115,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     })
     const rejectedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: { config: fiftyOneConfig, uiExtensions: acceptedDraft.uiExtensions },
+      data: { config: fiftyOneConfig, uiExtensions: acceptedDraft.uiExtensions, expectedRevision: acceptedDraft.revision },
     })
     expect(rejectedResponse.status()).toBe(422)
     expect(await rejectedResponse.json()).toMatchObject({
@@ -1171,7 +1173,10 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await frequency.fill('915.125')
   await bandwidth.fill('5.125')
   await page.getByTestId('link-power').locator('input').fill('42')
-  await page.getByTestId('link-data-rate').locator('input').fill('64')
+  // 微波速率按文档固定 80 Mbps，只读展示，不允许手填。
+  // el-input 把 data-testid 透传到原生 input 上。
+  await expect(page.getByTestId('link-data-rate')).toBeDisabled()
+  await expect(page.getByTestId('link-data-rate')).toHaveValue('80 Mbps')
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toHaveCount(0)
 
@@ -1203,7 +1208,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
     frequency: 915.125,
     bandwidth: 5.125,
     txPower: 42,
-    dataRate: 64,
+    dataRate: 80,
   })
   expect(savedDraft.config.platforms.find((platform) => platform.id === 'CMD-01')?.linkIds).toContain('L-CFG-001')
   expect(savedDraft.config.informationDemand.find(item => item.linkId === 'L-CFG-001')).toMatchObject({
@@ -1241,7 +1246,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   baseline.config.platforms.push({ ...structuredClone(baseline.config.platforms.find(platform => platform.id === 'STN-01')!),
     id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
   expect((await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, { headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-    data: { config: baseline.config, uiExtensions: baseline.uiExtensions } })).status()).toBe(200)
+    data: { config: baseline.config, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision } })).status()).toBe(200)
 
   await loginAs(page, 'operator')
   const loaded = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1274,7 +1279,8 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByTestId('jammer-platform').click()
   await expect(page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true })).toHaveCount(0)
   await page.getByRole('option', { name: '地面固定式干扰侦测站（STN-01）', exact: true }).click()
-  await page.getByTestId('jammer-power').locator('input').fill('0')
+  // 写入校验要求功率大于 0 W，输入框不接受 0。
+  await page.getByTestId('jammer-power').locator('input').fill('5')
   await page.getByTestId('jammer-range').locator('input').fill('1')
   await page.getByTestId('jammer-jamming-range').locator('input').fill('1')
   await page.getByTestId('jammer-direction').locator('input').fill('270')
@@ -1318,12 +1324,14 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
     id: 'JAM-CFG-001',
     platformId: 'AJ-001',
     type: 'SPOT',
-    defaultPower: 0,
+    defaultPower: 5,
     frequency: 0.0001,
     bandwidth: 0.0002,
     autoDetect: false,
-    detectionRange: 1852,
-    jammingRange: 1852,
+    // 距离按 km 输入、合同存米；释放范围取新建默认值 35 海里。
+    detectionRange: 1000,
+    jammingRange: 1000,
+    releaseRange: 64820,
     triggerTimeS: 300,
   })
   expect(savedDraft.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
@@ -1633,9 +1641,13 @@ test('OPERATOR checks fields on save without a separate script preview or prefli
   await page.getByTestId('scenario-name').fill('')
   await page.getByTestId('save-scenario').click()
   await expect(page.getByTestId('validation-panel')).toBeVisible()
-  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'scenario.name' }).click()
-  await expect(page.getByTestId('scenario-name')).toBeFocused()
+  // 定位会切回基础配置并卸载校验面板，面板内容须在定位前断言。
+  await expect(page.getByTestId('validation-panel')).toContainText('scenario.name')
   await expect(page.getByTestId('validation-panel')).not.toContainText('output.writeInterval')
+  await page.getByTestId('validation-panel').getByRole('button').filter({ hasText: 'scenario.name' }).click()
+  await expect(page.getByRole('tab', { name: '场景基础', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByTestId('scenario-name')).toBeFocused()
+  await expect(page.locator('[data-field-path="scenario.name"]')).toContainText('场景名称为必填项，且不能超过 128 个字符。')
   await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('script-preview-panel')).toHaveCount(0)
 
@@ -1684,8 +1696,9 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const audit = auditConsole(page)
   const runLoaded = page.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/simulations')
+  // 02f01ff 起每次新建运行按序编号（RUN-002…），命令路径不再固定为 RUN-001。
   const waitForCommand = (command: string) => page.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/commands'
+    && SIMULATION_COMMAND_PATH.test(new URL(response.url()).pathname)
     && response.request().postDataJSON().command === command)
 
   await loginAs(page, 'operator')
@@ -1725,7 +1738,7 @@ test('P3-1/P3-2 OPERATOR controls a run and reads one realtime telemetry frame',
   const remoteRunLoaded = remotePage.waitForResponse((response) => response.request().method() === 'GET'
     && new URL(response.url()).pathname === '/api/v1/simulations')
   const waitForRemoteCommand = (command: string) => remotePage.waitForResponse((response) => response.request().method() === 'POST'
-    && new URL(response.url()).pathname === '/api/v1/simulations/RUN-001/commands'
+    && SIMULATION_COMMAND_PATH.test(new URL(response.url()).pathname)
     && response.request().postDataJSON().command === command)
   await loginAs(remotePage, 'operator')
   expect((await remoteRunLoaded).status()).toBe(200)

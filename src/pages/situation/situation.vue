@@ -33,6 +33,8 @@ import { fileLinkDeviceStatus, selectFileDeviceStates } from '../../features/sit
 import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
+import { isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
+import { unwrapSuccessData } from '../../stores/api-envelope'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -92,6 +94,16 @@ const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthSto
 let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
+const missionPositions = ref<MissionPositionSnapshot | null>(null)
+const missionPositionMessage = ref('')
+const missionPositionSource = computed(() => {
+  const run = simulationRun.value
+  const scene = selectedScene.value
+  const auth = useAuthStore()
+  return auth.runtimeMode === 'LOCAL' && auth.principal && scene && run?.startedAt
+    && run.scenarioId === scene.config.scenario.id
+    ? `${auth.principal.userId}:${run.runId}:${scene.config.scenario.id}:${scene.revision}:${run.startedAt}` : null
+})
 // 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
 const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
@@ -120,9 +132,65 @@ const sourceMessage = ref('正在读取初始节点位置。')
 const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
 const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value)))
 const mapNodes = computed(() => selectedScene.value
-  ? selectedScene.value.config.platforms.map(platform => ({ platformId: platform.id, name: platform.name, type: platform.type, ...platform.initialPosition, speed: 0 }))
+  ? selectedScene.value.config.platforms.map(platform => ({
+    platformId: platform.id, name: platform.name, type: platform.type, ...platform.initialPosition, speed: 0,
+    ...missionPositions.value?.positions?.nodes.find(node => node.platformId === platform.id),
+  }))
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
 const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
+const missionPositionTime = computed(() => missionPositions.value?.positions?.nodes.length
+  ? Math.max(...missionPositions.value.positions.nodes.map(node => node.time)) : null)
+
+// 位置只绑定本次真实运行；场景、修订或账号改变时取消在途请求并清除旧坐标。
+watch(missionPositionSource, (source, _, onCleanup) => {
+  missionPositions.value = null
+  missionPositionMessage.value = ''
+  if (!source) return
+  const runId = simulationRun.value!.runId
+  const scenarioId = selectedScene.value!.config.scenario.id
+  const revision = selectedScene.value!.revision
+  let cancelled = false
+  let reading = false
+  let finalRead = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let request: AbortController | undefined
+  const read = async () => {
+    if (cancelled) return
+    if (reading) { finalRead = true; return }
+    clearTimeout(timer)
+    reading = true
+    request = new AbortController()
+    const timeout = setTimeout(() => request?.abort(), 5_000)
+    let hasMore = false
+    try {
+      const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/positions`, { signal: request.signal, cache: 'no-store' })
+      const data: unknown = unwrapSuccessData(await response.json())
+      if (cancelled) return
+      if (!response.ok || !isMissionPositionSnapshot(data) || data.runId !== runId
+        || data.scenarioId !== scenarioId || data.revision !== revision) throw new Error('运行位置响应不一致。')
+      missionPositions.value = data
+      hasMore = data.positions?.hasMore ?? false
+      missionPositionMessage.value = data.positions?.nodes.length
+        ? `本次位置已更新至 ${missionPositionTime.value} s${data.positions.issueCount ? '，部分无效记录已跳过' : ''}`
+        : simulationRun.value?.configLocked ? '等待本次仿真写入位置数据。' : '本次仿真尚无可用位置数据。'
+    } catch {
+      if (!cancelled) missionPositionMessage.value = `本次位置读取失败${missionPositions.value?.positions?.nodes.length ? '，保留上次位置' : ''}${simulationRun.value?.configLocked ? '，正在重试' : ''}。`
+    } finally {
+      clearTimeout(timeout)
+      reading = false
+      if (!cancelled && (simulationRun.value?.configLocked || hasMore || finalRead)) {
+        const delay = hasMore || finalRead ? 50 : 1_000
+        finalRead = false
+        timer = setTimeout(() => { void read() }, delay)
+      }
+    }
+  }
+  const stopStatusWatch = watch(() => simulationRun.value?.configLocked, (locked, wasLocked) => {
+    if (wasLocked && !locked) void read()
+  }, { flush: 'sync' })
+  onCleanup(() => { cancelled = true; clearTimeout(timer); request?.abort(); stopStatusWatch() })
+  void read()
+}, { immediate: true, flush: 'sync' })
 
 /** 按本机配置加载初始位置；本地模式未配置时显示空态，仅 Mock 服务加载固定帧，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
@@ -781,7 +849,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <dl class="timing-list">
                 <div><dt>帧标识</dt><dd>暂无数据</dd></div>
                 <div><dt>任务 / 运行</dt><dd>{{ otherSceneRun ? '暂无数据' : `${simulationRun?.taskId} / ${simulationRun?.runId}` }}</dd></div>
-                <div><dt>仿真时刻</dt><dd>{{ otherSceneRun ? 0 : simulationTime }} s</dd></div>
+                <div><dt>仿真时刻</dt><dd>{{ otherSceneRun ? 0 : missionPositionTime ?? simulationTime }} s</dd></div>
                 <div><dt>帧序号</dt><dd>暂无数据</dd></div>
               </dl>
             </div>
@@ -1039,6 +1107,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     <footer v-else-if="!selectedScene && sourceState === 'FILE' && initialSnapshot" class="situation-footer">
       <span>来源：{{ initialSnapshot.fileName }}</span>
       <span>{{ fileTimeLabel(fileTime) }} · 节点 {{ fileNodes.length }} 个 · 点击左侧节点可定位</span>
+    </footer>
+    <footer v-else-if="missionPositionSource" class="situation-footer" role="status">
+      <span>本次仿真位置</span>
+      <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" />

@@ -1845,17 +1845,17 @@ describe('P2-4 干扰设备字段校验', () => {
     }
   })
 
-  it('敌方干扰支持扫频与总开关，写入限制海里范围和触发时刻且旧读取不改值', () => {
+  it('敌方干扰支持扫频与总开关，写入限制 1～100 km 范围和触发时刻且旧读取不改值', () => {
     const config = scenarioDraft().config
     config.jammingEnabled = false
     config.jammers[0]!.type = 'SWEEP'
     config.jammers[0]!.triggerTimeS = 300
-    for (const range of [1852, 44448]) {
+    for (const range of [1000, 100000]) {
       config.jammers[0]!.detectionRange = range
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     }
-    for (const range of [0, 1851, 44449, Number.NaN]) {
+    for (const range of [0, 999, 100001, Number.NaN]) {
       config.jammers[0]!.detectionRange = range
       expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].detectionRange')
     }
@@ -1864,15 +1864,23 @@ describe('P2-4 干扰设备字段校验', () => {
     expect(config.jammers[0]!.detectionRange).toBe(150000)
     config.jammers[0]!.detectionRange = 44448
     config.jammers[0]!.jammingRange = 44448
-    for (const range of [1852, 44448]) {
+    for (const range of [1000, 100000]) {
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     }
-    for (const range of [0, 1851, 44449, Number.NaN]) {
+    for (const range of [0, 999, 100001, Number.NaN]) {
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].jammingRange')
     }
     config.jammers[0]!.jammingRange = 44448
+    // 释放范围可缺省；填写时须在 1～100 km 且不小于干扰范围。
+    for (const releaseRange of [44447, 100001]) {
+      config.jammers[0]!.releaseRange = releaseRange
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].releaseRange')
+    }
+    config.jammers[0]!.releaseRange = 64820
+    expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    delete config.jammers[0]!.releaseRange
     config.jammers[0]!.detectionRange = 1852
     config.jammers[0]!.jammingRange = 44448
     {

@@ -64,15 +64,34 @@ export interface Environment {
   simClockSpeed?: number;
   /** 海峡宽度，单位 km；不是各条链路的实际通信距离。 */
   transmissionDistance?: number;
-  /** 气象档位仅作为配置保存，不自动换算成物理雨衰值。 */
-  rainCloudAttenuation?: 'none' | 'lightRain' | 'moderateRain' | 'heavyRain';
+  /** 雨强档位；界面选择后同步写入 rainRateMmPerHour（0/10/25/50/100 mm/h）。 */
+  rainCloudAttenuation?: 'none' | 'lightRain' | 'moderateRain' | 'heavyRain' | 'stormRain';
   /** 云层高度范围（m）与云中液态水密度（g/m³）；旧场景缺省时采用对接示例值 500/2000/0.5。 */
   cloudAltitudeMinM?: Meters;
   cloudAltitudeMaxM?: Meters;
   cloudWaterDensityGM3?: number;
   /** 海面多径衰落启用后在地图上框选的海面区域顶点（至少 3 个，按绘制顺序）；缺省表示未框选，脚本不写坐标。 */
   seaPolygon?: GeoPoint[];
+  /** 以下为 link_calc natural_environment 参数（《与前端字段确认说明》）；旧场景缺省时按文档默认值生成。 */
+  rainEnabled?: boolean;
+  rainAltitudeLimitM?: Meters;
+  /** 固定雨衰兜底值，仅雨强为 0 时生效。 */
+  rainAttenuationDb?: Decibels;
+  cloudEnabled?: boolean;
+  atmosphereModel?: 'itu' | 'simplified' | 'auto';
+  /** 简化大气衰减率；大于 0 时优先于 ITU 模型。 */
+  simplifiedAttenuationDbPerKm?: number;
+  polarizationMismatchDb?: Decibels;
+  pointingErrorDb?: Decibels;
+  seaLowAltitudeThresholdM?: Meters;
+  seaPathOverSeaThresholdKm?: number;
+  seaModel?: 'coarse' | 'fine';
+  seaPolarization?: Polarization;
+  seaWaterTempC?: number;
+  /** 海面高度标准差 σh（m）；不大于 0 时由海况等级推导。 */
+  seaSurfaceRoughnessM?: Meters;
 }
+export type Polarization = 'vertical' | 'horizontal';
 export interface GeoPoint { longitude: Degrees; latitude: Degrees; }
 export interface ScenarioIdentity {
   id: ScenarioId; name: string; description: string; startTime: Iso8601Utc;
@@ -101,6 +120,14 @@ export interface Link {
   relayPlatformId?: Identifier | null;
   /** 数传波段，仅 DATALINK 使用；旧链路缺省为 C 波段。 */
   band?: DatalinkBand;
+  /** 接收机频率与带宽（MHz）；缺省时与发射参数相同。frequency/bandwidth 为发射参数。 */
+  rxFrequency?: Megahertz;
+  rxBandwidth?: Megahertz;
+  /** 收发极化；缺省时微波为水平极化，其余为垂直极化。 */
+  txPolarization?: Polarization;
+  rxPolarization?: Polarization;
+  /** 接收机噪声系数（dB）；缺省时天通卫星 2 dB，其余 3 dB。 */
+  noiseFigureDb?: Decibels;
 }
 export type DatalinkBand = 'C' | 'L';
 /** 链路切换触发条件：两端距离超过/低于阈值，或指定干扰设备开启/关闭。 */
@@ -123,12 +150,35 @@ export interface ScenarioLinkSettings {
   priority: LinkType[];
   /** 可配置的阶段切换规则；缺省表示只按优先级选主链路，不在仿真中切换。 */
   switchRules?: LinkSwitchRule[];
+  /** link_calc 全局阈值与编码；缺省时按《与前端字段确认说明》默认值生成。 */
+  linkCalc?: LinkCalcSettings;
+  /** 热链配置（全局）；缺省时按已启用链路自动串联。 */
+  hotLinks?: HotLinkSettings;
+}
+/**
+ * 热链：每条热链是首尾相接的链路编号序列（后一条的源平台等于前一条的目标平台），
+ * 跳点与端口由生成器从链路设备推出。forward 只含前向链路，reverse 只含返向链路。
+ */
+export interface HotLinkSettings {
+  forward: Identifier[][]; reverse: Identifier[][];
+  /** 热链终点的平台类型，生成时写参考模型名（如 REAR_COMM_PLATFORM）；默认后方指挥节点。 */
+  endPlatformType: Exclude<BusinessInformationNodeType, 'FORWARD_RELAY_NODE'>;
+}
+/** 信道编码增益（dB）：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。 */
+export type ChannelEncodingScheme = -1 | 0 | 5 | 6.5 | 3.5 | 8;
+export interface LinkCalcSettings {
+  emergencyThreshold: Ratio01; warningThreshold: Ratio01; valueThresholdBer: Ratio01;
+  /** 干扰圈半径，单位 km（0～100）。 */
+  jammingRangeKm: number;
+  channelEncodingScheme: ChannelEncodingScheme;
 }
 export interface Jammer {
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
   frequency: Megahertz; bandwidth: Megahertz; autoDetect: boolean; detectionRange: Meters;
-  /** 干扰有效作用距离，合同单位 m；界面按海里编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */
+  /** 干扰有效作用距离（触发半径），合同单位 m；界面按 km 编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */
   jammingRange: Meters;
+  /** 干扰机离开后的释放距离，合同单位 m；界面按 km 编辑，缺省为干扰范围加 5 海里。 */
+  releaseRange?: Meters;
   /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
   triggerTimeS?: Seconds;
 }

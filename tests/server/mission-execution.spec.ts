@@ -6,7 +6,7 @@ vi.mock('node:child_process', { spy: true })
 
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
-const { LocalMissionRunner } = await import('../../server/local/' + 'mission-runner.js')
+const { LocalMissionRunner, engineHasLinkCalc } = await import('../../server/local/' + 'mission-runner.js')
 const { MissionGuard } = await import('../../server/local/' + 'mission-guard.js')
 const { ScenarioSqliteStorage } = await import('../../server/local/' + 'scenario-sqlite.js')
 const { writeScriptText } = await import('../../server/local/' + 'script-file.js')
@@ -179,6 +179,36 @@ function draftForMission(): ScenarioDraft {
 }
 
 describe('本机 mission 执行器', () => {
+  it.each([
+    ['正常完成', 'Simulation complete', '', null, true],
+    ['标准输出明确缺少插件', 'Could not find processor WSF_LINK_CALC_PROCESSOR', '', null, false],
+    ['错误输出明确缺少插件', '', 'Could not find processor WSF_LINK_CALC_PROCESSOR', new Error('exit 1'), false],
+    ['其他引擎错误', '', 'FATAL: unrelated script error', new Error('exit 1'), true],
+    ['启动失败', '', '', new Error('spawn ENOENT'), true],
+  ] as const)('插件探测：%s；未知失败不擅自裁剪脚本且清理临时目录', async (_, stdout, stderr, error, supported) => {
+    let directory = ''
+    let script = ''
+    const probe = vi.spyOn(childProcess, 'execFile').mockImplementationOnce((...args: unknown[]) => {
+      const options = args[2] as { cwd: string }
+      directory = options.cwd
+      const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void
+      void readFile(join(directory, 'probe.txt'), 'utf8').then((content: string) => {
+        script = content
+        callback(error, stdout, stderr)
+      }, (readError: Error) => callback(readError, '', ''))
+      return new EventEmitter() as never
+    })
+    try {
+      const executable = join(tmpdir(), 'mission probe 中文', 'mission.exe')
+      expect(await engineHasLinkCalc(executable)).toBe(supported)
+      expect(probe).toHaveBeenCalledExactlyOnceWith(executable, ['-es', 'probe.txt'],
+        expect.objectContaining({ cwd: directory, shell: false, windowsHide: true, timeout: 15_000 }), expect.any(Function))
+      expect(script).toContain('add processor link_calc WSF_LINK_CALC_PROCESSOR')
+      expect(script).toContain('end_time 1 sec')
+      await expect(readdir(directory)).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally { probe.mockRestore() }
+  })
+
   it('spawn 前记录场景和修订，spawn 后补记 PID；真实 close 后才解除拦截', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-guard-'))
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
@@ -197,6 +227,58 @@ describe('本机 mission 执行器', () => {
       child.emit('close', 1)
       await process.completed
       expect(runner.safetyStatus()).toBeNull()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each([[true, true], [false, false]])('引擎有 WSF_LINK_CALC_PROCESSOR=%s 时运行包保留 link_calc=%s，探测只做一次', async (supported, kept) => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-link-calc-'))
+    vi.mocked(childProcess.spawn).mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+      queueMicrotask(() => { child.emit('spawn'); child.emit('close', 1) })
+      return child
+    })
+    const probe = vi.fn(async () => supported)
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, probe)
+      // 种子场景含后方节点，会生成 link_calc；激光与首条业务不可生成，先停用。
+      const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
+      draft.config.links.find(link => link.type === 'LASER')!.enabled = false
+      draft.config.informationDemand[0]!.enabled = false
+      for (let index = 0; index < 2; index++) {
+        const process = await runner.start(draft, `RUN-${index}`)
+        await process.completed
+        const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
+        expect(rear.includes('WSF_LINK_CALC_PROCESSOR')).toBe(kept)
+        expect(rear).toContain('end_platform_type')
+      }
+      expect(probe).toHaveBeenCalledOnce()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎探测 WSF_LINK_CALC_PROCESSOR 不抛错且不残留临时目录', async () => {
+    expect(typeof await engineHasLinkCalc(env.MISSION_SMOKE_EXECUTABLE!)).toBe('boolean')
+  })
+
+  it('探测异常仅本次保留插件，下次启动重新探测而不缓存未知结论', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-probe-retry-'))
+    vi.mocked(childProcess.spawn).mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+      queueMicrotask(() => { child.emit('spawn'); child.emit('close', 1) })
+      return child
+    })
+    const probe = vi.fn().mockRejectedValueOnce(new Error('temporary probe failure')).mockResolvedValueOnce(false)
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, probe)
+      const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
+      draft.config.links.find(link => link.type === 'LASER')!.enabled = false
+      draft.config.informationDemand[0]!.enabled = false
+      for (const [index, kept] of [true, false].entries()) {
+        const process = await runner.start(draft, `RUN-PROBE-${index}`)
+        await process.completed
+        const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
+        expect(rear.includes('WSF_LINK_CALC_PROCESSOR')).toBe(kept)
+      }
+      expect(probe).toHaveBeenCalledTimes(2)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 

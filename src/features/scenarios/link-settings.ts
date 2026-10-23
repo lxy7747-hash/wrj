@@ -20,6 +20,9 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
     enabledSatellites: { ...config.linkSettings.enabledSatellites },
     priority: [...config.linkSettings.priority],
     ...(config.linkSettings.switchRules === undefined ? {} : { switchRules: config.linkSettings.switchRules.map(rule => ({ ...rule })) }),
+    ...(config.linkSettings.linkCalc === undefined ? {} : { linkCalc: { ...config.linkSettings.linkCalc } }),
+    ...(config.linkSettings.hotLinks === undefined ? {} : { hotLinks: { ...config.linkSettings.hotLinks,
+      forward: config.linkSettings.hotLinks.forward.map(chain => [...chain]), reverse: config.linkSettings.hotLinks.reverse.map(chain => [...chain]) } }),
   } : {
     enabledSatellites: {
       TIANTONG: config.platforms.some((p) => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === 'TIANTONG'),

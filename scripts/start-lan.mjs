@@ -71,9 +71,13 @@ try {
   }
   if (stopping) throw new Error('部署启动已取消。')
   if (!ready) throw new Error('两份地图资源未能按时就绪。')
-  track(spawn(process.execPath, [join(root, 'server-dist', 'server.mjs')], {
+  const backend = track(spawn(process.execPath, [join(root, 'server-dist', 'server.mjs')], {
     cwd: root, env: process.env, shell: false, windowsHide: true, stdio: ['inherit', 'inherit', 'inherit', 'ipc'],
   }), 'Web 服务')
+  // 后台入口只接受自己启动的后端就绪通知，避免将占用端口的其他服务识别为本次启动成功。
+  backend.on('message', message => {
+    if (message?.type === 'ready' && !stopping && process.connected) process.send?.({ type: 'ready' }, () => {})
+  })
   // 后端已继承所需配置，启动器无需继续保留初始化密码。
   delete process.env.AUTH_BOOTSTRAP_PASSWORD
 } catch (error) {

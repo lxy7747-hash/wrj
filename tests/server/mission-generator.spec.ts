@@ -1,10 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
+import { autoHotLinkChains } from '../../src/features/scenarios/hot-links'
+import { readLinkSettings } from '../../src/features/scenarios/link-settings'
+import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
 const { buildMissionPackage, MissionGenerationError } = await import('../../server/scripts/' + 'mission-generator.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const { ScriptProjection } = await import('../../server/scripts/' + 'projection.js')
-const { writeScriptText } = await import('../../server/local/' + 'script-file.js')
+const { writeScriptText, withoutLinkCalc } = await import('../../server/local/' + 'script-file.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
 const { mkdtemp, readFile, rm, readdir, writeFile } = await import('node:' + 'fs/promises')
@@ -319,12 +322,18 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       bitErrorProbability: 0.00001 })
     const forwardText = typeText(forward.files)
     expect(forwardText).toContain('      bit_error_probability 0.00001')
-    // 示例 C 波段定向天线：俯仰 88°、下倾 3°；上行接前向时延处理器。
-    expect(forwardText).toContain('    elevation_beamwidth 88 deg')
-    expect(forwardText).toContain('      antenna_tilt -3 deg')
+    // 文档：仅指挥车 C 波段为定向天线（俯仰 88°、下倾 3°），任务机 C 波段为全向 180°；上行接前向时延处理器。
     expect(forwardText).toContain('    internal_link forward_delay')
+    expect(forwardText).not.toContain('antenna_tilt')
+    draft.config.platforms[0]!.type = 'GROUND_CLUSTER_COMMAND_NODE'
+    const commandFiles = buildMissionPackage(draft).files
+    const patterns = (commandFiles['comm_PerDefinition.txt'] ?? '').match(/antenna_pattern comm_\S+_(?:src|dst)_tx[\s\S]*?end_antenna_pattern/g) ?? []
+    expect(patterns.find((item: string) => item.includes('_src_tx'))).toContain('    elevation_beamwidth 88 deg')
+    expect(patterns.find((item: string) => item.includes('_dst_tx'))).toContain('    elevation_beamwidth 180 deg')
+    // 指挥车设备的收发机各一处下倾，任务机不下倾。
+    expect(typeText(commandFiles).match(/ {6}antenna_tilt -3 deg/g)).toHaveLength(2)
     link.direction = 'REVERSE'
-    draft.config.informationDemand[0]!.direction = 'REVERSE'
+    Object.assign(draft.config.informationDemand[0]!, { direction: 'REVERSE', informationType: '侦察信息' })
     const reverse = buildMissionPackage(draft)
     expect(reverse.manifest.devices[0]).toMatchObject({ role: 'DOWNLINK' })
     expect(typeText(reverse.files)).toContain('    internal_link return_delay')
@@ -475,9 +484,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.links[1]!.enabled = false
     expect(() => buildMissionPackage(draft)).toThrow('informationDemand[0].destinationPlatformIds[1]')
     draft.config.links[1]!.enabled = true
-    demand.direction = 'REVERSE'
+    Object.assign(demand, { direction: 'REVERSE', informationType: '侦察信息' })
     expect(() => buildMissionPackage(draft)).toThrow('informationDemand[0].destinationPlatformIds[0]')
-    demand.direction = 'FORWARD'
+    Object.assign(demand, { direction: 'FORWARD', informationType: '目标指令' })
     demand.destinationPlatformIds = ['AIR-01']
     draft.config.links.push({ ...draft.config.links[0]!, id: 'L-C' })
     draft.config.platforms[0]!.linkIds.push('L-C')
@@ -527,7 +536,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(text.match(/frequency 4500 MHz/g)).toHaveLength(4)
     expect(text.match(/bandwidth 20 MHz/g)).toHaveLength(4)
     expect(text.match(/power 100 W/g)).toHaveLength(2)
-    expect(text.match(/transfer_rate constant 20 mbits\/sec/g)).toHaveLength(2)
+    // 文档：微波速率固定 80 Mbit/s，不使用配置中的 dataRate。
+    expect(text.match(/transfer_rate constant 80 mbits\/sec/g)).toHaveLength(2)
     // 每台设备独立介质，避免共享介质被逐台改写；参数与示例介质一致。
     expect(text.match(/    add medium medium_comm_/g)).toHaveLength(2)
     expect(text.match(/^medium medium_comm_\S+ WSF_COMM_MEDIUM_UNGUIDED$/gm)).toHaveLength(2)
@@ -622,7 +632,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const rearText = files['comm_platform_REAR.txt']
     const block = rearText.slice(rearText.indexOf('  add processor link_calc WSF_LINK_CALC_PROCESSOR'))
     expect(rearText.match(/add processor link_calc/g)).toHaveLength(1)
-    expect(block).toContain('    update_interval 3.0 sec\n    emergency_threshold 0.80\n    warning_threshold   0.50\n')
+    // 阈值、干扰圈与编码缺省按《与前端字段确认说明》：1e-5 / 1e-6 / 1e-7、30 km、无编码。
+    expect(block).toContain('    update_interval 3.0 sec\n    emergency_threshold 1e-5\n    warning_threshold   1e-6\n'
+      + '    value_threshold_ber 1e-7\n    jamming_range       30 km\n    channel_encoding_scheme 0.0\n')
     const value = (name: string) => {
       const line = block.split('\n').find((item: string) => item.trimStart().startsWith(`${name} `))!
       const raw = line.trim().slice(name.length).trim()
@@ -633,12 +645,15 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     }
     const relayIds = manifest.platforms.filter((item: { relayRole: boolean }) => item.relayRole).map((item: { platformId: string }) => item.platformId)
     expect(value('relay_uav_names')).toEqual(relayIds)
-    const forward = manifest.devices.filter((item: { direction: string }) => item.direction === 'FORWARD')
+    // 未自定义热链时按已启用链路首尾相接自动串联；每条热链首跳无入端口、末跳无出端口，终点类型默认后方节点。
     const hotForward = value('hot_link_fw')
-    expect(Object.keys(hotForward)).toHaveLength(forward.length)
-    expect(hotForward.link1[0]).toEqual({ platform: forward[0].source.platformId, inPort: '', outPort: forward[0].source.deviceId })
-    expect(hotForward.link1.at(-1)).toEqual({ platform: forward[0].target.platformId, inPort: forward[0].target.deviceId, outPort: '' })
-    expect(Object.keys(value('hot_link_ret'))).toHaveLength(manifest.devices.length - forward.length)
+    const enabled = draft.config.links.filter(link => manifest.devices.some((device: { linkId: string }) => device.linkId === link.id))
+    expect(Object.keys(hotForward)).toHaveLength(autoHotLinkChains(enabled, 'FORWARD', readLinkSettings(draft.config).priority).length)
+    for (const hops of [...Object.values(hotForward), ...Object.values(value('hot_link_ret'))] as Array<Array<{ inPort: string; outPort: string }>>) {
+      expect(hops[0]!.inPort).toBe('')
+      expect(hops.at(-1)!.outPort).toBe('')
+    }
+    expect(block).toContain('    end_platform_type       REAR_COMM_PLATFORM\n')
     // port_params 由实际设备参数生成，平台类型名与设备编号能在生成的脚本中找到。
     const allText = typeText(files)
     for (const entry of value('port_params')) {
@@ -651,6 +666,124 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     // 未框选海面区域时不写坐标；海况是否计入跟随“海面多径衰落”开关。
     expect(environment.sea_state.sea_polygon).toEqual([])
     expect(environment.sea_state.enabled).toBe(draft.config.scenario.environment.multipathEnabled)
+    // 旧场景缺省的环境字段按文档默认值写出；大气默认 itu 且简化衰减率为 0，避免覆盖 ITU 模型。
+    expect(environment.atmosphere).toEqual({ enabled: true, model: 'itu', simplified_attenuation_db_per_km: 0 })
+    expect(environment.sea_state).toMatchObject({ low_altitude_threshold_m: 100, path_over_sea_threshold_km: 30, model: 'coarse',
+      polarization: 'vertical', sea_water_temp_c: 20, sea_surface_roughness_m: 0 })
+    expect(environment.rain).toMatchObject({ enabled: true, rain_altitude_limit_m: 3000, rain_attenuation_db: 0 })
+    // jammer_param 与 traffic_type 按文档结构生成。
+    const jammerParam = value('jammer_param')
+    expect(jammerParam.jammers).toHaveLength(manifest.jammers.length)
+    for (const [index, jammer] of manifest.jammers.entries()) {
+      expect(jammerParam.jammers[index]).toMatchObject({ platform_name: jammer.platformId, weapon_name: jammer.weaponId,
+        frequency_hz: jammer.frequencyHz, bandwidth_hz: jammer.bandwidthHz, power_w: jammer.powerW,
+        antenna_gain_dbi: 0, tx_loss_db: 0, spot_bandwidth_mhz: 20, sweep_duty_cycle: 0.1 })
+      expect(['broadband', 'spot', 'sweep']).toContain(jammerParam.jammers[index].mode)
+      expect(['ground', 'airborne']).toContain(jammerParam.jammers[index].jammer_type)
+    }
+    expect(Array.isArray(value('traffic_type'))).toBe(true)
+  })
+
+  it('本地运行包去掉 link_calc 整段，其余内容与保存的 TXT 一致', () => {
+    const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
+    draft.config.links.find(link => link.type === 'LASER')!.enabled = false
+    draft.config.informationDemand[0]!.enabled = false
+    const { files } = buildMissionPackage(draft)
+    const rearText = files['comm_platform_REAR.txt']
+    const stripped = withoutLinkCalc(rearText)
+    expect(rearText).toContain('WSF_LINK_CALC_PROCESSOR')
+    expect(stripped).not.toMatch(/link_calc|WSF_LINK_CALC_PROCESSOR|end_platform_type\s+\S/)
+    expect(stripped.trimEnd().endsWith('end_platform_type')).toBe(true)
+    const start = rearText.indexOf('  add processor link_calc')
+    const end = rearText.indexOf('  end_processor\n', start) + '  end_processor\n'.length
+    expect(stripped).toBe(rearText.slice(0, start) + rearText.slice(end))
+    for (const [name, content] of Object.entries(files)) if (name !== 'comm_platform_REAR.txt') expect(withoutLinkCalc(content)).toBe(content)
+  })
+
+  it('link_calc 读取场景的阈值、编码、环境参数，并按任务机汇总业务类型', () => {
+    const draft = minimalDraft()
+    draft.config.platforms[0]!.type = 'REAR_COMMAND_NODE'
+    draft.config.linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
+      priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'],
+      linkCalc: { emergencyThreshold: 2e-5, warningThreshold: 3e-6, valueThresholdBer: 4e-7, jammingRangeKm: 45, channelEncodingScheme: -1 } }
+    Object.assign(draft.config.scenario.environment, { rainEnabled: false, cloudEnabled: false, atmosphereModel: 'simplified',
+      simplifiedAttenuationDbPerKm: 0.05, polarizationMismatchDb: 1.5, pointingErrorDb: 0.5, seaModel: 'fine', seaPolarization: 'horizontal',
+      seaWaterTempC: 12, seaSurfaceRoughnessM: 1.2, seaLowAltitudeThresholdM: 150, seaPathOverSeaThresholdKm: 40 })
+    draft.config.informationDemand = [
+      { ...draft.config.informationDemand[0]!, id: 'BIZ-F', enabled: true, informationType: '目标指令', volumeMb: 0.000064, frequencyHz: 0.1 },
+      { ...draft.config.informationDemand[0]!, id: 'BIZ-S', enabled: true, informationType: '态势信息', volumeMb: 0.000032, frequencyHz: 0.2 },
+    ]
+    // 一条链路只配一项业务；第二项不绑定链路，按端点与方向自动选路。
+    delete draft.config.informationDemand[1]!.linkId
+    const text = buildMissionPackage(draft).files['comm_platform_REAR.txt']!
+    expect(text).toContain('    emergency_threshold 2e-5\n    warning_threshold   3e-6\n    value_threshold_ber 4e-7\n'
+      + '    jamming_range       45 km\n    channel_encoding_scheme -1.0\n')
+    const json = (name: string) => JSON.parse(text.split('\n').find((line: string) => line.trimStart().startsWith(`${name} `))!.trim().slice(name.length).trim().slice(1, -1))
+    const environment = json('natural_environment')
+    expect(environment.rain.enabled).toBe(false)
+    expect(environment.cloud.enabled).toBe(false)
+    expect(environment.atmosphere).toEqual({ enabled: true, model: 'simplified', simplified_attenuation_db_per_km: 0.05 })
+    expect(environment.misc_loss_db).toMatchObject({ polarization_mismatch_db: 1.5, pointing_error_db: 0.5 })
+    expect(environment.sea_state).toMatchObject({ model: 'fine', polarization: 'horizontal', sea_water_temp_c: 12,
+      sea_surface_roughness_m: 1.2, low_altitude_threshold_m: 150, path_over_sea_threshold_km: 40 })
+    // 前向类型记在目标任务机下；trans_freq 为“n 秒/次”，字段名按文档拼写 traffice_type。
+    expect(json('traffic_type')).toEqual([{ 'AIR-01': { forward: [
+      { traffice_type: 'kForwardTarget', data_volume_bits: 512, trans_freq: 10 },
+      { traffice_type: 'kForwardSituation', data_volume_bits: 256, trans_freq: 5 },
+    ], return: [] } }])
+  })
+
+  it('热链跨多条链路逐跳写出端口，终点平台类型写参考模型名，引用停用链路时阻断', () => {
+    const draft = minimalDraft()
+    const [command, uav] = draft.config.platforms as [ScenarioDraft['config']['platforms'][number], ScenarioDraft['config']['platforms'][number]]
+    command.type = 'GROUND_CLUSTER_COMMAND_NODE'
+    const rear = { ...structuredClone(command), id: 'REAR-01', name: '后方平台车', type: 'REAR_COMMAND_NODE' as const, linkIds: ['L-F'] }
+    draft.config.platforms.push(rear)
+    command.linkIds = ['L-A', 'L-F']
+    const datalink = draft.config.links[0]!
+    Object.assign(datalink, { type: 'DATALINK', band: 'C', direction: 'REVERSE', sourcePlatformId: uav.id, targetPlatformId: command.id })
+    draft.config.links.push({ ...structuredClone(datalink), id: 'L-F', type: 'FIBER', sourcePlatformId: command.id, targetPlatformId: rear.id })
+    delete draft.config.links[1]!.band
+    Object.assign(draft.config.informationDemand[0]!, { direction: 'REVERSE', informationType: '侦察信息', sourcePlatformId: uav.id, destinationPlatformIds: [command.id] })
+    draft.config.linkSettings = { enabledSatellites: { TIANTONG: false, SHENTONG: false }, switchCooldownS: 5,
+      priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'],
+      hotLinks: { forward: [], reverse: [['L-A', 'L-F']], endPlatformType: 'REAR_COMMAND_NODE' } }
+    const { files, manifest } = buildMissionPackage(draft)
+    const text = files['comm_platform_REAR.txt']!
+    const line = text.split('\n').find((item: string) => item.trimStart().startsWith('hot_link_ret '))!
+    const device = (linkId: string) => manifest.devices.find((item: { linkId: string }) => item.linkId === linkId)
+    const [a, f] = [device('L-A'), device('L-F')]
+    // 文档示例结构：任务机出 → 指挥车入/出 → 后方车入。
+    expect(JSON.parse(line.trim().slice('hot_link_ret'.length).trim().slice(1, -1))).toEqual({ link1: [
+      { platform: uav.id, inPort: '', outPort: a.source.deviceId },
+      { platform: command.id, inPort: a.target.deviceId, outPort: f.source.deviceId },
+      { platform: rear.id, inPort: f.target.deviceId, outPort: '' },
+    ] })
+    expect(text).toContain('    hot_link_fw             "{}"\n    end_platform_type       REAR_COMM_PLATFORM\n')
+    draft.config.links[1]!.enabled = false
+    expect(() => buildMissionPackage(draft)).toThrow('linkSettings.hotLinks.reverse[0]')
+  })
+
+  it('链路收发参数分开写入，卫星与微波速率按文档固定，光纤写入发送频率', () => {
+    const draft = minimalDraft()
+    const link = draft.config.links[0]!
+    Object.assign(link, { type: 'MICROWAVE', frequency: 8200, bandwidth: 30, rxFrequency: 8250, rxBandwidth: 50,
+      txPolarization: 'vertical', rxPolarization: 'horizontal', noiseFigureDb: 4, dataRate: 10 })
+    const text = typeText(buildMissionPackage(draft).files)
+    expect(text).toContain('    transmitter\n      frequency 8200 MHz\n      bandwidth 30 MHz\n')
+    expect(text).toContain('      polarization vertical\n')
+    expect(text).toContain('    receiver\n      frequency 8250 MHz\n      bandwidth 50 MHz\n      polarization horizontal\n')
+    expect(text.match(/noise_figure 4 dB/g)).toHaveLength(2)
+    expect(text).toContain('transfer_rate constant 80 mbits/sec')
+    link.type = 'FIBER'
+    link.dataRate = 100
+    link.frequency = 1300
+    draft.config.platforms[0]!.type = 'REAR_COMMAND_NODE'
+    const rear = buildMissionPackage(draft).files['comm_platform_REAR.txt']!
+    const portLine = rear.split('\n').find((line: string) => line.trimStart().startsWith('port_params '))!
+    const ports = JSON.parse(portLine.trim().slice('port_params'.length).trim().slice(1, -1))
+    expect(ports.flatMap((entry: { comm_params: unknown[] }) => entry.comm_params)).toContainEqual(expect.objectContaining({
+      transmitter: { frequency_ghz: 1.3, 'information_rate_mbits/sec': 100 } }))
   })
 
   it('海面多径衰落：框选区域写入 sea_polygon，开关写入 sea_state.enabled', () => {
@@ -895,6 +1028,99 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     draft.config.informationDemand[0]!.informationType = '视频' as never
     draft.config.informationDemand[0]!.frequencyHz = 1
     expect(() => buildMissionPackage(draft)).toThrow(/informationType/)
+  })
+
+  // 四类业务与两条前向、两条返向链路一一对应，端点均为 CMD-01 → AIR-01。
+  function directionDraft(): ScenarioDraft {
+    const draft = minimalDraft()
+    draft.config.platforms[0]!.type = 'REAR_COMMAND_NODE'
+    const base = draft.config.links[0]!
+    const plan = [['L-A', 'FORWARD', '目标指令', 0.000064, 0.1], ['L-B', 'FORWARD', '态势信息', 0.000032, 0.2],
+      ['L-C', 'REVERSE', '侦察信息', 0.000128, 0.5], ['L-D', 'REVERSE', '状态信息', 0.000016, 1]] as const
+    draft.config.links = plan.map(([id, direction], index) => ({ ...base, id, direction, frequency: base.frequency + index * 10 }))
+    for (const platform of draft.config.platforms) platform.linkIds = plan.map(([id]) => id)
+    draft.config.informationDemand = plan.map(([linkId, direction, informationType, volumeMb, frequencyHz]) => ({
+      ...draft.config.informationDemand[0]!, id: `BIZ-${linkId}`, linkId, direction, informationType, volumeMb, frequencyHz, enabled: true }))
+    return draft
+  }
+
+  it('业务类型与有效方向不一致时共享写入校验失败并定位，生成同样阻断', () => {
+    const draft = directionDraft()
+    const [target, , recon] = draft.config.informationDemand as [ScenarioDraft['config']['informationDemand'][number], unknown, ScenarioDraft['config']['informationDemand'][number]]
+    // REVERSE + 目标指令：链路与业务同为返向，仍因类型方向不符失败。
+    draft.config.links[0]!.direction = 'REVERSE'
+    target.direction = 'REVERSE'
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors).toEqual([expect.objectContaining({
+      code: 'INFORMATION_DEMAND_TYPE_DIRECTION_MISMATCH', fieldPath: 'informationDemand[0].direction', message: '目标指令须使用前向，当前业务方向为返向。' })])
+    expect(() => buildMissionPackage(draft)).toThrow('informationDemand[0].direction')
+    // FORWARD + 侦察信息：业务省略方向时取已关联链路方向，只报一条类型方向错误并定位到 linkId。
+    draft.config.links[0]!.direction = 'FORWARD'
+    target.direction = 'FORWARD'
+    draft.config.links[2]!.direction = 'FORWARD'
+    delete recon.direction
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors).toEqual([expect.objectContaining({
+      code: 'INFORMATION_DEMAND_TYPE_DIRECTION_MISMATCH', fieldPath: 'informationDemand[2].linkId', message: '侦察信息须使用返向，当前业务方向为前向。' })])
+    // 省略方向但类型与链路一致时，原有同向检查照常要求补齐方向。
+    draft.config.links[2]!.direction = 'REVERSE'
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors.map(issue => [issue.code, issue.fieldPath])).toEqual([
+      ['INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', 'informationDemand[2].direction']])
+    draft.config.links[2]!.direction = 'FORWARD'
+    // 显式 FORWARD + 侦察信息：同时保留原有业务与链路同向检查。
+    recon.direction = 'FORWARD'
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors.map(issue => issue.code)).toEqual(['INFORMATION_DEMAND_TYPE_DIRECTION_MISMATCH'])
+    draft.config.links[2]!.direction = 'REVERSE'
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors.map(issue => issue.code)).toEqual([
+      'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', 'INFORMATION_DEMAND_TYPE_DIRECTION_MISMATCH'])
+  })
+
+  it('四类业务配正确方向时生成正常：前向记在目标平台，返向记在源平台', () => {
+    const draft = directionDraft()
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors).toEqual([])
+    const text = buildMissionPackage(draft).files['comm_platform_REAR.txt']!
+    const line = text.split('\n').find((item: string) => item.trimStart().startsWith('traffic_type '))!
+    expect(JSON.parse(line.trim().slice('traffic_type'.length).trim().slice(1, -1))).toEqual([{ 'AIR-01': {
+      forward: [{ traffice_type: 'kForwardTarget', data_volume_bits: 512, trans_freq: 10 },
+        { traffice_type: 'kForwardSituation', data_volume_bits: 256, trans_freq: 5 }],
+      return: [] } }, { 'CMD-01': { forward: [],
+      return: [{ traffice_type: 'kReturnReconVideo', data_volume_bits: 1024, trans_freq: 2 },
+        { traffice_type: 'kReturnReconStatus', data_volume_bits: 128, trans_freq: 1 }] } }])
+  })
+
+  it('旧业务省略方向时按实际主路由逐目的地检查：冲突阻断生成，正确方向仍兼容', () => {
+    const draft = minimalDraft()
+    draft.config.links[0]!.direction = 'REVERSE'
+    const demand = draft.config.informationDemand[0]!
+    Object.assign(demand, { enabled: true, frequencyHz: 1 })
+    delete demand.linkId
+    delete demand.direction
+    // 写入校验无有效方向可比，由生成器在选定主路由后兜底，不改选路或类型。
+    expect(inspectScenarioConfig(draft.config, 'write').result.errors).toEqual([])
+    expect(() => buildMissionPackage(draft)).toThrow('informationDemand[0].destinationPlatformIds[0]：目标指令须使用前向链路，实际主路由 L-A 为返向。')
+    expect(demand.informationType).toBe('目标指令')
+    demand.informationType = '状态信息'
+    expect(buildMissionPackage(draft).manifest.businesses[0].routes.map((route: { linkId: string }) => route.linkId)).toEqual(['L-A'])
+  })
+
+  it('真实保存入口拒绝业务类型与方向不一致，草稿不被覆盖', async () => {
+    const server = createMockServer()
+    const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
+    try {
+      if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+      const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+      const original = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data as ScenarioDraft
+      const draft = minimalDraft()
+      draft.config.links[0]!.direction = 'REVERSE'
+      draft.config.informationDemand[0]!.direction = 'REVERSE'
+      const rejected = (await api.put('/api/v1/scenarios/SCN-001').set(headers)
+        .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: original.revision }).expect(422)).body
+      expect(rejected.error).toMatchObject({ code: 'VALIDATION_FAILED', fieldPath: 'informationDemand[0].direction' })
+      expect((await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data).toEqual(original)
+      draft.config.informationDemand[0]!.informationType = '侦察信息'
+      await api.put('/api/v1/scenarios/SCN-001').set(headers)
+        .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: original.revision }).expect(200)
+    } finally {
+      await server.close()
+    }
   })
 
 

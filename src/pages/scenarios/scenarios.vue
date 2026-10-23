@@ -7,7 +7,8 @@ import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../.
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
 import { saveScriptText } from '../../features/scenarios/script-file'
-import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
+import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
+import { linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, SEA_STATE_MAX, type RainTier } from '../../features/scenarios/link-calc-defaults'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -261,6 +262,42 @@ function touchField(event: Event): void {
  */
 function markDirty(): void {
   scenarioStore.markDirty()
+}
+
+type NaturalNumberKey = 'rainAltitudeLimitM' | 'rainAttenuationDb' | 'simplifiedAttenuationDbPerKm' | 'polarizationMismatchDb'
+  | 'pointingErrorDb' | 'seaLowAltitudeThresholdM' | 'seaPathOverSeaThresholdKm' | 'seaWaterTempC' | 'seaSurfaceRoughnessM'
+type NaturalGroup = 'rain' | 'atmosphere' | 'misc' | 'sea'
+/** link_calc natural_environment 数值字段，按文档“环境参数（全局）”的小标题分组；范围与校验一致。 */
+const NATURAL_NUMBER_FIELDS: readonly { key: NaturalNumberKey; group: NaturalGroup; label: string; min: number; max?: number; step: number; hint?: string }[] = [
+  { key: 'rainAltitudeLimitM', group: 'rain', label: '雨区顶部高度（m）', min: 0, max: 30000, step: 100, hint: '典型 1000～5000 m' },
+  { key: 'rainAttenuationDb', group: 'rain', label: '固定雨衰兜底值（dB）', min: 0, step: 0.1, hint: '仅雨强为 0 时生效' },
+  { key: 'simplifiedAttenuationDbPerKm', group: 'atmosphere', label: '简化衰减率（dB/km）', min: 0, step: 0.01, hint: '仅简化模式填写；大于 0 时优先于 ITU 模型' },
+  { key: 'polarizationMismatchDb', group: 'misc', label: '极化失配损耗（dB）', min: 0, step: 0.1, hint: '通常 0～3 dB' },
+  { key: 'pointingErrorDb', group: 'misc', label: '指向误差损耗（dB）', min: 0, step: 0.1 },
+  { key: 'seaLowAltitudeThresholdM', group: 'sea', label: '贴海飞行高度阈值（m）', min: 0, step: 10 },
+  { key: 'seaPathOverSeaThresholdKm', group: 'sea', label: '跨海距离阈值（km）', min: 0, step: 1 },
+  { key: 'seaWaterTempC', group: 'sea', label: '海水温度（℃）', min: -2, max: 30, step: 1 },
+  { key: 'seaSurfaceRoughnessM', group: 'sea', label: '海面高度标准差（m）', min: 0, max: 5, step: 0.1, hint: '0 表示按海况等级推导' },
+]
+const naturalFields = (group: NaturalGroup) => NATURAL_NUMBER_FIELDS.filter(field => field.group === group)
+const NATURAL_ENVIRONMENT_FIELD_KEYS = new Set<string>([...NATURAL_NUMBER_FIELDS.map(field => field.key),
+  'rainEnabled', 'cloudEnabled', 'atmosphereModel', 'seaModel', 'seaPolarization'])
+
+/** 选择雨强档位时同步降雨强度；档位为界面主入口，降雨强度仍可单独微调。 */
+function changeRainTier(tier: RainTier): void {
+  if (!draft.value) return
+  draft.value.config.scenario.environment.rainCloudAttenuation = tier
+  draft.value.config.scenario.environment.rainRateMmPerHour = RAIN_TIER_RATES[tier]
+  markDirty()
+}
+
+/** 选择 ITU 模型时清零简化衰减率，避免其大于 0 时覆盖 ITU 计算。 */
+function changeAtmosphereModel(model: 'itu' | 'simplified' | 'auto'): void {
+  if (!draft.value) return
+  const environment = draft.value.config.scenario.environment
+  environment.atmosphereModel = model
+  if (model === 'itu') environment.simplifiedAttenuationDbPerKm = 0
+  markDirty()
 }
 
 /** 保存地图框选的海面区域；polygon 为确认后的顶点副本。 */
@@ -531,13 +568,9 @@ function openNewLink(): void {
     type: 'MICROWAVE',
     sourcePlatformId: draft.value.config.platforms[0]!.id,
     targetPlatformId: draft.value.config.platforms[1]!.id,
-    frequency: 4500,
-    bandwidth: 20,
-    txPower: 50,
-    antennaGain: { tx: 10, rx: 10 },
+    ...linkTypeDefaults('MICROWAVE'),
     modulation: 'BPSK',
     berThreshold: 0.00001,
-    dataRate: 10,
     direction: 'FORWARD',
   }
   editingLinkIndex.value = null
@@ -738,7 +771,6 @@ function openNewJammer(): void {
     platformId: '',
     type: 'BARRAGE',
     ...JAMMER_DEFAULTS,
-    frequency: draft.value?.config.links.find(link => link.type === 'DATALINK')?.frequency ?? 2200,
     autoDetect: false,
   }
   jammerEditorUiExtension.value = { jammerId: jammerEditorJammer.value.id, direction: 0, duration: 60, enabled: true }
@@ -981,7 +1013,7 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
   const jammerField = /^jammers\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
-    frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
+    frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', autoDetect: 'jammer-auto-detect', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', releaseRange: 'jammer-release-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
   const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (demandField && linkDialogVisible.value) {
     const sharedTarget = ({ direction: 'link-direction', sourcePlatformId: 'link-source', destinationPlatformIds: 'link-target', linkId: 'link-id' } as Record<string, string>)[demandField]
@@ -996,10 +1028,20 @@ function validationTargetId(fieldPath: string): string | undefined {
     antennaGainCorrectionDb: 'link-gain-correction', coding: 'link-coding',
     antiJammingGainDb: 'link-anti-jamming-gain', spatialIsolationDb: 'link-spatial-isolation',
     berThreshold: 'link-ber-threshold', band: 'link-band',
+    rxFrequency: 'link-rx-frequency', rxBandwidth: 'link-rx-bandwidth', txPolarization: 'link-tx-polarization',
+    rxPolarization: 'link-rx-polarization', noiseFigureDb: 'link-noise-figure',
   } as Record<string, string>)[linkField]
   if (fieldPath.startsWith('linkSettings.enabledSatellites')) return 'link-relay-satellite'
   const ruleField = /^linkSettings\.switchRules\[(\d+)\](?:\.(\w+))?/.exec(fieldPath)
   if (ruleField) return ruleField[2] ? `switch-rule-${ruleField[1]}-${ruleField[2]}` : 'link-switch-rules'
+  const linkCalcField = /^linkSettings\.linkCalc\.(\w+)/.exec(fieldPath)?.[1]
+  if (linkCalcField) return `link-calc-${linkCalcField}`
+  const hotLinkField = /^linkSettings\.hotLinks\.(forward|reverse)\[(\d+)\]/.exec(fieldPath)
+  if (hotLinkField) return `hot-link-${hotLinkField[1]}-${hotLinkField[2]}`
+  if (fieldPath === 'linkSettings.hotLinks.endPlatformType') return 'hot-link-end-type'
+  if (fieldPath.startsWith('linkSettings.hotLinks')) return 'hot-link-settings'
+  const naturalField = /^scenario\.environment\.(\w+)/.exec(fieldPath)?.[1]
+  if (naturalField && NATURAL_ENVIRONMENT_FIELD_KEYS.has(naturalField)) return `scenario-env-${naturalField}`
   const directTargets: Record<string, string> = {
     'linkSettings.switchCooldownS': 'link-switch-cooldown',
     'linkSettings.priority': 'link-priority-0',
@@ -1167,9 +1209,8 @@ async function saveScenario(): Promise<void> {
         return
       }
       const scriptEpoch = scenarioStore.scriptEpoch
-      let path: string
       try {
-        path = await saveScriptText(script.value)
+        await saveScriptText(script.value)
         if (!current()) return
       } catch (error) {
         if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
@@ -1177,7 +1218,7 @@ async function saveScenario(): Promise<void> {
       }
       const canContinue = () => current(true) && scriptEpoch === scenarioStore.scriptEpoch
       if (!canContinue()) return
-      const startFailed = (message: string) => ElMessage.warning(`场景与 TXT 已保存（${path}），但未自动运行：${message}`)
+      const startFailed = (message: string) => ElMessage.warning(`场景已保存，但未自动运行：${message}`)
       if (!authStore.authorize('SIMULATION_CONTROL').allowed) {
         startFailed('当前账号没有仿真控制权限。')
         return
@@ -1205,7 +1246,7 @@ async function saveScenario(): Promise<void> {
       const started = await simulationStore.start()
       if (!canContinue()) return
       if (!started) { startFailed(simulationStore.resultMessage); return }
-      ElMessage.success(`场景已保存，TXT 已写入：${path}；仿真已启动。可前往态势主界面查看运行。`)
+      ElMessage.success('场景已保存，仿真已启动。')
       if (!saved && props.managed) emit('saved')
     } else {
       if (active && epoch === scenarioStore.requestEpoch) activeTab.value = 'validation'
@@ -1403,61 +1444,12 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
-          <el-form-item data-field-path="scenario.environment.rainCloudAttenuation" label="云雨气象衰减" :error="issueMessage('scenario.environment.rainCloudAttenuation')">
-            <el-select
-                v-model="draft.config.scenario.environment.rainCloudAttenuation"
-                data-testid="scenario-rain-cloud-atten"
-                @update:model-value="markDirty"
-            >
-              <el-option label="无" value="none" />
-              <el-option label="小雨" value="lightRain" />
-              <el-option label="中雨" value="moderateRain" />
-              <el-option label="大雨" value="heavyRain" />
-            </el-select>
-          </el-form-item>
-
-          <el-form-item data-field-path="scenario.environment.multipathEnabled" class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
-            <el-switch
-                v-model="draft.config.scenario.environment.multipathEnabled"
-                inline-prompt
-                active-text="启用"
-                inactive-text="禁用"
-                data-testid="scenario-multipath"
-                @update:model-value="markDirty"
-            />
-            <template v-if="draft.config.scenario.environment.multipathEnabled">
-              <el-button size="small" class="sea-area-button" :disabled="pending || draft.locked" data-testid="open-sea-area" @click="seaAreaVisible = true">
-                框选海面区域
-              </el-button>
-              <span class="sea-area-summary" data-testid="sea-area-summary">
-                {{ draft.config.scenario.environment.seaPolygon?.length
-                  ? `已框选 ${draft.config.scenario.environment.seaPolygon.length} 个顶点`
-                  : '未框选海面区域' }}
-              </span>
-            </template>
-            <SeaAreaMapPicker v-model="seaAreaVisible" :polygon="draft.config.scenario.environment.seaPolygon" @confirm="applySeaArea" />
-          </el-form-item>
-          <!-- 保留原有环境参数；不从气象档位推算这些数值。 -->
-          <el-form-item data-field-path="scenario.environment.cloudAltitudeMinM" label="云层下限高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMinM')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :min="0" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item data-field-path="scenario.environment.cloudAltitudeMaxM" label="云层上限高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMaxM')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :min="0" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item data-field-path="scenario.environment.cloudWaterDensityGM3" label="云中液态水密度（g/m³）" :error="issueMessage('scenario.environment.cloudWaterDensityGM3')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :min="0" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
-            <el-input-number v-model="draft.config.scenario.environment.seaState" controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
-          </el-form-item>
+          <!-- 温度、湿度、雨衰不在《与前端字段确认说明》中，沿用项目原口径，只保存不写入 link_calc。 -->
           <el-form-item data-field-path="scenario.environment.temperatureC" required label="温度（℃）" :error="issueMessage('scenario.environment.temperatureC')">
             <el-input-number v-model="draft.config.scenario.environment.temperatureC" controls-position="right" data-testid="scenario-temperature" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.humidityPercent" required label="相对湿度（%）" :error="issueMessage('scenario.environment.humidityPercent')">
             <el-input-number v-model="draft.config.scenario.environment.humidityPercent" controls-position="right" data-testid="scenario-humidity" @update:model-value="markDirty" />
-          </el-form-item>
-          <el-form-item data-field-path="scenario.environment.rainRateMmPerHour" required label="降雨率（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
-            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.rainLossDbPerKm" label="雨衰（dB/km）" :error="issueMessage('scenario.environment.rainLossDbPerKm')">
             <el-input-number v-model="draft.config.scenario.environment.rainLossDbPerKm" controls-position="right" data-testid="scenario-rain-loss" @update:model-value="markDirty" />
@@ -1472,6 +1464,107 @@ watch(activeTab, (tab) => {
               data-testid="scenario-description"
               @update:model-value="markDirty"
             />
+          </el-form-item>
+        </div>
+      </section>
+      <!-- 分组与标题按《与前端字段确认说明》“环境参数（全局）”：降雨、云雾、大气、极化失配、海况。 -->
+      <section class="console-panel scenario-section environment-section" aria-labelledby="scenario-environment-title" data-testid="scenario-environment">
+        <h3 id="scenario-environment-title" class="environment-section__title">环境参数（全局）</h3>
+        <h4 class="environment-group__title">降雨参数（NERain）</h4>
+        <div class="form-grid form-grid--scenario" data-testid="environment-rain">
+          <el-form-item data-field-path="scenario.environment.rainEnabled" label="是否开启" :error="issueMessage('scenario.environment.rainEnabled')">
+            <el-switch v-model="draft.config.scenario.environment.rainEnabled" inline-prompt active-text="开" inactive-text="关"
+              data-testid="scenario-env-rainEnabled" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.rainCloudAttenuation" label="雨强档位" :error="issueMessage('scenario.environment.rainCloudAttenuation')">
+            <el-select :model-value="draft.config.scenario.environment.rainCloudAttenuation" data-testid="scenario-rain-cloud-atten" @update:model-value="changeRainTier">
+              <el-option v-for="option in RAIN_TIER_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.rainRateMmPerHour" required label="降雨强度（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
+            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" :min="0" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
+            <small class="field-hint">0～100 mm/h，超过 100 按 100 封顶</small>
+          </el-form-item>
+          <el-form-item v-for="field in naturalFields('rain')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+              controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
+            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+          </el-form-item>
+        </div>
+        <h4 class="environment-group__title">云雾参数（NECloud）</h4>
+        <div class="form-grid form-grid--scenario" data-testid="environment-cloud">
+          <el-form-item data-field-path="scenario.environment.cloudEnabled" label="是否开启" :error="issueMessage('scenario.environment.cloudEnabled')">
+            <el-switch v-model="draft.config.scenario.environment.cloudEnabled" inline-prompt active-text="开" inactive-text="关"
+              data-testid="scenario-env-cloudEnabled" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.cloudAltitudeMinM" label="云层底边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMinM')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :min="0" :max="30000" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.cloudAltitudeMaxM" label="云层顶边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMaxM')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :min="0" :max="30000" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.cloudWaterDensityGM3" label="云中含水量（g/m³）" :error="issueMessage('scenario.environment.cloudWaterDensityGM3')">
+            <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :min="0" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
+            <small class="field-hint">典型 0.05～2.0 g/m³</small>
+          </el-form-item>
+        </div>
+        <h4 class="environment-group__title">大气参数（NEAtmosphere）</h4>
+        <div class="form-grid form-grid--scenario" data-testid="environment-atmosphere">
+          <el-form-item data-field-path="scenario.environment.atmosphereModel" label="衰减模型" :error="issueMessage('scenario.environment.atmosphereModel')">
+            <el-select :model-value="draft.config.scenario.environment.atmosphereModel" data-testid="scenario-env-atmosphereModel" @update:model-value="changeAtmosphereModel">
+              <el-option label="itu（标准）" value="itu" /><el-option label="simplified（简化）" value="simplified" /><el-option label="auto（自动）" value="auto" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-for="field in naturalFields('atmosphere')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+              :disabled="draft.config.scenario.environment.atmosphereModel === 'itu'"
+              controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
+            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+          </el-form-item>
+        </div>
+        <h4 class="environment-group__title">极化失配（MiscLossDB）</h4>
+        <div class="form-grid form-grid--scenario" data-testid="environment-misc">
+          <el-form-item v-for="field in naturalFields('misc')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+              controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
+            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
+          </el-form-item>
+        </div>
+        <h4 class="environment-group__title">海况参数（SeaState）</h4>
+        <div class="form-grid form-grid--scenario" data-testid="environment-sea">
+          <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
+            <el-input-number v-model="draft.config.scenario.environment.seaState" :min="0" :max="SEA_STATE_MAX" :step="1" step-strictly controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
+            <small class="field-hint">1～9 级，0 表示不启用海况损耗</small>
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.multipathEnabled" class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
+            <el-switch v-model="draft.config.scenario.environment.multipathEnabled" inline-prompt active-text="启用" inactive-text="禁用"
+              data-testid="scenario-multipath" @update:model-value="markDirty" />
+            <template v-if="draft.config.scenario.environment.multipathEnabled">
+              <el-button size="small" class="sea-area-button" :disabled="pending || draft.locked" data-testid="open-sea-area" @click="seaAreaVisible = true">
+                框选海面区域
+              </el-button>
+              <span class="sea-area-summary" data-testid="sea-area-summary">
+                {{ draft.config.scenario.environment.seaPolygon?.length
+                  ? `已框选 ${draft.config.scenario.environment.seaPolygon.length} 个顶点`
+                  : '未框选海面区域' }}
+              </span>
+            </template>
+            <SeaAreaMapPicker v-model="seaAreaVisible" :polygon="draft.config.scenario.environment.seaPolygon" @confirm="applySeaArea" />
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.seaModel" label="损耗计算模式" :error="issueMessage('scenario.environment.seaModel')">
+            <el-select v-model="draft.config.scenario.environment.seaModel" data-testid="scenario-env-seaModel" @update:model-value="markDirty">
+              <el-option label="经验模型（coarse）" value="coarse" /><el-option label="多径模型（fine）" value="fine" />
+            </el-select>
+          </el-form-item>
+          <el-form-item data-field-path="scenario.environment.seaPolarization" label="反射系数极化" :error="issueMessage('scenario.environment.seaPolarization')">
+            <el-select v-model="draft.config.scenario.environment.seaPolarization" data-testid="scenario-env-seaPolarization" @update:model-value="markDirty">
+              <el-option label="垂直极化" value="vertical" /><el-option label="水平极化" value="horizontal" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-for="field in naturalFields('sea')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+              controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
+            <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
         </div>
       </section>
@@ -1597,8 +1690,9 @@ watch(activeTab, (tab) => {
               <el-table-column prop="bandwidth" label="带宽（MHz）" />
               <el-table-column prop="defaultPower" label="发射功率（W）"  />
               <el-table-column label="自动检测"><template #default="{ row }">{{ row.autoDetect ? '开启' : '关闭' }}</template></el-table-column>
-              <el-table-column label="探测范围（海里）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
-              <el-table-column label="干扰范围（海里）"><template #default="{ row }">{{ Number((row.jammingRange / METERS_PER_NAUTICAL_MILE).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="探测范围（km）"><template #default="{ row }">{{ Number((row.detectionRange / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="干扰范围（km）"><template #default="{ row }">{{ Number((row.jammingRange / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
+              <el-table-column label="释放范围（km）"><template #default="{ row }">{{ Number((readJammerReleaseRange(row) / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
               <el-table-column label="触发时间（秒）"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
               <el-table-column label="方向（°）" ><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
               <el-table-column label="持续时间（s）" ><template #default="{ row }">{{ jammerExtension(row.id)?.duration }}</template></el-table-column>
@@ -2045,6 +2139,47 @@ watch(activeTab, (tab) => {
 .sea-area-summary {
   color: var(--console-text-muted);
   font-size: 0.75rem;
+}
+
+.field-hint {
+  width: 100%;
+  color: var(--console-text-muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.environment-section {
+  margin-top: 1rem;
+}
+
+.environment-section__title {
+  margin: 0 0 0.75rem;
+  font-size: 0.875rem;
+}
+
+.environment-group__title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0.5rem;
+  color: var(--console-cyan);
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+}
+
+.environment-group__title::after {
+  flex: 1;
+  border-top: 1px solid var(--console-border);
+  content: '';
+}
+
+.environment-section :deep(.el-select) {
+  width: 100%;
+}
+
+/* 文档字段名较长，加宽标签列，避免不换行标签溢出。 */
+.environment-section .form-grid--scenario :deep(.el-form-item) {
+  grid-template-columns: 10.5rem minmax(0, 1fr);
 }
 
 @media (max-width: 960px) {

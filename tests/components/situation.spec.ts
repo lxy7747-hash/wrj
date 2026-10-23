@@ -6,7 +6,8 @@ import { h, reactive } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../src/config/map.config'
-import type { ConfirmationContext, Link, Principal, SimulationRun } from '../../src/contracts/domain-models'
+import type { ConfirmationContext, Link, Principal, SimulationRun, ScenarioDraft } from '../../src/contracts/domain-models'
+import type { PositionUpdate } from '../../src/features/situation/position-updates'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
 import type { InitialNodeSnapshot, SituationMapNode } from '../../src/features/situation/initial-nodes'
 import { selectFileCommunicationLinks, type FileCommunicationConnection, type FileCommunicationLink } from '../../src/features/situation/file-communication-links'
@@ -279,6 +280,168 @@ describe('态势主界面', () => {
     expect(empty.text()).not.toContain('F-00042')
     expect(empty.find('button').text()).toBe('重新加载')
     expect(wrapper.find('.situation-footer').exists()).toBe(false)
+  })
+
+  async function mountLiveMission(readPositions: (scene: ScenarioDraft, init?: RequestInit) => Promise<Response>) {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    let current = simulationRun('RUNNING', true)
+    const fetcher = vi.fn(async (input: string, init?: RequestInit) => {
+      if (/\/simulations\/[^/]+\/positions$/.test(input)) return readPositions(scene, init)
+      if (input.endsWith('/simulations')) return successResponse([current])
+      if (input.endsWith(`/scenarios/${scene.config.scenario.id}`)) return successResponse(scene)
+      throw new Error(`Unexpected request ${input}`)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const wrapper = await mountSituationPage(scene.config.scenario.id, 'LOCAL')
+    return { wrapper, scene, fetcher, setRun(run: SimulationRun) { current = run; useSimulationStore().run = run } }
+  }
+
+  function livePositions(scene: ScenarioDraft, time: number | null, runId = 'RUN-001', hasMore = false) {
+    const platform = scene.config.platforms[0]!
+    const node: PositionUpdate = { platformId: platform.id, time: time ?? 0, longitude: 121 + (time ?? 0) / 100,
+      latitude: 25, altitude: 2000, speed: 100, heading: 90 }
+    return { runId, scenarioId: scene.config.scenario.id, revision: scene.revision,
+      positions: time === null ? null : { fileName: 'position.csv', generation: 1, nodes: [node], recordCount: 1,
+        issueCount: 0, issues: [], waitingForLine: false, hasMore } }
+  }
+
+  it('真实运行等待本次CSV后持续更新地图，配置位置和旧input文件不被当成运行位置', async () => {
+    let time: number | null = null
+    const { wrapper, scene, fetcher } = await mountLiveMission(async scene => successResponse(livePositions(scene, time)))
+    const platform = scene.config.platforms[0]!
+    const initialPosition = { ...platform.initialPosition }
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(platform.initialPosition)
+    await wrapper.get('.scene-summary__tabs button:last-child').trigger('click')
+    expect(wrapper.text()).toContain('等待本次仿真写入位置数据')
+    time = 5
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ platformId: platform.id, longitude: 121.05, time: 5 })
+    time = 10
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ longitude: 121.1, time: 10 })
+    expect(wrapper.text()).toContain('本次位置已更新至 10 s')
+    expect(useSimulationStore().selectedScene!.config.platforms[0]!.initialPosition).toEqual(initialPosition)
+    expect(fetcher.mock.calls.some(([url]) => /situation\/(initial-nodes|positions)/.test(url))).toBe(false)
+  })
+
+  it.each([100, 0])('节点详情仅在收到该节点本次位置后显示实际速度 %s m/s', async speed => {
+    let received = false
+    const { scene } = await mountLiveMission(async scene => {
+      const data = livePositions(scene, received ? 0 : null)
+      if (data.positions) data.positions.nodes[0]!.speed = speed
+      return successResponse(data)
+    })
+    const speedText = () => Array.from(document.querySelectorAll('[data-testid="selected-node-dialog"] dt'))
+      .find(label => label.textContent === '速度')?.nextElementSibling?.textContent
+    const selectNode = async (platformId: string) => {
+      mapControllerMock.latestOptions!.onSelectNode(platformId)
+      await flushPromises()
+    }
+    await selectNode(scene.config.platforms[0]!.id)
+    expect(speedText()).toBe('暂无运行数据')
+    received = true
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(speedText()).toBe(`${speed} m/s`)
+    await selectNode(scene.config.platforms[1]!.id)
+    expect(speedText()).toBe('暂无运行数据')
+    await selectNode(scene.config.platforms[0]!.id)
+    expect(speedText()).toBe(`${speed} m/s`)
+    received = false
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(speedText()).toBe('暂无运行数据')
+  })
+
+  it('结束时读取最后位置并排空增量，完成后停止轮询且保留最终坐标', async () => {
+    let time = 5
+    let hasMore = false
+    const { scene, fetcher, setRun } = await mountLiveMission(async scene => successResponse(livePositions(scene, time, 'RUN-001', hasMore)))
+    time = 20
+    hasMore = true
+    setRun({ ...simulationRun('COMPLETED', false), startedAt: '2026-08-06T08:05:00Z' })
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ time: 20 })
+    hasMore = false
+    time = 25
+    await vi.advanceTimersByTimeAsync(50)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ platformId: scene.config.platforms[0]!.id, time: 25 })
+    fetcher.mockClear()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('更换运行立即清除旧位置，迟到的旧任务响应不覆盖新任务', async () => {
+    let finish!: (response: Response) => void
+    let first = true
+    const { scene, setRun } = await mountLiveMission(async scene => {
+      if (first) { first = false; return new Promise(resolve => { finish = resolve }) }
+      return successResponse(livePositions(scene, null, 'RUN-002'))
+    })
+    setRun({ ...simulationRun('RUNNING', true), runId: 'RUN-002' })
+    await flushPromises()
+    finish(successResponse(livePositions(scene, 100)))
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(scene.config.platforms[0]!.initialPosition)
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).not.toHaveProperty('time', 100)
+  })
+
+  it.each(['离页', '登出', '换场景'])('位置请求在途时%s会取消请求并拒绝迟到坐标', async action => {
+    let finish!: (response: Response) => void
+    let signal: AbortSignal | null | undefined
+    const { wrapper, scene, fetcher } = await mountLiveMission(async (_, init) => {
+      signal = init?.signal
+      return new Promise(resolve => { finish = resolve })
+    })
+    if (action === '离页') { wrapper.unmount(); mountedWrapper = null }
+    else if (action === '登出') useAuthStore().resetToSafeEmpty()
+    else useSimulationStore().selectedScene = { ...scene, config: { ...scene.config, scenario: { ...scene.config.scenario, id: 'SCN-OTHER' } } }
+    await flushPromises()
+    expect(signal?.aborted).toBe(true)
+    finish(successResponse(livePositions(scene, 100)))
+    await flushPromises()
+    if (action !== '离页') expect(mapControllerMock.latestOptions!.initialNodes?.[0]).not.toHaveProperty('time', 100)
+    fetcher.mockClear()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(fetcher.mock.calls.some(([url]) => url.endsWith('/positions'))).toBe(false)
+  })
+
+  it('错运行或错修订的响应不进入地图；读取失败重试并恢复', async () => {
+    let kind: 'wrong-run' | 'wrong-revision' | 'failed' | 'ready' = 'wrong-run'
+    const { wrapper, scene } = await mountLiveMission(async scene => {
+      if (kind === 'failed') throw new Error('connection failed')
+      const data = livePositions(scene, 40, kind === 'wrong-run' ? 'RUN-OTHER' : 'RUN-001')
+      if (kind === 'wrong-revision') data.revision += 1
+      return successResponse(data)
+    })
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(scene.config.platforms[0]!.initialPosition)
+    kind = 'wrong-revision'
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).not.toHaveProperty('time', 40)
+    kind = 'failed'
+    await vi.advanceTimersByTimeAsync(1_000)
+    kind = 'ready'
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ time: 40 })
+    await wrapper.get('.scene-summary__tabs button:last-child').trigger('click')
+    expect(wrapper.text()).toContain('本次位置已更新至 40 s')
+  })
+
+  it('请求超时会取消并重试，不阻塞后续位置读取', async () => {
+    let waiting = true
+    let signal: AbortSignal | null | undefined
+    const { wrapper } = await mountLiveMission(async (scene, init) => {
+      if (!waiting) return successResponse(livePositions(scene, 15))
+      waiting = false
+      signal = init?.signal
+      return new Promise((_, reject) => signal?.addEventListener('abort', () => reject(new Error('timeout'))))
+    })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(signal?.aborted).toBe(true)
+    expect(wrapper.get('.situation-footer').text()).toContain('本次位置读取失败')
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ time: 15 })
   })
 
   it('质量指标位于右侧页签而非弹框，联动选中链路且来回切换保留筛选', async () => {

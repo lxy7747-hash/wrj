@@ -756,19 +756,19 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
-    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 100, bandwidth: 20, triggerTimeS: 300, detectionRange: 44448, jammingRange: 44448 })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 200, frequency: 2400, bandwidth: 50, triggerTimeS: 300, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
     expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
     expect(scenario.draft!.config.jammers).toHaveLength(2)
     await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
     const range = dialog.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'jammer-range')!
-    expect(range.props('modelValue')).toBe(150000 / 1852)
-    range.vm.$emit('update:modelValue', 25)
+    expect(range.props('modelValue')).toBe(150)
+    range.vm.$emit('update:modelValue', 101)
     await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
-    expect(document.querySelector('.el-message--warning')?.textContent).toContain('1～24 海里')
+    expect(document.querySelector('.el-message--warning')?.textContent).toContain('1～100 km')
     expect(dialog.props('error')).toBe('')
     expect(scenario.draft!.config.jammers[0]!.detectionRange).toBe(150000)
     range.vm.$emit('update:modelValue', 24)
@@ -777,7 +777,7 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
-    expect(scenario.draft!.config.jammers[0]).toMatchObject({ type: 'SWEEP', detectionRange: 44448, triggerTimeS: 300 })
+    expect(scenario.draft!.config.jammers[0]).toMatchObject({ type: 'SWEEP', detectionRange: 24000, triggerTimeS: 300 })
     expect(scenario.draft!.config.jammers[1]!.detectionRange).toBe(150000)
     expect(inspectScenarioConfig(scenario.draft!.config, 'write').result.valid).toBe(false)
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
@@ -869,7 +869,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.revision).toBe(5)
     expect(messageSpy).not.toHaveBeenCalled()
     expect(ElMessageBox.alert).not.toHaveBeenCalled()
-    expect(warningSpy).toHaveBeenCalledExactlyOnceWith('场景与 TXT 已保存（H:\\output\\SCN-001-r5.txt），但未自动运行：当前账号没有仿真控制权限。')
+    expect(warningSpy).toHaveBeenCalledExactlyOnceWith('场景已保存，但未自动运行：当前账号没有仿真控制权限。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(wrapper.text()).toContain('修订 5')
     expect(wrapper.text()).toContain('已就绪')
@@ -891,19 +891,34 @@ describe('P2-1 场景管理页面', () => {
     scenario.$patch({ draft: initial, panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
     const fields = wrapper.get('.form-grid--scenario')
-    expect(fields.findAll('.el-form-item__label').map((item) => item.text())).toEqual([
+    const labels = (root: ReturnType<typeof wrapper.get>) => root.findAll('.el-form-item__label').map((item) => item.text())
+    expect(labels(fields)).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
-      '仿真总时长（min）', '仿真时钟倍速（倍）', '海峡宽度（km）', '云雨气象衰减', '海面多径衰落',
-      '云层下限高度（m）', '云层上限高度（m）', '云中液态水密度（g/m³）',
-      '海况等级', '温度（℃）', '相对湿度（%）', '降雨率（mm/h）', '雨衰（dB/km）', '场景描述',
+      '仿真总时长（min）', '仿真时钟倍速（倍）', '海峡宽度（km）', '温度（℃）', '相对湿度（%）', '雨衰（dB/km）', '场景描述',
     ])
+    // 环境参数按《与前端字段确认说明》“环境参数（全局）”的五个小标题分组。
+    const environment = wrapper.get('[data-testid="scenario-environment"]')
+    expect(environment.get('.environment-section__title').text()).toBe('环境参数（全局）')
+    expect(environment.findAll('.environment-group__title').map(item => item.text())).toEqual([
+      '降雨参数（NERain）', '云雾参数（NECloud）', '大气参数（NEAtmosphere）', '极化失配（MiscLossDB）', '海况参数（SeaState）',
+    ])
+    expect(labels(environment.get('[data-testid="environment-rain"]'))).toEqual(['是否开启', '雨强档位', '降雨强度（mm/h）', '雨区顶部高度（m）', '固定雨衰兜底值（dB）'])
+    expect(labels(environment.get('[data-testid="environment-cloud"]'))).toEqual(['是否开启', '云层底边高度（m）', '云层顶边高度（m）', '云中含水量（g/m³）'])
+    expect(labels(environment.get('[data-testid="environment-atmosphere"]'))).toEqual(['衰减模型', '简化衰减率（dB/km）'])
+    expect(labels(environment.get('[data-testid="environment-misc"]'))).toEqual(['极化失配损耗（dB）', '指向误差损耗（dB）'])
+    expect(labels(environment.get('[data-testid="environment-sea"]'))).toEqual(['海况等级', '海面多径衰落', '损耗计算模式', '反射系数极化',
+      '贴海飞行高度阈值（m）', '跨海距离阈值（km）', '海水温度（℃）', '海面高度标准差（m）'])
+    // 旧场景缺省的 link_calc 环境参数按文档默认值补齐；ITU 模型下简化衰减率不可编辑。
+    expect(environment.get('[data-testid="scenario-env-seaLowAltitudeThresholdM"] input').attributes('aria-valuenow')).toBe('100')
+    expect(environment.get('[data-testid="scenario-env-seaWaterTempC"] input').attributes('aria-valuenow')).toBe('20')
+    expect(environment.get('[data-testid="scenario-env-simplifiedAttenuationDbPerKm"] input').attributes('disabled')).toBeDefined()
     // 海面多径衰落启用时可框选海面区域；未框选时脚本不写坐标。
-    expect(fields.get('[data-testid="sea-area-summary"]').text()).toBe('未框选海面区域')
-    expect(fields.find('[data-testid="open-sea-area"]').exists()).toBe(true)
+    expect(environment.get('[data-testid="sea-area-summary"]').text()).toBe('未框选海面区域')
+    expect(environment.find('[data-testid="open-sea-area"]').exists()).toBe(true)
     // 旧场景缺省云层参数时按对接示例典型值补齐。
-    expect(fields.get('[data-testid="scenario-cloud-min"] input').attributes('aria-valuenow')).toBe('500')
-    expect(fields.get('[data-testid="scenario-cloud-max"] input').attributes('aria-valuenow')).toBe('2000')
-    expect(fields.get('[data-testid="scenario-cloud-water"] input').attributes('aria-valuenow')).toBe('0.5')
+    expect(environment.get('[data-testid="scenario-cloud-min"] input').attributes('aria-valuenow')).toBe('500')
+    expect(environment.get('[data-testid="scenario-cloud-max"] input').attributes('aria-valuenow')).toBe('2000')
+    expect(environment.get('[data-testid="scenario-cloud-water"] input').attributes('aria-valuenow')).toBe('0.5')
     expect(wrapper.findAll('[data-testid="scenario-duration"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="scenario-sim-total-time"]').exists()).toBe(false)
     expect(wrapper.findAll('[data-testid="scenario-multipath"]')).toHaveLength(1)
@@ -911,8 +926,10 @@ describe('P2-1 场景管理页面', () => {
     expect((duration.element as HTMLInputElement).value).toBe('20')
     expect(fields.get('[data-testid="scenario-sim-clock-speed"] input').attributes('aria-valuenow')).toBe('2')
     expect(fields.get('[data-testid="scenario-trans-distance"] input').attributes('aria-valuenow')).toBe('300')
-    expect(fields.findComponent({ name: 'ElSelect' }).props('modelValue')).toBe('lightRain')
-    expect(fields.findComponent({ name: 'ElSwitch' }).props('modelValue')).toBe(true)
+    const rainTier = environment.findAllComponents({ name: 'ElSelect' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-rain-cloud-atten')!
+    const multipath = environment.findAllComponents({ name: 'ElSwitch' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-multipath')!
+    expect(rainTier.props('modelValue')).toBe('lightRain')
+    expect(multipath.props('modelValue')).toBe(true)
 
     await duration.setValue('20.5')
     await duration.trigger('change')
@@ -920,15 +937,16 @@ describe('P2-1 场景管理页面', () => {
     await fields.get('[data-testid="scenario-sim-clock-speed"] input').trigger('change')
     await fields.get('[data-testid="scenario-trans-distance"] input').setValue('350')
     await fields.get('[data-testid="scenario-trans-distance"] input').trigger('change')
-    fields.findComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'heavyRain')
-    fields.findComponent({ name: 'ElSwitch' }).vm.$emit('update:modelValue', false)
+    rainTier.vm.$emit('update:modelValue', 'heavyRain')
+    multipath.vm.$emit('update:modelValue', false)
     await nextTick()
 
     const saved = structuredClone(initial)
     saved.revision = 5
     saved.config.scenario.duration = 1230
     Object.assign(saved.config.scenario.environment, {
-      simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain', multipathEnabled: false,
+      // 选择雨强档位时同步降雨强度（大雨 50 mm/h）。
+      simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain', rainRateMmPerHour: 50, multipathEnabled: false,
     })
     const fetchSpy = vi.fn().mockResolvedValue(response(saved))
     vi.stubGlobal('fetch', fetchSpy)
@@ -2034,6 +2052,9 @@ describe('P2-1 场景管理页面', () => {
     select('link-target').vm.$emit('update:modelValue', 'UAV-01')
     select('link-modulation').vm.$emit('update:modelValue', 'BPSK')
     select('link-direction').vm.$emit('update:modelValue', 'REVERSE')
+    // 卫星、微波速率固定只读，切换为激光后才渲染可输入的数据速率；微波频率上限 10000 MHz，激光不设上限。
+    await nextTick()
+    inputNumber('link-frequency').vm.$emit('update:modelValue', 193500000)
     inputNumber('link-bandwidth').vm.$emit('input', 1000)
     inputNumber('link-bandwidth').vm.$emit('update:modelValue', 1000)
     inputNumber('link-power').vm.$emit('update:modelValue', 20)
@@ -2191,8 +2212,10 @@ describe('P2-1 场景管理页面', () => {
       frequency: 3200,
       bandwidth: 15,
       autoDetect: true,
-      detectionRange: 44448,
-      jammingRange: 44448,
+      // 探测范围按 km 输入；干扰与释放范围取文档默认的 30、35 海里。
+      detectionRange: 24000,
+      jammingRange: 55560,
+      releaseRange: 64820,
       triggerTimeS: 300,
     })
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).toContain('JAM-CFG-001')

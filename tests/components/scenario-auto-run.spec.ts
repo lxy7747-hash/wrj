@@ -94,7 +94,7 @@ describe('保存并生成 TXT 后自动运行', () => {
     expect(t.simulation.uiStatus).toBe('RUNNING')
     expect(t.store.draft?.locked).toBe(true)
     expect(t.store.dirty).toBe(false)
-    expect(t.successSpy).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('仿真已启动'))
+    expect(t.successSpy).toHaveBeenCalledExactlyOnceWith('场景已保存，仿真已启动。')
     expect(t.wrapper.emitted('saved')).toHaveLength(1)
     await t.save()
     expect(t.calls.filter(c => c.endsWith('/commands'))).toHaveLength(1)

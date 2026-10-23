@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
-import { isJammerPlatformType, METERS_PER_NAUTICAL_MILE } from '../../features/scenarios/jammer-settings'
+import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
@@ -34,15 +34,19 @@ const jammerPlatforms = computed(() => props.platforms.filter(platform => isJamm
 const legacyPlatformId = computed(() => editor.value?.platformId
   && !jammerPlatforms.value.some(platform => platform.id === editor.value?.platformId) ? editor.value.platformId : '')
 const legacyPlatformName = computed(() => props.platforms.find(platform => platform.id === legacyPlatformId.value)?.name ?? '未找到节点')
-const detectionRangeNm = computed<number | undefined>({
-  get: () => editor.value ? editor.value.detectionRange / METERS_PER_NAUTICAL_MILE : undefined,
-  /** 将用户输入的海里换算为合同米；清空留给确认校验，不自动覆盖旧超界距离。 */
-  set: value => { if (editor.value) editor.value.detectionRange = typeof value === 'number' ? value * METERS_PER_NAUTICAL_MILE : Number.NaN },
-})
-const jammingRangeNm = computed<number | undefined>({
-  get: () => editor.value ? editor.value.jammingRange / METERS_PER_NAUTICAL_MILE : undefined,
-  /** 干扰有效作用距离；单位与探测范围一致（海里展示、合同米）。 */
-  set: value => { if (editor.value) editor.value.jammingRange = typeof value === 'number' ? value * METERS_PER_NAUTICAL_MILE : Number.NaN },
+/** 按 km 展示合同米字段；清空留给确认校验，不自动覆盖旧超界距离。 */
+function kilometers(field: 'detectionRange' | 'jammingRange') {
+  return computed<number | undefined>({
+    get: () => editor.value ? Number((editor.value[field] / METERS_PER_KILOMETER).toFixed(3)) : undefined,
+    set: value => { if (editor.value) editor.value[field] = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
+  })
+}
+const detectionRangeKm = kilometers('detectionRange')
+const jammingRangeKm = kilometers('jammingRange')
+/** 释放范围；旧记录缺省时展示干扰范围加 5 海里，编辑后才写入字段。 */
+const releaseRangeKm = computed<number | undefined>({
+  get: () => editor.value ? Number((readJammerReleaseRange(editor.value) / METERS_PER_KILOMETER).toFixed(3)) : undefined,
+  set: value => { if (editor.value) editor.value.releaseRange = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
 })
 
 /** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
@@ -113,13 +117,17 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>
         <div class="link-editor-grid">
           <el-form-item label="自动检测"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
-          <el-form-item required label="探测范围（海里，1～24）">
-            <el-input-number v-model="detectionRangeNm" controls-position="right" data-testid="jammer-range" />
+          <el-form-item required label="探测范围（km，1～100）">
+            <el-input-number v-model="detectionRangeKm" controls-position="right" data-testid="jammer-range" />
             <small class="field-hint">自动探测发现目标的距离；合同单位为米。</small>
           </el-form-item>
-          <el-form-item required label="干扰范围（海里，1～24）">
-            <el-input-number v-model="jammingRangeNm" controls-position="right" data-testid="jammer-jamming-range" />
-            <small class="field-hint">干扰有效作用距离；自动探测仅在此范围内启停干扰。候选脚本无 weapon 最大作用距离指令。</small>
+          <el-form-item required label="干扰范围（km，1～100）">
+            <el-input-number v-model="jammingRangeKm" controls-position="right" data-testid="jammer-jamming-range" />
+            <small class="field-hint">干扰圈接触范围；自动探测仅在此范围内启停干扰，写入 jammer_param 时换算为海里。</small>
+          </el-form-item>
+          <el-form-item required label="释放范围（km，1～100）">
+            <el-input-number v-model="releaseRangeKm" controls-position="right" data-testid="jammer-release-range" />
+            <small class="field-hint">干扰机离开此距离后释放；不小于干扰范围，写入时换算为海里。</small>
           </el-form-item>
         </div>
       </section>

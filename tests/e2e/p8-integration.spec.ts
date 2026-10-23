@@ -77,7 +77,9 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
     expect(requests.filter((url) => url.endsWith('/api/v1/reset'))).toHaveLength(cycle + 1)
   }
   await page.getByText('状态示例与错误目录', { exact: true }).click()
-  await expect(page.getByTestId('error-catalog').locator('.el-table__row')).toHaveCount(30)
+  // 06f4df0 新增 INTERNAL_ERROR，目录共 31 项。
+  await expect(page.getByTestId('error-catalog').locator('.el-table__row')).toHaveCount(31)
+  await expect(page.getByTestId('error-catalog')).toContainText('INTERNAL_ERROR')
   await page.getByRole('radio', { name: '失败', exact: true }).focus()
   await page.keyboard.press('Space')
   await expect(page.getByText('状态示例：失败', { exact: true })).toBeVisible()

@@ -592,6 +592,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const unresolvedMission = missionSafety()
   if (unresolvedMission?.scenarioId) scenarios.setLocked(unresolvedMission.scenarioId, true)
   let mission: MissionProcess | undefined
+  let missionPositions: { runId: string; read: NonNullable<MissionProcess['readPositions']> } | undefined
   let missionStarting: Promise<MissionProcess> | undefined
   let missionStopping = false
   let missionCompletedWhileStopping: MissionOutcome | undefined
@@ -1030,6 +1031,38 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  /** 读取指定本地 mission 本次独占输出的最新位置；不接受浏览器提供文件路径。 */
+  app.get('/api/v1/simulations/:runId/positions', async (req, res) => {
+    const runId = req.params.runId
+    const requestId = 'REQ-MISSION-POSITIONS'
+    // Position snapshots are append-only during a live run and must never be reused by a browser/proxy cache.
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'SIMULATION_READ', runId) === undefined) return
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json(failure('INVALID_REQUEST', 400, { message: '此接口不接受文件路径或查询参数。' }))
+      return
+    }
+    const run = simulations.get(runId)
+    if (sendSimulationFailure(res, run, requestId)) return
+    const binding = missionPositions
+    if (!binding || binding.runId !== runId) {
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行未关联本地 mission 输出。' }))
+      return
+    }
+    try {
+      const snapshot = await binding.read()
+      if (snapshot === null || missionPositions !== binding) {
+        res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行未关联本地 mission 输出。' }))
+        return
+      }
+      res.status(200).json(success(snapshot, pageMeta(requestId)))
+    } catch {
+      res.status(503).json(failure('START_FAILED', 503, {
+        message: '本次仿真位置读取失败，请检查本次输出文件、表头及写入状态。', retryable: true,
+      }))
+    }
+  })
+
   /** 返回指定运行和帧编号对应的确定性遥测帧。 */
   app.get('/api/v1/simulations/:runId/frames/:frameId', (req, res) => {
     const { runId, frameId } = req.params
@@ -1122,6 +1155,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       try {
         missionStarting = options.missionExecution.start(draft.data, runId)
         const process = await missionStarting
+        missionPositions = process.readPositions ? { runId, read: process.readPositions.bind(process) } : undefined
         mission = process
         missionCompletedWhileStopping = undefined
         const started = simulations.startMission(process.pid, process.startedAt)
@@ -1885,6 +1919,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           res.setHeader('Cache-Control', 'no-store')
           res.setHeader('X-Content-Type-Options', 'nosniff')
           res.setHeader('Content-Security-Policy', 'sandbox')
+          // 跨源（UI 5173 → API 4173）时浏览器脚本须能读到附件头，saveDownload 依赖它确认是合法附件。
+          res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
           res.download(result.filePath, `${snapshot?.record.resultId ?? reportId}.${result.format.toLowerCase()}`, error => {
             if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '报告下载失败，请重试。' }))
           })

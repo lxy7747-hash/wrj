@@ -57,7 +57,7 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
 }
 
 describe('保存后由 Node 写入 TXT', () => {
-  it('保存、生成、落盘依次请求，显示服务端路径，不触发浏览器下载', async () => {
+  it('保存、生成、落盘依次请求，不触发浏览器下载', async () => {
     const { wrapper, store, fetchSpy, alert, click, save } = await setup()
     const warning = vi.spyOn(ElMessage, 'warning')
     await save()
@@ -65,7 +65,7 @@ describe('保存后由 Node 写入 TXT', () => {
       .toEqual(['GET scenarios/SCN-001', 'PUT scenarios/SCN-001', 'POST scenarios/SCN-001/validate', 'POST scripts/preview', 'POST scripts/SCRIPT-P2-001/local-file'])
     expect(JSON.parse(String(fetchSpy.mock.calls.at(-1)![1]?.body))).toEqual({ checksum: store.script!.checksum })
     expect(alert).not.toHaveBeenCalled()
-    expect(warning).toHaveBeenCalledExactlyOnceWith(`场景与 TXT 已保存（${path}），但未自动运行：当前账号没有仿真控制权限。`)
+    expect(warning).toHaveBeenCalledExactlyOnceWith('场景已保存，但未自动运行：当前账号没有仿真控制权限。')
     expect(click).not.toHaveBeenCalled()
     expect(wrapper.emitted('saved')).toBeUndefined()
   })
@@ -143,6 +143,6 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(fetchSpy.mock.calls.slice(-4).map(([url]) => String(url).split('/api/v1/')[1]))
       .toEqual(['confirmations', 'confirmations/CONF-TXT', 'scripts/preview', 'scripts/SCRIPT-P2-001/local-file'])
     expect(alert).not.toHaveBeenCalled()
-    expect(warning).toHaveBeenCalledExactlyOnceWith(`场景与 TXT 已保存（${path}），但未自动运行：当前账号没有仿真控制权限。`)
+    expect(warning).toHaveBeenCalledExactlyOnceWith('场景已保存，但未自动运行：当前账号没有仿真控制权限。')
   })
 })

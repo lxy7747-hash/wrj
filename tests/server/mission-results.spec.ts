@@ -114,6 +114,8 @@ describe('真实仿真结果闭环', () => {
     for (const format of ['HTML', 'CSV']) {
       const response = await api.post(url).set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format }).expect(200)
       expect(response.headers['content-disposition']).toContain(`${record.resultId}.${format.toLowerCase()}`)
+      // 跨源 UI 需读取附件头才能确认下载；暴露头须由服务端给出。
+      expect(response.headers['access-control-expose-headers']).toBe('Content-Disposition')
       expect(response.text).toContain(record.resultId)
       expect(response.text).toContain(draft.config.scenario.id)
       expect(response.text).toContain(snapshot.replay.sha256)

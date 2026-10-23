@@ -4,7 +4,7 @@ import { INITIAL_LOG, POSITION_CSV } from '../fixtures/local-replay'
 
 // 使用项目已有 tsx 加载服务端 ESM/JSON，不将 Node 模块加入浏览器 TS 工程。
 const { tsImport } = await import('tsx/esm/' + 'api')
-const { mkdtemp, writeFile, rm } = await import('node:fs/' + 'promises')
+const { mkdtemp, readFile, writeFile, rm } = await import('node:fs/' + 'promises')
 const { join } = await import('node:' + 'path')
 const { tmpdir } = await import('node:' + 'os')
 const { once } = await import('node:' + 'events')
@@ -82,8 +82,17 @@ test('真实快照登记后源文件变化，归档回放和评估仍同源，�
   await expect(page.getByTestId('report-archive-source')).toContainText(record.archiveId)
   await page.reload()
   await expect(page.getByTestId('report-archive-source')).toContainText(record.archiveId)
+  // 本地报告直接下载附件；先注册下载等待，再核对文件名与内容属于所选归档快照（快照甲，而非已变化的源文件）。
+  const downloaded = page.waitForEvent('download')
   await page.getByTestId('report-export').click()
-  await expect(page.getByTestId('local-report-export-result')).toContainText(record.reportId)
+  const download = await downloaded
+  expect(download.suggestedFilename()).toBe(`${record.reportId}.html`)
+  const content = await readFile((await download.path())!, 'utf8')
+  expect(content).toContain(record.reportId)
+  expect(content).toContain(record.positionFile.sha256)
+  const changed = store.list().find((item: typeof record) => item.archiveId !== record.archiveId)!
+  expect(content).not.toContain(changed.positionFile.sha256)
+  await expect(page.locator('.el-message--success')).toContainText('已发起报告下载，请在浏览器下载记录中查看。')
   expect(errors).toEqual([])
 })
 

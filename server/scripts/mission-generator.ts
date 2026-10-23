@@ -1,7 +1,13 @@
-import type { LinkSwitchTrigger, SatelliteType, ScenarioDraft } from '../../src/contracts/domain-models.js'
+import type { LinkCalcSettings, LinkSwitchTrigger, SatelliteType, ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { configuredScenarioOutput } from '../../src/config/app.config.js'
-import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
+import { INFORMATION_TYPE_DIRECTIONS, inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
 import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
+import {
+  defaultPolarization, fixedLinkDataRate, readLinkCalcSettings, readNaturalEnvironment, RECEIVER_NOISE_FIGURE_DB, TIANTONG_NOISE_FIGURE_DB,
+  type NaturalEnvironment,
+} from '../../src/features/scenarios/link-calc-defaults.js'
+import { METERS_PER_NAUTICAL_MILE, readJammerReleaseRange } from '../../src/features/scenarios/jammer-settings.js'
+import { HOT_LINK_END_REFERENCE_MODELS, readHotLinks } from '../../src/features/scenarios/hot-links.js'
 
 export class MissionGenerationError extends Error {
   constructor(readonly fieldPath: string, reason: string) {
@@ -44,6 +50,8 @@ type GeneratedJammer = {
   autoDetect: boolean
   detectionRangeM: number
   jammingRangeM: number
+  /** 干扰机离开后的释放距离，写入 jammer_param.release_radius_nm。 */
+  releaseRangeM: number
   triggerTimeS: number | null
   directionDeg: number
   durationS: number
@@ -115,21 +123,28 @@ const ENTRY_FILE = 'comm_SimSetup.txt'
 // 示例固定值：通信设备的公共介质、信道数与接收机参数。
 const COMM_MEDIUM = 'UAV_MESH_MEDIUM'
 const COMM_CHANNELS = 4
-const RECEIVER_NOISE_FIGURE_DB = 3
-const TIANTONG_NOISE_FIGURE_DB = 2
 const BIT_ERROR_PROBABILITY = 0.00001
-// 示例 C 波段定向天线：俯仰波束 88°，下倾 3°。
+// 指挥车 C 波段定向天线：俯仰波束 88°，下倾 3°；任务机 C 波段按文档为全向 180°。
 const DATALINK_C_ELEVATION_BEAMWIDTH_DEG = 88
 const DATALINK_C_ANTENNA_TILT_DEG = -3
 // 示例时延处理器：先进先出、10 个服务台、固定 1 秒。
 const DELAY_TEMPLATE = ['    queuing_method first_in_first_out', '    number_of_servers 10',
   '    time_distribution constant time 1.0 sec'] as const
-// 示例 link_calc 的固定参数；海域多边形取自场景框选，不再使用示例坐标。
+// 示例 link_calc 的固定参数；阈值、编码与环境参数来自场景配置（缺省按《与前端字段确认说明》）。
 const LINK_CALC_TEMPLATE = {
-  updateIntervalS: 3.0, emergencyThreshold: 0.80, warningThreshold: 0.50,
-  rainAltitudeLimitM: 3000,
+  updateIntervalS: 3.0,
   cloud: { minM: 500, maxM: 2000, waterDensityGM3: 0.5 },
 } as const
+// 业务类型到 traffic_type 的对应；字段名 traffice_type 按文档原样拼写（已确认）。分组方向取共享规则 INFORMATION_TYPE_DIRECTIONS。
+const TRAFFIC_TYPES: Record<keyof typeof INFORMATION_TYPE_DIRECTIONS, string> = {
+  '态势信息': 'kForwardSituation',
+  '目标指令': 'kForwardTarget',
+  '侦察信息': 'kReturnReconVideo',
+  '状态信息': 'kReturnReconStatus',
+}
+// jammer_param 中文档注明“写死”的字段。
+const JAMMER_PARAM_FIXED = { antenna_gain_dbi: 0.0, tx_loss_db: 0.0, spot_bandwidth_mhz: 20.0, sweep_duty_cycle: 0.1 } as const
+const JAMMER_PARAM_MODES: Record<JammerConfig['type'], string> = { BARRAGE: 'broadband', SPOT: 'spot', SWEEP: 'sweep' }
 const SIMULATION_NAME = 'MultiMethod_UAV_Comm_Scenario'
 
 // 以下固定段落原样取自对接示例 comm_PerDefinition.txt。
@@ -248,38 +263,79 @@ type LinkCalcDevice = {
  * JSON 按示例原样包在双引号中、内层不转义（已确认 A-03）；平台与设备编号均已限定为安全字符。
  */
 function buildLinkCalcProcessor(input: {
-  relayUavNames: string[]; devices: LinkCalcDevice[]; portParams: Map<string, Array<Record<string, unknown>>>
-  rainRateMmPerHour: number; seaState: number; cloud: { minM: number; maxM: number; waterDensityGM3: number }
-  multipathEnabled: boolean; seaPolygon: ReadonlyArray<{ lat: number; lon: number }>
+  relayUavNames: string[]; portParams: Map<string, Array<Record<string, unknown>>>
+  hotLinks: { forward: LinkCalcDevice[][]; reverse: LinkCalcDevice[][]; endReferenceModel: string }
+  environment: NaturalEnvironment; cloud: { minM: number; maxM: number; waterDensityGM3: number }
+  seaPolygon: ReadonlyArray<{ lat: number; lon: number }>
+  linkCalc: LinkCalcSettings; trafficType: unknown[]; jammerParam: { jammers: unknown[] }
 }): string[] {
-  const hotLinks = (direction: LinkCalcDevice['direction']) => Object.fromEntries(input.devices
-    .filter(device => device.direction === direction)
-    .map((device, index) => [`link${index + 1}`, [
-      { platform: device.source.platformId, inPort: '', outPort: device.source.deviceId },
-      ...(device.relay === null ? [] : [{ platform: device.relay.platformId, inPort: device.relay.ingressDeviceId, outPort: device.relay.egressDeviceId }]),
-      { platform: device.target.platformId, inPort: device.target.deviceId, outPort: '' },
-    ]]))
+  // 热链跨多条首尾相接的链路：相邻链路在衔接平台上以上一条的目标设备为入端口、下一条的源设备为出端口。
+  const hotLinks = (chains: readonly LinkCalcDevice[][]) => Object.fromEntries(chains.map((chain, index) => {
+    const hops: Array<{ platform: string; inPort: string; outPort: string }> = []
+    chain.forEach((device, position) => {
+      const inPort = position === 0 ? '' : chain[position - 1]!.target.deviceId
+      hops.push({ platform: device.source.platformId, inPort, outPort: device.source.deviceId })
+      if (device.relay !== null) hops.push({ platform: device.relay.platformId, inPort: device.relay.ingressDeviceId, outPort: device.relay.egressDeviceId })
+    })
+    const last = chain.at(-1)!
+    hops.push({ platform: last.target.platformId, inPort: last.target.deviceId, outPort: '' })
+    return [`link${index + 1}`, hops]
+  }))
   const template = LINK_CALC_TEMPLATE
+  const env = input.environment
+  // 字段与默认值取自《与前端字段确认说明》；降雨强度超过 100 mm/h 由后端封顶，这里原样写出。
   const naturalEnvironment = {
-    rain: { enabled: input.rainRateMmPerHour > 0, rain_rate_mm_hr: input.rainRateMmPerHour, rain_altitude_limit_m: template.rainAltitudeLimitM },
-    cloud: { enabled: true, cloud_altitude_min_m: input.cloud.minM, cloud_altitude_max_m: input.cloud.maxM, cloud_water_density_g_m3: input.cloud.waterDensityGM3 },
-    atmosphere: { enabled: true, model: 'ITU-R_P676', simplified_attenuation_db_per_km: 0.02 },
-    misc_loss_db: { polarization_mismatch_db: 0.0, pointing_error_db: 0.0, rain_attenuation_db: 0.0 },
-    sea_state: { enabled: input.multipathEnabled, sea_state_level: input.seaState, low_altitude_threshold_m: 300, path_over_sea_threshold_km: 30,
+    rain: { enabled: env.rainEnabled, rain_rate_mm_hr: env.rainRateMmPerHour, rain_altitude_limit_m: env.rainAltitudeLimitM,
+      rain_attenuation_db: env.rainAttenuationDb },
+    cloud: { enabled: env.cloudEnabled, cloud_altitude_min_m: input.cloud.minM, cloud_altitude_max_m: input.cloud.maxM, cloud_water_density_g_m3: input.cloud.waterDensityGM3 },
+    atmosphere: { enabled: true, model: env.atmosphereModel, simplified_attenuation_db_per_km: env.simplifiedAttenuationDbPerKm },
+    misc_loss_db: { polarization_mismatch_db: env.polarizationMismatchDb, pointing_error_db: env.pointingErrorDb, rain_attenuation_db: env.rainAttenuationDb },
+    sea_state: { enabled: env.multipathEnabled, sea_state_level: env.seaState, low_altitude_threshold_m: env.seaLowAltitudeThresholdM,
+      path_over_sea_threshold_km: env.seaPathOverSeaThresholdKm, model: env.seaModel, polarization: env.seaPolarization,
+      sea_water_temp_c: env.seaWaterTempC, sea_surface_roughness_m: env.seaSurfaceRoughnessM,
       use_reflection_geometry: false, sea_polygon: input.seaPolygon },
   }
   const portParams = [...input.portParams].map(([platformType, commParams]) => ({ platform_type: platformType, comm_params: commParams }))
   const raw = (value: unknown) => `"${JSON.stringify(value)}"`
+  const { linkCalc } = input
   return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR',
     `    update_interval ${template.updateIntervalS.toFixed(1)} sec`,
-    `    emergency_threshold ${template.emergencyThreshold.toFixed(2)}`,
-    `    warning_threshold   ${template.warningThreshold.toFixed(2)}`,
+    `    emergency_threshold ${linkCalc.emergencyThreshold.toExponential()}`,
+    `    warning_threshold   ${linkCalc.warningThreshold.toExponential()}`,
+    `    value_threshold_ber ${linkCalc.valueThresholdBer.toExponential()}`,
+    `    jamming_range       ${linkCalc.jammingRangeKm} km`,
+    `    channel_encoding_scheme ${linkCalc.channelEncodingScheme.toFixed(1)}`,
     `    relay_uav_names         ${raw(input.relayUavNames)}`,
-    `    hot_link_ret            ${raw(hotLinks('REVERSE'))}`,
-    `    hot_link_fw             ${raw(hotLinks('FORWARD'))}`,
+    `    hot_link_ret            ${raw(hotLinks(input.hotLinks.reverse))}`,
+    `    hot_link_fw             ${raw(hotLinks(input.hotLinks.forward))}`,
+    `    end_platform_type       ${input.hotLinks.endReferenceModel}`,
     `    port_params             ${raw(portParams)}`,
     `    natural_environment     ${raw(naturalEnvironment)}`,
+    `    traffic_type            ${raw(input.trafficType)}`,
+    `    jammer_param            ${raw(input.jammerParam)}`,
     '  end_processor']
+}
+
+/**
+ * 按任务机汇总已启用业务，生成 traffic_type：前向类型（态势/目标指令）记在目标平台下，
+ * 返向类型（侦察/状态）记在源平台下。trans_freq 为“n 秒/次”，由业务频次（Hz）取倒数。
+ */
+function buildTrafficType(businesses: ReadonlyArray<{ sourcePlatformId: string; messageType: string; sizeBits: number; frequencyHz: number
+  routes: ReadonlyArray<{ target: { platformId: string } }> }>): unknown[] {
+  const byPlatform = new Map<string, { forward: unknown[]; return: unknown[] }>()
+  for (const business of businesses) {
+    if (!Object.hasOwn(TRAFFIC_TYPES, business.messageType)) continue
+    const messageType = business.messageType as keyof typeof TRAFFIC_TYPES
+    const direction = INFORMATION_TYPE_DIRECTIONS[messageType] === 'FORWARD' ? 'forward' : 'return'
+    const entry = { traffice_type: TRAFFIC_TYPES[messageType], data_volume_bits: business.sizeBits, trans_freq: Number((1 / business.frequencyHz).toPrecision(6)) }
+    const owners = direction === 'forward' ? business.routes.map(route => route.target.platformId) : [business.sourcePlatformId]
+    for (const owner of new Set(owners)) {
+      const lists = byPlatform.get(owner) ?? { forward: [], return: [] }
+      lists[direction].push(entry)
+      byPlatform.set(owner, lists)
+    }
+  }
+  return [...byPlatform].map(([platformId, lists]) => ({ [platformId]: lists }))
 }
 
 // 已接通候选设备语法的链路类型；激光没有可用设备，数传按已确认选择固定 C 波段。
@@ -493,6 +549,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       autoDetect: jammer.autoDetect,
       detectionRangeM: jammer.detectionRange,
       jammingRangeM: jammer.jammingRange,
+      releaseRangeM: readJammerReleaseRange(jammer),
       triggerTimeS,
       directionDeg: extension.direction,
       durationS,
@@ -577,7 +634,8 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       bandwidthMHz: link.bandwidth,
       txPowerW: link.txPower,
       antennaGainDb: link.antennaGain,
-      dataRateMbps: link.dataRate,
+      // 卫星、微波速率按文档固定（天通 16 kbit/s），其余链路使用配置值。
+      dataRateMbps: fixedLinkDataRate(link, config.platforms) ?? link.dataRate,
       source: { platformId: link.sourcePlatformId, deviceId: `comm_${token(link.id)}_src` },
       relay: singleHopRelay ? {
         platformId: relayId!,
@@ -640,6 +698,12 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
         return leftOrder - rightOrder || left.linkId.localeCompare(right.linkId)
       })
       const primary = ordered[0]!
+      // 旧业务未指定方向时按实际主路由兜底：类型方向不符即阻断，不改类型、方向或选路。
+      const expected = INFORMATION_TYPE_DIRECTIONS[demand.informationType as InformationTypeEnum]
+      if (primary.direction !== expected) {
+        throw new MissionGenerationError(`${path}.destinationPlatformIds[${targetIndex}]`,
+          `${demand.informationType}须使用${expected === 'FORWARD' ? '前向' : '返向'}链路，实际主路由 ${primary.linkId} 为${primary.direction === 'FORWARD' ? '前向' : '返向'}。`)
+      }
       // 规则只作用于同方向业务：前向业务不得切到返向链路，反之亦然。
       const rules = switchRules.filter(rule => rule.sourcePlatformId === demand.sourcePlatformId && rule.targetPlatformId === target
         && rule.device.direction === primary.direction)
@@ -701,19 +765,29 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     receiverProcessorId?: string,
   ): void {
     const receiver = receiverProcessorId ? [`    internal_link ${receiverProcessorId}`] : []
+    const dataRate = mapping.dataRateMbps
+    const frequencyParam = (valueMHz: number) => valueMHz < 1000 ? { frequency_mhz: valueMHz } : { frequency_ghz: Number((valueMHz / 1000).toPrecision(12)) }
+    const params = portParams.get(platform.generatedType) ?? []
+    portParams.set(platform.generatedType, params)
     if (mapping.commModel === FIBER_COMM_MODEL) {
       ensureNetwork(networkName, FIBER_NETWORK_MODEL)
       definitions.push(`  comm ${deviceId} ${FIBER_COMM_MODEL}`, '    on', `    network_name ${networkName}`,
-        `    transfer_rate ${link.dataRate} mbits/sec`, `    channels ${COMM_CHANNELS}`, ...receiver, '  end_comm')
+        `    transfer_rate ${dataRate} mbits/sec`, `    channels ${COMM_CHANNELS}`, ...receiver, '  end_comm')
+      // 文档：光纤端口只有传输速率与发送频率（默认 1.3 GHz），有线收发器本身不写射频参数。
+      params.push({ comm_name: deviceId, transmitter: { ...frequencyParam(link.frequency), 'information_rate_mbits/sec': dataRate } })
       return
     }
-    const cBandDatalink = mapping.linkType === 'DATALINK' && mapping.band === 'C'
-    const elevationBeamwidth = cBandDatalink ? DATALINK_C_ELEVATION_BEAMWIDTH_DEG : 180
-    const tilt = cBandDatalink ? [`      antenna_tilt ${DATALINK_C_ANTENNA_TILT_DEG} deg`] : []
-    // 示例：微波水平极化，其余链路垂直极化；卫星链路不启用 ITU 大气衰减。
-    const polarization = mapping.linkType === 'MICROWAVE' ? 'horizontal' : 'vertical'
+    // 文档：仅指挥车 C 波段使用定向天线（俯仰 88°）；任务机 C 波段为全向 180°。
+    const directionalCBand = mapping.linkType === 'DATALINK' && mapping.band === 'C' && platform.referenceModel === 'COMMAND_VEHICLE_PLATFORM'
+    const elevationBeamwidth = directionalCBand ? DATALINK_C_ELEVATION_BEAMWIDTH_DEG : 180
+    const tilt = directionalCBand ? [`      antenna_tilt ${DATALINK_C_ANTENNA_TILT_DEG} deg`] : []
+    // 收发极化可配置；缺省时微波水平极化、其余垂直极化。卫星链路不启用 ITU 大气衰减。
+    const txPolarization = link.txPolarization ?? defaultPolarization(link.type)
+    const rxPolarization = link.rxPolarization ?? defaultPolarization(link.type)
+    const rxFrequency = link.rxFrequency ?? link.frequency
+    const rxBandwidth = link.rxBandwidth ?? link.bandwidth
     const attenuation = mapping.linkType === 'SAT' ? 'none' : 'itu'
-    const noiseFigure = platform.satelliteType === 'TIANTONG' ? TIANTONG_NOISE_FIGURE_DB : RECEIVER_NOISE_FIGURE_DB
+    const noiseFigure = link.noiseFigureDb ?? (platform.satelliteType === 'TIANTONG' ? TIANTONG_NOISE_FIGURE_DB : RECEIVER_NOISE_FIGURE_DB)
     for (const side of ['tx', 'rx'] as const) {
       antennas.push(`antenna_pattern ${deviceId}_${side}`, '  uniform_pattern',
         `    peak_gain ${link.antennaGain[side]} dB`, '    azimuth_beamwidth 360 deg',
@@ -724,26 +798,25 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     const medium = `medium_${deviceId}`
     mediums.push(`medium ${medium} WSF_COMM_MEDIUM_UNGUIDED`, `    channels ${COMM_CHANNELS}`,
       '    default_mode_name "default"', '    mode "default"', '      propagation_speed constant 299792458 m/sec',
-      `      transfer_rate constant ${link.dataRate} mbits/sec`,
+      `      transfer_rate constant ${dataRate} mbits/sec`,
       `      bit_error_probability ${BIT_ERROR_PROBABILITY}`,
       '      packet_loss_time constant 0 sec', '    end_mode', 'end_medium')
     definitions.push(`  comm ${deviceId} ${mapping.commModel}`, '    on', `    network_name ${networkName}`,
       `    add medium ${medium}`, '    end_medium',
       '    transmitter',
       `      frequency ${link.frequency} MHz`, `      bandwidth ${link.bandwidth} MHz`,
-      `      power ${link.txPower} W`, `      polarization ${polarization}`,
+      `      power ${link.txPower} W`, `      polarization ${txPolarization}`,
       `      antenna_pattern ${deviceId}_tx`, ...tilt,
       `      attenuation_model ${attenuation}`, '      end_attenuation_model', '    end_transmitter',
-      '    receiver', `      frequency ${link.frequency} MHz`, `      bandwidth ${link.bandwidth} MHz`,
-      `      polarization ${polarization}`, `      antenna_pattern ${deviceId}_rx`, ...tilt,
+      '    receiver', `      frequency ${rxFrequency} MHz`, `      bandwidth ${rxBandwidth} MHz`,
+      `      polarization ${rxPolarization}`, `      antenna_pattern ${deviceId}_rx`, ...tilt,
       `      noise_figure ${noiseFigure} dB`, '    end_receiver',
       ...receiver, '  end_comm')
-    const frequency = link.frequency < 1000 ? { frequency_mhz: link.frequency } : { frequency_ghz: Number((link.frequency / 1000).toPrecision(12)) }
-    const params = portParams.get(platform.generatedType) ?? []
     params.push({ comm_name: deviceId,
-      transmitter: { ...frequency, bandwidth_mhz: link.bandwidth, power_w: link.txPower, peak_gain_dB: link.antennaGain.tx, 'information_rate_mbits/sec': link.dataRate },
-      receiver: { ...frequency, bandwidth_mhz: link.bandwidth, peak_gain_dB: link.antennaGain.rx, 'information_rate_mbits/sec': link.dataRate, noise_figure_dB: noiseFigure } })
-    portParams.set(platform.generatedType, params)
+      transmitter: { ...frequencyParam(link.frequency), bandwidth_mhz: link.bandwidth, power_w: link.txPower, peak_gain_dB: link.antennaGain.tx,
+        polarization: txPolarization, 'information_rate_mbits/sec': dataRate },
+      receiver: { ...frequencyParam(rxFrequency), bandwidth_mhz: rxBandwidth, peak_gain_dB: link.antennaGain.rx,
+        polarization: rxPolarization, 'information_rate_mbits/sec': dataRate, noise_figure_dB: noiseFigure } })
   }
   if (jammers.length > 0) {
     // 候选干扰模型明确使用全向天线；不把通信链路天线增益借用到干扰设备。
@@ -959,13 +1032,37 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     maxM: environment.cloudAltitudeMaxM ?? LINK_CALC_TEMPLATE.cloud.maxM,
     waterDensityGM3: environment.cloudWaterDensityGM3 ?? LINK_CALC_TEMPLATE.cloud.waterDensityGM3,
   }
+  /**
+   * 解析热链配置（全局）：未自定义时按已启用链路自动串联；自定义热链引用停用或未参与本次场景的链路时阻断，
+   * 不静默丢弃整条热链。结构与首尾相接已由共享校验保证。
+   */
+  function resolveHotLinks() {
+    const hot = readHotLinks(settings.hotLinks, links, settings.priority)
+    const toDevices = (key: 'forward' | 'reverse') => hot[key].map((chain, index) => chain.map(linkId => {
+      const device = devices.find(item => item.linkId === linkId)
+      if (device === undefined) throw new MissionGenerationError(`linkSettings.hotLinks.${key}[${index}]`, `热链包含已停用或未参与本次场景的链路 ${linkId}，请启用该链路或调整热链。`)
+      return device
+    }))
+    return { forward: toDevices('forward'), reverse: toDevices('reverse'), endReferenceModel: HOT_LINK_END_REFERENCE_MODELS[hot.endPlatformType] }
+  }
   if (linkCalcSlot !== null) {
     linkCalcSlot.bucket.splice(linkCalcSlot.index, 0, ...buildLinkCalcProcessor({
       relayUavNames: platforms.filter(item => item.relayRole).map(item => item.platformId),
-      devices, portParams, rainRateMmPerHour: environment.rainRateMmPerHour, seaState: environment.seaState, cloud,
+      hotLinks: resolveHotLinks(), portParams, environment: readNaturalEnvironment(environment), cloud,
       // 海面多径衰落开关决定是否计入海况；地图框选的区域写入 sea_polygon，未框选时不写坐标（空列表）。
-      multipathEnabled: environment.multipathEnabled,
       seaPolygon: environment.seaPolygon?.map(point => ({ lat: point.latitude, lon: point.longitude })) ?? [],
+      linkCalc: readLinkCalcSettings(settings.linkCalc),
+      trafficType: buildTrafficType(businesses),
+      jammerParam: { jammers: jammers.map(jammer => ({
+        platform_name: jammer.platformId, weapon_name: jammer.weaponId,
+        jammer_type: config.platforms.find(item => item.id === jammer.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM' ? 'airborne' : 'ground',
+        enabled: jammer.configuredEnabled, mode: JAMMER_PARAM_MODES[jammer.type],
+        frequency_hz: jammer.frequencyHz, bandwidth_hz: jammer.bandwidthHz, power_w: jammer.powerW,
+        antenna_gain_dbi: JAMMER_PARAM_FIXED.antenna_gain_dbi, tx_loss_db: JAMMER_PARAM_FIXED.tx_loss_db,
+        trigger_radius_nm: Number((jammer.jammingRangeM / METERS_PER_NAUTICAL_MILE).toFixed(3)),
+        release_radius_nm: Number((jammer.releaseRangeM / METERS_PER_NAUTICAL_MILE).toFixed(3)),
+        spot_bandwidth_mhz: JAMMER_PARAM_FIXED.spot_bandwidth_mhz, sweep_duty_cycle: JAMMER_PARAM_FIXED.sweep_duty_cycle,
+      })) },
     }))
   }
 
@@ -1013,7 +1110,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const perDefinition = [
     ...(environmentEmitted ? ['global_environment',
       `  rain_rate ${environment.rainRateMmPerHour} mm/hr`,
-      `  rain_altitude_limit ${LINK_CALC_TEMPLATE.rainAltitudeLimitM} m`,
+      `  rain_altitude_limit ${readNaturalEnvironment(environment).rainAltitudeLimitM} m`,
       `  cloud_altitude_limits ${cloud.minM} m ${cloud.maxM} m`,
       `  cloud_water_density ${cloud.waterDensityGM3} g/m3`,
       `  sea_state ${environment.seaState}`, 'end_global_environment', ''] : []),
@@ -1052,7 +1149,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     `包内输出目录 ${outputDirectory}：scenario_events.csv（按开关输出） / scenario_events.aer / position.csv。`,
     `文件拆分与命名同对接示例，入口为 ${ENTRY_FILE}；平台类型名仍按场景平台独立生成。`,
     '数传上行经 forward_delay、下行经 return_delay（固定 1 秒）交给 script_proc；微波、卫星、光纤直连 script_proc。',
-    'link_calc 挂在第一个后方指挥节点上，参数由场景配置汇总；本地引擎未包含 WSF_LINK_CALC_PROCESSOR，本地运行会在读取输入时报错。',
+    'link_calc 挂在第一个后方指挥节点上，参数由场景配置汇总；本地运行前探测引擎，缺少 WSF_LINK_CALC_PROCESSOR 时运行包去掉该段，有则原样运行。',
     '生成阶段不运行 mission，engineValidated 保持 false。',
   ]
 
@@ -1066,7 +1163,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       hostPlatformId: linkCalcHost?.platformId ?? null,
       note: linkCalcSlot === null
         ? '场景中没有后方指挥节点，未生成 link_calc。'
-        : 'WSF_LINK_CALC_PROCESSOR 由对接方程序读取；本地 Release 与 部署/Windows 引擎未包含该处理器，会在读取输入时报错。',
+        : 'WSF_LINK_CALC_PROCESSOR 由对接方程序读取；本地运行前探测引擎，缺少该处理器时运行包去掉该段，有则原样运行。',
     },
     platforms, devices, businesses, jammers, sensors,
     environment: { seaState: environment.seaState, rainRateMmPerHour: environment.rainRateMmPerHour, engineEmitted: environmentEmitted },

@@ -592,3 +592,36 @@
 - 本机 AFSIM 2.9.0（去掉 `link_calc`）实测生成包：无错误、无告警；数传上下行业务 240 条全部经时延处理器接收；切换规则样例在干扰开启（884.5 s）后 886.8 s 切到微波、关闭（1004.5 s）后 1006.8 s 切回数传，期间 24 条走微波、216 条走数传，240 条全部接收；L 波段与云层参数按配置写出。
 - 10 个真实引擎用例未重跑：其场景含后方节点，安装插件前会因 `link_calc` 失败。其中读取平台定义的断言已改为读取 6 个拆分文件，但未经实机执行确认。
 - `engineValidated` 仍为 `false`。
+
+## 23. 对齐《与前端字段确认说明》（2026-10-22）
+
+依据 `场景配置参数对接/与前端字段确认说明.docx` 及对接方澄清：`traffice_type` 按文档拼写；编码增加 -1（关闭）；干扰范围界面统一用 km，写入 `jammer_param` 时换算为海里；单位按设备类型不强求统一；光纤按文档写传输速率与发送频率；仅指挥车 C 波段为定向天线（俯仰 88°、下倾 3°），任务机 C 波段为全向 180°；文档未覆盖的项（激光、温度、湿度）沿用项目原口径。默认值集中在 `src/features/scenarios/link-calc-defaults.ts`，界面、校验、生成器共用。
+
+| 字段 | 界面 | 生成 |
+|---|---|---|
+| `linkSettings.linkCalc`（`emergencyThreshold` 1e-5、`warningThreshold` 1e-6、`valueThresholdBer` 1e-7、`jammingRangeKm` 30、`channelEncodingScheme` 0） | 链路设置：链路计算阈值 | `link_calc` 的 `emergency_threshold`、`warning_threshold`、`value_threshold_ber`、`jamming_range <n> km`、`channel_encoding_scheme`；替换原示例固定的 0.80 / 0.50 |
+| `environment.rainCloudAttenuation` 新增 `stormRain` | 雨强档位（0/10/25/50/100 mm/h），选择后同步降雨强度 | — |
+| `environment.rainEnabled/rainAltitudeLimitM/rainAttenuationDb/cloudEnabled/atmosphereModel/simplifiedAttenuationDbPerKm/polarizationMismatchDb/pointingErrorDb/seaLowAltitudeThresholdM/seaPathOverSeaThresholdKm/seaModel/seaPolarization/seaWaterTempC/seaSurfaceRoughnessM` | 场景环境：链路计算环境参数（折叠区） | `natural_environment`；大气默认 `itu`、简化衰减率 0（原示例 `ITU-R_P676` + 0.02 会让简化模型覆盖 ITU）；贴海高度默认 100 m（原 300） |
+| `environment.seaState` | 0～9 整数（写入校验） | `sea_state_level` |
+| `links[].rxFrequency/rxBandwidth/txPolarization/rxPolarization/noiseFigureDb` | 链路编辑：收发参数分开；缺省接收同发射、微波水平其余垂直、噪声系数 3 dB（天通 2 dB） | 设备 `transmitter`/`receiver` 与 `port_params` |
+| 卫星/微波 `dataRate` | 只读固定：卫星 16 Mbit/s（天通 16 kbit/s）、微波 80 Mbit/s | 生成器按固定值写出，不读配置值 |
+| 数传 `dataRate` | 按波段与方向分档下拉（C 上行 25.6k/2M/4M 等） | 原样写出 |
+| `jammers[].releaseRange` | 干扰编辑：释放范围（km），缺省干扰范围 + 5 海里 | `jammer_param.release_radius_nm` |
+| 干扰范围 | 探测/干扰/释放统一 1～100 km（原 1～24 海里） | `trigger_radius_nm` 由 `jammingRange` 换算 |
+| — | — | `jammer_param`：`jammer_type` 按节点类型 ground/airborne，`mode` 为 broadband/spot/sweep，天线增益、发射损耗、点频带宽、扫频占空比按文档写死 |
+| — | — | `traffic_type`：前向类型（态势/目标指令）记在目标平台下，返向类型（侦察/状态）记在源平台下；`trans_freq` 取业务频次倒数（秒/次） |
+
+新建链路按类型套用文档端口默认值（切换类型、数传波段或方向时重新套用）；新建干扰源默认 2.4 GHz、50 MHz、200 W，干扰 30 海里、释放 35 海里。
+
+界面分组按文档标题：场景基础页下单列“环境参数（全局）”区块，分“降雨参数（NERain）/云雾参数（NECloud）/大气参数（NEAtmosphere）/极化失配（MiscLossDB）/海况参数（SeaState）”五个小标题；温度、湿度、雨衰（dB/km）不在文档中，留在场景基础，只保存不写入 `link_calc`。链路设置中“编码方案（全局）”“链路计算阈值（全局）”“热链配置（全局）”各自单列。
+### 23.1 热链配置（全局）
+
+文档示例的热链是跨多条链路的端到端路径（任务机 →C 下行→ 指挥车 →光纤→ 后方车），不能按单条链路生成，因此改为可配置：
+
+- `linkSettings.hotLinks = { forward: 链路编号[][], reverse: 链路编号[][], endPlatformType }`，界面在“链路设置 → 热链配置（全局）”按顺序选择链路。
+- 未自定义时按已启用链路首尾相接自动串联：从没有上游的链路出发，沿“目标平台 = 下一条源平台”延伸，分支按链路优先级取第一条，未覆盖的链路各自起头；可“恢复自动串联”。
+- 生成 `hot_link_fw/ret` 时逐跳写 `{platform, inPort, outPort}`：衔接平台以上一条的目标设备为入端口、下一条的源设备为出端口，中继链路插入中继入/出端口；首跳入端口、末跳出端口为空。
+- 共享校验要求每条热链非空、不重复、方向与列表一致、首尾相接（`HOT_LINK_CHAIN_INVALID`）；自定义热链引用停用或未参与本次场景的链路时阻断生成，定位 `linkSettings.hotLinks.reverse[i]`。
+- `end_platform_type`：热链终点的平台类型，全局一个值，写参考模型名（已确认），默认后方指挥节点 `REAR_COMM_PLATFORM`，可选指挥车 `COMMAND_VEHICLE_PLATFORM`、任务机 `MISSION_UAV_PLATFORM`。
+
+待对接方确认：`jamming_range` 是否接受 `km` 单位后缀；`port_params` 新增的 `polarization` 键、`rain.rain_attenuation_db` 是否被读取。
