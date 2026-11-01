@@ -359,6 +359,70 @@ describe('态势主界面', () => {
     expect(quality.acceptFrame(epoch, { frameId: 15, simulationTime: 68 }, input)).toBe(false)
   })
 
+  it('质量页导入文件后提交当前作用域、消费服务端规范数据并标明文件来源', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-10-31T01:00:00Z' }
+    const scope = { taskId: run.taskId, runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, startedAt: run.startedAt }
+    const dataset = {
+      schemaVersion: '1.0', scope,
+      source: { kind: 'FILE_IMPORT', fileName: 'quality.json', sha256: 'a'.repeat(64), importedAt: '2026-10-31T01:02:00Z', frameIdKind: 'PROVIDED' },
+      expectedStepS: 1,
+      samples: [{ time: 5, frameId: 7, linkId: 'L-MW-01', sourcePlatform: 'UAV-01', destPlatform: 'GCC-01', linkType: 'MICROWAVE',
+        frequency: 4500, bandwidth: 20, distance: 12_500, txPower: 100, txAntennaGain: 18, rxAntennaGain: 12,
+        pathLoss: 100, jammingPower: -95, receivedPower: -70, snr: 11, modulation: 'QPSK', ber: 1e-6,
+        linkStatus: 'UP', berThreshold: 1e-5, dataRate: 20, jsrDb: 8 }],
+      switchEvents: [],
+    }
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/simulations')) return successResponse([run])
+      if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
+      if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
+      if (url.endsWith(`/simulations/${run.runId}/quality`) && init?.method === 'POST') return successResponse(dataset)
+      if (url.endsWith(`/simulations/${run.runId}/quality`)) return successResponse(null)
+      if (url.includes(`/simulations/${run.runId}/quality/files/manifest.json?`)) return {
+        ok: true, headers: new Headers({ 'Content-Disposition': 'attachment; filename="manifest.json"', 'X-Quality-Source-Sha256': 'a'.repeat(64) }),
+        blob: vi.fn().mockResolvedValue(new Blob(['{}'], { type: 'application/json' })),
+      } as unknown as Response
+      throw new Error(`Unexpected request ${url}`)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    await wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(tab => tab.text() === '质量指标')!.trigger('click')
+    await flushPromises()
+    const input = wrapper.get<HTMLInputElement>('[data-testid="quality-import-input"]')
+    const originalText = '\uFEFF{"format":"wrj.quality.v1"}'
+    const file = { name: 'quality.json', size: 100,
+      arrayBuffer: vi.fn().mockResolvedValue(new TextEncoder().encode(originalText).buffer) } as unknown as File
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(useRuntimeQualityStore().snapshot?.source).toBe('FILE_IMPORT'))
+    const post = fetcher.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')!
+    const importRequest = JSON.parse((post[1] as RequestInit).body as string)
+    expect(importRequest).toMatchObject({ scope, fileName: 'quality.json', format: 'JSON' })
+    expect(importRequest.text).toBe(originalText)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('文件导入 · quality.json · 来源帧号')
+    expect(useRuntimeQualityStore().snapshot?.data.links[0]).toMatchObject({ sourcePortId: null, destinationPortId: null, quality: { snrDb: 11, interferencePowerDbm: -95 } })
+    const postCount = fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST').length
+    const invalidFile = { name: 'broken.json', size: 2,
+      arrayBuffer: vi.fn().mockResolvedValue(new Uint8Array([0xc3, 0x28]).buffer) } as unknown as File
+    Object.defineProperty(input.element, 'files', { configurable: true, value: [invalidFile] })
+    await input.trigger('change')
+    await flushPromises()
+    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(postCount)
+    const createObjectUrl = vi.fn().mockReturnValue('blob:test')
+    const revokeObjectUrl = vi.fn()
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl })
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    await wrapper.get('[data-testid="quality-download-button"]').trigger('click')
+    const manifest = [...document.querySelectorAll<HTMLElement>('.el-dropdown-menu__item')].find(item => item.textContent?.includes('manifest.json'))!
+    await manifest.click()
+    await flushPromises()
+    expect(fetcher.mock.calls.map(([url]) => String(url))).toContain(`http://127.0.0.1:4173/api/v1/simulations/${run.runId}/quality/files/manifest.json?sourceSha256=${'a'.repeat(64)}`)
+  })
+
   it('本机态势页不再显示运行结果栏或请求运行结果目录', async () => {
     const fetchSpy = situationFetch()
     vi.stubGlobal('fetch', fetchSpy)

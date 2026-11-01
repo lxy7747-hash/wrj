@@ -1,0 +1,98 @@
+质量数据接入与报表整改记录（2026-11-01）
+
+依据：V1.2_3多手段无人集群通联技术研究原型软件研发_软件测试大纲_V1.2_评审修改版.docx
+项目：H:/Project/newWrj/frontend
+范围：质量数据接收与绑定、规范CSV归档、WebSocket通知与页面消费、质量报表统计与图表。
+批量仿真已取消，不恢复。本记录不重新宣称73项正式验收用例全部通过。
+
+一、使用入口与合同
+
+1. 在态势页面选中已启动过的运行，在质量数据面板点击“导入 JSON / CSV”。
+   接收严格UTF-8文件，单文件最大4 MiB；保留原始BOM内容及来源SHA-256。
+   接口：POST /api/v1/simulations/:runId/quality，读取：GET 同一路径。
+   请求为 { scope, fileName, format: "JSON"或"CSV", text }。
+   scope包含taskId、runId、scenarioId、revision、startedAt，必须与启动时保存的运行配置完全一致。
+   真实运行采用启动时冻结的场景配置，后续编辑场景不改变该运行的数据映射。
+
+2. JSON原文外壳：
+   { "format": "wrj.quality.v1", "scope": { ...当前运行作用域 }, "samples": [ ... ], "switchEvents": [ ... ] }
+   samples使用QualitySample合同：明确给出linkId、frameId、time、端点、链路体制，以及完整质量测量字段。
+   测量包括frequency、bandwidth、distance、txPower、txAntennaGain、rxAntennaGain、pathLoss、jammingPower、
+   receivedPower、snr、jsrDb、modulation、ber、linkStatus、berThreshold、dataRate。
+   可选latencyMs、availabilityPercent、完整六项losses及布尔interferenceActive；不从dBm值推断干扰是否活动。
+   缺失必填值、空白数值、非有限数、BER超界、未知字段、重复样本或错配端点均拒绝整次导入。
+   权威类型：src/contracts/domain-models.ts；接口Schema：frontend-technical-design-v1/contracts/mock-api.openapi.yaml。
+
+3. CSV接收已有1.1版link_quality.csv标准表头；task_id必须属于当前任务。
+   由SourcePlatform、DestPlatform、LinkType唯一映射启用链路；存在多个同端点同体制链路时拒绝歧义，改用带linkId的JSON。
+   SNR映射snr，GXB映射jsrDb；两者不混用。不补写未提供的测量值。
+   CSV没有真实帧号，按时间组记录IMPORT_SEQUENCE“采样序号”，界面明确标注其来源。
+   连续性使用启动配置的timeStep和相邻序号共同判断；真实时间缺口会重置稳定帧计数，仍保留冷却约束。
+
+二、归档与下载
+
+1. 每次导入生成独立不可变目录，使用临时目录和原子指针发布，不覆盖旧版本。
+   同一运行的导入、读取和下载索引串行；不同运行彼此独立。
+   发布前后复核登录权限及运行作用域；失效则撤销本次发布。写盘失败不替换已发布数据。
+   最新指针或文件摘要损坏时明确失败，不静默退回旧文件。
+
+2. 归档包含quality.json、原始source.json或source.csv、manifest.json、link_quality.csv、link_state.csv。
+   每个文件记录SHA-256，原始文件摘要对应收到的UTF-8文本。
+   link_loss.csv只有全部样本明确提供六项损耗分量时生成。
+   link_switch.csv只输出来源ACCEPTED记录；JSON显式提供空切换集合时生成只有表头的零次切换文件。
+   未提供切换集合与明确零次切换分开处理；REJECTED保留在明细，不计入成功次数。
+   质量文件不制造events.csv；事件仍来自原事件输出通道。缺少的规范文件在manifest标记SOURCE_MISSING。
+   因此不能把本质量归档的contractsComplete=false误认为已经具备完整五类引擎输出。
+
+3. 态势面板“下载规范文件”菜单下载归档、清单及原始来源；缺少源数据的可选文件不可下载。
+   GET /api/v1/simulations/:runId/quality/files/:fileName?sourceSha256=当前来源摘要。
+   文件名为服务端白名单，不接收本机路径。下载与显示数据固定到同一SHA版本，后续导入不改变旧版本。
+   正式启动服务使用lan.outputRoot/quality；未设置时使用output/quality。纯Mock默认不接触文件系统。
+
+三、WebSocket与态势数据
+
+1. 在现有link.metric通道发布QUALITY_UPDATED小通知，携带运行作用域、来源摘要、样本数。
+   复用原序号、日志和续传机制，避免把整份质量文件放进WS帧。
+   页面收到通知、切换运行或重连时重新GET质量数据，并核对scope、epoch和来源摘要。
+   其他运行或过期请求不会污染当前态势。错误输入不会被当成有效质量帧。
+2. 显示明确测量的GXB、BER、接收干扰功率和SNR，并接入已有连续帧状态及本机质量选路判定。
+   来源切换事件单独展示。LOCAL_DECISION继续属于本机判定，不能冒充引擎已执行的切换。
+3. 这是规范文件快照的接收、归档和更新通知闭环；尚未把未确认协议的原生引擎输出转换为实时连续质量流。
+
+四、报表统计、筛选与导出
+
+1. 将质量来源附到同任务、运行、场景版本及启动时间的真实运行结果，不改写原始结果快照。
+   报告编号附加-Q-来源SHA，筛选、HTML/PDF/CSV导出精确读取该历史版本。
+   新导入生成新质量报告版本，不改变已经展示和导出的旧版本。
+2. 节点、链路、任务阶段、时间范围筛选共用质量投影；导出沿用同一来源及条件。
+   GXB/BER按筛选样本求平均；各链路曲线使用实际时间坐标，不跨链路连线，缺口断开。
+   连通时长按左侧帧状态累计到下一连续同链路帧；末帧和采样缺口不外推。
+   筛选边界落在采样点之间时裁剪连续观测区间；统计和雷达保留该裁剪结果，测量表只展示范围内样本。
+3. 雷达图比较各链路有效观测区间连通率（UP时长/已观测连续时长），至少三条有效链路才绘制。
+   不把GXB、BER等不同量纲拼成无依据的综合分。
+4. 干扰时长仅在选中观测区间的interferenceActive全部明确时累计活动区间并取时间并集。
+   没有观测、缺少活动标记或未提供切换集合时显示“暂无数据”；明确为零的测量才显示零。
+   页面、HTML、PDF、CSV复用来源、统计、测量表、切换明细和图表数据。
+
+五、仍需引擎材料或现场验证
+
+1. LinkCalc/LinkManager插件、真实接收质量字段语义及正式协议仍缺少。
+   当前FILE_IMPORT表示外部文件来源，不证明其内容已经由本机真实引擎求解或由现场设备测量。
+   原生实时质量流、连续引擎写盘与自动接收仍需以正式接口接通并实测。
+2. XIO客户端SDK、握手协议或控制桥接材料仍缺少；实际链路切换执行及回执、业务连续性不能由本机决策或导入事件代替验收。
+3. 航点航向/加速度、干扰俯仰角等尚未核实的原生映射仍需接口和运行验证；本轮未变更这些能力结论。
+4. 现场干扰效果、目标硬件性能、网络故障及长稳运行继续按大纲专项验证。
+
+六、验证记录
+
+此前记录中的944项属于2026-10-31轮次。本轮验证覆盖导入、归档、运行隔离、WS、态势面板和报表：
+1. 最终跨模块回归：81个测试文件全部通过，1275项通过、20项按外部条件跳过，共1295项。
+   日志output/quality-pipeline-final-tests.log。跳过项未计为通过，也不作为真实引擎或现场验收证据。
+2. TypeScript tsc -b通过，日志output/quality-pipeline-typecheck.log。
+3. validate-contracts通过：84个接口操作、40个类型化写接口、二进制下载、夹具和CSV合同检查；日志output/quality-pipeline-contracts.log。
+4. 内网前端和后端构建通过，日志output/quality-pipeline-build-web.log、output/quality-pipeline-build-server.log。
+   构建产物隔离在output/quality-pipeline-build-web和output/quality-pipeline-build-server，未替换部署包。
+5. git diff --check通过；PMTiles仍由/map/忽略规则管理，未修改本地地图文件。代码未提交。
+6. 重点回归包括：作用域错配整次拒绝、原始UTF-8/BOM保留、空白数字拒绝、损坏最新归档不回退、
+   发布后权限失效撤销、指针写盘失败无历史泄漏、旧SHA精确读取、连续时间缺口与浮点步长、
+   下载SHA与迟到请求保护、来源切换与本机决策区分、筛选边界裁剪和单链路切换明细、旧报告版本稳定导出。

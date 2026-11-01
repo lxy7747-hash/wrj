@@ -10,6 +10,7 @@ import type {
   JammerStatusData,
   JammerState,
   LinkStatusSummary,
+  QualityDatasetUpdate,
   RealtimeEnvelope,
   SimulationState,
   SwitchEvent,
@@ -58,6 +59,19 @@ function runtimeFor(store: object): TelemetryRuntime {
 /** 判断未知值是否为普通对象。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isQualityDatasetUpdate(value: unknown): value is QualityDatasetUpdate {
+  if (!isRecord(value) || value.kind !== 'QUALITY_UPDATED' || typeof value.sourceSha256 !== 'string'
+    || value.sourceSha256.length === 0 || typeof value.sampleCount !== 'number' || !Number.isSafeInteger(value.sampleCount) || value.sampleCount < 0
+    || !isRecord(value.scope)) return false
+  const scope = value.scope
+  return Object.keys(scope).length === 5
+    && typeof scope.taskId === 'string' && scope.taskId.length > 0
+    && typeof scope.runId === 'string' && scope.runId.length > 0
+    && typeof scope.scenarioId === 'string' && scope.scenarioId.length > 0
+    && typeof scope.revision === 'number' && Number.isSafeInteger(scope.revision) && scope.revision > 0
+    && typeof scope.startedAt === 'string' && scope.startedAt.length > 0
 }
 
 /** 校验对象的一组字段均为字符串。 */
@@ -764,6 +778,8 @@ export const useTelemetryStore = defineStore('telemetry', {
   state: () => ({
     frame: null as TelemetryFrame | null,
     events: [] as SituationEvent[],
+    /** Bounded WS reference; the situation page fetches and validates the full dataset. */
+    qualityUpdate: null as QualityDatasetUpdate | null,
     // A runtime-only task may have no telemetry frame; retain the task chosen
     // for the socket so reconnects cannot silently fall back to TASK-001.
     realtimeTaskId: null as TaskId | null,
@@ -1080,6 +1096,9 @@ export const useTelemetryStore = defineStore('telemetry', {
       } else if (envelope.topic === 'runtime.state') {
         const currentTaskId = useSimulationStore().run?.taskId ?? this.frame?.taskId
         if (currentTaskId === undefined || envelope.taskId !== currentTaskId) return false
+      } else if (envelope.topic === 'link.metric' && isQualityDatasetUpdate(envelope.payload)) {
+        const taskId = useSimulationStore().run?.taskId ?? this.frame?.taskId
+        if (taskId === undefined || envelope.taskId !== taskId || envelope.payload.scope.taskId !== taskId) return false
       } else if (this.frame === null || envelope.taskId !== this.frame.taskId) return false
 
       const previous = this.topicSequences[envelope.topic]
@@ -1098,6 +1117,11 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.frame = structuredClone(payload)
         this.events = this.events.filter((event) => event.frameId === payload.frameId)
       } else if (envelope.topic === 'link.metric') {
+        if (isQualityDatasetUpdate(envelope.payload)) {
+          this.qualityUpdate = structuredClone(envelope.payload)
+          this.topicSequences[envelope.topic] = envelope.sequence
+          return true
+        }
         const frame = this.frame
         if (frame === null
           || envelope.frameId !== frame.frameId
@@ -1329,6 +1353,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.realtimeTaskId = null
       this.frame = null
       this.events = []
+      this.qualityUpdate = null
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
       this.connectionState = 'DISCONNECTED'
       this.capabilityState = 'EMPTY'

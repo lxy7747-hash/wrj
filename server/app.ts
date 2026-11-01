@@ -23,6 +23,9 @@ import type {
   ScriptPreviewRequest,
   ScriptContract,
   ScenarioDraft,
+  QualityDataset,
+  QualityScope,
+  TaskPhase,
   TaskId,
   SimulationRun,
   User,
@@ -67,8 +70,11 @@ import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
 import type { LocalArchiveStorage } from './local/archive-sqlite.js'
 import { isLocalArchiveId } from '../src/features/admin/local-archive.js'
-import { isMissionResultId, type MissionResultParameterComparison, type MissionResultRecord } from '../src/features/results/mission-result.js'
+import { isMissionResultId, type MissionResultParameterComparison, type MissionResultRecord, type MissionResultSnapshot } from '../src/features/results/mission-result.js'
 import type { MissionResults } from './local/mission-results.js'
+import type { RunQualityStore } from './local/run-quality.js'
+import { QualityImportError } from '../src/features/data-exchange/quality-records.js'
+import { attachQualityReport, baseQualityReportId, qualityReportSha256 } from '../src/features/reports/quality-report.js'
 
 export interface MockServerOptions {
   port?: number
@@ -87,6 +93,8 @@ export interface MockServerOptions {
   loadLocalReport?: () => Promise<Report | null>
   exportLocalReport?: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string, source?: MissionResultRecord, comparisons?: MissionResultParameterComparison[], filter?: LocalReportFilter) => Promise<LocalReportExportResult>
   missionResults?: MissionResults
+  /** 规范质量文件的持久接入，缺省不访问文件系统。 */
+  runQualityStore?: RunQualityStore
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
   templateStorage?: TemplateStorage
@@ -318,12 +326,13 @@ function isPreflightRequest(value: unknown): value is PreflightRequest {
 
 /** 校验报表导出请求的闭合字段、格式和路径编号一致性。 */
 function isReportExportRequest(value: unknown, reportId: string): value is ReportExportRequest {
-  return isStrictObject(value, ['reportId', 'format'], ['confirmationId', 'filter'])
+  return isStrictObject(value, ['reportId', 'format'], ['confirmationId', 'filter', 'qualitySha256'])
     && value.reportId === reportId
     && (value.format === 'HTML' || value.format === 'PDF' || value.format === 'CSV')
     && (value.confirmationId === undefined
       || (typeof value.confirmationId === 'string' && value.confirmationId.length > 0))
     && (value.filter === undefined || parseLocalReportFilter(value.filter) !== null)
+    && (value.qualitySha256 === undefined || (typeof value.qualitySha256 === 'string' && /^[a-f0-9]{64}$/.test(value.qualitySha256)))
 }
 
 const AUDIT_RESULTS = new Set<AuditRecord['result']>(['SUCCESS', 'DENIED', 'ERROR'])
@@ -652,6 +661,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   if (unresolvedMission?.scenarioId) scenarios.setLocked(unresolvedMission.scenarioId, true)
   interface MissionSlot {
     taskId: string
+    qualityDraft?: ScenarioDraft
     mission?: MissionProcess
     positions?: { runId: string; read: NonNullable<MissionProcess['readPositions']> }
     /** 本次运行的控制台日志读取入口与超时设置；进程结束后仍保留，供排查查看。 */
@@ -662,6 +672,30 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     completedWhileStopping?: MissionOutcome
   }
   const missions = new Map<string, MissionSlot>()
+  const sameQualityScope = (left: QualityScope, right: QualityScope) => ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt']
+    .every(key => left[key as keyof QualityScope] === right[key as keyof QualityScope])
+  const qualityContext = (runId: string) => {
+    const result = simulations.get(runId)
+    if (!result.ok || !result.data.startedAt) return null
+    const saved = scenarios.get(result.data.scenarioId)
+    const draft = missions.get(runId)?.qualityDraft ?? (!options.missionExecution && saved.ok ? saved.data : null)
+    if (!draft || draft.config.scenario.id !== result.data.scenarioId) return null
+    const scope: QualityScope = { taskId: result.data.taskId, runId, scenarioId: result.data.scenarioId,
+      revision: draft.revision, startedAt: result.data.startedAt }
+    return { scope, draft }
+  }
+  const reportWithQuality = async (report: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string): Promise<Report> => {
+    if (!options.runQualityStore || !record?.runId || !record.taskId) return report
+    const sourceSha256 = requestedReportId === undefined ? undefined : qualityReportSha256(requestedReportId)
+    const dataset = await options.runQualityStore.load(record.runId, sourceSha256)
+    if (!dataset) {
+      if (sourceSha256) throw new Error('QUALITY_VERSION_NOT_FOUND')
+      return report
+    }
+    if (!sameQualityScope(dataset.scope, { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId,
+      revision: record.revision, startedAt: record.startedAt })) throw new Error('质量来源与运行结果版本不一致。')
+    return attachQualityReport(report, dataset, filter, phases)
+  }
   const hasMissions = () => [...missions.values()].some(slot => slot.mission || slot.starting)
   let closing = false
   const confirmations = new ConfirmationProjection(options.confirmationClock ?? (options.authStorage ? {
@@ -776,7 +810,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   // A 50-node full-scale scenario is approximately 17KB, exceeding 16KB but within this P0 local bound.
-  app.use(express.json({ strict: true, limit: '256kb' }))
+  const normalJson = express.json({ strict: true, limit: '256kb' })
+  const qualityJson = express.json({ strict: true, limit: '8mb' })
+  app.use((req, res, next) => (req.method === 'POST' && /^\/api\/v1\/simulations\/[^/]+\/quality$/.test(req.path)
+    ? qualityJson : normalJson)(req, res, next))
 
   // 自定义角色只能收窄基础角色；服务端逐请求重新读取，不依赖前端隐藏按钮授权。
   app.use('/api/v1', (req, res, next) => {
@@ -822,6 +859,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       } else if (path.startsWith('/simulations')) {
         menu = '/situation'
         if (req.method !== 'GET') permission = 'SIMULATION_CONTROL'
+        else if (/\/quality\/files\//.test(path)) permission = 'ORDINARY_REPORT_EXPORT'
       } else if (path.startsWith('/replays')) {
         menu = '/replays'
       } else if (req.method !== 'GET') {
@@ -1125,6 +1163,82 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
+  app.get('/api/v1/simulations/:runId/quality', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'QUALITY_READ', req.params.runId) === undefined) return
+    if (Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+    if (!options.runQualityStore) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前入口未配置规范质量文件接入。' })); return }
+    const run = simulations.get(req.params.runId)
+    if (sendSimulationFailure(res, run, 'REQ-QUALITY-GET')) return
+    const context = qualityContext(req.params.runId)
+    if (!context) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行没有可核对的启动时间或场景版本。' })); return }
+    try {
+      const dataset = await options.runQualityStore.load(req.params.runId)
+      if (dataset && !sameQualityScope(dataset.scope, context.scope)) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '质量文件与当前运行版本不一致。' })); return }
+      res.json(success(dataset, pageMeta('REQ-QUALITY-GET')))
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '质量文件不可读或校验失败，未使用其他数据替代。' })) }
+  })
+
+  app.post('/api/v1/simulations/:runId/quality', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const role = requireDemoRole(req, res, auth, 'QUALITY_IMPORT', req.params.runId)
+    if (role === undefined) return
+    if (Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+    if (!options.runQualityStore) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前入口未配置规范质量文件接入。' })); return }
+    const run = simulations.get(req.params.runId)
+    if (sendSimulationFailure(res, run, 'REQ-QUALITY-IMPORT')) return
+    const context = qualityContext(req.params.runId)
+    if (!context) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '请先启动所选场景的运行，再导入对应质量数据。' })); return }
+    const userId = authenticatedUsers.get(req)?.userId
+    const canPublish = () => {
+      const current = qualityContext(req.params.runId)
+      if (closing || !current || !sameQualityScope(current.scope, context.scope)) return false
+      if (!options.authStorage) return true
+      const user = options.authStorage.currentUser(req.headers.cookie)
+      if (!user || user.userId !== userId) return false
+      try {
+        const principal = principalForUser(user)
+        return principal.permissions.includes('SIMULATION_CONTROL') && (!principal.menuPaths || principal.menuPaths.includes('/situation'))
+      } catch { return false }
+    }
+    try {
+      const dataset = await options.runQualityStore.import(req.body, context.scope, context.draft.config, canPublish)
+      realtime.publishQualityDataset(dataset)
+      auth.recordSuccess(actorForRequest(req, role), role, 'QUALITY_IMPORT', req.params.runId)
+      res.json(success(dataset, pageMeta('REQ-QUALITY-IMPORT')))
+    } catch (error) {
+      auth.recordError(actorForRequest(req, role), role, 'QUALITY_IMPORT', req.params.runId)
+      if (!canPublish()) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '接收期间运行或登录状态已改变，请重新加载。' })); return }
+      if (error instanceof QualityImportError) {
+        const issue = error.issues[0]
+        res.status(422).json(failure('VALIDATION_FAILED', 422, { message: issue?.message ?? '质量文件不符合合同。', fieldPath: issue?.fieldPath ?? 'request' }))
+      } else res.status(503).json(failure('START_FAILED', 503, { message: '质量文件接收或写盘失败，未替换已发布数据。', retryable: true }))
+    }
+  })
+
+  app.get('/api/v1/simulations/:runId/quality/files/:fileName', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const role = requireDemoRole(req, res, auth, 'QUALITY_EXPORT', req.params.runId)
+    if (role === undefined) return
+    const sourceSha256 = req.query.sourceSha256
+    if (Object.keys(req.query).some(key => key !== 'sourceSha256') || (sourceSha256 !== undefined
+      && (typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sourceSha256)))) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+    const context = qualityContext(req.params.runId)
+    if (!context || !options.runQualityStore) { res.status(409).json(failure('INVALID_TRANSITION', 409)); return }
+    try {
+      const dataset = await options.runQualityStore.load(req.params.runId, sourceSha256 as string | undefined)
+      if (!dataset || !sameQualityScope(dataset.scope, context.scope)) { res.status(409).json(failure('VERSION_CONFLICT', 409)); return }
+      const file = await options.runQualityStore.getFile(req.params.runId, req.params.fileName, dataset.source.sha256)
+      if (!file) { res.status(404).json(failure('NOT_FOUND', 404, { message: '该文件未提供；缺测项不会生成替代文件。' })); return }
+      auth.recordSuccess(actorForRequest(req, role), role, 'QUALITY_EXPORT', req.params.runId)
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition, X-Quality-Source-Sha256')
+      res.setHeader('X-Quality-Source-Sha256', dataset.source.sha256)
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.type('application/octet-stream')
+      res.download(file.filePath, req.params.fileName)
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '规范质量文件导出失败。' })) }
+  })
+
   /** 读取指定本地 mission 本次独占输出的最新位置；不接受浏览器提供文件路径。 */
   app.get('/api/v1/simulations/:runId/positions', async (req, res) => {
     const runId = req.params.runId
@@ -1286,6 +1400,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       try {
         missions.set(runId, slot)
+        slot.qualityDraft = structuredClone(draft.data)
         slot.starting = options.missionExecution.start(draft.data, runId, run.ok ? run.data.taskId : undefined)
         const process = await slot.starting
         slot.positions = process.readPositions ? { runId, read: process.readPositions.bind(process) } : undefined
@@ -1891,7 +2006,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
       const snapshot = await options.missionResults?.get(req.params.resultId)
       if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
-      res.json(success(snapshot, pageMeta('REQ-MISSION-RESULT-GET')))
+      const report = await reportWithQuality(snapshot.report, snapshot.record, snapshot.parameters?.phases)
+      res.json(success({ ...snapshot, report }, pageMeta('REQ-MISSION-RESULT-GET')))
     } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果损坏或不可读，未切换到其他文件。' })) }
   })
 
@@ -1991,11 +2107,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!filter) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选来源或条件无效。' })); return }
     if (!options.missionResults?.filter) { res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '该历史结果没有完整筛选索引，请重新生成结果。' })); return }
     try {
-      const result = await options.missionResults.filter(resultId, reportId, filter)
-      res.status(200).json(success(result, pageMeta('REQ-REPORT-FILTER')))
+      const result = await options.missionResults.filter(resultId, baseQualityReportId(reportId), filter)
+      const snapshot = await options.missionResults.get(resultId)
+      if (!snapshot) throw new Error('FILTER_NOT_FOUND')
+      const report = await reportWithQuality(result.report, snapshot.record, snapshot.parameters?.phases, filter, reportId)
+      res.status(200).json(success({ ...result, report }, pageMeta('REQ-REPORT-FILTER')))
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
       if (code === 'FILTER_NOT_FOUND') res.status(404).json(failure('NOT_FOUND', 404))
+      else if (code === 'QUALITY_VERSION_NOT_FOUND') res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定质量报告版本不可用，请重新加载。' }))
       else if (code === 'FILTER_INVALID') res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选值不属于本次结果。' }))
       else res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '该历史结果没有完整筛选索引，请重新生成结果。' }))
     }
@@ -2043,7 +2163,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         let report = resultId !== undefined ? snapshot?.report ?? null
           : archiveId !== undefined ? options.archiveStorage?.get(archiveId)?.report ?? null : await options.loadLocalReport!()
         if (report !== null && !isLocalReport(report)) throw new Error('invalid local report')
-        if (!report || report.reportId !== reportId) {
+        if (!report || baseQualityReportId(report.reportId) !== baseQualityReportId(reportId)) {
           res.status(409).json(failure('CONFLICT', 409, { message: '来源文件已变化，请重新加载后导出，避免导出与页面不一致。', retryable: true }))
           return
         }
@@ -2051,7 +2171,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           if (typeof resultId !== 'string' || !options.missionResults?.filter) {
             res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '该报告没有完整筛选索引，请重新生成结果。' })); return
           }
-          try { report = (await options.missionResults.filter(resultId, reportId, req.body.filter)).report }
+          try { report = (await options.missionResults.filter(resultId, baseQualityReportId(reportId), req.body.filter)).report }
           catch { res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '筛选索引不可用或条件无效，请重新生成结果。' })); return }
         }
         if (!options.exportLocalReport) throw new Error('export unavailable')
@@ -2064,6 +2184,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             const resolved = await Promise.all([...new Set(candidateIds)].slice(0, 12).map(id => options.missionResults!.get(id)))
             comparisons = resolved.flatMap(candidate => candidate?.parameters === undefined ? [] : [{ record: candidate.record, parameters: candidate.parameters }])
           } catch { comparisons = [] }
+        }
+        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId)
+        if (report.reportId !== reportId || report.localEvidence?.quality?.source.sha256 !== req.body.qualitySha256) {
+          res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '质量来源已变化，请重新加载报告后导出。' }))
+          return
         }
         const result = await options.exportLocalReport(report, req.body.format, actorForRequest(req, role), snapshot?.record, comparisons, req.body.filter)
         if (!isLocalReportExport(result) || result.reportId !== reportId || result.format !== req.body.format) throw new Error('invalid export')

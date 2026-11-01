@@ -1427,6 +1427,31 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "minimum": 0
           }
         }
+      },
+      "quality": {
+        "$ref": "#/components/schemas/QualityDataset"
+      },
+      "qualityConnectivityRates": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "linkId",
+            "value"
+          ],
+          "properties": {
+            "linkId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 100
+            }
+          }
+        }
       }
     }
   },
@@ -1446,7 +1471,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "properties": {
       "reportId": {
         "type": "string",
-        "pattern": "^RPT-LOCAL-[a-f0-9]{64}$"
+        "pattern": "^RPT-LOCAL-[a-f0-9]{64}(?:-Q-[a-f0-9]{64})?$"
       },
       "generated": {
         "const": true
@@ -7054,6 +7079,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "confirmationId": {
         "type": "string",
         "minLength": 1
+      },
+      "qualitySha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
       }
     }
   },
@@ -9995,6 +10024,500 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         "maxItems": 1000,
         "uniqueItems": true
+      }
+    }
+  },
+  "QualityScope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "runId",
+      "scenarioId",
+      "revision",
+      "startedAt"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$"
+      },
+      "runId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$"
+      },
+      "scenarioId": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^SCN-"
+      },
+      "revision": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+      },
+      "startedAt": {
+        "type": "string",
+        "format": "date-time"
+      }
+    }
+  },
+  "QualityLosses": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "freeSpaceLossDb",
+      "seaMultipathLossDb",
+      "atmosphericLossDb",
+      "cloudRainLossDb",
+      "jammingLossDb",
+      "totalLossDb"
+    ],
+    "properties": {
+      "freeSpaceLossDb": {
+        "type": "number"
+      },
+      "seaMultipathLossDb": {
+        "type": "number"
+      },
+      "atmosphericLossDb": {
+        "type": "number"
+      },
+      "cloudRainLossDb": {
+        "type": "number"
+      },
+      "jammingLossDb": {
+        "type": "number"
+      },
+      "totalLossDb": {
+        "type": "number"
+      }
+    }
+  },
+  "QualitySample": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "time",
+      "sourcePlatform",
+      "destPlatform",
+      "linkType",
+      "frequency",
+      "bandwidth",
+      "distance",
+      "txPower",
+      "txAntennaGain",
+      "rxAntennaGain",
+      "pathLoss",
+      "jammingPower",
+      "receivedPower",
+      "snr",
+      "modulation",
+      "ber",
+      "linkStatus",
+      "berThreshold",
+      "dataRate",
+      "linkId",
+      "frameId",
+      "jsrDb"
+    ],
+    "properties": {
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sourcePlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "destPlatform": {
+        "type": "string",
+        "minLength": 1
+      },
+      "linkType": {
+        "type": "string",
+        "enum": [
+          "SAT",
+          "MICROWAVE",
+          "DATALINK",
+          "LASER",
+          "FIBER"
+        ]
+      },
+      "frequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "bandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "distance": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txPower": {
+        "type": "number",
+        "minimum": 0
+      },
+      "txAntennaGain": {
+        "type": "number"
+      },
+      "rxAntennaGain": {
+        "type": "number"
+      },
+      "pathLoss": {
+        "type": "number"
+      },
+      "jammingPower": {
+        "type": "number"
+      },
+      "receivedPower": {
+        "type": "number"
+      },
+      "snr": {
+        "type": "number"
+      },
+      "modulation": {
+        "enum": [
+          "BPSK",
+          "QPSK",
+          "OOK"
+        ]
+      },
+      "ber": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "linkStatus": {
+        "enum": [
+          "UP",
+          "DOWN"
+        ]
+      },
+      "berThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "dataRate": {
+        "type": "number",
+        "minimum": 0
+      },
+      "jsrDb": {
+        "type": "number"
+      },
+      "latencyMs": {
+        "type": "number",
+        "minimum": 0,
+        "description": "端到端时延（ms）；引擎提供时展示。"
+      },
+      "availabilityPercent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "链路可用率（%）；引擎提供时展示。"
+      },
+      "linkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frameId": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      },
+      "losses": {
+        "$ref": "#/components/schemas/QualityLosses"
+      },
+      "interferenceActive": {
+        "type": "boolean"
+      }
+    },
+    "x-source": "SRS §3.5.4"
+  },
+  "QualityDataset": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schemaVersion",
+      "scope",
+      "source",
+      "expectedStepS",
+      "samples",
+      "switchEvents"
+    ],
+    "properties": {
+      "schemaVersion": {
+        "const": "1.0"
+      },
+      "scope": {
+        "$ref": "#/components/schemas/QualityScope"
+      },
+      "source": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "fileName",
+          "sha256",
+          "importedAt",
+          "frameIdKind"
+        ],
+        "properties": {
+          "kind": {
+            "const": "FILE_IMPORT"
+          },
+          "fileName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "importedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "frameIdKind": {
+            "enum": [
+              "PROVIDED",
+              "IMPORT_SEQUENCE"
+            ]
+          },
+          "switchEventsProvided": {
+            "type": "boolean",
+            "description": "是否明确提供切换事件集合；未提供不能统计为零次。"
+          }
+        }
+      },
+      "expectedStepS": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "samples": {
+        "type": "array",
+        "maxItems": 100000,
+        "items": {
+          "$ref": "#/components/schemas/QualitySample"
+        }
+      },
+      "switchEvents": {
+        "type": "array",
+        "maxItems": 100000,
+        "items": {
+          "$ref": "#/components/schemas/QualitySwitchEvent"
+        }
+      }
+    }
+  },
+  "QualityDatasetOrNull": {
+    "anyOf": [
+      {
+        "$ref": "#/components/schemas/QualityDataset"
+      },
+      {
+        "const": null
+      }
+    ]
+  },
+  "QualityDatasetUpdate": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "kind",
+      "scope",
+      "sourceSha256",
+      "sampleCount"
+    ],
+    "properties": {
+      "kind": {
+        "const": "QUALITY_UPDATED"
+      },
+      "scope": {
+        "$ref": "#/components/schemas/QualityScope"
+      },
+      "sourceSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "sampleCount": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991
+      }
+    }
+  },
+  "QualityImportRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "scope",
+      "fileName",
+      "format",
+      "text"
+    ],
+    "properties": {
+      "scope": {
+        "$ref": "#/components/schemas/QualityScope"
+      },
+      "fileName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255
+      },
+      "format": {
+        "enum": [
+          "JSON",
+          "CSV"
+        ]
+      },
+      "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4194304
+      }
+    }
+  },
+  "GetapiV1SimulationsRunIdQualityResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/QualityDatasetOrNull"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1SimulationsRunIdQualityResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/QualityDataset"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1SimulationsRunIdQualityRequest": {
+    "$ref": "#/components/schemas/QualityImportRequest"
+  },
+  "QualitySwitchEvent": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "eventId",
+      "frameId",
+      "time",
+      "type",
+      "direction",
+      "oldLinkId",
+      "newLinkId",
+      "oldBer",
+      "newBer",
+      "stabilityFrames",
+      "minimumStableFrames",
+      "hysteresisSatisfied",
+      "cooldownRemainingS",
+      "decision",
+      "reason",
+      "dedupeKey"
+    ],
+    "properties": {
+      "eventId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "frameId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sourceRegistryTime": {
+        "type": "number",
+        "minimum": 0
+      },
+      "type": {
+        "const": "LINK_SWITCH"
+      },
+      "direction": {
+        "enum": [
+          "FORWARD",
+          "REVERSE"
+        ]
+      },
+      "oldLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "newLinkId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "oldBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "newBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "stabilityFrames": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "minimumStableFrames": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "hysteresisSatisfied": {
+        "type": "boolean"
+      },
+      "cooldownRemainingS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "decision": {
+        "enum": [
+          "ACCEPTED",
+          "REJECTED"
+        ]
+      },
+      "reason": {
+        "type": "string"
+      },
+      "dedupeKey": {
+        "type": "string"
       }
     }
   }

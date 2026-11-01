@@ -4,6 +4,7 @@ import { canVisitMenu } from '../../features/admin/access-control'
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
+import { ElMessage } from 'element-plus'
 import { MAP_CONFIG } from '../../config/map.config'
 import type { DetectionEvent, Link, SwitchEvent, UiLinkStatus, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
@@ -40,6 +41,8 @@ import { useReplayStore } from '../../stores/replay'
 import { readLinkEnabled } from '../../features/scenarios/link-settings'
 import { isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
 import { unwrapSuccessData } from '../../stores/api-envelope'
+import { isQualityDataset } from '../../features/data-exchange/quality-records'
+import { saveDownload } from '../../features/shared/download'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -90,6 +93,9 @@ const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
 const telemetryTab = ref('status')
+const qualityImportInput = ref<HTMLInputElement | null>(null)
+const qualityImporting = ref(false)
+const qualityLoadMessage = ref('')
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
@@ -118,8 +124,10 @@ const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
     ? { taskId: run.taskId, runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, startedAt: run.startedAt }
     : null
 })
+let qualityLoadRevision = 0
 watch([runtimeQualityScope, () => selectedScene.value?.config.links.map(link => link.id) ?? []], ([scope, ids]) => {
-  runtimeQualityStore.activate(scope, ids)
+  const epoch = runtimeQualityStore.activate(scope, ids)
+  if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
 // 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
 const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
@@ -404,6 +412,22 @@ const qualityLinks = computed(() => displayedLinks.value.map(link => ({
 })))
 const selectedRuntimeQuality = computed(() => runtimeQualityViews.value.get(selectedLinkId.value) ?? null)
 const qualitySourceKey = computed(() => `${sourceState.value}:${selectedScene.value?.config.scenario.id ?? frame.value?.runId ?? ''}:${runtimeQualityScope.value?.runId ?? ''}:${runtimeQualityScope.value?.startedAt ?? ''}:${selectedScene.value?.revision ?? ''}`)
+const qualitySourceLabel = computed(() => {
+  const source = runtimeQualityStore.importedDataset?.source
+  if (!source) return null
+  return `文件导入 · ${source.fileName} · ${source.frameIdKind === 'IMPORT_SEQUENCE' ? '采样序号（非引擎帧号）' : '来源帧号'} · ${source.sha256.slice(0, 12)}`
+})
+const qualityDownloadFiles = computed(() => {
+  const data = runtimeQualityStore.importedDataset
+  if (!data) return []
+  const source = data.source.fileName.toLowerCase().endsWith('.csv') ? 'source.csv' : 'source.json'
+  return [
+    { name: 'link_quality.csv', enabled: true }, { name: 'link_state.csv', enabled: true },
+    { name: 'link_loss.csv', enabled: data.hasCompleteLosses },
+    { name: 'link_switch.csv', enabled: data.hasSwitchEvidence },
+    { name: 'manifest.json', enabled: true }, { name: source, enabled: true },
+  ]
+})
 const selectedConfiguredLink = computed(() => {
   const link = selectedScene.value?.config.links.find(link => link.id === selectedLinkId.value)
   return link ? { ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) } : null
@@ -536,6 +560,132 @@ async function retryTelemetry(): Promise<void> {
   const loaded = await telemetryStore.loadFrame()
   if (!unmounted && loaded) telemetryStore.connect()
 }
+
+function sameQualityScope(left: RuntimeQualityScope, right: RuntimeQualityScope | null): boolean {
+  return right !== null && left.taskId === right.taskId && left.runId === right.runId
+    && left.scenarioId === right.scenarioId && left.revision === right.revision && left.startedAt === right.startedAt
+}
+
+/** Loads the persisted file after activation, reconnect, or a bounded WS update. */
+async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpoch: number): Promise<void> {
+  const revision = ++qualityLoadRevision
+  const runId = expectedScope.runId
+  try {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/quality`, {
+      headers: { 'X-Demo-Role': useAuthStore().role }, cache: 'no-store',
+    })
+    const body = await response.json() as unknown
+    if (revision !== qualityLoadRevision || !sameQualityScope(expectedScope, runtimeQualityScope.value)
+      || requestEpoch !== runtimeQualityStore.epoch) return
+    if (!response.ok) {
+      const error = typeof body === 'object' && body !== null ? (body as { error?: { message?: unknown } }).error : undefined
+      qualityLoadMessage.value = typeof error?.message === 'string' ? error.message : '质量数据读取失败。'
+      return
+    }
+    const data = unwrapSuccessData(body)
+    if (data === null) {
+      qualityLoadMessage.value = '当前运行尚未导入规范质量文件。'
+      return
+    }
+    if (!isQualityDataset(data) || !runtimeQualityStore.acceptDataset(requestEpoch, data)) {
+      qualityLoadMessage.value = '质量数据与当前运行或已保存场景不一致，未显示。'
+      return
+    }
+    qualityLoadMessage.value = ''
+  } catch {
+    if (revision === qualityLoadRevision && sameQualityScope(expectedScope, runtimeQualityScope.value)
+      && requestEpoch === runtimeQualityStore.epoch) qualityLoadMessage.value = '质量数据读取失败，请稍后重试。'
+  }
+}
+
+function openQualityImport(): void {
+  if (!runtimeQualityScope.value || qualityImporting.value) return
+  qualityImportInput.value?.click()
+}
+
+/**
+ * Keep the exact UTF-8 text (including an optional BOM) that will be hashed and
+ * archived by the server.  File.text() silently replaces malformed sequences,
+ * which would make the server digest describe a different file.
+ */
+async function readQualityFileText(file: File): Promise<string> {
+  try {
+    const bytes = await file.arrayBuffer()
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  } catch {
+    throw new Error('质量文件不是有效的 UTF-8 编码，未上传。')
+  }
+}
+
+async function importQualityFile(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  const scope = runtimeQualityScope.value
+  if (!file || !scope || qualityImporting.value) return
+  if (file.size > 4 * 1024 * 1024) { ElMessage.error('质量文件不能超过 4 MiB。'); return }
+  const match = file.name.match(/\.([A-Za-z0-9]+)$/u)
+  const extension = match?.[1]?.toUpperCase()
+  if (extension !== 'JSON' && extension !== 'CSV') { ElMessage.error('只支持 JSON 或 CSV 质量文件。'); return }
+  const requestEpoch = runtimeQualityStore.epoch
+  qualityImporting.value = true
+  try {
+    const text = await readQualityFileText(file)
+    if (!sameQualityScope(scope, runtimeQualityScope.value) || requestEpoch !== runtimeQualityStore.epoch) return
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(scope.runId)}/quality`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
+      body: JSON.stringify({ scope, fileName: file.name, format: extension, text }),
+    })
+    const body = await response.json() as unknown
+    if (!response.ok) {
+      const error = typeof body === 'object' && body !== null ? (body as { error?: { message?: unknown } }).error : undefined
+      throw new Error(typeof error?.message === 'string' ? error.message : '质量文件导入失败。')
+    }
+    const data = unwrapSuccessData(body)
+    if (!isQualityDataset(data) || !runtimeQualityStore.acceptDataset(requestEpoch, data)) throw new Error('服务端返回质量数据与当前运行不一致。')
+    qualityLoadMessage.value = ''
+    ElMessage.success(`已导入 ${data.samples.length} 条质量采样；来源为文件导入。`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '质量文件导入失败。')
+  } finally {
+    qualityImporting.value = false
+  }
+}
+
+async function downloadQualityFile(fileName: string): Promise<void> {
+  const source = runtimeQualityStore.importedDataset?.source
+  const scope = runtimeQualityScope.value
+  const requestEpoch = runtimeQualityStore.epoch
+  if (!source || !scope || !qualityDownloadFiles.value.some(item => item.name === fileName && item.enabled)) return
+  try {
+    const query = new URLSearchParams({ sourceSha256: source.sha256 })
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(scope.runId)}/quality/files/${encodeURIComponent(fileName)}?${query}`, {
+      headers: { 'X-Demo-Role': useAuthStore().role },
+    })
+    if (!sameQualityScope(scope, runtimeQualityScope.value) || requestEpoch !== runtimeQualityStore.epoch
+      || runtimeQualityStore.importedDataset?.source.sha256 !== source.sha256) return
+    if (response.ok && response.headers.get('X-Quality-Source-Sha256') !== source.sha256) throw new Error('下载文件的质量来源版本不一致，未保存。')
+    if (!await saveDownload(response, fileName, () => sameQualityScope(scope, runtimeQualityScope.value)
+      && requestEpoch === runtimeQualityStore.epoch && runtimeQualityStore.importedDataset?.source.sha256 === source.sha256)) return
+    ElMessage.success(`已开始下载 ${fileName}。`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '规范文件下载失败。')
+  }
+}
+
+watch(() => telemetryStore.qualityUpdate, update => {
+  const scope = runtimeQualityScope.value
+  if (!update || !scope || !sameQualityScope(update.scope, scope)) return
+  if (runtimeQualityStore.importedDataset?.source.sha256 === update.sourceSha256) return
+  void loadRuntimeQuality(scope, runtimeQualityStore.epoch)
+})
+
+// A fresh subscription also compensates for a bounded journal replay gap: REST
+// remains the source of the complete imported history.
+watch(connectionState, state => {
+  const scope = runtimeQualityScope.value
+  if (state === 'SUBSCRIBED' && scope) void loadRuntimeQuality(scope, runtimeQualityStore.epoch)
+})
 
 /**
  * 切换场景配置悬浮面板的折叠状态。
@@ -1122,6 +1272,16 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
+            <div class="quality-import-bar">
+              <input ref="qualityImportInput" type="file" accept=".json,.csv,application/json,text/csv" class="quality-import-input" data-testid="quality-import-input" @change="importQualityFile" />
+              <el-button size="small" type="primary" :loading="qualityImporting" :disabled="!runtimeQualityScope" data-testid="quality-import-button" @click="openQualityImport">导入 JSON / CSV</el-button>
+              <el-dropdown v-if="qualityDownloadFiles.length" trigger="click">
+                <el-button size="small" data-testid="quality-download-button">下载规范文件</el-button>
+                <template #dropdown><el-dropdown-menu><el-dropdown-item v-for="item in qualityDownloadFiles" :key="item.name" :disabled="!item.enabled" @click="downloadQualityFile(item.name)">{{ item.name }}{{ item.enabled ? '' : '（缺少源数据）' }}</el-dropdown-item></el-dropdown-menu></template>
+              </el-dropdown>
+              <span v-if="qualitySourceLabel" data-testid="quality-source">{{ qualitySourceLabel }}</span>
+              <span v-else>{{ qualityLoadMessage || '选择当前运行的规范质量 JSON 或 CSV 文件（最大 4 MiB）。' }}</span>
+            </div>
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
@@ -1131,6 +1291,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               :source-key="qualitySourceKey"
               :selected-link-id="selectedLinkId"
             />
+            <section v-if="runtimeQualityStore.importedSwitchEvents.length" class="quality-source-events" aria-label="导入质量文件中的切换事件">
+              <strong>导入文件记录的切换事件</strong><span>仅展示文件明确记录，未将本机选路判定标为实际执行。</span>
+              <ol>
+                <li v-for="item in runtimeQualityStore.importedSwitchEvents" :key="item.eventId">{{ formatSimulationTime(item.time) }} · {{ item.oldLinkId }} → {{ item.newLinkId }} · {{ item.decision }}</li>
+              </ol>
+            </section>
           </el-tab-pane>
           <el-tab-pane v-if="runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy>
             <RuntimeLinkDecisionPanel :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
@@ -1241,6 +1407,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .8fr); }
 .telemetry-quality-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
 .telemetry-quality-pane .quality-metric-panel { flex: 1; height: auto; }
+.quality-import-bar { display: flex; flex: 0 0 auto; align-items: center; gap: .5rem; margin-bottom: .5rem; min-width: 0; font-size: var(--console-font-size-min); color: var(--console-text-muted); overflow-wrap: anywhere; }
+.quality-import-input { display: none; }
+.quality-source-events { flex: 0 1 auto; max-height: 7rem; overflow: auto; margin-top: .5rem; font-size: var(--console-font-size-min); color: var(--console-text-muted); }
+.quality-source-events strong, .quality-source-events span { display: block; }
+.quality-source-events ol { margin: .3rem 0 0; padding-left: 1.2rem; }
 .runtime-quality-feedback { flex: 0 1 auto; max-height: 30%; overflow: auto; overflow-wrap: anywhere; font-size: var(--console-font-size-min); color: var(--console-danger); }
 .runtime-quality-feedback p { margin: 0 0 .4rem; }
 .floating-panel__toggle { position: absolute; z-index: 2; top: .3rem; display: grid; width: 1.75rem; height: 1.75rem; place-items: center; padding: 0; border: 1px solid var(--console-border-strong); border-radius: 5px; color: var(--console-cyan); background: rgba(7,21,34,.96); font-size: 1.1rem; line-height: 1; cursor: pointer; }

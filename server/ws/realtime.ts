@@ -4,6 +4,8 @@ import type {
   RealtimeEnvelope,
   FrameId,
   JammerStatusData,
+  QualityDataset,
+  QualityDatasetUpdate,
   ResetResult,
   SimulationRun,
   SimulationState,
@@ -36,6 +38,12 @@ export interface RealtimeController {
   activeClientCount(): number
   publishRuntimeState(run: SimulationRun): void
   publishJammerStatus(status: JammerStatusData, frameId: FrameId): void
+  /**
+   * Publishes only a bounded reference to an imported quality dataset.  Clients
+   * fetch the checked dataset from REST, so an arbitrary CSV history never
+   * becomes a websocket payload or journal entry.
+   */
+  publishQualityDataset(dataset: QualityDataset): void
   invalidateForReset(): void
   revalidateSessions(): void
   reset(): ResetResult
@@ -456,6 +464,31 @@ export function attachRealtimeServer(
       if (message === undefined) return
       for (const [client, subscription] of clients) {
         if (subscription.taskId === taskId && subscription.topics.has('jammer.event') && !replaying.get(client)?.has('jammer.event')) send(client, message)
+      }
+    },
+    publishQualityDataset: (dataset): void => {
+      revalidateSessions()
+      const { scope } = dataset
+      const taskId = scope.taskId as TaskId
+      const run = currentRun(taskId)
+      // The HTTP import already validates its scope.  Keep this second guard at
+      // the transport boundary so a stale async completion cannot notify a new
+      // task/run after it has been replaced.
+      if (!run || run.taskId !== scope.taskId || run.runId !== scope.runId) return
+      const simulationTime = dataset.samples.length
+        ? Math.max(...dataset.samples.map(sample => sample.time))
+        : run.canonical.currentTime
+      const payload: QualityDatasetUpdate = {
+        kind: 'QUALITY_UPDATED', scope: { ...scope }, sourceSha256: dataset.source.sha256,
+        sampleCount: dataset.samples.length,
+      }
+      const envelope: RealtimeEnvelope<QualityDatasetUpdate> = createEnvelope(
+        run.taskId, 'link.metric', payload, simulationTime,
+      )
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === run.taskId && subscription.topics.has('link.metric') && !replaying.get(client)?.has('link.metric')) send(client, message)
       }
     },
     invalidateForReset,

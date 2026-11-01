@@ -1,4 +1,5 @@
 import type { LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report } from '../../contracts/domain-models'
+import { isQualityDatasetProjection } from '../data-exchange/quality-records'
 import { isDetectionEvent } from './detection-events'
 
 /** 共享纯校验，Mock 服务无需导入本机文件索引适配器。 */
@@ -25,12 +26,12 @@ function object(v: unknown, keys: string[]): v is Record<string, unknown> {
 /** 本机报告不借用 Mock 的运行号、质量指标或时序点；全部子集合在边界闭合校验。 */
 export function isLocalReport(value: unknown): value is Report & { localEvidence: LocalReportEvidence } {
   if (!object(value, ['reportId', 'classification', 'generatedTime', 'status', 'localEvidence'])
-    || typeof value.reportId !== 'string' || !/^RPT-LOCAL-[a-f0-9]{64}$/.test(value.reportId)
+    || typeof value.reportId !== 'string' || !/^RPT-LOCAL-[a-f0-9]{64}(?:-Q-[a-f0-9]{64})?$/.test(value.reportId)
     || value.classification !== 'LEVEL_II' || value.status !== 'READY'
     || !text(value.generatedTime) || !Number.isFinite(Date.parse(value.generatedTime))) return false
   const e = value.localEvidence as Partial<LocalReportEvidence>
   const evidenceKeys = ['eventFile', 'positionFile', 'startTimeS', 'endTimeS', 'simulationComplete', 'positionCount', 'positionIssueCount', 'waitingForPositionLine', 'eventCount', 'eventWarningCount', 'nodes', 'eventCounts', 'connections', 'deviceEvents']
-  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis']
+  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis', 'quality', 'qualityConnectivityRates']
   if (!e || typeof e !== 'object' || Array.isArray(e) || !evidenceKeys.every(key => Object.hasOwn(e, key))
     || !Object.keys(e).every(key => evidenceKeys.includes(key) || optionalEvidenceKeys.includes(key))
     || ![e.eventFile, e.positionFile].every(file => object(file, ['fileName', 'sha256']) && text(file.fileName) && hash(file.sha256))
@@ -94,7 +95,17 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
     }
   }
   if (e.qualityKpis !== undefined && !isQualityKpis(e.qualityKpis)) return false
+  if (e.quality !== undefined && (!isQualityDatasetProjection(e.quality) || (value.reportId.includes('-Q-') && !value.reportId.endsWith(`-Q-${e.quality.source.sha256}`)))) return false
+  if (e.quality === undefined && value.reportId.includes('-Q-')) return false
+  if (e.qualityConnectivityRates !== undefined && (!e.quality || !isQualityConnectivityRates(e.qualityConnectivityRates))) return false
   return true
+}
+
+function isQualityConnectivityRates(value: unknown): value is NonNullable<LocalReportEvidence['qualityConnectivityRates']> {
+  if (!Array.isArray(value)) return false
+  const links = new Set<string>()
+  return value.every(row => object(row, ['linkId', 'value']) && text(row.linkId) && !links.has(row.linkId) && links.add(row.linkId)
+    && typeof row.value === 'number' && Number.isFinite(row.value) && row.value >= 0 && row.value <= 100)
 }
 
 const SWITCH_EVENT_KEYS = ['eventId', 'time', 'demandId', 'ruleId', 'fromDeviceId', 'toDeviceId', 'fromLinkId', 'toLinkId', 'stableChecks']
@@ -120,7 +131,7 @@ function isQualityKpis(value: unknown): value is LocalQualityKpis {
 
 export function isLocalReportExport(value: unknown): value is LocalReportExportResult {
   return object(value, ['reportId', 'generated', 'status', 'format', 'watermark', 'verifiedAt', 'filePath', 'sha256'])
-    && typeof value.reportId === 'string' && /^RPT-LOCAL-[a-f0-9]{64}$/.test(value.reportId)
+    && typeof value.reportId === 'string' && /^RPT-LOCAL-[a-f0-9]{64}(?:-Q-[a-f0-9]{64})?$/.test(value.reportId)
     && value.generated === true && value.status === 'SUCCESS' && (value.format === 'HTML' || value.format === 'PDF' || value.format === 'CSV')
     && text(value.watermark) && text(value.verifiedAt) && Number.isFinite(Date.parse(value.verifiedAt))
     && text(value.filePath) && hash(value.sha256)
@@ -168,7 +179,7 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
       ['通信设备关闭记录', String(events.get('COMM_TURNED_OFF') ?? 0)], ['干扰请求发起记录', String(events.get('JAMMING_REQUEST_INITIATED') ?? 0)],
       // 大纲评估指标：有引擎质量/干扰输出时填写，缺省显示“暂无数据”。切换次数来自切换事件，未解析到时同样显示暂无数据。
       ['平均连通时长', kpi(e.qualityKpis?.averageConnectedDurationS, value => reportTime(value))],
-      ['切换次数', e.switchEvents === undefined ? NO_DATA : String(e.switchEvents.length)],
+      ['切换次数', e.quality === undefined ? (e.switchEvents === undefined ? NO_DATA : String(e.switchEvents.length)) : (e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length > 0 ? String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length) : NO_DATA)],
       ['平均干信比', kpi(e.qualityKpis?.averageJsrDb, value => `${value.toFixed(2)} dB`)],
       ['平均误码率', kpi(e.qualityKpis?.averageBer, value => value.toExponential(2))],
       ['干扰持续时长', kpi(e.qualityKpis?.jammingDurationS, value => reportTime(value))],
@@ -184,6 +195,21 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
     { title: '链路切换事件', columns: ['事件编号', '时刻', '业务', '规则', '原链路', '新链路', '稳定次数'],
       rows: (e.switchEvents ?? []).map(row => [row.eventId, reportTime(row.time), row.demandId, row.ruleId ?? NO_DATA,
         row.fromLinkId ?? row.fromDeviceId, row.toLinkId ?? row.toDeviceId, row.stableChecks === null ? NO_DATA : String(row.stableChecks)]) },
+    ...(e.quality === undefined ? [] : [
+      { title: '质量数据来源', columns: ['项目', '值'], rows: [
+        ['来源文件', e.quality.source.fileName], ['来源 SHA-256', e.quality.source.sha256], ['导入时刻', e.quality.source.importedAt],
+        ['帧编号来源', e.quality.source.frameIdKind === 'PROVIDED' ? '源文件提供' : '导入顺序生成'], ['期望采样间隔', `${e.quality.expectedStepS} 秒`],
+        ['质量样本数', String(e.quality.samples.length)], ['源文件切换事件集合', e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length ? '已提供' : '未提供'], ['源文件切换事件数', e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length ? String(e.quality.switchEvents.length) : NO_DATA],
+        ['已接受切换事件数', String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length)], ['已拒绝切换事件数', String(e.quality.switchEvents.filter(row => row.decision === 'REJECTED').length)],
+      ] },
+      { title: '链路质量测量', columns: ['时刻', '帧', '链路', '发送节点', '接收节点', '状态', 'GXB', 'BER', '干扰活动'], rows: e.quality.samples.map(row => [
+        reportTime(row.time), String(row.frameId), row.linkId, name(row.sourcePlatform), name(row.destPlatform), row.linkStatus,
+        row.jsrDb.toFixed(3), row.ber.toExponential(3), row.interferenceActive === undefined ? NO_DATA : row.interferenceActive ? '是' : '否',
+      ]) },
+      { title: '质量源文件切换事件', columns: ['事件编号', '时刻', '原链路', '新链路', '旧 BER', '新 BER', '稳定帧', '决策', '原因'], rows: e.quality.switchEvents.map(row => [
+        row.eventId, reportTime(row.time), row.oldLinkId, row.newLinkId, row.oldBer.toExponential(3), row.newBer.toExponential(3), String(row.stabilityFrames), row.decision === 'ACCEPTED' ? '接受' : '拒绝', row.reason,
+      ]) },
+    ]),
   ]
 }
 

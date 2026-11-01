@@ -7,6 +7,7 @@ import { LocalMissionPool, readMissionConcurrency } from './local/mission-pool.j
 import { readMissionRunTimeout } from './local/mission-runner.js'
 import { DiskRealtimeJournal } from './local/realtime-journal.js'
 import { LocalMissionResults } from './local/mission-results.js'
+import { createRunQualityStore } from './local/run-quality.js'
 import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
@@ -68,6 +69,7 @@ const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
 let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
 const missionResults = new LocalMissionResults(lan ? join(lan.outputRoot, 'results') : fileURLToPath(new URL('../output/results/', import.meta.url)))
+const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'quality') : fileURLToPath(new URL('../output/quality/', import.meta.url)), () => new Date().toISOString())
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
 const missionExecution = lan?.webOnly
@@ -75,6 +77,7 @@ const missionExecution = lan?.webOnly
   : new LocalMissionPool(missionExecutable, missionDirectory, missionResults, missionConcurrency, missionRunTimeoutMs)
 const server = createMockServer({
   missionResults,
+  runQualityStore,
   createRunId: () => `RUN-${randomUUID()}`,
   realtimeJournal: new DiskRealtimeJournal(lan ? join(lan.outputRoot, 'ws-journal') : fileURLToPath(new URL('../output/ws-journal/', import.meta.url)), 128),
   port,

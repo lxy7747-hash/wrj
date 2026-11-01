@@ -3,10 +3,13 @@ import { computed, ref, watch } from 'vue'
 import type { LocalReportEvidence } from '../../contracts/domain-models'
 import type { MissionResultParameterComparison } from '../../features/results/mission-result'
 import { EVENT_LABELS, localReportTables, reportTime } from '../../features/reports/local-report'
+import { qualityReportView } from '../../features/reports/quality-report'
 import ReportChart from './ReportChart.vue'
 
 const props = withDefaults(defineProps<{ evidence: LocalReportEvidence; comparison?: MissionResultParameterComparison[]; preciseFilter?: boolean; timeline?: Array<{ id: string; time: number; type: string; subject: string; target?: string }>; timelineTotal?: number }>(), { comparison: () => [], preciseFilter: false, timeline: () => [], timelineTotal: 0 })
 const tables = computed(() => localReportTables(props.evidence))
+const qualityView = computed(() => props.evidence.quality === undefined ? null : qualityReportView(props.evidence.quality, props.evidence))
+const qualityConnectivityRates = computed(() => props.evidence.qualityConnectivityRates ?? qualityView.value?.connectivityRates ?? [])
 const activeTab = ref('汇总')
 const isNodeTab = computed(() => activeTab.value === '节点与位置')
 const isEventTab = computed(() => ['通信关联登记', '设备与干扰请求', '事件时间线'].includes(activeTab.value))
@@ -84,7 +87,7 @@ watch(connectionPageSize, () => { connectionPage.value = 1 })
     </el-form>
     <el-alert v-if="isEventTab && rangeError" type="error" title="开始时刻不得晚于结束时刻。" :closable="false" />
     <el-tabs v-model="activeTab">
-      <el-tab-pane v-for="table in [tables[0]!, nodeTable, ...detailTables, tables[4]!, ...(evidence.detectionEvents?.length ? [detectionTable] : []), switchTable]" :key="table.title" :label="table.title" :name="table.title" class="report-table-pane" lazy>
+      <el-tab-pane v-for="table in [tables[0]!, nodeTable, ...detailTables, tables[4]!, ...(evidence.detectionEvents?.length ? [detectionTable] : []), switchTable, ...tables.slice(7)]" :key="table.title" :label="table.title" :name="table.title" class="report-table-pane" lazy>
         <el-table class="report-data-table" :data="table.title === '通信关联登记' ? connectionRows : table.rows" stripe height="100%" :aria-label="table.title" :empty-text="['节点与位置', '通信关联登记', '设备与干扰请求', 'ESM 侦测事件'].includes(table.title) ? '暂无符合条件的数据' : '暂无数据'">
           <el-table-column v-for="(label, index) in table.columns" :key="index" :prop="String(index)" :label="label" min-width="140" />
         </el-table>
@@ -100,7 +103,15 @@ watch(connectionPageSize, () => { connectionPage.value = 1 })
         />
       </el-tab-pane>
       <el-tab-pane label="链路质量与曲线" name="链路质量与曲线" lazy>
-        <el-empty description="暂无数据" data-testid="report-quality-curves" />
+        <template v-if="qualityView && qualityView.samples.length">
+          <p class="scope-note">数据源：{{ qualityView.dataset.source.fileName }} · SHA-256 {{ qualityView.dataset.source.sha256 }}；仅显示已导入的实际测量值。</p>
+          <ReportChart title="各链路有效观测区间连通率" unit="%" :rows="qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value }))" radar />
+          <template v-for="series in qualityView.series" :key="series.linkId">
+            <ReportChart :title="`GXB 随时间变化 · ${series.linkId}`" unit="dB" :rows="series.gxbCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line />
+            <ReportChart :title="`误码率随时间变化 · ${series.linkId}`" unit="BER" :rows="series.berCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line />
+          </template>
+        </template>
+        <el-empty v-else description="暂无数据" data-testid="report-quality-curves" />
       </el-tab-pane>
       <el-tab-pane label="柱状图" name="柱状图" lazy><ReportChart :title="preciseFilter ? '筛选范围事件记录数' : '完整快照事件记录数'" unit="条" :rows="bars" /></el-tab-pane>
       <el-tab-pane label="事件时间线" name="事件时间线" lazy>

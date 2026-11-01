@@ -27,6 +27,7 @@ type OperationSchemaBinding = {
   readonly requestTargetRef: string | null
   readonly successStatus: string
   readonly dataRef: string | null
+  readonly binaryResponse?: true
 }
 type CanonicalTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event'
 
@@ -129,6 +130,9 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/simulations', operationId: 'getapiV1Simulations' },
   { method: 'post', path: '/api/v1/simulations', operationId: 'postapiV1Simulations' },
   { method: 'get', path: '/api/v1/simulations/{runId}', operationId: 'getapiV1SimulationsRunId' },
+  { method: 'get', path: '/api/v1/simulations/{runId}/quality', operationId: 'getapiV1SimulationsRunIdQuality' },
+  { method: 'post', path: '/api/v1/simulations/{runId}/quality', operationId: 'postapiV1SimulationsRunIdQuality' },
+  { method: 'get', path: '/api/v1/simulations/{runId}/quality/files/{fileName}', operationId: 'getapiV1SimulationsRunIdQualityFilesFileName' },
   { method: 'post', path: '/api/v1/simulations/{runId}/commands', operationId: 'postapiV1SimulationsRunIdCommands' },
   { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', operationId: 'postapiV1TasksTaskIdJammersJammerIdCommands' },
   { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', operationId: 'postapiV1TasksTaskIdJammersJammerIdParameters' },
@@ -223,6 +227,9 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1Simulations: operationSchemaBinding(null, '200', '#/components/schemas/SimulationRunList'),
   postapiV1Simulations: operationSchemaBinding('#/components/schemas/SimulationCreateRequest', '201', '#/components/schemas/SimulationRun'),
   getapiV1SimulationsRunId: operationSchemaBinding(null, '200', '#/components/schemas/SimulationRun'),
+  getapiV1SimulationsRunIdQuality: operationSchemaBinding(null, '200', '#/components/schemas/QualityDatasetOrNull'),
+  postapiV1SimulationsRunIdQuality: operationSchemaBinding('#/components/schemas/QualityImportRequest', '200', '#/components/schemas/QualityDataset'),
+  getapiV1SimulationsRunIdQualityFilesFileName: operationSchemaBinding(null, '200', null, true),
   postapiV1SimulationsRunIdCommands: operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'),
   postapiV1TasksTaskIdJammersJammerIdCommands: operationSchemaBinding('#/components/schemas/JammingCommand', '200', '#/components/schemas/JammerState'),
   postapiV1TasksTaskIdJammersJammerIdParameters: operationSchemaBinding('#/components/schemas/JammingParameterSet', '200', '#/components/schemas/SyncResult'),
@@ -306,6 +313,9 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1Simulations: ['401'],
   postapiV1Simulations: ['401', '409'],
   getapiV1SimulationsRunId: ['401', '404'],
+  getapiV1SimulationsRunIdQuality: ['400', '401', '403', '404', '409', '503'],
+  postapiV1SimulationsRunIdQuality: ['400', '401', '403', '404', '409', '422', '503'],
+  getapiV1SimulationsRunIdQualityFilesFileName: ['400', '401', '403', '404', '409', '503'],
   postapiV1SimulationsRunIdCommands: ['401', '409', '422', '428', '503'],
   postapiV1TasksTaskIdJammersJammerIdCommands: ['401', '403', '404', '409', '422'],
   postapiV1TasksTaskIdJammersJammerIdParameters: ['401', '403', '404', '409', '422'],
@@ -343,6 +353,20 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ['#/components/schemas/QualitySample/properties/linkType/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
+  ['#/components/schemas/QualitySample/properties/modulation/enum', ['BPSK','QPSK','OOK']],
+  ['#/components/schemas/QualitySample/properties/linkStatus/enum', ['UP','DOWN']],
+  ['#/components/schemas/QualityDataset/properties/schemaVersion/const', '1.0'],
+  ['#/components/schemas/QualityDataset/properties/source/properties/kind/const', 'FILE_IMPORT'],
+  ['#/components/schemas/QualityDataset/properties/source/properties/frameIdKind/enum', ['PROVIDED','IMPORT_SEQUENCE']],
+  ['#/components/schemas/QualitySwitchEvent/properties/type/const', 'LINK_SWITCH'],
+  ['#/components/schemas/QualitySwitchEvent/properties/direction/enum', ['FORWARD','REVERSE']],
+  ['#/components/schemas/QualitySwitchEvent/properties/decision/enum', ['ACCEPTED','REJECTED']],
+  ['#/components/schemas/QualityDatasetOrNull/anyOf/1/const', null],
+  ['#/components/schemas/QualityDatasetUpdate/properties/kind/const', 'QUALITY_UPDATED'],
+  ['#/components/schemas/QualityImportRequest/properties/format/enum', ['JSON','CSV']],
+  ['#/components/schemas/GetapiV1SimulationsRunIdQualityResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1SimulationsRunIdQualityResponse/properties/ok/const', true],
   ['#/components/schemas/LinkParameterField/enum', ['frequency','bandwidth','txPower','dataRate','modulation','berThreshold','coding','rxFrequency','rxBandwidth','antennaGain.tx','antennaGain.rx','antennaGainCorrectionDb','noiseFigureDb','txPolarization','rxPolarization']],
   ['#/components/schemas/LinkParameterSource/oneOf/0/properties/kind/const', 'EQUIPMENT'],
   ['#/components/schemas/LinkParameterSource/oneOf/0/properties/fields/items/enum', ['bandwidth','txPower','dataRate','modulation','berThreshold']],
@@ -994,8 +1018,9 @@ function operationSchemaBinding(
   requestTargetRef: string | null,
   successStatus: string,
   dataRef: string | null,
+  binaryResponse = false,
 ): OperationSchemaBinding {
-  return Object.freeze({ requestTargetRef, successStatus, dataRef })
+  return Object.freeze({ requestTargetRef, successStatus, dataRef, ...(binaryResponse ? { binaryResponse: true as const } : {}) })
 }
 
 function routeContract(
@@ -1539,7 +1564,13 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
           '$ref',
         )
         const responsePath = `${operationPath}.responses[${JSON.stringify(expectedBinding.successStatus)}]`
-        if (expectedBinding.dataRef === null) {
+        if (expectedBinding.binaryResponse) {
+          const binary = expectedContent && objectAt(expectedContent, 'application/octet-stream')
+          const schema = binary && objectAt(binary, 'schema')
+          if (!expectedContent || Object.keys(expectedContent).length !== 1 || schema?.type !== 'string' || schema.format !== 'binary') {
+            addFinding(findings, 'OPENAPI_SUCCESS_ENVELOPE', responsePath, 'Quality file downloads must use the exact binary response contract')
+          }
+        } else if (expectedBinding.dataRef === null) {
           if (!expectedResponse || expectedContentValue !== undefined) {
             addFinding(
               findings,
@@ -1571,6 +1602,7 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       }
 
       for (const [status, responseValue] of successEntries) {
+        if (expectedBinding?.binaryResponse) continue
         const response = isObject(responseValue) ? responseValue : undefined
         const content = response && objectAt(response, 'content')
         const mediaType = content && objectAt(content, 'application/json')
@@ -1632,12 +1664,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 81) {
+  if (operationCount !== 84) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 81 operations, found ${operationCount}`,
+      `Expected exactly 84 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1656,12 +1688,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 39 || requestSchemaOwners.size !== 39) {
+  if (writeCount !== 40 || requestSchemaOwners.size !== 40) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 39 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 40 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

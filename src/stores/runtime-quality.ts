@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
-import type { ValidationIssue } from '../contracts/domain-models'
+import type { QualityDataset, QualitySample, SwitchEvent, ValidationIssue } from '../contracts/domain-models'
 import { adaptRuntimeLinkQuality, type RuntimeLinkQualityData } from '../features/data-exchange/runtime-link-quality'
 import { RuntimeLinkDecisionTracker, type RuntimeLinkStatus, type RuntimeRouteCandidate, type RuntimeRouteDecision } from '../features/data-exchange/runtime-link-decisions'
+import { consecutiveQualitySamples, isQualityDataset } from '../features/data-exchange/quality-records'
 import { useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -28,6 +29,15 @@ export interface RuntimeQualityFrameMeta {
   simulationTime: number
 }
 
+export interface RuntimeQualitySnapshot {
+  frameId: number
+  simulationTime: number
+  data: RuntimeLinkQualityData
+  /** Native adapter data and canonical imported data have distinct identity guarantees. */
+  source?: 'NATIVE_LINK_CALC' | 'FILE_IMPORT'
+  frameIdKind?: 'PROVIDED' | 'IMPORT_SEQUENCE'
+}
+
 type RuntimeQualityState = 'EMPTY' | 'SUCCESS' | 'ERROR'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -48,7 +58,7 @@ function sameBindings(left: readonly RuntimeQualityBinding[], right: readonly Ru
   return left.length === right.length && left.every((value, index) => Object.keys(value).every(key => value[key as keyof RuntimeQualityBinding] === right[index]![key as keyof RuntimeQualityBinding]))
 }
 
-function sourceIdentity(value: Pick<RuntimeQualityBinding, 'sourceLinkId' | 'sourcePlatformId' | 'destinationPlatformId' | 'sourcePortId' | 'destinationPortId'>): string {
+function sourceIdentity(value: Pick<RuntimeQualityBinding, 'sourceLinkId' | 'sourcePlatformId' | 'destinationPlatformId'> & { sourcePortId: string | null; destinationPortId: string | null }): string {
   return JSON.stringify([value.sourceLinkId, value.sourcePlatformId, value.destinationPlatformId, value.sourcePortId, value.destinationPortId])
 }
 
@@ -86,6 +96,36 @@ function parseBindings(value: unknown, allowedLinkIds: ReadonlySet<string>): Run
   return parsed
 }
 
+/** Maps a validated canonical record without inventing a physical port identity. */
+function importedSample(sample: QualitySample) {
+  return {
+    linkId: sample.linkId,
+    sourcePlatformId: sample.sourcePlatform,
+    destinationPlatformId: sample.destPlatform,
+    sourcePortId: null,
+    destinationPortId: null,
+    distanceMeters: sample.distance,
+    losses: {
+      freeSpaceLossDb: sample.losses?.freeSpaceLossDb ?? null,
+      seaMultipathLossDb: sample.losses?.seaMultipathLossDb ?? null,
+      atmosphericLossDb: sample.losses?.atmosphericLossDb ?? null,
+      cloudRainLossDb: sample.losses?.cloudRainLossDb ?? null,
+      jammingLossDb: sample.losses?.jammingLossDb ?? null,
+      totalLossDb: sample.losses?.totalLossDb ?? sample.pathLoss,
+    },
+    quality: {
+      gxbDb: sample.jsrDb,
+      snrDb: sample.snr,
+      ber: sample.ber,
+      receivedPowerDbm: sample.receivedPower,
+      interferencePowerDbm: sample.jammingPower,
+      modelVersion: null,
+      modulation: sample.modulation,
+      inputTrace: { eirpDbw: null, gOverTDbK: null, dataRateMbps: sample.dataRate, jammerIds: null },
+    },
+  }
+}
+
 /**
  * 单次真实运行的质量快照及独立的本机质量判定；不补造 SNR 或 WebSocket 序号。
  * 激活、绑定和帧接收均复核当前会话、运行和保存场景，迟到数据只能被忽略。
@@ -95,7 +135,10 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   const simulation = useSimulationStore()
   const scope = ref<RuntimeQualityScope | null>(null)
   const bindings = ref<RuntimeQualityBinding[]>([])
-  const snapshot = ref<{ frameId: number; simulationTime: number; data: RuntimeLinkQualityData } | null>(null)
+  const snapshot = ref<RuntimeQualitySnapshot | null>(null)
+  /** Events recorded by the imported source; never populated from local route decisions. */
+  const importedSwitchEvents = ref<SwitchEvent[]>([])
+  const importedDataset = ref<(Pick<QualityDataset, 'source' | 'expectedStepS'> & { hasCompleteLosses: boolean; hasSwitchEvidence: boolean }) | null>(null)
   const linkStatuses = ref<RuntimeLinkStatus[]>([])
   const routeCandidates = ref<RuntimeRouteCandidate[]>([])
   const routeDecisions = ref<RuntimeRouteDecision[]>([])
@@ -129,6 +172,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     scope.value = null
     bindings.value = []
     snapshot.value = null
+    importedSwitchEvents.value = []
+    importedDataset.value = null
     errors.value = []
     state.value = 'EMPTY'
     resetCurrentDecisions()
@@ -173,6 +218,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   }
   const fail = (issue: ValidationIssue | ValidationIssue[]): false => {
     snapshot.value = null
+    importedSwitchEvents.value = []
+    importedDataset.value = null
     invalidateCurrentDecisions()
     errors.value = Array.isArray(issue) ? issue : [issue]
     state.value = 'ERROR'
@@ -196,6 +243,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     scope.value = { ...candidate }
     bindings.value = []
     snapshot.value = null
+    importedSwitchEvents.value = []
+    importedDataset.value = null
     resetCurrentDecisions()
     decisionEvents.value = []
     errors.value = []
@@ -216,6 +265,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     epoch.value += 1
     bindings.value = next
     snapshot.value = null
+    importedSwitchEvents.value = []
+    importedDataset.value = null
     resetCurrentDecisions()
     decisionEvents.value = []
     errors.value = []
@@ -237,7 +288,9 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
       const key = sourceIdentity({ sourceLinkId: link.linkId, sourcePlatformId: link.sourcePlatformId, destinationPlatformId: link.destinationPlatformId, sourcePortId: link.sourcePortId, destinationPortId: link.destinationPortId })
       if (!bound.has(key)) return fail({ severity: 'ERROR', code: 'RUNTIME_QUALITY_UNBOUND_LINK', fieldPath: `link_calc.links[${index}]`, message: '质量链路未与当前保存场景的通信设备显式绑定。' })
     }
-    snapshot.value = { frameId: meta.frameId, simulationTime: meta.simulationTime, data: result.data }
+    snapshot.value = { frameId: meta.frameId, simulationTime: meta.simulationTime, data: result.data, source: 'NATIVE_LINK_CALC' }
+    importedSwitchEvents.value = []
+    importedDataset.value = null
     const config = decisionConfig()
     if (config === null) {
       invalidateCurrentDecisions()
@@ -261,10 +314,86 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return true
   }
 
+  /**
+   * Receives the validated, persisted canonical file dataset.  Unlike the raw
+   * link_calc adapter this deliberately has no device-port binding: the source
+   * identifies a saved scenario link directly and no port is fabricated.
+   */
+  function acceptDataset(requestEpoch: number, candidate: unknown): boolean {
+    if (requestEpoch !== epoch.value || !active()) return false
+    if (!isQualityDataset(candidate)) {
+      return fail({ severity: 'ERROR', code: 'QUALITY_DATASET_INVALID', fieldPath: 'quality', message: '质量文件返回数据不符合规范合同。' })
+    }
+    const dataset = candidate
+    if (!sameScope(dataset.scope, scope.value)) return false
+    if (importedDataset.value?.source.sha256 === dataset.source.sha256) return true
+
+    const allowed = new Set(allowedLinkIds)
+    const frameTimes = new Map<number, number>()
+    const identities = new Set<string>()
+    for (const [index, sample] of dataset.samples.entries()) {
+      if (!allowed.has(sample.linkId)) {
+        return fail({ severity: 'ERROR', code: 'QUALITY_DATASET_UNKNOWN_LINK', fieldPath: `quality.samples[${index}].linkId`, message: '质量文件引用了当前已保存场景之外的链路。' })
+      }
+      const identity = `${sample.frameId}\u0000${sample.linkId}`
+      if (identities.has(identity)) {
+        return fail({ severity: 'ERROR', code: 'QUALITY_DATASET_DUPLICATE_SAMPLE', fieldPath: `quality.samples[${index}]`, message: '同一采样帧中的链路测量重复。' })
+      }
+      identities.add(identity)
+      const time = frameTimes.get(sample.frameId)
+      if (time !== undefined && time !== sample.time) {
+        return fail({ severity: 'ERROR', code: 'QUALITY_DATASET_FRAME_TIME_MISMATCH', fieldPath: `quality.samples[${index}].time`, message: '同一采样帧不能包含多个仿真时刻。' })
+      }
+      frameTimes.set(sample.frameId, sample.time)
+    }
+
+    const byFrame = new Map<number, QualitySample[]>()
+    for (const sample of dataset.samples) byFrame.set(sample.frameId, [...(byFrame.get(sample.frameId) ?? []), sample])
+    const frames = [...byFrame.entries()].sort(([leftFrame, left], [rightFrame, right]) => leftFrame - rightFrame || left[0]!.time - right[0]!.time)
+    const config = decisionConfig()
+    resetCurrentDecisions()
+    decisionEvents.value = []
+    latestMeta = null
+    let latest: RuntimeQualitySnapshot | null = null
+    let previousFrame: QualitySample | undefined
+    for (const [frameId, samples] of frames) {
+      const simulationTime = samples[0]!.time
+      const data: RuntimeLinkQualityData = {
+        modelVersion: null,
+        modulation: null,
+        links: samples.map(importedSample),
+      }
+      latest = { frameId, simulationTime, data, source: 'FILE_IMPORT', frameIdKind: dataset.source.frameIdKind }
+      latestMeta = { frameId, simulationTime }
+      if (config === null) continue
+      // CSV frame ids are local import sequence numbers.  A missing real-time
+      // interval must break stability accumulation even when those ids remain
+      // numerically adjacent; invalidate preserves any active route cooldown.
+      if (previousFrame !== undefined && !consecutiveQualitySamples(previousFrame, samples[0]!, dataset.expectedStepS)) decisionTracker.invalidate()
+      const decisions = decisionTracker.accept({ frameId, simulationTime, data }, config)
+      linkStatuses.value = decisions.statuses
+      routeCandidates.value = decisions.candidates
+      routeDecisions.value = decisions.decisions
+      const changes = decisions.decisions.filter(decision => decision.previousLinkId !== decision.selectedLinkId)
+      if (changes.length) decisionEvents.value = [...decisionEvents.value, ...changes].slice(-200)
+      previousFrame = samples[0]!
+    }
+    snapshot.value = latest
+    importedSwitchEvents.value = structuredClone(dataset.switchEvents)
+    importedDataset.value = {
+      source: { ...dataset.source }, expectedStepS: dataset.expectedStepS,
+      hasCompleteLosses: dataset.samples.every(sample => sample.losses !== undefined),
+      hasSwitchEvidence: dataset.source.switchEventsProvided === true || dataset.switchEvents.some(event => event.decision === 'ACCEPTED'),
+    }
+    errors.value = []
+    state.value = latest === null ? 'EMPTY' : 'SUCCESS'
+    return true
+  }
+
   // 会话、运行实例、场景修订或场景选择改变时立即使旧回调失效；当前时间刷新不影响已接收帧。
   watch(() => {
     return [auth.principal?.userId ?? '', auth.requestEpoch, auth.runtimeMode, simulation.run?.taskId ?? '', simulation.run?.runId ?? '', simulation.run?.scenarioId ?? '', simulation.run?.startedAt ?? '', simulation.selectedScene?.config.scenario.id ?? '', simulation.selectedScene?.revision ?? 0]
   }, () => { if (!active() && (scope.value !== null || bindings.value.length || snapshot.value !== null || errors.value.length)) reset() }, { flush: 'sync' })
 
-  return { scope, bindings, snapshot, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, resetToSafeEmpty: reset }
+  return { scope, bindings, snapshot, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, resetToSafeEmpty: reset }
 })

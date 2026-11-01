@@ -134,6 +134,27 @@ it('混合逐主题游标会补齐零游标事件主题的离线保留事件', a
   ])
 })
 
+it('质量文件更新只通过 link.metric 发送有界引用，不把采样历史写进 WS', async () => {
+  const { connect, realtime } = await setup()
+  const { messages } = await connect(['link.metric'])
+  await vi.waitFor(() => expect(messages).toHaveLength(2))
+  realtime.publishQualityDataset({
+    schemaVersion: '1.0',
+    scope: { taskId: 'TASK-001', runId: 'RUN-001', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-10-31T01:00:00Z' },
+    source: { kind: 'FILE_IMPORT', fileName: 'quality.csv', sha256: 'a'.repeat(64), importedAt: '2026-10-31T01:01:00Z', frameIdKind: 'IMPORT_SEQUENCE' },
+    expectedStepS: 1,
+    samples: [],
+    switchEvents: [],
+  })
+  await vi.waitFor(() => expect(messages).toHaveLength(3))
+  expect(messages[2]).toMatchObject({ topic: 'link.metric', payload: {
+    kind: 'QUALITY_UPDATED', sourceSha256: 'a'.repeat(64), sampleCount: 0,
+    scope: { runId: 'RUN-001' },
+  } })
+  expect(JSON.stringify(messages[2])).not.toContain('quality.csv')
+  expect(JSON.stringify(messages[2])).not.toContain('samples')
+})
+
 it('混合重连的零游标事件主题越出保留窗口时明确拒绝', async () => {
   const { connect, realtime } = await setup(false, undefined,
     { maxClients: 2, maxPerSource: 2, heartbeatMs: 30_000, maxRetainedEvents: 2 })

@@ -1,5 +1,5 @@
-import type { RuntimeLinkQuality, RuntimeLinkQualityData } from '../data-exchange/runtime-link-quality'
-import type { RuntimeQualityBinding } from '../../stores/runtime-quality'
+import type { RuntimeLinkQuality } from '../data-exchange/runtime-link-quality'
+import type { RuntimeQualityBinding, RuntimeQualitySnapshot } from '../../stores/runtime-quality'
 import type { RuntimeLinkStatus } from '../data-exchange/runtime-link-decisions'
 
 export const RUNTIME_STATUS_LABELS = { UNKNOWN: '待判定', UP: '正常', DEGRADED: '劣化', DOWN: '中断' } as const
@@ -33,7 +33,7 @@ export interface RuntimeLinkQualityView {
 
 /** 连接显式绑定、已校验快照及同帧本机判定，不改写源测量。 */
 export function selectRuntimeQualityViews(
-  snapshot: { frameId: number; simulationTime: number; data: RuntimeLinkQualityData } | null,
+  snapshot: RuntimeQualitySnapshot | null,
   bindings: readonly RuntimeQualityBinding[],
   links: readonly { linkId: string; sourceName: string; destinationName: string }[],
   currentTime: number,
@@ -43,10 +43,13 @@ export function selectRuntimeQualityViews(
   if (!snapshot) return views
   for (const link of links) {
     const binding = bindings.find(item => item.linkId === link.linkId)
-    if (!binding) continue
-    const measurement = snapshot.data.links.find(item => item.linkId === binding.sourceLinkId
-      && item.sourcePlatformId === binding.sourcePlatformId && item.destinationPlatformId === binding.destinationPlatformId
-      && item.sourcePortId === binding.sourcePortId && item.destinationPortId === binding.destinationPortId)
+    // Canonical file records identify a configured link directly and intentionally
+    // omit physical engine ports.  Native records remain strict full bindings.
+    const measurement = snapshot.source === 'FILE_IMPORT'
+      ? snapshot.data.links.find(item => item.linkId === link.linkId)
+      : binding === undefined ? undefined : snapshot.data.links.find(item => item.linkId === binding.sourceLinkId
+        && item.sourcePlatformId === binding.sourcePlatformId && item.destinationPlatformId === binding.destinationPlatformId
+        && item.sourcePortId === binding.sourcePortId && item.destinationPortId === binding.destinationPortId)
     if (measurement) {
       // UI 运行时钟可能落后于反馈；此时年龄未知，不能冒充0毫秒的新鲜测量。
       const ageMs = (currentTime - snapshot.simulationTime) * 1000

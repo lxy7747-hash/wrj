@@ -8,8 +8,9 @@ export interface RuntimeLinkQuality {
   linkId: string
   sourcePlatformId: string
   destinationPlatformId: string
-  sourcePortId: string
-  destinationPortId: string
+  /** null means a canonical imported record did not claim an engine port binding. */
+  sourcePortId: string | null
+  destinationPortId: string | null
   distanceMeters: number | null
   losses: {
     freeSpaceLossDb: number | null
@@ -22,7 +23,8 @@ export interface RuntimeLinkQuality {
   quality: {
     /** 保留源 GXB，不据此生成 SNR、状态或滞回结论。 */
     gxbDb: number | null
-    snrDb: null
+    /** Native link_calc has no agreed SNR field; canonical file imports may provide it. */
+    snrDb: number | null
     ber: number | null
     receivedPowerDbm: number | null
     /** 尚无已确认的引擎字段映射；null 不得被干扰损耗或干扰源数量替代。 */

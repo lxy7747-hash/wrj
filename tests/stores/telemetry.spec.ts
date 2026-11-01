@@ -65,6 +65,17 @@ describe('P3-2 遥测 Store', () => {
     vi.unstubAllGlobals()
   })
 
+  it('在没有固定遥测帧的真实运行中接收质量文件更新引用，不把它当作链路摘要', () => {
+    const store = useTelemetryStore()
+    useSimulationStore().$patch({ run: { taskId: 'TASK-001', runId: 'RUN-001', scenarioId: 'SCN-001', startedAt: '2026-10-31T01:00:00Z' } as unknown as SimulationRun })
+    expect(store.acceptEnvelope({
+      type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: 'TASK-001', sequence: 1, simulationTime: 5,
+      payload: { kind: 'QUALITY_UPDATED', sourceSha256: 'a'.repeat(64), sampleCount: 1,
+        scope: { taskId: 'TASK-001', runId: 'RUN-001', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-10-31T01:00:00Z' } },
+    })).toBe(true)
+    expect(store).toMatchObject({ frame: null, qualityUpdate: { kind: 'QUALITY_UPDATED', sampleCount: 1, sourceSha256: 'a'.repeat(64) }, topicSequences: { 'link.metric': 1 } })
+  })
+
   it('执行 RF 干扰命令并在失败时清除旧成功结果', async () => {
     const store = useTelemetryStore()
     const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }

@@ -22,6 +22,22 @@ function sourceCalc(overrides: Record<string, unknown> = {}) {
   }
 }
 
+function importedDataset(overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: '1.0', scope: scope(),
+    source: { kind: 'FILE_IMPORT', fileName: 'quality.json', sha256: 'a'.repeat(64), importedAt: '2026-10-31T01:02:00Z', frameIdKind: 'PROVIDED' },
+    expectedStepS: 1,
+    samples: [{
+      time: 5, frameId: 7, linkId: 'L-001', sourcePlatform: 'UAV-001', destPlatform: 'SAT-001', linkType: 'SAT',
+      frequency: 2200, bandwidth: 40, distance: 12_500, txPower: 10, txAntennaGain: 2, rxAntennaGain: 3,
+      pathLoss: 102, jammingPower: -89, receivedPower: -70, snr: 12, modulation: 'QPSK', ber: 1e-6,
+      linkStatus: 'UP', berThreshold: 1e-5, dataRate: 1, jsrDb: 8, interferenceActive: true,
+    }],
+    switchEvents: [],
+    ...overrides,
+  }
+}
+
 function prepare(activeScope = scope()) {
   const auth = useAuthStore()
   const simulation = useSimulationStore()
@@ -50,6 +66,35 @@ describe('运行质量 Store', () => {
     expect(store.snapshot).toBe(snapshot)
     expect(store.acceptFrame(epoch, { frameId: 11, simulationTime: 51 }, sourceCalc({ model_version: 'new' }))).toBe(true)
     expect(store.snapshot?.data.modelVersion).toBe('new')
+  })
+
+  it('接收规范文件测量时不伪造端口，并保留文件给出的 SNR、干扰功率和帧号类型', () => {
+    const store = prepare()
+    expect(store.acceptDataset(store.epoch, importedDataset())).toBe(true)
+    expect(store).toMatchObject({
+      state: 'SUCCESS', importedDataset: { source: { kind: 'FILE_IMPORT', frameIdKind: 'PROVIDED' } },
+      snapshot: { frameId: 7, simulationTime: 5, source: 'FILE_IMPORT', frameIdKind: 'PROVIDED', data: { links: [{
+        linkId: 'L-001', sourcePortId: null, destinationPortId: null,
+        quality: { snrDb: 12, interferencePowerDbm: -89, gxbDb: 8 },
+      }] } },
+    })
+    expect(store.acceptDataset(store.epoch, importedDataset({ source: { kind: 'FILE_IMPORT', fileName: 'quality.json', sha256: 'b'.repeat(64), importedAt: '2026-10-31T01:02:00Z', frameIdKind: 'IMPORT_SEQUENCE' } }))).toBe(true)
+    expect(store.snapshot?.frameIdKind).toBe('IMPORT_SEQUENCE')
+  })
+
+  it('导入序号相邻但真实采样时间断档时不累计稳定帧，0.1 秒浮点误差仍连续', () => {
+    const store = prepare()
+    useSimulationStore().$patch({ selectedScene: { config: { scenario: { id: scope().scenarioId }, platforms: [], links: [{ id: 'L-001', type: 'SAT', direction: 'FORWARD' }] }, revision: scope().revision } as any })
+    const base = importedDataset() as any
+    const sample = base.samples[0]
+    base.samples = [0, 100, 200].map((time, frameId) => ({ ...sample, time, frameId }))
+    expect(store.acceptDataset(store.epoch, base)).toBe(true)
+    expect(store.linkStatuses.find(item => item.linkId === 'L-001')?.stableFrames).toBe(1)
+
+    const continuous = importedDataset({ expectedStepS: 0.1, source: { ...base.source, sha256: 'c'.repeat(64) } }) as any
+    continuous.samples = [0, 0.1, 0.20000000001].map((time, frameId) => ({ ...sample, time, frameId }))
+    expect(store.acceptDataset(store.epoch, continuous)).toBe(true)
+    expect(store.linkStatuses.find(item => item.linkId === 'L-001')?.stableFrames).toBe(3)
   })
 
   it('运行时钟刷新不作废质量域，但认证或选中场景身份不匹配会拒绝激活', async () => {

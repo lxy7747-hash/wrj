@@ -294,6 +294,7 @@ export const useReportStore = defineStore('report', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
           body: JSON.stringify({ reportId: report.reportId, format,
+            ...(report.localEvidence?.quality === undefined ? {} : { qualitySha256: report.localEvidence.quality.source.sha256 }),
             ...(this.localFilterResult?.filter === undefined ? {} : { filter: this.localFilterResult.filter }) }),
         })
         if (report.localEvidence) {

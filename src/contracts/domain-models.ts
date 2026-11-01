@@ -420,6 +420,29 @@ export interface SwitchEvent {
   stabilityFrames: number; minimumStableFrames: number; hysteresisSatisfied: boolean; cooldownRemainingS: Seconds;
   decision: 'ACCEPTED' | 'REJECTED'; reason: string; dedupeKey: string;
 }
+export interface QualityScope { taskId: string; runId: string; scenarioId: string; revision: number; startedAt: string; }
+export interface QualityLosses {
+  freeSpaceLossDb: number; seaMultipathLossDb: number; atmosphericLossDb: number;
+  cloudRainLossDb: number; jammingLossDb: number; totalLossDb: number;
+}
+/** 规范文件中的测量值，不使用场景默认值补齐。 */
+export interface QualitySample extends Omit<LinkQualityData, 'modulation'> {
+  modulation: Modulation | 'OOK';
+  linkId: string; frameId: number; jsrDb: number; losses?: QualityLosses;
+  /** 来源明确给出的干扰活动状态，不从有限的 dBm 数值推测。 */
+  interferenceActive?: boolean;
+}
+export interface QualityDataset {
+  schemaVersion: '1.0'; scope: QualityScope;
+  source: { kind: 'FILE_IMPORT'; fileName: string; sha256: string; importedAt: string; frameIdKind: 'PROVIDED' | 'IMPORT_SEQUENCE'; switchEventsProvided?: boolean };
+  expectedStepS: number; samples: QualitySample[];
+  /** 文件明确记录的切换事件，不从本机决策生成成功事件。 */
+  switchEvents: SwitchEvent[];
+}
+export interface QualityImportRequest { scope: QualityScope; fileName: string; format: 'JSON' | 'CSV'; text: string; }
+/** WS 只发布更新引用，完整记录通过同一运行的质量接口读取。 */
+export interface QualityDatasetUpdate { kind: 'QUALITY_UPDATED'; scope: QualityScope; sourceSha256: string; sampleCount: number; }
+export type LinkMetricPayload = LinkStatusSummary[] | QualityDatasetUpdate;
 export type ReportClassification = 'LEVEL_II' | 'LEVEL_III';
 export interface ReportKpis {
   connectivityRate: Percent0To100; switchCount: number; avgBer: Ratio01; avgSnrDb: Decibels;
@@ -455,6 +478,10 @@ export interface LocalReportEvidence {
   switchEvents?: LocalSwitchEvent[]
   /** 评估指标；引擎提供质量与干扰输出时填写，缺省项在报表中显示“暂无数据”。 */
   qualityKpis?: LocalQualityKpis
+  /** 按筛选边界裁剪后的有效观测连通率，避免表格截断样本导致图表丢失边界区间。 */
+  qualityConnectivityRates?: Array<{ linkId: string; value: number }>
+  /** 明确绑定本次运行的规范质量文件及测量记录；旧报告可省略。 */
+  quality?: QualityDataset
 }
 export interface LocalSwitchEvent {
   eventId: string; time: number; demandId: string; ruleId: string | null; fromDeviceId: string; toDeviceId: string
@@ -489,7 +516,7 @@ export interface LocalReportFilterResult {
   links: string[]
 }
 export interface Report { reportId: ReportId; runId?: RunId; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; localEvidence?: LocalReportEvidence; }
-export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; filter?: LocalReportFilter; }
+export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; filter?: LocalReportFilter; qualitySha256?: string; }
 export interface ReportExportResult { reportId: ReportId; generated: false; status: 'FIXTURE_SUCCESS'; watermark: string; verifiedAt: Iso8601Utc; }
 export interface Replay { replayId: ReplayId; runId: RunId; state: ReplayState; durationS: Seconds; currentTimeS: Seconds; eventIds: Identifier[]; }
 export interface ReplayCommand { command: 'PLAY' | 'PAUSE' | 'SEEK' | 'STEP_FORWARD' | 'STEP_BACK' | 'SPEED'; value?: number; }
