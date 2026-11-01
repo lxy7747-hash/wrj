@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
 import { randomBytes, scrypt, scryptSync, timingSafeEqual, createHash } from 'node:crypto'
-import type { AuditRecord, User } from '../../src/contracts/domain-models.js'
+import type { AuditDeleteRequest, AuditRecord, User } from '../../src/contracts/domain-models.js'
 import type { AuthStorage } from '../auth/projection.js'
 import { isManagedUsername } from '../auth/projection.js'
 
@@ -78,6 +78,29 @@ export class AuthSqliteStorage implements AuthStorage {
       ...(row.object_id === null ? {} : { objectId: String(row.object_id) }),
       occurredAt: String(row.occurred_at), immutableFixture: true,
     })) } catch { throw new Error('审计数据库读取失败，未回退到演示数据。') }
+  }
+
+  deleteAudit(auditIds: AuditDeleteRequest['auditIds'], record: Omit<AuditRecord, 'auditId'>): boolean {
+    const rowIds = auditIds.map(auditId => /^AUD-LOCAL-(\d+)$/.exec(auditId)?.[1])
+    if (rowIds.some((id): id is undefined => id === undefined)) return false
+    const numericIds = rowIds as string[]
+    const placeholders = numericIds.map(() => '?').join(',')
+    try {
+      this.db.exec('BEGIN IMMEDIATE')
+      const rows = this.db.prepare(`SELECT id FROM audit_logs WHERE id IN (${placeholders})`).all(...numericIds)
+      if (rows.length !== auditIds.length || rows.some(row => !auditIds.includes(`AUD-LOCAL-${row.id}`))) {
+        this.db.exec('ROLLBACK')
+        return false
+      }
+      this.db.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders})`).run(...numericIds)
+      this.db.prepare('INSERT INTO audit_logs(actor,role,module,action,object_id,result,occurred_at) VALUES(?,?,?,?,?,?,?)')
+        .run(record.actor, record.role, record.module, record.action, record.objectId ?? null, record.result, record.occurredAt)
+      this.db.exec('COMMIT')
+      return true
+    } catch {
+      try { this.db.exec('ROLLBACK') } catch { /* no transaction remains */ }
+      throw new Error('审计数据库删除失败，操作未确认，请先重新查询。')
+    }
   }
   expiresAt(created: string): string { return new Date(Date.parse(created) + 5 * 60 * 1000).toISOString() }
   watchSessions(check: () => void): () => void {

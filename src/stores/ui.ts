@@ -4,13 +4,13 @@ import { defineStore } from 'pinia'
 import { isRfc3339DateTime } from '../features/scenarios/scenario-validation'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { useAdminStore } from './admin'
-import { useBatchStore } from './batch'
 import { useDataExchangeStore } from './data-exchange'
 import { useReplayStore } from './replay'
 import { useReportStore } from './report'
 import { useScenarioStore } from './scenario'
 import { useSimulationStore } from './simulation'
 import { useTelemetryStore } from './telemetry'
+import { useRuntimeQualityStore } from './runtime-quality'
 import { useTraceabilityStore } from './traceability'
 
 export const useUiStore = defineStore('ui', {
@@ -24,9 +24,9 @@ export const useUiStore = defineStore('ui', {
     /** 清空九个业务投影，并关闭实时连接和回放、仿真请求计时器。 */
     clearBusinessProjections(): void {
       useTelemetryStore().disconnectAndReset()
+      useRuntimeQualityStore().resetToSafeEmpty()
       useSimulationStore().resetToSafeEmpty()
       useScenarioStore().resetToSafeEmpty()
-      useBatchStore().resetToSafeEmpty()
       useReportStore().resetToSafeEmpty()
       useReplayStore().resetToSafeEmpty()
       useAdminStore().resetToSafeEmpty()
@@ -85,7 +85,6 @@ export const useUiStore = defineStore('ui', {
           ['场景列表', () => useScenarioStore().loadScenes()],
           ['仿真运行', () => useSimulationStore().resetProjection()],
           ['态势帧', () => telemetry.loadFrame()],
-          ['批次', () => useBatchStore().loadComparison()],
           ['报告', () => useReportStore().load()],
           ['回放', () => useReplayStore().load()],
           ['系统管理', () => useAdminStore().loadAll()],

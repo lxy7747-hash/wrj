@@ -1,5 +1,5 @@
 import type {
-  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Platform, Polarization,
+  ChannelEncodingScheme, DatalinkBand, Environment, Link, LinkCalcSettings, LinkDirection, LinkType, Modulation, Platform, Polarization,
 } from '../../contracts/domain-models'
 
 /**
@@ -61,6 +61,10 @@ export function defaultPolarization(type: LinkType): Polarization {
 
 export const RECEIVER_NOISE_FIGURE_DB = 3
 export const TIANTONG_NOISE_FIGURE_DB = 2
+export const MICROWAVE_DATA_RATE_MBPS = 80
+export const SATELLITE_DATA_RATE_MBPS = { TIANTONG: 0.016, SHENTONG: 16 } as const
+export const LINK_MODULATIONS: readonly Modulation[] = ['BPSK', 'QPSK']
+export const LASER_LINK_MODULATION = 'OOK' as const
 
 /** 链路涉及的通信卫星（端点或中继），用于确定天通的固定速率与噪声系数。 */
 export function linkSatellite(link: Pick<Link, 'sourcePlatformId' | 'targetPlatformId' | 'relayPlatformId'>, platforms: readonly Platform[]): Platform | undefined {
@@ -69,10 +73,12 @@ export function linkSatellite(link: Pick<Link, 'sourcePlatformId' | 'targetPlatf
 }
 
 /** 卫星、微波链路的传输速率由文档固定（只显示、不可选）；天通为 16 kbit/s。返回 Mbps，其他类型返回 null。 */
-export function fixedLinkDataRate(link: Pick<Link, 'type' | 'sourcePlatformId' | 'targetPlatformId' | 'relayPlatformId'>, platforms: readonly Platform[]): number | null {
-  if (link.type === 'MICROWAVE') return 80
+export function fixedLinkDataRate(link: Pick<Link, 'type' | 'sourcePlatformId' | 'targetPlatformId' | 'relayPlatformId'> & Partial<Pick<Link, 'direction' | 'forwardDataRate' | 'reverseDataRate'>>, platforms: readonly Platform[]): number | null {
+  if (link.type === 'MICROWAVE') return MICROWAVE_DATA_RATE_MBPS
   if (link.type !== 'SAT') return null
-  return linkSatellite(link, platforms)?.satelliteType === 'TIANTONG' ? 0.016 : 16
+  const configuredRate = link.direction === 'REVERSE' ? link.reverseDataRate : link.forwardDataRate
+  if (configuredRate !== undefined) return configuredRate
+  return SATELLITE_DATA_RATE_MBPS[linkSatellite(link, platforms)?.satelliteType === 'TIANTONG' ? 'TIANTONG' : 'SHENTONG']
 }
 
 /** 数传速率档位（Mbps），按波段与方向区分；前向为上行、返向为下行。 */
@@ -102,8 +108,8 @@ type LinkParameterDefaults = Pick<Link, 'frequency' | 'bandwidth' | 'rxFrequency
 export function linkTypeDefaults(type: LinkType, band: DatalinkBand = 'C', direction: LinkDirection = 'FORWARD'): LinkParameterDefaults {
   const polarization = defaultPolarization(type)
   const base = { txPolarization: polarization, rxPolarization: polarization }
-  if (type === 'SAT') return { ...base, frequency: 200, rxFrequency: 200, bandwidth: 20, rxBandwidth: 50, txPower: 100, antennaGain: { tx: 25, rx: 25 }, dataRate: 16 }
-  if (type === 'MICROWAVE') return { ...base, frequency: 8200, rxFrequency: 8200, bandwidth: 30, rxBandwidth: 50, txPower: 20, antennaGain: { tx: 0, rx: 0 }, dataRate: 80 }
+  if (type === 'SAT') return { ...base, frequency: 200, rxFrequency: 200, bandwidth: 20, rxBandwidth: 50, txPower: 100, antennaGain: { tx: 25, rx: 25 }, dataRate: SATELLITE_DATA_RATE_MBPS.SHENTONG }
+  if (type === 'MICROWAVE') return { ...base, frequency: 8200, rxFrequency: 8200, bandwidth: 30, rxBandwidth: 50, txPower: 20, antennaGain: { tx: 0, rx: 0 }, dataRate: MICROWAVE_DATA_RATE_MBPS }
   if (type === 'FIBER') return { ...base, frequency: 1300, rxFrequency: 1300, bandwidth: 20, rxBandwidth: 20, txPower: 50, antennaGain: { tx: 10, rx: 10 }, dataRate: 100 }
   if (type === 'DATALINK') {
     const table = {

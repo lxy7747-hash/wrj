@@ -12,6 +12,8 @@ const auth = useAuthStore()
 const ui = useUiStore()
 const router = useRouter()
 const menuVisible = (path: string) => canVisitMenu(auth.principal, path)
+const systemManagementActivePath = computed(() => ['master-data', 'equipment-library'].includes(String(router.currentRoute.value.query.section))
+  ? '/admin?section=master-data' : router.currentRoute.value.fullPath)
 
 watch(
   () => auth.principal,
@@ -74,7 +76,6 @@ async function logout(): Promise<void> {
         <nav aria-label="主导航">
           <router-link v-if="menuVisible('/situation')" to="/situation">态势主界面</router-link>
           <router-link v-if="menuVisible('/scenarios')" to="/scenarios">场景配置</router-link>
-          <!-- <router-link to="/batches">批量仿真</router-link> -->
           <router-link v-if="APP_CONFIG.showReports && menuVisible('/reports')" to="/reports">评估报表</router-link>
           <router-link v-if="menuVisible('/replays')" to="/replays">历史回放</router-link>
           <router-link v-if="(auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange) && menuVisible(systemManagementPath)" :to="systemManagementPath">系统管理</router-link>
@@ -108,16 +109,9 @@ async function logout(): Promise<void> {
       >
         <div class="system-management__body">
           <aside v-if="auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange" class="system-management__sidebar" aria-label="系统管理导航">
-            <el-menu router :default-active="$route.fullPath">
+            <el-menu router :default-active="systemManagementActivePath">
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="模型与参数">
-                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData && menuVisible('/admin?section=master-data')" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">主数据管理</el-menu-item>
-                <el-menu-item
-                  v-if="menuVisible('/admin?section=equipment-library')"
-                  index="/admin?section=equipment-library"
-                  :disabled="auth.principal?.role !== 'ADMIN'"
-                >
-                  装备参数库
-                </el-menu-item>
+                <el-menu-item v-if="APP_CONFIG.systemManagement.showMasterData && (menuVisible('/admin?section=master-data') || menuVisible('/admin?section=equipment-library'))" index="/admin?section=master-data" :disabled="auth.principal?.role !== 'ADMIN'">基础数据管理</el-menu-item>
                 <el-menu-item v-if="menuVisible('/admin?section=scenario-templates')" index="/admin?section=scenario-templates" :disabled="auth.principal?.role !== 'ADMIN'">场景模板维护</el-menu-item>
               </el-menu-item-group>
               <el-menu-item-group v-if="auth.principal?.role === 'ADMIN'" title="账号与维护">

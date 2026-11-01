@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { HotLinkSettings, Jammer, Link, LinkCalcSettings, LinkSwitchRule, LinkSwitchTrigger, LinkType, Platform, SatelliteType, ScenarioLinkSettings } from '../../contracts/domain-models'
-import { isConfiguredLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { isConfiguredLinkEnabled, LINK_DECISION_DEFAULTS, readLinkSettings } from '../../features/scenarios/link-settings'
 import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError, readHotLinks } from '../../features/scenarios/hot-links'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, readLinkCalcSettings } from '../../features/scenarios/link-calc-defaults'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
@@ -14,6 +14,8 @@ const props = withDefaults(defineProps<{
   jammers?: Jammer[]
   disabled: boolean
   typeOptions: readonly { value: LinkType; label: string }[]
+  /** 父页将完整校验路径转换为本面板相对路径后传入，供字段下方即时展示。 */
+  fieldMessage?: (relativeFieldPath: string) => string
 }>(), { links: () => [], jammers: () => [] })
 const emit = defineEmits<{
   'update:modelValue': [value: ScenarioLinkSettings]
@@ -33,6 +35,47 @@ function selectSatellite(type: SatelliteType): void {
 /** 保存冷却秒数；清空值保留为非法数值供整体校验阻断，避免静默改回默认值。 */
 function setCooldown(value: number | undefined): void {
   if (!props.disabled) emit('update:modelValue', { ...settings.value, switchCooldownS: value ?? Number.NaN })
+}
+
+/** 保存连续稳定检查次数；清空值保留为非法数值供整体校验阻断。 */
+function setStableChecks(value: number | undefined): void {
+  if (!props.disabled) emit('update:modelValue', { ...settings.value, switchStableChecks: value ?? Number.NaN })
+}
+
+const decisionFields = [
+  { key: 'switchCooldownFrames', label: '切换冷却帧数', min: 0, step: 1 },
+  { key: 'minimumGxbDb', label: '可用性 GXB 下限（dB）', step: 1 },
+  { key: 'maximumBer', label: '可用性 BER 上限', min: 0, max: 1, step: 1e-6 },
+  { key: 'minimumGxbImprovementDb', label: '切换 GXB 最少改善（dB）', min: 0, step: 1 },
+  { key: 'minimumBerImprovementFactor', label: '切换 BER 最少改善倍数', min: 1, step: 1 },
+  { key: 'minimumSpatialIsolationDb', label: '候选空域隔离下限（dB）', min: 0, step: 1 },
+] as const
+
+function setDecisionField(key: (typeof decisionFields)[number]['key'], value: number | undefined): void {
+  if (!props.disabled) emit('update:modelValue', { ...settings.value, [key]: value ?? Number.NaN })
+}
+
+const failureFields = [
+  { key: 'minimumReceivedPowerDbm', label: '接收功率失效下限（dBm）', step: 1 },
+  { key: 'failureGxbDb', label: 'GXB 失效下限（dB）', step: 1 },
+  { key: 'failureBer', label: 'BER 失效上限', min: 0, max: 1, step: 1e-5 },
+] as const
+type FailureField = (typeof failureFields)[number]['key']
+
+function enableFailureField(key: FailureField, enabled: string | number | boolean): void {
+  if (props.disabled) return
+  const next = { ...settings.value }
+  if (enabled === true) next[key] = Number.NaN
+  else delete next[key]
+  emit('update:modelValue', next)
+}
+
+function setFailureField(key: FailureField, value: number | undefined): void {
+  if (!props.disabled) emit('update:modelValue', { ...settings.value, [key]: value ?? Number.NaN })
+}
+
+function setConsistency(value: string | number | boolean): void {
+  if (!props.disabled) emit('update:modelValue', { ...settings.value, switchConsistencyCheck: value === true })
 }
 
 /** 移动优先级；type 为待移动类型，index 为目标顺位（从零开始），其余类型按原顺序顺延。 */
@@ -197,7 +240,7 @@ function linkLabel(link: Link): string {
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
       <!-- 左列：选路策略与全局计算参数；右列：热链与切换规则（可增删的列表，内容较长）。 -->
       <div class="link-settings__column" data-testid="link-settings-left">
-      <div class="link-settings__strategy">
+      <el-form-item class="link-settings__strategy" :error="fieldMessage?.('priority') ?? ''">
         <div class="link-settings__heading">链路优先级 <small>拖拽排序，越靠上优先级越高</small></div>
         <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
           <li v-for="(type, index) in settings.priority" :key="type"
@@ -218,24 +261,54 @@ function linkLabel(link: Link): string {
             </button>
           </li>
         </ol>
-      </div>
-      <el-form-item label="本场景选用卫星">
+      </el-form-item>
+      <el-form-item label="本场景选用卫星" :error="fieldMessage?.('enabledSatellites') ?? ''">
         <el-select :model-value="settings.enabledSatellites.TIANTONG ? 'TIANTONG' : settings.enabledSatellites.SHENTONG ? 'SHENTONG' : undefined"
           placeholder="请先在节点配置中配置卫星" aria-label="本场景选用卫星" data-testid="link-relay-satellite" @change="selectSatellite">
           <el-option v-for="satellite in satellites" :key="satellite.value" :value="satellite.value" :label="satellite.label"
             :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
         </el-select>
       </el-form-item>
-      <el-form-item label="防乒乓滞回时间（秒）">
-        <el-input-number :model-value="settings.switchCooldownS" :min="0" :step="1" controls-position="right"
+      <el-form-item label="防乒乓滞回时间（秒）" :error="fieldMessage?.('switchCooldownS') ?? ''">
+        <el-input-number :model-value="settings.switchCooldownS" :min="fieldMessage ? undefined : 0" :step="1" controls-position="right"
           data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
       </el-form-item>
+      <el-form-item label="连续稳定检查次数" :error="fieldMessage?.('switchStableChecks') ?? ''">
+        <el-input-number :model-value="settings.switchStableChecks ?? LINK_DECISION_DEFAULTS.switchStableChecks" :min="fieldMessage ? undefined : 1" :max="fieldMessage ? undefined : 100" :step="1" step-strictly controls-position="right"
+          :disabled="disabled" data-testid="link-switch-stable-checks" @update:model-value="setStableChecks" />
+        <small class="link-settings__hint">默认连续 3 帧满足条件；质量选路按有效输入帧检查，场景规则按配置的仿真时间步检查。</small>
+      </el-form-item>
+      <el-form-item label="规则切换一致性校验" :error="fieldMessage?.('switchConsistencyCheck') ?? ''">
+        <el-switch :model-value="settings.switchConsistencyCheck ?? true" :disabled="disabled" data-testid="link-switch-consistency"
+          @update:model-value="setConsistency" />
+        <small class="link-settings__hint">规则稳定窗内候选链路变化后重新计数；质量选路始终复核候选一致性。</small>
+      </el-form-item>
+      <section class="link-settings__rules" data-testid="quality-decision-settings" aria-label="质量选路与切换门限">
+        <div class="link-settings__heading"><span>质量选路与切换门限</span></div>
+        <el-form-item v-for="field in decisionFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
+          <el-input-number :model-value="settings[field.key] ?? LINK_DECISION_DEFAULTS[field.key]"
+            :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined"
+            :max="fieldMessage ? undefined : 'max' in field ? field.max : undefined" :step="field.step"
+            :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
+            @update:model-value="setDecisionField(field.key, $event)" />
+        </el-form-item>
+        <small class="link-settings__hint">候选须同时满足 GXB、BER 与空域隔离门限；切换须满足连续稳定、冷却秒数及帧数，并达到 BER 或 GXB 改善门限。</small>
+        <el-form-item v-for="field in failureFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
+          <el-switch :model-value="Object.hasOwn(settings, field.key)" :disabled="disabled" :data-testid="`link-decision-enable-${field.key}`"
+            @update:model-value="enableFailureField(field.key, $event)" />
+          <el-input-number v-if="Object.hasOwn(settings, field.key)" :model-value="Number.isFinite(settings[field.key]) ? settings[field.key] : undefined"
+            :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined" :max="fieldMessage ? undefined : 'max' in field ? field.max : undefined"
+            :step="field.step" :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
+            @update:model-value="setFailureField(field.key, $event)" />
+        </el-form-item>
+        <small class="link-settings__hint">硬失效门限按设备标定值启用并填写；未配置时不会推定中断功率或 GXB 门限。</small>
+      </section>
       <section class="link-settings__rules" data-testid="channel-encoding-settings" aria-labelledby="channel-encoding-title">
         <div class="link-settings__heading">
           <span id="channel-encoding-title">编码方案（全局）</span>
           <small>channel_encoding_scheme，用于链路计算中的干扰余量</small>
         </div>
-        <el-form-item label="信道编码">
+        <el-form-item label="信道编码" :error="fieldMessage?.('linkCalc.channelEncodingScheme') ?? ''">
           <el-select :model-value="linkCalc.channelEncodingScheme" data-testid="link-calc-channelEncodingScheme"
             @update:model-value="updateLinkCalc({ channelEncodingScheme: $event })">
             <el-option v-for="option in CHANNEL_ENCODING_OPTIONS" :key="option.value" :value="option.value" :label="option.label" />
@@ -248,12 +321,12 @@ function linkLabel(link: Link): string {
           <small>写入后方节点 link_calc，供对接方链路计算使用</small>
         </div>
         <div class="link-settings__rule-grid">
-          <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label">
+          <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label" :error="fieldMessage?.(`linkCalc.${field.key}`) ?? ''">
             <el-input :model-value="String(linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
               @change="setThreshold(field.key, $event)" />
           </el-form-item>
-          <el-form-item :label="`干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}）`">
-            <el-input-number :model-value="linkCalc.jammingRangeKm" :min="JAMMING_RANGE_KM.min" :max="JAMMING_RANGE_KM.max" controls-position="right"
+          <el-form-item :label="`干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
+            <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
               data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
           </el-form-item>
         </div>
@@ -266,7 +339,7 @@ function linkLabel(link: Link): string {
           <small data-testid="hot-link-state">{{ settings.hotLinks ? '已手动调整' : '自动生成' }}</small>
           <el-button v-if="settings.hotLinks" link type="primary" data-testid="hot-link-reset" @click="emitHotLinks(undefined)">恢复自动串联</el-button>
         </div>
-        <el-form-item label="热链终点平台类型（end_platform_type）">
+        <el-form-item label="热链终点平台类型（end_platform_type）" :error="fieldMessage?.('hotLinks.endPlatformType') ?? ''">
           <el-select :model-value="hotLinks.endPlatformType" data-testid="hot-link-end-type"
             @update:model-value="emitHotLinks({ ...hotLinks, endPlatformType: $event })">
             <el-option v-for="type in HOT_LINK_END_PLATFORM_TYPES" :key="type" :value="type" :label="hotEndLabels[type]" />
@@ -280,10 +353,12 @@ function linkLabel(link: Link): string {
               <strong>link{{ index + 1 }}</strong>
               <el-button link type="danger" :data-testid="`hot-link-${group.key}-${index}-remove`" @click="updateChain(group.key, index, null)">删除</el-button>
             </div>
-            <el-select :model-value="chain" multiple placeholder="按路径顺序选择链路" style="width: 100%" :data-testid="`hot-link-${group.key}-${index}`"
-              @update:model-value="updateChain(group.key, index, $event)">
-              <el-option v-for="link in links.filter(item => item.direction === group.direction)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
-            </el-select>
+            <el-form-item :error="fieldMessage?.(`hotLinks.${group.key}[${index}]`) ?? ''">
+              <el-select :model-value="chain" multiple placeholder="按路径顺序选择链路" style="width: 100%" :data-testid="`hot-link-${group.key}-${index}`"
+                @update:model-value="updateChain(group.key, index, $event)">
+                <el-option v-for="link in links.filter(item => item.direction === group.direction)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
+              </el-select>
+            </el-form-item>
             <small class="link-settings__empty">{{ chainPath(chain) }}</small>
             <small v-if="hotLinkChainError(chain, links, group.direction)" class="link-settings__error">{{ hotLinkChainError(chain, links, group.direction) }}</small>
           </div>
@@ -300,42 +375,44 @@ function linkLabel(link: Link): string {
         <div v-for="(rule, index) in rules" :key="rule.id" class="link-settings__rule" :data-testid="`switch-rule-${index}`">
           <div class="link-settings__rule-head">
             <strong>{{ rule.id }}</strong>
-            <el-switch :model-value="rule.enabled !== false" active-text="启用" inactive-text="停用"
-              :data-testid="`switch-rule-${index}-enabled`" @update:model-value="updateRule(index, { enabled: Boolean($event) })" />
+            <el-form-item :error="fieldMessage?.(`switchRules[${index}].enabled`) ?? ''">
+              <el-switch :model-value="rule.enabled !== false" active-text="启用" inactive-text="停用"
+                :data-testid="`switch-rule-${index}-enabled`" @update:model-value="updateRule(index, { enabled: Boolean($event) })" />
+            </el-form-item>
             <el-button link type="danger" :data-testid="`switch-rule-${index}-remove`" @click="removeRule(index)">删除</el-button>
           </div>
           <div class="link-settings__rule-grid">
-            <el-form-item label="切换条件">
+            <el-form-item label="切换条件" :error="fieldMessage?.(`switchRules[${index}].trigger`) ?? ''">
               <el-select :model-value="rule.trigger" :data-testid="`switch-rule-${index}-trigger`"
                 @update:model-value="updateRule(index, { trigger: $event })">
                 <el-option v-for="option in triggerOptions" :key="option.value" :value="option.value" :label="option.label" />
               </el-select>
             </el-form-item>
-            <el-form-item v-if="isDistance(rule.trigger)" label="距离阈值（km）">
+            <el-form-item v-if="isDistance(rule.trigger)" label="距离阈值（km）" :error="fieldMessage?.(`switchRules[${index}].distanceThresholdM`) ?? ''">
               <el-input-number :model-value="rule.distanceThresholdM === undefined ? undefined : rule.distanceThresholdM / 1000"
-                :min="0" :step="10" controls-position="right" :data-testid="`switch-rule-${index}-distanceThresholdM`"
+                :min="fieldMessage ? undefined : 0" :step="10" controls-position="right" :data-testid="`switch-rule-${index}-distanceThresholdM`"
                 @update:model-value="updateRule(index, { distanceThresholdM: $event === undefined || $event === null ? Number.NaN : $event * 1000 })" />
             </el-form-item>
-            <el-form-item v-else label="干扰设备">
+            <el-form-item v-else label="干扰设备" :error="fieldMessage?.(`switchRules[${index}].jammerId`) ?? ''">
               <el-select :model-value="rule.jammerId" placeholder="请选择干扰设备" :data-testid="`switch-rule-${index}-jammerId`"
                 @update:model-value="updateRule(index, { jammerId: $event })">
                 <el-option v-for="jammer in jammers" :key="jammer.id" :value="jammer.id"
                   :label="`${jammer.id}（${scenarioPlatformLabel(platforms, jammer.platformId)}）`" />
               </el-select>
             </el-form-item>
-            <el-form-item label="源平台">
+            <el-form-item label="源平台" :error="fieldMessage?.(`switchRules[${index}].sourcePlatformId`) ?? ''">
               <el-select :model-value="rule.sourcePlatformId" filterable :data-testid="`switch-rule-${index}-sourcePlatformId`"
                 @update:model-value="updateRule(index, { sourcePlatformId: $event })">
                 <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
               </el-select>
             </el-form-item>
-            <el-form-item label="目标平台">
+            <el-form-item label="目标平台" :error="fieldMessage?.(`switchRules[${index}].targetPlatformId`) ?? ''">
               <el-select :model-value="rule.targetPlatformId" filterable :data-testid="`switch-rule-${index}-targetPlatformId`"
                 @update:model-value="updateRule(index, { targetPlatformId: $event })">
                 <el-option v-for="platform in platforms" :key="platform.id" :value="platform.id" :label="scenarioPlatformLabel(platforms, platform.id)" />
               </el-select>
             </el-form-item>
-            <el-form-item class="link-settings__rule-wide" label="切换到链路">
+            <el-form-item class="link-settings__rule-wide" label="切换到链路" :error="fieldMessage?.(`switchRules[${index}].toLinkId`) ?? ''">
               <el-select :model-value="rule.toLinkId" placeholder="该源、目标平台之间没有链路" :data-testid="`switch-rule-${index}-toLinkId`"
                 @update:model-value="updateRule(index, { toLinkId: $event })">
                 <el-option v-for="link in candidateLinks(rule)" :key="link.id" :value="link.id" :label="linkLabel(link)" />
@@ -359,6 +436,7 @@ function linkLabel(link: Link): string {
 :global(.link-settings-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
 .link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 2rem; }
 .link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
+.link-settings__hint { display: block; width: 100%; margin-top: 4px; color: var(--console-text-muted); font-size: 12px; line-height: 1.4; }
 .link-settings__strategy { min-width: 0; margin-bottom: 1rem; }
 .link-settings__heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem; }
 .link-settings__heading small, .link-settings__priority-item small { color: var(--console-text-muted); font-size: 12px; }

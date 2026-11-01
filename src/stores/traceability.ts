@@ -54,7 +54,7 @@ export const useTraceabilityStore = defineStore('traceability', {
       this.state = 'LOADING'
       try {
         const metadata = {} as FixtureMetadata
-        for (const [section, count] of Object.entries({ capabilities: 29, interfaces: 7, decisions: 8, routes: 11 })) {
+        for (const [section, count] of Object.entries({ capabilities: 29, interfaces: 7, decisions: 8, routes: 10 })) {
           const response = await apiFetch(`${resolveMockOrigin()}/api/v1/meta/${section}`, { headers: { 'X-Demo-Role': useAuthStore().role } })
           const payload = await response.json()
           if (epoch !== this.requestEpoch) return false

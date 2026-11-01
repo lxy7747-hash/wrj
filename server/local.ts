@@ -1,8 +1,11 @@
 import { loadEnvFile } from 'node:process'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { writeScriptText } from './local/script-file.js'
-import { LocalMissionRunner } from './local/mission-runner.js'
+import { LocalMissionPool, readMissionConcurrency } from './local/mission-pool.js'
+import { readMissionRunTimeout } from './local/mission-runner.js'
+import { DiskRealtimeJournal } from './local/realtime-journal.js'
 import { LocalMissionResults } from './local/mission-results.js'
 import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
@@ -29,15 +32,20 @@ try {
 const lan = process.env.WRJ_DEPLOYMENT === 'lan' ? await readLanConfig(process.env) : undefined
 const port = lan?.port ?? Number(process.env.MOCK_PORT ?? '4173')
 if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new RangeError('MOCK_PORT 必须为有效端口号。')
+const missionConcurrency = readMissionConcurrency(process.env.MISSION_MAX_PARALLEL_TASKS)
+const missionRunTimeoutMs = readMissionRunTimeout(process.env.MISSION_RUN_TIMEOUT_SECONDS)
 const logPath = process.env.AFSIM_EVENT_LOG_PATH?.trim()
 const positionPath = process.env.AFSIM_POSITION_LOG_PATH?.trim()
 const scenarioDbPath = process.env.SCENARIO_DB_PATH?.trim()
 if (!scenarioDbPath) throw new Error('本机启动必须配置 SCENARIO_DB_PATH，不允许回退到 Mock 登录。')
 const authStorage = new AuthSqliteStorage(scenarioDbPath, process.env.AUTH_BOOTSTRAP_PASSWORD)
 delete process.env.AUTH_BOOTSTRAP_PASSWORD
+const localDataDirectory = dirname(scenarioDbPath)
+const equipmentDbPath = join(localDataDirectory, 'equipment.db')
+const masterDataDbPath = join(localDataDirectory, 'master-data.db')
 // 动态导入保证未配置 SQLite 的原有 Mock/文件入口不加载数据库驱动。
 const scenarioStorage = scenarioDbPath
-  ? new (await import('./local/scenario-sqlite.js')).ScenarioSqliteStorage(scenarioDbPath)
+  ? new (await import('./local/scenario-sqlite.js')).ScenarioSqliteStorage(scenarioDbPath, { equipmentPath: equipmentDbPath, masterDataPath: masterDataDbPath })
   : undefined
 let templateStorage: import('./templates/projection.js').TemplateStorage & { close(): void } | undefined
 try {
@@ -49,28 +57,29 @@ try {
   throw error
 }
 // 独立业务库不植入默认参数，初始化后统一纳入完整系统备份。
-const equipmentStorage = new EquipmentSqliteStorage(join(dirname(scenarioDbPath), 'equipment.db'), scenarioDbPath)
-const accessControlStorage = new AccessControlSqliteStorage(join(dirname(scenarioDbPath), 'access-control.db'))
-const archiveStorage = new ArchiveSqliteStorage(join(dirname(scenarioDbPath), 'archives.db'))
-// 主数据独立空库；不写入冻结样例。
-const masterDataStorage = new MasterDataSqliteStorage(join(dirname(scenarioDbPath), 'master-data.db'))
-const runtimeConfig = new RuntimeConfigSqliteStorage(join(dirname(scenarioDbPath), 'runtime-config.db'), { eventPath: logPath || null, positionPath: positionPath || null })
+const equipmentStorage = new EquipmentSqliteStorage(equipmentDbPath, scenarioDbPath)
+const accessControlStorage = new AccessControlSqliteStorage(join(localDataDirectory, 'access-control.db'))
+const archiveStorage = new ArchiveSqliteStorage(join(localDataDirectory, 'archives.db'))
+// 通用数据独立空库；不写入冻结样例。
+const masterDataStorage = new MasterDataSqliteStorage(masterDataDbPath)
+const runtimeConfig = new RuntimeConfigSqliteStorage(join(localDataDirectory, 'runtime-config.db'), { eventPath: logPath || null, positionPath: positionPath || null })
 const backupStorage = new SystemBackupSqliteStorage(scenarioDbPath)
 const exchangeMonitor = new LocalExchangeMonitor(scenarioDbPath)
 let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
 const missionResults = new LocalMissionResults(lan ? join(lan.outputRoot, 'results') : fileURLToPath(new URL('../output/results/', import.meta.url)))
+const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
+const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
+const missionExecution = lan?.webOnly
+  ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
+  : new LocalMissionPool(missionExecutable, missionDirectory, missionResults, missionConcurrency, missionRunTimeoutMs)
 const server = createMockServer({
   missionResults,
+  createRunId: () => `RUN-${randomUUID()}`,
+  realtimeJournal: new DiskRealtimeJournal(lan ? join(lan.outputRoot, 'ws-journal') : fileURLToPath(new URL('../output/ws-journal/', import.meta.url)), 128),
   port,
   ...(lan ? { publicOrigin: lan.publicOrigin, host: lan.host, site: createLanSite(lan.webRoot, lan.tilePort) } : {}),
-  missionExecution: lan?.webOnly
-    ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
-    : new LocalMissionRunner(
-      lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url))),
-      lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url)),
-      missionResults,
-    ),
+  missionExecution,
   writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()
@@ -90,7 +99,7 @@ const server = createMockServer({
   },
   loadExchangeMonitor: () => exchangeMonitor.snapshot(),
   loadLocalReport: () => { const config = runtimeConfig.load(); return readLocalReport(config.eventPath ?? undefined, config.positionPath ?? undefined) },
-  exportLocalReport: (report, format, actor, source) => exportLocalReport(lan ? join(lan.outputRoot, 'reports') : fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor, source),
+  exportLocalReport: (report, format, actor, source, comparisons, filter) => exportLocalReport(lan ? join(lan.outputRoot, 'reports') : fileURLToPath(new URL('../output/reports/', import.meta.url)), report, format, actor, source, comparisons, filter),
   scenarioStorage,
   templateStorage,
   authStorage,

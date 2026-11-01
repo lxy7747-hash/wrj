@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import type { Component } from 'vue'
 import ElementPlus, { ElDialog, ElMessage, ElMessageBox, ElSelect, ElInputNumber } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import LocalReportTabs from '../../src/components/reports/LocalReportTabs.vue'
 import ReportChart from '../../src/components/reports/ReportChart.vue'
 import QualityMetricPanel from '../../src/components/situation/QualityMetricPanel.vue'
@@ -10,6 +10,7 @@ import EquipmentRelations from '../../src/components/admin/EquipmentRelations.vu
 import RoleProfiles from '../../src/components/admin/RoleProfiles.vue'
 import AccountManagement from '../../src/components/admin/AccountManagement.vue'
 import { useAdminStore } from '../../src/stores/admin'
+import { useAuthStore } from '../../src/stores/auth'
 import { SITUATION_LINKS_F00042 } from '../../src/features/situation/situation-model'
 import { LOCAL_REPORT } from '../fixtures/local-report'
 import { EQUIPMENT } from '../fixtures/equipment'
@@ -111,6 +112,38 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(wrapper.findAll('.el-table__body tbody tr')).toHaveLength(0)
     expect(wrapper.text()).toContain('暂无数据')
   })
+  it('干信比、时延、可用率无数据显示暂无数据，引擎提供后直接展示', async () => {
+    const links = structuredClone(SITUATION_LINKS_F00042.slice(0, 1))
+    const wrapper = setup(QualityMetricPanel, { links, nodes: [links[0]!.sourceName], sourceKey: 'A' })
+    await flushPromises()
+    const cells = () => wrapper.findAll('.el-table__body tbody tr')[0]!.findAll('td').slice(-3).map(cell => cell.text())
+    expect(cells()).toEqual(['暂无数据', '暂无数据', '暂无数据'])
+    const measured = structuredClone(links)
+    measured[0]!.detailed = { ...measured[0]!.detailed!, jsrDb: -4.5, latencyMs: 12.34, availabilityPercent: 99.5 }
+    await (wrapper as unknown as { setProps(props: { links: unknown[] }): Promise<void> }).setProps({ links: measured })
+    expect(cells()).toEqual(['-4.50', '12.3', '99.5'])
+  })
+  it('质量指标按链路类型筛选，只列出已出现的体制，换来源重置', async () => {
+    const links = [
+      { linkId: 'L1', sourceName: 'A', destinationName: 'B', type: 'SAT' as const },
+      { linkId: 'L2', sourceName: 'A', destinationName: 'C', type: 'MICROWAVE' as const },
+      { linkId: 'L3', sourceName: 'B', destinationName: 'C', type: 'MICROWAVE' as const },
+    ]
+    const wrapper = setup(QualityMetricPanel, { links, nodes: ['A', 'B', 'C'], sourceKey: 'A' })
+    await flushPromises()
+    const rows = () => wrapper.findAll('.el-table__body tbody tr')
+    const typeSelect = wrapper.findAllComponents(ElSelect)[3]!
+    expect(typeSelect.findAllComponents({ name: 'ElOption' }).map(option => option.props('label'))).toEqual(['卫星链路', '微波链路'])
+    typeSelect.vm.$emit('update:modelValue', 'MICROWAVE')
+    await flushPromises()
+    expect(rows()).toHaveLength(2)
+    wrapper.findAllComponents(ElSelect)[0]!.vm.$emit('update:modelValue', 'B')
+    await flushPromises()
+    expect(rows()).toHaveLength(1)
+    await wrapper.setProps({ sourceKey: 'B' })
+    expect(typeSelect.props('modelValue')).toBe('')
+    expect(rows()).toHaveLength(3)
+  })
   it('无质量测量的真实链路保留名称，指标和源时刻显示暂无数据；仍可筛选', async () => {
     const links = [
       { linkId: 'FILE-1', sourceName: '无人机01', destinationName: '后方通信车' },
@@ -121,7 +154,7 @@ describe('前端能力补齐的真实值与空态', () => {
     const rows = () => wrapper.findAll('.el-table__body tbody tr')
     expect(rows()).toHaveLength(2)
     expect(rows()[0]!.findAll('td').map(cell => cell.text())).toEqual([
-      '无人机01 → 后方通信车', ...Array(7).fill('暂无数据'),
+      '无人机01 → 后方通信车', ...Array(8).fill('暂无数据'),
     ])
     wrapper.findAllComponents(ElSelect)[0]!.vm.$emit('update:modelValue', '无人机02')
     await flushPromises()
@@ -152,9 +185,10 @@ describe('前端能力补齐的真实值与空态', () => {
   })
   it('引用登记调用正式接口；拒绝另一装备的响应并清除历史', async () => {
     const reference = { equipmentId: EQUIPMENT.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: 'L-MW-01' }
-    const fetch = vi.fn().mockResolvedValueOnce(response({ history: [EQUIPMENT], references: [] }))
-      .mockResolvedValueOnce(response({ history: [EQUIPMENT], references: [reference] }))
-      .mockResolvedValueOnce(response({ history: [{ ...EQUIPMENT, equipmentId: 'OTHER' }], references: [] }))
+    const details = [response({ history: [EQUIPMENT], references: [] }), response({ history: [EQUIPMENT], references: [reference] }),
+      response({ history: [{ ...EQUIPMENT, equipmentId: 'OTHER' }], references: [] })]
+    // 场景列表读取失败时回退为手工输入编号。
+    const fetch = vi.fn((url: string) => Promise.resolve(String(url).endsWith('/api/v1/scenarios') ? new Response('{}', { status: 503 }) : details.shift()!))
     vi.stubGlobal('fetch', fetch)
     const wrapper = setup(EquipmentRelations, { equipment: EQUIPMENT })
     await flushPromises()
@@ -163,11 +197,44 @@ describe('前端能力补齐的真实值与空态', () => {
     const inputs = wrapper.findAll('input')
     await inputs[0]!.setValue('SCN-001'); await inputs[1]!.setValue('L-MW-01')
     await button(wrapper, '登记当前版本引用').trigger('click'); await flushPromises()
-    expect(JSON.parse(fetch.mock.calls[1]![1].body)).toEqual({ reference, remove: false })
+    const put = fetch.mock.calls.find(call => (call as unknown as [string, RequestInit])[1]?.method === 'PUT') as unknown as [string, RequestInit]
+    expect(JSON.parse(String(put[1].body))).toEqual({ reference, remove: false })
     expect(wrapper.text()).toContain('当前版本')
     await button(wrapper, '重新加载引用与版本').trigger('click'); await flushPromises()
     expect(wrapper.text()).toContain('装备引用与版本响应不正确')
     expect(wrapper.text()).not.toContain(EQUIPMENT.type)
+  })
+  it('停用装备保留历史展示但禁用新引用登记', async () => {
+    const fetch = vi.fn().mockResolvedValue(response({ history: [{ ...EQUIPMENT, active: false }], references: [] }))
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = setup(EquipmentRelations, { equipment: { ...EQUIPMENT, active: false } })
+    await flushPromises()
+    const register = button(wrapper, '登记当前版本引用')
+    expect(register.attributes('disabled')).toBeDefined()
+    await register.trigger('click')
+    expect(fetch.mock.calls.filter(call => (call as unknown as [string, RequestInit])[1]?.method === 'PUT')).toHaveLength(0)
+  })
+  it('从已保存场景选择链路登记引用，标出频率不在装备范围的链路', async () => {
+    const scene = { config: { scenario: { id: 'SCN-001', name: '演示场景' }, links: [
+      { id: 'L-MW-01', type: 'MICROWAVE', frequency: EQUIPMENT.frequencyMinMHz },
+      { id: 'L-OUT', type: 'MICROWAVE', frequency: 1 },
+    ] }, locked: false }
+    const fetch = vi.fn((url: string) => Promise.resolve(String(url).endsWith('/api/v1/scenarios') ? response([scene]) : response({ history: [EQUIPMENT], references: [] })))
+    vi.stubGlobal('fetch', fetch)
+    const wrapper = setup(EquipmentRelations, { equipment: EQUIPMENT })
+    await flushPromises()
+    const selects = wrapper.findAllComponents(ElSelect)
+    expect(selects).toHaveLength(2)
+    selects[0]!.vm.$emit('update:modelValue', 'SCN-001')
+    await flushPromises()
+    const options = selects[1]!.findAllComponents({ name: 'ElOption' }).map(option => String(option.props('label')))
+    expect(options[0]).not.toContain('不在装备范围')
+    expect(options[1]).toContain('不在装备范围')
+    selects[1]!.vm.$emit('update:modelValue', 'L-MW-01')
+    await flushPromises()
+    await button(wrapper, '登记当前版本引用').trigger('click'); await flushPromises()
+    const put = fetch.mock.calls.find(call => (call as unknown as [string, RequestInit])[1]?.method === 'PUT') as unknown as [string, RequestInit]
+    expect(JSON.parse(String(put[1].body)).reference).toMatchObject({ scenarioId: 'SCN-001', linkId: 'L-MW-01' })
   })
   it('角色由真实加载、表单编辑与二次确认保存，不预置角色或自动分配', async () => {
     const saved = { version: 2, profiles: [{ profileId: 'READ', name: '只读角色', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ'], menuPaths: ['/situation'] }], assignments: [] }
@@ -188,6 +255,10 @@ describe('前端能力补齐的真实值与空态', () => {
     expect(wrapper.text()).toContain('只读角色')
   })
   it.each([true, false])('备份入口开启=%s 时管理员菜单遵循配置，操作员不获得管理员菜单', async enabled => {
+    // 只验证备份开关，其余系统管理入口固定为关闭，避免受默认配置影响。
+    const others = { ...APP_CONFIG.systemManagement }
+    Object.assign(APP_CONFIG.systemManagement, { showMasterData: false, showSimulationData: false, showRuntimeStatus: false, showDataExchange: false })
+    onTestFinished(() => { Object.assign(APP_CONFIG.systemManagement, others) })
     const original = APP_CONFIG.systemManagement.showDatabaseBackup
     APP_CONFIG.systemManagement.showDatabaseBackup = enabled
     try {
@@ -201,7 +272,7 @@ describe('前端能力补齐的真实值与空态', () => {
       await flushPromises()
       const choices = () => wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
         .filter((row: VueWrapper<{ $props: { value: string } }>) => row.props('value').startsWith('/admin'))
-      const adminMenus = ['账号管理', '装备参数库', '场景模板维护', '操作审计日志', ...(enabled ? ['备份恢复'] : [])]
+      const adminMenus = ['账号管理', '场景模板维护', '操作审计日志', ...(enabled ? ['备份恢复'] : [])]
       expect(choices().map((row: VueWrapper) => row.text())).toEqual(adminMenus)
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
         .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', ...adminMenus])
@@ -222,7 +293,7 @@ describe('前端能力补齐的真实值与空态', () => {
       await flushPromises()
       await button(wrapper, '新增角色').trigger('click')
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '历史回放'])
+        .toEqual(['态势主界面', '场景配置', '历史回放', ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : [])])
     } finally { APP_CONFIG.showReports = original }
   })
   it.each([
@@ -245,10 +316,14 @@ describe('前端能力补齐的真实值与空态', () => {
       await flushPromises()
       const choices = wrapper.get('[aria-label="菜单权限"]').findAllComponents({ name: 'ElCheckbox' })
       expect(choices.some((row: VueWrapper<{ $props: { value: string } }>) => row.props('value') === path)).toBe(true)
+      if (flag === 'showMasterData') expect(choices.some((row: VueWrapper<{ $props: { value: string } }>) => row.props('value') === '/admin?section=equipment-library')).toBe(true)
     } finally { APP_CONFIG.systemManagement[flag] = original }
   })
   it('编辑并保存旧角色时保留未显示的菜单授权，不静默修改既有权限', async () => {
-    const profile = { profileId: 'CUSTOM', name: '旧角色', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin', '/admin?section=master-data', '/admin/data-exchange', '/batches', '/blueprint', '/interactions', '/traceability'] }
+    const original = { ...APP_CONFIG.systemManagement }
+    Object.assign(APP_CONFIG.systemManagement, { showMasterData: false, showDataExchange: false })
+    onTestFinished(() => { Object.assign(APP_CONFIG.systemManagement, original) })
+    const profile = { profileId: 'CUSTOM', name: '旧角色', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin', '/admin?section=master-data', '/admin/data-exchange', '/blueprint', '/interactions', '/traceability'] }
     const config = { version: 1, profiles: [profile], assignments: [] }
     const fetch = vi.fn().mockResolvedValueOnce(response(config)).mockImplementationOnce((_url, init) => Promise.resolve(response(JSON.parse(init.body))))
     vi.stubGlobal('fetch', fetch)
@@ -257,17 +332,16 @@ describe('前端能力补齐的真实值与空态', () => {
     await flushPromises()
     await button(wrapper, '编辑').trigger('click')
     const menus = wrapper.get('[aria-label="菜单权限"]')
-    expect(menus.text()).not.toContain('主数据管理')
+    expect(menus.text()).not.toContain('基础数据管理')
     expect(menus.text()).not.toContain('数据交换与接口')
     for (const hiddenLabel of ['批量仿真', '能力蓝图', '感知、干扰与选路', '需求追踪']) {
       expect(menus.text()).not.toContain(hiddenLabel)
     }
     await wrapper.get('[data-testid="profile-name"]').setValue('修改名称')
-    await menus.findAllComponents({ name: 'ElCheckbox' }).find((row: VueWrapper<{ $props: { value: string } }>) => row.props('value') === '/admin?section=equipment-library')!.get('input').setValue(true)
     await button(wrapper, '确认配置').trigger('click')
     await button(wrapper, '保存权限配置').trigger('click')
     await flushPromises()
-    expect(JSON.parse(fetch.mock.calls[1]![1].body).profiles[0]).toEqual({ ...profile, name: '修改名称', menuPaths: [...profile.menuPaths, '/admin?section=equipment-library'] })
+    expect(JSON.parse(fetch.mock.calls[1]![1].body).profiles[0]).toEqual({ ...profile, name: '修改名称' })
   })
   it('角色畸形响应显示错误；离页迟到响应不再改变视图或提示成功', async () => {
     let resolve!: (response: Response) => void

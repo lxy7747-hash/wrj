@@ -32,7 +32,7 @@ watch(() => store.csvContracts, (contracts) => {
         <DataExchangeStateTag :state="store.csvState" data-testid="csv-state" />
       </div>
     </template>
-    <p class="exchange-card__description">校验三个 canonical CSV 的表头、UTF-8 文本和字段类型；本阶段不读取或写入文件。</p>
+    <p class="exchange-card__description">校验含任务标识和版本的链路质量、状态、损耗、切换及事件 CSV。此处只校验文本；真实任务的文件留存以运行输出为准。</p>
     <el-form label-position="top">
       <el-form-item label="CSV 合同">
         <el-select v-model="contractName" data-testid="csv-contract-select">

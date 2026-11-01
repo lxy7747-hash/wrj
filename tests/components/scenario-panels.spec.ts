@@ -13,7 +13,7 @@ import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import type { Link, ScenarioConfig, ScenarioLinkSettings } from '../../src/contracts/domain-models'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Platform } from '../../src/contracts/domain-models'
-import { INFORMATION_NODE_TYPE_LIMITS } from '../../src/features/scenarios/scenario-validation'
+import { INFORMATION_NODE_LIMIT, INFORMATION_NODE_TYPE_LIMITS } from '../../src/features/scenarios/scenario-validation'
 
 const emptyValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
 
@@ -107,7 +107,11 @@ describe('场景拆分面板', () => {
     expect(wrapper.get('[data-testid="link-settings"]').findAll('[data-testid^="link-type-enabled-"]')).toHaveLength(0)
     const satelliteSelect = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-relay-satellite')!
     expect(satelliteSelect.props('modelValue')).toBe('TIANTONG')
-    expect(wrapper.findAllComponents({ name: 'ElSwitch' })).toHaveLength(0)
+    // 不恢复旧的链路类型开关；保留一致性校验和三个质量门限开关。
+    expect(wrapper.findAllComponents({ name: 'ElSwitch' }).map(item => item.attributes('data-testid'))).toEqual([
+      'link-switch-consistency', 'link-decision-enable-minimumReceivedPowerDbm',
+      'link-decision-enable-failureGxbDb', 'link-decision-enable-failureBer',
+    ])
     satelliteSelect.vm.$emit('change', 'SHENTONG')
     let changed = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
     expect(changed.enabledSatellites.TIANTONG).toBe(false)
@@ -572,7 +576,7 @@ describe('场景拆分面板', () => {
       expect(number!.props('disabled')).toBe(disabled)
     }
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled') !== undefined).toBe(disabled)
-    expect(wrapper.findAllComponents({ name: 'ElOptionGroup' }).map((group) => group.props('label'))).toEqual(['信息节点', '支撑实体（不计入50个信息节点）'])
+    expect(wrapper.findAllComponents({ name: 'ElOptionGroup' }).map((group) => group.props('label'))).toEqual(['信息节点', `支撑实体（不计入${INFORMATION_NODE_LIMIT}个信息节点）`])
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')?.length ?? 0).toBe(disabled ? 0 : 1)
     wrapper.unmount()

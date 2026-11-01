@@ -45,7 +45,7 @@ afterEach(async () => {
   directory = ''
 })
 
-describe('主数据独立 SQLite 存储与引用保护', () => {
+describe('通用数据独立 SQLite 存储与引用保护', () => {
   it('纯 Mock 登记引用幂等且不抹去其他项的历史保护，停用仍保留关系', async () => {
     const server = createMockServer({ port: 0 })
     cleanups.push(() => server.close())
@@ -106,6 +106,21 @@ describe('主数据独立 SQLite 存储与引用保护', () => {
       { dataId: 'OLD', kind: 'DEVICE', version: 1, referenceCount: 0, active: true },
     ]) await api.post(path).set(headers).send({ operation: 'CREATE', data }).expect(422)
     expect(storage.load()).toEqual([])
+  })
+
+  it('设备固有字段只能由设备库维护，公共参数和枚举仍可保存', async () => {
+    const { api, storage } = await start()
+    const publicData = { ...master, dataId: 'PUBLIC-NOISE', content: { ...master.content,
+      entries: [{ key: 'noiseFigureDb', valueType: 'NUMBER' as const, value: 4, unit: 'dB' }] } }
+    await api.post(path).set(headers).send({ operation: 'CREATE', data: publicData }).expect(201)
+    const equipmentField = { ...master, dataId: 'DUPLICATE-BANDWIDTH', content: { ...master.content,
+      entries: [{ key: 'bandwidthMHz', valueType: 'NUMBER' as const, value: 5, unit: 'MHz' }] } }
+    const rejected = await api.post(path).set(headers).send({ operation: 'CREATE', data: equipmentField }).expect(422)
+    expect(rejected.body.error.fieldPath).toBe('data.content.entries[0].key')
+    const enumeration = { ...master, dataId: 'ENUM-MODULATION', kind: 'ENUMERATION', content: { ...master.content,
+      entries: [{ key: 'modulation.QPSK', valueType: 'TEXT' as const, value: 'QPSK' }] } }
+    await api.post(path).set(headers).send({ operation: 'CREATE', data: enumeration }).expect(201)
+    expect(storage.load().map((item: { dataId: string }) => item.dataId)).toEqual(['ENUM-MODULATION', 'PUBLIC-NOISE'])
   })
 
   it('登记当前目标版本幂等，保留历史引用并保护停用后的删除', async () => {
@@ -184,12 +199,12 @@ describe('主数据独立 SQLite 存储与引用保护', () => {
     cleanups.push(() => second.close())
     expect(second.save({ ...master, version: 2 }, 1)).toBe(true)
     expect(storage.save({ ...master, version: 2 }, 1)).toBe(false)
-    expect(() => storage.save({ ...master, version: 4 }, 2)).toThrow('主数据写入无效')
+    expect(() => storage.save({ ...master, version: 4 }, 2)).toThrow('通用数据写入无效')
     expect(second.delete(master.dataId, 2)).toBe(true)
     expect(second.addReference({ dataId: master.dataId, dataVersion: 2, targetType: 'SCENARIO', targetId: 'SCN-001', targetVersion: '4' })).toBe(false)
   })
 
-  it('主数据或目标存储异常均返回 503，不伪造成功响应', async () => {
+  it('通用数据或目标存储异常均返回 503，不伪造成功响应', async () => {
     const unavailable = {
       load: () => { throw new Error('unavailable') },
       save: () => { throw new Error('unavailable') },

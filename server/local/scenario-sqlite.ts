@@ -1,16 +1,22 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
-import type { ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models.js'
+import type { EquipmentParameter, LinkParameterSource, MasterData, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { prepareLinkEquipment } from '../../src/features/scenarios/link-equipment-parameters.js'
+import { prepareLinkMasterData } from '../../src/features/scenarios/link-master-parameters.js'
 import type { ScenarioStorage } from '../scenarios/projection.js'
+import { ParameterSourceError, readLinkParameterSource } from '../scenarios/parameter-sources.js'
 
 /** 仅限非敏感开发数据；普通 SQLite 不提供本项目要求的加密或密钥管理。 */
 export class ScenarioSqliteStorage implements ScenarioStorage {
   private readonly db: DatabaseSync
+  private readonly hasSources: boolean
 
-  constructor(path: string) {
+  constructor(path: string, sources?: { equipmentPath: string; masterDataPath: string }) {
     if (!isAbsolute(path)) throw new Error('SCENARIO_DB_PATH 必须为绝对路径。')
+    if (sources && (!isAbsolute(sources.equipmentPath) || !isAbsolute(sources.masterDataPath))) throw new Error('参数来源数据库路径必须为绝对路径。')
     this.db = new DatabaseSync(path)
+    this.hasSources = sources !== undefined
     try {
       this.db.exec(`
         PRAGMA busy_timeout = 1000;
@@ -22,6 +28,12 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
           revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1)
         ) STRICT;
       `)
+      if (sources) {
+        // ATTACH 会创建空库；本机启动随后初始化各自的表，测试只传场景库时保持旧行为。
+        this.db.prepare('ATTACH DATABASE ? AS equipment').run(sources.equipmentPath)
+        this.db.prepare('ATTACH DATABASE ? AS master').run(sources.masterDataPath)
+        this.db.exec('PRAGMA main.synchronous=FULL; PRAGMA equipment.synchronous=FULL; PRAGMA master.synchronous=FULL')
+      }
       this.list()
     } catch {
       this.db.close()
@@ -64,6 +76,9 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   }
 
   save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean {
+    if (!this.hasSources && draft.config.links.some(link => readLinkParameterSource(link) !== undefined)) {
+      throw new Error('参数来源需要附加的装备和通用数据存储。')
+    }
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const current = this.load(draft.config.scenario.id)
@@ -73,6 +88,16 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
       }
       if (!Number.isSafeInteger(draft.revision) || draft.revision <= (current?.revision ?? 0)) {
         throw new Error('场景修订号必须递增。')
+      }
+      if (this.hasSources) {
+        // 仅跨库引用写入要求回滚日志；不修改现有模式，也不阻断旧场景读取或普通保存。
+        if ([...(current?.config.links ?? []), ...draft.config.links].some(link => link.parameterSource)) {
+          for (const scope of ['main', 'equipment', 'master']) {
+            const mode = Object.values(this.db.prepare(`PRAGMA ${scope}.journal_mode`).get()!)[0]
+            if (!['delete', 'truncate', 'persist'].includes(String(mode))) throw new Error('参数来源保存需要所有数据库使用回滚日志模式。')
+          }
+        }
+        this.syncParameterSources(current?.config, draft)
       }
       this.db.prepare(`
         INSERT INTO scenarios (id, name, config_json, ui_extensions_json, revision)
@@ -85,6 +110,104 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
+    }
+  }
+
+  /** Read only an exact source version; never silently substitute the newest record. */
+  private sourceRecord(scope: 'equipment' | 'master', id: string, version: number, currentTable: string, historyTable: string, jsonColumn: string): unknown | undefined {
+    const current = this.db.prepare(`SELECT ${jsonColumn} AS json FROM ${scope}.${currentTable} WHERE id = ? AND version = ?`).get(id, version)
+    const row = current ?? this.db.prepare(`SELECT ${jsonColumn} AS json FROM ${scope}.${historyTable} WHERE id = ? AND version = ?`).get(id, version)
+    return row && typeof row.json === 'string' ? JSON.parse(row.json) : undefined
+  }
+
+  private currentSource(scope: 'equipment' | 'master', id: string, table: string, jsonColumn: string): unknown | undefined {
+    const row = this.db.prepare(`SELECT ${jsonColumn} AS json FROM ${scope}.${table} WHERE id = ?`).get(id)
+    return row && typeof row.json === 'string' ? JSON.parse(row.json) : undefined
+  }
+
+  private sameFields(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((field, index) => field === right[index])
+  }
+
+  private fieldValue(link: ScenarioConfig['links'][number], field: string): unknown {
+    if (field === 'antennaGain.tx') return link.antennaGain.tx
+    if (field === 'antennaGain.rx') return link.antennaGain.rx
+    return (link as unknown as Record<string, unknown>)[field]
+  }
+
+  private matchesPrepared(link: ScenarioConfig['links'][number], prepared: ScenarioConfig['links'][number], fields: readonly string[]): boolean {
+    return fields.every(field => Object.is(this.fieldValue(link, field), this.fieldValue(prepared, field)))
+  }
+
+  private syncParameterSources(previous: ScenarioConfig | undefined, draft: ScenarioDraft): void {
+    for (const [index, link] of draft.config.links.entries()) {
+      const source = readLinkParameterSource(link)
+      const oldLink = previous?.links.find(item => item.id === link.id)
+      const oldSource = oldLink && readLinkParameterSource(oldLink)
+      if (!source) {
+        if (oldSource?.kind === 'EQUIPMENT') this.db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ? AND link_id = ? AND equipment_id = ?')
+          .run(draft.config.scenario.id, link.id, oldSource.sourceId)
+        continue
+      }
+      const unchanged = oldSource !== undefined && oldSource.kind === source.kind && oldSource.sourceId === source.sourceId
+        && oldSource.sourceVersion === source.sourceVersion && oldSource.entryKey === source.entryKey && this.sameFields(oldSource.fields, source.fields)
+      if (source.kind === 'EQUIPMENT') this.validateEquipmentSource(link, source, unchanged, draft.config, index)
+      else this.validateMasterSource(link, source, unchanged, draft.config, index)
+
+      if (oldSource?.kind === 'EQUIPMENT' && (source.kind !== 'EQUIPMENT' || oldSource.sourceId !== source.sourceId || oldSource.sourceVersion !== source.sourceVersion)) {
+        this.db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ? AND link_id = ? AND equipment_id = ?')
+          .run(draft.config.scenario.id, link.id, oldSource.sourceId)
+      }
+      if (source.kind === 'EQUIPMENT' && !unchanged) {
+        const saved = this.db.prepare(`INSERT INTO equipment.equipment_references (scenario_id, link_id, equipment_id, equipment_version)
+          SELECT ?, ?, id, version FROM equipment.equipment_parameters WHERE id = ? AND version = ?
+          AND COALESCE(json_extract(parameters_json, '$.active'), 1) = 1
+          ON CONFLICT(scenario_id, link_id) DO UPDATE SET equipment_id = excluded.equipment_id, equipment_version = excluded.equipment_version`)
+          .run(draft.config.scenario.id, link.id, source.sourceId, source.sourceVersion)
+        if (saved.changes !== 1) throw new ParameterSourceError('CONFLICT', `links[${index}].parameterSource`, '装备来源已停用或版本已变化，请重新选择。')
+      } else if (source.kind === 'MASTER_DATA' && !unchanged) {
+        this.db.prepare(`INSERT INTO master.master_data_references (data_id, data_version, target_type, target_id, target_version)
+          VALUES (?, ?, 'SCENARIO', ?, ?) ON CONFLICT(data_id, data_version, target_type, target_id, target_version) DO NOTHING`)
+          .run(source.sourceId, source.sourceVersion, draft.config.scenario.id, String(draft.revision))
+      }
+    }
+    // Links deleted by a newer editor are not visited above; remove only their source-managed reference.
+    for (const oldLink of previous?.links ?? []) {
+      if (draft.config.links.some(link => link.id === oldLink.id)) continue
+      const oldSource = readLinkParameterSource(oldLink)
+      if (oldSource?.kind === 'EQUIPMENT') this.db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ? AND link_id = ? AND equipment_id = ?')
+        .run(draft.config.scenario.id, oldLink.id, oldSource.sourceId)
+    }
+  }
+
+  private validateEquipmentSource(link: ScenarioConfig['links'][number], source: LinkParameterSource, unchanged: boolean, config: ScenarioConfig, index: number): void {
+    const raw = unchanged
+      ? this.sourceRecord('equipment', source.sourceId, source.sourceVersion, 'equipment_parameters', 'equipment_history', 'parameters_json')
+      : this.currentSource('equipment', source.sourceId, 'equipment_parameters', 'parameters_json')
+    if (!raw || typeof raw !== 'object') throw new ParameterSourceError('CONFLICT', `links[${index}].parameterSource`, '装备来源不存在或版本已变化，请重新选择。')
+    const equipment = raw as EquipmentParameter
+    if (!unchanged && (equipment.version !== source.sourceVersion || equipment.active === false || equipment.readOnly)) {
+      throw new ParameterSourceError('CONFLICT', `links[${index}].parameterSource`, '装备来源已停用、只读或版本已变化，请重新选择。')
+    }
+    // Historical records are accepted only for an unchanged source and an exact mapped-value match.
+    const prepared = prepareLinkEquipment(link, unchanged ? { ...equipment, active: true, readOnly: false } : equipment, config.platforms, unchanged)
+    if (!prepared.ok || !this.sameFields(source.fields, prepared.ok ? prepared.fields : []) || !this.matchesPrepared(link, prepared.ok ? prepared.link : link, source.fields)) {
+      throw new ParameterSourceError('VALIDATION_FAILED', `links[${index}].parameterSource`, prepared.ok ? '链路参数与所选装备来源不一致，请清除来源后手动编辑。' : prepared.message)
+    }
+  }
+
+  private validateMasterSource(link: ScenarioConfig['links'][number], source: LinkParameterSource, unchanged: boolean, config: ScenarioConfig, index: number): void {
+    const raw = unchanged
+      ? this.sourceRecord('master', source.sourceId, source.sourceVersion, 'master_data', 'master_data_history', 'data_json')
+      : this.currentSource('master', source.sourceId, 'master_data', 'data_json')
+    if (!raw || typeof raw !== 'object') throw new ParameterSourceError('CONFLICT', `links[${index}].parameterSource`, '通用基础数据不存在或版本已变化，请重新选择。')
+    const data = raw as MasterData
+    if (!unchanged && (data.version !== source.sourceVersion || !data.active)) {
+      throw new ParameterSourceError('CONFLICT', `links[${index}].parameterSource`, '通用基础数据已停用或版本已变化，请重新选择。')
+    }
+    const prepared = prepareLinkMasterData(link, unchanged ? { ...data, active: true } : data, config.platforms, source.entryKey, unchanged)
+    if (!prepared.ok || !this.sameFields(source.fields, prepared.ok ? prepared.fields : []) || !this.matchesPrepared(link, prepared.ok ? prepared.link : link, source.fields)) {
+      throw new ParameterSourceError('VALIDATION_FAILED', `links[${index}].parameterSource`, prepared.ok ? '链路参数与所选通用基础数据不一致，请清除来源后手动编辑。' : prepared.message)
     }
   }
 

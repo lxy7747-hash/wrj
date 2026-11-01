@@ -1,9 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElInputNumber, ElSelect } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ReportsPage from '../../src/pages/reports/reports.vue'
+import LocalReportTabs from '../../src/components/reports/LocalReportTabs.vue'
 import { useReportStore, isReport } from '../../src/stores/report'
 import { useAuthStore } from '../../src/stores/auth'
 import { isLocalReport, isLocalReportExport, localReportTables } from '../../src/features/reports/local-report'
@@ -12,7 +13,65 @@ import { LOCAL_REPORT, LOCAL_EXPORT } from '../fixtures/local-report'
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 describe('本地文件报告页面与信任边界', () => {
-  it('有导出权限时也不再提供打印或另存 PDF 入口，保留完整报告导出', async () => {
+  it('表单编辑不改变已应用范围，非法区间仍可重置，重新加载清除旧条件', async () => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-001', scenarioName: '运行结果', revision: 1,
+      startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:10Z' }
+    const store = useReportStore()
+    store.$patch({ selectedReport: structuredClone(LOCAL_REPORT), reports: [structuredClone(LOCAL_REPORT)], resultSource: record, capabilityState: 'SUCCESS' })
+    vi.spyOn(store, 'loadResult').mockResolvedValue(true)
+    const apply = vi.spyOn(store, 'applyLocalFilter').mockImplementation(async filter => {
+      store.localFilterResult = { report: structuredClone(LOCAL_REPORT), filter, timeline: [], timelineTotal: 0, stages: [], links: ['L-1'] }
+      store.capabilityState = 'SUCCESS'
+      return true
+    })
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
+    await router.push(`/reports?resultId=${record.resultId}`)
+    const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
+    await flushPromises()
+    const form = wrapper.get('[aria-label="报告统一筛选"]')
+    const selects = wrapper.findAllComponents(ElSelect).filter(select => form.element.contains(select.element))
+    const inputs = wrapper.findAllComponents(ElInputNumber)
+    selects[0]!.vm.$emit('update:modelValue', 'A')
+    inputs[0]!.vm.$emit('update:modelValue', 1); inputs[1]!.vm.$emit('update:modelValue', 3)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="report-applied-filter"]').text()).toContain('全部数据')
+    await wrapper.findAll('button').find(button => button.text() === '应用精确筛选')!.trigger('click')
+    await flushPromises()
+    expect(apply).toHaveBeenLastCalledWith({ nodeId: 'A', from: 1, to: 3 })
+    expect(wrapper.get('[data-testid="report-applied-filter"]').text()).toContain('节点 A；1～3 秒')
+    expect(wrapper.get('[data-testid="report-export"]').text()).toBe('导出筛选报告')
+    expect(selects[2]!.props('disabled')).toBe(true)
+    inputs[0]!.vm.$emit('update:modelValue', 5)
+    await flushPromises()
+    expect(wrapper.text()).toContain('开始时刻不得晚于结束时刻')
+    await wrapper.findAll('button').find(button => button.text() === '重置')!.trigger('click')
+    await flushPromises()
+    expect(apply).toHaveBeenLastCalledWith({})
+    selects[0]!.vm.$emit('update:modelValue', 'A')
+    await wrapper.findAll('button').find(button => button.text() === '重新加载')!.trigger('click')
+    await flushPromises()
+    expect(selects[0]!.props('modelValue')).toBe('')
+    store.localFilterResult = null; store.capabilityState = 'ERROR'; store.resultMessage = '历史索引缺失，请重新生成结果。'
+    await flushPromises()
+    expect(wrapper.text()).toContain('历史索引缺失，请重新生成结果。')
+    expect(wrapper.get('[data-testid="report-export"]').attributes('disabled')).toBeUndefined()
+    wrapper.unmount()
+  })
+  it('精确筛选时间线非空时不显示空态，柱图声明筛选范围', async () => {
+    const wrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_REPORT.localEvidence, preciseFilter: true,
+      timeline: [{ id: 'LOG-L1', time: 5, type: 'LINK_ADDED_TO_MANAGER', subject: 'A', target: 'B' }], timelineTotal: 1 },
+      global: { plugins: [ElementPlus] } })
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '事件时间线')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="report-event-timeline"]').text()).toContain('LOG-L1')
+    expect(wrapper.findAll('.el-empty').some(empty => empty.text().includes('暂无符合条件的数据'))).toBe(false)
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '柱状图')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('筛选范围事件记录数')
+    wrapper.unmount()
+  })
+  it('有导出权限时不提供浏览器打印，但提供服务端真实 PDF 导出', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const principal = { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'ORDINARY_REPORT_EXPORT'] }
@@ -27,6 +86,8 @@ describe('本地文件报告页面与信任边界', () => {
     expect(wrapper.find('[data-testid="report-print-pdf"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('打印当前视图')
     expect(wrapper.text()).not.toContain('另存 PDF')
+    await wrapper.get('input[aria-label="导出格式"]').trigger('click'); await flushPromises()
+    expect(document.body.textContent).toContain('PDF')
     expect(wrapper.get('[data-testid="report-export"]').text()).toBe('导出完整报告')
     expect(print).not.toHaveBeenCalled()
     expect(useReportStore().exportResult).toBeNull()
@@ -55,7 +116,10 @@ describe('本地文件报告页面与信任边界', () => {
     expect(wrapper.text()).toContain('0分10秒')
     for (const tab of wrapper.findAll('.el-tabs__item')) { await tab.trigger('click'); await flushPromises() }
     expect(wrapper.text()).toContain('暂无数据')
-    expect(wrapper.text()).toContain('当前文件未提供干信比、SNR、BER、接收功率、时延和可用率测量。')
+    // 链路质量曲线无测量时只显示暂无数据；汇总按大纲列出评估指标，缺数据同样显示暂无数据。
+    expect(wrapper.get('[data-testid="report-quality-curves"]').text()).toBe('暂无数据')
+    for (const label of ['平均连通时长', '切换次数', '平均干信比', '平均误码率', '干扰持续时长']) expect(wrapper.text()).toContain(label)
+    expect(wrapper.text()).toContain('链路切换事件')
     expect(wrapper.text()).not.toContain('不使用 Mock 补齐')
     await wrapper.get('[data-testid="report-export"]').trigger('click')
     await flushPromises()
@@ -110,5 +174,17 @@ describe('本地文件报告页面与信任边界', () => {
     const partial = structuredClone(LOCAL_REPORT.localEvidence)
     partial.simulationComplete = false; partial.waitingForPositionLine = true; partial.nodes[0]!.positionCount = 0
     expect(JSON.stringify(localReportTables(partial))).toContain('当前快照')
+  })
+  it('只展示完成时冻结的已保存参数，不把缺失质量指标补为数值', async () => {
+    const wrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_REPORT.localEvidence, comparison: [{
+      record: { resultId: 'RESULT-00000000-0000-0000-0000-000000000001', scenarioId: 'SCN-001', scenarioName: '参数对比', revision: 2, startedAt: '2026-09-20T00:00:00Z', completedAt: '2026-09-20T00:01:00Z' },
+      parameters: { scenarioId: 'SCN-001', revision: 2, platformCount: 2, linkCount: 1, jammerCount: 1,
+        links: [{ id: 'L-1', type: 'MICROWAVE', frequencyMHz: 8200, bandwidthMHz: 30, txPowerW: 45 }],
+        jammers: [{ id: 'J-1', frequencyMHz: 2400, bandwidthMHz: 50, defaultPowerW: 200 }] },
+    }] }, global: { plugins: [ElementPlus] } })
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text().includes('已完成运行参数对比'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="completed-result-parameter-comparison"]').text()).toContain('8200MHz/30MHz/45W')
+    expect(wrapper.text()).toContain('质量指标仍为暂无数据')
   })
 })

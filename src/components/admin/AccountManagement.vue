@@ -78,7 +78,7 @@ const rolePermissions = [
   },
   {
     role: roleLabels.ADMIN,
-    permissions: 'OPERATOR 全部权限，以及模板、主数据、用户角色、备份恢复、审计、完整配置与三级报告权限',
+    permissions: 'OPERATOR 全部权限，以及模板、通用数据、用户角色、备份恢复、审计、完整配置与三级报告权限',
   },
 ]
 
@@ -111,6 +111,41 @@ async function updateUser(user: User, operation: 'UPDATE' | 'ENABLE' | 'DISABLE'
   ElMessage.success(operation === 'UPDATE'
     ? `用户 ${user.username} 已切换为${roleLabels[next.role]}。`
     : resultMessage.value)
+}
+
+const editingUser = ref<User | null>(null)
+const editForm = reactive<{ username: string; role: Role; status: User['status'] }>({ username: '', role: 'OPERATOR', status: 'ACTIVE' })
+const editError = ref('')
+/** 当前登录管理员或最后一个启用管理员只允许修改用户名，角色和状态保持锁定。 */
+const editProtection = computed(() => editingUser.value ? adminProtection(editingUser.value) : undefined)
+
+function openEdit(user: User): void {
+  if (pending.value) return
+  editingUser.value = user
+  Object.assign(editForm, { username: user.username, role: user.role, status: user.status })
+  editError.value = ''
+}
+
+/**
+ * 提交用户修改表单；成功关闭弹窗，失败保留表单并显示原因。
+ * @returns 提交结束后兑现且不返回值的 Promise。
+ * @sideEffects 调用用户管理 Store 的 UPDATE 操作；服务端同时撤销该用户现有会话，重新登录后权限按新角色生效。
+ */
+async function submitEdit(): Promise<void> {
+  const user = editingUser.value
+  if (user === null || pending.value) return
+  editError.value = ''
+  const next: User = { ...user, username: editForm.username, role: editForm.role, status: editForm.status }
+  if (next.username === user.username && next.role === user.role && next.status === user.status) {
+    editingUser.value = null
+    return
+  }
+  const updated = await admin.mutateUser(user, 'UPDATE', next)
+  if (updated) {
+    editingUser.value = null
+    ElMessage.success(resultMessage.value)
+  }
+  else editError.value = resultMessage.value
 }
 
 /**
@@ -221,8 +256,18 @@ async function confirmDelete(): Promise<void> {
           <el-table-column label="状态" min-width="180">
             <template #default="scope">{{ statusLabels[scope.row.status as User['status']] }}</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="330">
+          <el-table-column label="操作" min-width="400">
             <template #default="scope">
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :disabled="pending"
+                :data-testid="`edit-user-${scope.row.userId}`"
+                @click="openEdit(scope.row)"
+              >
+                修改
+              </el-button>
               <el-button
                 size="small"
                 :disabled="pending || !!adminProtection(scope.row)"
@@ -263,6 +308,43 @@ async function confirmDelete(): Promise<void> {
         </el-table>
       </div>
     </section>
+
+    <el-dialog
+      :model-value="editingUser !== null"
+      title="修改用户"
+      width="min(480px, calc(100vw - 32px))"
+      :show-close="!pending"
+      :close-on-click-modal="!pending"
+      :close-on-press-escape="!pending"
+      data-testid="edit-user-dialog"
+      @update:model-value="(visible: boolean) => { if (!visible) editingUser = null }"
+    >
+      <el-form class="create-form" label-position="top" :model="editForm" :disabled="pending" @submit.prevent="submitEdit">
+        <el-form-item label="用户名">
+          <el-input v-model="editForm.username" data-testid="edit-username" autocomplete="off" />
+        </el-form-item>
+        <el-form-item label="角色">
+          <el-select v-model="editForm.role" :disabled="!!editProtection" data-testid="edit-role">
+            <el-option :label="roleLabels.OPERATOR" value="OPERATOR" />
+            <el-option :label="roleLabels.ADMIN" value="ADMIN" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-select v-model="editForm.status" :disabled="!!editProtection" data-testid="edit-status">
+            <el-option :label="statusLabels.ACTIVE" value="ACTIVE" />
+            <el-option :label="statusLabels.DISABLED" value="DISABLED" />
+            <el-option :label="statusLabels.LOCKED" value="LOCKED" />
+          </el-select>
+        </el-form-item>
+        <p v-if="editProtection" class="section-note edit-note">{{ editProtection }}，角色和状态不可修改。</p>
+        <p class="section-note edit-note">保存后该用户现有登录会话失效，重新登录后按新角色和状态生效。</p>
+        <el-alert v-if="editError" type="error" :title="editError" :closable="false" data-testid="edit-user-error" />
+        <div class="create-actions">
+          <el-button :disabled="pending" @click="editingUser = null">取消</el-button>
+          <el-button native-type="submit" type="primary" :loading="pending" data-testid="save-user">保存</el-button>
+        </div>
+      </el-form>
+    </el-dialog>
 
     <el-dialog
       v-if="pendingDelete"
@@ -454,6 +536,11 @@ async function confirmDelete(): Promise<void> {
 .create-form :deep(.el-select) {
   min-width: 0;
   width: 100%;
+}
+
+.edit-note {
+  margin: 0;
+  text-align: left;
 }
 
 .create-actions {

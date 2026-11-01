@@ -62,6 +62,28 @@ describe('文件消息链路投影', () => {
     expect(link.id).toBe(JSON.stringify(['DATALINK', 'A', 'c_band_uplink', 'B', 'c_band_uplink']))
   })
 
+  it('两端都是原生激光收发器时生成激光业务链路，异构端点不猜测制式', () => {
+    const laser = build([
+      transmit(1, 'A', 'optical_tx', 7),
+      receive(1.0004, 'B', 'optical_rx', 7),
+    ], { devices: [
+      ['A', 'optical_tx', 'WSF_LASER_TRANSCEIVER'],
+      ['B', 'optical_rx', 'WSF_LASER_TRANSCEIVER'],
+    ] })
+    expect(laser.issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 0 })
+    expect(laser.links).toMatchObject([{ type: 'LASER', sourceDeviceId: 'optical_tx', targetDeviceId: 'optical_rx' }])
+
+    const mixed = build([
+      transmit(1, 'A', 'optical_tx', 7),
+      receive(1.0004, 'B', 'radio_rx', 7),
+    ], { devices: [
+      ['A', 'optical_tx', 'WSF_LASER_TRANSCEIVER'],
+      ['B', 'radio_rx', 'WSF_RADIO_TRANSCEIVER'],
+    ] })
+    expect(mixed.links).toEqual([])
+    expect(mixed.issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 1 })
+  })
+
   it('同一消息发往多个接收方时发送设备唯一，判为来源明确而不是歧义', () => {
     const { links, issues } = build([
       transmit(1, 'A', 'c_band_uplink', 7),

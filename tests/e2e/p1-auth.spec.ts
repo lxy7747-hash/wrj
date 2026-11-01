@@ -26,7 +26,6 @@ interface WorkspaceRoute {
 const SHARED_WORKSPACE_ROUTES: readonly WorkspaceRoute[] = [
   { path: '/situation', navLabel: '态势主界面', title: '态势主界面' },
   { path: '/scenarios', navLabel: '场景配置', title: '场景配置', titleRole: 'region' },
-  { path: '/batches', navLabel: '批量仿真', title: '批量仿真', hidden: true },
   { path: '/reports', navLabel: '评估报表', title: '评估报表', titleRole: 'region', hidden: !APP_CONFIG.showReports },
   { path: '/replays', navLabel: '历史回放', title: '历史回放' },
   { path: '/blueprint', navLabel: '能力与追踪', title: '能力蓝图', hidden: true },
@@ -166,10 +165,7 @@ async function visitWorkspaceRoute(page: Page, route: WorkspaceRoute): Promise<v
   await expect(page.locator('.app-shell')).toBeVisible()
   await expect(navigation).toBeVisible()
   await expect(page.getByTestId('identity-panel')).toBeVisible()
-  if (route.path === '/batches') {
-    await expect(page.getByTestId('batch-run-table')).toBeVisible()
-    await expect(page.locator('#batches-title')).toHaveCount(0)
-  } else if (route.path === '/replays') {
+  if (route.path === '/replays') {
     await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。', { exact: true })).toBeVisible()
     await expect(page.getByTestId('replay-timeline')).toHaveCount(0)
     await expect(page.locator('#replays-title')).toHaveCount(0)
@@ -316,8 +312,8 @@ test('管理员可使用当前菜单并直接访问隐藏页面', async ({ page 
   }
 
   await expect(page.getByRole('complementary', { name: '系统管理导航' }).getByRole('menuitem')).toHaveText([
-    ...(APP_CONFIG.systemManagement.showMasterData ? ['主数据管理'] : []),
-    '装备参数库', '场景模板维护', '操作审计日志', '账号管理',
+    ...(APP_CONFIG.systemManagement.showMasterData ? ['基础数据管理'] : []),
+    '场景模板维护', '操作审计日志', '账号管理',
     ...(APP_CONFIG.systemManagement.showDatabaseBackup ? ['数据库备份 / 恢复'] : []),
     ...(APP_CONFIG.systemManagement.showSimulationData ? ['仿真数据管理'] : []),
     ...(APP_CONFIG.systemManagement.showRuntimeStatus ? ['系统运行状态'] : []),
@@ -335,21 +331,22 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   const audit = auditConsole(page)
   await loginAs(page, 'admin')
   await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: '系统管理' }).click()
-  await page.goto('/admin?section=master-data')
+  await page.goto('/admin?section=master-data&category=master')
   const panel = page.getByTestId('master-data-panel')
   await expect(panel.getByTestId('master-table')).toContainText('MW-COMM')
   await panel.getByTestId('master-create').click()
-  const createDialog = page.getByRole('dialog', { name: '新增主数据', exact: true })
+  const createDialog = page.getByRole('dialog', { name: '新增通用数据', exact: true })
   for (const dataId of ['.', '..']) {
     await createDialog.getByTestId('master-id').fill(dataId)
     await createDialog.getByTestId('master-save').click()
     await expect(createDialog.getByRole('alert')).toContainText('请填写有效编号')
   }
   await createDialog.getByTestId('master-id').fill('DEVICE-P7-E2E')
-  await createDialog.getByTestId('master-name').fill('浏览器测试字典')
+  await createDialog.getByTestId('master-name').fill('浏览器测试公共参数')
   await createDialog.getByRole('button', { name: '新增条目' }).click()
-  await createDialog.getByRole('textbox', { name: '参数键', exact: true }).fill('mode')
-  await createDialog.getByPlaceholder('文本值').fill('standard')
+  await createDialog.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '参数键', exact: true }) }).click()
+  await page.getByRole('option', { name: '接收机噪声系数', exact: true }).click()
+  await createDialog.getByRole('spinbutton', { name: '参数值', exact: true }).fill('6')
   const created = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/admin/master-data')
   await createDialog.getByTestId('master-save').click()
@@ -358,7 +355,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   const row = panel.getByTestId('master-table').locator('.el-table__row').filter({ hasText: 'DEVICE-P7-E2E' })
   await expect(row).toContainText('启用')
   await row.getByRole('button', { name: '编辑', exact: true }).click()
-  const editDialog = page.getByRole('dialog', { name: '编辑主数据', exact: true })
+  const editDialog = page.getByRole('dialog', { name: '编辑通用数据', exact: true })
   await expect(editDialog.getByTestId('master-id')).toBeDisabled()
   await editDialog.locator('.el-switch').click()
   await expect(editDialog.getByRole('switch')).not.toBeChecked()
@@ -375,7 +372,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   await row.getByRole('button', { name: '删除', exact: true }).click()
   const deleted = page.waitForResponse((response) => response.request().method() === 'DELETE'
     && new URL(response.url()).pathname === '/api/v1/admin/master-data/DEVICE-P7-E2E')
-  await page.getByRole('dialog', { name: '删除主数据', exact: true }).getByRole('button', { name: '确认删除', exact: true }).click()
+  await page.getByRole('dialog', { name: '删除通用数据', exact: true }).getByRole('button', { name: '确认删除', exact: true }).click()
   expect((await deleted).status()).toBe(200)
   await expect(row).toHaveCount(0)
   expect(audit.errors).toEqual([])
@@ -817,7 +814,7 @@ test('态势链路标题不再展示异常数量和候选入口', async ({ page 
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
 
-test('P3 reports atomically switch sources and enforce Level II/III export paths', async ({ page }) => {
+test('P3 ordinary report curves and export remain available', async ({ page }) => {
   const audit = auditConsole(page)
   // 原生布局循环是 window.error 事件，不能只依赖 pageerror 或 console。
   await page.context().addInitScript(() => {
@@ -847,50 +844,16 @@ test('P3 reports atomically switch sources and enforce Level II/III export paths
     await expectStableLayout(page)
   }
 
-  const batchLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001')
-  await page.getByTestId('report-source').click()
-  await page.getByRole('option', { name: /RPT-BATCH-001/ }).click()
-  expect((await batchLoaded).status()).toBe(200)
-  await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
-  await expect(page.getByTestId('report-tabs')).toContainText('BATCH-001 · 12 次已加载运行')
-  await page.getByTestId('report-export').click()
-  await expect(page.getByText('当前账号没有三级批量报告导出权限。', { exact: true })).toBeVisible()
-
-  const ordinaryLoaded = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-001')
-  await page.getByTestId('report-source').click()
-  await page.getByRole('option', { name: /RPT-001 · 单次仿真/ }).click()
-  expect((await ordinaryLoaded).status()).toBe(200)
   const ordinaryExport = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-001/export')
   await page.getByTestId('report-export').click()
   expect((await ordinaryExport).status()).toBe(200)
   await expect(page.locator('.reports-page__export-result')).toContainText('未生成文件')
 
-  const adminPage = await page.context().newPage()
-  const adminAudit = auditConsole(adminPage)
-  await loginAs(adminPage, 'admin')
-  await adminPage.goto('/reports')
-  await adminPage.getByTestId('report-tabs').waitFor()
-  await adminPage.getByTestId('report-source').click()
-  await adminPage.getByRole('option', { name: /RPT-BATCH-001/ }).click()
-  await expect(adminPage.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-BATCH-001')
-  await adminPage.getByTestId('report-export').click()
-  const dialog = adminPage.getByRole('dialog', { name: '确认验证三级批量报告导出' })
-  await expect(dialog).toBeVisible()
-  const aggregateExport = adminPage.waitForResponse((response) => new URL(response.url()).pathname === '/api/v1/reports/RPT-BATCH-001/export')
-  await dialog.getByTestId('confirm-report-export').click()
-  expect((await aggregateExport).status()).toBe(200)
-  await expect(adminPage.locator('.reports-page__export-result')).toContainText('2026-08-06 18:08:00')
-
   await expectStableLayout(page)
-  await expectStableLayout(adminPage)
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
-  expect(adminAudit.errors).toEqual([])
-  expect(adminAudit.http404s).toEqual([])
-  expect([...adminAudit.nonLoopbackHosts]).toEqual([])
-  await adminPage.close()
 })
 
 test.describe('P2-1 scenario business loop', () => {

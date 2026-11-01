@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import { selectFileMessageLinks, FILE_MESSAGE_DIRECTION_LABELS, type FileMessageLink } from '../../features/situation/file-message-links'
 import { fileJammerRadiusMeters, selectFileDeviceStates, type FileDeviceEvent } from '../../features/situation/file-device-events'
+import { selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
 import {
   PLATFORM_TYPE_LABELS,
   type SituationLinkView,
@@ -33,6 +34,8 @@ const props = defineProps<{
   fileSpeed?: number
   fileSeekRevision?: number
   configuredLinks?: Link[]
+  configuredLinkStatuses?: ReadonlyMap<string, 'UP' | 'DEGRADED' | 'DOWN'>
+  configuredJammers?: ConfiguredJammerRange[]
   links: SituationLinkView[]
   selectedNodeId: string
   focusTarget: SituationMapFocusTarget | null
@@ -68,8 +71,22 @@ const hasFileLinks = computed(() => !props.frame && !props.configuredLinks && (p
 const hasFileMessageLinks = computed(() => visibleMessageLinks.value.length > 0)
 const hasFileInterference = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => fileJammerRadiusMeters(node.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined))
+const configuredRanges = computed(() => props.configuredJammers === undefined ? []
+  : selectInterferenceRanges(props.frame?.platforms ?? props.initialNodes ?? [], null, props.configuredJammers))
+const hasInterference = computed(() => props.frame !== null || configuredRanges.value.length > 0 || !!hasFileInterference.value)
 const hasFileDetection = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined))
+/** 节点图例列出当前地图上出现的全部类型（含文件参考模型名换算后的类型）；无法识别的类型合并为“其他节点”。 */
+const nodeTypeLegend = computed(() => {
+  const entries = new Map<string, string>()
+  for (const node of props.initialNodes ?? []) {
+    const category = nodeCategory(node)
+    const label = category ? PLATFORM_TYPE_LABELS[category as keyof typeof PLATFORM_TYPE_LABELS] ?? '其他节点' : '其他节点'
+    const glyph = nodeGlyph(node)
+    entries.set(glyph, entries.has(glyph) && !entries.get(glyph)!.includes(label) ? `${entries.get(glyph)} / ${label}` : label)
+  }
+  return [...entries].map(([glyph, label]) => ({ glyph, label }))
+})
 const themeToggleLabel = computed(() => (
   theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
 ))
@@ -89,7 +106,7 @@ const layers = reactive<Record<MapLayer, boolean>>({
   flow: !prefersReducedMotion(),
   // 当前时刻没有业务链路时用登记关联兜底，避免地图上一条连线都没有；有业务链路时让位。
   potential: !hasFileMessageLinks.value,
-  interference: props.frame !== null || !!hasFileInterference.value,
+  interference: hasInterference.value,
   grid: MAP_CONFIG.defaults.gridVisible,
   detection: true,
 })
@@ -137,10 +154,11 @@ function layerDisabled(layer: MapLayer): boolean {
   if (props.frame) return false
   if (layer === 'links' || layer === 'flow') return !hasFileMessageLinks.value && !props.configuredLinks?.length
   if (layer === 'potential') return !hasFileLinks.value
-  if (layer === 'interference') return !hasFileInterference.value
+  if (layer === 'interference') return !hasInterference.value
   return false
 }
-const selectedFileInterferenceRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
+const selectedConfiguredRanges = computed(() => configuredRanges.value.filter(range => range.platformId === selectedNode.value?.platformId))
+const selectedFileInterferenceRadius = computed(() => props.configuredJammers === undefined && !props.frame && !props.configuredLinks && selectedNode.value
   ? fileJammerRadiusMeters(selectedNode.value.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) : undefined)
 const selectedFileDetectionRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
   ? MAP_CONFIG.fileDetectionRadiiMeters[selectedNode.value.platformId] : undefined)
@@ -213,7 +231,7 @@ function setLayerVisible(layer: MapLayer, visible: boolean): void {
 }
 
 // 首次收到范围数据时开启图层；普通位置更新不覆盖用户手动关闭的选择。
-watch(() => props.frame !== null || !!hasFileInterference.value, available => {
+watch(hasInterference, available => {
   setLayerVisible('interference', available)
 })
 
@@ -311,6 +329,8 @@ onMounted(() => {
     fileMessageLinks: visibleMessageLinks.value,
     fileDeviceStates: fileDeviceStates.value,
     configuredLinks: props.configuredLinks,
+    configuredLinkStatuses: props.configuredLinkStatuses,
+    configuredJammers: props.configuredJammers,
     onSelectConfiguredLink: link => emit('select-configured-link', link),
     onSelectFileLink: openFileLink,
     onSelectFileMessageLink: openMessageLink,
@@ -368,6 +388,14 @@ watch(fileDeviceStates, states => {
 watch(() => props.configuredLinks, links => {
   mapController.value?.setConfiguredLinks(links)
 })
+
+watch(() => props.configuredLinkStatuses, statuses => {
+  mapController.value?.setConfiguredLinkStatuses(statuses)
+})
+
+watch(() => props.configuredJammers, jammers => {
+  mapController.value?.setConfiguredJammers(jammers)
+}, { deep: true })
 
 watch(selectedFileLink, link => {
   if (!link) fileLinkDialogVisible.value = false
@@ -567,7 +595,8 @@ onBeforeUnmount(() => {
           <div v-if="usesTemporarySatellitePosition"><dt>地图临时示意位置</dt><dd>{{ Math.abs(selectedNodePosition.longitude) }}°{{ selectedNodePosition.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNodePosition.latitude) }}°{{ selectedNodePosition.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ configuredLinks && !('time' in selectedNode) ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
-          <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（指定范围）</dd></div>
+          <div v-for="range in selectedConfiguredRanges" :key="range.id" data-testid="configured-jammer-range"><dt>{{ range.jammerId }} 干扰范围（半径）</dt><dd>{{ range.radiusMeters / 1000 }} 公里（配置范围，非实测覆盖）</dd></div>
+          <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（示意范围，缺少设备配置）</dd></div>
           <div v-if="selectedFileDetectionRadius !== undefined"><dt>探测范围（半径）</dt><dd>{{ selectedFileDetectionRadius / 1000 }} 公里（指定范围）</dd></div>
         </dl>
         <template v-if="!frame && !configuredLinks">
@@ -681,7 +710,11 @@ onBeforeUnmount(() => {
       </div>
     </el-dialog>
 
-    <div class="offline-map__legend" aria-label="链路类型图例">
+    <div class="offline-map__legend">
+      <div v-if="nodeTypeLegend.length" class="offline-map__legend-group" aria-label="节点类型图例" data-testid="node-type-legend">
+        <div v-for="item in nodeTypeLegend" :key="item.glyph"><span class="legend-glyph" aria-hidden="true">{{ item.glyph }}</span>{{ item.label }}</div>
+      </div>
+      <div class="offline-map__legend-group" aria-label="链路类型图例">
       <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
       <div><i class="legend-line legend-line--microwave"></i>微波链路</div>
       <div><i class="legend-line legend-line--datalink"></i>新一代数传链路</div>
@@ -690,6 +723,7 @@ onBeforeUnmount(() => {
       <div><i class="legend-line legend-line--fiber"></i>光纤链路</div>
       <div v-if="hasFileMessageLinks"><i class="legend-arrow" aria-hidden="true">▲</i>消息投递方向</div>
       <div v-if="hasFileDetection"><i class="legend-line legend-line--detection"></i>探测范围</div>
+      </div>
     </div>
 
   </section>
@@ -891,7 +925,13 @@ onBeforeUnmount(() => {
   transition: left 0.18s ease;
 }
 
-.offline-map__legend div {
+.offline-map__legend {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+}
+
+.offline-map__legend-group > div {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -924,7 +964,9 @@ onBeforeUnmount(() => {
 }
 
 .legend-line--laser {
-  border-color: #b37feb;
+  height: 3px;
+  border: 0;
+  background: repeating-linear-gradient(to right, #b37feb 0 12px, transparent 12px 16px, #b37feb 16px 18px, transparent 18px 22px);
 }
 
 .legend-line--unavailable {
@@ -933,6 +975,14 @@ onBeforeUnmount(() => {
 
 .legend-line--fiber {
   border-color: #20b2aa;
+}
+
+.legend-glyph {
+  width: 1.625rem;
+  color: #42d8ff;
+  font-size: 0.85rem;
+  font-style: normal;
+  text-align: center;
 }
 
 .legend-arrow {

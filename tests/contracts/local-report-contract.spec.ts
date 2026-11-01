@@ -19,7 +19,8 @@ describe('本地报告增量合同兼容与冻结', () => {
   })
   it('拒绝本地证据冒充运行、三级报告及质量数据；拒绝伪导出', () => {
     for (const change of [{ runId: 'RUN-001' }, { classification: 'LEVEL_III' }, { kpis: fixtures.report.kpis }]) expect(report({ ...LOCAL_REPORT, ...change })).toBe(false)
-    for (const change of [{ generated: false }, { format: 'PDF' }, { sha256: 'bad' }, { filePath: '' }, { extra: true }]) expect(exported({ ...LOCAL_EXPORT, ...change })).toBe(false)
+    expect(exported({ ...LOCAL_EXPORT, format: 'PDF' })).toBe(true)
+    for (const change of [{ generated: false }, { format: 'ZIP' }, { sha256: 'bad' }, { filePath: '' }, { extra: true }]) expect(exported({ ...LOCAL_EXPORT, ...change })).toBe(false)
     const invalid = structuredClone(LOCAL_REPORT)
     invalid.localEvidence.positionCount = -1
     expect(report(invalid)).toBe(false)

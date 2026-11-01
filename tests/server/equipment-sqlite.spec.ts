@@ -35,12 +35,25 @@ afterEach(async () => {
 })
 
 describe('装备参数正式存储与接口', () => {
+  it.each(['卫星通信设备', '原有未分类设备'])('手动引用入口拒绝类型 %s 绑定微波链路，引用表保持空', async type => {
+    const { api, storage } = await start()
+    await api.post(path).set(headers).send({ ...EQUIPMENT, type }).expect(201)
+    const scene = (await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
+    const link = scene.config.links.find((item: { type: string }) => item.type === 'MICROWAVE')
+    const result = await api.put(`${path}/${EQUIPMENT.equipmentId}/reference`).set(headers).send({ remove: false,
+      reference: { equipmentId: EQUIPMENT.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: link.id } })
+    expect(result.status).toBe(422)
+    expect(result.body.error.fieldPath).toBe('reference.linkId')
+    expect(result.body.error.message).toMatch(/类型/)
+    expect(storage.details(EQUIPMENT.equipmentId).references).toEqual([])
+  })
+
   it('可选完整参数兼容旧数据，真实历史和引用持久化且不改写场景', async () => {
     const first = await start()
     await first.api.post(path).set(headers).send(EQUIPMENT).expect(201)
     const before = (await first.api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
     const linkId = before.config.links[0].id
-    const edited = { ...EQUIPMENT, bandwidthMHz: 0.5, txPowerW: 0, dataRateMbps: 2 }
+    const edited = { ...EQUIPMENT, bandwidthMHz: 0.5, txPowerW: 0, dataRateMbps: 80 }
     await first.api.put(`${path}/TEST-RADIO`).set(headers).send(edited).expect(200)
     const reference = { equipmentId: 'TEST-RADIO', equipmentVersion: 2, scenarioId: 'SCN-001', linkId }
     const bind = (change = {}, remove = false) => first.api.put(`${path}/TEST-RADIO/reference`).set(headers).send({ reference: { ...reference, ...change }, remove })
@@ -68,6 +81,33 @@ describe('装备参数正式存储与接口', () => {
     const { api, storage } = await start()
     await api.post(path).set(headers).send({ ...EQUIPMENT, ...change }).expect(422)
     expect(storage.load()).toEqual([])
+  })
+
+  it.each([
+    [{ type: '微波通信设备', frequencyMinMHz: 201, frequencyMaxMHz: 200 }, 'frequencyMaxMHz'],
+    [{ type: '微波通信设备', bandwidthMHz: 0 }, 'bandwidthMHz'],
+    [{ type: '微波通信设备', txPowerW: 101 }, 'txPowerW'],
+    [{ type: '微波通信设备', modulation: 'OOK' }, 'modulation'],
+    [{ type: '微波通信设备', dataRateMbps: 2 }, 'dataRateMbps'],
+    [{ type: '卫星通信设备', txPowerW: 1001 }, 'txPowerW'],
+    [{ type: '激光通信设备', frequencyMaxMHz: 12000, bandwidthMHz: 2000, modulation: 'QPSK', txPowerW: 1 }, 'modulation'],
+    [{ type: '激光通信设备', frequencyMinMHz: null, frequencyMaxMHz: null, modulation: 'OOK', txPowerW: 0 }, 'txPowerW'],
+  ] as const)('写入按链路设备规则拒绝 %j，字段可定位且不改数据库', async (change, fieldPath) => {
+    const { api, storage } = await start()
+    const baseline = { ...EQUIPMENT, type: '微波通信设备' }
+    await api.post(path).set(headers).send(baseline).expect(201)
+    const response = await api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send({ ...baseline, ...change })
+    expect(response.status).toBe(422)
+    expect(response.body.error.fieldPath).toBe(fieldPath)
+    expect(storage.load()).toEqual([baseline])
+  })
+
+  it('卫星频率超过 10GHz 仍按场景链路规则允许写入', async () => {
+    const { api, storage } = await start()
+    const satellite = { ...EQUIPMENT, equipmentId: 'SAT-12000', type: '卫星通信设备', frequencyMinMHz: 12000, frequencyMaxMHz: 12000,
+      bandwidthMHz: 25, txPowerW: 100, dataRateMbps: 16 }
+    await api.post(path).set(headers).send(satellite).expect(201)
+    expect(storage.load()).toEqual([satellite])
   })
 
   it('确认删除、重开不再存在；确认不可复用且权限独立保护', async () => {
@@ -136,6 +176,65 @@ describe('装备参数正式存储与接口', () => {
     expect((await second.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send(EQUIPMENT)).status).toBe(409)
     expect((await second.api.post(path).set(headers).send(EQUIPMENT)).status).toBe(409)
     expect((await second.api.get(path).set(headers)).body.data[0].version).toBe(2)
+  })
+
+  it('停用持久化且不改写既有引用；恢复后才允许新登记，权限、只读和旧版本仍受保护', async () => {
+    const first = await start()
+    await first.api.post(path).set(headers).send(EQUIPMENT).expect(201)
+    const before = (await first.api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
+    const reference = { equipmentId: EQUIPMENT.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: before.config.links[0].id }
+    await first.api.put(`${path}/${EQUIPMENT.equipmentId}/reference`).set(headers).send({ reference, remove: false }).expect(200)
+
+    await first.api.put(`${path}/${EQUIPMENT.equipmentId}`).set({ ...headers, 'X-Demo-Role': 'OPERATOR' })
+      .send({ ...EQUIPMENT, active: false }).expect(403)
+    const stopped = await first.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send({ ...EQUIPMENT, active: false }).expect(200)
+    expect(stopped.body.data).toEqual({ ...EQUIPMENT, active: false, version: 2 })
+    expect(first.server.auditSnapshot().some((row: { action: string; result: string }) => row.action === 'MASTER_DATA_EQUIPMENT_DISABLE' && row.result === 'SUCCESS')).toBe(true)
+    await first.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send({ ...EQUIPMENT, active: false }).expect(409)
+    await first.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send({ ...EQUIPMENT, active: false, version: 2, readOnly: true }).expect(403)
+    await first.api.put(`${path}/${EQUIPMENT.equipmentId}/reference`).set(headers)
+      .send({ reference: { ...reference, equipmentVersion: 2 }, remove: false }).expect(409)
+    const details = (await first.api.get(`${path}/${EQUIPMENT.equipmentId}/details`).set(headers)).body.data
+    expect(details.references).toEqual([reference])
+    expect(details.history[0]).toEqual({ ...EQUIPMENT, active: false, version: 2 })
+    expect((await first.api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data).toEqual(before)
+    await first.close()
+
+    const second = await start(first.file)
+    expect(second.storage.load()).toEqual([{ ...EQUIPMENT, active: false, version: 2 }])
+    const restored = { ...EQUIPMENT, active: true, version: 2 }
+    await second.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send(restored).expect(200)
+    expect(second.server.auditSnapshot().some((row: { action: string; result: string }) => row.action === 'MASTER_DATA_EQUIPMENT_ENABLE' && row.result === 'SUCCESS')).toBe(true)
+    await second.api.put(`${path}/${EQUIPMENT.equipmentId}/reference`).set(headers)
+      .send({ reference: { ...reference, equipmentVersion: 3 }, remove: false }).expect(200)
+    expect(second.storage.details(EQUIPMENT.equipmentId).references).toEqual([{ ...reference, equipmentVersion: 3 }])
+  })
+
+  it('旧数据库记录缺少 active 时重开后默认启用，并在后续保存时写入状态', async () => {
+    const first = await start()
+    await first.api.post(path).set(headers).send(EQUIPMENT).expect(201)
+    await first.close()
+    const { active: _active, ...legacy } = EQUIPMENT
+    const database = new DatabaseSync(first.file)
+    database.prepare('UPDATE equipment_parameters SET parameters_json = ? WHERE id = ?').run(JSON.stringify(legacy), EQUIPMENT.equipmentId)
+    database.close()
+    const second = await start(first.file)
+    expect(second.storage.load()).toEqual([EQUIPMENT])
+    await second.api.put(`${path}/${EQUIPMENT.equipmentId}`).set(headers).send({ ...legacy, version: 1 }).expect(200)
+    expect(second.storage.load()).toEqual([{ ...EQUIPMENT, version: 2 }])
+  })
+
+  it('已有引用时，存储层只允许单独启停跳过场景同步，拒绝直接写入通信参数', async () => {
+    const { storage } = await start()
+    expect(storage.save(EQUIPMENT)).toBe(true)
+    storage.setReference({ equipmentId: EQUIPMENT.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: 'L-MW-01' }, false)
+    expect(storage.save({ ...EQUIPMENT, frequencyMaxMHz: 250, version: 2 }, 1)).toBe(false)
+    expect(storage.load()).toEqual([EQUIPMENT])
+    expect(storage.save({ ...EQUIPMENT, active: false, version: 2 }, 1)).toBe(true)
+    expect(storage.details(EQUIPMENT.equipmentId).references[0]?.equipmentVersion).toBe(1)
+    // 保留未修改参数的正常保存；不能把未变化的 active 误当成绕过场景同步。
+    expect(storage.save({ ...EQUIPMENT, active: false, version: 3 }, 2)).toBe(true)
+    expect(storage.details(EQUIPMENT.equipmentId).references[0]?.equipmentVersion).toBe(1)
   })
 
   it.each(['OPERATOR', 'INVALID'])('列表与写入拒绝 %s，数据库保持空', async role => {

@@ -30,13 +30,13 @@ describe('P5 数据交换 Store', () => {
     useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
   })
 
-  it('原子加载三类 CSV、场景、五类前端结构和七类接口合同', async () => {
+  it('原子加载五类 CSV、场景、五类前端结构和七类接口合同', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => Promise.resolve(contractResponse(input))))
     const store = useDataExchangeStore()
 
     await expect(store.loadContracts()).resolves.toBe(true)
     expect(store.$state).toMatchObject({ loadState: 'SUCCESS', resultCode: 'SUCCESS' })
-    expect(store.csvContracts).toHaveLength(3)
+    expect(store.csvContracts).toHaveLength(5)
     expect(store.frontendContracts).toHaveLength(5)
     expect(store.interfaces).toHaveLength(7)
     expect(store.scenarioContract?.name).toBe('ScenarioConfig')
@@ -102,13 +102,15 @@ describe('P5 数据交换 Store', () => {
     const valid = createCsvExample(linkContract)
 
     expect(inspectCsvText(linkContract, valid)).toMatchObject({ valid: true, rowCount: 1, headerMatched: true })
+    expect(inspectCsvText(linkContract, valid.replace('TASK-001', '../TASK-001')).valid).toBe(false)
+    expect(inspectCsvText(linkContract, valid.replace('TASK-001,1.1', 'TASK-001,1.0')).valid).toBe(false)
     expect(inspectCsvText(linkContract, valid.replace('Frequency', '频率')).issues[0]).toMatchObject({ code: 'HEADER_INVALID', row: 1 })
     expect(inspectCsvText(linkContract, `${valid},多余列`).issues[0]).toMatchObject({ code: 'TYPE_INVALID', row: 2 })
-    expect(inspectCsvText(linkContract, valid.replace('\n42,', '\n�,')).issues[0]).toMatchObject({ code: 'ENCODING_INVALID' })
+    expect(inspectCsvText(linkContract, valid.replace('TASK-001', '�')).issues[0]).toMatchObject({ code: 'ENCODING_INVALID' })
 
     const invalidFrequency = valid.split('\n')
     const cells = invalidFrequency[1]!.split(',')
-    cells[4] = '-1'
+    cells[linkContract.fields.indexOf('Frequency')] = '-1'
     invalidFrequency[1] = cells.join(',')
     expect(inspectCsvText(linkContract, invalidFrequency.join('\n')).valid).toBe(false)
 
@@ -123,11 +125,11 @@ describe('P5 数据交换 Store', () => {
       })
     }
 
-    const eventText = `${eventContract.fields.join(',')}\n42,DETECTION,UAV-01,,SUCCESS,,,,"a,b"`
+    const eventText = `${eventContract.fields.join(',')}\nTASK-001,1.1,42,DETECTION,UAV-01,,SUCCESS,,,,"a,b"`
     expect(inspectCsvText(eventContract, eventText)).toMatchObject({ valid: true, rowCount: 1 })
-    expect(inspectCsvText(eventContract, `${eventContract.fields.join(',')}\n42,DETECTION,UAV-01,   ,SUCCESS, , , ,`))
+    expect(inspectCsvText(eventContract, `${eventContract.fields.join(',')}\nTASK-001,1.1,42,DETECTION,UAV-01,   ,SUCCESS, , , ,`))
       .toMatchObject({ valid: true, rowCount: 1 })
-    expect(inspectCsvText(eventContract, `${eventContract.fields.join(',')}\n42,DETECTION,UAV-01,,,,,,"未闭合`).valid).toBe(false)
+    expect(inspectCsvText(eventContract, `${eventContract.fields.join(',')}\nTASK-001,1.1,42,DETECTION,UAV-01,,,,,,"未闭合`).valid).toBe(false)
   })
 
   it('通过 Store 执行 CSV 与场景 JSON 的成功和错误路径', async () => {
@@ -144,7 +146,8 @@ describe('P5 数据交换 Store', () => {
 
     await expect(store.parseScenarioJson('')).resolves.toBe(false)
     await expect(store.parseScenarioJson('{')).resolves.toBe(false)
-    expect(store.jsonValidation.errors[0]).toMatchObject({ code: 'JSON_SYNTAX_ERROR', fieldPath: '$' })
+    expect(store.jsonValidation.errors[0]).toMatchObject({ code: 'JSON_SYNTAX_ERROR', fieldPath: '$[1:2]' })
+    expect(store.jsonValidation.errors[0]?.message).toContain('第 1 行，第 2 列')
     const invalidScenario = structuredClone(fixtureSource.scenario) as Record<string, unknown>
     invalidScenario.unknown = true
     await expect(store.parseScenarioJson(JSON.stringify(invalidScenario))).resolves.toBe(false)

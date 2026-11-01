@@ -1,6 +1,6 @@
 import type { AfsimConnectionRecord } from '../data-exchange/afsim-event-log'
 
-export const FILE_COMMUNICATION_LABELS = { SAT: '卫星通信', MICROWAVE: '微波通信', DATALINK: '新一代数传链路', FIBER: '光纤链路' } as const
+export const FILE_COMMUNICATION_LABELS = { SAT: '卫星通信', MICROWAVE: '微波通信', DATALINK: '新一代数传链路', LASER: '激光链路', FIBER: '光纤链路' } as const
 export type FileCommunicationType = keyof typeof FILE_COMMUNICATION_LABELS
 
 /** 真实登记证据，不携带或推断 UP/DOWN、SNR、BER。 */
@@ -21,6 +21,7 @@ export interface FileCommunicationLink {
 export function fileCommunicationType(type: string, name = ''): FileCommunicationType | null {
   if (type === 'satcom_1' || type === 'satcom_2') return 'SAT'
   if (type === 'microwave') return 'MICROWAVE'
+  if (type === 'WSF_LASER_TRANSCEIVER') return 'LASER'
   if (type === 'WSF_RADIO_TRANSCEIVER' && ['sat_link', 'sat_link_a', 'sat_link_b'].includes(name)) return 'SAT'
   if (type === 'WSF_RADIO_TRANSCEIVER' && name === 'microwave_link') return 'MICROWAVE'
   if (type === 'WSF_RADIO_TRANSCEIVER' && ['c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'].includes(name)) return 'DATALINK'
@@ -29,6 +30,10 @@ export function fileCommunicationType(type: string, name = ''): FileCommunicatio
 
 /** 保留旧类型投影；新增名称映射要求两端同类，不能由单端推断跨用途登记的类别。 */
 export function fileConnectionTypes(record: FileCommunicationConnection): FileCommunicationType[] {
+  // 激光是生成器写出的专用收发器；一端为激光而另一端不是时，不把异构登记误画为激光链路。
+  const sourceLaser = record.sourceType === 'WSF_LASER_TRANSCEIVER'
+  const targetLaser = record.targetType === 'WSF_LASER_TRANSCEIVER'
+  if (sourceLaser || targetLaser) return sourceLaser && targetLaser ? ['LASER'] : []
   const legacy = [fileCommunicationType(record.sourceType), fileCommunicationType(record.targetType)]
     .filter((type): type is FileCommunicationType => type !== null)
   if (legacy.length) return [...new Set(legacy)]

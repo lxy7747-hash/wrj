@@ -30,7 +30,7 @@ async function inspect(): Promise<void> {
         <DataExchangeStateTag :state="store.processState" data-testid="process-state" />
       </div>
     </template>
-    <p class="exchange-card__description">展示启动前路径校验、单实例锁、PID、stdout、超时终止和资源清理；不调用真实操作系统进程。</p>
+    <p class="exchange-card__description">展示启动前路径校验、单实例锁、PID、stdout、超时终止和资源清理的合同；不调用真实操作系统进程。本地真实运行的 stdout/stderr 在“态势主界面 → 进程日志”查看，运行超时由服务端 MISSION_RUN_TIMEOUT_SECONDS 配置。</p>
     <el-button type="primary" @click="inspect">检查进程管理合同</el-button>
     <el-alert class="exchange-card__result" :type="store.processState === 'ERROR' ? 'error' : 'info'" :closable="false" :title="store.processMessage" />
     <el-descriptions v-if="store.processResult" :column="2" border size="small" data-testid="process-result">

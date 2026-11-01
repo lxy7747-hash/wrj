@@ -297,6 +297,31 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(draft).toEqual(original)
   })
 
+  it('显式原生 ESM 设置生成经验证的被动接收器，不把旧概率或距离写成引擎参数', () => {
+    const draft = minimalDraft()
+    draft.config.sensors = [{ id: 'ESM-01', platformId: 'CMD-01',
+      frequencyRange: { min: 2000, max: 5000 }, detectionRange: 150000 }]
+    draft.uiExtensions.sensors = [{ sensorId: 'ESM-01', type: 'ESM', direction: 90, probability: 0.5, enabled: true,
+      esm: { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 } }]
+    const { files, manifest } = buildMissionPackage(draft)
+    const sensor = manifest.sensors[0]
+    expect(sensor).toMatchObject({ model: 'WSF_ESM_SENSOR', nativeEsm: { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 },
+      frequencyMHz: 3500, bandwidthMHz: 3000, detectionRangeM: 150000, directionDeg: 90, probability: 0.5 })
+    const text = typeText(files)
+    expect(text).toContain(`sensor ${sensor.deviceId} WSF_ESM_SENSOR`)
+    expect(text).toContain('      frequency_band 2 GHz 5 GHz')
+    expect(text).toContain('      dwell_time 1 sec')
+    expect(text).toContain('      revisit_time 1 sec')
+    expect(text).toContain('      continuous_detection_sensitivity -200 dBW')
+    expect(text).toContain('      pulsed_detection_sensitivity -200 dBW')
+    expect(text).toContain('      detection_threshold 0 dB')
+    expect(text).not.toContain('maximum_range 150000 m')
+    expect(text).not.toContain('reports_bearing')
+
+    draft.uiExtensions.sensors[0]!.esm!.dwellTimeS = 0
+    expect(() => buildMissionPackage(draft)).toThrow('uiExtensions.sensors[0].esm.dwellTimeS')
+  })
+
   it('侦测设备停用时不写 on，非法频率范围与距离阻断生成', () => {
     const draft = minimalDraft()
     draft.config.sensors = [{ id: 'ESM-01', platformId: 'CMD-01',
@@ -365,6 +390,31 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     expect(entry).toContain('  end_route\n')
     expect(manifest.platforms[1].waypoints[0]).toMatchObject({ arrivalTimeS: 60, arrivalTimeEnforced: false })
     expect(entry).not.toContain('arrival')
+  })
+
+  it('保留航点加速度与航向，平台初始航向映射为已核实的 heading 指令', () => {
+    const draft = minimalDraft()
+    const platform = draft.config.platforms[1]!
+    platform.heading = 45
+    platform.waypoints = [{ longitude: 120.2, latitude: 23.6, altitude: 8100, speed: 250, arrivalTime: 60, heading: 75, acceleration: 2.5 }]
+    const generated = buildMissionPackage(draft)
+    expect(setupText(generated.files)).toContain('  heading 45 deg')
+    expect(generated.manifest.platforms[1].waypoints[0]).toMatchObject({ headingDeg: 75, accelerationMps2: 2.5, arrivalTimeEnforced: false })
+    expect(setupText(generated.files)).not.toContain('acceleration 2.5')
+  })
+
+  it('卫星正反向独立速率写入各自通信设备，干扰俯仰仅记录到清单直到原生语法核实', () => {
+    const draft = satelliteDraft()
+    draft.config.links[0]!.forwardDataRate = 4
+    draft.config.links[0]!.reverseDataRate = 0.512
+    draft.config.links[0]!.direction = 'REVERSE'
+    draft.config.informationDemand[0]!.direction = 'REVERSE'
+    draft.config.informationDemand[0]!.informationType = '侦察信息'
+    const generated = buildMissionPackage(draft)
+    expect(generated.manifest.devices[0]).toMatchObject({ dataRateMbps: 0.512 })
+    const jammer = jammerDraft()
+    jammer.uiExtensions.jammers[0]!.elevation = 30
+    expect(buildMissionPackage(jammer).manifest.jammers[0]).toMatchObject({ elevationDeg: 30, elevationEngineMapped: false })
   })
 
   it('环境、时钟倍速与开始日期时刻写入 mission 入口', () => {
@@ -590,7 +640,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
 
   const cases: Array<[string, (d: ScenarioDraft) => void, string]> = [
     ['报文超过引擎容量', d => { d.config.informationDemand[0]!.enabled = true; d.config.informationDemand[0]!.volumeMb = 1000 }, 'informationDemand[0].volumeMb'],
-    ['激光链路未接通', d => { d.config.links[0]!.type = 'LASER' }, 'links[0].type'],
+    ['激光链路缺光学参数', d => { d.config.links[0]!.type = 'LASER' }, 'links[0].laser'],
     ['卫星缺子类型', d => {
       d.config.platforms[1]!.type = 'COMMUNICATION_SATELLITE'
       d.config.platforms[1]!.category = 'space'
@@ -604,7 +654,7 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     ['卫星链路缺卫星端点', d => { d.config.links[0]!.type = 'SAT' }, 'links[0].type'],
     ['航点速度为零', d => { d.config.platforms[1]!.waypoints = [{ ...d.config.platforms[1]!.initialPosition, speed: 0, arrivalTime: 10 }] }, 'platforms[1].waypoints[0].speed'],
     ['编码未接通', d => { d.config.links[0]!.coding = 'LDPC' }, 'links[0].coding'],
-    ['增益修正未接通', d => { d.config.links[0]!.antennaGainCorrectionDb = 1 }, 'links[0].antennaGainCorrectionDb'],
+    ['抗干扰增益未接通', d => { d.config.links[0]!.antiJammingGainDb = 1 }, 'links[0].antiJammingGainDb'],
     ['非法频率', d => { d.config.links[0]!.frequency = 0 }, 'links[0].frequency'],
     ['脚本注入', d => {
       const id = 'CMD\ninclude_once bad.txt'
@@ -618,6 +668,25 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     mutate(draft)
     expect(() => buildMissionPackage(draft)).toThrow(MissionGenerationError)
     expect(() => buildMissionPackage(draft)).toThrow(fieldPath)
+  })
+
+  it('RF 天线增益修正只加到该链路实际接收端的独立接收天线', () => {
+    const draft = minimalDraft()
+    const link = draft.config.links[0]!
+    link.type = 'MICROWAVE'
+    link.antennaGainCorrectionDb = 7
+    const generated = buildMissionPackage(draft)
+    const device = generated.manifest.devices[0]!
+    const text = typeText(generated.files)
+    expect(device).toMatchObject({ antennaGainCorrectionDb: 7, antennaGainCorrectionEngineMapped: true })
+    expect(text).toContain(`antenna_pattern ${device.source.deviceId}_rx\n  uniform_pattern\n    peak_gain ${link.antennaGain.rx} dB`)
+    expect(text).toContain(`antenna_pattern ${device.target.deviceId}_rx\n  uniform_pattern\n    peak_gain ${link.antennaGain.rx + 7} dB`)
+    link.type = 'LASER'
+    link.laser = { txApertureDiameterM: 0.1, rxApertureDiameterM: 0.1, pulseWidthS: 1e-8, modulation: 'OOK' }
+    expect(() => buildMissionPackage(draft)).toThrow('links[0].antennaGainCorrectionDb')
+    link.type = 'FIBER'
+    delete link.laser
+    expect(() => buildMissionPackage(draft)).toThrow('links[0].antennaGainCorrectionDb')
   })
 
   it('后方节点挂载 link_calc：参数结构同示例，由场景配置汇总，JSON 内层引号不转义', () => {
@@ -832,14 +901,37 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
     const linkB = manifest.devices.find((item: { linkId: string }) => item.linkId === 'L-B')
     expect(text).toContain(`      string routeComm_0 = "${linkA.source.deviceId}";`)
     expect(text).toContain('PLATFORM.Comm(routeComm_0).SendMessage(message, routePlatform_0, routeDevice_0);')
-    expect(text).toContain('    execute at_interval_of 3 sec')
+    expect(text).toContain('    execute at_interval_of 2 sec')
     expect(text).toContain(`          WsfWeapon jammer = jammerPlatform.Weapon("${manifest.jammers[0].weaponId}");`.replace(/^ {10}/, '            '))
     expect(text).toContain('              condition = jammer.IsTurnedOn();')
     expect(text).toContain('              condition = jammerSeenOn_0_1 && !jammer.IsTurnedOn();')
     expect(text).toContain('if (peer.IsValid()) condition = PLATFORM.SlantRangeTo(peer) > 200000;')
     expect(text).toContain(`            nextComm = "${linkB.source.deviceId}";`)
-    expect(text).toContain('          && TIME_NOW - routeSwitchedAt_0 >= 7)')
+    // 缺省稳定次数 3、一致性校验开启：行为与原冷却时间锁一致。
+    expect(text).toContain('        if (differs && routeStable_0 >= 3 && TIME_NOW - routeSwitchedAt_0 >= 7)')
     expect(text).toContain('writeln("LINK_SWITCH time=", TIME_NOW, " business=')
+    expect(manifest.output).toMatchObject({ switchCooldownS: 7, switchStableChecks: 3, switchConsistencyCheck: true })
+
+    // 三重防抖：连续稳定次数、选路一致性重计数、冷却时间锁同时写入脚本。
+    config.linkSettings.switchStableChecks = 5
+    const stable = buildMissionPackage(draft)
+    const stableText = stable.files['comm_platform_REAR.txt']
+    expect(stableText).toContain('      string routeCandidate_0 = "";')
+    expect(stableText).toContain('      int routeStable_0 = 0;')
+    expect(stableText).toContain('          if (nextComm + "|" + nextPlatform + "|" + nextDevice == routeCandidate_0) routeStable_0 = routeStable_0 + 1;')
+    expect(stableText).toContain('        if (differs && routeStable_0 >= 5 && TIME_NOW - routeSwitchedAt_0 >= 7)')
+    expect(stable.manifest.output).toMatchObject({ switchStableChecks: 5, switchConsistencyCheck: true })
+    config.linkSettings.switchConsistencyCheck = false
+    const loose = buildMissionPackage(draft).files['comm_platform_REAR.txt']
+    expect(loose).not.toContain('== routeCandidate_0) routeStable_0')
+    expect(loose).toContain('          routeStable_0 = routeStable_0 + 1;')
+    // 括号与花括号保持配平，生成脚本结构可被预检接受。
+    for (const content of [stableText, loose]) {
+      expect(content.split('{').length).toBe(content.split('}').length)
+      expect(content.split('(').length).toBe(content.split(')').length)
+    }
+    delete config.linkSettings.switchStableChecks
+    delete config.linkSettings.switchConsistencyCheck
     // 停用的规则不生成；规则顺序即优先顺序（干扰规则在距离规则之前判断）。
     expect(text).not.toContain('RULE-OFF')
     expect(text.indexOf('ruleId = "RULE-JAM"')).toBeLessThan(text.indexOf('ruleId = "RULE-FAR"'))
@@ -924,8 +1016,9 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       const first = await writeScriptText(root, script, draft.revision, draft)
       const second = await writeScriptText(root, script, draft.revision, draft)
       expect(first).not.toBe(second)
-      expect(first.endsWith('comm_SimSetup.txt')).toBe(true)
+      expect(first.endsWith('scenario.txt')).toBe(true)
       expect(await readFile(first, 'utf8')).toBe(await readFile(second, 'utf8'))
+      expect(await readFile(first, 'utf8')).toContain('include_once comm_SimSetup.txt')
       expect(await readdir(join(dirname(first), draft.config.output.directory))).toEqual([])
       expect(await readFile(join(dirname(first), `SCN-001-r${draft.revision}.txt`), 'utf8')).toContain(script.preview)
       const manifest = JSON.parse(await readFile(join(dirname(first), 'mapping.json'), 'utf8'))
@@ -1222,7 +1315,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
         .send({ scenarioId: 'SCN-001', warningConfirmationId: context.confirmationId }).expect(200)).body.data
       const result = (await api.post(`/api/v1/scripts/${script.scriptId}/local-file`).set(headers)
         .send({ checksum: script.checksum }).expect(200)).body.data
-      expect(result.path.endsWith('comm_SimSetup.txt')).toBe(true)
+      expect(result.path.endsWith('scenario.txt')).toBe(true)
+      expect(await readFile(result.path, 'utf8')).toContain('引用顺序')
       expect(JSON.parse(await readFile(join(dirname(result.path), 'input.json'), 'utf8'))).toEqual(saved)
       saved.config.informationDemand[0].enabled = true
       saved.config.informationDemand[0].volumeMb = 1000
@@ -1231,10 +1325,8 @@ describe('候选 AFSIM 节点与独立微波设备生成', () => {
       const confirm = (await api.post('/api/v1/confirmations').set(headers)
         .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' }).expect(201)).body.data
       await api.post(`/api/v1/confirmations/${confirm.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
-      const next = (await api.post('/api/v1/scripts/preview').set(headers)
-        .send({ scenarioId: 'SCN-001', warningConfirmationId: confirm.confirmationId }).expect(200)).body.data
-      const failure = (await api.post(`/api/v1/scripts/${next.scriptId}/local-file`).set(headers)
-        .send({ checksum: next.checksum }).expect(422)).body
+      const failure = (await api.post('/api/v1/scripts/preview').set(headers)
+        .send({ scenarioId: 'SCN-001', warningConfirmationId: confirm.confirmationId }).expect(422)).body
       expect(failure.error).toMatchObject({ code: 'VALIDATION_FAILED', fieldPath: 'informationDemand[0].volumeMb' })
       expect(failure.data).toBeUndefined()
       expect((await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data).toEqual(latest)

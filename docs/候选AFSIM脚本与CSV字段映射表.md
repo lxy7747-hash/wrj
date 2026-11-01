@@ -2,9 +2,11 @@
 
 整理日期：2026-09-22。
 
-## 当前权威口径（2026-09-28，2026-10-08 补充）
+## 当前权威口径（2026-09-28，2026-10-27 补充）
 
-以下按现行 `server/scripts/mission-generator.ts`、包内 `mapping.json` 与 `tests/server/mission-execution.spec.ts` 判定。后文第 1～19 节记录历次候选和历史缺口，出现矛盾时以本节及第 20～22 节的现行实现为准。**2026-10-08 起生成包按对接示例拆分文件、入口改为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选，详见第 22 节；本节表格中与第 22 节冲突的内容以第 22 节为准。****本机部署限制：本机两套 AFSIM 引擎均缺少 `WSF_LINK_CALC_PROCESSOR` 插件，含后方指挥节点的场景生成的 Mission 在本机必然报错退出，安装对接方插件前无法原样运行（见 22.5）；去掉 `link_calc` 的实测与自动化测试通过均不等于原样实机验收通过。****写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应 `execution.json`、日志和实际 CSV 为证。
+2026-10-27 激光接入以第 23 节为准：本机已确认内置 `WSF_LASER_TRANSCEIVER`，并用生成器输出完成隔离的双端消息收发验证。后文“激光仅有天线图形／继续阻断”描述保留为此前的候选脚本结论；本次不再适用。现行执行器先探测 `WSF_LINK_CALC_PROCESSOR`，引擎明确缺失时只在本次运行包移除该段，不将探测失败当作所有场景可原样执行的证据。
+
+以下按现行生成器、包内 `mapping.json` 与列明的真实引擎测试判定。后文第 1～22 节记录历次候选、实现和历史缺口，出现矛盾时以本节及第 23 节为准。2026-10-08 起生成包按对接示例拆分文件，入口为 `comm_SimSetup.txt`，并新增 `link_calc`、时延处理器、阶段切换规则与海面区域框选。**写入脚本不等于真实引擎效果已验证**：普通生成请求不运行 mission，`mapping.json.engineValidated` 始终为 `false`；实机验证仅覆盖列明的测试场景，须以对应日志和实际 CSV 为证。第 22.5 节的本机插件缺失仍是安装事实，现行执行器按前述探测结果处理本次运行包，不假定外部质量计算插件支持光学参数。
 
 | 参数或能力 | 当前分类 | 具体边界与证据 |
 |---|---|---|
@@ -13,7 +15,8 @@
 | 雷达侦测候选、干扰设备、定时启停与距离门控、海况和降雨 | 写入脚本；部分实机样例验证 | 生成 `WSF_RADAR_SENSOR`、干扰 weapon/processor、`global_environment` 等。实机已核对定时启停和部分事件；没有验证所有天气/干扰参数的物理效果、探测概率或真实 SNR/BER。 |
 | `scenario.timeStep`、`output.writeInterval`、`environment.simClockSpeed` | 写入脚本，但效果边界受限 | `scenario.timeStep` 映射为 mover `update_interval`；`position.csv` 由 `MOVER_UPDATED` 触发写入。`output.writeInterval` 当前写入业务发送处理器的 `update_interval`，**不独立控制位置采样周期**。位置记录实际间隔须以 AFSIM 2.9.0 的同平台 CSV 实测为准，不能据配置值推断。`clock_rate` 虽写入，在当前 mission `-es` 模式下不改变墙钟倍速。 |
 | 场景编号/名称/描述、修订号、配置快照；链路调制、BER 阈值、业务 QoS、ESM 扩展方向/概率（冷却时间自 2026-10-08 起用于阶段切换规则，见第 22 节） | 仅元数据或项目侧规则 | `input.json`、`mapping.json` 保存身份与配置；部分字段用于生成前选择或校验，但无已确认的同名引擎参数或效果证据。不能把配置误码概率充作测量 BER，也不能把保存成功充作引擎生效。 |
-| 链路质量 CSV、链路切换 CSV；激光通信、信道编码及非零增益修正等 | 当前不支持或明确阻断 | 缺完整真实测量时，开启 `output.linkQualityEnabled` 或 `output.linkSwitchEnabled` 即按字段路径拒绝生成；不输出伪造的规范 CSV。其他未核实的设备/参数按生成器字段级校验拒绝，不静默改写成替代模型。 |
+| 激光通信 | 真正激光收发器已接入，有限样例实机验证 | 使用 `WSF_LASER_TRANSCEIVER`；用户必须提供光学口径、脉宽和 OOK 光调制，频率换算为光波长；不使用射频或有线收发器替代。光学端口未纳入对接方 `link_calc` 的质量统计合同；具体边界见第 23 节。 |
+| 链路质量 CSV、链路切换 CSV；信道编码及非零增益修正等 | 当前不支持或明确阻断 | 缺完整真实测量时，开启 `output.linkQualityEnabled` 或 `output.linkSwitchEnabled` 即按字段路径拒绝生成；不输出伪造的规范 CSV。其他未核实的设备/参数按生成器字段级校验拒绝，不静默改写成替代模型。 |
 
 参数生效的唯一运行证据链为：保存的场景修订 → 生成包的 `input.json`/`mapping.json` 与脚本 → 本次独占运行的 `execution.json` 和日志 → 实际输出文件。`RUN-001`、`F-00042` 属冻结演示证据，不是后续每次新建运行的固定编号或真实测量。
 
@@ -625,3 +628,20 @@
 - `end_platform_type`：热链终点的平台类型，全局一个值，写参考模型名（已确认），默认后方指挥节点 `REAR_COMM_PLATFORM`，可选指挥车 `COMMAND_VEHICLE_PLATFORM`、任务机 `MISSION_UAV_PLATFORM`。
 
 待对接方确认：`jamming_range` 是否接受 `km` 单位后缀；`port_params` 新增的 `polarization` 键、`rain.rain_attenuation_db` 是否被读取。
+
+## 23. 真正激光通信设备接入（2026-10-27）
+
+用户已授权扩展激光必填参数并同步冻结合同。本机 `wsf_mil.dll` 内置 `WSF_LASER_TRANSCEIVER`，不需要把激光转换为 `WSF_RADIO_TRANSCEIVER` 或有线 `WSF_COMM_TRANSCEIVER`。此前候选目录确实只有未引用的 `LASER_COMM_ANTENNA`；本次直接使用已核实的引擎类型，取消生成该固定天线图形。
+
+- `links[].laser` 保存 `txApertureDiameterM`、`rxApertureDiameterM`、`pulseWidthS` 和 `modulation`。前三项必须为正的有限数值，首批仅开放已核实的 `OOK`，脚本写 `modulation_type ook`，不把历史通用字段中的 `BPSK/QPSK` 转成光学调制。
+- 编辑器新增“光学配置”。光学口径单位 m，脉宽界面输入 ns、规范存储 s；激光频率继续使用 MHz，脚本光波长按 `299792458 / (frequency × 1000000)` 换算为 m。接收频率、带宽可显式填写，留空时使用发射侧对应值。极化、射频天线增益及射频调制不作为激光的有效输入。
+- 收发端分别生成独立激光收发器，写入光波长、光功率、收发口径、脉宽和光调制。每台设备的独立介质按 `dataRate` 设置报文传输速率，不给激光介质配置固定 BER。该速率不等同于光学调制物理比特率；引擎根据脉宽/调制决定脉冲时序，不传会被引擎覆盖的 `pulse_repetition_frequency`。
+- `Link` 读取兼容没有 `laser` 的旧配置；`LinkWrite`、共享运行时写入校验和生成器均要求参与生成的激光链路具备完整光学参数。明确 `enabled:false` 的链路可暂不填写光学参数，不生成设备及其关联业务。额外字段、非法数值、非法调制和非激光链路携带光学参数均被拒绝。
+- 新建和编辑旧设备不补光学默认值，不迁移或修改用户数据库。冻结 fixture 中 `L-LASER-04` 的 0.1 m 口径、10 ns 脉宽和 OOK 是合成回归样例，不能当作真实设备参数；用户须依据设备资料自行填写。
+- 外部 `WSF_LINK_CALC_PROCESSOR` 的合同尚未约定光学端口，`port_params` 不发送激光端口，包含激光的整条热链不参与该外部质量统计；业务脚本仍使用原链路。`mapping.json.linkCalc.excludedOpticalLinkIds` 明确列出被排除的激光链路。规范质量/切换 CSV 的既有缺测拦截保留，不虚构 SNR、BER 或测量结果。
+
+实机回归在独立临时目录运行本机 AFSIM 2.9.0，使用两节点、2 秒的合成场景，只改变光功率：1 W 时实际记录 2 次发送和 2 次接收；`1e-30 W` 时记录 0 次发送和 0 次接收。该正负对照验证专用激光模型不是无条件连通；不代表任意距离、天气、移动跟踪或实际设备性能已验收。测试结束清理临时目录，不修改用户场景、原 CSV 或常驻服务。
+
+可复验命令：设置 `MISSION_SMOKE_EXECUTABLE` 为本机完整引擎目录中的 `mission.exe`，运行 `npx vitest run --config vitest.config.ts tests/server/laser-generator.spec.ts`；未设置时两个原生引擎用例明确跳过。
+
+本轮最终验证：激光编辑器、合同、生成器及既有生成器聚焦 **4 文件／106 项通过**（含两个真实激光引擎用例）；`npm run p0:check` 退出码 0，unit **1063**、contracts **143**、server **599 通过／18 条件跳过**，coverage **1805 通过／18 条件跳过**。覆盖率 statements **93.58%**／branches **90.56%**／functions **95.17%**／lines **97.37%**，未降低门槛。未运行 E2E、视觉验收或实际设备标定；未重启服务或提交 Git。

@@ -5,7 +5,7 @@ const record = { dataId: 'DICT-1', kind: 'PARAMETER_DICTIONARY', version: 1, ref
   content: { name: '参数字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT', value: 'standard' }] } }
 const reference = { dataId: record.dataId, dataVersion: 1, targetType: 'SCENARIO', targetId: 'SCN-1', targetVersion: '2' }
 
-describe('主数据内容与引用的共享信任边界', () => {
+describe('通用数据内容与引用的共享信任边界', () => {
   it('保留旧元数据只读兼容，新写不接受空内容、设备副本或非法类型', () => {
     const { content, ...legacy } = record
     expect(isMasterData(legacy)).toBe(true)

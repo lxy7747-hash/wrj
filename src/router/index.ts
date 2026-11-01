@@ -81,13 +81,6 @@ export const routeRecords: RouteRecordRaw[] = [
     meta: { title: '场景管理', guard: 'principal', layout: 'workspace' },
   },
   {
-    path: '/batches',
-    name: 'batches',
-    component: () => import('../pages/batches/batches.vue'),
-    beforeEnter: requirePrincipal,
-    meta: { title: '批量仿真', guard: 'principal', layout: 'workspace' },
-  },
-  {
     path: '/reports',
     name: 'reports',
     component: () => import('../pages/reports/reports.vue'),
@@ -152,7 +145,7 @@ export function createAppRouter(history: RouterHistory = createWebHistory(), pin
     history,
     routes: [
       ...routeRecords,
-      // 未匹配路径（包括“/”）直接重定向到登录页且不新增命名路由，以保留冻结的 11 条路由合同并避免警告。
+      // 未匹配路径（包括“/”）直接重定向到登录页，不新增命名路由或触发警告。
       { path: '/:pathMatch(.*)*', redirect: '/login' },
     ],
   })
@@ -162,7 +155,12 @@ export function createAppRouter(history: RouterHistory = createWebHistory(), pin
     if (useUiStore(pinia).resetState === 'EXECUTING' && to.path !== '/login') return false
     const principal = authFor(pinia).principal
     if (to.path !== '/login' && principal?.menuPaths) {
-      const menuPath = to.path === '/admin' && typeof to.query.section === 'string' ? `/admin?section=${to.query.section}` : to.path
+      let menuPath = to.path === '/admin' && typeof to.query.section === 'string' ? `/admin?section=${to.query.section}` : to.path
+      // 合并页面仍按原分类授权；旧装备专用角色不会因此获得字典的访问权限。
+      if (to.path === '/admin' && to.query.section === 'master-data'
+        && (to.query.category === 'equipment' || (to.query.category !== 'master' && !canVisitMenu(principal, menuPath)))) {
+        menuPath = '/admin?section=equipment-library'
+      }
       if (!canVisitMenu(principal, menuPath)) {
         authFor(pinia).lastCode = 'PERMISSION_DENIED'
         authFor(pinia).lastMessage = '当前角色没有此菜单的访问权限。'

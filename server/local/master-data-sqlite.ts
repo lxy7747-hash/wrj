@@ -4,12 +4,12 @@ import type { MasterData, MasterDataDetails, MasterDataReference } from '../../s
 import { isMasterData, isMasterDetails, isMasterReference, isMasterWrite } from '../../src/features/admin/admin-contract.js'
 import type { MasterDataStorage } from '../admin/projection.js'
 
-/** 独立空库：只持久化管理员实际录入的主数据，不导入或覆盖冻结示例。 */
+/** 独立空库：只持久化管理员实际录入的通用数据，不导入或覆盖冻结示例。 */
 export class MasterDataSqliteStorage implements MasterDataStorage {
   private readonly db: DatabaseSync
 
   constructor(path: string) {
-    if (!isAbsolute(path)) throw new Error('主数据数据库路径必须为绝对路径。')
+    if (!isAbsolute(path)) throw new Error('通用数据存储路径必须为绝对路径。')
     this.db = new DatabaseSync(path)
     try {
       this.db.exec(`PRAGMA busy_timeout = 1000;
@@ -36,7 +36,7 @@ export class MasterDataSqliteStorage implements MasterDataStorage {
       this.load()
     } catch {
       this.db.close()
-      throw new Error('主数据存储无效，未覆盖已有数据。')
+      throw new Error('通用数据存储无效，未覆盖已有数据。')
     }
   }
 
@@ -45,20 +45,20 @@ export class MasterDataSqliteStorage implements MasterDataStorage {
   }
 
   private readRecord(row: Record<string, unknown>): MasterData {
-    if (typeof row.id !== 'string' || !Number.isSafeInteger(row.version) || typeof row.data_json !== 'string') throw new Error('主数据存储结构不正确。')
+    if (typeof row.id !== 'string' || !Number.isSafeInteger(row.version) || typeof row.data_json !== 'string') throw new Error('通用数据存储结构不正确。')
     const value: unknown = JSON.parse(row.data_json)
-    if (!isMasterData(value) || value.dataId !== row.id || value.version !== row.version) throw new Error('主数据记录格式不正确。')
+    if (!isMasterData(value) || value.dataId !== row.id || value.version !== row.version) throw new Error('通用数据记录格式不正确。')
     return { ...value, referenceCount: this.referenceCount(value.dataId) }
   }
 
   private referenceCount(dataId: string): number {
     const row = this.db.prepare('SELECT COUNT(*) AS count FROM master_data_references WHERE data_id = ?').get(dataId)
-    if (!row || (typeof row.count !== 'number' && typeof row.count !== 'bigint')) throw new Error('主数据引用计数读取失败。')
+    if (!row || (typeof row.count !== 'number' && typeof row.count !== 'bigint')) throw new Error('通用数据引用计数读取失败。')
     return Number(row.count)
   }
 
   save(record: MasterData, expectedVersion?: number): boolean {
-    if (!isMasterWrite(record) || record.version !== (expectedVersion ?? 0) + 1) throw new Error('主数据写入无效。')
+    if (!isMasterWrite(record) || record.version !== (expectedVersion ?? 0) + 1) throw new Error('通用数据写入无效。')
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const referenceCount = this.referenceCount(record.dataId)
@@ -121,19 +121,19 @@ export class MasterDataSqliteStorage implements MasterDataStorage {
         .map(row => ({ dataId: String(row.data_id), dataVersion: Number(row.data_version), targetType: String(row.target_type),
           targetId: String(row.target_id), targetVersion: String(row.target_version) })),
     }
-    if (!isMasterDetails(value)) throw new Error('主数据历史或引用格式不正确。')
+    if (!isMasterDetails(value)) throw new Error('通用数据历史或引用格式不正确。')
     return value
   }
 
   private readHistory(row: Record<string, unknown>): MasterData {
-    if (typeof row.id !== 'string' || !Number.isSafeInteger(row.version) || typeof row.data_json !== 'string') throw new Error('主数据历史结构不正确。')
+    if (typeof row.id !== 'string' || !Number.isSafeInteger(row.version) || typeof row.data_json !== 'string') throw new Error('通用数据历史结构不正确。')
     const value: unknown = JSON.parse(row.data_json)
-    if (!isMasterData(value) || value.dataId !== row.id || value.version !== row.version) throw new Error('主数据历史记录格式不正确。')
+    if (!isMasterData(value) || value.dataId !== row.id || value.version !== row.version) throw new Error('通用数据历史记录格式不正确。')
     return { ...value, referenceCount: this.referenceCount(value.dataId) }
   }
 
   addReference(reference: MasterDataReference): boolean {
-    if (!isMasterReference(reference)) throw new Error('主数据引用无效。')
+    if (!isMasterReference(reference)) throw new Error('通用数据引用无效。')
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const current = this.db.prepare(`SELECT 1 FROM master_data WHERE id = ?

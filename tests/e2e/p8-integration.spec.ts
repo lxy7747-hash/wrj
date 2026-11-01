@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' }
 
-test('P8 全局重置、目录定位与十一条路由双视口验收', async ({ page, request }, testInfo) => {
+test('P8 全局重置、目录定位与保留路由双视口验收', async ({ page, request }, testInfo) => {
   /** 保存实际截图文件并挂入机器报告，便于逐页复核。 */
   async function screenshot(name: string): Promise<void> {
     const path = testInfo.outputPath(`${name}.png`)
@@ -26,7 +26,7 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
   await page.getByTestId('login-submit').click()
   await page.waitForURL('**/situation')
 
-  for (const path of ['/situation', '/scenarios', '/batches', '/reports', '/replays', '/admin', '/blueprint', '/admin/data-exchange', '/traceability', '/interactions']) {
+  for (const path of ['/situation', '/scenarios', '/reports', '/replays', '/admin', '/blueprint', '/admin/data-exchange', '/traceability', '/interactions']) {
     await page.goto(path)
     await expect(page.locator('.app-shell')).toBeVisible()
     await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible()
@@ -41,8 +41,6 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
       await page.getByTestId('open-exchange-tools').click()
       await expect(page.getByTestId('interface-contract-table').locator('.interface-item')).toHaveCount(7)
       await page.getByRole('dialog', { name: '接口工具' }).getByRole('button', { name: '关闭此对话框' }).click()
-    } else if (path === '/batches') {
-      await expect(page.getByTestId('batch-run-table').locator('.el-table__row')).toHaveCount(12)
     } else if (path === '/situation') {
       await expect(page.locator('.offline-map')).toBeVisible()
     } else if (path === '/scenarios') {
@@ -77,8 +75,8 @@ test('P8 全局重置、目录定位与十一条路由双视口验收', async ({
     expect(requests.filter((url) => url.endsWith('/api/v1/reset'))).toHaveLength(cycle + 1)
   }
   await page.getByText('状态示例与错误目录', { exact: true }).click()
-  // 06f4df0 新增 INTERNAL_ERROR，目录共 31 项。
-  await expect(page.getByTestId('error-catalog').locator('.el-table__row')).toHaveCount(31)
+  // 完整索引缺失采用独立错误码，目录共 32 项。
+  await expect(page.getByTestId('error-catalog').locator('.el-table__row')).toHaveCount(32)
   await expect(page.getByTestId('error-catalog')).toContainText('INTERNAL_ERROR')
   await page.getByRole('radio', { name: '失败', exact: true }).focus()
   await page.keyboard.press('Space')

@@ -13,8 +13,8 @@ const objectCategories: Record<string, string> = {
   SCENARIO_: '场景', TEMPLATE_: '场景模板',
   SIMULATION_JAMMER_: '干扰设备', SIMULATION_: '仿真运行',
   SCRIPT_PREVIEW: '场景', SCRIPT_PREFLIGHT: '脚本',
-  BATCH_: '仿真批次', REPLAY_: '回放', REPORT_: '报告',
-  MASTER_DATA_: '主数据', THRESHOLD_: '阈值配置', BACKUP_: '备份',
+  REPLAY_: '回放', REPORT_: '报告',
+  MASTER_DATA_EQUIPMENT_: '装备参数', MASTER_DATA_: '通用数据', THRESHOLD_: '阈值配置', BACKUP_: '备份',
 }
 
 export function formatModule(row: AuditRecord): string {
@@ -73,10 +73,6 @@ const actionLabels: Record<string, string> = {
   SIMULATION_CLOSED_LOOP: '执行干扰闭环',
   SIMULATION_JAMMER_COMMAND: '执行干扰设备指令',
   SIMULATION_JAMMER_SYNC: '同步干扰设备参数',
-  BATCH_LIST: '查询仿真批次列表',
-  BATCH_CREATE: '创建仿真批次',
-  BATCH_READ: '读取仿真批次',
-  BATCH_COMMAND: '执行批次控制指令',
   REPLAY_LIST: '查询回放列表',
   REPLAY_READ: '读取回放',
   REPLAY_COMMAND: '执行回放控制指令',
@@ -85,10 +81,17 @@ const actionLabels: Record<string, string> = {
   REPORT_EXPORT: '验证报告导出',
   CONFIRMATION_CREATE: '创建操作确认',
   CONFIRMATION_CONFIRM: '确认操作',
-  MASTER_DATA_LIST: '查询主数据列表',
-  MASTER_DATA_CREATE: '新增主数据',
-  MASTER_DATA_UPDATE: '修改主数据',
-  MASTER_DATA_DELETE: '删除主数据',
+  MASTER_DATA_LIST: '查询通用数据列表',
+  MASTER_DATA_CREATE: '新增通用数据',
+  MASTER_DATA_UPDATE: '修改通用数据',
+  MASTER_DATA_DELETE: '删除通用数据',
+  MASTER_DATA_EQUIPMENT_LIST: '查询装备参数',
+  MASTER_DATA_EQUIPMENT_CREATE: '新增装备参数',
+  MASTER_DATA_EQUIPMENT_UPDATE: '修改装备参数',
+  MASTER_DATA_EQUIPMENT_DISABLE: '停用装备参数',
+  MASTER_DATA_EQUIPMENT_ENABLE: '启用装备参数',
+  MASTER_DATA_EQUIPMENT_DELETE: '删除装备参数',
+  MASTER_DATA_EQUIPMENT_REFERENCE: '维护装备引用',
   BACKUP_LIST: '查询备份列表',
   BACKUP_CREATE: '创建备份',
   BACKUP_RESTORE: '恢复备份',
@@ -97,6 +100,7 @@ const actionLabels: Record<string, string> = {
   FULL_CONFIG_EXPORT: '验证完整配置导出',
   AUDIT_LIST: '查询操作审计日志',
   AUDIT_EXPORT: '导出审计日志',
+  AUDIT_DELETE: '删除审计日志',
   METADATA_READ: '查询能力元数据',
   INTERFACE_LIST: '查询接口列表',
   FRONTEND_CONTRACT_LIST: '查询前端接口规范',
@@ -105,6 +109,8 @@ const actionLabels: Record<string, string> = {
   POSITIONS_READ: '读取节点实时位置',
   LOCAL_REPLAY_READ: '读取本地回放',
 }
+
+export const auditActionOptions = Object.entries(actionLabels).map(([value, label]) => ({ value, label }))
 
 export function formatAction(row: AuditRecord): string {
   const label = actionLabels[row.action]

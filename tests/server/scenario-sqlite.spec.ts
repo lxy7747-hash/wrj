@@ -421,6 +421,31 @@ describe('SQLite 场景开发持久化', () => {
     expect(storage.load()).toEqual(imported.body.data.drafts[0])
   })
 
+  it('版本化场景文件保留界面扩展和原生 ESM 参数，旧版纯配置仍可导入', async () => {
+    const { api } = await start(await databasePath())
+    const source = draft()
+    source.uiExtensions.sensors[0]!.esm = { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 }
+    const imported = await api.post('/api/v1/scenarios/import').set(headers).send({
+      items: [{ format: 'wrj.scenario.snapshot', version: 1, config: source.config, uiExtensions: source.uiExtensions }],
+    }).expect(200)
+    expect(imported.body.data.drafts[0].uiExtensions.sensors[0].esm).toEqual(source.uiExtensions.sensors[0].esm)
+    const legacy = structuredClone(source.config)
+    legacy.scenario.name = '旧版纯配置文件'
+    const legacyImported = await api.post('/api/v1/scenarios/import').set(headers).send({ items: [legacy] }).expect(200)
+    expect(legacyImported.body.data.drafts[0].config.scenario.name).toBe('旧版纯配置文件')
+    expect(legacyImported.body.data.drafts[0].uiExtensions.sensors).not.toHaveProperty('0.esm')
+  })
+
+  it('拒绝未知场景文件外壳，且不修改已保存场景', async () => {
+    const { api, storage } = await start(await databasePath())
+    const original = draft()
+    const saved = (await api.put(endpoint).set(headers).send(update(original)).expect(200)).body.data
+    await api.post('/api/v1/scenarios/import').set(headers).send({
+      items: [{ format: 'wrj.scenario.snapshot', version: 2, config: original.config, uiExtensions: original.uiExtensions }],
+    }).expect(422)
+    expect(storage.load()).toEqual(saved)
+  })
+
   it('数据库不可写时导入失败，原配置不被替换', async () => {
     const { api, storage } = await start(await databasePath())
     const original = draft()

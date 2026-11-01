@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto'
+import type { BigIntStats } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
+import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
 import { fileConnectionTypes, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
 import { buildFileDeviceEvents } from '../../src/features/situation/file-device-events.js'
@@ -21,6 +23,87 @@ const PLATFORM_DISPLAY_NAMES = new Map([
   ['jammer_airborne_01', '机载干扰平台01'],
 ])
 
+/** 完整内存快照仍服务于小文件和旧调用方；较大原始文件走逐行稳定读取。 */
+const FULL_SNAPSHOT_LIMIT_BYTES = 32 * 1024 * 1024
+const STREAM_SOURCE_LIMIT_BYTES = 256 * 1024 * 1024
+const STREAM_MAX_LIMIT_BYTES = 2 * 1024 * 1024 * 1024
+const STREAM_CHUNK_BYTES = 64 * 1024
+const STREAM_LINE_LIMIT_BYTES = 128 * 1024
+const STREAM_METADATA_LIMIT_BYTES = 16 * 1024 * 1024
+const DECLARATION_LIMIT_BYTES = 256 * 1024
+const MESSAGE_BATCH_LIMIT_BYTES = 1024 * 1024
+
+export interface StableTextSource {
+  source: { fileName: string; path: string; bytes: number; sha256: string }
+  waitingForLine: boolean
+}
+
+/**
+ * 在文件身份、长度和修改时间保持不变时才提交逐行读取结果。回调只看到已换行的 UTF-8 文本，
+ * 因此大文件不会被复制成一个 Buffer 或字符串；未完成尾行由调用者明确决定是否接受。
+ */
+export async function readStableUtf8Lines(
+  inputPath: string, onLine: (line: string, lineNumber: number) => void | Promise<void>, maxBytes = STREAM_SOURCE_LIMIT_BYTES,
+): Promise<StableTextSource> {
+  const sourcePath = resolve(inputPath)
+  const handle = await open(sourcePath, 'r')
+  let waitingForLine = false
+  const digest = createHash('sha256')
+  try {
+    const before = await handle.stat({ bigint: true })
+    if (!before.isFile()) throw new Error('输入路径必须为普通文件。')
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > STREAM_MAX_LIMIT_BYTES) throw new Error('流式读取上限无效。')
+    if (before.size > BigInt(maxBytes)) throw new Error(`原始文件超过受保护流式读取上限 ${maxBytes / 1024 / 1024} MiB。`)
+    const size = Number(before.size)
+    const decoder = new TextDecoder('utf-8', { fatal: true })
+    let pending = ''
+    let lineNumber = 0
+    let offset = 0
+    while (offset < size) {
+      const bytes = new Uint8Array(Math.min(STREAM_CHUNK_BYTES, size - offset))
+      const result = await handle.read(bytes, 0, bytes.length, offset)
+      if (result.bytesRead === 0) throw new Error('文件在读取期间被截断，请在写入稳定后重试。')
+      const chunk = bytes.subarray(0, result.bytesRead)
+      digest.update(chunk)
+      offset += result.bytesRead
+      try { pending += decoder.decode(chunk, { stream: true }) } catch { throw new Error('文件不是有效的 UTF-8 文本，请确认文件编码。') }
+      let breakAt = pending.indexOf('\n')
+      while (breakAt >= 0) {
+        const line = pending.slice(0, breakAt).replace(/\r$/, '')
+        pending = pending.slice(breakAt + 1)
+        if (Buffer.byteLength(line, 'utf8') > STREAM_LINE_LIMIT_BYTES) throw new Error('文件含超过 128 KiB 的单行记录，拒绝不受控解析。')
+        lineNumber += 1
+        await onLine(line, lineNumber)
+        breakAt = pending.indexOf('\n')
+      }
+      if (Buffer.byteLength(pending, 'utf8') > STREAM_LINE_LIMIT_BYTES) throw new Error('文件含超过 128 KiB 的未完成记录，拒绝不受控解析。')
+    }
+    try { pending += decoder.decode() } catch { throw new Error('文件末尾不是完整 UTF-8 文本。') }
+    waitingForLine = pending.length > 0
+    const after = await stat(sourcePath, { bigint: true })
+    if (!sameFileVersion(before, after)) throw new Error('文件在读取期间发生变化，请在写入稳定后重试。')
+    return { source: { fileName: basename(sourcePath), path: sourcePath, bytes: size, sha256: digest.digest('hex') }, waitingForLine }
+  } finally { await handle.close() }
+}
+
+type FileVersionStat = Pick<BigIntStats, 'dev' | 'ino' | 'size' | 'mtimeNs' | 'ctimeNs'>
+
+/**
+ * 判断读取前（句柄）与读取后（路径）是否为同一文件的同一版本。
+ * @remarks 部分 Node 版本在 Windows 上按路径 stat 返回 dev=0，而句柄 stat 返回实际卷序列号；
+ * 只有两侧都提供设备号时才比较 dev，替换/改写仍由 inode、长度和纳秒级 mtime/ctime 判定。
+ */
+export function sameFileVersion(before: FileVersionStat, after: FileVersionStat): boolean {
+  if (before.dev !== 0n && after.dev !== 0n && before.dev !== after.dev) return false
+  return before.ino === after.ino && before.size === after.size
+    && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs
+}
+
+/** 大文件只需来源校验时逐块求摘要，不在内存中保留原始字节。 */
+export async function readLocalFileDigest(inputPath: string): Promise<StableTextSource> {
+  return readStableUtf8Lines(inputPath, () => undefined)
+}
+
 async function fileVersion(path: string): Promise<string> {
   const info = await stat(path, { bigint: true })
   if (!info.isFile()) throw new Error('输入路径必须为普通文件。')
@@ -39,19 +122,18 @@ export async function readLocalFileSnapshot(inputPath: string) {
   const handle = await open(sourcePath, 'r')
   let bytes: Buffer
   try {
-    const before = await handle.stat()
+    const before = await handle.stat({ bigint: true })
     if (!before.isFile()) throw new Error('输入路径必须为普通文件。')
-    // ponytail: 完整快照暂限 32 MiB；接入持续增长的大日志时再增加流式读取。
-    if (before.size > 32 * 1024 * 1024) throw new Error('当前完整文件解析上限为 32 MiB。')
-    bytes = Buffer.alloc(before.size)
+    if (before.size > BigInt(FULL_SNAPSHOT_LIMIT_BYTES)) throw new Error('当前完整文件解析上限为 32 MiB；请使用流式读取接口。')
+    bytes = Buffer.alloc(Number(before.size))
     let offset = 0
     while (offset < bytes.length) {
       const chunk = await handle.read(bytes, offset, bytes.length - offset, offset)
       if (chunk.bytesRead === 0) throw new Error('文件在读取期间被截断，请在写入稳定后重试。')
       offset += chunk.bytesRead
     }
-    const after = await stat(sourcePath)
-    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ino !== after.ino) {
+    const after = await stat(sourcePath, { bigint: true })
+    if (!sameFileVersion(before, after)) {
       throw new Error('文件在读取期间发生变化，请在写入稳定后重试。')
     }
   } finally {
@@ -66,6 +148,8 @@ export async function readLocalFileSnapshot(inputPath: string) {
 
 /** 只读解析 AFSIM 事件日志；inputPath 为本机配置或命令行明确指定的路径。 */
 export async function readAfsimLogFile(inputPath: string) {
+  const info = await stat(resolve(inputPath), { bigint: true })
+  if (info.size > BigInt(FULL_SNAPSHOT_LIMIT_BYTES)) return readLargeAfsimLogFile(inputPath)
   const { source, bytes } = await readLocalFileSnapshot(inputPath)
   let text: string
   try {
@@ -76,6 +160,156 @@ export async function readAfsimLogFile(inputPath: string) {
   return {
     source,
     ...parseAfsimEventLog(text),
+  }
+}
+
+/**
+ * 对大量消息事件做分批语法验证与计数，只保留报告/态势所需的非消息元数据。消息明细仍由任务的
+ * 连续 events.csv 留存，不把数十万条消息复制进结果快照。非消息元数据超过固定上限时拒绝发布，
+ * 防止“看似完整”的截断报告。
+ */
+async function readLargeAfsimLogFile(inputPath: string) {
+  const declarations = new Map<string, { text: string; line: number }>()
+  const emittedDeclarations = new Set<string>()
+  const metadata: string[] = []
+  const metadataLineNumbers: number[] = []
+  let metadataBytes = 0
+  let declarationBytes = 0
+  let nativeMessageBlock = false
+  let messageEventCount = 0
+  const messageCounts = new Map<string, number>()
+  const messageIssues: Array<{ severity: 'WARNING'; line: number; message: string; rawText?: string }> = []
+  let messageStart = Infinity
+  let messageEnd = -Infinity
+  let pendingMessageBytes = 0
+  const messageBatches = new Map<string, { rows: Array<{ text: string; line: number }>; bytes: number }>()
+
+  const appendMetadata = (line: string, lineNumber: number) => {
+    metadataBytes += Buffer.byteLength(line, 'utf8') + 1
+    if (metadataBytes > STREAM_METADATA_LIMIT_BYTES) throw new Error('非消息事件元数据超过 16 MiB 受保护上限，拒绝生成不完整报告。')
+    metadata.push(line)
+    metadataLineNumbers.push(lineNumber)
+  }
+  const flushMessageBatch = (type: string) => {
+    const batch = messageBatches.get(type)
+    if (!batch || batch.rows.length === 0) return
+    const declaration = declarations.get(type)
+    if (!declaration) throw new Error(`消息事件 ${type} 缺少字段声明。`)
+    const parsed = parseAfsimEventLog(`${declaration.text}\n${batch.rows.map(row => row.text).join('\n')}`)
+    if (!parsed.valid || parsed.events.length !== batch.rows.length || parsed.events.some(event => event.type !== type)) {
+      throw new Error(`消息事件 ${type} 解析失败，拒绝用计数替代原始记录。`)
+    }
+    for (const issue of parsed.issues) {
+      if (issue.severity !== 'WARNING') continue
+      const sourceLine = issue.line === 1 ? declaration.line : batch.rows[issue.line - 2]?.line
+      if (!sourceLine) throw new Error(`消息事件 ${type} 的诊断行号无法映射回来源。`)
+      messageIssues.push({ severity: 'WARNING', line: sourceLine, message: issue.message,
+        ...(issue.rawText === undefined ? {} : { rawText: issue.rawText }) })
+    }
+    for (const event of parsed.events) {
+      messageEventCount += 1
+      messageCounts.set(type, (messageCounts.get(type) ?? 0) + 1)
+      messageStart = Math.min(messageStart, event.time)
+      messageEnd = Math.max(messageEnd, event.time)
+    }
+    pendingMessageBytes -= batch.bytes
+    batch.rows = []
+    batch.bytes = 0
+  }
+  const flushAllMessageBatches = () => { for (const type of messageBatches.keys()) flushMessageBatch(type) }
+  const validateDeclaration = (text: string) => {
+    const cells = parseCsvLine(text)?.map(cell => cell.trim())
+    if (!cells || !cells[0]?.startsWith('!')) throw new Error('CSV 事件字段声明格式不正确。')
+    const type = cells[0].slice(1).trim()
+    const columns = cells.slice(1).map(cell => {
+      const match = /^(.+)<[^<>]+>$/.exec(cell)
+      if (!match) throw new Error('CSV 事件字段声明格式不正确。')
+      return match[1]!
+    })
+    if (columns[0] !== 'time') columns.unshift('time', 'event')
+    if (!/^[A-Z][A-Z_0-9]*$/.test(type) || columns[1] !== 'event'
+      || (type !== 'MESSAGE_HOP' && new Set(columns).size !== columns.length)) throw new Error('CSV 事件声明重复或字段不唯一。')
+    return type
+  }
+  const source = await readStableUtf8Lines(inputPath, async (line, lineNumber) => {
+    const trimmed = line.trim()
+    if (!trimmed) return
+    if (trimmed.startsWith('!')) {
+      const type = validateDeclaration(trimmed)
+      if (declarations.has(type)) throw new Error(`CSV 事件 ${type} 字段声明重复。`)
+      declarationBytes += Buffer.byteLength(trimmed, 'utf8') + 1
+      if (declarationBytes > DECLARATION_LIMIT_BYTES) throw new Error('CSV 事件字段声明超过 256 KiB 受保护上限。')
+      declarations.set(type, { text: trimmed, line: lineNumber })
+      nativeMessageBlock = false
+      return
+    }
+    const columns = parseCsvLine(trimmed)
+    if (columns && columns.length >= 2) {
+      const type = columns[1]?.trim() ?? ''
+      if (!type) throw new Error('CSV 事件类型为空。')
+      nativeMessageBlock = false
+      if (type.startsWith('MESSAGE_')) {
+        const batch = messageBatches.get(type) ?? { rows: [], bytes: 0 }
+        const bytes = Buffer.byteLength(trimmed, 'utf8') + 1
+        batch.rows.push({ text: trimmed, line: lineNumber }); batch.bytes += bytes; pendingMessageBytes += bytes
+        messageBatches.set(type, batch)
+        if (batch.bytes >= MESSAGE_BATCH_LIMIT_BYTES || pendingMessageBytes >= MESSAGE_BATCH_LIMIT_BYTES) flushAllMessageBatches()
+      } else {
+        const declaration = declarations.get(type)
+        if (!declaration) throw new Error(`CSV 事件 ${type} 缺少字段声明。`)
+        if (!emittedDeclarations.has(type)) { appendMetadata(declaration.text, declaration.line); emittedDeclarations.add(type) }
+        appendMetadata(trimmed, lineNumber)
+      }
+      return
+    }
+    const header = /^(\S+)\s+([A-Z][A-Z_0-9]*)\b/.exec(trimmed)
+    if (header) {
+      nativeMessageBlock = header[2]!.startsWith('MESSAGE_')
+      if (!nativeMessageBlock) appendMetadata(line, lineNumber)
+      else {
+        // 原生多行消息可能带任意扩展续行；不校验就汇总会掩盖损坏。大体量运行要求引擎输出 CSV。
+        throw new Error('超过 32 MiB 的原生多行消息日志暂不支持；请使用 AFSIM CSV 事件输出以生成可验证报告。')
+      }
+      return
+    }
+    if (!nativeMessageBlock) appendMetadata(line, lineNumber)
+  })
+  if (source.waitingForLine) throw new Error('日志含未换行的尾部记录，拒绝将其当作完整仿真结果。')
+  flushAllMessageBatches()
+  const parsed = parseAfsimEventLog(metadata.join('\n'))
+  if (!parsed.valid) throw new Error('日志解析失败，请先检查来源行号。')
+  const sourceLine = (line: number) => {
+    const mapped = metadataLineNumbers[line - 1]
+    if (!mapped) throw new Error('压缩元数据的诊断行号无法映射回来源。')
+    return mapped
+  }
+  const sourceEventId = (id: string) => /^LOG-L\d+$/.test(id) ? `LOG-L${sourceLine(Number(id.slice(5)))}` : id
+  for (const event of parsed.events) {
+    event.sourceLine = sourceLine(event.sourceLine); event.endLine = sourceLine(event.endLine); event.id = sourceEventId(event.id)
+  }
+  for (const node of parsed.nodes) {
+    node.sourceEventId = sourceEventId(node.sourceEventId)
+    if (node.initialState) node.initialState.sourceEventId = sourceEventId(node.initialState.sourceEventId)
+  }
+  for (const system of parsed.communicationSystems) system.sourceEventId = sourceEventId(system.sourceEventId)
+  for (const connection of parsed.connections) connection.sourceEventId = sourceEventId(connection.sourceEventId)
+  parsed.issues = [...parsed.issues.map(issue => ({ ...issue, line: sourceLine(issue.line) })), ...messageIssues]
+  const eventCounts = { ...parsed.summary.eventCounts }
+  for (const [type, count] of messageCounts) eventCounts[type] = (eventCounts[type] ?? 0) + count
+  const times = [parsed.summary.timeRange?.start, parsed.summary.timeRange?.end, messageStart, messageEnd].filter((value): value is number => Number.isFinite(value))
+  return {
+    source: source.source,
+    ...parsed,
+    // 报告统计仍使用全量消息数；调用方必须把 false 透传到回放/界面，不能将空 messageLinks 当成全量动画。
+    messageDetailsComplete: false,
+    messageDetailEventCount: messageEventCount,
+    summary: {
+      ...parsed.summary,
+      eventCount: parsed.summary.eventCount + messageEventCount,
+      eventCounts,
+      timeRange: times.length ? { start: Math.min(...times), end: Math.max(...times) } : null,
+      warningCount: parsed.issues.filter(issue => issue.severity === 'WARNING').length,
+    },
   }
 }
 
@@ -127,7 +361,9 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
   // 业务链路在服务端推导：浏览器不接触原始事件，且 systems 的键与设备类型索引同形。
   const messageLinks = buildFileMessageLinks(parsed.events, new Set(nodes.map(node => node.platformId)), systems).links
   const platformDeletions = buildFilePlatformDeletions(parsed.events, new Set(nodes.map(node => node.platformId)))
-  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections, deviceEvents, messageLinks, platformDeletions }
+  const incompleteMessages = 'messageDetailsComplete' in parsed && parsed.messageDetailsComplete === false
+  const snapshot = { fileName: parsed.source.fileName, sha256: parsed.source.sha256, nodes, connections, deviceEvents, messageLinks, platformDeletions,
+    ...(incompleteMessages ? { messageDetailsComplete: false, messageDetailEventCount: parsed.messageDetailEventCount } : {}) }
   if (!isInitialNodeSnapshot(snapshot)) throw new Error('日志初始位置为空或格式不正确。')
   return snapshot
 }

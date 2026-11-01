@@ -2,12 +2,13 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.vectorgrid'
 
-import { MAP_CONFIG, isSatellitePlatform, resolvePlatformCoordinates } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeGlyph, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { Link, TelemetryFrame } from '../../contracts/domain-models'
+import type { Link, TelemetryFrame, UiLinkStatus } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink, type FileCommunicationType } from '../../features/situation/file-communication-links'
-import { fileJammerRadiusMeters, fileLinkDeviceStatus, type FileDeviceEvent } from '../../features/situation/file-device-events'
+import { fileLinkDeviceStatus, type FileDeviceEvent } from '../../features/situation/file-device-events'
+import { selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
 import type { FileMessageLink } from '../../features/situation/file-message-links'
 import { FILE_MESSAGE_DIRECTION_LABELS } from '../../features/situation/file-message-links'
 import { createOfflineVectorLabelLayer } from './offline-vector-label-layer'
@@ -46,6 +47,8 @@ export interface SituationMapControllerOptions {
   fileMessageLinks?: FileMessageLink[]
   fileDeviceStates?: FileDeviceEvent[]
   configuredLinks?: Link[]
+  configuredLinkStatuses?: ReadonlyMap<string, UiLinkStatus>
+  configuredJammers?: ConfiguredJammerRange[]
   onSelectConfiguredLink?: (link: Link) => void
   onSelectFileLink?: (link: FileCommunicationLink) => void
   onSelectFileMessageLink?: (link: FileMessageLink) => void
@@ -58,6 +61,8 @@ export interface SituationMapControllerOptions {
 
 export interface SituationMapController {
   setConfiguredLinks: (links: Link[] | undefined) => void
+  setConfiguredLinkStatuses: (statuses: ReadonlyMap<string, UiLinkStatus> | undefined) => void
+  setConfiguredJammers: (jammers: ConfiguredJammerRange[] | undefined) => void
   /**
    * 替换地图当前展示的链路集合。
    * @param links 新的链路视图列表。
@@ -354,6 +359,7 @@ const LINK_TYPE_STYLES: Record<SituationLinkView['type'], L.PathOptions> = {
     color: '#b37feb',
     weight: 3,
     opacity: 0.95,
+    dashArray: '12 4 2 4',
   },
   FIBER: {
     color: '#20b2aa',
@@ -394,6 +400,7 @@ const FILE_LINK_TYPE_STYLES: Record<FileCommunicationType, L.PathOptions> = {
   SAT: LINK_TYPE_STYLES.SAT,
   MICROWAVE: LINK_TYPE_STYLES.MICROWAVE,
   DATALINK: LINK_TYPE_STYLES.DATALINK,
+  LASER: LINK_TYPE_STYLES.LASER,
   FIBER: { color: '#20b2aa', weight: 3, opacity: 0.95 },
 }
 
@@ -455,6 +462,8 @@ export function createSituationMapController(options: SituationMapControllerOpti
   const filePulses = new Map<string, FileMessagePulse>()
   let fileDeviceStates = options.fileDeviceStates ?? []
   let configuredLinks = options.configuredLinks
+  let configuredLinkStatuses = options.configuredLinkStatuses
+  let configuredJammers = options.configuredJammers
   let currentNodes = currentFrame?.platforms ?? fileNodes
   let selectedNodeId = options.selectedNodeId
   let focusedTarget: SituationMapFocusTarget | null = null
@@ -526,6 +535,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         layerGroups.interference,
         currentFrame,
         focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '',
+        currentNodes, configuredJammers,
       )
       renderLinks(
         layerGroups.links,
@@ -539,8 +549,8 @@ export function createSituationMapController(options: SituationMapControllerOpti
         focusedTarget = { kind: 'link', targetId: link.id }
         renderBusinessLayers()
         options.onSelectConfiguredLink?.(link)
-      })
-      renderInterference(layerGroups.interference, null, '')
+      }, configuredLinkStatuses)
+      renderInterference(layerGroups.interference, null, focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '', currentNodes, configuredJammers)
     } else {
       // 业务链路只陈述已发生的投递，不因设备启停被隐藏；设备状态在详情中单独呈现。
       renderMessageLinks(layerGroups.links, currentNodes, fileMessageLinks, focusedTarget?.targetId ?? '', link => {
@@ -553,8 +563,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         focusedTarget = { kind: 'link', targetId: link.id }
         options.onSelectFileLink?.(link)
       })
-      const activePlatforms = new Set(fileDeviceStates.filter(event => event.kind === 'JAMMING' && event.active).map(event => event.platformId))
-      renderInterference(layerGroups.interference, null, '', currentNodes.filter(node => activePlatforms.has(node.platformId)), fileDeviceStates, currentNodes)
+      renderInterference(layerGroups.interference, null, '', currentNodes, configuredJammers, fileDeviceStates)
     }
     renderNodes(layerGroups.nodes, currentNodes, highlightedNodeId, handleMapNodeSelect)
   }
@@ -618,9 +627,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
   }
 
   return {
+    setConfiguredJammers(jammers): void {
+      if (!map) return
+      configuredJammers = jammers
+      renderBusinessLayers()
+    },
     setConfiguredLinks(links): void {
       if (!map) return
       configuredLinks = links
+      if (!currentFrame) renderBusinessLayers()
+    },
+    setConfiguredLinkStatuses(statuses): void {
+      if (!map) return
+      configuredLinkStatuses = statuses
       if (!currentFrame) renderBusinessLayers()
     },
     setLinks(links): void {
@@ -742,6 +761,19 @@ export function createSituationMapController(options: SituationMapControllerOpti
         }
         return
       }
+      if (!currentFrame && target.kind === 'interference') {
+        const range = selectInterferenceRanges(currentNodes, null, configuredJammers, fileDeviceStates)
+          .find(range => range.jammerId === target.targetId)
+        const platform = currentNodes.find(node => node.platformId === range?.platformId)
+        if (!platform || !range) return
+        selectedNodeId = platform.platformId
+        focusedTarget = target
+        renderBusinessLayers()
+        map.fitBounds(L.latLng(pointForPlatform(platform, currentNodes)).toBounds(range.radiusMeters * 2), {
+          padding: [...MAP_CONFIG.fitPadding], maxZoom: focusZoom, ...animation,
+        })
+        return
+      }
       if (!currentFrame) return
       if (target.kind === 'link') {
         const link = currentLinks.find((candidate) => candidate.linkId === target.targetId)
@@ -768,8 +800,10 @@ export function createSituationMapController(options: SituationMapControllerOpti
       focusedTarget = target
       renderBusinessLayers()
       const center = L.latLng(pointForPlatform(platform, currentNodes))
-      if (jammer.active) {
-        map.fitBounds(center.toBounds(MAP_CONFIG.activeInterferenceRadiusMeters * 2), {
+      const range = selectInterferenceRanges(currentNodes, currentFrame, configuredJammers)
+        .find(range => range.platformId === platform.platformId && (!range.jammerId || range.jammerId === jammer.jammerId))
+      if (jammer.active && range) {
+        map.fitBounds(center.toBounds(range.radiusMeters * 2), {
           padding: [...MAP_CONFIG.fitPadding],
           maxZoom: focusZoom,
           ...animation,
@@ -921,7 +955,8 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const glyph = document.createElement('span')
   glyph.className = 'situation-map-node__glyph'
-  glyph.textContent = isSat ? '▲' : '●'
+  glyph.textContent = nodeGlyph(platform)
+  glyph.dataset.nodeType = platform.type ?? ''
   glyph.style.fontSize = selected ? '24px' : '20px'
   glyph.style.lineHeight = '20px'
   glyph.style.webkitTextStroke = '1px #06111d'
@@ -1411,17 +1446,23 @@ function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: Situatio
   }))
 }
 
-/** 配置连线使用中性虚线，不把配置启停推断成运行通断或链路质量。 */
-function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void): void {
+/**
+ * 配置连线沿用体制样式，仅已验证质量帧的判定结果可覆盖为异常红色。
+ * 配置启停不代表运行质量，缺少判定时停用仅降低透明度。
+ */
+function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void,
+  statuses?: ReadonlyMap<string, UiLinkStatus>): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
   renderConnections(group, links.flatMap(link => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
+    const status = statuses?.get(link.id)
+    const style = status && status !== 'UP' ? UNAVAILABLE_LINK_STYLE : LINK_TYPE_STYLES[link.type]
     return [{
       id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, links), nodes),
-      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；暂无运行数据`,
-      style: { color: '#8496a3', weight: selectedId === link.id ? 5 : 3, dashArray: '6 6', opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
+      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；${status ? `质量判定：${LINK_STATUS_LABELS[status]}` : '暂无运行数据'}`,
+      style: { ...style, weight: selectedId === link.id ? 5 : 3, opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
       hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
     }]
   }))
@@ -1475,12 +1516,11 @@ function renderFileLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: 
     return [{
       id: `file:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, drawableLinks), nodes),
       name: `${FILE_COMMUNICATION_LABELS[link.type]}登记关联：${source.name} — ${target.name}；${link.records.length} 条登记；状态未知，不表示当前正在转发`,
-      // 登记关联统一降级为半透明点线，与业务链路的实线明显区分。
+      // 登记关联用半透明细线区分业务投递，保留各体制自己的线型。
       style: {
         ...FILE_LINK_TYPE_STYLES[link.type],
         weight: 2,
         opacity: 0.5,
-        dashArray: '2 6',
         className: 'situation-map-file-link',
       },
       hitClass: 'situation-map-file-link-hit', select: () => onSelect(link),
@@ -1518,21 +1558,23 @@ function renderFileDetection(group: L.LayerGroup, nodes: SituationMapNode[]): vo
   }
 }
 
-/** 复用范围圈，文字说明留在详情；不由范围推断设备启停或链路质量。 */
-function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string, fileNodes: SituationMapNode[] = [], fileDeviceStates: FileDeviceEvent[] = [], nodes = frame?.platforms ?? fileNodes): void {
+/** 逐设备复用配置范围圈；不由范围推断设备启停、实测覆盖或链路质量。 */
+function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, selectedJammerId: string,
+  nodes: SituationMapNode[], jammers?: ConfiguredJammerRange[], fileDeviceStates: FileDeviceEvent[] = []): void {
   const entries = interferenceLayers.get(group) ?? new Map<string, { circle: L.Circle; selected: boolean }>()
   interferenceLayers.set(group, entries)
-  const platforms = frame?.platforms.filter(platform => platform.jammers.some(jammer => jammer.active))
-    ?? fileNodes.filter(node => fileJammerRadiusMeters(node.platformId, fileDeviceStates, MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined)
-  const ids = new Set(platforms.map(platform => platform.platformId))
+  const ranges = selectInterferenceRanges(nodes, frame, jammers, fileDeviceStates)
+  const ids = new Set(ranges.map(range => range.id))
   for (const [id, entry] of entries) {
     if (!ids.has(id)) { group.removeLayer(entry.circle); entries.delete(id) }
   }
-  for (const platform of platforms) {
-    const selected = frame?.platforms.find(node => node.platformId === platform.platformId)?.jammers
-      .some(jammer => jammer.active && jammer.jammerId === selectedJammerId) ?? false
-    const radius = frame ? MAP_CONFIG.activeInterferenceRadiusMeters : fileJammerRadiusMeters(platform.platformId, fileDeviceStates, MAP_CONFIG.fileInterferenceRadiusMeters)!
-    let entry = entries.get(platform.platformId)
+  for (const range of ranges) {
+    const platform = nodes.find(node => node.platformId === range.platformId)!
+    const selected = range.jammerId ? range.jammerId === selectedJammerId
+      : frame?.platforms.find(node => node.platformId === platform.platformId)?.jammers
+        .some(jammer => jammer.active && jammer.jammerId === selectedJammerId) ?? false
+    const radius = range.radiusMeters
+    let entry = entries.get(range.id)
     if (entry && !entry.circle.getLatLng().equals(pointForPlatform(platform, nodes))) entry.circle.setLatLng(pointForPlatform(platform, nodes))
     if (entry?.selected === selected && entry.circle.getRadius() === radius) continue
     const color = selected ? '#f5b942' : '#ff526d'
@@ -1544,13 +1586,16 @@ function renderInterference(group: L.LayerGroup, frame: TelemetryFrame | null, s
     if (!entry) {
       const circle = L.circle(pointForPlatform(platform, nodes), { ...style, radius }).addTo(group)
       entry = { circle, selected }
-      entries.set(platform.platformId, entry)
+      entries.set(range.id, entry)
     } else {
       entry.circle.setRadius(radius)
       entry.circle.setStyle(style)
       entry.circle.getElement()?.classList.toggle('situation-map-interference--selected', selected)
       entry.selected = selected
     }
+    const label = document.createElement('span')
+    label.textContent = `${range.jammerId ?? platform.name}：半径 ${radius / 1000} 公里（${range.configured ? '配置范围，非实测覆盖' : '示意范围，缺少设备配置'}）`
+    entry.circle.unbindTooltip().bindTooltip(label, { sticky: true })
   }
 }
 

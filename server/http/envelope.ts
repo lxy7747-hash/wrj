@@ -36,6 +36,7 @@ const DEFAULT_MESSAGES: Record<ApiErrorCode, string> = {
   CORRUPT_FIXTURE: 'The deterministic fixture is corrupt.',
   OUT_OF_RANGE: '参数超出设备能力范围。',
   DEVICE_DISABLED: '干扰设备不可用。',
+  FILTER_UNSUPPORTED: '该历史结果没有完整筛选索引，请重新生成结果。',
   LOOPBACK_ONLY: 'The mock server accepts only its canonical loopback boundary.',
   TOPIC_FORBIDDEN: 'The requested WebSocket topic is not canonical.',
   SEQUENCE_GAP: 'The requested sequence cannot be resumed.',

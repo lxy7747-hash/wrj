@@ -1,16 +1,18 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
+import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 
 vi.mock('node:child_process', { spy: true })
 
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
-const { LocalMissionRunner, engineHasLinkCalc } = await import('../../server/local/' + 'mission-runner.js')
+const { LocalMissionRunner, engineHasLinkCalc, resolveMissionOutputDirectory, readConsoleLogTail, readMissionRunTimeout } = await import('../../server/local/' + 'mission-runner.js')
 const { MissionGuard } = await import('../../server/local/' + 'mission-guard.js')
 const { ScenarioSqliteStorage } = await import('../../server/local/' + 'scenario-sqlite.js')
-const { writeScriptText } = await import('../../server/local/' + 'script-file.js')
+const { writeScriptText, withoutLinkCalc } = await import('../../server/local/' + 'script-file.js')
 const { MissionGenerationError } = await import('../../server/scripts/' + 'mission-generator.js')
+const { APP_CONFIG } = await import('../../src/config/' + 'app.config.js')
 const { default: request } = await import('super' + 'test')
 const { once, EventEmitter } = await import('node:' + 'events')
 const { mkdtemp, mkdir, readFile, readdir, rm, appendFile, writeFile } = await import('node:' + 'fs/promises')
@@ -18,8 +20,12 @@ const { tmpdir } = await import('node:' + 'os')
 const { join, dirname } = await import('node:' + 'path')
 const childProcess = await import('node:' + 'child_process')
 const { env } = await import('node:' + 'process')
+const { default: nodeProcess } = await import('node:' + 'process')
+const { setTimeout: delay } = await import('node:' + 'timers/promises')
 type MissionOutcome = { code: number | null; completedAt?: string; errorMessage?: string }
-type MissionProcess = { pid: number; startedAt: string; entryPath: string; completed: Promise<MissionOutcome>; stop(): Promise<void> }
+type MissionControl = { command: 'PAUSE' | 'RESUME' | 'STEP' } | { command: 'SET_SPEED'; speedMultiplier: number }
+type MissionProcess = { pid: number; startedAt: string; entryPath: string; completed: Promise<MissionOutcome>; control?(command: MissionControl): Promise<void>; stop(): Promise<void>
+  readConsoleLog?(): Promise<{ text: string; bytes: number; truncated: boolean }>; timeoutMs?: number }
 
 // 对接示例拆分：平台定义分布在公共定义与 5 个平台类型文件中。
 const TYPE_FILES = ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt',
@@ -65,7 +71,7 @@ describe('真实 mission 命令边界', () => {
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     expect((await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)).body.data)
       .toMatchObject({ uiStatus: 'RUNNING', canonical: { processId: 7654 }, configLocked: true })
-    expect(start).toHaveBeenCalledExactlyOnceWith(draft, activeRunId)
+    expect(start).toHaveBeenCalledExactlyOnceWith(draft, activeRunId, 'TASK-001')
     await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(409)
     expect(server.auditSnapshot().at(-1)).toMatchObject({ action: 'SIMULATION_COMMAND', objectId: activeRunId, result: 'ERROR' })
     await command({ command: 'PAUSE' }).expect(409)
@@ -82,6 +88,63 @@ describe('真实 mission 命令边界', () => {
     await expect.poll(run).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false,
       canonical: { processId: null, progress: 100 } })
     expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(false)
+  })
+
+  it('只在真实执行器确认运行中命令后更新暂停、继续、单步和倍速投影', async () => {
+    const { handle } = processHandle()
+    handle.control = vi.fn(async () => undefined)
+    const { command } = await apiFor(async () => handle)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    await command({ command: 'PAUSE' }).expect(200)
+    await command({ command: 'STEP', stepCount: 1 }).expect(200)
+    await command({ command: 'RESUME' }).expect(200)
+    await command({ command: 'SET_SPEED', speedMultiplier: 2 }).expect(200)
+    expect(handle.control).toHaveBeenNthCalledWith(1, { command: 'PAUSE' })
+    expect(handle.control).toHaveBeenNthCalledWith(2, { command: 'STEP', stepCount: 1 })
+    expect(handle.control).toHaveBeenNthCalledWith(3, { command: 'RESUME' })
+    expect(handle.control).toHaveBeenNthCalledWith(4, { command: 'SET_SPEED', speedMultiplier: 2 })
+  })
+
+  it('控制台日志接口返回本次运行日志与超时设置，结束后仍可读，拒绝查询参数和未关联运行', async () => {
+    const { handle, result } = processHandle()
+    handle.readConsoleLog = vi.fn(async () => ({ text: 'Simulation complete\n', bytes: 20, truncated: false }))
+    handle.timeoutMs = 60_000
+    const { api, command } = await apiFor(async () => handle)
+    await api.get(`/api/v1/simulations/${activeRunId}/console`).set(headers).expect(409)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const log = await api.get(`/api/v1/simulations/${activeRunId}/console`).set(headers).expect(200)
+    expect(log.body.data).toEqual({ text: 'Simulation complete\n', bytes: 20, truncated: false, timeoutMs: 60_000 })
+    expect(log.headers['cache-control']).toBe('no-store')
+    await api.get(`/api/v1/simulations/${activeRunId}/console?path=C:/x`).set(headers).expect(400)
+    result.resolve({ code: 0, completedAt: '2026-09-23T00:01:00Z' })
+    await expect.poll(async () => (await api.get(`/api/v1/simulations/${activeRunId}`).set(headers)).body.data.uiStatus).toBe('COMPLETED')
+    await api.get(`/api/v1/simulations/${activeRunId}/console`).set(headers).expect(200)
+  })
+
+  it('真实执行器拒绝运行中命令时不伪造投影状态', async () => {
+    const { handle } = processHandle()
+    handle.control = vi.fn(async () => { throw new Error('引擎未确认暂停') })
+    const { command, run } = await apiFor(async () => handle)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    await command({ command: 'PAUSE' }).expect(503)
+    expect(await run()).toMatchObject({ uiStatus: 'RUNNING', canonical: { status: 'RUNNING' } })
+  })
+
+  it('等待引擎控制确认时拒绝并发命令，确认前状态不变；非Error失败也保持原状态', async () => {
+    const { handle } = processHandle(), ack = deferred<void>()
+    handle.control = vi.fn(() => ack.promise)
+    const { command, run } = await apiFor(async () => handle)
+    await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+    const pending = command({ command: 'PAUSE' }).then((response: { status: number }) => response)
+    await expect.poll(() => vi.mocked(handle.control!).mock.calls.length).toBe(1)
+    expect((await run()).uiStatus).toBe('RUNNING')
+    await command({ command: 'SET_SPEED', speedMultiplier: 2 }).expect(409)
+    ack.resolve(); expect((await pending).status).toBe(200)
+    expect((await run()).uiStatus).toBe('PAUSED')
+    handle.control = vi.fn(async () => { throw 'missing acknowledgement' })
+    const failure = await command({ command: 'RESUME' }).expect(503)
+    expect(failure.body.error.message).toContain('未确认')
+    expect((await run()).uiStatus).toBe('PAUSED')
   })
 
   it.each(['generation', 'spawn', 'exit'])('%s 失败不假报运行成功，保留错误并解锁', async kind => {
@@ -179,6 +242,18 @@ function draftForMission(): ScenarioDraft {
 }
 
 describe('本机 mission 执行器', () => {
+  it('连续留存只接受生成包 mapping 中的包内相对输出目录', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-output-mapping-'))
+    const entry = join(root, 'comm_SimSetup.txt')
+    try {
+      await writeFile(entry, '')
+      await writeFile(join(root, 'mapping.json'), JSON.stringify({ output: { resolvedDirectory: 'custom/nested/output' } }))
+      await expect(resolveMissionOutputDirectory(entry)).resolves.toBe(join(root, 'custom', 'nested', 'output'))
+      await writeFile(join(root, 'mapping.json'), JSON.stringify({ output: { resolvedDirectory: '../outside' } }))
+      await expect(resolveMissionOutputDirectory(entry)).rejects.toThrow('越出运行目录')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it.each([
     ['正常完成', 'Simulation complete', '', null, true],
     ['标准输出明确缺少插件', 'Could not find processor WSF_LINK_CALC_PROCESSOR', '', null, false],
@@ -230,6 +305,46 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('运行超时后按停止流程终止本次进程并记录超时原因；控制台日志可读尾部', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-timeout-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8766, kill: vi.fn(() => { queueMicrotask(() => child.emit('close', null)); return true }) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error | null) => void
+      queueMicrotask(() => { child.emit('close', null); callback(null) })
+      return new EventEmitter() as never
+    })
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, async () => true, 50)
+      const process = await runner.start(draftForMission(), 'RUN-TIMEOUT')
+      expect(process.timeoutMs).toBe(50)
+      await appendFile(join(dirname(process.entryPath), 'mission-console.log'), '第一行\nlast line\n')
+      const log = await process.readConsoleLog!()
+      expect(log).toEqual({ text: '第一行\nlast line\n', bytes: new TextEncoder().encode('第一行\nlast line\n').length, truncated: false })
+      const outcome = await process.completed
+      expect(outcome.errorMessage).toContain('超时上限')
+      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toContain('超时上限')
+      expect(runner.safetyStatus()).toBeNull()
+    } finally { vi.mocked(childProcess.execFile).mockReset(); await rm(root, { recursive: true, force: true }) }
+  })
+
+  it('控制台日志超过上限时只读末尾并丢弃首个不完整行；超时配置拒绝非法值', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-console-'))
+    try {
+      const path = join(root, 'mission-console.log')
+      await writeFile(path, `${'x'.repeat(100)}\n中文行\n末行\n`)
+      // 末尾 20 字节含 3 个 x 的残行，残行被丢弃，中文多字节行保持完整。
+      const tail = await readConsoleLogTail(path, 20)
+      expect(tail.truncated).toBe(true)
+      expect(tail.text).toBe('中文行\n末行\n')
+      expect((await readConsoleLogTail(path, 17)).text).toBe('末行\n')
+      expect(readMissionRunTimeout(undefined)).toBe(0)
+      expect(readMissionRunTimeout('0')).toBe(0)
+      expect(readMissionRunTimeout('120')).toBe(120_000)
+      for (const invalid of ['-1', '1.5', 'abc', '86401']) expect(() => readMissionRunTimeout(invalid)).toThrow(RangeError)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it.each([[true, true], [false, false]])('引擎有 WSF_LINK_CALC_PROCESSOR=%s 时运行包保留 link_calc=%s，探测只做一次', async (supported, kept) => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-link-calc-'))
     vi.mocked(childProcess.spawn).mockImplementation(() => {
@@ -250,6 +365,9 @@ describe('本机 mission 执行器', () => {
         const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
         expect(rear.includes('WSF_LINK_CALC_PROCESSOR')).toBe(kept)
         expect(rear).toContain('end_platform_type')
+        expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')))
+          .toMatchObject({ runId: `RUN-${index}`, taskId: 'TASK-LOCAL',
+            linkCalcCompatibility: supported ? 'PRESERVED' : 'MISSING_PROCESSOR_STRIPPED' })
       }
       expect(probe).toHaveBeenCalledOnce()
     } finally { await rm(root, { recursive: true, force: true }) }
@@ -402,7 +520,7 @@ describe('本机 mission 执行器', () => {
         draft.config.platforms.push(relay)
         Object.assign(draft.config.links[0]!, { relayPlatformId: relay.id,
           type: type === 'COMMUNICATION_SATELLITE' ? 'SAT' : 'MICROWAVE', txPower: 1000, antennaGain: { tx: 50, rx: 50 } })
-        Object.assign(draft.config.informationDemand[0]!, { enabled: true, informationType: '状态信息', frequencyHz: 1, volumeMb: 0.000256 })
+        Object.assign(draft.config.informationDemand[0]!, { enabled: true, informationType: '目标指令', frequencyHz: 1, volumeMb: 0.000256 })
         const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
         const outcome = await process.completed
         expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
@@ -474,7 +592,8 @@ describe('本机 mission 执行器', () => {
         link.targetPlatformId = 'CMD-01'
       }
       link.direction = direction
-      Object.assign(demand, { enabled: true, informationType: '侦察信息', volumeMb: 0.000256, frequencyHz, direction,
+      const informationType = direction === 'FORWARD' ? '目标指令' : '侦察信息'
+      Object.assign(demand, { enabled: true, informationType, volumeMb: 0.000256, frequencyHz, direction,
         sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId] })
       const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
       const outcome = await process.completed
@@ -490,7 +609,7 @@ describe('本机 mission 执行器', () => {
         expect(Number(cells[0])).toBeCloseTo(index / frequencyHz, 5)
         expect(cells[2]).toBe(link.sourcePlatformId)
         expect(cells[4]).toMatch(/_src$/)
-        expect(cells[7]).toBe('侦察信息')
+        expect(cells[7]).toBe(informationType)
         expect(cells[8]).toBe('2048')
       })
       received.forEach((cells: string[]) => {
@@ -505,7 +624,7 @@ describe('本机 mission 执行器', () => {
     try {
       const draft = draftForMission()
       const demand = draft.config.informationDemand[0]!
-      Object.assign(demand, { enabled: true, id: 'INFO-001', informationType: '状态信息', volumeMb: 0.000256, frequencyHz: 1 })
+      Object.assign(demand, { enabled: true, id: 'INFO-001', informationType: '目标指令', volumeMb: 0.000256, frequencyHz: 1 })
       const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
       const outcome = await process.completed
       expect(outcome).toMatchObject({ code: 0 })
@@ -551,10 +670,10 @@ describe('本机 mission 执行器', () => {
       expect(outcome.errorMessage).toBeUndefined()
       const directory = dirname(process.entryPath)
       const entry = await readFile(process.entryPath, 'utf8')
+      const platformTypes = await readTypeFiles(directory)
       expect(entry).toContain('clock_rate 4')
-      expect(entry).toContain('  sea_state 3')
-      expect(entry).toContain('  rain_rate 12.5 mm/hr')
-      expect(entry).toContain('  route\n')
+      expect(platformTypes).toContain('  sea_state 3')
+      expect(platformTypes).toContain('  rain_rate 12.5 mm/hr')
       expect(entry).toContain('start_date mar 05 2026')
       expect(entry).toContain('start_time 06:07:08.000')
       const csv = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
@@ -691,9 +810,12 @@ describe('本机 mission 执行器', () => {
       await expect.poll(async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers)).body.data,
         { timeout: 10_000 }).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false, canonical: { processId: null, currentTime: 3, progress: 100 } })
       const directory = join(root, 'runs', (await readdir(join(root, 'runs')))[0]!)
-      expect(await readTypeFiles(directory)).toBe(savedPlatforms)
       const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
       expect(receipt).toMatchObject({ code: 0, scenarioId: 'SCN-001', revision: saved.revision, pid: started.canonical.processId })
+      expect(receipt.linkCalcCompatibility).toMatch(/^(PRESERVED|MISSING_PROCESSOR_STRIPPED)$/)
+      expect(await readTypeFiles(directory)).toBe(receipt.linkCalcCompatibility === 'PRESERVED'
+        ? savedPlatforms
+        : withoutLinkCalc(savedPlatforms))
       expect(await readFile(join(directory, 'mission-console.log'), 'utf8')).toContain('Simulation complete')
       expect(await readFile(join(directory, 'output', 'position.csv'), 'utf8')).toContain('3,AIR-01,')
       const events = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
@@ -734,6 +856,97 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：外部强杀本次 PID 后写非完成记录、清除 guard 并可再次启动', async () => {
+    const evidenceParent = join(nodeProcess.cwd(), 'output', 'local-remediation-20261027', 'process')
+    await mkdir(evidenceParent, { recursive: true })
+    const root = await mkdtemp(join(evidenceParent, 'native-abnormal-exit-'))
+    const runner = new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root)
+    const draft = draftForMission()
+    draft.config.scenario.duration = 3_600
+    draft.config.output.writeInterval = 60
+    const process = await runner.start(draft, 'RUN-NATIVE-KILL', 'TASK-NATIVE-KILL')
+    nodeProcess.kill(process.pid, 'SIGKILL')
+    const outcome = await Promise.race([
+      process.completed,
+      delay(10_000).then(() => { throw new Error(`mission PID ${process.pid} did not close after owned external kill`) }),
+    ])
+    expect(outcome.code).not.toBe(0)
+    expect(outcome.errorMessage).toContain('mission 执行失败')
+    expect(() => nodeProcess.kill(process.pid, 0)).toThrow()
+    expect(runner.safetyStatus()).toBeNull()
+    const receipt = JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8'))
+    expect(receipt.errorMessage).toContain('mission 执行失败')
+    const restarted = await runner.start(draft, 'RUN-NATIVE-KILL-RESTART', 'TASK-NATIVE-KILL')
+    await restarted.stop()
+    expect(runner.safetyStatus()).toBeNull()
+    await writeFile(join(root, 'evidence.json'), JSON.stringify({
+      kind: 'owned-native-external-kill', pid: process.pid, entryPath: process.entryPath, outcome, restartPid: restarted.pid,
+      guardCleared: true, verifiedAt: new Date().toISOString(),
+    }, null, 2))
+  }, 30_000)
+
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：runner STOP 清理本次 PID、写非完成归档并可再次启动', async () => {
+    const evidenceParent = join(nodeProcess.cwd(), 'output', 'local-remediation-20261027', 'process')
+    await mkdir(evidenceParent, { recursive: true })
+    const root = await mkdtemp(join(evidenceParent, 'native-runner-stop-'))
+    const runner = new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root)
+    const draft = draftForMission()
+    draft.config.scenario.duration = 3_600
+    draft.config.output.writeInterval = 60
+    const process = await runner.start(draft, 'RUN-NATIVE-STOP', 'TASK-NATIVE-STOP')
+    await process.stop()
+    const outcome = await Promise.race([
+      process.completed,
+      delay(10_000).then(() => { throw new Error(`runner STOP did not close mission PID ${process.pid}`) }),
+    ])
+    expect(outcome.code).not.toBe(0)
+    expect(() => nodeProcess.kill(process.pid, 0)).toThrow()
+    expect(runner.safetyStatus()).toBeNull()
+    const restarted = await runner.start(draft, 'RUN-NATIVE-STOP-RESTART', 'TASK-NATIVE-STOP')
+    await restarted.stop()
+    expect(runner.safetyStatus()).toBeNull()
+    await writeFile(join(root, 'evidence.json'), JSON.stringify({
+      kind: 'owned-native-runner-stop', pid: process.pid, entryPath: process.entryPath, outcome, restartPid: restarted.pid,
+      guardCleared: true, verifiedAt: new Date().toISOString(),
+    }, null, 2))
+  }, 30_000)
+
+  it('运行期间从自定义输出目录分块连续留存，关闭前已落盘且收尾无重复', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-continuous-'))
+    const child = Object.assign(new EventEmitter(), { pid: 8788, kill: vi.fn(() => true) })
+    vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
+    const originalOutput = { ...APP_CONFIG.scenarioOutput }
+    try {
+      const draft = draftForMission()
+      APP_CONFIG.scenarioOutput.directory = 'custom/continuous-output'
+      const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draft)
+      const output = join(dirname(process.entryPath), 'custom', 'continuous-output', 'scenario_events.csv')
+      const bytes = new TextEncoder().encode(REPORT_EVENT_CSV)
+      await writeFile(output, bytes.subarray(0, Math.floor(bytes.length / 2)))
+      await appendFile(output, bytes.subarray(Math.floor(bytes.length / 2)))
+      const taskArchives = join(root, 'time-series', 'TASK-LOCAL')
+      const archive = join(taskArchives, (await readdir(taskArchives))[0]!)
+      await expect.poll(async () => {
+        try { return (await readFile(join(archive, 'events.csv'), 'utf8')).includes('TASK-LOCAL,1.1,') }
+        catch { return false }
+      }).toBe(true)
+      const duringRun = await readFile(join(archive, 'events.csv'), 'utf8')
+      await appendFile(join(dirname(process.entryPath), 'mission-console.log'), 'Simulation complete\n')
+      child.emit('close', 0)
+      await expect(process.completed).resolves.toMatchObject({ code: 0 })
+      const manifest = JSON.parse(await readFile(join(archive, 'manifest.json'), 'utf8'))
+      expect(manifest).toMatchObject({ mode: 'CONTINUOUS', status: 'COMPLETED', completed: true, contractsComplete: false })
+      expect(manifest.files).toEqual(expect.arrayContaining([expect.objectContaining({ fileName: 'events.csv', rowCount: expect.any(Number) })]))
+      const completedCsv = await readFile(join(archive, 'events.csv'), 'utf8')
+      // close还会提交末尾无换行记录；已落盘前缀不变，最终每个源事件恰好一条。
+      expect(completedCsv.startsWith(duringRun)).toBe(true)
+      const rows = completedCsv.trimEnd().split('\r\n').slice(1)
+      expect(new Set(rows).size).toBe(rows.length)
+      expect(rows).toHaveLength(manifest.files.find((file: { fileName: string }) => file.fileName === 'events.csv').rowCount)
+      expect(completedCsv).toContain(',SIMULATION_COMPLETE,')
+    } finally { Object.assign(APP_CONFIG.scenarioOutput, originalOutput); await rm(root, { recursive: true, force: true }) }
+  })
+
   it('停止的任务不发布结果；旧草稿关闭事件输出不覆盖系统配置', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-cancel-'))
     const capture = vi.fn(async () => {})
@@ -765,6 +978,44 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('Windows runner STOP 终止本次父子进程树，close 后才解除 guard', async () => {
+    if (nodeProcess.platform !== 'win32') return
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-tree-'))
+    const childSource = 'setInterval(() => {}, 1000)'
+    const parentSource = [
+      "const { spawn } = require('node:child_process')",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childSource)}], { stdio: 'ignore', windowsHide: true })`,
+      'console.log(child.pid)',
+      'setInterval(() => {}, 1000)',
+    ].join(';')
+    const external = childProcess.spawn(nodeProcess.execPath, ['-e', parentSource], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    try {
+      const [chunk] = await once(external.stdout!, 'data')
+      const descendantPid = Number(String(chunk).trim())
+      expect(Number.isSafeInteger(descendantPid)).toBe(true)
+      const facade = Object.assign(new EventEmitter(), { pid: external.pid, kill: vi.fn(() => true) })
+      external.once('exit', (code: number | null) => facade.emit('exit', code))
+      external.once('close', (code: number | null) => facade.emit('close', code))
+      vi.mocked(childProcess.spawn).mockImplementationOnce(() => { queueMicrotask(() => facade.emit('spawn')); return facade as never })
+      const runner = new LocalMissionRunner(join(root, 'unused.exe'), root)
+      const process = await runner.start(draftForMission())
+      await expect(process.stop()).resolves.toBeUndefined()
+      await expect(process.completed).resolves.toEqual(expect.objectContaining({}))
+      expect(runner.safetyStatus()).toBeNull()
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        try { nodeProcess.kill(descendantPid, 0) }
+        catch { return }
+        await new Promise(resolve => setTimeout(resolve, 100))
+      }
+      throw new Error(`owned descendant ${descendantPid} remained after runner STOP`)
+    } finally {
+      if (external.pid) {
+        try { nodeProcess.kill(external.pid, 'SIGKILL') } catch { /* 已由本次 runner stop 清理。 */ }
+      }
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('正常终止信号被忽略时限时强制终止，失败写入运行记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-stop-timeout-'))
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn((signal?: string) => {
@@ -774,13 +1025,28 @@ describe('本机 mission 执行器', () => {
     vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
     try {
       const process = await new LocalMissionRunner(join(root, 'mission.exe'), root).start(draftForMission())
+      let taskkillCalls = 0
+      const taskkill = vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+        const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void
+        taskkillCalls += 1
+        queueMicrotask(() => {
+          if (taskkillCalls === 1) callback(new Error('first taskkill did not terminate the process'), '', '')
+          else { callback(null, '', ''); child.emit('close', null) }
+        })
+        return new EventEmitter() as never
+      })
+      taskkill.mockClear()
       vi.useFakeTimers()
       const stopping = process.stop()
       const rejection = expect(stopping).rejects.toThrow('停止超时')
       await vi.advanceTimersByTimeAsync(5_001)
       await rejection
       expect(child.kill).toHaveBeenNthCalledWith(1)
-      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
+      if (nodeProcess.platform === 'win32') {
+        expect(taskkill).toHaveBeenCalledTimes(2)
+        expect(taskkill).toHaveBeenCalledWith('taskkill', ['/PID', '8765', '/T', '/F'], { windowsHide: true, timeout: 1_000 }, expect.any(Function))
+        expect(child.kill).toHaveBeenCalledTimes(1)
+      } else expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
       expect((await process.completed).errorMessage).toContain('停止超时')
       expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')).errorMessage).toContain('停止超时')
     } finally { vi.useRealTimers(); await rm(root, { recursive: true, force: true }) }
@@ -793,6 +1059,14 @@ describe('本机 mission 执行器', () => {
     try {
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
       const process = await runner.start(draftForMission())
+      let taskkillCalls = 0
+      const taskkill = vi.mocked(childProcess.execFile).mockImplementation((...args: unknown[]) => {
+        const callback = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void
+        taskkillCalls += 1
+        queueMicrotask(() => callback(taskkillCalls === 1 ? new Error('first taskkill did not terminate the process') : null, '', ''))
+        return new EventEmitter() as never
+      })
+      taskkill.mockClear()
       let completed = false
       void process.completed.then(() => { completed = true })
       vi.useFakeTimers()
@@ -802,7 +1076,11 @@ describe('本机 mission 执行器', () => {
       await rejection
       expect(completed).toBe(false)
       expect(runner.safetyStatus()?.scenarioId).toBe('SCN-001')
-      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
+      if (nodeProcess.platform === 'win32') {
+        expect(taskkill).toHaveBeenCalledTimes(2)
+        expect(taskkill).toHaveBeenCalledWith('taskkill', ['/PID', '8766', '/T', '/F'], { windowsHide: true, timeout: 1_000 }, expect.any(Function))
+        expect(child.kill).toHaveBeenCalledTimes(1)
+      } else expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL')
       child.emit('close', null)
       expect((await process.completed).errorMessage).toContain('仍未关闭')
       expect(runner.safetyStatus()).toBeNull()

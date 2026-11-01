@@ -6,36 +6,41 @@ import ReportTabs from '../../components/reports/ReportTabs.vue'
 import LocalReportTabs from '../../components/reports/LocalReportTabs.vue'
 import MissionResults from '../../components/situation/MissionResults.vue'
 import { ElMessage } from 'element-plus'
-import type { ReportExportRequest } from '../../contracts/domain-models'
-import { useBatchStore } from '../../stores/batch'
+import type { LocalReportFilter, ReportExportRequest } from '../../contracts/domain-models'
 import { useReportStore } from '../../stores/report'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { formatDateTime } from '../../features/shared/date-time'
 
 const reportStore = useReportStore()
-const batchStore = useBatchStore()
 const telemetryStore = useTelemetryStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
-const { reports, selectedReport, capabilityState, resultMessage, confirmation, exportResult } = storeToRefs(reportStore)
+const { reports, selectedReport, capabilityState, resultMessage, exportResult, resultComparisons, localFilterResult, resultSource } = storeToRefs(reportStore)
 const exportFormat = ref<ReportExportRequest['format']>('HTML')
 const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(capabilityState.value))
+const filterNode = ref(''), filterLink = ref(''), filterStage = ref(''), filterFrom = ref<number | null>(null), filterTo = ref<number | null>(null)
+const filterRangeError = computed(() => filterFrom.value !== null && filterTo.value !== null && filterFrom.value > filterTo.value)
+const localEvidence = computed(() => localFilterResult.value?.report.localEvidence ?? selectedReport.value?.localEvidence)
+const appliedFilterLabel = computed(() => {
+  const filter = localFilterResult.value?.filter
+  return filter && Object.keys(filter).length ? [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && `链路 ${filter.linkId}`,
+    filter.stage && `阶段 ${filter.stage}`,
+    (filter.from !== undefined || filter.to !== undefined) && `${filter.from ?? selectedReport.value?.localEvidence?.startTimeS}～${filter.to ?? selectedReport.value?.localEvidence?.endTimeS} 秒`].filter(Boolean).join('；') : '全部数据'
+})
+function clearFilterInputs(): void { filterNode.value = ''; filterLink.value = ''; filterStage.value = ''; filterFrom.value = null; filterTo.value = null }
 
-/** 加载当前报告所引用的正式批次或遥测证据。 */
+/** 加载当前报告所引用的遥测证据。 */
 async function loadEvidence(): Promise<void> {
   const report = selectedReport.value
   if (report?.localEvidence) {
     telemetryStore.resetToSafeEmpty()
-    batchStore.resetToSafeEmpty()
     exportFormat.value = 'HTML'
+    clearFilterInputs()
+    if (resultSource.value) await reportStore.applyLocalFilter({})
     return
   }
-  if (report?.batchId !== undefined) {
-    telemetryStore.resetToSafeEmpty()
-    await batchStore.loadComparison(report.batchId)
-  } else if (report?.runId !== undefined) {
-    batchStore.resetToSafeEmpty()
+  if (report?.runId !== undefined) {
     await telemetryStore.loadFrame(report.runId, 'F-00042')
   }
 }
@@ -48,7 +53,6 @@ onMounted(async () => {
 watch([archiveId, resultId], () => { void reload() })
 onBeforeUnmount(() => {
   reportStore.resetToSafeEmpty()
-  batchStore.resetToSafeEmpty()
   telemetryStore.resetToSafeEmpty()
 })
 
@@ -78,9 +82,11 @@ async function requestExport(): Promise<void> {
   if (local) { if (ok) ElMessage.success(reportStore.resultMessage); else ElMessage.error(reportStore.resultMessage) }
 }
 
-/** 完成三级批量报告的一次性确认和导出验证。 */
-async function confirmExport(): Promise<void> {
-  await reportStore.confirmExport()
+async function applyLocalFilter(reset = false): Promise<void> {
+  if (!resultSource.value || (!reset && filterRangeError.value)) return
+  if (reset) clearFilterInputs()
+  const filter: LocalReportFilter = { ...(filterNode.value ? { nodeId: filterNode.value } : {}), ...(filterLink.value ? { linkId: filterLink.value } : {}), ...(filterStage.value ? { stage: filterStage.value } : {}), ...(filterFrom.value === null ? {} : { from: filterFrom.value }), ...(filterTo.value === null ? {} : { to: filterTo.value }) }
+  await reportStore.applyLocalFilter(filter)
 }
 
 </script>
@@ -104,12 +110,12 @@ async function confirmExport(): Promise<void> {
             v-for="report in reports"
             :key="report.reportId"
             :value="report.reportId"
-            :label="report.localEvidence ? `本地文件报告 · ${report.reportId.slice(-12)}` : report.runId ? `${report.reportId} · 单次仿真` : `${report.reportId} · 批量聚合`"
+            :label="report.localEvidence ? `本地文件报告 · ${report.reportId.slice(-12)}` : `${report.reportId} · 单次仿真`"
           />
         </el-select>
         <el-select v-model="exportFormat" aria-label="导出格式" :disabled="pending || selectedReport === null">
           <el-option value="HTML" label="HTML" />
-          <el-option v-if="!selectedReport?.localEvidence" value="PDF" label="PDF" />
+          <el-option value="PDF" label="PDF" />
           <el-option value="CSV" label="CSV" />
         </el-select>
         <el-button
@@ -118,7 +124,7 @@ async function confirmExport(): Promise<void> {
           :loading="capabilityState === 'EXECUTING'"
           :disabled="pending || selectedReport === null"
           @click="requestExport"
-        >{{ selectedReport?.localEvidence ? '导出完整报告' : '验证导出' }}</el-button>
+        >{{ selectedReport?.localEvidence ? (appliedFilterLabel === '全部数据' ? '导出完整报告' : '导出筛选报告') : '验证导出' }}</el-button>
         <el-button :disabled="pending" @click="reload">重新加载</el-button>
       </div>
     </header>
@@ -128,11 +134,22 @@ async function confirmExport(): Promise<void> {
       <p v-if="archiveId" data-testid="report-archive-source">归档：{{ archiveId }} · 未绑定场景或运行</p>
       <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
-      <LocalReportTabs v-else-if="selectedReport?.localEvidence" :evidence="selectedReport.localEvidence" />
+      <template v-else-if="selectedReport?.localEvidence">
+        <el-alert v-if="resultSource && (capabilityState === 'ERROR' || !localFilterResult)" type="warning" :closable="false" :title="resultMessage || '该历史结果没有完整筛选索引，请重新生成结果。'" />
+        <p v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
+        <el-form v-if="resultSource" inline class="local-report-filter" aria-label="报告统一筛选">
+          <el-form-item label="节点"><el-select v-model="filterNode" clearable style="width: 160px" placeholder="全部节点"><el-option v-for="node in selectedReport.localEvidence.nodes" :key="node.platformId" :value="node.platformId" :label="node.name" /></el-select></el-form-item>
+          <el-form-item label="链路"><el-select v-model="filterLink" clearable style="width: 180px" :disabled="!localFilterResult" placeholder="全部链路"><el-option v-for="link in localFilterResult?.links ?? []" :key="link" :value="link" :label="link" /></el-select></el-form-item>
+          <el-form-item label="任务阶段"><el-select v-model="filterStage" clearable :disabled="!localFilterResult?.stages.length" style="width: 220px" :placeholder="localFilterResult?.stages.length ? '全部阶段' : '本次运行未设置任务阶段'"><el-option v-for="stage in localFilterResult?.stages ?? []" :key="stage" :label="stage" :value="stage" /></el-select></el-form-item>
+          <el-form-item label="开始时刻（秒）"><el-input-number v-model="filterFrom" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="filterTo" :min="0" :max="selectedReport.localEvidence.endTimeS" /></el-form-item>
+          <el-form-item><el-button type="primary" :disabled="filterRangeError || !localFilterResult" @click="applyLocalFilter()">应用精确筛选</el-button><el-button :disabled="!localFilterResult" @click="applyLocalFilter(true)">重置</el-button></el-form-item>
+        </el-form>
+        <el-alert v-if="filterRangeError" type="error" :closable="false" title="开始时刻不得晚于结束时刻。" />
+        <LocalReportTabs :evidence="localEvidence!" :comparison="resultComparisons" :precise-filter="!!resultSource" :timeline="localFilterResult?.timeline" :timeline-total="localFilterResult?.timelineTotal" />
+      </template>
       <ReportTabs
         v-else-if="selectedReport"
         :report="selectedReport"
-        :batch-runs="batchStore.runs"
         :frame="telemetryStore.frame"
         :events="telemetryStore.events"
       />
@@ -156,19 +173,6 @@ async function confirmExport(): Promise<void> {
       <el-descriptions-item label="文件 SHA-256">{{ exportResult.sha256 }}</el-descriptions-item>
     </el-descriptions>
 
-    <el-dialog
-      :model-value="confirmation !== null"
-      title="确认验证三级批量报告导出"
-      width="min(28rem, calc(100vw - 2rem))"
-      :close-on-click-modal="false"
-      @update:model-value="!$event && reportStore.cancelConfirmation()"
-    >
-      <p>当前报告属于三级数据。确认后仅验证导出权限、格式和水印，不会生成或下载文件。</p>
-      <template #footer>
-        <el-button :disabled="pending" @click="reportStore.cancelConfirmation()">取消</el-button>
-        <el-button type="primary" data-testid="confirm-report-export" :loading="pending" @click="confirmExport">确认验证</el-button>
-      </template>
-    </el-dialog>
   </section>
 </template>
 

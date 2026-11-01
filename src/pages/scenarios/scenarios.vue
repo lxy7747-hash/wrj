@@ -4,11 +4,13 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, GeoPoint, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { applyLinkEdit, synchronizePlatformLinkIds } from '../../features/scenarios/link-edit'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
+import { PLATFORM_POSITION_RULES } from '../../features/scenarios/platform-position-rules'
 import { saveScriptText } from '../../features/scenarios/script-file'
 import { isJammerPlatformType, JAMMER_DEFAULTS, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
-import { linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, SEA_STATE_MAX, type RainTier } from '../../features/scenarios/link-calc-defaults'
+import { linkTypeDefaults, RAIN_TIER_OPTIONS, RAIN_TIER_RATES, type RainTier } from '../../features/scenarios/link-calc-defaults'
 import {
   BUSINESS_INFORMATION_NODE_TYPES,
   INFORMATION_NODE_LIMIT,
@@ -29,12 +31,16 @@ import { useAuthStore } from '../../stores/auth'
 import { useSimulationStore } from '../../stores/simulation'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import ValidationPanel from '../../components/scenarios/ValidationPanel.vue'
+import ScriptPreview from '../../components/scenarios/ScriptPreview.vue'
 import PlatformEditorDialog from '../../components/scenarios/PlatformEditorDialog.vue'
 import LinkEditorDialog from '../../components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../components/scenarios/LinkSettingsPanel.vue'
 import SeaAreaMapPicker from '../../components/scenarios/SeaAreaMapPicker.vue'
 import JammerEditorDialog from '../../components/scenarios/JammerEditorDialog.vue'
+import TaskPhaseEditor from '../../components/scenarios/TaskPhaseEditor.vue'
+import NativeEsmEditor, { NATIVE_ESM_PROBE_DEFAULTS } from '../../components/scenarios/NativeEsmEditor.vue'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
+import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
 
 const scenarioStore = useScenarioStore()
 const props = defineProps<{ managed?: boolean }>()
@@ -56,11 +62,14 @@ const {
   script,
   scriptState,
   scriptResultMessage,
+  preflight,
 } = storeToRefs(scenarioStore)
 const activeTab = ref('scenario')
 const showIds = ref(false)
 const draftReviewed = ref(false)
 const savingScript = ref(false)
+const scriptOutputPath = ref('')
+const scriptGenerationLog = ref<string[]>([])
 const validationAttempted = ref(false)
 const touchedFields = ref(new Set<string>())
 watch(() => draft.value?.config.scenario.id, () => {
@@ -77,7 +86,11 @@ const platformEditorError = ref('')
 const detailPlatformId = ref<string | null>(null)
 const detailPlatform = computed(() => draft.value?.config.platforms.find(platform => platform.id === detailPlatformId.value) ?? null)
 // 重载或切换草稿时关闭详情，避免同编号节点串到另一场景。
-watch(draft, () => { detailPlatformId.value = null }, { flush: 'sync' })
+watch(draft, () => {
+  detailPlatformId.value = null
+  scriptOutputPath.value = ''
+  scriptGenerationLog.value = []
+}, { flush: 'sync' })
 const linkDialogVisible = ref(false)
 const editingLinkIndex = ref<number | null>(null)
 const linkSettingsVisible = ref(false)
@@ -243,10 +256,79 @@ const useStartTimeDatePicker = computed(() => {
  * @returns 对应错误消息；没有错误时返回空字符串。
  * @remarks 只读取当前校验结果，不修改表单或错误集合。
  */
+function sensorExtensionIndex(sensorId: string): number {
+  return draft.value?.uiExtensions.sensors.findIndex(sensor => sensor.sensorId === sensorId) ?? -1
+}
+
+function liveFieldMessage(fieldPath: string): string {
+  return fieldValidationMessage([...liveValidation.value.errors, ...liveValidation.value.warnings], fieldPath)
+}
+
 function issueMessage(fieldPath: string): string {
   if (!showValidationSummary.value && !touchedFields.value.has(fieldPath)) return ''
-  return liveValidation.value.errors.find((issue) => issue.fieldPath === fieldPath)?.message
-    ?? validation.value.errors.find((issue) => issue.fieldPath === fieldPath)?.message ?? ''
+  return fieldValidationMessage([...liveValidation.value.errors, ...liveValidation.value.warnings,
+    ...validation.value.errors, ...validation.value.warnings], fieldPath)
+}
+
+function relativeEditorIssues(result: { errors: ValidationIssue[]; warnings: ValidationIssue[] }, path: string): ValidationIssue[] {
+  const collection = path.slice(0, path.lastIndexOf('['))
+  return [...result.errors, ...result.warnings].flatMap(issue => issue.fieldPath.startsWith(`${path}.`)
+    ? [{ ...issue, fieldPath: issue.fieldPath.slice(path.length + 1) }]
+    : issue.fieldPath === collection ? [{ ...issue, fieldPath: issue.code.includes('_ID_') ? 'id' : 'type' }] : [])
+}
+
+/** 只校验编辑副本；编辑中的无效数据不写入草稿，也不覆盖其他设备的参数。 */
+function validatePlatformFields(platform: Platform): ValidationIssue[] {
+  if (!draft.value) return []
+  const config = structuredClone(toRaw(draft.value.config))
+  const index = editingPlatformIndex.value ?? config.platforms.length
+  config.platforms[index] = structuredClone(toRaw(platform))
+  return relativeEditorIssues(inspectScenarioConfig(config, 'write').result, `platforms[${index}]`)
+}
+
+function validateLinkFields(link: Link, demand?: InformationDemand | null): ValidationIssue[] {
+  if (!draft.value) return []
+  const config = structuredClone(toRaw(draft.value.config))
+  const index = editingLinkIndex.value ?? config.links.length
+  config.links[index] = structuredClone(toRaw(link))
+  synchronizePlatformLinkIds(config, link.id)
+  let demandIndex = -1
+  if (demand) {
+    demandIndex = config.informationDemand.findIndex(item => item.id === demand.id)
+    if (demandIndex < 0) demandIndex = config.informationDemand.length
+    config.informationDemand[demandIndex] = { ...structuredClone(toRaw(demand)), linkId: link.id,
+      sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId], direction: link.direction }
+  }
+  const result = inspectScenarioConfig(config, 'write').result
+  const issues = relativeEditorIssues(result, `links[${index}]`)
+  if (demandIndex >= 0) issues.push(...relativeEditorIssues(result, `informationDemand[${demandIndex}]`)
+    .map(issue => ({ ...issue, fieldPath: `business.${issue.fieldPath}` })))
+  if (link.type === 'SAT' && !config.platforms.some(platform => platform.type === 'COMMUNICATION_SATELLITE'
+    && [link.sourcePlatformId, link.targetPlatformId].includes(platform.id))) {
+    for (const fieldPath of ['sourcePlatformId', 'targetPlatformId']) issues.push({ severity: 'ERROR',
+      code: 'SATELLITE_ENDPOINT_REQUIRED', fieldPath, message: '卫星链路的源平台或目标平台至少有一端必须选择通信卫星。' })
+  }
+  if (linkFrequencyBelowMinimum.value) issues.unshift({ severity: 'ERROR', code: 'LINK_FREQUENCY_INVALID', fieldPath: 'frequency', message: '链路频率必须大于 0 MHz。' })
+  if (linkBandwidthBelowMinimum.value) issues.unshift({ severity: 'ERROR', code: 'LINK_BANDWIDTH_INVALID', fieldPath: 'bandwidth', message: '链路带宽必须大于 0 MHz。' })
+  return issues
+}
+
+function validateJammerFields(jammer: Jammer, extension: JammerUiExtension): ValidationIssue[] {
+  if (!draft.value) return []
+  const config = structuredClone(toRaw(draft.value.config))
+  const extensions = structuredClone(toRaw(draft.value.uiExtensions))
+  const index = editingJammerIndex.value ?? config.jammers.length
+  config.jammers[index] = structuredClone(toRaw(jammer))
+  const existing = extensions.jammers.findIndex(item => item.jammerId === jammer.id)
+  const extensionIndex = existing < 0 ? extensions.jammers.length : existing
+  extensions.jammers[extensionIndex] = { ...structuredClone(toRaw(extension)), jammerId: jammer.id }
+  synchronizePlatformJammerIds(config, jammer.id)
+  const issues = relativeEditorIssues(inspectScenarioConfig(config, 'write').result, `jammers[${index}]`)
+  issues.push(...relativeEditorIssues(inspectScenarioUiExtensions(extensions, config.jammers.map(item => item.id), config.sensors.map(item => item.id)).result,
+    `uiExtensions.jammers[${extensionIndex}]`))
+  if (jammerFrequencyBelowMinimum.value) issues.unshift({ severity: 'ERROR', code: 'JAMMER_FREQUENCY_INVALID', fieldPath: 'frequency', message: '干扰频率必须大于 0 MHz。' })
+  if (jammerBandwidthBelowMinimum.value) issues.unshift({ severity: 'ERROR', code: 'JAMMER_BANDWIDTH_INVALID', fieldPath: 'bandwidth', message: '干扰带宽必须大于 0 MHz。' })
+  return issues
 }
 
 function touchField(event: Event): void {
@@ -339,7 +421,7 @@ function suggestPlatformId(type: PlatformType): string {
 function openNewPlatform(preferredType?: PlatformType | 'business' | 'supporting'): void {
   if (draft.value === null) return
   if (preferredType === 'business' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
-    ElMessage.error('信息节点已达 50 个，不能继续新增。')
+    ElMessage.error(`信息节点已达 ${INFORMATION_NODE_LIMIT} 个，不能继续新增。`)
     return
   }
 
@@ -354,7 +436,7 @@ function openNewPlatform(preferredType?: PlatformType | 'business' | 'supporting
   } else if (preferredType === 'supporting' || businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
     targetType = 'COMMUNICATION_SATELLITE'
     if (preferredType !== 'supporting' && businessNodeCount.value >= INFORMATION_NODE_LIMIT) {
-      ElMessage.info('信息节点已达 50 个上限，当前可新增支撑实体。')
+      ElMessage.info(`信息节点已达 ${INFORMATION_NODE_LIMIT} 个上限，当前可新增支撑实体。`)
     }
   } else {
     targetType = 'AIRBORNE_MISSION_CLUSTER'
@@ -378,8 +460,8 @@ function openNewPlatform(preferredType?: PlatformType | 'business' | 'supporting
     ...(targetType === 'COMMUNICATION_SATELLITE' ? { satelliteType: defaultSatelliteType } : {}),
     category: PLATFORM_TYPE_DOMAINS[targetType] ?? (isBusiness ? 'air' : 'space'),
     initialPosition: {
-      longitude: 0,
-      latitude: 0,
+      longitude: PLATFORM_POSITION_RULES[targetType]?.minLongitude ?? 0,
+      latitude: PLATFORM_POSITION_RULES[targetType]?.minLatitude ?? 0,
       altitude: targetType === 'COMMUNICATION_SATELLITE' ? 550000 : 0,
     },
     waypoints: [],
@@ -600,31 +682,12 @@ function openLinkEditor(link: Link, index: number): void {
 }
 
 /**
- * 根据链路端点同步平台反向关联。
- * @param config 待同步的完整场景配置副本。
- * @param linkId 新增、更新或删除的链路 ID。
- * @returns 无返回值。
- * @sideEffects 先从所有平台移除该 ID，再为当前链路的源端和目标端补回关联。
- */
-function synchronizePlatformLinkIds(config: ScenarioConfig, linkId: string): void {
-  config.platforms.forEach((platform) => {
-    platform.linkIds = platform.linkIds.filter((id) => id !== linkId)
-  })
-  const link = config.links.find((item) => item.id === linkId)
-  if (link === undefined) return
-  new Set([link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId]).forEach((platformId) => {
-    const platform = config.platforms.find((item) => item.id === platformId)
-    if (platform !== undefined) platform.linkIds.push(linkId)
-  })
-}
-
-/**
- * 将链路编辑副本写入当前场景草稿。
+ * 引用相关修改即时保存；未引用基础数据的链路保持原草稿编辑流程。
  * @param linkEditor 新增或编辑的链路副本。
  * @returns 校验并写入成功时返回 `true`，否则返回 `false`。
- * @sideEffects 成功时同步端点平台关联、标记未保存并关闭对话框。
+ * @sideEffects 成功时同步保存修订及端点关联，并关闭对话框；不生成脚本或运行仿真。
  */
-function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): boolean {
+async function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): Promise<boolean> {
   if (draft.value === null || pending.value || draft.value.locked) return false
   linkEditorError.value = ''
   if (linkFrequencyBelowMinimum.value) {
@@ -643,36 +706,38 @@ function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): boolean 
   ))) {
     return showEditorValidationMessage('卫星链路的源平台或目标平台至少有一端必须选择通信卫星。')
   }
-  const candidate = structuredClone(toRaw(draft.value.config))
   const editedLink = structuredClone(toRaw(linkEditor))
-  if (editingLinkIndex.value === null) candidate.links.push(editedLink)
-  else candidate.links[editingLinkIndex.value] = editedLink
   if (!demand) {
     return showEditorValidationMessage('请填写该链路的业务参数。')
   }
-  const demandIndex = candidate.informationDemand.findIndex(item => item.id === demand.id)
-  const previous = candidate.informationDemand[demandIndex]
+  const previous = draft.value.config.informationDemand.find(item => item.id === demand.id)
   if (previous?.linkId && previous.linkId !== editedLink.id) {
     return showEditorValidationMessage('该业务已关联其他链路。')
   }
   const editedDemand = { ...structuredClone(toRaw(demand)), linkId: editedLink.id,
     sourcePlatformId: editedLink.sourcePlatformId, destinationPlatformIds: [editedLink.targetPlatformId], direction: editedLink.direction }
-  if (demandIndex < 0) candidate.informationDemand.push(editedDemand)
-  else candidate.informationDemand[demandIndex] = editedDemand
-  synchronizePlatformLinkIds(candidate, editedLink.id)
-  const issue = inspectScenarioConfig(candidate, 'write').result.errors.find((item) => (
-    item.fieldPath.startsWith('links') || item.fieldPath.endsWith('.linkIds') || item.fieldPath.startsWith('informationDemand')
-  ))
+  const issue = validateLinkFields(editedLink, editedDemand).find(item => item.severity === 'ERROR')
   if (issue !== undefined) {
     return showEditorValidationMessage(issue.message)
   }
 
-  draft.value.config.links = candidate.links
-  draft.value.config.informationDemand = candidate.informationDemand
-  draft.value.config.platforms = candidate.platforms
-  markDirty()
+  const previousLinkId = editingLinkIndex.value === null ? undefined : draft.value.config.links[editingLinkIndex.value]?.id
+  const previousSource = draft.value.config.links.find(link => link.id === previousLinkId)?.parameterSource
+  if (!editedLink.parameterSource && !previousSource) {
+    const candidate = structuredClone(toRaw(draft.value.config))
+    applyLinkEdit(candidate, editedLink, editedDemand, previousLinkId)
+    draft.value.config = candidate
+    markDirty()
+    linkDialogVisible.value = false
+    ElMessage.success(editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。')
+    return true
+  }
+  const epoch = scenarioStore.requestEpoch
+  const saved = await scenarioStore.saveLink(editedLink, editedDemand, previousLinkId, executionLifetime.signal)
+  if (!active || epoch !== scenarioStore.requestEpoch) return false
+  if (!saved) return showEditorValidationMessage(scenarioStore.resultMessage)
   linkDialogVisible.value = false
-  ElMessage.success(editingLinkIndex.value === null ? '链路已新增，保存草稿后生效。' : '链路已更新，保存草稿后生效。')
+  ElMessage.success('链路、关联业务及参数引用已保存。')
   return true
 }
 
@@ -685,6 +750,10 @@ function applyLinkEditor(linkEditor: Link, demand?: InformationDemand): boolean 
  */
 function removeLink(link: Link, index: number): boolean {
   if (draft.value === null || pending.value || draft.value.locked) return false
+  if (link.parameterSource) {
+    ElMessage.error('该链路仍引用基础数据，请先编辑链路，取消引用并保存后再删除。')
+    return false
+  }
   const candidate = structuredClone(toRaw(draft.value.config))
   candidate.informationDemand = candidate.informationDemand.filter(item => item.linkId !== link.id)
   if (candidate.informationDemand.length === 0) {
@@ -926,6 +995,20 @@ function setSensorExtensionValue<K extends keyof SensorUiExtension>(sensorId: st
   markDirty()
 }
 
+/** 原生 ESM 设置存在时，生成器选择 WSF_ESM_SENSOR；缺省记录仍保持雷达兼容路径。 */
+function sensorUsesNativeEsm(sensorId: string): boolean {
+  return sensorExtension(sensorId)?.esm !== undefined
+}
+
+function setNativeEsm(sensorId: string, esm: SensorUiExtension['esm']): void {
+  const extension = sensorExtension(sensorId)
+  if (extension === undefined) return
+  // `esm: undefined` is not a legacy record: the closed validator correctly rejects an explicitly malformed setting.
+  if (esm === undefined) delete extension.esm
+  else extension.esm = esm
+  markDirty()
+}
+
 /** 读取传感器方向的编辑模式。 */
 function sensorDirectionMode(sensorId: string): 'OMNI' | 'DIRECTIONAL' {
   return typeof sensorExtension(sensorId)?.direction === 'number' ? 'DIRECTIONAL' : 'OMNI'
@@ -967,7 +1050,9 @@ function addSensor(): void {
   if (draft.value === null || platform === undefined) return
   const sensorId = nextSensorId()
   draft.value.config.sensors.push({ id: sensorId, platformId: platform.id, frequencyRange: { min: 1000, max: 6000 }, detectionRange: 100000 })
-  draft.value.uiExtensions.sensors.push({ sensorId, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })
+  draft.value.uiExtensions.sensors.push({ sensorId, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true,
+    // 本机 AFSIM 2.9 被动侦测探针的已接受参数；用户仍可在表格中调节。
+    esm: { ...NATIVE_ESM_PROBE_DEFAULTS } })
   synchronizeAllSensorIds()
 }
 
@@ -1044,6 +1129,7 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (naturalField && NATURAL_ENVIRONMENT_FIELD_KEYS.has(naturalField)) return `scenario-env-${naturalField}`
   const directTargets: Record<string, string> = {
     'linkSettings.switchCooldownS': 'link-switch-cooldown',
+    'linkSettings.switchStableChecks': 'link-switch-stable-checks',
     'linkSettings.priority': 'link-priority-0',
     'scenario.id': 'scenario-id',
     'scenario.name': 'scenario-name',
@@ -1210,8 +1296,10 @@ async function saveScenario(): Promise<void> {
       }
       const scriptEpoch = scenarioStore.scriptEpoch
       try {
-        await saveScriptText(script.value)
+        const path = await saveScriptText(script.value)
         if (!current()) return
+        scriptOutputPath.value = path
+        scriptGenerationLog.value = [`已生成 scenario.txt：${path}`, `场景修订：${script.value.configVersion}`, '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
       } catch (error) {
         if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
         return
@@ -1424,6 +1512,9 @@ watch(activeTab, (tab) => {
             />
           </el-form-item>
 
+          <el-form-item data-field-path="scenario.phases" label="任务阶段（可选）" title="按任务计划设置阶段时间，完成后用于报表筛选。相邻阶段共用边界时，该时刻归入后一个阶段；任务结束时刻保留。">
+            <TaskPhaseEditor v-model="draft.config.scenario.phases" :duration="draft.config.scenario.duration" :disabled="draft.locked" @update:model-value="markDirty" />
+          </el-form-item>
           <el-form-item data-field-path="scenario.environment.simClockSpeed" label="仿真时钟倍速（倍）" :error="issueMessage('scenario.environment.simClockSpeed')">
             <el-input-number
                 v-model="draft.config.scenario.environment.simClockSpeed"
@@ -1438,8 +1529,6 @@ watch(activeTab, (tab) => {
             <el-input-number
                 v-model="draft.config.scenario.environment.transmissionDistance"
                 controls-position="right"
-                :min="150"
-                :max="410"
                 data-testid="scenario-trans-distance"
                 @update:model-value="markDirty"
             />
@@ -1483,11 +1572,11 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.rainRateMmPerHour" required label="降雨强度（mm/h）" :error="issueMessage('scenario.environment.rainRateMmPerHour')">
-            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" :min="0" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.rainRateMmPerHour" controls-position="right" data-testid="scenario-rain-rate" @update:model-value="markDirty" />
             <small class="field-hint">0～100 mm/h，超过 100 按 100 封顶</small>
           </el-form-item>
           <el-form-item v-for="field in naturalFields('rain')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
-            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
             <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
@@ -1499,13 +1588,13 @@ watch(activeTab, (tab) => {
               data-testid="scenario-env-cloudEnabled" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudAltitudeMinM" label="云层底边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMinM')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :min="0" :max="30000" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMinM" :max="30000" controls-position="right" data-testid="scenario-cloud-min" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudAltitudeMaxM" label="云层顶边高度（m）" :error="issueMessage('scenario.environment.cloudAltitudeMaxM')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :min="0" :max="30000" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.cloudAltitudeMaxM" :max="30000" controls-position="right" data-testid="scenario-cloud-max" @update:model-value="markDirty" />
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.cloudWaterDensityGM3" label="云中含水量（g/m³）" :error="issueMessage('scenario.environment.cloudWaterDensityGM3')">
-            <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :min="0" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.cloudWaterDensityGM3" :step="0.1" controls-position="right" data-testid="scenario-cloud-water" @update:model-value="markDirty" />
             <small class="field-hint">典型 0.05～2.0 g/m³</small>
           </el-form-item>
         </div>
@@ -1517,7 +1606,7 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
           <el-form-item v-for="field in naturalFields('atmosphere')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
-            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               :disabled="draft.config.scenario.environment.atmosphereModel === 'itu'"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
             <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
@@ -1526,7 +1615,7 @@ watch(activeTab, (tab) => {
         <h4 class="environment-group__title">极化失配（MiscLossDB）</h4>
         <div class="form-grid form-grid--scenario" data-testid="environment-misc">
           <el-form-item v-for="field in naturalFields('misc')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
-            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
             <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
@@ -1534,7 +1623,7 @@ watch(activeTab, (tab) => {
         <h4 class="environment-group__title">海况参数（SeaState）</h4>
         <div class="form-grid form-grid--scenario" data-testid="environment-sea">
           <el-form-item data-field-path="scenario.environment.seaState" required label="海况等级" :error="issueMessage('scenario.environment.seaState')">
-            <el-input-number v-model="draft.config.scenario.environment.seaState" :min="0" :max="SEA_STATE_MAX" :step="1" step-strictly controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
+            <el-input-number v-model="draft.config.scenario.environment.seaState" :step="1" step-strictly controls-position="right" data-testid="scenario-sea-state" @update:model-value="markDirty" />
             <small class="field-hint">1～9 级，0 表示不启用海况损耗</small>
           </el-form-item>
           <el-form-item data-field-path="scenario.environment.multipathEnabled" class="multipath-field" label="海面多径衰落" :error="issueMessage('scenario.environment.multipathEnabled')">
@@ -1563,7 +1652,7 @@ watch(activeTab, (tab) => {
             </el-select>
           </el-form-item>
           <el-form-item v-for="field in naturalFields('sea')" :key="field.key" :data-field-path="`scenario.environment.${field.key}`" :label="field.label" :error="issueMessage(`scenario.environment.${field.key}`)">
-            <el-input-number v-model="draft.config.scenario.environment[field.key]" :min="field.min" :max="field.max ?? Infinity" :step="field.step"
+            <el-input-number v-model="draft.config.scenario.environment[field.key]" :step="field.step"
               controls-position="right" :data-testid="`scenario-env-${field.key}`" @update:model-value="markDirty" />
             <small v-if="field.hint" class="field-hint">{{ field.hint }}</small>
           </el-form-item>
@@ -1631,7 +1720,7 @@ watch(activeTab, (tab) => {
                 <el-tag type="info" data-testid="scenario-selected-satellite">选用卫星：{{ linkSettings.enabledSatellites.TIANTONG ? '天通卫星' : linkSettings.enabledSatellites.SHENTONG ? '神通卫星' : '未选择' }}</el-tag>
               </div>
               <div class="platform-actions">
-                <LinkSettingsPanel v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
+                <LinkSettingsPanel :field-message="path => liveFieldMessage(`linkSettings.${path}`)" v-model:dialog-visible="linkSettingsVisible" :model-value="draft.config.linkSettings" :platforms="draft.config.platforms"
                   :links="draft.config.links" :jammers="draft.config.jammers"
                   :disabled="pending || draft.locked" :type-options="linkTypeOptions" @update:model-value="updateLinkSettings" />
                 <el-button type="primary" :disabled="pending || draft.locked" data-testid="add-link" @click="openNewLink">新增链路</el-button>
@@ -1729,24 +1818,25 @@ watch(activeTab, (tab) => {
               <el-table-column prop="id" label="传感器 ID"/>
               <el-table-column label="类型"><template #default>ESM</template></el-table-column>
               <el-table-column label="归属平台" min-width="160">
-                <template #default="{ row, $index }"><el-select v-model="row.platformId" :data-testid="`sensor-platform-${$index}`" @change="synchronizeAllSensorIds"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></template>
+                <template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].platformId`)"><el-select v-model="row.platformId" :data-testid="`sensor-platform-${$index}`" @change="synchronizeAllSensorIds"><el-option v-for="platform in draft.config.platforms" :key="platform.id" :label="platform.name" :value="platform.id" /></el-select></el-form-item></template>
               </el-table-column>
-              <el-table-column label="最低频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.min" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="最高频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.frequencyRange.max" :min="0.001" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
-              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-input-number v-model="row.detectionRange" :min="Number.MIN_VALUE" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></template></el-table-column>
+              <el-table-column label="最低频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].frequencyRange.min`)"><el-input-number v-model="row.frequencyRange.min" controls-position="right" :data-testid="`sensor-frequency-min-${$index}`" @update:model-value="markDirty" /></el-form-item></template></el-table-column>
+              <el-table-column label="最高频率（MHz）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].frequencyRange.max`)"><el-input-number v-model="row.frequencyRange.max" controls-position="right" :data-testid="`sensor-frequency-max-${$index}`" @update:model-value="markDirty" /></el-form-item></template></el-table-column>
+              <el-table-column label="探测范围（m）" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`sensors[${$index}].detectionRange`)"><el-tooltip :disabled="!sensorUsesNativeEsm(row.id)" content="原生 ESM 无已证实的距离指令；该字段仅保留历史/规划值，不写入引擎。"><el-input-number v-model="row.detectionRange" :disabled="sensorUsesNativeEsm(row.id)" controls-position="right" :data-testid="`sensor-range-${$index}`" @update:model-value="markDirty" /></el-tooltip></el-form-item></template></el-table-column>
               <el-table-column label="方向" min-width="220">
                 <template #default="{ row, $index }">
-                  <div class="sensor-direction-editor">
-                    <el-select :model-value="sensorDirectionMode(row.id)" :data-testid="`sensor-direction-mode-${$index}`" @change="setSensorDirectionMode(row.id, $event)">
+                  <el-form-item class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].direction`)"><div class="sensor-direction-editor">
+                    <el-tooltip :disabled="!sensorUsesNativeEsm(row.id)" content="原生 ESM 无已证实的方向指令；该字段仅保留历史/规划值，不写入引擎。"><el-select :model-value="sensorDirectionMode(row.id)" :disabled="sensorUsesNativeEsm(row.id)" :data-testid="`sensor-direction-mode-${$index}`" @change="setSensorDirectionMode(row.id, $event)">
                       <el-option label="全向" value="OMNI" />
                       <el-option label="定向" value="DIRECTIONAL" />
-                    </el-select>
-                    <el-input-number v-if="sensorDirectionMode(row.id) === 'DIRECTIONAL'" :model-value="sensorExtension(row.id)?.direction" :min="0" :max="360" controls-position="right" :data-testid="`sensor-direction-${$index}`" @update:model-value="setSensorDirection(row.id, $event)" />
-                  </div>
+                    </el-select></el-tooltip>
+                    <el-input-number v-if="sensorDirectionMode(row.id) === 'DIRECTIONAL'" :model-value="sensorExtension(row.id)?.direction" :disabled="sensorUsesNativeEsm(row.id)" controls-position="right" :data-testid="`sensor-direction-${$index}`" @update:model-value="setSensorDirection(row.id, $event)" />
+                  </div></el-form-item>
                 </template>
               </el-table-column>
-              <el-table-column label="探测概率" min-width="90"><template #default="{ row, $index }"><el-input-number :model-value="sensorExtension(row.id)?.probability" :min="0" :max="1" :step="0.01" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? 0)" /></template></el-table-column>
-              <el-table-column label="启用"><template #default="{ row, $index }"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></template></el-table-column>
+              <el-table-column label="探测概率" min-width="90"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].probability`)"><el-tooltip :disabled="!sensorUsesNativeEsm(row.id)" content="原生 ESM 无已证实的概率指令；该字段仅保留历史/规划值，不写入引擎。"><el-input-number :model-value="sensorExtension(row.id)?.probability" :step="0.01" :disabled="sensorUsesNativeEsm(row.id)" controls-position="right" :data-testid="`sensor-probability-${$index}`" @update:model-value="setSensorExtensionValue(row.id, 'probability', $event ?? Number.NaN)" /></el-tooltip></el-form-item></template></el-table-column>
+              <el-table-column label="原生被动侦测" min-width="430"><template #default="{ row }"><NativeEsmEditor :field-message="path => liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].esm.${path}`)" :sensor-id="row.id" :model-value="sensorExtension(row.id)?.esm" :disabled="pending || draft.locked" @update:model-value="setNativeEsm(row.id, $event)" /></template></el-table-column>
+              <el-table-column label="启用"><template #default="{ row, $index }"><el-form-item class="scenario-table-field" :error="liveFieldMessage(`uiExtensions.sensors[${sensorExtensionIndex(row.id)}].enabled`)"><el-switch :model-value="sensorExtension(row.id)?.enabled" :data-testid="`sensor-enabled-${$index}`" @change="setSensorExtensionValue(row.id, 'enabled', $event)" /></el-form-item></template></el-table-column>
               <el-table-column label="操作" fixed="right"><template #default="{ $index }"><el-button link type="danger" :data-testid="`delete-sensor-${$index}`" @click="removeSensor($index)">删除</el-button></template></el-table-column>
             </el-table>
           </section>
@@ -1764,6 +1854,19 @@ watch(activeTab, (tab) => {
             :validation="validation"
             :completed="validationCompleted"
             @locate="locateValidationIssue"
+          />
+          <ScriptPreview
+            v-if="activeTab === 'validation' && script !== null"
+            :state="scriptState"
+            :result-message="scriptResultMessage"
+            :script="script"
+            :preflight="preflight"
+            :locked="draft?.locked ?? false"
+            :dirty="dirty"
+            :preflight-passed="preflight.valid"
+            :output-path="scriptOutputPath"
+            :generation-log="scriptGenerationLog"
+            @preflight="scenarioStore.preflightScript"
           />
           <TemplateLibrary
             v-else-if="activeTab === 'templates'"
@@ -1831,6 +1934,7 @@ watch(activeTab, (tab) => {
     </el-dialog>
 
     <PlatformEditorDialog
+      :validate="validatePlatformFields"
       :show-ids="showIds"
       v-model="platformDialogVisible"
       :platform="platformEditor"
@@ -1851,6 +1955,7 @@ watch(activeTab, (tab) => {
     />
 
     <LinkEditorDialog
+      :validate="validateLinkFields"
       :show-ids="showIds"
       v-model="linkDialogVisible"
       :link="linkEditorLink"
@@ -1863,6 +1968,12 @@ watch(activeTab, (tab) => {
       :link-direction-labels="linkDirectionLabels"
       :minimum-step="LINK_MHZ_MINIMUM_STEP"
       :demand="linkBusiness"
+      :parameter-catalog="scenarioStore.parameterCatalog"
+      :parameter-catalog-state="scenarioStore.parameterCatalogState"
+      :parameter-catalog-message="scenarioStore.parameterCatalogMessage"
+      :reference-disabled="!draft || draft.revision === 0"
+      @load-parameters="scenarioStore.loadParameterCatalog()"
+      @close-parameters="scenarioStore.clearParameterCatalog()"
       @opened="focusValidationField(linkFocusPath)"
       @apply="applyLinkEditor"
       @frequency-input="trackLinkFrequencyInput"
@@ -1870,6 +1981,7 @@ watch(activeTab, (tab) => {
     />
 
     <JammerEditorDialog
+      :validate="validateJammerFields"
       :show-ids="showIds"
       v-model="jammerDialogVisible"
       :jammer="jammerEditorJammer"
@@ -1890,6 +2002,9 @@ watch(activeTab, (tab) => {
 </template>
 
 <style scoped>
+.scenario-table-field { margin-bottom: 0; }
+.scenario-table-field :deep(.el-form-item__error) { position: static; }
+
 .scenario-page {
   display: flex;
   height: 100%;
@@ -2052,7 +2167,7 @@ watch(activeTab, (tab) => {
 
 .form-grid {
   display: grid;
-  gap: 0 1rem;
+  gap: 0 0.75rem;
 }
 
 .form-grid--basic {
@@ -2066,7 +2181,8 @@ watch(activeTab, (tab) => {
 .form-grid--scenario :deep(.el-form-item) {
   display: grid;
   width: 100%;
-  max-width: 30rem;
+  max-width: none;
+  margin-bottom: 0.75rem;
   align-items: start;
   grid-template-columns: 7.5rem minmax(0, 1fr);
 }
@@ -2078,7 +2194,7 @@ watch(activeTab, (tab) => {
   align-items: center;
   justify-content: flex-end;
   margin: 0;
-  padding-right: 0.5rem;
+  padding-right: 0.375rem;
   line-height: 2rem;
   text-align: right;
   white-space: nowrap;

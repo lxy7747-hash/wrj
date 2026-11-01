@@ -4,6 +4,8 @@ import {
   EVENTS_CSV_HEADER,
   LINK_QUALITY_CSV_HEADER,
   LINK_SWITCH_CSV_HEADER,
+  LINK_STATE_CSV_HEADER,
+  LINK_LOSS_CSV_HEADER,
   type CapabilityState,
   type ContractDescriptor,
   type InterfaceMetadata,
@@ -12,7 +14,7 @@ import {
   type ValidationResult,
 } from '../contracts/domain-models'
 import { createCsvExample as buildCsvExample, inspectCsvText, type CsvValidationResult } from '../features/data-exchange/csv-contract'
-import { inspectScenarioConfig } from '../features/scenarios/scenario-validation'
+import { inspectScenarioConfig, parseJsonText } from '../features/scenarios/scenario-validation'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { isLocalMonitorSnapshot, type LocalMonitorSnapshot } from '../features/data-exchange/local-monitor'
 
@@ -67,9 +69,11 @@ const FRONTEND_CONTRACTS: readonly ContractExpectation[] = [
 ]
 
 const CSV_CONTRACTS: readonly ContractExpectation[] = [
-  { name: 'link_quality.csv', version: '1.0', fields: LINK_QUALITY_CSV_HEADER.split(',') },
-  { name: 'events.csv', version: '1.0', fields: EVENTS_CSV_HEADER.split(',') },
-  { name: 'link_switch.csv', version: '1.0', fields: LINK_SWITCH_CSV_HEADER.split(',') },
+  { name: 'link_quality.csv', version: '1.1', fields: LINK_QUALITY_CSV_HEADER.split(',') },
+  { name: 'events.csv', version: '1.1', fields: EVENTS_CSV_HEADER.split(',') },
+  { name: 'link_switch.csv', version: '1.1', fields: LINK_SWITCH_CSV_HEADER.split(',') },
+  { name: 'link_state.csv', version: '1.1', fields: LINK_STATE_CSV_HEADER.split(',') },
+  { name: 'link_loss.csv', version: '1.1', fields: LINK_LOSS_CSV_HEADER.split(',') },
 ]
 
 const INTERFACES: readonly InterfaceMetadata[] = [
@@ -344,19 +348,18 @@ export const useDataExchangeStore = defineStore('dataExchange', {
       }
       this.jsonState = 'VALIDATING'
       await Promise.resolve()
-      let value: unknown
-      try {
-        value = JSON.parse(text) as unknown
-      } catch {
+      const parsed = parseJsonText(text)
+      if (!parsed.valid) {
         this.jsonState = 'ERROR'
         this.jsonValidation = {
           valid: false,
-          errors: [{ severity: 'ERROR', code: 'JSON_SYNTAX_ERROR', message: 'JSON 语法不正确。', fieldPath: '$' }],
+          errors: [parsed.issue],
           warnings: [],
         }
-        this.jsonMessage = 'JSON 语法不正确。'
+        this.jsonMessage = parsed.issue.message
         return false
       }
+      const value = parsed.value
       this.jsonState = 'EXECUTING'
       await Promise.resolve()
       const inspection = inspectScenarioConfig(value)

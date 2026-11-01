@@ -15,7 +15,7 @@ import type {
   ScriptContract,
   ValidationResult,
 } from '../../src/contracts/domain-models'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation'
+import { inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../../src/features/scenarios/scenario-validation'
 import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { configuredScenarioOutput } from '../../src/config/app.config'
 import { getLinkExclusionReason, isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
@@ -30,6 +30,42 @@ const META: PageMeta = {
   pageSize: 1,
   total: 1,
 }
+
+describe('JSON 文本语法定位', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it.each([
+    ['未闭合对象', '{\r\n  "名称": "无人机"\r\n  ', '$[3:3]'],
+    ['未闭合数组', '[\r\n  "中文",\r\n  ', '$[3:3]'],
+  ])('把%s EOF 定位到包含 CRLF 和空白的输入末尾', (_label, text, fieldPath) => {
+    const original = text
+    const result = parseJsonText(text)
+
+    expect(result).toMatchObject({ valid: false, issue: { code: 'JSON_SYNTAX_ERROR', fieldPath } })
+    expect(text).toBe(original)
+  })
+
+  it('使用 UTF-16 列号定位中文和代理对后的语法 token', () => {
+    const result = parseJsonText('{ "😀" 1 }')
+
+    expect(result).toMatchObject({ valid: false, issue: { fieldPath: '$[1:8]' } })
+  })
+
+  it('保留 Firefox 提供的行列信息，并在宿主无法定位时明确保留根诊断', () => {
+    vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
+      throw new SyntaxError('JSON.parse: expected property name at line 2 column 7 of the JSON data')
+    })
+    expect(parseJsonText('{\n  }')).toMatchObject({ valid: false, issue: { fieldPath: '$[2:7]' } })
+
+    vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
+      throw new SyntaxError('JSON parser failed')
+    })
+    expect(parseJsonText('{}')).toMatchObject({
+      valid: false,
+      issue: { fieldPath: '$', message: 'JSON 语法不正确，解析器未返回可定位的位置。' },
+    })
+  })
+})
 
 describe('链路新增参数边界', () => {
   it('旧双选或均未选使用天通默认值，参与原因优先显示链路停用', () => {
@@ -928,7 +964,8 @@ describe('P2-6 场景模板 Store', () => {
     const scenario = useScenarioStore()
 
     await expect(scenario.importTemplate('{')).resolves.toBe(false)
-    expect(scenario.templateResultCode).toBe('INVALID_REQUEST')
+    expect(scenario.templateResultCode).toBe('JSON_SYNTAX_ERROR')
+    expect(scenario.templateResultMessage).toContain('第 1 行，第 2 列')
     await expect(scenario.importTemplate(JSON.stringify({ name: '缺少配置' }))).resolves.toBe(false)
     expect(scenario.templateResultCode).toBe('VALIDATION_FAILED')
     await expect(scenario.copyTemplate('TPL-SCN-001', '模板副本')).resolves.toBe(true)
@@ -1209,6 +1246,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     scenario.draft = scenarioDraft()
     await expect(scenario.importScenarioSnapshot('{')).resolves.toBe(false)
     expect(scenario.resultCode).toBe('VALIDATION_FAILED')
+    expect(scenario.resultMessage).toContain('第 1 行，第 2 列')
     await expect(scenario.importScenarioSnapshot(JSON.stringify([scenario.draft.config]))).resolves.toBe(false)
     expect(scenario.resultCode).toBe('VALIDATION_FAILED')
 
@@ -1628,7 +1666,7 @@ describe('P2-7 传感器、输出与信息需求字段校验', () => {
 })
 
 describe('P2-2 平台与航点字段校验', () => {
-  it('接受 50 个业务信息节点并拒绝第 51 个', () => {
+  it('接受 50 个业务信息节点与第 51 个扩展节点，并在受保护上限后拒绝新增', () => {
     const config = scenarioDraft().config
     const source = structuredClone(config.platforms[3]!)
     for (let index = 0; index < 44; index += 1) {
@@ -1650,6 +1688,17 @@ describe('P2-2 平台与航点字段校验', () => {
       sensorIds: [],
       jammerIds: [],
     })
+    expect(inspectScenarioConfig(config).result.valid).toBe(true)
+    for (let index = 52; index <= 65; index += 1) {
+      config.platforms.push({
+        ...structuredClone(source),
+        id: `CAPACITY-${String(index).padStart(3, '0')}`,
+        name: `容量测试节点 ${index}`,
+        linkIds: [],
+        sensorIds: [],
+        jammerIds: [],
+      })
+    }
     expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({
       code: 'NODE_LIMIT_EXCEEDED',
       fieldPath: 'platforms',
@@ -1774,6 +1823,66 @@ describe('P2-2 平台与航点字段校验', () => {
       message: '关联对象不属于当前场景实体。',
       fieldPath: `platforms[0].${field}`,
     })
+  })
+})
+
+describe('切换防抖参数校验', () => {
+  it('连续稳定次数须为 1～100 的整数，一致性开关须为布尔值；缺省兼容旧场景', () => {
+    const config = scenarioDraft().config
+    config.linkSettings = readLinkSettings(config)
+    expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    config.linkSettings.switchStableChecks = 15
+    config.linkSettings.switchConsistencyCheck = false
+    expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    for (const invalid of [0, 101, 1.5, Number.NaN]) {
+      config.linkSettings.switchStableChecks = invalid
+      expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath), String(invalid)).toContain('linkSettings.switchStableChecks')
+    }
+    config.linkSettings.switchStableChecks = 3
+    ;(config.linkSettings as unknown as Record<string, unknown>).switchConsistencyCheck = 'yes'
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('linkSettings.switchConsistencyCheck')
+  })
+})
+
+describe('跨对象频段冲突检测', () => {
+  const codes = (config: ScenarioDraft['config']) => inspectScenarioConfig(config, 'write').result.warnings
+    .filter(warning => ['LINK_FREQUENCY_CONFLICT', 'JAMMER_BAND_UNMATCHED'].includes(warning.code))
+
+  it('同一接收平台的启用链路频段部分重叠时警告并定位到两条链路频率；同体制同信道共用、错开或停用不报', () => {
+    const config = scenarioDraft().config
+    const index = config.links.findIndex(link => link.id === 'L-DL-05')
+    // 示例 L-DL-03/L-DL-05 同收端、同体制、同频点同带宽，按网络共用信道处理。
+    expect(codes(config)).toEqual([])
+    config.links[index]!.frequency = 2205
+    const conflicts = codes(config)
+    expect(conflicts).toEqual([
+      expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${config.links.findIndex(link => link.id === 'L-DL-03')}].frequency` }),
+      expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${index}].frequency` }),
+    ])
+    expect(conflicts[1]!.message).toContain('L-DL-03')
+    expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
+    config.links[index]!.frequency = 2300
+    expect(codes(config)).toEqual([])
+    config.links[index]!.frequency = 2205
+    config.links[index]!.enabled = false
+    expect(codes(config)).toEqual([])
+  })
+
+  it('同一接收平台不同体制链路同信道也视为互扰', () => {
+    const config = scenarioDraft().config
+    const microwave = config.links.find(link => link.id === 'L-MW-01')!
+    const datalink = config.links.find(link => link.id === 'L-DL-03')!
+    microwave.frequency = datalink.frequency
+    microwave.bandwidth = datalink.bandwidth
+    expect(codes(config).map(warning => warning.code)).toEqual(['LINK_FREQUENCY_CONFLICT', 'LINK_FREQUENCY_CONFLICT', 'LINK_FREQUENCY_CONFLICT'])
+  })
+
+  it('干扰频段未覆盖任何启用链路时警告并定位到干扰频率', () => {
+    const config = scenarioDraft().config
+    expect(codes(config)).toEqual([])
+    config.jammers[0]!.frequency = 50
+    config.jammers[0]!.bandwidth = 1
+    expect(codes(config)).toEqual([expect.objectContaining({ code: 'JAMMER_BAND_UNMATCHED', fieldPath: 'jammers[0].frequency' })])
   })
 })
 
@@ -1962,5 +2071,23 @@ describe('P2-4 干扰设备字段校验', () => {
     expect(inspectScenarioUiExtensions({ jammers: [null, uiExtensions.jammers[1]], sensors: uiExtensions.sensors }, jammerIds, sensorIds).result.errors
       .map((issue) => issue.fieldPath)).toContain('uiExtensions.jammers[0]')
     expect(inspectScenarioUiExtensions({ jammers: [], sensors: null }, []).result.errors[0]?.fieldPath).toBe('uiExtensions')
+  })
+
+  it('仅校验显式原生 ESM 的已证实参数，不要求旧 ESM 记录迁移', () => {
+    const { config, uiExtensions } = scenarioDraft()
+    const jammerIds = config.jammers.map((jammer) => jammer.id)
+    const sensorIds = config.sensors.map((sensor) => sensor.id)
+    const native = structuredClone(uiExtensions)
+    native.sensors[0]!.esm = { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 }
+    expect(inspectScenarioUiExtensions(native, jammerIds, sensorIds).result.valid).toBe(true)
+
+    const invalid = structuredClone(native)
+    invalid.sensors[0]!.esm = { sensitivityDbw: 1, detectionThresholdDb: -1, dwellTimeS: 0, revisitTimeS: Number.NaN }
+    expect(inspectScenarioUiExtensions(invalid, jammerIds, sensorIds).result.errors.map(issue => issue.fieldPath)).toEqual(expect.arrayContaining([
+      'uiExtensions.sensors[0].esm.sensitivityDbw',
+      'uiExtensions.sensors[0].esm.detectionThresholdDb',
+      'uiExtensions.sensors[0].esm.dwellTimeS',
+      'uiExtensions.sensors[0].esm.revisitTimeS',
+    ]))
   })
 })

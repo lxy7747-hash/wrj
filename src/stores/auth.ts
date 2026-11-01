@@ -47,7 +47,6 @@ const PERMISSIONS: readonly Permission[] = [
   'BACKUP_RESTORE',
   'AUDIT_READ',
   'FULL_CONFIG_EXPORT',
-  'BATCH_LEVEL_III_EXPORT',
 ]
 
 /**

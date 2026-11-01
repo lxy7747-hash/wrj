@@ -8,6 +8,17 @@ export const LINK_PARAMETER_DEFAULTS = {
   spatialIsolationDb: 0,
 } as const
 
+export const LINK_DECISION_DEFAULTS = {
+  switchStableChecks: 3,
+  switchCooldownS: 5,
+  switchCooldownFrames: 10,
+  minimumGxbDb: 6,
+  maximumBer: 1e-5,
+  minimumGxbImprovementDb: 3,
+  minimumBerImprovementFactor: 10,
+  minimumSpatialIsolationDb: 0,
+} as const
+
 /**
  * 读取链路设置，旧快照缺省时返回独立的默认值，不修改原场景。
  * @param config 当前场景中的平台和可选链路设置。
@@ -29,7 +40,7 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
       // 单选默认天通；没有对应实体时不自动创建或启用卫星。
       SHENTONG: false,
     },
-    switchCooldownS: 5,
+    ...LINK_DECISION_DEFAULTS,
     priority: ['DATALINK', 'MICROWAVE', 'SAT', 'LASER', 'FIBER'],
   }
   // 旧双选/均未选收敛为默认天通；仅转换合法布尔值的副本，非法输入仍交给校验阻断。

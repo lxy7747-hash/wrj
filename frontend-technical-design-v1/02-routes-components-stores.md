@@ -1,20 +1,19 @@
 # 02 路由、组件与 Store 所有权
 
-## 固定路由表（恰好 11 条）
+## 固定路由表（恰好 10 条）
 
 | Route | Page | 主要组件 | Store | API/Topic | Guard |
 |---|---|---|---|---|---|
 | `/login` | `LoginPage` | `LoginForm`, `AuthFeedback` | `authStore`, `uiStore` | `POST /api/v1/auth/login` | 独立公开布局；成功后 `replace('/situation')` |
 | `/situation` | `SituationPage` | `OfflineSituationMap`, `MetricPanel`, `LinkQualityDialog`, `SimulationToolbar` | `simulationStore`, `telemetryStore`, `uiStore` | simulations/frames；`simulation.frame`, `link.metric`, `runtime.state` | `requirePrincipal` |
 | `/scenarios` | `ScenariosPage` | `ScenarioEditor`, `ValidationPanel`, `TemplateLibrary`, `ScriptPreview` | `scenarioStore`, `uiStore` | scenarios/templates/scripts/contracts | `requirePrincipal`; 官方库写操作另需 ADMIN |
-| `/batches` | `BatchesPage` | `BatchForm`, `BatchRunTable`, `BatchStateCard` | `batchStore`, `scenarioStore`, `uiStore` | batches | `requirePrincipal` |
-| `/reports` | `ReportsPage` | `ReportSourcePicker`, `KpiGrid`, `ReportTabs`, `BatchComparisonTable`, `ExportConfirmationDialog` | `reportStore`, `batchStore`, `telemetryStore`, `authStore`, `uiStore` | reports/batches/simulations/confirmations | `requirePrincipal`; Level III 导出需 ADMIN+确认 |
+| `/reports` | `ReportsPage` | `ReportSourcePicker`, `KpiGrid`, `ReportTabs`, `ExportConfirmationDialog` | `reportStore`, `telemetryStore`, `authStore`, `uiStore` | reports/simulations/confirmations | `requirePrincipal`; 仅 Level II 普通报告可导出 |
 | `/replays` | `ReplaysPage` | `ReplaySelector`, `ReplayTimeline`, `ReplayToolbar`, `ReplayEventDetail` | `replayStore`, `telemetryStore`, `uiStore` | replays | `requirePrincipal` |
 | `/admin` | `AdminPage` | `MasterDataPanel`, `UserRolePanel`, `BackupRestoreWizard`, `AuditPanel`, `FullConfigExportPanel`, `ArchivePanel`, `HealthPanel` | `adminStore`, `dataExchangeStore`, `authStore`, `uiStore` | admin groups including `/api/v1/admin/config/export`; 本机监测 `/api/v1/data-exchange/monitor` | `requireAdmin`; operator 重定向 `/blueprint` 并显示拒绝原因 |
 | `/blueprint` | `BlueprintPage` | `CapabilityCardGrid`, `InterfaceContractTable`, `DecisionRegister` | `traceabilityStore`, `authStore`, `uiStore` | meta capabilities/interfaces/decisions | `requirePrincipal` |
 | `/admin/data-exchange` | `DataExchangePage` | `CsvContractCard`, `ScenarioJsonPanel`, `WebSocketContractCard`, `ProcessContractCard`, `InterfaceContractTable` | `dataExchangeStore`, `scenarioStore`, `simulationStore`, `telemetryStore` | contracts/csv；scenario JSON；`/ws/v1`；runtime state | `requirePrincipal`; 通过 `/admin` 系统管理壳进入，其他管理子页仍需 `requireAdmin` |
 | `/traceability` | `TraceabilityPage` | `TraceFilterBar`, `RequirementTraceTable`, `InterfaceTraceTable` | `traceabilityStore`, `uiStore` | meta capabilities/interfaces/routes | `requirePrincipal` |
-| `/interactions` | `InteractionsPage` | `StateFixtureGallery`, `ErrorCatalogPanel`, `ContractExamples` | `authStore`, `scenarioStore`, `simulationStore`, `telemetryStore`, `batchStore`, `reportStore`, `replayStore`, `adminStore`, `traceabilityStore`, `uiStore` | contracts/meta/reset | `requirePrincipal` |
+| `/interactions` | `InteractionsPage` | `StateFixtureGallery`, `ErrorCatalogPanel`, `ContractExamples` | `authStore`, `scenarioStore`, `simulationStore`, `telemetryStore`, `reportStore`, `replayStore`, `adminStore`, `traceabilityStore`, `uiStore` | contracts/meta/reset | `requirePrincipal` |
 
 未知路径重定向 `/login` 不新增命名路由。`requirePrincipal` 只检查内存 principal；`requireAdmin` 同时在 UI 产生 `PERMISSION_DENIED` 证据。真正操作仍由 mock 的 `x-rbac` 重验。
 
@@ -31,7 +30,6 @@
 | `simulationStore` | RUN-001 UI/canonical 状态、time/progress/mode/speed、config lock、command feedback | `create`, `command`, `setSpeed`, `step`, `clearTimers`, `resetProjection`, `resetToSafeEmpty` | telemetry 数组、浏览器定时期望值 |
 | `telemetryStore` | 按 frameId 的平台/链路/事件、topic sequence、新鲜度 | `connect`, `subscribe`, `acceptEnvelope`, `markDisconnected`, `disconnectAndReset`, `loadFrame`, `resetToSafeEmpty` | 仿真命令、地图实例 |
 | `dataExchangeStore` | CSV/JSON 校验结果、合同目录、七类接口元数据和进程可见投影 | `loadContracts`, `validateCsv`, `parseScenarioJson`, `inspectProcess`, `resetToSafeEmpty` | 真实文件句柄、操作系统进程、场景草稿副本 |
-| `batchStore` | batch form、BATCH-001、12 行、状态、selected run | `validate`, `create`, `command`, `loadComparison`, `resetToSafeEmpty` | report export 权限/确认 |
 | `reportStore` | 报告列表、source、KPI view-model、tabs、confirmation、export result | `selectSource`, `load`, `requestExport`, `confirmExport`, `cancelConfirmation`, `invalidateConfirmation`, `resetToSafeEmpty` | 文件 Blob/下载 URL |
 | `replayStore` | REPLAY-001、游标、速度、state、事件选择 | `load`, `play`, `pause`, `seek`, `step`, `setSpeed`, `stopPlaybackTimer`, `resetToSafeEmpty` | RUN 原始数据写操作 |
 | `adminStore` | master data、users、audit、backup/restore/full-config-export fixture、confirmation、archives、health | `loadAll`, `mutateMasterData`, `mutateUser`, `runBackupFixture`, `runRestoreFixture`, `requestFullConfigExport`, `filterAudit`, `invalidateConfirmation`, `resetToSafeEmpty` | 真实秘密、文件、DB handle |
@@ -49,7 +47,7 @@
 - `ScenariosPage` 对 `ScenarioConfig` 使用单一 canonical 编辑副本，并以独立 `ScenarioUiExtensions` 保存干扰器/传感器 UI 扩展；保存/预览前必经 AJV+业务规则。四类业务信息节点合计支持 50 个，支撑实体不计数；新增第 51 个业务信息节点以 `NODE_LIMIT_EXCEEDED` 阻断且草稿不改变。
 - `DataExchangePage` 作为系统管理下的共享子功能，集中承载 CSV、场景 JSON、本机消息和 AFSIM 进程四项数据交换能力；页面通过本机 Mock 加载合同并复用 `telemetryStore` 连接回环 WebSocket，但不读写真实文件、不启动操作系统进程。操作员可进入本子功能，其他管理子页仍拒绝访问。
 - 场景实体类型控件按“业务信息节点”和“支撑实体”分组，`category` 只以“部署域”标签展示。校验存在警告而无错误时，预览脚本前必须完成一次性确认；存在错误时不得发起确认或预览。
-- `ReportsPage` 的普通/批次 source 选择一次性替换 KPI、时序曲线、表格和导出策略；普通报告曲线只消费 `Report.timeSeries` 正式时序点，批次报告没有时序点时显示空态；禁止混合 RUN-001 与 BATCH-001 数据。
+- `ReportsPage` 只消费单次运行的 `Report.timeSeries` 正式时序点；Level III 历史记录可读但不可导出，禁止混入已移除的批次来源。
 - `ReplaysPage` 使用 RUN-001 快照的只读投影；回放动作不发布 simulation control topic。
 - `InteractionsPage` 只调用 `uiStore.resetAllProjections()`，不得直接请求 reset API 或逐个写业务 store。
 
@@ -62,7 +60,7 @@ P8 已由 `src/stores/ui.ts` 实施该协调流程，`App.vue` 登出清理复�
 1. 将 reset 状态置为 EXECUTING；调用 `telemetryStore.disconnectAndReset()` 关闭并标记旧 WS，调用 `simulationStore.clearTimers()` 与 `replayStore.stopPlaybackTimer()` 清理计时器。
 2. 调用 `reportStore.invalidateConfirmation()` 与 `adminStore.invalidateConfirmation()`，取消所有一次性确认上下文。
 3. 通过 API adapter 调用 `POST /api/v1/reset`；页面和其他 store 不得直接调用该 endpoint。
-4. 成功后依次执行 `authStore.refreshPermissions()`、`scenarioStore.load()`、`simulationStore.resetProjection()`、`telemetryStore.loadFrame()`、`batchStore.loadComparison()`、`reportStore.load()`、`replayStore.load()`、`adminStore.loadAll()`、`traceabilityStore.loadMetadata()`。
+4. 成功后依次执行 `authStore.refreshPermissions()`、`scenarioStore.load()`、`simulationStore.resetProjection()`、`telemetryStore.loadFrame()`、`reportStore.load()`、`replayStore.load()`、`adminStore.loadAll()`、`traceabilityStore.loadMetadata()`。
 5. 最后清除 UI pending/error/dialog，记录 reset SUCCESS，并允许 telemetryStore 重新建立订阅。
 
 任一步失败都进入 reset ERROR；WS 保持断开、计时器保持清除、确认上下文保持失效，并对九个业务 store 全部调用 `resetToSafeEmpty()`，不得保留成功/失败混合的半初始化状态。ERROR 显示 correlationId 和重试入口；重试仍从步骤 1 开始。

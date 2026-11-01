@@ -56,7 +56,7 @@ export const MAP_CONFIG = {
   curveSampleCount: 32,
   /** 经纬网线的间隔，单位为度。 */
   gridIntervalDegrees: 0.5,
-  /** 激活干扰范围传给 Leaflet circle 的半径，单位为米。 */
+  /** 没有设备配置的遥测帧使用的示意半径（米），不代表实测覆盖。 */
   activeInterferenceRadiusMeters: 12000,
   /** 文件干扰节点范围圈的半径（显示约定，非 CSV 遥测、非引擎参数）：24 海里 × 1852 米/海里。 */
   fileInterferenceRadiusMeters: 24 * 1852,
@@ -84,7 +84,57 @@ export const MAP_CONFIG = {
   temporarySatelliteSpreadRadiusDegrees: 0.05,
   /** 右侧全链路状态表的 SNR / BER 列；只控制展示，不删除质量数据。 */
   showLinkQualityColumns: false as boolean,
+  /**
+   * 节点类型图标：场景平台类型及已确认的文件平台类型各用不同符号。
+   * 未登记类型（含无法确定所属类型的文件记录）回退为圆点，不猜测类型。
+   */
+  nodeTypeGlyphs: {
+    // 仅用基本几何符号，麒麟/Windows 常用中文字体均可显示，避免表情字体差异。
+    REAR_COMMAND_NODE: '■',
+    FORWARD_RELAY_NODE: '◆',
+    GROUND_CLUSTER_COMMAND_NODE: '▼',
+    AIRBORNE_MISSION_CLUSTER: '●',
+    COMMUNICATION_SATELLITE: '▲',
+    GROUND_JAMMER_DETECTION_STATION: '★',
+    AIRBORNE_JAMMER_PLATFORM: '☆',
+  } as Readonly<Record<string, string>>,
+  /**
+   * AFSIM 文件平台类型（参考模型名）到场景节点类型的对应；与生成器写出的参考模型名一致
+   * （见 hot-links.ts），并兼容本地场景导入使用的旧类型名。未列出的类型不猜测。
+   */
+  filePlatformTypes: {
+    REAR_COMM_PLATFORM: 'REAR_COMMAND_NODE',
+    COMMAND_VEHICLE_PLATFORM: 'GROUND_CLUSTER_COMMAND_NODE',
+    MISSION_UAV_PLATFORM: 'AIRBORNE_MISSION_CLUSTER',
+    TIAN_TONG_SAT: 'COMMUNICATION_SATELLITE',
+    SHEN_TONG_SAT: 'COMMUNICATION_SATELLITE',
+    GROUND_JAMMER_STATION: 'GROUND_JAMMER_DETECTION_STATION',
+    Command_Vehicle_PLATFORM: 'REAR_COMMAND_NODE',
+    Drone_MISSION_AIRCRAFT: 'AIRBORNE_MISSION_CLUSTER',
+  } as Readonly<Record<string, string>>,
+  nodeFallbackGlyph: '○',
 } as const
+
+/**
+ * 归一节点类型：场景类型原样返回，已知文件参考模型名换算为场景类型，卫星按编号兜底识别。
+ * @returns 场景节点类型；无法确定时返回 undefined。
+ */
+export function nodeCategory(platform: { type?: string; platformId?: string; id?: string; name?: string }): string | undefined {
+  if (isSatellitePlatform(platform)) return 'COMMUNICATION_SATELLITE'
+  const type = platform.type ?? ''
+  if (Object.hasOwn(MAP_CONFIG.nodeTypeGlyphs, type)) return type
+  return MAP_CONFIG.filePlatformTypes[type]
+}
+
+/**
+ * 返回节点类型对应的地图图标符号。
+ * @param platform 节点类型与编号。
+ * @returns 已识别类型的符号，未识别类型返回空心圆。
+ */
+export function nodeGlyph(platform: { type?: string; platformId?: string; id?: string; name?: string }): string {
+  const category = nodeCategory(platform)
+  return (category && MAP_CONFIG.nodeTypeGlyphs[category]) || MAP_CONFIG.nodeFallbackGlyph
+}
 
 /**
  * 判断指定平台或节点是否为卫星。

@@ -28,6 +28,18 @@ async function click(text: string): Promise<void> {
   await flushPromises()
 }
 
+function selectByAria(label: string) {
+  const control = wrapper!.findAllComponents({ name: 'ElSelect' })
+    .find((component) => component.find(`input[aria-label="${label}"]`).exists())
+  expect(control, `缺少 ${label} 选择框`).toBeDefined()
+  return control!
+}
+
+async function selectValue(label: string, value: string): Promise<void> {
+  selectByAria(label).vm.$emit('update:modelValue', value)
+  await flushPromises()
+}
+
 describe('P7 系统管理面板', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
@@ -36,7 +48,37 @@ describe('P7 系统管理面板', () => {
   })
   afterEach(() => { wrapper?.unmount(); wrapper = undefined; ElMessage.closeAll(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-  it.each([true, false])('主数据保存与删除通过真实 Store 反馈，成功=%s', async success => {
+  it('旧通用记录保留读取，设备字段提示归属并禁止保存，手动整理为公共字段后恢复保存', async () => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    const legacy = { dataId: 'LEGACY-EQUIPMENT-DEFAULT', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+      content: { name: '旧参数', description: '', entries: [{ key: 'bandwidthMHz', valueType: 'NUMBER' as const, value: 5, unit: 'MHz' }] } }
+    const updated = { ...legacy, version: 2, content: { ...legacy.content, entries: [{ key: 'noiseFigureDb', valueType: 'NUMBER' as const, value: 5, unit: 'dB' }] } }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-OWNERSHIP', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: 1 },
+    }) }) as Response
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([legacy])).mockResolvedValueOnce(response(updated))
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('编辑')
+    expect(wrapper.get('[data-testid="master-equipment-field-warning"]').text()).toContain('bandwidthMHz 属于设备固有参数')
+    expect(wrapper.get('[data-testid="master-save"]').attributes('disabled')).toBeDefined()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await selectValue('参数键', 'noiseFigureDb')
+    expect(wrapper.find('[data-testid="master-equipment-field-warning"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="master-save"]').attributes('disabled')).toBeUndefined()
+    expect(legacy.content.entries[0]!.key).toBe('bandwidthMHz')
+    const parameterValue = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(component => component.find('input[aria-label="参数值"]').exists())
+    parameterValue!.vm.$emit('update:modelValue', 5)
+    await flushPromises()
+    await click('保存')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(store.masterData).toEqual([updated])
+  })
+
+  it.each([true, false])('通用数据保存与删除通过真实 Store 反馈，成功=%s', async success => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().role = 'ADMIN'
@@ -57,24 +99,29 @@ describe('P7 系统管理面板', () => {
     vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
     wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
     await flushPromises()
+    expect(wrapper.attributes('aria-label')).toBe('基础数据管理')
+    expect(wrapper.get('h3').text()).toBe('基础数据管理')
+    expect(wrapper.get('header.maintenance-toolbar').text()).not.toContain('已完成')
     expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
     expect(message).not.toHaveBeenCalled()
     await click('编辑')
     await click('保存')
     if (success) {
       expect(message).toHaveBeenCalledTimes(1)
-      expect(message).toHaveBeenLastCalledWith('主数据已保存，当前版本 2。')
+      expect(message).toHaveBeenLastCalledWith('通用数据已保存。')
+      expect(wrapper.get('header.maintenance-toolbar').text()).not.toContain('已完成')
       expect(store.maintenance.master).toMatchObject({ state: 'SUCCESS', message: '' })
       expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
     } else {
-      expect(wrapper.get('[data-testid="master-feedback"]').text()).toContain('保存结果与当前主数据不一致。')
+      expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+      expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toContain('保存结果与当前通用数据不一致。')
       expect(message).not.toHaveBeenCalled()
       await click('取消')
     }
     await click('删除')
     if (success) {
       expect(message).toHaveBeenCalledTimes(2)
-      expect(message).toHaveBeenLastCalledWith('主数据已删除。')
+      expect(message).toHaveBeenLastCalledWith('通用数据已删除。')
       expect(store.maintenance.master).toMatchObject({ state: 'SUCCESS', message: '' })
       expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
       expect(store.masterData).toEqual([])
@@ -88,11 +135,43 @@ describe('P7 系统管理面板', () => {
     expect(message).toHaveBeenCalledTimes(success ? 2 : 0)
   })
 
-  it('主数据空消息不渲染空白提示条', async () => {
+  it('通用数据空消息不渲染空白提示条', async () => {
     useAdminStore().maintenance.master = { state: 'EMPTY', message: '', fieldPath: '' }
     wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+  })
+
+  it('不显示解释及填写规则，新增校验失败仍在弹框定位字段且不发保存请求', async () => {
+    useAuthStore().role = 'ADMIN'
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('新增通用数据')
+    await click('保存')
+    const message = '编号不能为空或全是空格。'
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe(message)
+    expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+    expect(wrapper.findAll('.el-alert').filter(alert => alert.text() === message)).toHaveLength(1)
+    expect(wrapper.get('.master-field-help').text()).toContain('不能为 . 或 ..')
+    expect(wrapper.find('.master-entry-help').exists()).toBe(false)
+    expect(wrapper.find('.master-entries > .maintenance-note').exists()).toBe(false)
+    await wrapper.get('[data-testid="master-id"]').setValue('DICT-VALIDATION')
+    await click('保存')
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe('名称不能为空或全是空格。')
+    await wrapper.get('[data-testid="master-name"]').setValue('公共接收参数')
+    await click('保存')
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe('参数条目不能为空，请至少新增并填写一条参数。')
+    await click('新增条目')
+    await click('保存')
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe('第 1 条参数：参数键不能为空。')
+    await selectValue('参数键', 'noiseFigureDb')
+    await click('保存')
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe('第 1 条参数：数值不能为空，且必须为有效的整数或小数。')
+    expect(wrapper.find('[data-testid="master-feedback"]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-testid="master-editor-feedback"]')).toHaveLength(1)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -124,9 +203,9 @@ describe('P7 系统管理面板', () => {
     expect(wrapper.get(`[data-testid="${section}-feedback"]`).text()).toContain('系统管理服务暂时不可用，请稍后重试。')
   })
 
-  it('主数据列表筛选、内容编辑、新增与删除确认复用既有组件', async () => {
+  it('通用数据列表筛选、内容编辑、新增与删除确认复用既有组件', async () => {
     const store = useAdminStore()
-    const writable = { dataId: 'DICT-UI', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
+    const writable = { dataId: 'DICT-UI', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: false,
       content: { name: '界面参数', description: '', entries: [{ key: 'sample', valueType: 'TEXT' as const, value: 'value' }] } }
     store.masterData = [writable]
     const save = vi.spyOn(store, 'saveMasterData').mockResolvedValueOnce(false).mockResolvedValue(true)
@@ -135,26 +214,29 @@ describe('P7 系统管理面板', () => {
     wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     expect(wrapper.text()).toContain('DICT-UI')
-    await wrapper.get('input[aria-label="主数据检索"]').setValue('missing')
-    expect(wrapper.text()).toContain('暂无匹配的主数据')
-    await wrapper.get('input[aria-label="主数据检索"]').setValue('')
+    await wrapper.get('input[aria-label="通用数据检索"]').setValue('missing')
+    expect(wrapper.text()).toContain('暂无匹配的通用数据')
+    await wrapper.get('input[aria-label="通用数据检索"]').setValue('')
     wrapper.findAllComponents({ name: 'ElSelect' })[0]!.vm.$emit('update:modelValue', 'DEVICE')
     await flushPromises()
-    expect(wrapper.text()).toContain('暂无匹配的主数据')
+    expect(wrapper.text()).toContain('暂无匹配的通用数据')
     wrapper.findAllComponents({ name: 'ElSelect' })[0]!.vm.$emit('update:modelValue', '')
     await flushPromises()
     await click('编辑')
     expect(wrapper.get('[data-testid="master-id"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.findComponent({ name: 'ElSwitch' }).props('modelValue')).toBe(false)
     await click('保存')
     expect(save).toHaveBeenLastCalledWith(writable, false)
     await click('取消')
-    await click('新增主数据')
+    await click('新增通用数据')
+    expect(wrapper.get('.master-editor-basics').findAll('.el-form-item__label').map(label => label.text())).toEqual(['编号', '类型', '名称'])
+    expect(wrapper.findComponent({ name: 'ElSwitch' }).exists()).toBe(false)
     await wrapper.get('[data-testid="master-id"]').setValue(' DEVICE-P7 ')
     await wrapper.get('[data-testid="master-name"]').setValue('新增字典')
     await click('新增条目')
-    await wrapper.get('input[aria-label="参数键"]').setValue('enabled')
+    await selectValue('参数键', 'noiseFigureDb')
     await click('保存')
-    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ dataId: 'DEVICE-P7', version: 1, referenceCount: 0, content: expect.objectContaining({ name: '新增字典' }) }), true)
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ dataId: 'DEVICE-P7', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true, content: expect.objectContaining({ name: '新增字典' }) }), true)
     await click('删除')
     expect(run).not.toHaveBeenCalled()
     await click('删除')
@@ -164,7 +246,187 @@ describe('P7 系统管理面板', () => {
     expect(store.loadMaintenance).toHaveBeenCalledWith('master')
   })
 
-  it('主数据编辑副本支持数值和布尔条目切换，取消不污染原记录', async () => {
+  it('体制参数、参数字典及枚举独立显示与筛选，编辑保留原分类、说明和引用', async () => {
+    const store = useAdminStore()
+    vi.mocked(store.loadMaintenance).mockRestore()
+    useAuthStore().role = 'ADMIN'
+    const communication = { dataId: 'COMM-LEGACY', kind: 'COMMUNICATION_SYSTEM' as const, version: 1, referenceCount: 1, active: true,
+      content: { name: '旧通信体制', description: '保留已有说明。', entries: [{ key: 'noiseFigureDb', valueType: 'NUMBER' as const, value: 3, unit: 'dB' }] } }
+    const dictionary = { dataId: 'DICT-PUBLIC', kind: 'PARAMETER_DICTIONARY' as const, version: 1, referenceCount: 0, active: true,
+      content: { name: '公共参数字典', description: '', entries: [{ key: 'rxBandwidthMHz', valueType: 'NUMBER' as const, value: 10, unit: 'MHz' }] } }
+    const enumeration = { dataId: 'ENUM-MODULATION', kind: 'ENUMERATION' as const, version: 1, referenceCount: 0, active: true,
+      content: { name: '调制枚举', description: '', entries: [{ key: 'modulation.QPSK', valueType: 'TEXT' as const, value: 'QPSK' }] } }
+    const updated = { ...communication, version: 2, content: { ...communication.content, name: '更新后的通信体制' } }
+    const response = (data: unknown): Response => ({ ok: true, json: async () => ({ ok: true, data,
+      meta: { requestId: 'REQ-PUBLIC-KIND', generatedAt: fixtures.epoch, page: 1, pageSize: 10, total: 3 },
+    }) }) as Response
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([communication, dictionary, enumeration])).mockResolvedValueOnce(response(updated))
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    const table = wrapper.get('[data-testid="master-table"]')
+    expect(table.text()).toContain('COMM-LEGACY')
+    expect(table.text()).toContain('DICT-PUBLIC')
+    expect(table.text()).toContain('体制参数')
+    expect(table.text()).toContain('参数字典')
+    expect(table.text()).not.toContain('公共链路参数')
+    await selectValue('通用数据类型筛选', 'COMMUNICATION_SYSTEM')
+    expect(table.text()).toContain('COMM-LEGACY')
+    expect(table.text()).not.toContain('DICT-PUBLIC')
+    expect(table.text()).not.toContain('ENUM-MODULATION')
+    await selectValue('通用数据类型筛选', 'PARAMETER_DICTIONARY')
+    expect(table.text()).toContain('DICT-PUBLIC')
+    expect(table.text()).not.toContain('COMM-LEGACY')
+    expect(table.text()).not.toContain('ENUM-MODULATION')
+    await selectValue('通用数据类型筛选', 'ENUMERATION')
+    expect(table.text()).toContain('ENUM-MODULATION')
+    expect(table.text()).not.toContain('COMM-LEGACY')
+    expect(table.text()).not.toContain('DICT-PUBLIC')
+    await selectValue('通用数据类型筛选', '')
+    await click('编辑')
+    const basics = wrapper.get('.master-editor-basics')
+    expect(basics.findAll('.el-form-item__label').map(label => label.text())).toEqual(['编号', '类型', '名称', '状态'])
+    expect(basics.find('textarea').exists()).toBe(false)
+    expect(basics.find('.el-descriptions').exists()).toBe(false)
+    await wrapper.get('[data-testid="master-name"]').setValue('更新后的通信体制')
+    await click('保存')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).data).toMatchObject({ dataId: 'COMM-LEGACY', kind: 'COMMUNICATION_SYSTEM', version: 1, referenceCount: 1, content: { description: '保留已有说明。' } })
+    expect(store.masterData.find(item => item.dataId === 'COMM-LEGACY')).toMatchObject({ kind: 'COMMUNICATION_SYSTEM', version: 2 })
+  })
+
+  it('参数字典从中文字段选择，自动带出类型和单位；换字段后必须重新填写数值', async () => {
+    const store = useAdminStore()
+    useAuthStore().role = 'ADMIN'
+    const source = { dataId: 'DICT-PARAMETER-FORMAT', kind: 'PARAMETER_DICTIONARY' as const, version: 1, referenceCount: 0, active: true,
+      content: { name: '接收参数', description: '', entries: [{ key: 'noiseFigureDb', valueType: 'NUMBER' as const, value: 5, unit: 'dB', minimum: 0, maximum: 10 }] } }
+    store.masterData = [structuredClone(source)]
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('编辑')
+    expect(selectByAria('参数键').props('modelValue')).toBe('noiseFigureDb')
+    await selectValue('参数键', 'rxAntennaGainDbi')
+    const parameterValue = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(component => component.find('input[aria-label="参数值"]').exists())
+    expect(parameterValue).toBeDefined()
+    expect(parameterValue!.props('modelValue')).toBeUndefined()
+    expect((wrapper.get('input[placeholder="单位（可选）"]').element as HTMLInputElement).value).toBe('dBi')
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })).toHaveLength(3)
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).slice(1).every(component => component.props('modelValue') === undefined)).toBe(true)
+    await click('保存')
+    expect(wrapper.get('[data-testid="master-editor-feedback"]').text()).toBe('第 1 条参数：数值不能为空，且必须为有效的整数或小数。')
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(store.masterData).toEqual([source])
+    await click('取消')
+    expect(store.masterData).toEqual([source])
+  })
+
+  it('切换类型只提供所属字段，不匹配的原有条目保留回显且不能再次选入', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('新增通用数据')
+    await click('新增条目')
+    const enabledKeys = () => selectByAria('参数键').findAllComponents({ name: 'ElOption' })
+      .filter(option => !option.props('disabled')).map(option => option.props('value'))
+    expect(enabledKeys()).toEqual(['txAntennaGainDbi', 'rxAntennaGainDbi', 'antennaGainCorrectionDb', 'noiseFigureDb'])
+    await selectValue('参数键', 'frequencyMHz')
+    expect(selectByAria('参数键').props('modelValue')).toBe('')
+    await selectValue('参数键', 'noiseFigureDb')
+    wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 5)
+    await selectValue('编辑通用数据类型', 'COMMUNICATION_SYSTEM')
+    expect(enabledKeys()).toEqual(['frequencyMHz', 'rxFrequencyMHz', 'rxBandwidthMHz'])
+    expect(selectByAria('参数键').props('modelValue')).toBe('noiseFigureDb')
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.props('modelValue')).toBe(5)
+    const oldOption = selectByAria('参数键').findAllComponents({ name: 'ElOption' }).find(option => option.props('value') === 'noiseFigureDb')
+    expect(oldOption?.props('disabled')).toBe(true)
+    expect(oldOption?.props('label')).toBe('接收机噪声系数（原有字段）')
+    await selectValue('参数键', 'frequencyMHz')
+    expect(selectByAria('参数键').props('modelValue')).toBe('frequencyMHz')
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.props('modelValue')).toBeUndefined()
+    await selectValue('编辑通用数据类型', 'PARAMETER_DICTIONARY')
+    expect(enabledKeys()).toEqual(['txAntennaGainDbi', 'rxAntennaGainDbi', 'antennaGainCorrectionDb', 'noiseFigureDb'])
+    expect(selectByAria('参数键').props('modelValue')).toBe('frequencyMHz')
+    expect(fetchMock).not.toHaveBeenCalled()
+    await click('取消')
+  })
+
+  it.each([
+    { kind: 'COMMUNICATION_SYSTEM', keys: ['frequencyMHz', 'rxFrequencyMHz', 'rxBandwidthMHz'] },
+    { kind: 'PARAMETER_DICTIONARY', keys: ['txAntennaGainDbi', 'rxAntennaGainDbi', 'antennaGainCorrectionDb', 'noiseFigureDb'] },
+  ])('$kind 已选字段在其他条目中置灰，全部选完不能新增，移除后恢复可选', async ({ kind, keys }) => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('新增通用数据')
+    await selectValue('编辑通用数据类型', kind)
+    await click('新增条目')
+    await selectValue('参数键', keys[0]!)
+    wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.vm.$emit('update:modelValue', 5)
+    await click('新增条目')
+    const selects = () => wrapper!.findAllComponents({ name: 'ElSelect' }).filter(component => component.find('input[aria-label="参数键"]').exists())
+    const option = (index: number, key: string) => selects()[index]!.findAllComponents({ name: 'ElOption' }).find(item => item.props('value') === key)!
+    expect(option(0, keys[0]!).props('disabled')).toBe(false)
+    expect(option(1, keys[0]!).props('disabled')).toBe(true)
+    selects()[1]!.vm.$emit('update:modelValue', keys[0])
+    await flushPromises()
+    expect(selects()[1]!.props('modelValue')).toBe('')
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' })[0]!.props('modelValue')).toBe(5)
+    for (let index = 1; index < keys.length; index++) {
+      if (index > 1) await click('新增条目')
+      selects()[index]!.vm.$emit('update:modelValue', keys[index])
+      await flushPromises()
+    }
+    const addButton = wrapper.findAllComponents({ name: 'ElButton' }).find(button => button.text() === '新增条目')!
+    expect(addButton.props('disabled')).toBe(true)
+    addButton.vm.$emit('click', new MouseEvent('click'))
+    await flushPromises()
+    expect(selects()).toHaveLength(keys.length)
+    await wrapper.findAll('.master-entry')[0]!.get('button').trigger('click')
+    await flushPromises()
+    expect(addButton.props('disabled')).toBe(false)
+    expect(option(0, keys[0]!).props('disabled')).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+    await click('取消')
+  })
+
+  it('旧别名和未知参数原样回显，取消编辑不会改写其类型、单位、数值、边界或引用历史', async () => {
+    const store = useAdminStore()
+    const source = { dataId: 'COMM-ALIASES', kind: 'COMMUNICATION_SYSTEM' as const, version: 4, referenceCount: 1, active: true,
+      content: { name: '历史通信参数', description: '', entries: [
+        { key: 'rxFrequency', valueType: 'NUMBER' as const, value: 2200, unit: 'MHz', minimum: 2000, maximum: 2400 },
+        { key: 'rxBandwidth', valueType: 'NUMBER' as const, value: 15 },
+        { key: 'legacyText', valueType: 'TEXT' as const, value: '保留原文本' },
+        { key: 'legacySwitch', valueType: 'BOOLEAN' as const, value: true },
+      ] } }
+    store.masterData = [structuredClone(source)]
+    wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
+    await flushPromises()
+    await click('编辑')
+    const keys = wrapper.findAllComponents({ name: 'ElSelect' }).filter(component => component.find('input[aria-label="参数键"]').exists())
+    expect(keys).toHaveLength(4)
+    expect(keys.map(component => component.props('modelValue'))).toEqual(['rxFrequency', 'rxBandwidth', 'legacyText', 'legacySwitch'])
+    const types = wrapper.findAllComponents({ name: 'ElSelect' }).filter(component => component.find('input[aria-label="参数值类型"]').exists())
+    expect(types.map(component => component.props('modelValue'))).toEqual(['NUMBER', 'NUMBER', 'TEXT', 'BOOLEAN'])
+    const units = wrapper.findAll('input[placeholder="单位（可选）"]')
+    expect((units[0]!.element as HTMLInputElement).value).toBe('MHz')
+    expect((units[1]!.element as HTMLInputElement).value).toBe('')
+    await click('新增条目')
+    const added = wrapper.findAllComponents({ name: 'ElSelect' }).filter(component => component.find('input[aria-label="参数键"]').exists()).at(-1)!
+    for (const key of ['rxFrequencyMHz', 'rxBandwidthMHz']) {
+      expect(added.findAllComponents({ name: 'ElOption' }).find(option => option.props('value') === key)!.props('disabled')).toBe(true)
+    }
+    added.vm.$emit('update:modelValue', 'rxFrequencyMHz')
+    await flushPromises()
+    expect(added.props('modelValue')).toBe('')
+    await click('取消')
+    expect(store.masterData).toEqual([source])
+  })
+
+  it('通用数据编辑副本支持数值和布尔条目切换，取消不污染原记录', async () => {
     const store = useAdminStore()
     const source = { dataId: 'DICT-TYPES', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
       content: { name: '类型测试', description: '', entries: [{ key: 'enabled', valueType: 'TEXT' as const, value: 'original' }] } }
@@ -184,7 +446,7 @@ describe('P7 系统管理面板', () => {
     expect(store.masterData).toEqual([source])
   })
 
-  it('主数据内容编辑支持文本、数值范围、布尔值和移除条目，数值清空不能保存', async () => {
+  it('通用数据内容编辑支持文本、数值范围、布尔值和移除条目，数值清空不能保存', async () => {
     const store = useAdminStore()
     useAuthStore().role = 'ADMIN'
     const source = { dataId: 'DICT-ENTRY', kind: 'PARAMETER_DICTIONARY', version: 1, referenceCount: 0, active: true,
@@ -195,13 +457,8 @@ describe('P7 系统管理面板', () => {
     wrapper = mount(MasterDataPanel, { global: { plugins: [ElementPlus] } })
     await flushPromises()
     await click('编辑')
-    await click('新增条目')
-    const keys = wrapper.findAll('input[aria-label="参数键"]')
-    await keys[keys.length - 1]!.setValue('retryLimit')
-    const texts = wrapper.findAll('input[placeholder="文本值"]')
-    await texts[texts.length - 1]!.setValue('three')
     const typeSelectors = wrapper.findAllComponents({ name: 'ElSelect' }).filter((component) => component.find('input[aria-label="参数值类型"]').exists())
-    typeSelectors[typeSelectors.length - 1]!.vm.$emit('update:modelValue', 'NUMBER')
+    typeSelectors[0]!.vm.$emit('update:modelValue', 'NUMBER')
     await flushPromises()
     const numbers = wrapper.findAllComponents({ name: 'ElInputNumber' })
     numbers[0]!.vm.$emit('update:modelValue', 3)
@@ -213,17 +470,16 @@ describe('P7 系统管理面板', () => {
     await click('保存')
     expect(store.maintenance.master.state).toBe('ERROR')
     expect(fetchMock).not.toHaveBeenCalled()
-    typeSelectors[typeSelectors.length - 1]!.vm.$emit('update:modelValue', 'BOOLEAN')
+    typeSelectors[0]!.vm.$emit('update:modelValue', 'BOOLEAN')
     await flushPromises()
-    const switches = wrapper.findAllComponents({ name: 'ElSwitch' })
-    switches[switches.length - 1]!.vm.$emit('update:modelValue', true)
+    wrapper.findAllComponents({ name: 'ElSwitch' })[0]!.vm.$emit('update:modelValue', true)
     await click('移除')
-    expect(wrapper.findAll('input[aria-label="参数键"]')).toHaveLength(1)
+    expect(wrapper.findAllComponents({ name: 'ElSelect' }).filter(component => component.find('input[aria-label="参数键"]').exists())).toHaveLength(0)
     await click('取消')
     expect(store.masterData).toEqual([source])
   })
 
-  it('主数据详情显示实际历史和引用，确认后才登记并更新引用数量', async () => {
+  it('通用数据详情显示实际历史和引用，确认后才登记并更新引用数量', async () => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().role = 'ADMIN'
@@ -251,7 +507,7 @@ describe('P7 系统管理面板', () => {
     expect(details.get('[data-testid="master-history-table"]').text()).toContain('版本字典')
     expect(details.get('[data-testid="master-reference-table"]').text()).toContain('暂无引用记录')
     const selects = wrapper.findAllComponents({ name: 'ElSelect' })
-    const versionSelect = selects.find((component) => component.find('input[aria-label="主数据版本"]').exists())
+    const versionSelect = selects.find((component) => component.find('input[aria-label="通用数据版本"]').exists())
     const targetSelect = selects.find((component) => component.find('input[aria-label="引用目标"]').exists())
     expect(versionSelect).toBeDefined()
     expect(targetSelect).toBeDefined()
@@ -271,7 +527,7 @@ describe('P7 系统管理面板', () => {
     expect(store.masterTargets).toEqual([])
   })
 
-  it('关闭主数据详情会使在途引用登记失效，迟到响应不会登记', async () => {
+  it('关闭通用数据详情会使在途引用登记失效，迟到响应不会登记', async () => {
     const store = useAdminStore()
     vi.mocked(store.loadMaintenance).mockRestore()
     useAuthStore().role = 'ADMIN'

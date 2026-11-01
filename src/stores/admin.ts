@@ -9,6 +9,7 @@ import type {
   AuditRecord,
   AuditRequest,
   AuditExportResult,
+  AuditDeleteResult,
   CapabilityState,
   ConfirmationContext,
   ConfirmationAction,
@@ -27,7 +28,7 @@ import type {
   UserRoleCommand,
 } from '../contracts/domain-models'
 import { resolveMockOrigin, useAuthStore } from './auth'
-import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isMasterReference, isMasterTarget, isMasterWrite, isRestoreResult, isSystemHealth } from '../features/admin/admin-contract'
+import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isMasterReference, isMasterTarget, isMasterWrite, isRestoreResult, isSystemHealth, masterDataEquipmentFieldIssue, masterDataWriteIssue } from '../features/admin/admin-contract'
 import { isLocalArchiveRecord } from '../features/admin/local-archive'
 import type { LocalArchiveRecord } from '../contracts/domain-models'
 import { equipmentIssue, isEquipmentParameter } from '../features/admin/equipment-contract'
@@ -64,6 +65,7 @@ const EXPORT_STATUS_KEYS = new Set(['objectId', 'generated', 'classification', '
 const AUDIT_EXPORT_KEYS = new Set([...EXPORT_STATUS_KEYS, 'fileName', 'content', 'recordCount'])
 
 export type AuditFilters = Omit<AuditRequest, 'export' | 'confirmationId'>
+export interface AuditListOptions { page?: number; pageSize?: number; sortOrder?: 'asc' | 'desc' }
 
 class InvalidResponseError extends Error {
   /**
@@ -265,7 +267,18 @@ export function isAuditRecord(value: unknown): value is AuditRecord {
 
 function readAuditRecords(payload: unknown): AuditRecord[] | undefined {
   const data = readStrictData(payload)
-  return Array.isArray(data) && data.every(isAuditRecord) ? data : undefined
+  return Array.isArray(data) && data.every(isAuditRecord)
+    && new Set(data.map(record => record.auditId)).size === data.length ? data : undefined
+}
+
+function readAuditDeletion(payload: unknown, requestedIds: string[]): AuditDeleteResult | undefined {
+  const data = readStrictData(payload)
+  if (typeof data !== 'object' || data === null || Array.isArray(data)
+    || Object.keys(data).join(',') !== 'deletedIds') return undefined
+  const ids = (data as Partial<AuditDeleteResult>).deletedIds
+  return Array.isArray(ids) && ids.length === requestedIds.length
+    && new Set(ids).size === ids.length && ids.every(id => typeof id === 'string' && requestedIds.includes(id))
+    ? data as AuditDeleteResult : undefined
 }
 
 function readConfirmation(payload: unknown, state: ConfirmationContext['state']): ConfirmationContext | undefined {
@@ -325,6 +338,12 @@ export const useAdminStore = defineStore('admin', {
     resultMessage: '尚未加载账号。',
     auditRecords: [] as AuditRecord[],
     auditFilters: {} as AuditFilters,
+    auditPage: 1,
+    auditPageSize: 20,
+    auditTotal: 0,
+    auditSortOrder: 'desc' as 'asc' | 'desc',
+    auditRequestEpoch: 0,
+    auditDeletionPending: false,
     auditState: 'EMPTY' as CapabilityState,
     auditResultCode: 'EMPTY',
     auditResultMessage: '暂无审计记录。',
@@ -335,7 +354,7 @@ export const useAdminStore = defineStore('admin', {
     masterDetails: null as MasterDataDetails | null,
     masterTargets: [] as MasterDataTarget[],
     masterDetailsState: 'EMPTY' as CapabilityState,
-    masterDetailsMessage: '请选择主数据查看版本和引用记录。',
+    masterDetailsMessage: '请选择通用数据查看版本和引用记录。',
     equipment: [] as EquipmentParameter[],
     backups: [] as BackupRecord[],
     backupPlanStatus: null as BackupPlanStatus | null,
@@ -406,7 +425,7 @@ export const useAdminStore = defineStore('admin', {
       this.maintenanceConfirmation = null
     },
 
-    /** 加载指定维护面板；参数为主数据、备份目录、归档或健康面板名称。 */
+    /** 加载指定维护面板；参数为通用数据、备份目录、归档或健康面板名称。 */
     async loadMaintenance(section: Exclude<MaintenanceSection, 'export'>): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance[section].state)) return false
       if (section === 'master') this.clearMasterDetails()
@@ -451,7 +470,7 @@ export const useAdminStore = defineStore('admin', {
     async saveEquipment(record: EquipmentParameter, create: boolean): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.equipment.state)) return false
       const data = { ...record }
-      const issue = equipmentIssue(data)
+      const issue = equipmentIssue(data, 'write')
       if (issue || data.readOnly) {
         this.maintenance.equipment = { state: 'ERROR', ...(issue ?? { message: '只读装备不可编辑。', fieldPath: 'readOnly' }) }
         return false
@@ -470,7 +489,7 @@ export const useAdminStore = defineStore('admin', {
           throw new Error('装备保存响应与提交参数不一致，请重新加载核实。')
         }
         this.equipment = [...this.equipment.filter(item => item.equipmentId !== saved.equipmentId), saved]
-        this.maintenance.equipment = { state: 'SUCCESS', message: `装备参数已保存，当前版本 ${saved.version}。`, fieldPath: '' }
+        this.maintenance.equipment = { state: 'SUCCESS', message: '装备参数已保存。', fieldPath: '' }
         return true
       } catch (error) {
         if (epoch !== this.maintenanceEpoch) return false
@@ -512,15 +531,21 @@ export const useAdminStore = defineStore('admin', {
     },
 
     /**
-     * 保存主数据编辑副本；成功后用服务端版本替换列表对应行。
+     * 保存通用数据编辑副本；成功后用服务端版本替换列表对应行。
      * @param data 包含当前版本和只读引用数量的完整数据。
      * @param create 是否新增；为 false 时更新当前编号。
      */
     async saveMasterData(data: MasterData, create: boolean): Promise<boolean> {
       if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.maintenance.master.state)) return false
-      this.maintenance.master = { state: 'VALIDATING', message: '正在校验主数据。', fieldPath: '' }
-      if (!isMasterWrite(data)) {
-        this.showMaintenanceError('master', new Error('请填写有效编号、类型、名称和参数条目。'))
+      this.maintenance.master = { state: 'VALIDATING', message: '正在校验通用数据。', fieldPath: '' }
+      const validationIssue = masterDataWriteIssue(data)
+      if (validationIssue) {
+        this.maintenance.master = { state: 'ERROR', ...validationIssue }
+        return false
+      }
+      const ownershipIssue = masterDataEquipmentFieldIssue(data)
+      if (ownershipIssue) {
+        this.maintenance.master = { state: 'ERROR', ...ownershipIssue }
         return false
       }
       const epoch = this.maintenanceEpoch
@@ -532,9 +557,9 @@ export const useAdminStore = defineStore('admin', {
         if (epoch !== this.maintenanceEpoch) return false
         const updated = readStrictData(payload)
         if (!isMasterWrite(updated) || updated.dataId !== data.dataId || updated.version !== (create ? 1 : data.version + 1)
-          || updated.referenceCount !== data.referenceCount) throw new Error('保存结果与当前主数据不一致。')
+          || updated.referenceCount !== data.referenceCount) throw new Error('保存结果与当前通用数据不一致。')
         this.masterData = create ? [...this.masterData, updated] : this.masterData.map((item) => item.dataId === updated.dataId ? updated : item)
-        this.maintenance.master = { state: 'SUCCESS', message: `主数据已保存，当前版本 ${updated.version}。`, fieldPath: '' }
+        this.maintenance.master = { state: 'SUCCESS', message: '通用数据已保存。', fieldPath: '' }
         return true
       } catch (error) {
         if (epoch !== this.maintenanceEpoch) return false
@@ -553,7 +578,7 @@ export const useAdminStore = defineStore('admin', {
       this.masterDetailsMessage = '正在加载版本与引用记录。'
       if (!normalizedId) {
         this.masterDetailsState = 'ERROR'
-        this.masterDetailsMessage = '请选择有效主数据。'
+        this.masterDetailsMessage = '请选择有效通用数据。'
         return false
       }
       try {
@@ -568,7 +593,7 @@ export const useAdminStore = defineStore('admin', {
         if (!isMasterDetails(details) || details.dataId !== normalizedId
           || !Array.isArray(targets) || !targets.every(isMasterTarget)
           || new Set(targets.map((target) => JSON.stringify([target.targetType, target.targetId, target.targetVersion]))).size !== targets.length) {
-          throw new Error('主数据版本或引用记录格式不正确。')
+          throw new Error('通用数据版本或引用记录格式不正确。')
         }
         this.masterDetails = details
         this.masterTargets = targets
@@ -580,7 +605,7 @@ export const useAdminStore = defineStore('admin', {
         this.masterDetails = null
         this.masterTargets = []
         this.masterDetailsState = 'ERROR'
-        this.masterDetailsMessage = error instanceof Error ? error.message : '主数据详情加载失败。'
+        this.masterDetailsMessage = error instanceof Error ? error.message : '通用数据详情加载失败。'
         return false
       }
     },
@@ -596,7 +621,7 @@ export const useAdminStore = defineStore('admin', {
         || !this.masterTargets.some((target) => target.targetType === reference.targetType && target.targetId === reference.targetId
           && target.targetVersion === reference.targetVersion)) {
         this.masterDetailsState = 'ERROR'
-        this.masterDetailsMessage = '请选择有效的主数据版本和引用目标。'
+        this.masterDetailsMessage = '请选择有效的通用数据版本和引用目标。'
         return false
       }
       this.masterDetailsState = 'VALIDATING'
@@ -634,13 +659,13 @@ export const useAdminStore = defineStore('admin', {
       this.masterDetails = null
       this.masterTargets = []
       this.masterDetailsState = 'EMPTY'
-      this.masterDetailsMessage = '请选择主数据查看版本和引用记录。'
+      this.masterDetailsMessage = '请选择通用数据查看版本和引用记录。'
     },
 
     /**
      * 用户在界面确认后执行敏感操作；每步响应都检查会话是否已失效。
      * @param operation 删除、备份、恢复或配置导出动作。
-     * @param targetId 删除的主数据编号或恢复的备份编号。
+     * @param targetId 删除的通用数据编号或恢复的备份编号。
      */
     async runMaintenanceAction(operation: MaintenanceAction, targetId = '', backupName?: string): Promise<boolean> {
       if (this.maintenanceConfirmation !== null || Object.values(this.maintenance).some((item) => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(item.state))) return false
@@ -681,7 +706,7 @@ export const useAdminStore = defineStore('admin', {
           const deleted = readDeleteResult(payload)
           if (!deleted?.deleted || deleted.objectId !== targetId) throw new Error('删除结果与当前对象不一致。')
           this.masterData = this.masterData.filter((item) => item.dataId !== targetId)
-          message = '主数据已删除。'
+          message = '通用数据已删除。'
         } else if (operation === 'BACKUP') {
           if (!isBackupRecord(result) || this.backups.some((item) => item.backupId === result.backupId)) throw new Error('备份记录格式或编号不正确。')
           this.backups = [...this.backups, result]
@@ -931,42 +956,107 @@ export const useAdminStore = defineStore('admin', {
       return this.mutateUser(user, 'CREATE', user, password)
     },
 
-    /** Loads immutable audit records using the closed administrator filter contract. */
-    async loadAudit(filters: AuditFilters = {}): Promise<boolean> {
+    /** Loads a server-sorted page without allowing older page requests to replace it. */
+    async loadAudit(filters: AuditFilters = {}, options: AuditListOptions = {}): Promise<boolean> {
+      if (this.auditDeletionPending) return false
       const epoch = this.requestEpoch
+      const auditEpoch = ++this.auditRequestEpoch
+      const isCurrent = () => epoch === this.requestEpoch && auditEpoch === this.auditRequestEpoch
+      const page = options.page ?? 1
+      const pageSize = options.pageSize ?? this.auditPageSize
+      const sortOrder = options.sortOrder ?? this.auditSortOrder
+      const selectedFilters = { ...filters }
       this.auditState = 'LOADING'
       await Promise.resolve()
-      if (epoch !== this.requestEpoch) return false
+      if (!isCurrent()) return false
       this.auditState = 'VALIDATING'
       const query = new URLSearchParams()
-      for (const [key, value] of Object.entries(filters)) {
+      for (const [key, value] of Object.entries(selectedFilters)) {
         if (value !== undefined && value !== '') query.set(key, value)
       }
       try {
+        if (!Number.isSafeInteger(page) || page < 1 || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100
+          || (sortOrder !== 'asc' && sortOrder !== 'desc')) throw new InvalidAuditResponseError()
+        query.set('page', String(page))
+        query.set('pageSize', String(pageSize))
+        query.set('sortOrder', sortOrder)
         await Promise.resolve()
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditState = 'EXECUTING'
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/audit${query.size === 0 ? '' : `?${query}`}`, {
           headers: { 'X-Demo-Role': useAuthStore().role },
         })
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditState = 'VALIDATING'
         const payload: unknown = await response.json().catch(() => undefined)
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         if (!response.ok) throw readFailure(payload) ?? new InvalidAuditResponseError()
         const records = readAuditRecords(payload)
         if (records === undefined) throw new InvalidAuditResponseError()
+        const meta = (payload as { meta: PageMeta }).meta
+        if (meta.page !== page || meta.pageSize !== pageSize
+          || records.length !== Math.min(pageSize, Math.max(0, meta.total! - (page - 1) * pageSize))) throw new InvalidAuditResponseError()
         this.auditRecords = records
-        this.auditFilters = { ...filters }
+        this.auditFilters = selectedFilters
+        this.auditPage = page
+        this.auditPageSize = pageSize
+        this.auditTotal = meta.total!
+        this.auditSortOrder = sortOrder
         this.auditState = records.length === 0 ? 'EMPTY' : 'SUCCESS'
         this.auditResultCode = 'SUCCESS'
         this.auditResultMessage = records.length === 0 ? '没有符合条件的审计记录。' : `已加载 ${records.length} 条审计记录。`
         return true
       } catch (error) {
-        if (epoch !== this.requestEpoch) return false
+        if (!isCurrent()) return false
         this.auditRecords = []
+        this.auditTotal = 0
         this.showAuditError(error, '审计日志加载失败。')
         return false
+      }
+    },
+
+    /** Deletes the explicitly confirmed IDs, then reloads the applied query. */
+    async deleteAudit(auditIds: string[]): Promise<boolean> {
+      if (this.auditDeletionPending || this.auditConfirmation !== null
+        || ['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.auditState)) return false
+      const epoch = this.requestEpoch
+      const auditEpoch = ++this.auditRequestEpoch
+      const isCurrent = () => epoch === this.requestEpoch && auditEpoch === this.auditRequestEpoch
+      const ids = [...auditIds]
+      if (useAuthStore().role !== 'ADMIN' || ids.length === 0 || ids.length > 100
+        || new Set(ids).size !== ids.length || ids.some(id => typeof id !== 'string' || id.trim() === '')) {
+        this.auditState = 'ERROR'
+        this.auditResultCode = useAuthStore().role === 'ADMIN' ? 'INVALID_REQUEST' : 'PERMISSION_DENIED'
+        this.auditResultMessage = useAuthStore().role === 'ADMIN' ? '请选择 1～100 条不重复的审计记录。' : '仅管理员可删除审计记录。'
+        return false
+      }
+      this.auditDeletionPending = true
+      this.auditState = 'EXECUTING'
+      this.auditExportStatus = null
+      try {
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/audit/delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
+          body: JSON.stringify({ auditIds: ids }),
+        })
+        if (!isCurrent()) return false
+        const payload: unknown = await response.json().catch(() => undefined)
+        if (!isCurrent()) return false
+        if (!response.ok) throw readFailure(payload) ?? new InvalidAuditResponseError()
+        if (readAuditDeletion(payload, ids) === undefined) throw new InvalidAuditResponseError()
+        this.auditDeletionPending = false
+        if (!await this.loadAudit(this.auditFilters, { page: this.auditPage })) return false
+        const lastPage = Math.max(1, Math.ceil(this.auditTotal / this.auditPageSize))
+        if (this.auditPage > lastPage) return this.loadAudit(this.auditFilters, { page: lastPage })
+        return true
+      } catch (error) {
+        if (!isCurrent()) return false
+        this.auditRecords = []
+        this.auditTotal = 0
+        this.showAuditError(error, '审计日志删除失败。')
+        return false
+      } finally {
+        if (epoch === this.requestEpoch) this.auditDeletionPending = false
       }
     },
 
@@ -1091,6 +1181,12 @@ export const useAdminStore = defineStore('admin', {
       this.resultMessage = '用户列表已清空。'
       this.auditRecords = []
       this.auditFilters = {}
+      this.auditRequestEpoch += 1
+      this.auditDeletionPending = false
+      this.auditPage = 1
+      this.auditPageSize = 20
+      this.auditTotal = 0
+      this.auditSortOrder = 'desc'
       this.auditState = 'EMPTY'
       this.auditResultCode = 'EMPTY'
       this.auditResultMessage = '暂无审计记录。'

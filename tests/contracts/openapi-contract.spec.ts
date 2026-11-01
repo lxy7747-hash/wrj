@@ -63,6 +63,35 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
+  it('declares the 1.9.3 equipment write boundary', () => {
+    const { openApi } = loadContractDocuments()
+    expect(asObject(asObject(openApi).info).version).toBe('1.9.3')
+  })
+
+  it('exposes the read-only scenario parameter catalog to both scenario roles', () => {
+    const { openApi } = loadContractDocuments()
+    const operation = operationAt(openApi, '/api/v1/scenarios/parameter-catalog', 'get')
+    expect(operation.operationId).toBe('getScenarioParameterCatalog')
+    expect(operation['x-rbac']).toBe('BUSINESS_READ')
+    expect(responseSchemaAt(openApi, '/api/v1/scenarios/parameter-catalog', 'get', '200')).toEqual({
+      $ref: '#/components/schemas/GetScenarioParameterCatalogResponse',
+    })
+  })
+
+  it('freezes parameter-source field bounds, equipment subset, and master enum key branch', () => {
+    const { openApi } = loadContractDocuments()
+    const source = asObject(schemaAt(openApi, 'LinkParameterSource'))
+    const branches = source.oneOf as unknown[]
+    const equipment = asObject(branches[0])
+    const master = asObject(branches[1])
+    const equipmentFields = asObject(asObject(equipment.properties).fields)
+    const masterFields = asObject(asObject(master.properties).fields)
+    expect(equipmentFields).toMatchObject({ minItems: 1, maxItems: 15, uniqueItems: true, items: { enum: ['bandwidth', 'txPower', 'dataRate', 'modulation', 'berThreshold'] } })
+    expect(masterFields).toMatchObject({ minItems: 1, maxItems: 15, uniqueItems: true })
+    expect(asObject(asObject(master.properties).entryKey)).toMatchObject({ type: 'string', minLength: 1, pattern: '\\S' })
+    expect(asObject(equipment.properties).entryKey).toBeUndefined()
+  })
+
   it('旧场景可读取零设备参数，写入合同只接受正功率和正侦测距离', () => {
     const { openApi, fixtures } = loadContractDocuments()
     const ajv = new Ajv2020({ strict: false })
@@ -175,6 +204,15 @@ describe('OpenAPI contract audit', () => {
     expect(write(record)).toBe(false)
     const content = { name: '通信字典', description: '', entries: [{ key: 'mode', valueType: 'TEXT', value: '标准' }] }
     expect(write({ ...record, content })).toBe(true)
+    const equipmentKeys = ['frequencyMinMHz', 'frequencyMaxMHz', 'bandwidth', 'bandwidthMHz', 'txPower', 'txPowerW', 'dataRate', 'dataRateMbps', 'modulation', 'berThreshold']
+    for (const key of equipmentKeys) {
+      const entry = key === 'modulation' ? { key, valueType: 'TEXT', value: 'QPSK' } : { key, valueType: 'NUMBER', value: 1 }
+      expect(write({ ...record, content: { ...content, entries: [entry] } })).toBe(false)
+      expect(write({ ...record, kind: 'COMMUNICATION_SYSTEM', content: { ...content, entries: [entry] } })).toBe(false)
+      expect(read({ ...record, content: { ...content, entries: [entry] } })).toBe(true)
+    }
+    expect(write({ ...record, kind: 'ENUMERATION', content: { ...content, entries: [{ key: 'modulation.QPSK', valueType: 'TEXT', value: 'QPSK' }] } })).toBe(true)
+    expect(write({ ...record, kind: 'ENUMERATION', content: { ...content, entries: [{ key: 'coding.UNCODED', valueType: 'TEXT', value: 'UNCODED' }] } })).toBe(true)
     for (const patch of [{ kind: 'DEVICE' }, { content: { ...content, entries: [] } },
       { content: { ...content, entries: [{ key: 'x', valueType: 'NUMBER', value: '3' }] } },
       { content: { ...content, entries: [{ key: 'x', valueType: 'BOOLEAN', value: false, unit: 'm' }] } },
@@ -248,7 +286,7 @@ describe('OpenAPI contract audit', () => {
     expect(auditOpenApi(document)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_SERVERS', path: '$.servers' }))
   })
 
-  it('accepts the authoritative 83-operation contract', () => {
+  it('accepts the authoritative 81-operation contract', () => {
     const { openApi } = loadContractDocuments()
 
     expect(asObject(openApi).servers).toEqual([expect.objectContaining({ url: 'http://127.0.0.1:4173' })])
@@ -261,9 +299,66 @@ describe('OpenAPI contract audit', () => {
         .filter((method) => path[method] !== undefined)
         .map((method) => ({ method, operation: asObject(path[method]) }))
     })
-    expect(operations).toHaveLength(83)
-    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(40)
-    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(83)
+    expect(operations).toHaveLength(81)
+    expect(operations.filter(({ method }) => ['post', 'put', 'patch'].includes(method))).toHaveLength(39)
+    expect(new Set(operations.map(({ operation }) => operation.operationId)).size).toBe(81)
+  })
+
+  it('freezes paginated audit listing and atomic ADMIN audit deletion', () => {
+    const { openApi } = loadContractDocuments()
+    const list = operationAt(openApi, '/api/v1/admin/audit', 'get')
+    const queryNames = (list.parameters as Array<Record<string, unknown>>)
+      .filter((parameter) => parameter.in === 'query')
+      .map((parameter) => parameter.name)
+    expect(queryNames).toEqual([
+      'from', 'to', 'actor', 'role', 'module', 'action', 'result', 'page', 'pageSize', 'sortOrder',
+    ])
+    expect(schemaAt(openApi, 'Meta')).toMatchObject({
+      properties: {
+        page: { type: 'integer', minimum: 1 },
+        pageSize: { type: 'integer', minimum: 1 },
+        total: { type: 'integer', minimum: 0 },
+      },
+    })
+
+    const remove = operationAt(openApi, '/api/v1/admin/audit/delete', 'post')
+    expect(remove['x-rbac']).toBe('ADMIN')
+    expect(Object.keys(asObject(remove.responses))).toEqual(['200', '400', '401', '403', '404', '500'])
+    const ajv = new Ajv2020({ strict: false }); addFormats(ajv)
+    ajv.addSchema({ $id: 'audit-delete-boundary', components: asObject(openApi).components })
+    const request = ajv.compile({ $ref: 'audit-delete-boundary#/components/schemas/AuditDeleteRequest' })
+    const result = ajv.compile({ $ref: 'audit-delete-boundary#/components/schemas/AuditDeleteResult' })
+    expect(request({ auditIds: ['AUD-001'] })).toBe(true)
+    expect(request({ auditIds: ['AUD-001', 'AUD-002'] })).toBe(true)
+    for (const value of [
+      {}, { auditIds: [] }, { auditIds: ['AUD-001', 'AUD-001'] },
+      { auditIds: [''] }, { auditIds: Array.from({ length: 101 }, (_, index) => `AUD-${index}`) },
+      { auditIds: ['AUD-001'], extra: true },
+    ]) expect(request(value)).toBe(false)
+    expect(result({ deletedIds: ['AUD-001'] })).toBe(true)
+    expect(result({ deletedIds: [] })).toBe(false)
+
+    const weakened = structuredClone(openApi)
+    operationAt(weakened, '/api/v1/admin/audit/delete', 'post')['x-rbac'] = 'AUDIT_READ'
+    expect(auditOpenApi(weakened)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_AUDIT_DELETE_RBAC' }))
+    const expanded = structuredClone(openApi)
+    ;(operationAt(expanded, '/api/v1/admin/audit', 'get').parameters as unknown[]).push({
+      name: 'cursor', in: 'query', schema: { type: 'string' },
+    })
+    expect(auditOpenApi(expanded)).toContainEqual(expect.objectContaining({ code: 'OPENAPI_AUDIT_LIST_PARAMETERS' }))
+  })
+
+  it('keeps native ESM settings optional but typed on sensor UI extensions', () => {
+    const document = loadContractDocuments().openApi
+    const esm = schemaPropertyAt(document, 'SensorUiExtension', 'esm')
+    expect(esm).toEqual({ $ref: '#/components/schemas/NativeEsmSettings' })
+    const ajv = new Ajv2020({ strict: false }); addFormats(ajv)
+    ajv.addSchema({ $id: 'sensor-ui-boundary', components: asObject(document).components })
+    const validate = ajv.compile({ $ref: 'sensor-ui-boundary#/components/schemas/SensorUiExtension' })
+    const sensor = { sensorId: 'SNS-1', type: 'ESM', direction: 'OMNI', probability: 0.5, enabled: true }
+    expect(validate(sensor)).toBe(true)
+    expect(validate({ ...sensor, esm: { sensitivityDbw: -120, detectionThresholdDb: 10, dwellTimeS: 0.5, revisitTimeS: 2 } })).toBe(true)
+    expect(validate({ ...sensor, esm: { sensitivityDbw: -120, detectionThresholdDb: 10, dwellTimeS: -1, revisitTimeS: 2 } })).toBe(false)
   })
 
   it('冻结全局重置的管理员权限及 403 拒绝响应', () => {

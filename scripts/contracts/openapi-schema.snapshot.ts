@@ -1141,6 +1141,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         "minItems": 1
       },
+      "relatedNodeIds": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uniqueItems": true
+      },
       "eventCounts": {
         "type": "array",
         "items": {
@@ -1246,6 +1254,179 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             }
           }
         }
+      },
+      "detectionEvents": {
+        "type": "array",
+        "description": "ESM/传感器侦测规范事件；源文件未给出的目标、频段、概率、结论为 null，不补默认值。",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "eventId",
+            "time",
+            "type",
+            "platformId",
+            "sensorId",
+            "targetPlatformId",
+            "frequencyMinHz",
+            "frequencyMaxHz",
+            "probability",
+            "detected"
+          ],
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "time": {
+              "type": "number",
+              "minimum": 0
+            },
+            "type": {
+              "enum": [
+                "SENSOR_DETECTION_CHANGED",
+                "SENSOR_TRACK_INITIATED",
+                "SENSOR_TRACK_UPDATED",
+                "SENSOR_TRACK_DROPPED"
+              ]
+            },
+            "platformId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sensorId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "targetPlatformId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "frequencyMinHz": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "exclusiveMinimum": 0
+            },
+            "frequencyMaxHz": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "exclusiveMinimum": 0
+            },
+            "probability": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "detected": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        }
+      },
+      "switchEvents": {
+        "type": "array",
+        "description": "链路切换事件；由引擎切换输出解析，未发生或未解析时省略。",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "eventId",
+            "time",
+            "demandId",
+            "ruleId",
+            "fromDeviceId",
+            "toDeviceId",
+            "fromLinkId",
+            "toLinkId",
+            "stableChecks"
+          ],
+          "properties": {
+            "eventId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "time": {
+              "type": "number",
+              "minimum": 0
+            },
+            "demandId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ruleId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "fromDeviceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "toDeviceId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "fromLinkId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "toLinkId": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "stableChecks": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "qualityKpis": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "评估指标；引擎提供质量与干扰输出时填写，缺省项显示暂无数据。",
+        "properties": {
+          "averageConnectedDurationS": {
+            "type": "number",
+            "minimum": 0
+          },
+          "averageJsrDb": {
+            "type": "number"
+          },
+          "averageBer": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "jammingDurationS": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
       }
     }
   },
@@ -1276,6 +1457,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "format": {
         "enum": [
           "HTML",
+          "PDF",
           "CSV"
         ]
       },
@@ -1341,6 +1523,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "const": 1
           }
         }
+      },
+      {
+        "$ref": "#/components/schemas/EquipmentLinkWriteParameters"
       }
     ]
   },
@@ -1355,6 +1540,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "const": false
           }
         }
+      },
+      {
+        "$ref": "#/components/schemas/EquipmentLinkWriteParameters"
       }
     ]
   },
@@ -1440,9 +1628,211 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "null"
         ],
         "exclusiveMinimum": 0
+      },
+      "active": {
+        "type": "boolean",
+        "default": true,
+        "description": "缺省视为启用；停用后保留既有引用和历史，但不能登记新引用。"
       }
     },
-    "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。"
+    "description": "管理员维护的装备默认参数；频率单位 MHz，两端同时为空或为有限正数，且下限不得大于上限（由服务端跨字段校验）。未配置使用 null。active 缺省为 true；停用仅限制后续选用，不改写既有引用和历史。只读由服务端控制；写入只允许 false。创建版本 1，更新携带当前版本。"
+  },
+  "EquipmentLinkWriteParameters": {
+    "type": "object",
+    "description": "仅装备新增和更新使用的链路类型条件约束。EquipmentParameter 读取保持兼容历史类型和值；未知历史类型不推断为任一通信类型。频率范围同时填写、下限不大于上限等跨字段关系由服务端运行时校验。",
+    "required": [
+      "type"
+    ],
+    "allOf": [
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "卫星通信设备"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "modulation": {
+              "enum": [
+                "BPSK",
+                "QPSK",
+                null
+              ]
+            },
+            "txPowerW": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1000
+            },
+            "dataRateMbps": {
+              "enum": [
+                0.016,
+                16,
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "微波通信设备"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "modulation": {
+              "enum": [
+                "BPSK",
+                "QPSK",
+                null
+              ]
+            },
+            "txPowerW": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100
+            },
+            "dataRateMbps": {
+              "enum": [
+                80,
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "数传通信设备"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "modulation": {
+              "enum": [
+                "BPSK",
+                "QPSK",
+                null
+              ]
+            },
+            "txPowerW": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100
+            },
+            "dataRateMbps": {
+              "enum": [
+                0.0064,
+                0.0128,
+                0.0256,
+                0.0512,
+                2,
+                4,
+                8,
+                16,
+                null
+              ]
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "激光通信设备"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "modulation": {
+              "enum": [
+                "OOK",
+                null
+              ]
+            },
+            "txPowerW": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "exclusiveMinimum": 0,
+              "maximum": 100
+            }
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "光纤通信设备"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "modulation": {
+              "enum": [
+                "BPSK",
+                "QPSK",
+                null
+              ]
+            },
+            "txPowerW": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 100
+            },
+            "dataRateMbps": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 10,
+              "maximum": 1000
+            }
+          }
+        }
+      }
+    ]
   },
   "EquipmentReference": {
     "type": "object",
@@ -1473,7 +1863,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "integer",
         "minimum": 1
       }
-    }
+    },
+    "description": "新增登记仅允许类型与目标链路匹配的已明确通信设备；未知历史类型不能新增引用。已保存的历史引用仅在参数来源和值未变更时兼容。"
   },
   "EquipmentDetails": {
     "type": "object",
@@ -1524,7 +1915,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "/scenarios",
         "/reports",
         "/replays",
-        "/batches",
         "/blueprint",
         "/interactions",
         "/traceability",
@@ -1579,7 +1969,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         }
       },
       "menuPaths": {
-        "$ref": "#/components/schemas/MenuPaths"
+        "$ref": "#/components/schemas/RoleProfileMenuPaths"
       }
     },
     "allOf": [
@@ -1613,7 +2003,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                   "/scenarios",
                   "/reports",
                   "/replays",
-                  "/batches",
                   "/blueprint",
                   "/interactions",
                   "/traceability",
@@ -1772,7 +2161,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     }
   },
   "PutapiV1AdminAccessControlRequest": {
-    "$ref": "#/components/schemas/AccessControlConfig"
+    "$ref": "#/components/schemas/AccessControlConfigWrite"
   },
   "PutapiV1AdminEquipmentEquipmentIdReferenceRequest": {
     "$ref": "#/components/schemas/EquipmentReferenceRequest"
@@ -1906,6 +2295,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "arrivalTime": {
         "type": "number",
         "minimum": 0
+      },
+      "heading": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
+      },
+      "acceleration": {
+        "type": "number",
+        "description": "期望加速度，m/s²；原生执行映射尚未核实。"
       }
     }
   },
@@ -2175,6 +2573,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "environment": {
         "$ref": "#/components/schemas/Environment"
+      },
+      "phases": {
+        "type": "array",
+        "maxItems": 64,
+        "items": {
+          "$ref": "#/components/schemas/TaskPhase"
+        },
+        "description": "用户保存的任务阶段计划；阶段不重叠且不超过duration；缺省时不推断阶段。"
       }
     }
   },
@@ -2214,6 +2620,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/PlatformWrite"
+            }
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkWrite"
             }
           },
           "jammers": {
@@ -2348,6 +2760,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "minLength": 1
         },
         "uniqueItems": true
+      },
+      "heading": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
       }
     },
     "allOf": [
@@ -2505,6 +2922,134 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     ]
   },
+  "LaserLinkParameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "txApertureDiameterM",
+      "rxApertureDiameterM",
+      "pulseWidthS",
+      "modulation"
+    ],
+    "properties": {
+      "txApertureDiameterM": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "rxApertureDiameterM": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "pulseWidthS": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "modulation": {
+        "const": "OOK"
+      }
+    }
+  },
+  "LinkParameterField": {
+    "type": "string",
+    "enum": [
+      "frequency",
+      "bandwidth",
+      "txPower",
+      "dataRate",
+      "modulation",
+      "berThreshold",
+      "coding",
+      "rxFrequency",
+      "rxBandwidth",
+      "antennaGain.tx",
+      "antennaGain.rx",
+      "antennaGainCorrectionDb",
+      "noiseFigureDb",
+      "txPolarization",
+      "rxPolarization"
+    ]
+  },
+  "LinkParameterSource": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "sourceId",
+          "sourceVersion",
+          "fields"
+        ],
+        "properties": {
+          "kind": {
+            "const": "EQUIPMENT"
+          },
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "bandwidth",
+                "txPower",
+                "dataRate",
+                "modulation",
+                "berThreshold"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "sourceId",
+          "sourceVersion",
+          "fields"
+        ],
+        "properties": {
+          "kind": {
+            "const": "MASTER_DATA"
+          },
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 15,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/LinkParameterField"
+            }
+          },
+          "entryKey": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        }
+      }
+    ]
+  },
   "Link": {
     "allOf": [
       {
@@ -2536,6 +3081,49 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "required": [
               "band"
             ]
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "LASER"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "else": {
+          "not": {
+            "required": [
+              "laser"
+            ]
+          }
+        }
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "SAT"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "properties": {
+            "forwardDataRate": {
+              "minimum": 0.128,
+              "maximum": 8
+            },
+            "reverseDataRate": {
+              "minimum": 0.064,
+              "maximum": 2
+            }
           }
         }
       }
@@ -2628,6 +3216,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "maximum": 100,
         "description": "接收机噪声系数，单位 dB；缺省时天通卫星 2 dB，其余 3 dB。"
       },
+      "parameterSource": {
+        "$ref": "#/components/schemas/LinkParameterSource",
+        "description": "新增或编辑时用户选择的基础数据快照；旧场景可省略。"
+      },
       "id": {
         "type": "string",
         "minLength": 1
@@ -2681,14 +3273,68 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0
       },
+      "laser": {
+        "$ref": "#/components/schemas/LaserLinkParameters",
+        "description": "仅 LASER 使用；光学波长由 frequency（MHz）换算，通用 modulation 不作为光调制。"
+      },
       "direction": {
         "type": "string",
         "enum": [
           "FORWARD",
           "REVERSE"
         ]
+      },
+      "forwardDataRate": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "reverseDataRate": {
+        "type": "number",
+        "exclusiveMinimum": 0
       }
     }
+  },
+  "LinkWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/Link"
+      },
+      {
+        "if": {
+          "properties": {
+            "type": {
+              "const": "LASER"
+            },
+            "enabled": {
+              "not": {
+                "const": false
+              }
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        "then": {
+          "required": [
+            "laser"
+          ],
+          "properties": {
+            "laser": {
+              "$ref": "#/components/schemas/LaserLinkParameters"
+            },
+            "txPower": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "dataRate": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            }
+          }
+        }
+      }
+    ]
   },
   "Jammer": {
     "type": "object",
@@ -3229,6 +3875,18 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minimum": 0,
         "default": 5
       },
+      "switchStableChecks": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 3,
+        "description": "连续稳定帧数，默认3。显式历史值保留。"
+      },
+      "switchConsistencyCheck": {
+        "type": "boolean",
+        "default": true,
+        "description": "防抖：稳定窗内候选链路变化时重新计数，确认选路结果一致后才切换。"
+      },
       "switchRules": {
         "type": "array",
         "description": "阶段切换规则；按列表顺序，第一条条件成立的规则决定源到目标的当前链路。",
@@ -3362,6 +4020,49 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             }
           }
         ]
+      },
+      "switchCooldownFrames": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9007199254740991,
+        "default": 10
+      },
+      "minimumGxbDb": {
+        "type": "number",
+        "default": 6
+      },
+      "maximumBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.00001
+      },
+      "minimumGxbImprovementDb": {
+        "type": "number",
+        "minimum": 0,
+        "default": 3
+      },
+      "minimumBerImprovementFactor": {
+        "type": "number",
+        "minimum": 1,
+        "default": 10
+      },
+      "minimumSpatialIsolationDb": {
+        "type": "number",
+        "minimum": 0,
+        "default": 0
+      },
+      "minimumReceivedPowerDbm": {
+        "type": "number",
+        "description": "可选设备标定的接收功率失效下限，dBm；不推定默认值。"
+      },
+      "failureGxbDb": {
+        "type": "number"
+      },
+      "failureBer": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
       }
     }
   },
@@ -3394,7 +4095,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "items": {
           "$ref": "#/components/schemas/Platform"
         },
-        "x-max-business-information-nodes": 50,
+        "x-max-business-information-nodes": 64,
         "x-min-business-information-nodes": 1,
         "x-business-information-node-types": [
           "REAR_COMMAND_NODE",
@@ -3406,7 +4107,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "REAR_COMMAND_NODE": 1,
           "FORWARD_RELAY_NODE": 2,
           "GROUND_CLUSTER_COMMAND_NODE": 1,
-          "AIRBORNE_MISSION_CLUSTER": 47
+          "AIRBORNE_MISSION_CLUSTER": 61
         },
         "x-supporting-entity-types-excluded-from-capacity": [
           "COMMUNICATION_SATELLITE",
@@ -3556,6 +4257,21 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "dataRate": {
         "type": "number",
         "minimum": 0
+      },
+      "jsrDb": {
+        "type": "number",
+        "description": "干信比（dB）；引擎提供时展示，缺省显示暂无数据。"
+      },
+      "latencyMs": {
+        "type": "number",
+        "minimum": 0,
+        "description": "端到端时延（ms）；引擎提供时展示。"
+      },
+      "availabilityPercent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "链路可用率（%）；引擎提供时展示。"
       }
     },
     "x-source": "SRS §3.5.4"
@@ -3680,6 +4396,21 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "dataRate": {
         "type": "number",
         "minimum": 0
+      },
+      "jsrDb": {
+        "type": "number",
+        "description": "干信比（dB）；引擎提供时展示，缺省显示暂无数据。"
+      },
+      "latencyMs": {
+        "type": "number",
+        "minimum": 0,
+        "description": "端到端时延（ms）；引擎提供时展示。"
+      },
+      "availabilityPercent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "链路可用率（%）；引擎提供时展示。"
       }
     }
   },
@@ -4417,6 +5148,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "enabled": {
         "type": "boolean"
+      },
+      "elevation": {
+        "type": "number",
+        "minimum": -10,
+        "maximum": 60,
+        "description": "俯仰角，度；原生映射未核实。"
       }
     }
   },
@@ -4457,6 +5194,35 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "enabled": {
         "type": "boolean"
+      },
+      "esm": {
+        "$ref": "#/components/schemas/NativeEsmSettings"
+      }
+    }
+  },
+  "NativeEsmSettings": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "sensitivityDbw",
+      "detectionThresholdDb",
+      "dwellTimeS",
+      "revisitTimeS"
+    ],
+    "properties": {
+      "sensitivityDbw": {
+        "type": "number"
+      },
+      "detectionThresholdDb": {
+        "type": "number"
+      },
+      "dwellTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "revisitTimeS": {
+        "type": "number",
+        "minimum": 0
       }
     }
   },
@@ -4496,6 +5262,42 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "data": {
         "$ref": "#/components/schemas/DeleteResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "ScenarioParameterCatalog": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "equipment",
+      "masterData"
+    ],
+    "properties": {
+      "equipment": {
+        "$ref": "#/components/schemas/EquipmentParameterList"
+      },
+      "masterData": {
+        "$ref": "#/components/schemas/MasterDataList"
+      }
+    }
+  },
+  "GetScenarioParameterCatalogResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/ScenarioParameterCatalog"
       },
       "meta": {
         "$ref": "#/components/schemas/Meta"
@@ -4633,129 +5435,34 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     }
   },
-  "BatchRunResult": {
+  "LocalReportFilter": {
     "type": "object",
     "additionalProperties": false,
-    "required": [
-      "runId",
-      "reportId",
-      "powerW",
-      "distanceKm",
-      "connectivityDurationS",
-      "connectivityRate",
-      "switchCount",
-      "avgBer",
-      "maxBer",
-      "avgSnrDb",
-      "minSnrDb",
-      "interferenceDurationS",
-      "status"
-    ],
     "properties": {
-      "runId": {
+      "nodeId": {
         "type": "string",
-        "pattern": "^RUN-"
+        "minLength": 1,
+        "maxLength": 200
       },
-      "reportId": {
+      "linkId": {
         "type": "string",
-        "pattern": "^RPT-"
+        "minLength": 1,
+        "maxLength": 200
       },
-      "powerW": {
+      "stage": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "from": {
         "type": "number",
         "minimum": 0
       },
-      "distanceKm": {
+      "to": {
         "type": "number",
         "minimum": 0
-      },
-      "connectivityDurationS": {
-        "type": "number",
-        "minimum": 0
-      },
-      "connectivityRate": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 100
-      },
-      "switchCount": {
-        "type": "integer",
-        "minimum": 0
-      },
-      "avgBer": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 1
-      },
-      "maxBer": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 1
-      },
-      "avgSnrDb": {
-        "type": "number"
-      },
-      "minSnrDb": {
-        "type": "number"
-      },
-      "interferenceDurationS": {
-        "type": "number",
-        "minimum": 0
-      },
-      "status": {
-        "enum": [
-          "COMPLETED",
-          "ERROR"
-        ]
       }
     }
-  },
-  "Batch": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "batchId",
-      "state",
-      "runIds",
-      "reportIds",
-      "aggregateReportId"
-    ],
-    "properties": {
-      "batchId": {
-        "type": "string",
-        "pattern": "^BATCH-"
-      },
-      "state": {
-        "enum": [
-          "DRAFT",
-          "VALIDATING",
-          "QUEUED",
-          "RUNNING",
-          "COMPLETED",
-          "PARTIAL_FAILURE",
-          "CANCELLED",
-          "ERROR"
-        ]
-      },
-      "runIds": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "pattern": "^RUN-"
-        }
-      },
-      "reportIds": {
-        "type": "array",
-        "items": {
-          "type": "string",
-          "pattern": "^RPT-"
-        }
-      },
-      "aggregateReportId": {
-        "type": "string",
-        "pattern": "^RPT-"
-      }
-    },
-    "x-fixture-path": "$.batch"
   },
   "ReportTimeSeriesPoint": {
     "type": "object",
@@ -4904,11 +5611,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               },
               {
                 "required": [
-                  "batchId"
-                ]
-              },
-              {
-                "required": [
                   "kpis"
                 ]
               },
@@ -4936,10 +5638,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "runId": {
         "type": "string",
         "pattern": "^RUN-"
-      },
-      "batchId": {
-        "type": "string",
-        "pattern": "^BATCH-"
       },
       "classification": {
         "enum": [
@@ -5350,6 +6048,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "CORRUPT_FIXTURE",
       "OUT_OF_RANGE",
       "DEVICE_DISABLED",
+      "FILTER_UNSUPPORTED",
       "LOOPBACK_ONLY",
       "TOPIC_FORBIDDEN",
       "SEQUENCE_GAP",
@@ -5937,6 +6636,44 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     }
   },
+  "AuditDeleteRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "auditIds"
+    ],
+    "properties": {
+      "auditIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "AuditDeleteResult": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "deletedIds"
+    ],
+    "properties": {
+      "deletedIds": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
   "ExportStatus": {
     "type": "object",
     "additionalProperties": false,
@@ -6016,12 +6753,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "$ref": "#/components/schemas/EventRecord"
     }
   },
-  "BatchList": {
-    "type": "array",
-    "items": {
-      "$ref": "#/components/schemas/Batch"
-    }
-  },
   "ReportList": {
     "type": "array",
     "items": {
@@ -6084,8 +6815,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   "RouteMetadataList": {
     "type": "array",
-    "minItems": 11,
-    "maxItems": 11,
+    "minItems": 10,
+    "maxItems": 10,
     "items": {
       "$ref": "#/components/schemas/RouteMetadata"
     }
@@ -6100,35 +6831,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   "CsvContractList": {
     "type": "array",
-    "minItems": 3,
-    "maxItems": 3,
+    "minItems": 5,
+    "maxItems": 5,
     "items": {
       "$ref": "#/components/schemas/ContractDescriptor"
-    }
-  },
-  "BatchDetail": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "batch",
-      "runs",
-      "aggregateReport"
-    ],
-    "properties": {
-      "batch": {
-        "$ref": "#/components/schemas/Batch"
-      },
-      "runs": {
-        "type": "array",
-        "minItems": 12,
-        "maxItems": 12,
-        "items": {
-          "$ref": "#/components/schemas/BatchRunResult"
-        }
-      },
-      "aggregateReport": {
-        "$ref": "#/components/schemas/Report"
-      }
     }
   },
   "ScenarioValidationRequest": {
@@ -6168,7 +6874,35 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minItems": 1,
         "maxItems": 1,
         "items": {
-          "$ref": "#/components/schemas/ScenarioConfigWrite"
+          "oneOf": [
+            {
+              "$ref": "#/components/schemas/ScenarioConfigWrite"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "format",
+                "version",
+                "config",
+                "uiExtensions"
+              ],
+              "properties": {
+                "format": {
+                  "const": "wrj.scenario.snapshot"
+                },
+                "version": {
+                  "const": 1
+                },
+                "config": {
+                  "$ref": "#/components/schemas/ScenarioConfigWrite"
+                },
+                "uiExtensions": {
+                  "$ref": "#/components/schemas/ScenarioUiExtensions"
+                }
+              }
+            }
+          ]
         }
       }
     }
@@ -6280,7 +7014,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "mode": {
         "enum": [
           "INTERACTIVE_SINGLE",
-          "BATCH_PARAMETER_TRAVERSAL",
           "PARAMETER_SCAN",
           "HISTORICAL_REPLAY"
         ]
@@ -6298,67 +7031,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     },
     "description": "START requires mode; SET_SPEED requires speedMultiplier; STEP requires stepCount=1; STOP requires a valid SIMULATION_STOP confirmation when unsaved execution state would be discarded."
-  },
-  "BatchRequest": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "scenarioId",
-      "powersW",
-      "distancesKm",
-      "deterministicOrder"
-    ],
-    "properties": {
-      "scenarioId": {
-        "type": "string",
-        "pattern": "^SCN-"
-      },
-      "powersW": {
-        "type": "array",
-        "const": [
-          50,
-          100,
-          150,
-          200
-        ],
-        "minItems": 1,
-        "items": {
-          "type": "number",
-          "minimum": 0
-        }
-      },
-      "distancesKm": {
-        "type": "array",
-        "const": [
-          80,
-          100,
-          120
-        ],
-        "minItems": 1,
-        "items": {
-          "type": "number",
-          "minimum": 0
-        }
-      },
-      "deterministicOrder": {
-        "const": true
-      }
-    }
-  },
-  "BatchCommand": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "command"
-    ],
-    "properties": {
-      "command": {
-        "enum": [
-          "START",
-          "CANCEL"
-        ]
-      }
-    }
   },
   "ReportExportRequest": {
     "type": "object",
@@ -6398,7 +7070,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "SCENARIO_WARNING_CONTINUE",
           "OFFICIAL_TEMPLATE_DELETE",
           "SIMULATION_STOP",
-          "BATCH_LEVEL_III_EXPORT",
           "BACKUP_RESTORE",
           "FULL_CONFIG_EXPORT",
           "AUDIT_EXPORT",
@@ -6780,24 +7451,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     }
   },
-  "BatchReportLink": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "reportId",
-      "runId"
-    ],
-    "properties": {
-      "reportId": {
-        "type": "string",
-        "pattern": "^RPT-"
-      },
-      "runId": {
-        "type": "string",
-        "pattern": "^RUN-"
-      }
-    }
-  },
   "ResetFixture": {
     "type": "object",
     "additionalProperties": false,
@@ -6959,10 +7612,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "replay",
       "report",
       "archive",
-      "batch",
-      "batchRuns",
-      "batchReports",
-      "batchAggregateReport",
       "reset",
       "validation",
       "metadata",
@@ -7053,28 +7702,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "archive": {
         "$ref": "#/components/schemas/ArchiveRecord"
-      },
-      "batch": {
-        "$ref": "#/components/schemas/Batch"
-      },
-      "batchRuns": {
-        "type": "array",
-        "minItems": 12,
-        "maxItems": 12,
-        "items": {
-          "$ref": "#/components/schemas/BatchRunResult"
-        }
-      },
-      "batchReports": {
-        "type": "array",
-        "minItems": 12,
-        "maxItems": 12,
-        "items": {
-          "$ref": "#/components/schemas/BatchReportLink"
-        }
-      },
-      "batchAggregateReport": {
-        "$ref": "#/components/schemas/Report"
       },
       "reset": {
         "$ref": "#/components/schemas/ResetFixture"
@@ -7800,92 +8427,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     }
   },
-  "GetapiV1BatchesResponse": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "properties": {
-      "ok": {
-        "const": true
-      },
-      "data": {
-        "$ref": "#/components/schemas/BatchList"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      }
-    }
-  },
-  "PostapiV1BatchesRequest": {
-    "$ref": "#/components/schemas/BatchRequest"
-  },
-  "PostapiV1BatchesResponse": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "properties": {
-      "ok": {
-        "const": true
-      },
-      "data": {
-        "$ref": "#/components/schemas/Batch"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      }
-    }
-  },
-  "GetapiV1BatchesBatchIdResponse": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "properties": {
-      "ok": {
-        "const": true
-      },
-      "data": {
-        "$ref": "#/components/schemas/BatchDetail"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      }
-    }
-  },
-  "PostapiV1BatchesBatchIdCommandsRequest": {
-    "$ref": "#/components/schemas/BatchCommand"
-  },
-  "PostapiV1BatchesBatchIdCommandsResponse": {
-    "type": "object",
-    "additionalProperties": false,
-    "required": [
-      "ok",
-      "data",
-      "meta"
-    ],
-    "properties": {
-      "ok": {
-        "const": true
-      },
-      "data": {
-        "$ref": "#/components/schemas/Batch"
-      },
-      "meta": {
-        "$ref": "#/components/schemas/Meta"
-      }
-    }
-  },
   "GetapiV1ReportsResponse": {
     "type": "object",
     "additionalProperties": false,
@@ -8267,6 +8808,29 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "data": {
         "$ref": "#/components/schemas/AuditExportResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PostapiV1AdminAuditDeleteRequest": {
+    "$ref": "#/components/schemas/AuditDeleteRequest"
+  },
+  "PostapiV1AdminAuditDeleteResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/AuditDeleteResult"
       },
       "meta": {
         "$ref": "#/components/schemas/Meta"
@@ -9095,9 +9659,57 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             ]
           }
         }
+      },
+      {
+        "if": {
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "COMMUNICATION_SYSTEM",
+                "PARAMETER_DICTIONARY"
+              ]
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "content": {
+              "properties": {
+                "entries": {
+                  "items": {
+                    "not": {
+                      "required": [
+                        "key"
+                      ],
+                      "properties": {
+                        "key": {
+                          "enum": [
+                            "frequencyMinMHz",
+                            "frequencyMaxMHz",
+                            "bandwidth",
+                            "bandwidthMHz",
+                            "txPower",
+                            "txPowerW",
+                            "dataRate",
+                            "dataRateMbps",
+                            "modulation",
+                            "berThreshold"
+                          ]
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     ],
-    "description": "写入必须提供真实内容；运行时额外校验条目键唯一、数值在声明范围内、枚举值唯一且仅文本。旧只读元数据允许缺少 content。"
+    "description": "写入必须提供真实内容；通信体制和参数字典不得写入设备固有参数键，枚举仍可保存受控文本选项。运行时额外校验条目键唯一、数值在声明范围内、枚举值唯一且仅文本。旧只读元数据允许缺少 content。"
   },
   "MasterDataReference": {
     "type": "object",
@@ -9278,6 +9890,113 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   },
   "PutapiV1AdminMasterDataDataIdReferenceRequest": {
     "$ref": "#/components/schemas/MasterDataReference"
+  },
+  "TaskPhase": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "id",
+      "name",
+      "startTimeS",
+      "endTimeS"
+    ],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80
+      },
+      "startTimeS": {
+        "type": "number",
+        "minimum": 0
+      },
+      "endTimeS": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    }
+  },
+  "RoleProfileMenuPaths": {
+    "type": "array",
+    "minItems": 0,
+    "uniqueItems": true,
+    "items": {
+      "type": "string",
+      "enum": [
+        "/situation",
+        "/scenarios",
+        "/reports",
+        "/replays",
+        "/blueprint",
+        "/interactions",
+        "/traceability",
+        "/admin/data-exchange",
+        "/admin",
+        "/admin?section=equipment-library",
+        "/admin?section=scenario-templates",
+        "/admin?section=audit-logs",
+        "/admin?section=master-data",
+        "/admin?section=database-backup",
+        "/admin?section=simulation-data",
+        "/admin?section=runtime-status"
+      ]
+    }
+  },
+  "RoleProfileWrite": {
+    "allOf": [
+      {
+        "$ref": "#/components/schemas/RoleProfile"
+      },
+      {
+        "properties": {
+          "menuPaths": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RoleProfileMenuPaths"
+              },
+              {
+                "minItems": 1
+              }
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "AccessControlConfigWrite": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "version",
+      "profiles",
+      "assignments"
+    ],
+    "properties": {
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "profiles": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RoleProfileWrite"
+        },
+        "maxItems": 100,
+        "uniqueItems": true
+      },
+      "assignments": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/RoleAssignment"
+        },
+        "maxItems": 1000,
+        "uniqueItems": true
+      }
+    }
   }
 }
 )

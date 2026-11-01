@@ -115,6 +115,21 @@ describe('新增场景参数的写入边界', () => {
     }
   })
 
+  it('卫星方向速率与质量切换门限分别校验边界和相互关系', () => {
+    const config = configuration()
+    config.links[0]!.type = 'SAT'
+    config.links[0]!.forwardDataRate = 0.128
+    config.links[0]!.reverseDataRate = 2
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).not.toContain('links[0].forwardDataRate')
+    config.links[0]!.forwardDataRate = 0.1
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('links[0].forwardDataRate')
+    config.links[0]!.forwardDataRate = 0.128
+    Object.assign(config.linkSettings!, { minimumGxbDb: 6, maximumBer: 1e-5, failureGxbDb: 7, failureBer: 1e-6 })
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toEqual(expect.arrayContaining([
+      'linkSettings.failureGxbDb', 'linkSettings.failureBer',
+    ]))
+  })
+
   it('热链结构、终点类型及有序引用分别定位，不修改已保存的链路', () => {
     const config = configuration()
     const originalLinks = structuredClone(config.links)

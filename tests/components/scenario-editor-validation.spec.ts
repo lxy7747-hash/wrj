@@ -171,9 +171,8 @@ describe('场景实体弹框确认校验', () => {
     number('jammer-power', undefined)
     await flushPromises()
     await confirm('apply-jammer')
-    expectValidationMessage('默认功率必须大于 0 W。')
     expect(store.draft).toEqual(original)
-    number('jammer-power', 200)
+    number('jammer-power', 30)
     number('jammer-range', 101)
     await flushPromises()
     await confirm('apply-jammer')
@@ -198,5 +197,95 @@ describe('场景实体弹框确认校验', () => {
     expect(wrapper.findComponent({ name: 'JammerEditorDialog' }).props('modelValue')).toBe(false)
     expect(store.draft!.config.jammers).toHaveLength(original.config.jammers.length + 1)
     expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+  })
+})
+
+
+describe('5.2.2 输入时字段下即时校验', () => {
+  function errorFor(id: string): string {
+    return document.querySelector(`[data-testid="${id}"]`)?.closest('.el-form-item')
+      ?.querySelector('.el-form-item__error')?.textContent ?? ''
+  }
+
+  async function input(id: string, value: string) {
+    const element = document.querySelector<HTMLInputElement>(`[data-testid="${id}"] input`)
+    expect(element).not.toBeNull()
+    element!.value = value
+    element!.dispatchEvent(new Event('input', { bubbles: true }))
+    await flushPromises()
+    await new Promise(resolve => setTimeout(resolve, 120))
+  }
+
+  it('基础环境参数保留越界输入，字段下报错且修正即清除', async () => {
+    await loadPage()
+    await input('scenario-trans-distance', '500')
+    expect(errorFor('scenario-trans-distance')).toContain('150～410')
+    await input('scenario-trans-distance', '200')
+    expect(errorFor('scenario-trans-distance')).toBe('')
+    await input('scenario-env-rainAltitudeLimitM', '30001')
+    expect(errorFor('scenario-env-rainAltitudeLimitM')).toContain('30000')
+    await input('scenario-env-rainAltitudeLimitM', '1000')
+    expect(errorFor('scenario-env-rainAltitudeLimitM')).toBe('')
+  })
+
+  it('干扰范围/功率/方向越界未确认即红字，修正清除，取消不写入草稿', async () => {
+    const { wrapper, store, confirm } = await loadPage()
+    const original = structuredClone(toRaw(store.draft!))
+    await wrapper.get('#tab-jammers').trigger('click')
+    await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
+    await flushPromises()
+    await input('jammer-range', '101')
+    expect(errorFor('jammer-range')).toContain('1～100 km')
+    expect(store.draft).toEqual(original)
+    await input('jammer-range', '80')
+    expect(errorFor('jammer-range')).toBe('')
+    await input('jammer-power', '2')
+    expect(errorFor('jammer-power')).toContain('-10～30 dBm')
+    await input('jammer-power', '30')
+    expect(errorFor('jammer-power')).toBe('')
+    await input('jammer-direction', '361')
+    expect(errorFor('jammer-direction')).toContain('360')
+    await input('jammer-direction', '180')
+    expect(errorFor('jammer-direction')).toBe('')
+    await confirm('cancel-jammer')
+    expect(store.draft).toEqual(original)
+  })
+
+  it('编辑冲突两端中任意链路即时提示频段警告，修正消失且草稿未变', async () => {
+    const { wrapper, store, confirm } = await loadPage()
+    const original = structuredClone(toRaw(store.draft!))
+    const index = store.draft!.config.links.findIndex(link => link.id === 'L-DL-03')
+    await wrapper.get('#tab-links').trigger('click')
+    await wrapper.get(`[data-testid="edit-link-${index}"]`).trigger('click')
+    await flushPromises()
+    await input('link-frequency', '2205')
+    expect(errorFor('link-frequency')).toContain('警告：')
+    expect(errorFor('link-frequency')).toContain('同频互扰')
+    expect(store.draft).toEqual(original)
+    await input('link-frequency', String(original.config.links[index]!.frequency))
+    expect(errorFor('link-frequency')).toBe('')
+    await confirm('cancel-link')
+    expect(store.draft).toEqual(original)
+  })
+
+  it('传感器清空必填/负值和原生ESM参数实时定位对应字段', async () => {
+    const { wrapper, store } = await loadPage()
+    const sensorId = store.draft!.config.sensors[0]!.id
+    await wrapper.get('#tab-data').trigger('click')
+    await flushPromises()
+    await input('sensor-frequency-min-0', '')
+    expect(errorFor('sensor-frequency-min-0')).toContain('最低频率必须大于 0')
+    await input('sensor-frequency-min-0', '2000')
+    expect(errorFor('sensor-frequency-min-0')).toBe('')
+    await input('sensor-probability-0', '')
+    expect(errorFor('sensor-probability-0')).toContain('0 至 1')
+    await input('sensor-probability-0', '0.5')
+    expect(errorFor('sensor-probability-0')).toBe('')
+    store.draft!.uiExtensions.sensors[0]!.esm = { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 }
+    await flushPromises()
+    await input(`native-esm-dwell-${sensorId}`, '0')
+    expect(errorFor(`native-esm-dwell-${sensorId}`)).toContain('驻留时间必须大于 0')
+    await input(`native-esm-dwell-${sensorId}`, '2')
+    expect(errorFor(`native-esm-dwell-${sensorId}`)).toBe('')
   })
 })

@@ -1,0 +1,434 @@
+V1.2测试大纲与当前项目覆盖差距清单（2026-10-31）
+
+本表为本轮代码整改前的审查快照，统计数不代表整改后的剩余代码缺陷数。
+2026-10-31后续代码整改和验证结果见同目录《V1.2代码整改记录.txt》；引擎及现场验收条件仍须逐项验证。
+
+一、范围和统计口径
+依据：H:\Project\改文档\测试\V1.2_3多手段无人集群通联技术研究原型软件研发_软件测试大纲_V1.2_评审修改版.docx
+SHA-256：ab38f58112846fd5fc005e9b8a2b5e87844801dfd477ab9f82d4d91ce56e6870
+项目：H:/Project/newWrj/frontend 当前已保存源码及现有测试/本机联调证据。
+批量仿真已由用户明确取消；新版残留的批量参数遍历/扫描/聚合对比不计功能缺口。
+单次仿真、场景内批量新增节点、多任务并行与任务隔离继续保留。
+按73个用例逐项互斥统计；同一插件或数据源缺口会影响多个用例，不等于多个独立缺陷。
+基础能力具备不等于正式验收通过；缺少材料/实测证据不一概当作未实现功能。
+文档自身的周期、干扰理论方向、系统目标等歧义另列，不通过改变物理模型迎合错误预期。
+
+二、统计
+类别 | 总数 | 基础能力具备 | 部分覆盖/能力缺口 | 待专项实测/交付核验
+功能 | 45 | 22 | 22 | 1
+性能 | 20 | 1 | 15 | 4
+齐套 | 8 | 0 | 0 | 8
+合计 | 73 | 23 | 37 | 13
+
+三、逐项核对
+QTX-01 合同交付物齐套性
+状态：待专项实测或交付核验
+差距/条件：需将7项交付对象形成齐套清单，核验文件版本、评审签署、纸质/电子介质一致性；不是仅凭源码存在判通过。
+依据：V1.2 QTX-01及4.1/4.2
+
+QTX-02 软件需求规格说明
+状态：待专项实测或交付核验
+差距/条件：需求规格说明文件已在项目中；与V1.2/交付版本的一致性、评审及纸质件待核验。
+依据：docs/source/多手段无人集群通联技术软件-软件需求规格说明.docx
+
+QTX-03 软件设计说明
+状态：待专项实测或交付核验
+差距/条件：设计说明文件已在项目中；与V1.2/交付版本的一致性、评审及纸质件待核验。
+依据：docs/source/多手段无人集群通联技术软件-设计说明.docx
+
+QTX-04 软件技术报告
+状态：待专项实测或交付核验
+差距/条件：已见研制总结等相关材料，未确认满足本版要求的软件技术报告正式版本及评审记录，不能按不存在所有材料处理。
+依据：H:/Project/改文档/9多手段无人集群通联技术研究原型软件研发-软件研制总结报告.docx
+
+QTX-05 软件测试报告
+状态：待专项实测或交付核验
+差距/条件：已见软件测试报告草稿；覆盖新版73项的实际结果、缺陷闭环、评审签署和正式报告尚待核验。
+依据：H:/Project/改文档/6多手段无人集群通联技术研究原型软件研发_软件测试报告.docx
+
+QTX-06 软件使用说明书
+状态：待专项实测或交付核验
+差距/条件：已有部署、结果使用等说明，尚未确认一份完整正式使用说明书、纸质件及3项操作复现记录。
+依据：部署/代码更新包/使用说明.md；部署/Windows/仿真结果使用说明.md；部署/国产化部署.docx
+
+QTX-07 第三方CNAS测评报告
+状态：待专项实测或交付核验
+差距/条件：本次限定查询newWrj和改文档目录未见CNAS测评报告/有效资质证明；该交付证据仍需提供，不能用自测替代，也不计成软件编码缺陷。
+依据：V1.2 QTX-07；newWrj/改文档目录文件检索
+
+QTX-08 多手段无人集群通联技术研究仿真原型软件1套及源代码
+状态：待专项实测或交付核验
+差距/条件：源码及Windows代码更新包已有；完整源代码交付、指定国产环境完整仿真、构建复现与安装程序一致性仍待正式交付核验。
+依据：部署/代码更新包/CODE-VERSION.txt；部署/版本说明.md；docs/麒麟网页验证.md
+
+GNZB-01 2D态势渲染（Leaflet）
+状态：待专项实测或交付核验
+差距/条件：四类链路线型/颜色、劣化红色和逐设备干扰范围均已实现；尚缺真实引擎帧下的端到端一致性实测。
+依据：src/components/situation/situation-map-controller.ts:338,369,757,795；src/features/situation/interference-ranges.ts
+
+GNZB-02 实时指标监控面板
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：面板和节点/链路/时间筛选已具备，但真实引擎尚未输出GXB、BER、接收功率及可用状态。
+依据：src/components/situation/QualityMetricPanel.vue:53-56；src/contracts/domain-models.ts:610
+
+GNZB-03 链路质量弹窗展示
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：弹窗可展示字段和来源时刻，但真实质量数据缺失时明确显示“暂无数据”。
+依据：src/components/situation/LinkQualityDialog.vue:85-87,103,117
+
+GNZB-04 评估报表可视化
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：节点、链路、阶段、时间统一筛选已实现；真实质量曲线页仍固定为空，且缺引擎质量/切换时序源，无法完成质量图表及完整导出。
+依据：src/pages/reports/reports.vue:135-145；src/components/reports/LocalReportTabs.vue:103；src/features/reports/local-report.ts:170-174
+
+GNZB-05 场景可视化配置
+状态：基础能力具备
+差距/条件：节点、链路、干扰、传感器、环境、航迹与时序均有可视化配置和统一场景对象。
+依据：src/pages/scenarios/scenarios.vue；src/contracts/domain-models.ts:237-239
+
+GNZB-06 参数校验与冲突检测
+状态：基础能力具备
+差距/条件：字段级即时错误/警告、预检和阻断保存/生成均已具备。
+依据：src/features/scenarios/validation-fields.ts；src/pages/scenarios/scenarios.vue:264；src/components/scenarios/PlatformEditorDialog.vue:111
+
+GNZB-07 场景模板管理
+状态：基础能力具备
+差距/条件：模板新建、复制、编辑、刷新、删除及确认流程均有实现；10月29日基础数据/场景参数E2E留有通过记录。
+依据：src/pages/scenarios/ScenarioWorkspace.vue:143-157,202-211；src/pages/scenarios/scenarios.vue:1239-1252
+
+GNZB-08 仿真平台脚本生成
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：已生成平台、通信、传感器、干扰与时序脚本，但场景模型未完整表达加速度/航向等运动参数；前返向独立速率、ESM概率映射、干扰精确指向等也未完整映射，且尚无真实引擎完整解析验收。
+依据：server/scripts/mission-generator.ts；src/contracts/domain-models.ts
+
+GNZB-09 仿真引擎驱动
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：本机真实 mission 仅支持 START/STOP；PAUSE、RESUME、STEP、SET_SPEED 因未接入运行中控制桥而被服务端拒绝。批量模式按用户决定不计缺口。
+依据：server/app.ts:1258-1277；server/simulations/mission-execution.ts
+
+GNZB-10 LinkCalculator插件（链路计算）
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：本机引擎探针确认缺少 WSF_LINK_CALC_PROCESSOR；生成器仅保留待对接插件配置，不能形成逐帧质量结果。
+依据：server/local/mission-runner.ts:89-113,157-159；docs/本机真实引擎联调记录.txt
+
+GNZB-11 复合损耗模型计算
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：自由空间、海面多径、大气、云雨和干扰损耗参数可下发给待对接 LinkCalc，但当前没有可运行插件输出总损耗及分量。
+依据：server/scripts/mission-generator.ts:274-316；server/local/mission-runner.ts
+
+GNZB-12 GXB/BER逐帧求解
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：源码明确阻断无真实测量时的质量CSV，不能以固定通信模型参数替代逐帧GXB/BER。
+依据：server/scripts/mission-generator.ts:1213-1216,1254-1262
+
+GNZB-13 链路状态判定
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：有链路数据结构和阈值配置，但没有真实GXB、BER、接收功率输入及连续帧状态机，因此不能完成受控版本一致的可用/劣化/中断判定。
+依据：src/contracts/domain-models.ts:250-255；server/scripts/mission-generator.ts:1254-1262
+
+GNZB-14 ESM侦测传感器管理
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：可生成 WSF_ESM_SENSOR、解析规范侦测事件，但概率、方向和频段字段未完成经验证的一对一引擎映射，不能保证完整事件要素。
+依据：server/scripts/mission-generator.ts:947-950,1271-1276；src/features/reports/detection-events.ts
+
+GNZB-15 RF干扰机控制
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：已有宽带/瞄准/扫频类型、启停和部分频段带宽功率配置；但采用W而非-10～30 dBm受控范围，无俯仰角参数和真实执行回执。
+依据：src/features/scenarios/scenario-validation.ts:133,627-659,820-822；server/scripts/mission-generator.ts
+
+GNZB-16 侦测→启扰→劣化闭环
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：投影层可校验同帧闭环，但真实运行脚本按距离/干扰开关门控，不消费真实ESM结果，且无质量劣化回传。
+依据：server/simulations/projection.ts:433-468；server/scripts/mission-generator.ts:1217-1219
+
+GNZB-17 干扰参数实时同步
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：投影层具备版本递增和帧边界校验，但仅固定证据投影；真实前端—交换层—引擎之间没有参数同步适配与引擎确认。
+依据：server/simulations/projection.ts:482-516；server/app.ts
+
+GNZB-18 LinkManager插件（链路质量监测）
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：缺少 LinkManager 插件及同一仿真时刻全候选链路质量快照、历史稳定状态的真实来源。
+依据：server/scripts/mission-generator.ts:1254-1262；docs/本机真实引擎联调记录.txt
+
+GNZB-19 前向选路能力（干扰最小通道）
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：当前按预设优先级、距离或干扰开关规则切换，不按候选集真实干扰指标比较并选择。
+依据：server/scripts/mission-generator.ts:218-262,721-765,1212-1215
+
+GNZB-20 返向选路能力（误码最低链路）
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：缺真实BER流，也没有按BER、稳定性、滞回条件进行返向候选排序的实现。
+依据：server/scripts/mission-generator.ts:1213-1216,1257-1262
+
+GNZB-21 切换决策与事件记录
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：脚本已有连续检查、一致性、冷却时间三类防抖框架和日志，但不是基于前/返向质量优选，且无规范切换CSV及真实质量证据。
+依据：server/scripts/mission-generator.ts:248-262,1083-1089,1212-1215
+
+GNZB-22 多手段综合切换
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：四类链路可建模，但缺跨体制真实质量重算、基于质量的主备切换和切换期间无丢帧业务连续性证据。
+依据：server/scripts/mission-generator.ts:1213-1219,1232-1238
+
+GNZB-23 CSV文件读写
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：CSV契约、UTF-8增量写入、表头/任务隔离校验已实现，但质量、状态、损耗、切换CSV须由真实引擎提供，当前明确标记REQUIRES_ENGINE。
+依据：server/local/continuous-time-series.ts:150-152,389-403；server/local/time-series.ts:13-16
+
+GNZB-24 JSON配置解析
+状态：基础能力具备
+差距/条件：UTF-8读取、版本校验、字段路径错误反馈和合法配置映射均已实现。
+依据：src/pages/scenarios/ScenarioWorkspace.vue:106-140；server/scenarios/projection.ts:332-407；src/features/scenarios/scenario-validation.ts:924
+
+GNZB-25 WebSocket数据推送
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：主题、序号、任务隔离和断线游标续传已实现；真实链路指标、干扰和切换事件源尚未由引擎持续提供。
+依据：server/ws/realtime.ts:20-25,227-234,256-348；server/ws/realtime.ts:296-308
+
+GNZB-26 仿真进程管理
+状态：基础能力具备
+差距/条件：进程启动、单实例防护、stdout日志、超时终止和资源清理代码已具备；目标机mission.exe联调仍属验收验证。
+依据：server/local/mission-runner.ts:26-33,134-305；server/local.ts:36
+
+GNZB-27 人机交互接口
+状态：基础能力具备
+差距/条件：登录、菜单、参数保存、按钮/弹窗反馈等基础交互链路已具备。
+依据：src/pages/scenarios/scenarios.vue；src/pages/situation/situation.vue；src/components/data-exchange/ExchangeMonitor.vue
+
+GNZB-28 本地文件接口
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：场景JSON导出仅保存config，导入会重建uiExtensions，导致原生ESM等界面扩展无损还原失败；完整实际CSV仍依赖引擎源。
+依据：src/pages/scenarios/ScenarioWorkspace.vue:92-94；server/scenarios/projection.ts:379-407；server/local/continuous-time-series.ts:389-403
+
+GNZB-29 基础数据管理
+状态：基础能力具备
+差距/条件：设备/主数据CRUD、组合查询、停用与版本、真实来源引用及删除保护已实现；10月29日相关浏览器回归通过，正式数据引用工况仍需验收。
+依据：server/admin/projection.ts；server/local/equipment-sqlite.ts；server/local/master-data-sqlite.ts；src/components/admin/EquipmentLibrary.vue；output/basic-data-management-e2e/.last-run.json
+
+GNZB-30 用户与角色管理
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-31 数据库备份与恢复
+状态：基础能力具备
+差距/条件：已有真实系统数据库快照、摘要/结构/业务校验、恢复前备份及失败回滚；还需在正式交付库记录恢复结果，不按缺少备份功能计。
+依据：server/local/system-backup-sqlite.ts；server/local/system-backup-validation.ts；server/local.ts:66；docs/系统备份与恢复说明.md
+
+GNZB-32 用户操作日志
+状态：基础能力具备
+差距/条件：审计记录、条件筛选、分页与导出已有；普通员不能修改/删除，管理员删除另有授权与确认，符合本用例的普通员拒绝要求。
+依据：src/components/admin/AuditLog.vue；server/app.ts:2631；output/audit-management-e2e/.last-run.json
+
+GNZB-33 登录认证与权限控制
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-34 设备参数新增
+状态：基础能力具备
+差距/条件：设备/主数据CRUD、组合查询、停用与版本、真实来源引用及删除保护已实现；10月29日相关浏览器回归通过，正式数据引用工况仍需验收。
+依据：server/admin/projection.ts；server/local/equipment-sqlite.ts；server/local/master-data-sqlite.ts；src/components/admin/EquipmentLibrary.vue；output/basic-data-management-e2e/.last-run.json
+
+GNZB-35 设备参数修改
+状态：基础能力具备
+差距/条件：设备/主数据CRUD、组合查询、停用与版本、真实来源引用及删除保护已实现；10月29日相关浏览器回归通过，正式数据引用工况仍需验收。
+依据：server/admin/projection.ts；server/local/equipment-sqlite.ts；server/local/master-data-sqlite.ts；src/components/admin/EquipmentLibrary.vue；output/basic-data-management-e2e/.last-run.json
+
+GNZB-36 设备参数删除
+状态：基础能力具备
+差距/条件：设备/主数据CRUD、组合查询、停用与版本、真实来源引用及删除保护已实现；10月29日相关浏览器回归通过，正式数据引用工况仍需验收。
+依据：server/admin/projection.ts；server/local/equipment-sqlite.ts；server/local/master-data-sqlite.ts；src/components/admin/EquipmentLibrary.vue；output/basic-data-management-e2e/.last-run.json
+
+GNZB-37 设备参数查询
+状态：基础能力具备
+差距/条件：设备/主数据CRUD、组合查询、停用与版本、真实来源引用及删除保护已实现；10月29日相关浏览器回归通过，正式数据引用工况仍需验收。
+依据：server/admin/projection.ts；server/local/equipment-sqlite.ts；server/local/master-data-sqlite.ts；src/components/admin/EquipmentLibrary.vue；output/basic-data-management-e2e/.last-run.json
+
+GNZB-38 用户新增
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-39 用户修改
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-40 用户删除
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-41 用户查询
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-42 角色权限设置
+状态：基础能力具备
+差距/条件：账号新增/编辑/查询/删除、自定义角色档案/菜单/权限与分配、会话撤销和当前/最后管理员保护已有；不再把基础身份为两类误判为没有新增角色。
+依据：src/components/admin/AccountManagement.vue；src/components/admin/RoleProfiles.vue；server/auth/projection.ts；server/local/access-control-sqlite.ts
+
+GNZB-43 数据库备份
+状态：基础能力具备
+差距/条件：已有真实系统数据库快照、摘要/结构/业务校验、恢复前备份及失败回滚；还需在正式交付库记录恢复结果，不按缺少备份功能计。
+依据：server/local/system-backup-sqlite.ts；server/local/system-backup-validation.ts；server/local.ts:66；docs/系统备份与恢复说明.md
+
+GNZB-44 数据库恢复
+状态：基础能力具备
+差距/条件：已有真实系统数据库快照、摘要/结构/业务校验、恢复前备份及失败回滚；还需在正式交付库记录恢复结果，不按缺少备份功能计。
+依据：server/local/system-backup-sqlite.ts；server/local/system-backup-validation.ts；server/local.ts:66；docs/系统备份与恢复说明.md
+
+GNZB-45 典型场景综合应用测试
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：新增典型场景要求50信息节点完整配置→真实干扰300帧启/900帧停→质量劣化→按真实干扰/BER选路→报表闭环。启动/日志/位置已有，但缺真实质量求解与选路闭环，不能用界面或规则演示替代。
+依据：V1.2 GNZB-45；server/local/mission-runner.ts；server/scripts/mission-generator.ts；src/components/reports/LocalReportTabs.vue
+
+XNZB-01 评估报表生成与导出
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：PDF/HTML/CSV导出框架存在，但真实质量曲线、雷达图及质量统计未接入，且缺真实质量时序源；批量仿真不计入本项缺口。
+依据：src/pages/reports/reports.vue:104-109；src/components/reports/LocalReportTabs.vue:103；src/features/reports/local-report.ts:170-174
+
+XNZB-02 仿真时序数据CSV留存
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：持续增量写盘与清单可记录性能，但全量链路状态、损耗、切换数据仍缺真实引擎输入，不能证明无断档。
+依据：server/local/continuous-time-series.ts:150-152,389-403
+
+XNZB-03 信息节点建模规模
+状态：待专项实测或交付核验
+差距/条件：源码允许64个业务信息节点，类型上限可覆盖60节点；已有50/51节点本机动态记录，但尚无V1.2所要求60节点完整动态、四链路和质量联合工况证据。
+依据：src/features/scenarios/scenario-validation.ts:108-117,1036-1041；docs/本机专项整改记录.txt
+
+XNZB-04 异构信息链路建模
+状态：基础能力具备
+差距/条件：卫星、微波、数传、激光四类链路的数据模型、参数配置与态势差异化展示基础均已具备；仍需正式测试记录确认。
+依据：src/contracts/domain-models.ts；src/features/scenarios/link-calc-defaults.ts；server/scripts/mission-generator.ts
+
+XNZB-05 干扰设备建模
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：机载、地面两类干扰平台和干扰设备可配置，但缺面向接收端产生真实干扰效果的已验证执行与质量闭环；指向也未覆盖俯仰维度。
+依据：src/features/scenarios/scenario-validation.ts:95-104,133,627-659,820-822
+
+XNZB-06 异构链路通信实时计算
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：四类链路的逐帧传播损耗、GXB、BER没有真实质量插件输出；激光也被排除在当前LinkCalc热链统计之外。
+依据：server/local/mission-runner.ts；server/scripts/mission-generator.ts:832,1215-1216
+
+XNZB-07 复合损耗与调制兼容计算
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：BPSK配置可保存，但没有可验证的复合损耗分量、多干扰叠加与GXB/BER计算结果。
+依据：src/contracts/domain-models.ts；server/scripts/mission-generator.ts:1215-1216
+
+XNZB-08 链路计算实时性
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：可配置0.25秒时间步，但缺0.25秒质量帧计算器；已有50节点/90分钟推进不证明全部链路损耗、GXB、BER在每帧内完成。
+依据：src/features/scenarios/scenario-validation.ts:944；server/scripts/mission-generator.ts:883-884,1215；docs/本机真实引擎联调记录.txt
+
+XNZB-09 前向/返向信息速率设置
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：链路有方向和单一dataRate字段，数传存在方向档位；但卫星前向0.128～8、返向0.064～2 Mbps的独立边界/组合校验未实现，且速率未进入真实GXB、BER、时延求解。
+依据：src/contracts/domain-models.ts:131-134；src/features/scenarios/link-calc-defaults.ts:83-120
+
+XNZB-10 宽带压制干扰源建模与功率设置
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：有BARRAGE模型，但默认功率单位为W，未实现-10～30 dBm和100/200/400 MHz的受控档位/PSD判定，也无GXB随功率变化的真实计算。
+依据：src/features/scenarios/scenario-validation.ts:133,642-645；server/scripts/mission-generator.ts
+
+XNZB-11 干扰下链路互通显示
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：态势可显示链路与干扰覆盖，但无真实GXB/BER状态流驱动300帧启扰、900帧停扰后的连通—劣化/中断—恢复及2秒刷新证明。
+依据：server/scripts/mission-generator.ts:1215-1219；src/stores/runtime-quality.ts
+
+XNZB-12 侦测—启扰—劣化闭环响应
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：缺真实ESM事件到RF执行再到同/次帧质量反馈的接入链路；现有投影闭环不能替代真实引擎联调。
+依据：server/simulations/projection.ts:433-468；server/scripts/mission-generator.ts:1217-1219
+
+XNZB-13 最优信息链路选取计算
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：未实现按GXB≥6 dB、BER≤1E-5过滤，前向最小干扰/返向最低BER排序、质量裕度和10帧冷却的真实选路。
+依据：server/scripts/mission-generator.ts:721-765,1212-1215
+
+XNZB-14 链路切换防抖动机制
+状态：部分覆盖/明确能力缺口
+整改属性：CODE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：连续稳定、一致性和冷却三层框架已存在，但默认稳定检查次数为1而非大纲默认3，且没有质量差距门限参与切换。
+依据：server/scripts/mission-generator.ts:248-262,1264-1266；src/features/scenarios/link-settings.ts:32-34
+
+XNZB-15 切换决策响应时间
+状态：部分覆盖/明确能力缺口
+整改属性：MIXED（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：当前切换检查固定每3秒且由规则触发，缺从真实质量变化到完成切换的可量测时戳、质量驱动决策和业务连续性证据。
+依据：server/scripts/mission-generator.ts:192-193,1083-1089,1212-1215
+
+XNZB-16 数据契约一致性
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：CSV及WebSocket的任务隔离、版本、时刻和错误响应合同已有实现；没有证据表明正常业务载荷必须含error字段。明确缺口是引擎未提供五类实际时序源，无法验证全链路契约齐套、多任务隔离和单位实测一致性。
+依据：src/contracts/domain-models.ts:559-614；server/local/time-series.ts:13-16,95-97；server/local/continuous-time-series.ts:389-403
+
+XNZB-17 WebSocket数据推送实时性
+状态：部分覆盖/明确能力缺口
+整改属性：ENGINE（CODE=代码；ENGINE=引擎/插件/真实数据；MIXED=两者共同）
+差距/条件：持久化日志、按主题序号和续传机制已实现；50节点全量真实指标下的无丢帧、低延迟与重连续传仍缺真实质量源和专项压测证据。
+依据：server/local/realtime-journal.ts:15-24,81-100；server/ws/realtime.ts:256-348
+
+XNZB-18 单机离线运行
+状态：待专项实测或交付核验
+差距/条件：离线资源与本地存储可用，已有历史离线包检查；缺新版完整功能在物理断网且禁止外联工况的正式记录。大纲“任何网络连接”须明确允许本机HTTP/WS。
+依据：docs/内网部署.md；部署/离线部署包/使用说明.md；V1.2 XNZB-18
+
+XNZB-19 最低硬件环境部署运行
+状态：待专项实测或交付核验
+差距/条件：未找到6核2.1GHz/16GB/500GB SSD目标设备的50节点全流程性能验收记录；不能由开发环境或受控I/O试验代替。
+依据：docs/本机专项整改记录.txt；V1.2 XNZB-19
+
+XNZB-20 操作系统适配
+状态：待专项实测或交付核验
+差距/条件：Windows已有真实mission及核心程序运行证据，但最终指定系统/新包全流程仍需复验。麒麟x86仅完成网页/API/地图/回放验证，Linux mission未接入；大纲Windows与麒麟/UOS目标口径需先统一。
+依据：docs/麒麟网页验证.md；部署/版本说明.md；部署/代码更新包/CODE-VERSION.txt
+
+四、概述中的附加条件与测试准备（不额外虚增73项用例数量）
+- 启动不大于2分钟、连续运行不小于72小时、平均故障间隔不小于100小时尚无完整正式验收记录；大纲还需补明确步骤及统计口径。
+- 准备并冻结3套典型场景、至少120条设备参数、200组损耗基准、30组干扰参数和50条侦测样本等输入材料；已存在说明或样例不等于完整数据集已交付。
+- 1秒/0.25秒帧周期、宽带干扰PSD变化与GXB方向、Windows与麒麟/UOS、物理断网与本机HTTP/WS等口径需统一。
+
+五、构建与证据边界
+- 已有5.1.1地图/解析168项、5.2.2校验250项及10月29日设备/主数据/场景参数浏览器回归记录；这些不等于新版73项正式通过。
+- 10月29日已生成Windows代码更新包acfa0d33；Windows旧完整目录CODE-VERSION仍为10月22日。目标机器是否实际应用更新尚无本轮证据。
+- 本轮只读核查实现及既有证据，未修改软件/原Word、未重跑全量测试、未启动真实引擎、未执行现场/长期/最低硬件试验。

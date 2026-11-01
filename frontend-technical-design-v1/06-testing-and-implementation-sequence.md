@@ -5,7 +5,7 @@
 | 层 | 工具 | 最小覆盖 | 合并门禁 |
 |---|---|---|---|
 | Type/schema | TypeScript、AJV、Vitest | ScenarioConfig、五 SRS 接口、API/WS envelope、fixture 全量 | `tsc --noEmit`；正/负 schema；类型名/枚举/单位快照一致 |
-| State/store | Vitest | capability、simulation UI/canonical、link UI/canonical、confirmation、replay、batch、config lock | 每条合法边和非法边；reset 后深相等；核心 unit line/branch ≥90% |
+| State/store | Vitest | capability、simulation UI/canonical、link UI/canonical、confirmation、replay、config lock | 每条合法边和非法边；reset 后深相等；核心 unit line/branch ≥90% |
 | RBAC | Vitest、Supertest | 角色×route×endpoint×敏感 action | UI guard 与 server reject 均有证据；last-admin 和 Level III 组合覆盖 |
 | Component | Vue Test Utils | 29 capability 目的地、7 interface 目的地、共享表单/表格/对话框 | 已声明状态、键盘、错误/空状态、fieldPath、单位、无颜色唯一语义 |
 | Contract/API | Supertest、`ws` test client | OpenAPI 每个 operation、error catalog、5 个 canonical topics | 成功/错误 envelope；127.0.0.1；序号/gap/close 1008/reconnect；禁止副作用 |
@@ -33,7 +33,6 @@
 - link：连续帧/滞回；F-00042 的 L-MW-01=UP，L-DL-03 UI DEGRADED/canonical DOWN。
 - confirmation：场景 WARNING 继续、官方模板删除、仿真停止和敏感管理员动作均覆盖确认/取消；过期、重新认证、重复确认、reset 全部失效；场景存在 ERROR 时不得以确认绕过。
 - replay：load/play/pause/seek/single-frame/back/speed/end/corrupt；不修改 RUN-001。
-- batch：12 run/report 一一对应；partial/cancel/illegal transition；聚合只来自同 12 行。
 
 ### RBAC 决策表
 
@@ -54,7 +53,6 @@
 2. 读取 SCN-001→TASK-001→RUN-001→F-00042。
 3. 从 frame 验证 L-MW-01/L-DL-03、DET-042、SW-003；沿 RUN-001 读取 REPLAY-001、RPT-001、ARCH-001。
    F-00042、DET-042、SW-003 的有效 `simulationTime/time` 均为 42；`sourceRegistryTime` 只保存原型旧展示值，绝不参与同帧计算。
-4. 读取 BATCH-001，验证 RUN-B01…RUN-B12 与 RPT-B01…RPT-B12 顺序一一对应并指向 RPT-BATCH-001。
 5. 修改草稿、运行状态、回放游标、确认上下文和 WS sequence，再 reset；重复 1–4 得响应 B。
 6. 删除传输连接对象后 A 与 B 深相等；所有引用 closure 零 orphan，所有 timestamp 均为 fixture 常量。
 
@@ -73,8 +71,7 @@ OpenAPI 静态审计逐 operation 检查：唯一 operationId；32 个 POST/PUT/
 | `/login` | 三种认证结果；ADMIN 与 OPERATOR 分别登录；无 token/cookie |
 | `/situation` | F-00042 同帧地图/面板/弹窗；仿真状态/锁 |
 | `/scenarios` | 列表、新建/复制、指定编号编辑、保存返回列表、模板创建、确认删除/锁保护；完整校验、单快照 import/undo/reset、模板 RBAC、脚本预览 |
-| `/batches` | 12 行、参数、状态与 report pair |
-| `/reports` | RUN/BATCH source 原子切换；Level II/III 权限和确认 |
+| `/reports` | 单次 RUN 来源；仅 Level II 普通报告导出 |
 | `/replays` | REPLAY-001 控件、事件、corrupt/empty overlay |
 | `/admin` | operator 重定向；ADMIN 主数据/用户/备份/审计/归档/健康 |
 
@@ -84,11 +81,11 @@ SQLite 完整备份追加专项：使用临时主库、装备库、角色权限�
 | `/traceability` | 29+7 行过滤与 destination navigation |
 | `/interactions` | 六态 gallery、错误目录、closed-loop duplicate、reset |
 
-所有十一条路由分别在 1920×1080 和 1366×768 截图比较。小视口允许数据表内部滚动，但导航、主 action、错误和确认按钮必须可见/可键盘到达；无重叠、截断或脱离 viewport 的 modal。
+所有十条路由分别在 1920×1080 和 1366×768 截图比较。小视口允许数据表内部滚动，但导航、主 action、错误和确认按钮必须可见/可键盘到达；无重叠、截断或脱离 viewport 的 modal。
 
 阶段化 E2E 口径：
 
-- P1 只验证 11 条路由的页面壳、主导航、匿名重定向及 OPERATOR/ADMIN 权限矩阵，不断言 P2–P8 尚未实现的业务功能。
+- P1 只验证 10 条路由的页面壳、主导航、匿名重定向及 OPERATOR/ADMIN 权限矩阵，不断言 P2–P8 尚未实现的业务功能。
 - P2–P7 随对应能力实现补充业务主链、已声明状态、错误路径和权限操作断言。
 - P8 汇总全部路由及业务链路，执行完整双视口集成验收。
 
@@ -96,8 +93,8 @@ SQLite 完整备份追加专项：使用临时主库、装备库、角色权限�
 
 1. **合同基线**：复制 types，采用 OpenAPI 2020-12 schema 与 fixture loader；AJV 直接验证 `DeterministicFixtures`，先通过 type/schema/evidence/timing closure tests。
 2. **Mock 内核**：实现固定 clock/requestId、success/error envelope、内存 projection、reset、loopback bind；通过无副作用测试。
-3. **Auth/RBAC/router shell**：实现两个受支持角色的独立认证、十一路由与 guards；通过 route×role 表。
-4. **核心 adapters/stores**：依次 auth/ui、scenario、simulation/telemetry、batch/report/replay、admin/traceability；每个状态机先测后接 UI。
+3. **Auth/RBAC/router shell**：实现两个受支持角色的独立认证、十条路由与 guards；通过 route×role 表。
+4. **核心 adapters/stores**：依次 auth/ui、scenario、simulation/telemetry、report/replay、admin/traceability；每个状态机先测后接 UI。
 5. **场景与合同页面**：scenario editor、validation、template、script preview、blueprint/traceability/interactions。
 6. **运行态势与 WS**：离线 Leaflet、frame consistency、simulation controls、topics/reconnect。
 7. **批次/报告/回放**：同源选择、普通报告正式时序曲线、12 行 registry、Level III confirmation、只读 replay。
@@ -136,4 +133,4 @@ node -e "const f=require('fs'); JSON.parse(f.readFileSync('.\\contracts\\mock-ap
 node -e "const f=require('fs'),Ajv=require('ajv/dist/2020'),a=JSON.parse(f.readFileSync('.\\contracts\\mock-api.openapi.yaml')),d=JSON.parse(f.readFileSync('.\\contracts\\deterministic-fixtures.json')),rw=x=>Array.isArray(x)?x.map(rw):x&&typeof x==='object'?Object.fromEntries(Object.entries(x).map(([k,v])=>[k,k==='$ref'&&typeof v==='string'?v.replace('#/components/schemas/','#/$defs/'):rw(v)])):x,s=rw({$schema:'https://json-schema.org/draft/2020-12/schema',$ref:'#/$defs/DeterministicFixtures',$defs:a.components.schemas}),j=new Ajv({allErrors:true,strict:false}); if(!j.validate(s,d)){console.error(j.errors);process.exit(1)} console.log('FIXTURE SCHEMA PASS')"
 ```
 
-OpenAPI 静态审计需再枚举 `paths` 下的 `get/post/put/delete/patch`：断言 operationId 唯一；写 operation 的 `requestBody.content.application/json.schema.$ref` 非空且唯一；除 login 外 `parameters` 包含 `#/components/parameters/DemoRole`；每个非 101 的 2xx response 指向独立 envelope，且该 envelope 的 `data.$ref` 不是空 schema。fixture 语义审计按 ID 集合验证 platform/link/sensor/jammer/event/run/report/archive/batch 引用，并断言 frame、link、platform、event、同步证据的有效仿真时刻均为 42。
+OpenAPI 静态审计需再枚举 `paths` 下的 `get/post/put/delete/patch`：断言 operationId 唯一；写 operation 的 `requestBody.content.application/json.schema.$ref` 非空且唯一；除 login 外 `parameters` 包含 `#/components/parameters/DemoRole`；每个非 101 的 2xx response 指向独立 envelope，且该 envelope 的 `data.$ref` 不是空 schema。fixture 语义审计按 ID 集合验证 platform/link/sensor/jammer/event/run/report/archive 引用，并断言 frame、link、platform、event、同步证据的有效仿真时刻均为 42。

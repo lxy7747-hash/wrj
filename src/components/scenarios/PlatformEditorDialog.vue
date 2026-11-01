@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
-import type { BusinessInformationNodeType, Platform, PlatformType, SatelliteType } from '../../contracts/domain-models'
+import type { BusinessInformationNodeType, Platform, PlatformType, SatelliteType, ValidationIssue } from '../../contracts/domain-models'
 import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS, waypointSpeedError } from '../../features/scenarios/scenario-validation'
 import { PLATFORM_POSITION_RULES } from '../../features/scenarios/platform-position-rules'
+import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
 import WaypointMapPicker, { type WaypointMapPoint } from './WaypointMapPicker.vue'
 
 type PlatformTypeOption = { value: PlatformType, label: string }
@@ -23,6 +24,7 @@ const props = defineProps<{
   businessTypeLimits: Readonly<Record<BusinessInformationNodeType, number>>
   deploymentDomainLabels: Record<Platform['category'], string>
   suggestPlatformId?: (type: PlatformType) => string
+  validate?: (platform: Platform) => ValidationIssue[]
   businessNodeCount?: number
 }>()
 
@@ -51,6 +53,7 @@ const satellitePickerPoint = ref<WaypointMapPoint>({ longitude: 0, latitude: 0 }
 const quantity = ref(1)
 const spacingKm = ref(1)
 const confirmationAttempted = ref(false)
+const touchedFields = ref<ReadonlySet<string>>(new Set())
 
 const selectedBusinessType = computed(() => {
   const type = editor.value?.type
@@ -80,6 +83,35 @@ const showWaypoints = computed(() => supportsWaypoints.value || (isSatellite.val
 const hasInvalidWaypointSpeed = computed(() => supportsWaypoints.value && editor.value?.waypoints.some(point => waypointSpeedError(point.speed)) === true)
 const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE'
   && editor.value.satelliteType !== 'TIANTONG' && editor.value.satelliteType !== 'SHENTONG')
+const validationTick = ref(0)
+watch(editor, () => { validationTick.value += 1 }, { deep: true, flush: 'sync' })
+const validationIssues = computed(() => {
+  void validationTick.value
+  return editor.value !== null && props.validate !== undefined ? props.validate(editor.value) : []
+})
+
+function resetValidationState(): void {
+  confirmationAttempted.value = false
+  touchedFields.value = new Set()
+}
+
+function touchField(fieldPath: string): void {
+  if (touchedFields.value.has(fieldPath)) return
+  touchedFields.value = new Set([...touchedFields.value, fieldPath])
+}
+
+function shouldShowFieldError(fieldPath: string): boolean {
+  if (confirmationAttempted.value) return true
+  return [...touchedFields.value].some(touched => fieldPath === touched
+    || fieldPath.startsWith(`${touched}.`) || fieldPath.startsWith(`${touched}[`)
+    || touched.startsWith(`${fieldPath}.`) || touched.startsWith(`${fieldPath}[`))
+}
+
+function fieldError(fieldPath: string, fallback = ''): string {
+  const validationMessage = fieldValidationMessage(validationIssues.value, fieldPath)
+  if (validationMessage) return validationMessage
+  return shouldShowFieldError(fieldPath) ? fallback : ''
+}
 
 /**
  * 同步实体类型对应的卫星子类型和批量数量字段。
@@ -90,7 +122,7 @@ const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATIO
 function synchronizeTypeFields(type: PlatformType): void {
   if (editor.value === null) return
   resetMapPickers()
-  confirmationAttempted.value = false
+  resetValidationState()
   editor.value.category = PLATFORM_TYPE_DOMAINS[type]
   if (type !== 'COMMUNICATION_SATELLITE') delete editor.value.satelliteType
   if (type !== 'AIRBORNE_MISSION_CLUSTER') quantity.value = 1
@@ -118,6 +150,11 @@ function synchronizeTypeFields(type: PlatformType): void {
   }
 }
 
+function onPlatformTypeChange(type: PlatformType): void {
+  touchField('type')
+  synchronizeTypeFields(type)
+}
+
 function onSatelliteTypeChange(satelliteType: SatelliteType): void {
   if (editor.value === null || props.editing) return
   const currentName = editor.value.name ? editor.value.name.trim() : ''
@@ -126,10 +163,16 @@ function onSatelliteTypeChange(satelliteType: SatelliteType): void {
   }
 }
 
+function onSatelliteTypeFieldChange(satelliteType: SatelliteType): void {
+  touchField('satelliteType')
+  onSatelliteTypeChange(satelliteType)
+}
+
 function addWaypoint(): void {
   if (!supportsWaypoints.value) return
-  confirmationAttempted.value = false
-  editor.value?.waypoints.push({ longitude: 0, latitude: 0, altitude: 0, speed: 0, arrivalTime: 0 })
+  resetValidationState()
+  editor.value?.waypoints.push({ longitude: waypointBounds.value?.minLongitude ?? 0,
+    latitude: waypointBounds.value?.minLatitude ?? 0, altitude: 0, speed: 0, arrivalTime: 0 })
 }
 
 function openWaypointPicker(index: number): void {
@@ -147,6 +190,9 @@ function applyWaypointMapPoint(point: WaypointMapPoint): void {
   waypoint.longitude = point.longitude
   waypoint.latitude = point.latitude
   waypoint.altitude = 0
+  touchField(`waypoints[${waypointPickerIndex.value}].longitude`)
+  touchField(`waypoints[${waypointPickerIndex.value}].latitude`)
+  touchField(`waypoints[${waypointPickerIndex.value}].altitude`)
   waypointPickerVisible.value = false
 }
 
@@ -161,6 +207,8 @@ function applySatelliteMapPoint(point: WaypointMapPoint): void {
   if (!satellitePickerVisible.value || !props.modelValue || props.pending || props.locked || !isSatellite.value || editor.value === null) return
   editor.value.initialPosition.longitude = point.longitude
   editor.value.initialPosition.latitude = point.latitude
+  touchField('initialPosition.longitude')
+  touchField('initialPosition.latitude')
   satellitePickerVisible.value = false
 }
 
@@ -194,7 +242,7 @@ function apply(): void {
 watch(() => props.modelValue, (visible) => {
   resetMapPickers()
   if (!visible) return
-  confirmationAttempted.value = false
+  resetValidationState()
   editor.value = props.platform === null ? null : structuredClone(toRaw(props.platform))
   quantity.value = 1
   spacingKm.value = 1
@@ -219,14 +267,14 @@ watch(() => props.modelValue, (visible) => {
       <section class="platform-editor-section" aria-labelledby="platform-basic-title">
         <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
         <div class="platform-editor-grid">
-          <el-form-item required v-show="showIds" label="场景实体 ID">
-            <el-input v-model="editor.id" :disabled="editing" data-testid="platform-id" />
+          <el-form-item required v-show="showIds" label="场景实体 ID" :error="fieldError('id')">
+            <el-input v-model="editor.id" :disabled="editing" data-testid="platform-id" @input="touchField('id')" @update:model-value="touchField('id')" />
           </el-form-item>
-          <el-form-item label="名称" required :error="confirmationAttempted && !editor.name?.trim() ? '请填写名称。' : ''">
-            <el-input v-model="editor.name" data-testid="platform-name" />
+          <el-form-item label="名称" required :error="fieldError('name', !editor.name?.trim() ? '请填写名称。' : '')">
+            <el-input v-model="editor.name" data-testid="platform-name" @input="touchField('name')" @update:model-value="touchField('name')" />
           </el-form-item>
-          <el-form-item required label="场景实体类型">
-            <el-select v-model="editor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type" @change="synchronizeTypeFields">
+          <el-form-item required label="场景实体类型" :error="fieldError('type')">
+            <el-select v-model="editor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type" @change="onPlatformTypeChange">
               <el-option-group label="信息节点">
                 <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-option-group>
@@ -238,8 +286,8 @@ watch(() => props.modelValue, (visible) => {
               当前 {{ businessTypeCounts[selectedBusinessType] }} / {{ businessTypeLimits[selectedBusinessType] }} 个{{ (props.businessNodeCount ?? 0) >= INFORMATION_NODE_LIMIT ? `（信息节点已达 ${INFORMATION_NODE_LIMIT} 个上限）` : '' }}
             </span>
           </el-form-item>
-          <el-form-item v-if="editor.type === 'COMMUNICATION_SATELLITE'" label="卫星类型" required :error="confirmationAttempted && invalidSatelliteType ? '请选择天通卫星或神通卫星。' : ''">
-            <el-select v-model="editor.satelliteType" placeholder="请选择卫星类型" style="width: 100%" data-testid="platform-satellite-type" @change="onSatelliteTypeChange">
+          <el-form-item v-if="editor.type === 'COMMUNICATION_SATELLITE'" label="卫星类型" required :error="fieldError('satelliteType', invalidSatelliteType ? '请选择天通卫星或神通卫星。' : '')">
+            <el-select v-model="editor.satelliteType" placeholder="请选择卫星类型" style="width: 100%" data-testid="platform-satellite-type" @change="onSatelliteTypeFieldChange">
               <el-option v-for="option in satelliteTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
@@ -260,13 +308,14 @@ watch(() => props.modelValue, (visible) => {
         </div>
         <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <div class="position-grid">
-          <el-form-item required label="经度（°）"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="positionRule?.minLongitude ?? -180" :max="positionRule?.maxLongitude ?? 180" controls-position="right" data-testid="platform-longitude" /></el-form-item>
-          <el-form-item required label="纬度（°）"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="positionRule?.minLatitude ?? -90" :max="positionRule?.maxLatitude ?? 90" controls-position="right" data-testid="platform-latitude" /></el-form-item>
-          <el-form-item required label="高度（m）"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="0" controls-position="right" data-testid="platform-altitude" /></el-form-item>
+          <el-form-item required label="经度（°）" :error="fieldError('initialPosition.longitude')"><el-input-number v-model="editor.initialPosition.longitude" :disabled="isForwardRelay" :min="validate === undefined ? positionRule?.minLongitude ?? -180 : undefined" :max="validate === undefined ? positionRule?.maxLongitude ?? 180 : undefined" controls-position="right" data-testid="platform-longitude" @input="touchField('initialPosition.longitude')" @update:model-value="touchField('initialPosition.longitude')" /></el-form-item>
+          <el-form-item required label="纬度（°）" :error="fieldError('initialPosition.latitude')"><el-input-number v-model="editor.initialPosition.latitude" :disabled="isForwardRelay" :min="validate === undefined ? positionRule?.minLatitude ?? -90 : undefined" :max="validate === undefined ? positionRule?.maxLatitude ?? 90 : undefined" controls-position="right" data-testid="platform-latitude" @input="touchField('initialPosition.latitude')" @update:model-value="touchField('initialPosition.latitude')" /></el-form-item>
+          <el-form-item required label="高度（m）" :error="fieldError('initialPosition.altitude')"><el-input-number v-model="editor.initialPosition.altitude" :disabled="isForwardRelay" :min="validate === undefined ? 0 : undefined" controls-position="right" data-testid="platform-altitude" @input="touchField('initialPosition.altitude')" @update:model-value="touchField('initialPosition.altitude')" /></el-form-item>
+          <el-form-item label="初始航向（°）" :error="fieldError('heading')"><el-input-number v-model="editor.heading" :min="validate === undefined ? 0 : undefined" :max="validate === undefined ? 360 : undefined" controls-position="right" data-testid="platform-heading" @input="touchField('heading')" @update:model-value="touchField('heading')" /></el-form-item>
         </div>
         <div v-if="showGridSpacing" class="position-grid">
-          <el-form-item required label="节点间隔（km）" :error="confirmationAttempted && invalidSpacing ? '节点间隔必须大于 0 km。' : ''">
-            <el-input-number v-model="spacingKm" :min="0" :step="0.1" :disabled="cannotAdd" controls-position="right" data-testid="platform-spacing" />
+          <el-form-item required label="节点间隔（km）" :error="fieldError('spacingKm', invalidSpacing ? '节点间隔必须大于 0 km。' : '')">
+            <el-input-number v-model="spacingKm" :min="0" :step="0.1" :disabled="cannotAdd" controls-position="right" data-testid="platform-spacing" @input="touchField('spacingKm')" @update:model-value="touchField('spacingKm')" />
           </el-form-item>
         </div>
         <span v-if="showGridSpacing" class="platform-editor-field__hint">以编队原点为中心方形平铺，默认相邻节点间隔 1 km；不足一行时居中排列，高度保持一致。</span>
@@ -279,13 +328,16 @@ watch(() => props.modelValue, (visible) => {
           <el-button v-else-if="isSatellite" size="small" type="danger" :disabled="pending || locked" data-testid="clear-satellite-waypoints" @click="editor.waypoints = []">清除历史航点</el-button>
         </div>
         <p v-if="isSatellite" class="platform-editor-field__hint" data-testid="satellite-waypoint-warning">通信卫星不能配置航点。请主动清除历史航点后确认；原数据不会自动丢弃。</p>
-        <p v-else class="platform-editor-field__hint">航点非必填；固定节点无需新增。新增后各列均为必填，速度须大于 0，到达时间须严格递增且不超过场景时长。</p>
+        <p v-if="fieldError('waypoints')" class="platform-editor-field__error">{{ fieldError('waypoints') }}</p>
+        <p v-else-if="!isSatellite" class="platform-editor-field__hint">航点非必填；固定节点无需新增。新增后各列均为必填，速度须大于 0，到达时间须严格递增且不超过场景时长。</p>
         <el-table :data="editor.waypoints" empty-text="暂无航点" data-testid="waypoint-table">
-          <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.longitude" :min="waypointBounds?.minLongitude ?? -180" :max="waypointBounds?.maxLongitude ?? 180" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.latitude" :min="waypointBounds?.minLatitude ?? -90" :max="waypointBounds?.maxLatitude ?? 90" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-input-number v-model="row.altitude" :min="0" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" /></template></el-table-column>
-          <el-table-column label="速度（m/s）*" min-width="180"><template #default="{ row, $index }"><el-form-item required :error="confirmationAttempted ? waypointSpeedError(row.speed) : ''"><el-input-number v-model="row.speed" :min="0" placeholder="请输入大于 0 的速度" controls-position="right" :aria-invalid="confirmationAttempted && Boolean(waypointSpeedError(row.speed))" :data-testid="`waypoint-speed-${$index}`" /></el-form-item></template></el-table-column>
-          <el-table-column label="到达时间（s） *" min-width="140"><template #default="{ row, $index }"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" /></template></el-table-column>
+          <el-table-column label="经度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`waypoints[${$index}].longitude`)"><el-input-number v-model="row.longitude" :min="validate === undefined ? waypointBounds?.minLongitude ?? -180 : undefined" :max="validate === undefined ? waypointBounds?.maxLongitude ?? 180 : undefined" controls-position="right" :data-testid="`waypoint-longitude-${$index}`" @input="touchField(`waypoints[${$index}].longitude`)" @update:model-value="touchField(`waypoints[${$index}].longitude`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="纬度（°） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`waypoints[${$index}].latitude`)"><el-input-number v-model="row.latitude" :min="validate === undefined ? waypointBounds?.minLatitude ?? -90 : undefined" :max="validate === undefined ? waypointBounds?.maxLatitude ?? 90 : undefined" controls-position="right" :data-testid="`waypoint-latitude-${$index}`" @input="touchField(`waypoints[${$index}].latitude`)" @update:model-value="touchField(`waypoints[${$index}].latitude`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="高度（m） *" min-width="130"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`waypoints[${$index}].altitude`)"><el-input-number v-model="row.altitude" :min="validate === undefined ? 0 : undefined" controls-position="right" :data-testid="`waypoint-altitude-${$index}`" @input="touchField(`waypoints[${$index}].altitude`)" @update:model-value="touchField(`waypoints[${$index}].altitude`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="速度（m/s）*" min-width="180"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`waypoints[${$index}].speed`, waypointSpeedError(row.speed))"><el-input-number v-model="row.speed" :min="0" placeholder="请输入大于 0 的速度" controls-position="right" :aria-invalid="Boolean(fieldError(`waypoints[${$index}].speed`, waypointSpeedError(row.speed)))" :data-testid="`waypoint-speed-${$index}`" @input="touchField(`waypoints[${$index}].speed`)" @update:model-value="touchField(`waypoints[${$index}].speed`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="航向（°）" min-width="140"><template #default="{ row, $index }"><el-form-item :error="fieldError(`waypoints[${$index}].heading`)"><el-input-number v-model="row.heading" :min="validate === undefined ? 0 : undefined" :max="validate === undefined ? 360 : undefined" controls-position="right" :data-testid="`waypoint-heading-${$index}`" @input="touchField(`waypoints[${$index}].heading`)" @update:model-value="touchField(`waypoints[${$index}].heading`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="加速度（m/s²）" min-width="160"><template #default="{ row, $index }"><el-form-item :error="fieldError(`waypoints[${$index}].acceleration`)"><el-input-number v-model="row.acceleration" controls-position="right" :data-testid="`waypoint-acceleration-${$index}`" @input="touchField(`waypoints[${$index}].acceleration`)" @update:model-value="touchField(`waypoints[${$index}].acceleration`)" /></el-form-item></template></el-table-column>
+          <el-table-column label="到达时间（s） *" min-width="140"><template #default="{ row, $index }"><el-form-item required :error="fieldError(`waypoints[${$index}].arrivalTime`)"><el-input-number v-model="row.arrivalTime" :min="0" controls-position="right" :data-testid="`waypoint-arrival-${$index}`" @input="touchField(`waypoints[${$index}].arrivalTime`)" @update:model-value="touchField(`waypoints[${$index}].arrivalTime`)" /></el-form-item></template></el-table-column>
           <el-table-column label="操作" width="140">
             <template #default="{ $index }">
               <el-button v-if="supportsWaypoints" link type="primary" :disabled="pending || locked" :data-testid="`pick-waypoint-${$index}`" @click="openWaypointPicker($index)">地图选点</el-button>
@@ -343,6 +395,13 @@ watch(() => props.modelValue, (visible) => {
   display: block;
   margin-top: 0.25rem;
   color: var(--console-text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.platform-editor-field__error {
+  margin: 0.25rem 0;
+  color: var(--el-color-danger);
   font-size: 12px;
   line-height: 1.4;
 }

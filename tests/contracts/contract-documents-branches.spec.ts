@@ -140,13 +140,6 @@ describe('contract document malformed-input audit branches', () => {
       },
     },
     {
-      name: 'a mismatched batch report pair',
-      mutate: (fixtures: DeterministicFixtureSet) => {
-        fixtures.batchReports[0].runId = 'RUN-ORPHAN'
-      },
-      finding: { code: 'FIXTURE_BATCH_PAIR', path: '$.batchReports[].runId' },
-    },
-    {
       name: 'a missing canonical CSV declaration',
       mutate: (fixtures: DeterministicFixtureSet) => {
         fixtures.contracts.csv.pop()

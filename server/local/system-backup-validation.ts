@@ -62,10 +62,10 @@ export function validateSystemSnapshot(db: DatabaseSync): void {
   const references = db.prepare('SELECT * FROM master.master_data_references').all().map(row => ({ dataId: String(row.data_id), dataVersion: Number(row.data_version), targetType: String(row.target_type), targetId: String(row.target_id), targetVersion: String(row.target_version) }))
   for (const row of [...master, ...masterHistory]) {
     const item: unknown = JSON.parse(String(row.data_json))
-    if (!isMasterData(item) || item.dataId !== row.id || item.version !== row.version) throw new Error('主数据版本无效。')
+    if (!isMasterData(item) || item.dataId !== row.id || item.version !== row.version) throw new Error('通用数据版本无效。')
   }
   for (const id of new Set([...masterHistory.map(row => String(row.id)), ...references.map(row => row.dataId)])) {
-    if (!isMasterDetails({ dataId: id, history: masterHistory.filter(row => row.id === id).map(row => JSON.parse(String(row.data_json))), references: references.filter(row => row.dataId === id) })) throw new Error('主数据历史引用无效。')
+    if (!isMasterDetails({ dataId: id, history: masterHistory.filter(row => row.id === id).map(row => JSON.parse(String(row.data_json))), references: references.filter(row => row.dataId === id) })) throw new Error('通用数据历史引用无效。')
   }
   for (const row of db.prepare('SELECT * FROM archives.local_archives').all()) {
     const value: unknown = JSON.parse(String(row.payload))

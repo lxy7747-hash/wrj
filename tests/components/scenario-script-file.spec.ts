@@ -70,6 +70,20 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(wrapper.emitted('saved')).toBeUndefined()
   })
 
+  it('移除独立生成入口，再次保存仍生成 TXT 并展示路径、日志及同修订预览', async () => {
+    const { wrapper, fetchSpy, save } = await setup(undefined, undefined, true)
+    expect(wrapper.find('[data-testid="generate-scenario-script"]').exists()).toBe(false)
+    await save()
+    fetchSpy.mockClear()
+    await save()
+    expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('scenario.txt')
+    expect(wrapper.find('[data-testid="generate-script"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(path)
+    expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('引用顺序')
+    expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/local-file'))).toHaveLength(1)
+    expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  })
+
   it('保存失败不生成、不写文件', async () => {
     const { wrapper, fetchSpy, alert, save } = await setup()
     await wrapper.get('[data-testid="scenario-name"]').setValue(' ')

@@ -11,10 +11,11 @@ const props = defineProps<{
   locked: boolean
   dirty: boolean
   preflightPassed: boolean
+  outputPath?: string
+  generationLog?: string[]
 }>()
 
 const emit = defineEmits<{
-  generate: []
   preflight: []
 }>()
 
@@ -38,14 +39,9 @@ function scriptLocation(fieldPath: string): string {
 <!--    </div>-->
     <el-alert v-if="resultMessage && state !== 'EMPTY'" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
     <p class="script-guidance" data-testid="script-next-step">
-      {{ preflightPassed ? '预检已通过；保存场景时由本机服务写入 TXT，不会启动真实 AFSIM。' : script ? '下一步：点击“执行预检”。如重新生成预览，需要重新预检。' : dirty ? '请先点击上方“保存”，生成 TXT 后可执行预检。' : '场景已保存：点击“保存”可重新生成 TXT。生成预览不会启动仿真。' }}
+      {{ preflightPassed ? '预检已通过；预览未执行引擎校验，实际执行包可能按引擎能力适配，以运行记录为准。' : script ? '下一步：点击“执行预检”。再次保存生成脚本后，需要重新预检。' : '请先点击上方“保存”，生成 TXT 后可执行预检。' }}
     </p>
     <div class="platform-actions">
-      <el-tooltip content="请先保存草稿" placement="top" :disabled="!dirty">
-        <span class="script-action-tooltip">
-          <el-button :type="script === null ? 'primary' : 'default'" :loading="pending" :disabled="locked || dirty" data-testid="generate-script" @click="emit('generate')">生成脚本预览</el-button>
-        </span>
-      </el-tooltip>
       <el-button :type="script !== null && !preflightPassed ? 'primary' : 'default'" :loading="pending" :disabled="script === null" data-testid="preflight-script" @click="emit('preflight')">执行预检</el-button>
     </div>
     <template v-if="script">
@@ -55,7 +51,13 @@ function scriptLocation(fieldPath: string): string {
         <el-descriptions-item label="校验和">{{ script.checksum }}</el-descriptions-item>
         <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
         <el-descriptions-item label="生成时间">{{ formatDateTime(script.generatedTime) }}</el-descriptions-item>
+        <el-descriptions-item label="预览入口">scenario.txt</el-descriptions-item>
+        <el-descriptions-item label="生成路径">{{ outputPath || '尚未写入本机文件' }}</el-descriptions-item>
       </el-descriptions>
+      <details v-if="generationLog?.length" class="script-log" data-testid="script-generation-log">
+        <summary>生成日志</summary>
+        <div v-for="line in generationLog" :key="line">{{ line }}</div>
+      </details>
       <pre class="scenario-script-preview" data-testid="script-preview">{{ script.preview }}</pre>
     </template>
     <el-table v-if="issues.length" :data="issues" stripe data-testid="preflight-issues">
@@ -109,10 +111,6 @@ function scriptLocation(fieldPath: string): string {
   margin-top: 1rem;
 }
 
-.script-action-tooltip {
-  display: inline-flex;
-}
-
 .scenario-script-preview {
   max-height: 32rem;
   margin: 1rem 0 0;
@@ -125,4 +123,7 @@ function scriptLocation(fieldPath: string): string {
   font: 12px/1.6 Consolas, monospace;
   white-space: pre;
 }
+
+.script-log { margin-top: 1rem; color: var(--console-text-muted); }
+.script-log summary { cursor: pointer; color: var(--console-text); }
 </style>

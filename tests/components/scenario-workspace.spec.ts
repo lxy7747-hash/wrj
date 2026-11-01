@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
-import { defineComponent } from 'vue'
+import { defineComponent, isProxy } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import ElementPlus, { ElMessage, ElMessageBox, ElSelect } from 'element-plus'
 import Workspace from '../../src/pages/scenarios/ScenarioWorkspace.vue'
@@ -16,6 +16,16 @@ const Editor = defineComponent({
   emits: ['saved', 'back'],
   template: '<div data-testid="editor"><button @click="$emit(\'saved\')">保存完成</button><button @click="$emit(\'back\')">返回</button></div>',
 })
+
+function readBlobText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => resolve(String(reader.result))
+    reader.readAsText(blob)
+  })
+}
+
 enableAutoUnmount(afterEach)
 beforeEach(() => { sessionStorage.clear() })
 afterEach(() => {
@@ -224,4 +234,24 @@ it('从模板创建独立场景并返回列表，取消模板对话框不创建'
   await flushPromises()
   await wrapper.findAll('button').find(b => b.text() === '取消')!.trigger('click')
   expect(scenes.list()).toHaveLength(2)
+})
+
+it('从响应式列表导出完整场景文件，不向 structuredClone 传入 Proxy 且保留原生 ESM 扩展', async () => {
+  const { wrapper, store } = await setup()
+  const scene = store.scenes[0]!
+  scene.uiExtensions.sensors[0]!.esm = { sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 }
+  expect(isProxy(scene)).toBe(true)
+  let captured: Blob | undefined
+  vi.stubGlobal('URL', { createObjectURL: vi.fn((blob: Blob) => { captured = blob; return 'blob:scene-export' }), revokeObjectURL: vi.fn() })
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+
+  await wrapper.get('[data-testid="scene-export-SCN-001"]').trigger('click')
+
+  expect(captured).toBeInstanceOf(Blob)
+  const snapshot = JSON.parse(await readBlobText(captured!))
+  expect(snapshot).toMatchObject({
+    format: 'wrj.scenario.snapshot', version: 1,
+    config: { scenario: { id: 'SCN-001' } },
+    uiExtensions: { sensors: [{ sensorId: 'ESM-01', esm: scene.uiExtensions.sensors[0]!.esm }] },
+  })
 })

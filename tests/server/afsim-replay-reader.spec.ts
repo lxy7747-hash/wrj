@@ -6,8 +6,10 @@ const source = vi.hoisted(() => ({ initial: { nodes: [] as Array<{ platformId: s
   platformDeletions: [] as Array<{ time: number }> } }))
 vi.mock('../../server/local/afsim-log-reader.js', () => ({
   readInitialNodes: async () => source.initial,
-  readLocalFileSnapshot: async () => ({ bytes: new TextEncoder().encode('TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n'),
-    source: { fileName: 'positions.csv', sha256: 'TEST' } }),
+  readStableUtf8Lines: async (_path: string, onLine: (line: string, lineNumber: number) => void | Promise<void>) => {
+    await onLine('TIME,NAME,LON,LAT,ALT,SPEED,HEADING', 1)
+    return { waitingForLine: false, source: { fileName: 'positions.csv', sha256: 'TEST', bytes: 41, path: 'positions.csv' } }
+  },
 }))
 
 const readerModule = '../../server/local/' + 'afsim-replay-reader.js'

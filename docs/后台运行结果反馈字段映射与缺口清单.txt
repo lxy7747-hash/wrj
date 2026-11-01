@@ -1,0 +1,443 @@
+后台运行结果反馈字段映射与缺口清单
+核对日期：2026-10-31
+阶段：字段核对、质量适配及前端统一管理/展示；尚未接入真实运行通道。
+
+一、依据与结论
+
+1. 输入资料
+   H:/Project/newWrj/场景配置参数对接/后台组件反馈给前端界面参数.docx
+   SHA-256：10ED2DC9C9A118E3788C77E594F2B64FC3E0CDEA137838420452D51285D30E51
+   H:/Project/newWrj/场景配置参数对接/param_json.txt
+   SHA-256：8B73BD63482603A91C9A022E5CD428261F2332BA5268E38E0308AF8F26C4CA8A
+   核对代码：H:/Project/newWrj/frontend 当前工作区，包含已有未提交改动。
+   按用户确认，完全忽略 Word 中的 V 标记；不将其解释为已实现、已验证或可用。
+
+2. 两份资料的角色
+   Word 是后台业务输出清单；TXT 是帧快照和事件的报文示例。示例数值不构成真实运行证据。
+   以下“可映射”仅表示字段语义有对应位置，不代表报文已通过当前入口校验或页面已接入。
+   缺字段、身份不明或尚无真实数据时，继续显示“暂无数据”；不得补0、默认成功或示例值。
+
+3. 本阶段边界
+   清单编制阶段只核对资料；后续质量适配及前端管理/展示的实现和验证见第十三、十四节。原始资料、冻结合同、数据库、CSV、配置和服务均未因此修改。
+   不恢复用户已取消的批量仿真、参数扫描、单步入口及“按选中消息绘制实际路径”功能。
+   现有登记关联、设备启停可用性与真实质量状态仍分开；不以设备开启、消息收发或登记连线推断链路质量。
+   所有“需确认”“需扩展”均为待办，不是已获冻结的接口规则或已完成能力。
+
+二、当前接入边界
+
+1. 现有浏览器实时封装
+   src/contracts/domain-models.ts 的 RealtimeEnvelope、WsTopic；src/stores/telemetry.ts 的 acceptEnvelope。
+   消息要求 type=event、schemaVersion=1.0、topic、taskId、正整数 sequence，并校验帧号与仿真时刻。
+   当前主题为 simulation.frame、runtime.state、link.metric、jammer.event、switch.event。
+   新资料的 msg_type=frame_snapshot/switch_event 不是这些封装的直接替代物。
+   server/ws/realtime.ts 的 /ws/v1 是 Node 面向浏览器的订阅通道；已有该地址不代表后台组件已有向 Node 投递新报文的入口。
+
+2. 现有完整遥测帧
+   TelemetryFrame 要求 frameId、taskId、runId、simulationTime、sequence、platforms、links、linkSummaries、uiLinks、eventIds、evidence。
+   isTelemetryFrame 对字段数量、范围、身份、同帧关系及候选/选路/事件语义做严格校验。
+   现有真实运行不应靠伪造以下固定证据通过旧通路：coding=UNCODED、qualityModelVersion=SNBER-1.2、COMPOSITE-LOSS-1.0、LLZT-1.0，以及 SCN-001-v4 / AFSIM-2.9.0-FIXTURE / FRAME-1.0 同步版本。
+   此处描述当前限制，不在本轮修改它们。后续应确认真实结果的合同版本和缺失字段表达方式，保留既有冻结验证路径。
+   当前遥测校验的 LINK_TYPES 不含 FIBER；真实光纤结果也不能改成微波等其他类型来绕过校验。
+
+3. 现有 REST 与固定证据
+   GET /api/v1/simulations/:runId/frames/:frameId 与 GET /api/v1/simulations/:runId/events 供 loadFrame 使用。
+   server/simulations/projection.ts 的 getFrame/listEvents 受 ownsFixedEvidence 限制；有接口不等于已经返回本次 mission 的动态质量结果。
+   link.metric 当前只投影 linkSummaries 和 uiLinks.ageMs，不更新 links 中完整的 GXB、接收功率和损耗。
+   因而不能只发送 link.metric 就宣称所有质量面板、详情、损耗卡片都已同步。
+
+4. 现有本地结果与报表
+   server/local/time-series.ts 已声明 events.csv、link_quality.csv、link_state.csv、link_loss.csv、link_switch.csv 的规范文件。
+   该写入路径校验已有引擎文件；缺文件会记录 REQUIRES_ENGINE，不从设备启停或消息记录推导质量数据。
+   新 JSON 到这些规范文件、实时状态及本地报告的适配尚需实现，不能因已有 CSV 合同就认定 JSON 已被消费。
+   src/features/reports/local-report.ts 的 LocalQualityKpis 支持真实平均干信比/误码率等可选汇总，缺项显示“暂无数据”。
+
+三、报文外壳与运行身份
+
+G01 msg_type
+   frame_snapshot 表达快照，switch_event 表达事件。需由 Node 按确认后的合同区分处理，再形成浏览器消息；不得只改字段名后绕过校验。
+
+G02 frame_id
+   是源帧标识。当前 FrameId 是 F- 前缀字符串；源数字帧号的内部映射、运行内唯一性、重启复用规则待确认。
+   frame_id 不能直接当作每个 topic 的 sequence：事件不是每帧都有，直接套用会被误判为断档。
+
+G03 sim_time_s
+   可对应 simulationTime、LinkQualityData.time、事件 time，单位均为仿真秒；必须是非负有限数。
+   界面按分秒显示，协议继续保留原单位和精度。不得用墙钟时间替代仿真时间。
+   当前节点/摘要允许最近5秒，链路详情与执行证据要求同刻；uiLinks.ageMs 必须与 simulationTime-updatedAt 的毫秒差一致。
+   只有后台保证字段是本帧计算结果时，才能使用顶层时刻作测量时刻；不能将旧值重标成当前时间或统一填 ageMs=0。
+
+G04 wall_time_ms
+   是源本机时间戳，可作为延迟与溯源元数据；不属于当前 TelemetryFrame/RealtimeEnvelope 的已有字段。
+   需确认是否为Unix毫秒时间戳、时钟同步、显示时区与缺省规则；不得覆盖 simulationTime 或把 Node 包装时间冒充引擎产生时间。
+
+G05 资料未给出的身份与版本
+   必须明确 taskId、runId、scenarioId、配置修订/脚本标识、生产者实例、schemaVersion 的来源。
+   可由已验证的本次 mission 会话上下文绑定，不要求后台照抄前端编号，但必须有唯一且可审计的关联。
+   不允许写死 RUN-001、TASK-001、F-00042，或把已结束运行的迟到数据写进下一次运行。
+
+G06 全量、增量及重连
+   每帧字段是否完整、空数组是“无新增”还是“清空状态”、缺字段是未知还是保持旧值、事件重发、顺序与补帧方式均待确认。
+   原始帧号、每主题消息序号和事件唯一编号承担不同职责，应分别保留。
+
+G07 Word 的运行状态与控制信息
+   Word 列出 IDLE/RUNNING/PAUSED/STOPPED、运行模式、倍速和回放进度；JSON 只明确给出了仿真时刻，没有对应的完整运行状态对象。
+   当前 SimulationState 还要求 totalDuration、processId、progress，并区分 COMPLETED/ERROR；SimulationRun 另有 uiStatus 和 configLocked。
+   STOPPED 不能在不知终止原因时一律转成 COMPLETED 或 ERROR。进程信息可取本次 Node 管理的真实 mission 进程。
+   单次运行状态与历史回放游标/倍速分别归属 simulationStore、replayStore；收到状态不代表已接通相应控制指令。
+
+四、链路计算字段
+以下 L 指 link_calc.links[]；全局项另列，所有映射先完成本次运行的链路身份关联。
+
+L01 link_id、tx_platform、rx_platform、tx_port、rx_port
+   可对应内部 linkId、sourcePlatform、destPlatform，端口标识用于唯一关联通信设备。
+   当前遥测成员没有独立端口字段；不能只凭 link_id 或端口名称猜场景链路/链路类型。
+   server/scripts/mission-generator.ts 已记录每条生成链路的 source/target platformId、deviceId，可作为本次运行的关联依据；应核对实际生成物。
+   同一平台多设备、反向链路和中继段必须可区分；英文标识用于关联，中文名称仅用于展示。
+
+L02 distance_km
+   可转换为 LinkQualityData.distance：km×1000=m；地图详情显示时再按界面单位格式化。
+
+L03 losses.free_space_db
+   对应自由空间损耗：CompositeLossEvidence.freeSpaceLossDb；也对应 link_loss.csv 的 FreeSpaceLoss。单位 dB 不变。
+
+L04 losses.sea_multipath_db
+   对应 link_loss.csv 的 SeaMultipathLoss。旧 CompositeLossEvidence 没有同义字段，不能塞入 systemLossDb。
+
+L05 losses.atmospheric_db
+   对应 link_loss.csv 的 AtmosphericLoss。旧四分量合同没有直接字段，不能改称遮挡损耗。
+
+L06 losses.cloud_rain_db
+   对应 link_loss.csv 的 CloudRainLoss。旧四分量合同没有独立云雨字段，需保留原分量并确认展示合同。
+
+L07 losses.jamming_loss_db
+   语义可对应 interferenceLossDb、link_loss.csv 的 JammingLoss，须确认都是损耗而不是干扰功率。
+   dB 损耗不能当作 jammingPower(dBm) 或 jam_power_w(W)。
+
+L08 losses.total_composite_db
+   可对应 pathLoss、totalPathLossDb、link_loss.csv 的 TotalLoss，单位 dB。
+   需后台说明总量是否仅为上述分量之和及允许误差；前端不重新实现传播损耗模型。
+
+L09 quality.gxb_db
+   TXT 标注 J/S，语义可对应 LinkQualityData.jsrDb、CSV 的 GXB；Word 未进一步解释正负方向和门限比较规则。
+   必须确认确为 J/S、值越大是否代表干扰越强。不得用它填 snr/currentSnr 或 SNR 曲线。
+
+L10 quality.ber
+   可对应 links[].ber、linkSummaries[].currentBer、规范 CSV 的 BER，范围为0～1。
+   候选和分段 BER 必须按唯一链路身份及同帧时刻关联；不得按 BER 数值相同就认作同一链路。
+
+L11 quality.rx_power_dbw
+   可对应 receivedPower(dBm)：dBm=dBW+30。不得漏加30或直接沿用数值改单位。
+
+L12 quality.input_trace.eirp_dbw、g_over_t_dbk
+   当前完整遥测/损耗证据没有同义的溯源字段，需确认真实结果扩展模型。
+   EIRP 包含等效辐射因素，不能直接作为 txPower(W)；G/T 也不能作为 rxAntennaGain(dBi) 或 noisePowerDbm。
+
+L13 quality.input_trace.data_rate_bps
+   可转换为 dataRate(Mbps)：bps÷1,000,000。需确认它是本帧实际计算输入速率，不是收发消息条数或负载吞吐量。
+
+L14 quality.input_trace.jammers[]
+   表示本链路生效干扰源标识。需要绑定真实 jammerId/平台；当前 links 没有干扰源集合字段，不能只取第一台或从名称猜设备。
+
+L15 link_calc.model_version、L.quality.model_version
+   是计算模型版本，需确认全局与逐链路不一致时的规则；按真实来源保留。
+   不能强改为旧 qualityModelVersion=SNBER-1.2，也不能把模型版本当成传输 schemaVersion 或判定阈值版本。
+
+L16 link_calc.modulation、L.quality.modulation
+   可对应 modulation。需确认逐链路与全局缺省值的优先级；当前旧遥测校验只允许 BPSK/QPSK。
+   对未知调制应定位错误，不自动换成 BPSK。资料没有 coding 字段，不能为通过旧校验虚填 UNCODED。
+
+L17 quality.error_msg、link_calc.invalid_param_errors[]
+   应进入现有 resultCode/resultMessage/resultFieldPath 风格的错误反馈。
+   invalid_param_errors 的元素结构尚未给出，需要明确链路身份、字段路径、错误代码及中文原因。
+   质量无效时不保留上一帧数值冒充当前成功，也不能把 error_msg 非空的数据仍标为有效测量。
+
+L18 status.state
+   AVAILABLE/DEGRADED/INTERRUPTED 与界面 UP/DEGRADED/DOWN 可作同义枚举对照。
+   规范 canonicalStatus/linkStatus/CSV LinkStatus 仍只有 UP/DOWN；DEGRADED 对应何种规范状态必须由受控规则或后台显式值确定。
+   不把 summary.status 直接覆盖 uiLinks.status，不复制旧夹具的某条映射作为所有真实链路的规则。
+
+L19 status.thresholds.gxb_db、ber_switch、ber_degrade
+   原样保留为真实生效阈值，需确认 GXB 比较方向、BER 两阈值含义、相等边界、告警阈值是否另有字段。
+   资料示例不是冻结默认值。旧 UiLinkProjection.thresholdVersion 固定 LLZT-1.0，新来源还需提供可追溯的阈值版本及来源。
+
+L20 status.jitter_suppressed
+   只表示是否抑制瞬时抖动。不能据此生成 consecutiveFrames、reason 或新的前端判定算法。
+   应由后台补连续稳定帧数、判定原因、阈值版本，以及明确的规范两态；前端统一展示已验证投影。
+
+L21 旧完整质量记录仍缺的成员
+   资料没有 SNR/currentSnr、完整平台位置与速度、linkType、frequency、bandwidth、txPower、tx/rxAntennaGain、jammingPower、berThreshold，以及旧完整 FrameEvidence 的部分成员。
+   其中部分可从本次已验证的生效配置/同帧真实输出关联，但必须标明来源，不能将配置值冒充实测值。
+   SNR、noisePowerDbm、effectiveNoiseAndInterferenceDbm 等无法从现有字段直接取得时，不得用0或GXB补齐。
+
+五、ESM 侦测字段
+以下 E 指 jammer_sensor.esm。
+
+E01 detect_status
+   DETECTED/NOT_DETECTED 表示当前侦测状态；与“传感器已启动/已停止/扫描覆盖”不是同一概念。
+   当前 DetectionEvent 是事件记录；持续状态需要独立来源和时间，不能用最后一条历史事件无限代表现在。
+
+E02 events[]、events[].time_s
+   Word 描述本帧新侦测事件；映射到 DetectionEvent 时要保留源时刻，并补事件唯一编号、dedupeKey、sensorId 与同帧身份。
+   空 events 表示没有新增事件的规则需确认；不能据此清空此前侦测历史。同一传感器可以合法产生多条事件。
+
+E03 events[].target_names[]
+   一条源消息可有多个目标；当前 DetectionEvent 每条只有一个 targetPlatformId。
+   如需拆分，应由同一原始事件编号加目标身份形成可重放的子事件编号；具体规则待确认，不能用本机到达时间随机造编号。
+
+E04 events[].target_pos[].name、pos.lat、pos.lon、pos.alt_m
+   可保留目标观测位置（度、度、米），需要与 target_names 对齐，校验重复目标、数量、范围和时刻。
+   当前 DetectionEvent 没有位置字段；不能将侦测估计位置直接覆盖 PlatformStatus 或 position.csv 的真实节点位置。
+
+E05 events[].platform_type
+   示例 UAV 不是当前 PlatformType 的直接枚举；需确认是目标类型还是传感器所属平台类型，再用本次运行映射处理。
+   不把所有被侦测对象一律改成任务机。
+
+E06 events[].freq_band_hz
+   示例是单一频点，不是上下限数组。Hz÷1,000,000可得到 MHz；不能无依据生成一个频段宽度。
+   LocalDetectionEvent 的 frequencyMinHz/frequencyMaxHz 允许缺失，但需按实际源含义决定展示频点还是范围。
+
+E07 events[].detect_prob
+   可对应 detectionProbability / LocalDetectionEvent.probability，取值0～1；要区分实际反馈值与场景预设概率。
+
+E08 资料缺项
+   缺少传感器唯一身份、所属平台、启停与扫描覆盖状态、事件唯一编号和重发规则。
+   Word 写有传感器工作状态，TXT 未提供对应字段；这些项目不能靠 detect_status 代替。
+
+六、RF 干扰机、闭环与参数同步
+以下 J 指 jammer_sensor.rf_jammer，C 指 jammer_sensor.closed_loop。
+
+J01 device_status
+   ON/OFF 可对应 JammerStatusData.active。需补 jammerId、platformId、任务/运行及生效时刻，才能定位当前地面或机载设备。
+   单一 rf_jammer 对象尚未说明如何覆盖多台干扰设备，不能用它覆盖所有设备。
+
+J02 active_params.power_w
+   可对应 power/defaultPower，单位 W；反馈当前生效功率与场景默认发射功率要区分。
+   此值不能直接作为每条链路的接收干扰功率。
+
+J03 active_params.freq_band_hz
+   示例是两个边界值；需确认代表上下限还是其他含义。
+   只有确认是频段边界后，才能换算中心频率与带宽，不能直接拿第一项作为“中心频率”。
+
+J04 active_params.detect_range_nm
+   明确为海里时：×1852得到合同的米，×1.852得到界面公里。可与场景 detectionRange 对照，但当前 JammerStatusData 无实时侦测范围字段。
+   侦测范围不等于干扰作用范围或释放范围；不能据此修改三个不同圆圈的半径。
+
+J05 指令执行反馈
+   Word 明确注明 RF 指令执行反馈是假成功。当前 controlJammer 需要真实请求与返回身份匹配的执行结果。
+   设备状态 ON 不等于本次指令执行成功；不能将“收到帧”或 HTTP 传输成功写成真实执行成功。
+   真实 commandId、成功/失败、原因、生效帧/时刻是否能提供，需要后台明确；不提供时不能按真实控制完成验收。
+
+C01 last_action
+   JAM_ON/JAM_OFF/NONE 是最近动作，不是含完整身份和时刻的闭环事件。不能直接填成 JammingDecision.action=START。
+   自动启扰与自动关停需要可追溯事件，避免逐帧重复的 last_action 被累计成多次动作。
+
+C02 jam_target_id
+   可对应干扰目标标识，但仍缺执行设备、侦测事件、受影响链路、decisionId/runId/effectiveFrameId 等关联。
+   不以“此时 BER 变化”自动推断就是该干扰机导致。
+
+C03 jam_mode
+   broadband/spot/sweep 可与场景 BARRAGE/SPOT/SWEEP 作语义对照；当前运行状态合同没有对应模式字段，需确认扩展。
+   模式反馈不表示已经完成一次可取消、可失败的控制请求。
+
+C04 Word 附带的启扰时序输入要求
+   当前 JammerEditorDialog 已有“干扰触发时间（仿真秒）”与“持续时间”；triggerTimeS 是相对仿真开始的绝对触发时刻。
+   “侦测到目标后延迟多久再启扰”不能直接用 triggerTimeS 代替。是否增加该输入及引擎规则需另行确认，本轮不扩展表单。
+
+C05 参数同步
+   active_params 只给当前值，不能证明 SyncResult 的 config/node/engine/ui 四个参数版本已经一致。
+   缺参数版本、生效帧/时刻、回读来源、请求关联等信息时，不生成 SYNCHRONIZED 成功记录。
+
+七、候选链路、前返向路径和切换事件
+以下 M 指 Word 第三模块的 link_manager；由于原文括号错误，正式顶层位置仍需后台确认。
+
+M01 candidate_links[].link_id
+   关联当前链路与摘要的身份；不能用同样的 BER 或相似端口名称代替身份匹配。
+
+M02 candidate_links[].gxb_db、ber、jam_power_w、available
+   GXB、BER 的语义同 L09/L10；jam_power_w 是 W，且要确认是接收干扰功率、发射功率还是选路评分输入。
+   若语义确为接收干扰功率，正数 W 可按10×log10(W)+30转为dBm；0 W不能生成有限dBm或冒充0 dBm，缺失表达待合同确认。
+   jam_power_w 不能直接作为 RouteCandidateEvidence.jamImpactDb。available 是否等于规范链路可用或候选 eligible，也需明确。
+
+M03 routing_result.forward / return
+   方向名可对应 FORWARD / REVERSE。节点序列的实际端点以报文为准，不根据“前向/返向”名称补节点或反转路径。
+
+M04 path_id、mission_uav、selected_link
+   path_id 表达整条路径，mission_uav 给出对应任务机，selected_link 示例为某个链路段索引。
+   当前 RouteDecision 仅记录 selectedLinkId，不具备等价的多跳路径模型；不得把 path_id 当 linkId。
+   必须确认 selected_link 在多跳中具体代表哪段，以及多任务机是否按数组或任务机键组织。
+
+M05 nodes[].platform、platform_type
+   提供按顺序排列的节点。保留英文平台标识，用本次场景映射生成中文展示名。
+   COMMAND_VEHICLE_PLATFORM/SHEN_TONG_SAT/MISSION_UAV_PLATFORM 等引擎类型需通过受控映射对应场景类型，不能按字符串猜测。
+
+M06 links[].index、from、to、link_id、out_port、in_port
+   描述每个有序链路段。需检查连续顺序、相邻端点、端口存在性，以及完整路径的链路段数与节点数关系。
+   端口身份缺失或 from/to 不闭合时，不能自补中继、卫星或其他转发段。
+
+M07 links[].ber、gxb_db、jam_power_w、available
+   与候选链路字段作同义对照，但同一帧同一真实链路的数值应一致；不覆盖另一条同名端口链路。
+
+M08 candidates[].path_id、links[] 及其中的 link_id/from/to/ber/gxb_db/jam_power_w/available
+   是整条候选路径的对比数据。当前示例候选比选中路径少 nodes、index、out_port、in_port 等字段，需要明确允许的精简结构和关联规则。
+   数组顺序不等于已经确认的排名；前端不重算最优路径、不从候选拼造新的中继路径。
+
+M09 与旧候选/决策合同的缺口
+   RouteCandidateEvidence 还需要 direction、jamImpactDb、stabilityFrames、rank、eliminationReason；原示例未齐。
+   RouteDecision 还需要 task/run/frame/time、previousLinkId、strategy、metric、minimumStableFrames、hysteresisThreshold、reason；原示例未齐。
+   当前遥测帧非空决策要求前返向共两条，不能直接表达“每任务机×方向”的多条路径结果，后续需要确认真实合同。
+
+S01 switch_events[].msg_type、frame_id、sim_time_s
+   事件有自己的时刻和帧号。示例顶层为60分00.5秒、帧4800，切换事件为61分15秒、帧4815，不是同一帧。
+   当前 switch.event 校验要求当前帧、信封、事件时刻一致；必须确认事件是独立推送、历史集合还是快照内新增事件。
+   不把事件时间改成当前帧时间以凑校验，也不把未来事件提前投影到地图。
+
+S02 switch_events[].uav、direction
+   uav 是任务机身份，direction 的 forward/return 对应 FORWARD/REVERSE；同一方向下不同任务机的决策不能相互串用。
+
+S03 old_link、new_link
+   对应旧/新链路身份，需与同任务机、同方向的选路结论及真实设备映射闭合。
+   身份关联应覆盖合法摘要链路，不能要求每条链路都必须已经展开在 frame.links 详情中。
+
+S04 reason
+   源允许 BER/JAMMING/LINK_INTERRUPT 等原因；旧实时校验对接受事件限定 BER_THRESHOLD_AND_HYSTERESIS 且新BER必须更优。
+   因干扰或中断触发的真实切换不能被改写成 BER 原因，也不能为了通过旧规则伪造更优 BER；需确认分原因的真实决策合同。
+
+S05 anti_bounce.stable_frames、cooldown_locked、quality_threshold_met
+   stable_frames 可对应稳定帧计数，但还缺最低稳定帧数和阈值版本。
+   cooldown_locked 不能完整代替 cooldownRemainingS；quality_threshold_met 不能直接代替 hysteresisSatisfied。
+   需确认这些值属于切换前的检查还是切换后的状态；不得从布尔值造出冷却秒数、滞回阈值或稳定帧门槛。
+
+S06 事件完整性与去重
+   当前 SwitchEvent 还需要 eventId、dedupeKey、oldBer、newBer、minimumStableFrames、hysteresisSatisfied、cooldownRemainingS、decision。
+   同帧质量集合足够且身份唯一时可关联真实 oldBer/newBer；缺关联时不采用其他时刻或其他链路的 BER。
+   Word 只承诺“发生切换时输出”，不等于同时提供拒绝决策日志；无拒绝事件不能伪报拒绝次数为0。
+   空事件数组不能清空已保存历史；重复/迟到事件与新运行的数据边界需要明确。
+
+八、可复用的展示与结果链路
+
+1. 统一态势投影
+   src/features/situation/situation-model.ts、src/components/situation/LinkStateBadge.vue、MetricPanel.vue、LinkQualityDialog.vue、QualityMetricPanel.vue。
+   后续只能消费统一、已校验的投影；不在表格、地图、详情中各自实现状态判定。
+   现有入口证据：src/features/situation/situation-model.ts:211 的 getProjection、同文件:272 的统一指标，QualityMetricPanel.vue:7、LinkQualityDialog.vue:106、LinkStateBadge.vue:7。
+   situation.vue:110 的 FILE 来源使用位置、通信关联和设备事件；:208 的 SCENE 来源展示保存配置；:270 的 MOCK 分支才消费 telemetry 投影。mission 位置轮询不等于质量帧接入。
+   FILE 中“正常/切换/干扰”是设备开启/关闭/未知的展示约定（situation.vue:39、:1025），不是质量判定；文件链路详情的质量值在 LinkQualityDialog.vue:67 显示“暂无数据”。
+   当前 QualityMetricPanel 读取当前投影的详细质量；新报文不会自动覆盖 FILE/SCENE。后续需要明确数据融合与时间优先级，不能让运行快照覆盖历史回放的用户游标。
+
+2. 计算与证据展示
+   src/components/blueprint/LinkCalculatorContractCard.vue、src/components/interactions/CompositeLossExample.vue、SnrBerExample.vue。
+   可参考已有字段和错误定位方式；当前证据结构/固定版本限制需先处理，不能改贴标签就称真实求解已接入。
+   消费证据分别为 LinkCalculatorContractCard.vue:13 的固定 L-MW-01、CompositeLossExample.vue:18 的 frame.evidence.losses、SnrBerExample.vue:15 的同帧链路/损耗。
+
+3. 干扰与选路展示
+   src/components/interactions/EsmSensorPanel.vue、RfJammerPanel.vue、ClosedLoopStepper.vue、JammerSyncPanel.vue、RouteRankingPanel.vue、SwitchDecisionPanel.vue，以及 src/components/situation/LinkCandidatePanel.vue。
+   已有交互与数据结构可以复用，真实执行回执、多设备标识、路径模型及同帧证据仍需补齐。
+   不擅自恢复隐藏的导航、已取消的弹框或按选中消息绘制路径功能。
+   消费证据：EsmSensorPanel.vue:11 读取场景传感器及 DETECTION 事件；RfJammerPanel.vue:12 读取控制状态；ClosedLoopStepper.vue:9 关联侦测与执行证据；JammerSyncPanel.vue:21 读取同步版本。
+   LinkCandidatePanel.vue:23 校验候选快照；RouteRankingPanel.vue:8 读取方向及排名/决策；SwitchDecisionPanel.vue:8 读取切换证据。它们不是 param_json 的接收器。
+
+4. 评估报表与历史
+   src/components/reports/LocalReportTabs.vue、src/features/reports/local-report.ts、src/stores/report.ts、server/local/time-series.ts、server/local/mission-results.ts。
+   五分量损耗与 link_loss.csv 已有同义列；新 JSON 仍缺写入和读取适配，不能当作已接入。
+   link_quality.csv 的 SNR 等必填值不齐时不能造完整行；缺失文件继续明确标记，而非生成空表宣称完成。
+   平均 BER、平均 GXB、连通时长、干扰时长和切换次数需要真实时序/事件及统计口径；不能从一帧或 last_action 推算整次运行统计。
+   应先关联 runId、模型/阈值版本、源数据与时间范围，后续才可将实际结果落到报告与回放。
+   当前本地报告通过 localEvidence 展示（src/pages/reports/reports.vue:135），LocalReportTabs.vue:102 的“链路质量与曲线”明确为空态；可选 qualityKpis 是汇总，不是逐时刻曲线。
+   src/components/reports/ReportTabs.vue:28、:72 的另一条报告合同分支消费 Report.timeSeries；有此组件不能作为当前 CSV 已提供真实质量曲线的证明。
+
+5. 现有输出开关
+   src/config/app.config.ts 的 scenarioOutput 当前为 linkQualityEnabled=false、linkSwitchEnabled=false、eventsEnabled=true。
+   后续需核实实际引擎输出与配置的关系；本轮不改变开关，也不把单纯打开页面当成已生成质量/切换数据。
+
+九、开始实施前需要后台明确的事项
+
+Q01 真实输出入口：使用何种传输、发送端/接收端地址、消息边界、编码、频率，以及由哪个进程/组件实际产出。
+Q02 运行关联：如何绑定本次任务、运行、场景/脚本版本，如何识别平台、链路、端口、传感器与多台干扰机。
+Q03 快照与事件：完整/增量含义，空数组/缺字段/null 的规则，逐主题序号、事件唯一编号、重发与补帧规则。
+Q04 质量规则：真实模型版本、GXB的J/S口径、SNR是否能提供、接收干扰功率的含义，以及功率为0时如何表达。
+Q05 状态规则：UI三态和规范两态、真实生效阈值、连续帧门槛、滞回/冷却规则、判定原因和阈值版本来源。
+Q06 路径规则：顶层 link_manager 层级、每任务机多方向结果结构、选中段含义、候选字段完整性、排名与旧新链路身份。
+Q07 干扰能力：真实命令回执是否提供、参数版本如何回读，侦测后延时是否支持，传感器启停与扫描状态如何反馈。
+Q08 最低真实样本：至少一帧合法快照、一条侦测事件、一条真实切换事件；并给出相应运行/设备对应关系。示例数值和 V 标记均不代替这些样本。
+
+十、原始样例的格式与一致性问题
+
+1. 原样不是合法 JSON：含 // 注释；按允许注释的解析方式继续检查，仍有第107行缺逗号/冒号、第204～205行候选对象结构错误、第233行缺闭合对象等5处语法诊断。
+2. closed_loop 的 jam_target_id 后缺逗号，jam_mode 后缺冒号；return.candidates 缺对象包裹并有尾逗号；jammer_sensor/link_manager 的闭合层级不明确。需后台给出修正版，不由前端猜正式结构。
+3. return 候选中有空 link_id；REALY 等平台拼写是否为真实标识需确认，不能自行改名后关联。
+4. 新切换事件的 new_link 在该示例 link_calc.links/候选中未形成完整关联；顶层帧与事件帧不一致的问题见 S01。
+5. 模型版本、阈值、路径和数值都只是示例；本轮未修改原文件，也未制作可被误当成实测的替代数据包。
+
+十一、后续实施顺序与验收条件
+
+1. 先处理 Q01～Q05 的最小闭合项及合法真实样本，确认真实结果合同与现有固定证据合同的兼容边界，再修改 Node/Store。
+2. 第一批只打通已具备真实依据的链路质量字段、身份和时间；缺 SNR 时保留“暂无数据”，不伪造旧完整帧。
+3. 第二批接 ESM/RF 状态和真实事件；确认命令回执之前，不把反馈帧或假成功标为真实执行成功。
+4. 第三批接候选、多跳路径与切换证据；展示后台结论，不重写选路/滞回算法，不扩大已取消的功能范围。
+5. 最后将同一批真实时序接入评估报表和历史归档，展示、导出和回放使用一致的运行及时间范围。
+
+后续回归应覆盖：合法字段与单位换算；GXB不冒充SNR；0 W功率；非法/缺失身份；多设备/多任务机；跨帧与跨时刻；重复/迟到/断档；运行或会话切换；模型与阈值版本；错误字段路径；缺数据空态；图表/详情/报告来源一致。实际修改后再运行对应合同、Store/组件和双视口 E2E 门禁。
+
+十二、本轮验证边界
+
+本清单依据两份原资料及列出的实际源码核对，完全忽略 V 标记。
+清单编制阶段仅执行源文件读取、SHA-256 核对、JSON/JSONC 静态语法检查和清单覆盖检查；不将原样例解析失败报告为通过。
+该阶段未启动 mission/AFSIM、未接入真实发送端、未修改冻结合同或业务内容、未运行代码门禁，也不宣称上述真实运行能力已完成。
+
+十三、链路质量适配开发记录（2026-10-31）
+
+1. 已实现 src/features/data-exchange/runtime-link-quality.ts 的 adaptRuntimeLinkQuality。
+   输入为已解析的 link_calc 子对象，输出独立的质量数据和 ValidationIssue；不是完整报文接收或 TelemetryFrame 校验。
+   按完整有向身份（链路、收发平台、收发端口）判重，保留英文源标识；尚未绑定运行/场景身份。
+   distance_km×1000 转为 distanceMeters；rx_power_dbw+30 转为 receivedPowerDbm；data_rate_bps÷1,000,000 转为输入溯源的 dataRateMbps。
+   五项损耗及总损耗分别保留；GXB、EIRP、G/T 保留原含义，不生成 SNR、发射功率、噪声功率或旧四分量证据。
+   缺失测量输出 null；干扰源缺失为 null，源明确给出空数组时保留空数组。全局与逐链路版本/调制分别保留，不互相补齐或覆盖。
+
+2. 校验与错误边界
+   身份必须非空，数值必须有限；距离和输入速率非负，BER在0～1内，距离换算溢出被拒绝。
+   dB损耗分量未新增正负、求和或误差规则；模型版本保留真实字符串，不伪装固定版本。
+   调制复用项目现有 BPSK/QPSK/OOK 支持；非法类型、非法数值、重复身份/干扰源均给出本地稳定错误码及源字段路径。
+   quality.error_msg 非空、invalid_param_errors 非空时整批拒绝，data 为 null；聚合错误内部结构未约定，不猜上游错误码或路径。
+   任何质量字段错误均不返回部分成功结果；未知扩展不透传。status 及其他模块不由此函数校验或投影，不可用本函数通过代替完整报文通过。
+
+3. 本轮验证
+   npx vitest run --config vitest.config.ts tests/contracts/runtime-link-quality.spec.ts tests/stores/telemetry.spec.ts --reporter=dot：2文件、119项通过（新增适配66项、原遥测53项）。
+   npm run typecheck：通过。
+   npm run validate:contracts：通过，81个操作、39个类型化写操作；现有schema、fixture闭合和五类CSV审计通过。
+   尚未执行全量p0:check、覆盖率或E2E；本轮没有页面或接收通道变更，不以这些聚焦结果代替全量验收。
+
+4. 下一批边界
+   仍需Q01～Q03确认的接收方式、运行归属、时间与帧规则，才能从真实通道安全写入Store并使页面更新。
+   不读取示例TXT作为实时数据，不改旧遥测信任边界，不推导UI/规范状态、连续帧或滞回，也未接入ESM/RF、选路和报表。
+
+十四、前端统一质量管理与展示开发记录（2026-10-31）
+
+1. 统一质量Store
+   新增 src/stores/runtime-quality.ts，提供activate、bindLinks、acceptFrame和resetToSafeEmpty公开动作。
+   activate只允许当前LOCAL已认证会话、本次运行和已保存场景，绑定任务、运行、场景、场景修订、startedAt及会话身份；链路ID必须属于当前已保存场景。
+   bindLinks要求显式提供场景链路ID与原始链路/收发平台/收发端口的对应，拒绝空身份、未知场景链路和重复对应，不从名称或BER猜映射。
+   绑定变化后epoch递增。实际接收方应在绑定完成、建立请求/订阅时捕获epoch；迟到回调必须使用原epoch，不能临时读取新运行的epoch冒充新请求。
+   帧号为非负安全整数，仿真时刻为非负有限数；仅接收二者均严格前进的完整质量快照。原始帧号不作为WS主题序号。
+   合法元信息的处理水位独立于展示数据保存，适配失败或身份未绑定时清空快照进入ERROR，迟到的旧成功帧不能恢复旧值；后续新合法帧可恢复。
+   会话、运行实例、场景修订、数据源模式改变及重置均淘汰旧epoch；同会话权限刷新、同scope重新激活及运行时钟刷新不会重复清空有效数据。
+   各Pinia实例捕获自己的auth/simulation Store；另一实例活跃时，原实例的会话变化仍清理原实例。
+
+2. 统一投影与页面
+   src/features/situation/runtime-quality-view.ts将已校验快照与显式绑定连接到当前链路名称，供QualityMetricPanel及LinkQualityDialog共用。
+   态势页仅为本次LOCAL所选场景运行激活质量域，离页清空；全局重置也调用该Store的清理动作。FILE历史文件及旧固定证据不混入本次质量数据。
+   面板/详情显示同一测量的BER、接收功率、GXB及路径损耗；详情另保留各真实损耗分量、距离、计算输入速率、模型版本和调制。
+   缺失指标显示“暂无数据”，不从上一帧、全局默认或配置值补实测值；SNR、时延、可用率和未获真实判定的UI/规范状态仍为空。
+   由当前运行时钟与源测量时刻计算已知年龄；UI时钟落后时年龄为未知，不冒充0毫秒或标为新鲜。时间窗口只按已知年龄筛选，详情保留源时刻和年龄。
+   错误保留稳定错误码、原字段路径和中文原因；质量面板错误区域及新质量详情内容限制在各自容器内滚动。
+   未修改地图、全链路状态列、KPI的状态规则或颜色，未把summary.status覆盖到UI三态。
+
+3. 本轮最终验证
+   npx vitest run --config vitest.config.ts tests/contracts/runtime-link-quality.spec.ts tests/stores/runtime-quality.spec.ts tests/stores/telemetry.spec.ts tests/stores/p8-integration.spec.ts tests/components/runtime-quality.spec.ts tests/components/frontend-capabilities.spec.ts tests/components/situation.spec.ts tests/components/App.spec.ts --reporter=dot：8文件、351项通过。
+   npm run typecheck：通过。
+   npm run build：通过。
+   npm run validate:contracts：通过，81个操作、39个类型化写操作，schema/fixture/CSV审计通过。
+   本轮未运行全量p0:check、覆盖率或E2E，不沿用此前全量测试数字。
+
+4. 尚未接通的部分
+   当前只具备前端内部的接收动作及页面消费者；生产代码没有自动向Store投递真实质量报文，也没有读取param_json.txt作为运行数据。
+   后续仍需明确后台连接角色/地址、运行归属、帧与测量时刻语义、真实生成设备映射，再接Node接收、WS推送及浏览器接收动作。
+   本轮不新增WS主题或修改冻结协议，不启动mission/AFSIM，不重启服务，不提交或推送Git。

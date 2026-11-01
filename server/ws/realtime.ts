@@ -15,6 +15,7 @@ import type {
 import { assertLoopbackRequest, assertLanRequest } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
 import { fixedFrameForRun, ownsFixedEvidence } from '../simulations/projection.js'
+import { MemoryRealtimeJournal, type RealtimeJournalStore } from './realtime-journal.js'
 
 const CANONICAL_TOPICS = new Set<WsTopic>([
   'simulation.frame',
@@ -29,6 +30,7 @@ const MAX_CLIENTS = 64
 const MAX_CLIENTS_PER_SOURCE = 8
 const HEARTBEAT_MS = 30_000
 const MAX_BUFFERED_BYTES = 1_048_576
+const MAX_RETAINED_EVENTS = 128
 
 export interface RealtimeController {
   activeClientCount(): number
@@ -47,6 +49,7 @@ interface SubscriptionAcknowledgement {
   topics: WsTopic[]
   lastSequence: number
   nextSequence: number
+  lastSequences?: Partial<Record<WsTopic, number>>
 }
 
 function isDemoRole(value: string | undefined): boolean {
@@ -77,7 +80,7 @@ function parseSubscription(data: RawData, isBinary: boolean):
   }
 
   const record = value as Record<string, unknown>
-  const allowedKeys = new Set(['type', 'schemaVersion', 'taskId', 'topics', 'lastSequence'])
+  const allowedKeys = new Set(['type', 'schemaVersion', 'taskId', 'topics', 'lastSequence', 'lastSequences'])
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     return { accepted: false, code: 'INVALID_ENVELOPE', message: 'The subscription contains unknown fields.' }
   }
@@ -109,6 +112,24 @@ function parseSubscription(data: RawData, isBinary: boolean):
     return { accepted: false, code: 'INVALID_ENVELOPE', message: 'lastSequence must be a nonnegative safe integer.' }
   }
 
+  if (record.lastSequence !== undefined && record.lastSequences !== undefined) {
+    return { accepted: false, code: 'INVALID_ENVELOPE', message: 'Use either lastSequence or lastSequences, not both.' }
+  }
+
+  let lastSequences: Partial<Record<WsTopic, number>> | undefined
+  if (record.lastSequences !== undefined) {
+    if (typeof record.lastSequences !== 'object' || record.lastSequences === null || Array.isArray(record.lastSequences)) {
+      return { accepted: false, code: 'INVALID_ENVELOPE', message: 'lastSequences must be an object keyed by subscribed topic.' }
+    }
+    const cursors = record.lastSequences as Record<string, unknown>
+    const cursorTopics = Object.keys(cursors)
+    if (cursorTopics.length !== topics.length
+      || cursorTopics.some((topic) => !topics.includes(topic) || !Number.isSafeInteger(cursors[topic]) || (cursors[topic] as number) < 0)) {
+      return { accepted: false, code: 'INVALID_ENVELOPE', message: 'lastSequences must contain a nonnegative cursor for every subscribed topic.' }
+    }
+    lastSequences = Object.fromEntries(cursorTopics.map((topic) => [topic, cursors[topic] as number])) as Partial<Record<WsTopic, number>>
+  }
+
   return {
     accepted: true,
     request: {
@@ -117,6 +138,7 @@ function parseSubscription(data: RawData, isBinary: boolean):
       taskId: record.taskId as TaskId,
       topics: topics as WsTopic[],
       ...(record.lastSequence === undefined ? {} : { lastSequence: record.lastSequence as number }),
+      ...(lastSequences === undefined ? {} : { lastSequences }),
     },
   }
 }
@@ -133,112 +155,38 @@ function reject(client: WebSocket, code: WsRejection['code'], message: string): 
   client.close(1008, code)
 }
 
-function trackClient(
-  client: WebSocket,
-  clients: Map<WebSocket, Set<WsTopic>>,
-  projection: MockProjection,
-  replayTopic: (client: WebSocket, topic: WsTopic) => void,
-  send: (client: WebSocket, message: string) => void,
-): void {
-  client.on('error', () => clients.delete(client))
-  clients.set(client, new Set())
-  client.once('close', () => clients.delete(client))
-
-  let subscribed = false
-  client.on('message', (data, isBinary) => {
-    if (subscribed) {
-      reject(client, 'INVALID_ENVELOPE', 'Only one subscription is accepted per connection.')
-      return
-    }
-
-    const parsed = parseSubscription(data, isBinary)
-    if (!parsed.accepted) {
-      reject(client, parsed.code, parsed.message)
-      return
-    }
-
-    if (parsed.request.taskId !== projection.snapshot().task.taskId) {
-      reject(client, 'INVALID_ENVELOPE', 'The subscription task is not owned by this projection.')
-      return
-    }
-
-    const lastSequence = parsed.request.lastSequence ?? 0
-    // P0 owns no historical event log, so only a fresh cursor can be resumed without inventing data.
-    if (lastSequence > 0) {
-      reject(client, 'SEQUENCE_GAP', 'P0 can resume only from lastSequence 0.')
-      return
-    }
-
-    subscribed = true
-    clients.set(client, new Set(parsed.request.topics))
-    const acknowledgement: SubscriptionAcknowledgement = {
-      type: 'subscribed',
-      schemaVersion: '1.0',
-      taskId: parsed.request.taskId,
-      topics: [...parsed.request.topics],
-      lastSequence,
-      nextSequence: lastSequence + 1,
-    }
-    send(client, JSON.stringify(acknowledgement))
-
-    parsed.request.topics.forEach((topic) => replayTopic(client, topic))
-  })
-}
-
-/**
- * 创建一条具有新主题序号的规范实时信封。
- * @param projection 提供任务标识和分主题序号的 Mock 投影。
- * @param topic 当前消息主题。
- * @param payload 主题对应的已校验载荷。
- * @param simulationTime 当前仿真时刻。
- * @param frameId 同帧主题使用的帧标识。
- * @returns 可缓存、重放或广播的实时信封。
- */
-function createEnvelope<T>(
-  projection: MockProjection,
-  topic: WsTopic,
-  payload: T,
-  simulationTime: number,
-  frameId?: FrameId,
-): RealtimeEnvelope<T> {
-  const taskId = projection.snapshot().task.taskId
-  return {
-    type: 'event',
-    schemaVersion: '1.0',
-    topic,
-    taskId,
-    sequence: projection.nextSequence(taskId, topic),
-    simulationTime,
-    ...(frameId === undefined ? {} : { frameId }),
-    payload,
-  }
-}
+interface ClientSubscription { taskId?: TaskId; topics: Set<WsTopic> }
+interface RealtimeJournalOptions { journal?: RealtimeJournalStore; replayPageSize?: number }
 
 export function attachRealtimeServer(
   httpServer: HttpServer,
   projection: MockProjection,
-  currentRun: () => SimulationRun | undefined = () => projection.snapshot().run,
+  currentRun: (taskId?: TaskId) => SimulationRun | undefined = () => projection.snapshot().run,
   authorize?: (request: IncomingMessage) => boolean,
   publicOrigin?: string,
-  limits: { maxClients: number; maxPerSource: number; heartbeatMs: number; maxBufferedBytes?: number } = {
+  limits: { maxClients: number; maxPerSource: number; heartbeatMs: number; maxBufferedBytes?: number; maxRetainedEvents?: number } = {
     maxClients: MAX_CLIENTS,
     maxPerSource: MAX_CLIENTS_PER_SOURCE,
     heartbeatMs: HEARTBEAT_MS,
   },
+  journalOptions?: RealtimeJournalOptions,
 ): RealtimeController {
-  const clients = new Map<WebSocket, Set<WsTopic>>()
+  const clients = new Map<WebSocket, ClientSubscription>()
   const requests = new Map<WebSocket, IncomingMessage>()
   const alive = new Map<WebSocket, boolean>()
-  const send = (client: WebSocket, message: string): void => {
-    if (client.readyState !== WebSocket.OPEN) return
+  const replaying = new Map<WebSocket, Set<WsTopic>>()
+  const send = (client: WebSocket, message: string, onFlushed?: () => void): boolean => {
+    if (client.readyState !== WebSocket.OPEN) return false
     if (client.bufferedAmount + Buffer.byteLength(message) > (limits.maxBufferedBytes ?? MAX_BUFFERED_BYTES)) {
       clients.delete(client)
       requests.delete(client)
       alive.delete(client)
+      replaying.delete(client)
       client.terminate()
-      return
+      return false
     }
-    client.send(message)
+    client.send(message, (error) => { if (error == null) onFlushed?.() })
+    return true
   }
   const sourceFor = (request: IncomingMessage) => request.socket.remoteAddress?.replace(/^::ffff:/, '') ?? 'unknown'
   const heartbeat = setInterval(() => {
@@ -261,44 +209,145 @@ export function attachRealtimeServer(
       if (!authorize(request)) { clients.delete(client); requests.delete(client); alive.delete(client); client.close(1008, 'SESSION_EXPIRED') }
     }
   }
-  const currentEnvelopes = new Map<WsTopic, string>()
-  let publishedRunId = currentRun()?.runId
+  const retainedEventLimit = Number.isSafeInteger(limits.maxRetainedEvents) && limits.maxRetainedEvents! > 0
+    ? Math.min(limits.maxRetainedEvents!, MAX_RETAINED_EVENTS)
+    : MAX_RETAINED_EVENTS
+  const journal = journalOptions?.journal ?? new MemoryRealtimeJournal(retainedEventLimit)
+  const replayPageSize = Math.max(1, Math.min(journalOptions?.replayPageSize ?? 64, 512))
+  const currentEnvelopes = new Map<string, string>()
+  const runIds = new Map<TaskId, string>()
+  const keyFor = (taskId: TaskId, topic: WsTopic): string => `${taskId}\u0000${topic}`
+  const forgetTask = (taskId: TaskId): void => {
+    for (const topic of CANONICAL_TOPICS) currentEnvelopes.delete(keyFor(taskId, topic))
+  }
+  const ownsTask = (taskId: TaskId): boolean => {
+    const run = currentRun(taskId)
+    return run?.taskId === taskId || taskId === projection.snapshot().task.taskId
+  }
+  const createEnvelope = <T>(taskId: TaskId, topic: WsTopic, payload: T, simulationTime: number, frameId?: FrameId): RealtimeEnvelope<T> => {
+    // Keep the projection counter advancing for existing in-process observers;
+    // durable ordering itself is owned by the journal so it survives restart.
+    projection.nextSequence(taskId, topic)
+    return {
+      type: 'event', schemaVersion: '1.0', topic, taskId,
+      sequence: journal.next(taskId, topic), simulationTime,
+      ...(frameId === undefined ? {} : { frameId }), payload,
+    }
+  }
+  const retain = (envelope: RealtimeEnvelope<unknown>): string | undefined => {
+    const message = JSON.stringify(envelope)
+    try {
+      journal.append(envelope.taskId, envelope.topic, { sequence: envelope.sequence, message })
+      currentEnvelopes.set(keyFor(envelope.taskId, envelope.topic), message)
+      return message
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === envelope.taskId) reject(client, 'SEQUENCE_GAP', reason)
+      }
+      return undefined
+    }
+  }
   const webSocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_TRANSPORT_PAYLOAD_BYTES,
   })
 
-  const replayTopic = (client: WebSocket, topic: WsTopic): void => {
+  const replayTopic = (client: WebSocket, taskId: TaskId, topic: WsTopic, lastSequence: number, replayZeroCursorEvents: boolean): void => {
     revalidateSessions()
     if (!clients.has(client)) return
     // 自选场景只有 Mock 控制状态，不能重放固定样例的链路与事件作为它的结果。
     // 没有运行时仍按无运行处理：依赖运行的主题各自缺失，静态链路摘要照常返回。
-    const run = currentRun()
+    const run = currentRun(taskId)
     if (topic !== 'runtime.state' && run !== undefined && !ownsFixedEvidence(run)) return
-    let message = currentEnvelopes.get(topic)
+    if (lastSequence > 0 || replayZeroCursorEvents) {
+      let cursor = lastSequence
+      let page: Array<{ sequence: number; message: string }> = []
+      const activeTopics = replaying.get(client) ?? new Set<WsTopic>()
+      if (activeTopics.has(topic)) return
+      activeTopics.add(topic)
+      replaying.set(client, activeTopics)
+      const finish = (): void => {
+        const topics = replaying.get(client)
+        topics?.delete(topic)
+        if (topics?.size === 0) replaying.delete(client)
+      }
+      const continueReplay = (): void => {
+        if (!clients.has(client)) { finish(); return }
+        if (page.length === 0) {
+          const read = journal.readAfter(taskId, topic, cursor, replayPageSize)
+          if (!read.ok) { finish(); reject(client, 'SEQUENCE_GAP', read.reason); return }
+          page = read.events
+        }
+        const event = page.shift()
+        if (event === undefined) { finish(); return }
+        if (!send(client, event.message, () => { cursor = event.sequence; continueReplay() })) finish()
+      }
+      continueReplay()
+      return
+    }
+    let message = currentEnvelopes.get(keyFor(taskId, topic))
     if (message === undefined) {
       const snapshot = projection.snapshot()
       let envelope: RealtimeEnvelope<unknown> | undefined
       if (topic === 'simulation.frame') {
         const frame = fixedFrameForRun(run?.runId ?? snapshot.frame.runId)
-        envelope = createEnvelope(projection, topic, frame, frame.simulationTime, frame.frameId)
+        envelope = createEnvelope(taskId, topic, frame, frame.simulationTime, frame.frameId)
       } else if (topic === 'link.metric') {
-        envelope = createEnvelope(projection, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
+        envelope = createEnvelope(taskId, topic, snapshot.frame.linkSummaries, snapshot.frame.simulationTime, snapshot.frame.frameId)
       } else if (topic === 'runtime.state') {
-        const run = currentRun()
-        if (run !== undefined) envelope = createEnvelope(projection, topic, run.canonical, run.canonical.currentTime)
+        if (run !== undefined) {
+          // A first subscription establishes the current run without creating a
+          // boundary.  A later different run is what invalidates old cursors.
+          runIds.set(taskId, run.runId)
+          envelope = createEnvelope(taskId, topic, run.canonical, run.canonical.currentTime)
+        }
       } else if (topic === 'jammer.event') {
         const event = snapshot.events.find((item) => item.type === 'DETECTION')
-        if (event !== undefined) envelope = createEnvelope(projection, topic, event, event.time, event.frameId)
+        if (event !== undefined) envelope = createEnvelope(taskId, topic, event, event.time, event.frameId)
       } else if (topic === 'switch.event') {
         const event = snapshot.events.find((item) => item.type === 'LINK_SWITCH')
-        if (event !== undefined) envelope = createEnvelope(projection, topic, event, event.time, event.frameId)
+        if (event !== undefined) envelope = createEnvelope(taskId, topic, event, event.time, event.frameId)
       }
       if (envelope === undefined) return
-      message = JSON.stringify(envelope)
-      currentEnvelopes.set(topic, message)
+      message = retain(envelope)
     }
-    send(client, message)
+    if (message !== undefined) send(client, message)
+  }
+
+  const canResume = (taskId: TaskId, topics: WsTopic[], cursors: Partial<Record<WsTopic, number>>, resumesAnyTopic: boolean): string | undefined => {
+    for (const topic of topics) {
+      const read = journal.canResume(taskId, topic, cursors[topic] ?? 0, resumesAnyTopic)
+      if (!read.ok) return read.reason
+    }
+    return undefined
+  }
+
+  const trackClient = (client: WebSocket): void => {
+    client.on('error', () => { clients.delete(client); replaying.delete(client) })
+    clients.set(client, { topics: new Set() })
+    client.once('close', () => { clients.delete(client); replaying.delete(client) })
+    let subscribed = false
+    client.on('message', (data, isBinary) => {
+      if (subscribed) { reject(client, 'INVALID_ENVELOPE', 'Only one subscription is accepted per connection.'); return }
+      const parsed = parseSubscription(data, isBinary)
+      if (!parsed.accepted) { reject(client, parsed.code, parsed.message); return }
+      const taskId = parsed.request.taskId
+      if (!ownsTask(taskId)) { reject(client, 'INVALID_ENVELOPE', 'The subscription task is not owned by this realtime server.'); return }
+      const run = currentRun(taskId)
+      try {
+        if (run !== undefined && journal.prepareRun(taskId, run.runId)) forgetTask(taskId)
+      } catch (error) { reject(client, 'SEQUENCE_GAP', error instanceof Error ? error.message : String(error)); return }
+      const lastSequence = parsed.request.lastSequence ?? 0
+      const lastSequences = parsed.request.lastSequences ?? (Object.fromEntries(parsed.request.topics.map(topic => [topic, lastSequence])) as Partial<Record<WsTopic, number>>)
+      const resumesAnyTopic = parsed.request.topics.some(topic => (lastSequences[topic] ?? 0) > 0)
+      const gap = canResume(taskId, parsed.request.topics, lastSequences, resumesAnyTopic)
+      if (gap !== undefined) { reject(client, 'SEQUENCE_GAP', `The requested sequence is outside the retained realtime event window: ${gap}`); return }
+      subscribed = true
+      clients.set(client, { taskId, topics: new Set(parsed.request.topics) })
+      send(client, JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', taskId, topics: [...parsed.request.topics], lastSequence, nextSequence: lastSequence + 1, ...(parsed.request.lastSequences === undefined ? {} : { lastSequences }) } satisfies SubscriptionAcknowledgement))
+      for (const topic of parsed.request.topics) replayTopic(client, taskId, topic, lastSequences[topic] ?? 0, resumesAnyTopic && (lastSequences[topic] ?? 0) === 0)
+    })
   }
 
   webSocketServer.on('connection', (client, request) => {
@@ -306,7 +355,7 @@ export function attachRealtimeServer(
     alive.set(client, true)
     client.on('pong', () => alive.set(client, true))
     client.once('close', () => { requests.delete(client); alive.delete(client) })
-    trackClient(client, clients, projection, replayTopic, send)
+    trackClient(client)
   })
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
@@ -349,6 +398,8 @@ export function attachRealtimeServer(
     requests.clear()
     alive.clear()
     currentEnvelopes.clear()
+    replaying.clear()
+    journal.clear()
   }
 
   return {
@@ -356,46 +407,55 @@ export function attachRealtimeServer(
     revalidateSessions,
     publishRuntimeState: (run): void => {
       revalidateSessions()
-      const runChanged = publishedRunId !== run.runId
+      const taskId = run.taskId
+      const runChanged = runIds.get(taskId) !== run.runId
       if (runChanged) {
-        publishedRunId = run.runId
-        currentEnvelopes.clear()
+        runIds.set(taskId, run.runId)
+        forgetTask(taskId)
+        try { journal.prepareRun(taskId, run.runId) } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error)
+          for (const [client, subscription] of clients) if (subscription.taskId === taskId) reject(client, 'SEQUENCE_GAP', reason)
+          return
+        }
       }
-      const subscribers = [...clients].filter(([, topics]) => topics.has('runtime.state'))
-      if (subscribers.length === 0) currentEnvelopes.delete('runtime.state')
-      else {
-        const envelope: RealtimeEnvelope<SimulationState> = createEnvelope(
-          projection,
-          'runtime.state',
-          run.canonical,
-          run.canonical.currentTime,
-        )
-        const message = JSON.stringify(envelope)
-        currentEnvelopes.set('runtime.state', message)
-        subscribers.forEach(([client]) => send(client, message))
+      const envelope: RealtimeEnvelope<SimulationState> = createEnvelope(
+        taskId,
+        'runtime.state',
+        run.canonical,
+        run.canonical.currentTime,
+      )
+      const message = retain(envelope)
+      if (message === undefined) return
+      const subscribers = [...clients].filter(([, subscription]) => subscription.taskId === taskId && subscription.topics.has('runtime.state'))
+      if (subscribers.length > 0) {
+        subscribers.forEach(([client]) => {
+          if (!replaying.get(client)?.has('runtime.state')) send(client, message)
+        })
       }
       if (runChanged) {
-        for (const [client, topics] of clients) {
-          for (const topic of topics) {
-            if (topic !== 'runtime.state') replayTopic(client, topic)
+        for (const [client, subscription] of clients) {
+          if (subscription.taskId !== taskId) continue
+          for (const topic of subscription.topics) {
+            if (topic !== 'runtime.state') replayTopic(client, taskId, topic, 0, false)
           }
         }
       }
     },
     publishJammerStatus: (status, frameId): void => {
       revalidateSessions()
-      if (!ownsFixedEvidence(currentRun())) return
+      const taskId = projection.snapshot().task.taskId
+      if (!ownsFixedEvidence(currentRun(taskId))) return
       const envelope: RealtimeEnvelope<JammerStatusData> = createEnvelope(
-        projection,
+        taskId,
         'jammer.event',
         status,
         status.time,
         frameId,
       )
-      const message = JSON.stringify(envelope)
-      currentEnvelopes.set('jammer.event', message)
-      for (const [client, topics] of clients) {
-        if (topics.has('jammer.event')) send(client, message)
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === taskId && subscription.topics.has('jammer.event') && !replaying.get(client)?.has('jammer.event')) send(client, message)
       }
     },
     invalidateForReset,
@@ -409,6 +469,7 @@ export function attachRealtimeServer(
         client.terminate()
       }
       clients.clear()
+      replaying.clear()
       requests.clear()
       alive.clear()
       webSocketServer.close((error) => {

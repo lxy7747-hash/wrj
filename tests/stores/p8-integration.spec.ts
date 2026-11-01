@@ -5,7 +5,6 @@ import { useUiStore } from '../../src/stores/ui'
 import { useAuthStore } from '../../src/stores/auth'
 import { useAdminStore } from '../../src/stores/admin'
 import type { ConfirmationContext, User } from '../../src/contracts/domain-models'
-import { useBatchStore } from '../../src/stores/batch'
 import { useDataExchangeStore } from '../../src/stores/data-exchange'
 import { useReplayStore } from '../../src/stores/replay'
 import { useReportStore } from '../../src/stores/report'
@@ -29,7 +28,6 @@ function loads() {
     vi.spyOn(useScenarioStore(), 'loadScenes').mockResolvedValue(true),
     vi.spyOn(useSimulationStore(), 'resetProjection').mockResolvedValue(true),
     vi.spyOn(useTelemetryStore(), 'loadFrame').mockResolvedValue(true),
-    vi.spyOn(useBatchStore(), 'loadComparison').mockResolvedValue(true),
     vi.spyOn(useReportStore(), 'load').mockResolvedValue(true),
     vi.spyOn(useReplayStore(), 'load').mockResolvedValue(true),
     vi.spyOn(useAdminStore(), 'loadAll').mockResolvedValue(true),
@@ -43,9 +41,7 @@ function expectEmpty() {
   expect(useSimulationStore().run).toBeNull()
   expect(useTelemetryStore().frame).toBeNull()
   expect(useTelemetryStore().connectionState).toBe('DISCONNECTED')
-  expect(useBatchStore().batch).toBeNull()
   expect(useReportStore().selectedReport).toBeNull()
-  expect(useReportStore().confirmation).toBeNull()
   expect(useReplayStore().replay).toBeNull()
   expect(useAdminStore().users).toEqual([])
   expect(useAdminStore().auditConfirmation).toBeNull()
@@ -98,7 +94,7 @@ describe('P8 全局重置', () => {
     expect(useTelemetryStore().connectionBlocked).toBe(false)
   })
 
-  it.each(Array.from({ length: 9 }, (_, index) => index))('加载步骤 %i 失败后清除所有半初始化投影并支持重试', async (index) => {
+  it.each(Array.from({ length: 8 }, (_, index) => index))('加载步骤 %i 失败后清除所有半初始化投影并支持重试', async (index) => {
     const actions = loads()
     actions[index]!.mockResolvedValueOnce(false)
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(resetResult)))
@@ -170,7 +166,7 @@ describe('P8 全局重置', () => {
 })
 
 describe('P8 目录与管理重载', () => {
-  it('加载 29/7/8/11，筛选并仅解析已知定位目标', async () => {
+  it('加载 29/7/8/10，筛选并仅解析已知定位目标', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => response(fixtures.metadata[url.split('/').at(-1)! as keyof typeof fixtures.metadata])))
     const store = useTraceabilityStore()
     expect(store.rows).toEqual([])
@@ -281,16 +277,4 @@ describe('P8 迟到响应失效', () => {
     expect(auth.authState).toBe('EMPTY')
   })
 
-  it('确认报告导出的响应到达前重置，不恢复旧确认', async () => {
-    const report = useReportStore()
-    const confirmation: ConfirmationContext = { confirmationId: 'P8', state: 'AWAITING_CONFIRMATION', actor: 'admin', role: 'ADMIN', createdAt: fixtures.epoch, expiresAt: '2026-08-06T08:05:00Z' }
-    report.$patch({ confirmation, pendingFormat: 'PDF' })
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => {
-      report.resetToSafeEmpty()
-      return response({ ...confirmation, state: 'CONFIRMED' })
-    }))
-    expect(await report.confirmExport()).toBe(false)
-    expect(report.confirmation).toBeNull()
-    expect(report.capabilityState).toBe('EMPTY')
-  })
 })

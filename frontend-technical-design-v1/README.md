@@ -1,10 +1,62 @@
 # 前端技术设计包 V1.1
 
-本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、11 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
+本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、10 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.48**，SHA-256：`B0BA633B1D41F2D51F5D3E7800BE0D51BDE84FAD65F6CD7228B67F9C3360D6AF`。本次按用户确认将高空前出中继节点数量上限由 1 放开至 2；下方历史冻结记录的旧哈希保持原样。
+当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为本文末尾的“2026-10-29 装备链路写入规则与类型匹配”；下方其余记录均为历史，旧哈希保持原样。
 
-## 高空前出中继节点数量上限（2026-10-13，当前冻结记录）
+## 批量仿真移除合同（2026-10-28，历史冻结记录）
+
+OpenAPI 更新至 **1.9.0**（80 操作 / 39 个 typed POST/PUT/PATCH 写操作）。移除 `/api/v1/batches*` 七项端点、Batch/LocalBatch schema、批次 fixture 与批次路由；`BATCH_LEVEL_III_EXPORT`、批量参数遍历和批量报告导出不再存在。`ReportClassification.LEVEL_III` 仅保留为历史读取兼容，导出统一拒绝；普通 Level II 报告的导出权限保护不变。`POST /api/v1/admin/audit/delete` 保持 ADMIN 合同，未因本次移除而改变。访问控制读模型允许退休 OPERATOR profile 的空菜单，写入 schema 仍要求至少一个菜单，Principal 菜单和 ADMIN `/admin` 约束不变。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `2DC988782A1BA6BD6028CE7CC6ED8D8E62256539A9D418905C794C255F852228` |
+| `contracts/mock-api.openapi.yaml` | `2DD16E2459E84B92F0B8D2D0640D0D37463C363134BC6BA49CEAF155D410015E` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `9998EA5285CCD80A5E47643792D8A79628AADAD9E72CF6BDD0C9E584B0D0296C` |
+| `contracts/deterministic-fixtures.json` | `AA5C02D41D386844A2BE64B0B9883145AEDFA77D20EEB6E2919E0B86A388F1CB` |
+| `../scripts/contracts/contract-documents.ts` | `F127868C0E384720F67704FBF9163CE7B56BEF7187037EBCC58D3464FF5D09A5` |
+| `../scripts/validate-contracts.ts` | `4FCE69FE1EE0A9540DE54D2E9D49AAF1E6D135F450EC5C7E429D310D95A30EE9` |
+| `../tests/contracts/openapi-contract.spec.ts` | `F7593258DFC73BD1181A50CA7B3C02C0477158676190BAEE2989D721451CDCA1` |
+| `../tests/contracts/fixture-contract.spec.ts` | `463709F1D403D0DA1E7B23EC177FD7D1367131436D5FC9A7D435DB1BE6A4D4BD` |
+| `../tests/contracts/frontend-capabilities.spec.ts` | `9BE3227FBEC15178B22B8703E1D1D50138DE738856259E849B29CC8736337DE2` |
+
+## 审计管理分页与原子删除合同（2026-10-28，历史冻结记录）
+
+OpenAPI 更新至 **1.8.12**（87 操作 / 42 个 typed POST/PUT/PATCH 写操作）。`GET /api/v1/admin/audit` 保持 `AuditRecord[]` 响应数据，新增且只新增 `page`、`pageSize`、`sortOrder` 三个列表 query 参数；现有筛选仍由 `AuditRequest` 表示，分页信息仍在既有 `Meta`（`page/pageSize/total`）中，不混入筛选请求。
+
+`POST /api/v1/admin/audit/delete` 仅限 ADMIN，单条和批量共用闭合的 `AuditDeleteRequest` / `AuditDeleteResult`。`auditIds` 与 `deletedIds` 均为 1–100 个唯一、非空标识；任一记录不存在即 404 且不执行部分删除。删除不新增 Permission 或 ConfirmationAction；实际操作由服务端记录为 `AUDIT_DELETE`。确定性 fixture 内容未变，schema snapshot、静态参数/RBAC 审计和正反例合同回归已同步。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `4F0F45227B7F848E742575969E9AE181A12989B1D3282E9D2F1542B61D4BDCF3` |
+| `contracts/mock-api.openapi.yaml` | `107BE5FE9846B4D8FD07BD8B553C35376F196F3F809412A44CE20EC498F310FA` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `B5733A30ECEFA54C035432B61DCE4EBA10DE393DA177CBB3F8D2A3801FC56EDB` |
+| `../scripts/contracts/contract-documents.ts` | `7D8583E81C4ECC5A1478148AADC6F533FB756B05B7E11753D740B848A4B298FE` |
+| `../scripts/validate-contracts.ts` | `CB1D970C7175E8F67FBF296C5EF1A689A3527BB71870BC1B25936D44EB8A3E85` |
+| `../tests/contracts/openapi-contract.spec.ts` | `EE2459B286EC67C16ACF2AA435154AA92B432A4A6BB224FACC5F3F43A85D8115` |
+
+## 本地批次、阶段与原生 ESM 合同（2026-10-27，历史冻结记录）
+
+OpenAPI 更新至 **1.8.11**（86 操作 / 41 个 typed POST/PUT/PATCH 写操作）。新增本地批次选项、批次报告读取和已确认的报告导出操作；本地批次与既有确定性 mock 批次以联合 schema 并存，既有 fixture 保持有效。报告筛选、终态导出、`BATCH_LEVEL_III_EXPORT` 二次确认和本地服务不可用的 503 响应均纳入合同。
+
+场景身份可选任务阶段 `phases`，其开始/结束边界、唯一标识和不重叠规则由共享运行时校验；`NativeEsmSettings` 进入领域模型，传感器 UI 扩展可选 `esm` 配置。schema snapshot、静态合同审计和 OpenAPI 合同回归与上述变更同步；下方 1.8.10 及更早冻结记录仅保留为历史。
+
+## 激光链路接入合同（2026-10-27，当前冻结记录）
+
+OpenAPI 更新至 **1.8.10**（83 操作 / 40 写操作不变）。读取 `Link` 保持兼容：历史 `LASER` 链路可省略 `laser`；若提供，则必须是闭合的 `LaserLinkParameters`，包含正数收发口径、正数脉宽及唯一支持的光调制 `OOK`。新写入 `LinkWrite` 在 `type=LASER` 且 `enabled` 未明确为 `false` 时必须提供完整 `laser`，并要求 `txPower` 和 `dataRate` 为正数；禁用链路可暂不带光学参数。非 LASER 链路不得携带 `laser`。
+
+`Link.modulation` 继续保留既有 `BPSK/QPSK` 传输字段，不能控制光学引擎；光调制以 `laser.modulation` 为准。光波长由既有 `frequency`（MHz）换算，不新增重复波长字段，且不扩展全局 telemetry/SNBER 枚举。运行时和合同均不为真实用户、旧数据库或新建设备推导默认光学参数；fixture 的 `L-LASER-04` 仅作为冻结的合成回归样例，不是设备默认值。旧读取回归通过删除该样例的 `laser` 属性验证。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `4A5648290D268CF11254CB2CA9A2C94A661C2F4DA80E06C99617B8D1F8B8E96F` |
+| `contracts/mock-api.openapi.yaml` | `9793AF37C8A54B5DFB7CB327EFC36DF3EC4D7494DE821547BC49B8AC80D2B430` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `D5F7A71577DA727359A9602DAD7B0344B8ED3A36EE585A9B05398CFA381CCDA2` |
+| `../scripts/contracts/contract-documents.ts` | `EC08857AEA3424DCAB47AC9F2A4E5FB061AA593526BB54604861F127E782310A` |
+| `../tests/contracts/laser-contract.spec.ts` | `0FCC848AEFC2FE47E35AA1492ED28BE0A019DB136F70E44CE0477458EB1603DB` |
+| `contracts/deterministic-fixtures.json`（冻结的合成回归样例） | `FD6BDAADF64E39756BF3947F8B767DF5D00643BECC319C1D3701A826F2B93288` |
+
+## 高空前出中继节点数量上限（2026-10-13，历史冻结记录）
 
 OpenAPI 更新至 **1.8.9**（83 操作 / 40 写操作不变），`ScenarioConfig.platforms` 数量元数据与共享运行时校验统一允许最多 2 个 `FORWARD_RELAY_NODE`。默认配置仍为 1 个，其位置只读约束、其他类型上限和信息节点总容量 50 个不变；新增、改型、保存及导入共用此规则。领域类型、fixture 和存量数据库未修改；数量语义仍由共享运行时校验执行，schema snapshot 同步更新。
 
@@ -296,3 +348,25 @@ Vue 3、TypeScript、Vite、Pinia、Vue Router、Element Plus、离线 Leaflet�
 - `contracts/mock-api.openapi.yaml`：`87F4F12C02BDB82A0F79B034418FAB8AE27253E32F6B3E85E1A6BF4A19872C42`
 - `scripts/contracts/openapi-schema.snapshot.ts`：`8F5FE1E2CA3D790DE032B5E4A2618D4C591822876DF01B415476BC6A7BA3D73F`
 - `contracts/deterministic-fixtures.json` 未修改：`2908EDEE19C38B318282999A1D8BF5B8EA19C5318E4170C1258D953BB5783B84`；HTML 原型、原始 SRS/DD 未修改。
+
+### 2026-10-29 链路基础数据参数来源（历史冻结记录，OpenAPI 1.9.2）
+
+新增/编辑链路可记录装备或通用基础数据的版本化参数来源；旧场景省略该字段仍可读取。通用数据只按合同字段名和单位映射，枚举必须显式选择 `entryKey`，未知或单位不符条目不自动套用。设备的频段范围、带宽、功率、速率、默认调制与 BER 阈值键仅可由设备库维护；通信体制和参数字典的新写入不得重复这些键，历史读取保持兼容，枚举仍保存受控文本选项。链路工作频点、接收配置及增益／噪声等公共参数仍按明确字段和单位映射。新增只读 GET `/api/v1/scenarios/parameter-catalog`，共 81 个 operation、39 个 POST/PUT/PATCH；目录闭合性由保存服务核对。本轮不改正式数据或 fixture。
+
+- `contracts/domain-models.ts`（与源码镜像一致）：`8A2E39B5EABA8F70F5130FB371A8CE1023BA731DACE9D2B1696660D4F54DA81B`
+- `contracts/mock-api.openapi.yaml`：`2AA27E11B80985A8BC58D7BF0513E96C040F73A3095782AAA449D90E0CB26D2C`
+- `scripts/contracts/openapi-schema.snapshot.ts`：`B417D47BB7537B68DEAD505E2648214E7B554B7F6FE24D7B398B4736565C4920`
+
+### 2026-10-29 装备链路写入规则与类型匹配（当前冻结记录，OpenAPI 1.9.3）
+
+`EquipmentParameter` 保持历史读取兼容，不枚举或推断未知历史 `type`。新增仅供装备新增／更新请求组合的 `EquipmentLinkWriteParameters`：卫星、微波、数传、激光和光纤设备分别收紧调制、发射功率和数据速率；激光仅允许 `OOK` 且功率大于 0，卫星功率上限为 1000 W，其余已知类型为 100 W。频率和带宽继续只要求正有限值，频率范围成对填写及下限不得大于上限仍由服务端跨字段校验，未杜撰 10 GHz／1 GHz 上限。
+
+新增引用只允许与目标链路类型匹配的明确通信设备；未知历史类型不能作为新引用。已保存的历史引用仅限参数来源和值均未变更时兼容。操作数仍为 81，typed POST／PUT／PATCH 写操作仍为 39；领域模型与确定性 fixture 本轮未修改。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/mock-api.openapi.yaml` | `70BD84CB4248EF61BCEB183BA39F7083B57EDC9688F0D685AB47EE68309F2136` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `83FF5E7F2B8FD6C8F7969E6649D99A51BC4899B900BE31D6B6D6C9D662AC3827` |
+| `../scripts/contracts/contract-documents.ts` | `AC972B9C9424B6F2D03C17D90801177635D3E80553525D5734773D4E49D50150` |
+| `../tests/contracts/equipment-contract.spec.ts` | `BBBFB7F9D560467449430B63FB4552B1DC00B2306586DFCB462EF5BC8893BF75` |
+| `../tests/contracts/openapi-contract.spec.ts` | `2E263783B4599088F27AA618AF39B07E884351F85365DB45F73B9D7AB311F62C` |

@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { formatDateTime } from '../../features/shared/date-time'
 
 const props = defineProps<{
   title: string
   unit: string
   rows: Array<{ label: string; value: number }>
   radar?: boolean
+  sourceRange?: string
+  generatedTime?: string
 }>()
 const rows = computed(() => props.rows.filter(row => Number.isFinite(row.value)))
 const maximum = computed(() => props.radar ? 100 : Math.max(1, ...rows.value.map(row => row.value)))
@@ -19,6 +22,7 @@ const polygon = computed(() => rows.value.map((row, index) => point(index, row.v
 <template>
   <section class="report-chart" :aria-label="title">
     <h4>{{ title }}<small>（{{ unit }}）</small></h4>
+    <p v-if="sourceRange || generatedTime">{{ sourceRange }}<span v-if="generatedTime"> · 生成时刻 {{ formatDateTime(generatedTime) }}</span></p>
     <el-empty v-if="!rows.length || (radar && rows.length < 3)" description="暂无数据" :image-size="60" />
     <template v-else-if="radar">
       <!-- 仅比较同量纲的连通率，不把缺失值当零，也不构造综合评分。 -->

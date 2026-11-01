@@ -1,5 +1,6 @@
 import type {
   ApiErrorCode,
+  AuditDeleteResult,
   AuditRecord,
   AuthResult,
   Iso8601Utc,
@@ -33,7 +34,6 @@ const ADMIN_PERMISSIONS: readonly Permission[] = [
   'BACKUP_RESTORE',
   'AUDIT_READ',
   'FULL_CONFIG_EXPORT',
-  'BATCH_LEVEL_III_EXPORT',
 ]
 
 export interface PermissionSet {
@@ -51,6 +51,7 @@ export interface AuthStorage {
   revokeUser(id: string): void
   readAudit(): AuditRecord[]
   appendAudit(record: Omit<AuditRecord, 'auditId'>): void
+  deleteAudit(auditIds: string[], record: Omit<AuditRecord, 'auditId'>): boolean
 }
 
 export interface ProjectionFailure {
@@ -185,6 +186,32 @@ export class AuthProjection {
    */
   auditSnapshot(): AuditRecord[] {
     return this.storage ? this.storage.readAudit() : structuredClone(this.runtimeState.audit)
+  }
+
+  /** Deletes a complete selected audit set, then records that deletion as one new audit event. */
+  deleteAudit(actor: string, auditIds: string[]): ProjectionResult<AuditDeleteResult> {
+    const record: Omit<AuditRecord, 'auditId'> = {
+      actor,
+      role: 'ADMIN',
+      module: moduleForAction('AUDIT_DELETE'),
+      action: 'AUDIT_DELETE',
+      objectId: 'AUDIT-LOG',
+      result: 'SUCCESS',
+      occurredAt: this.storage?.time() ?? this.runtimeState.occurredAt,
+      immutableFixture: true,
+    }
+    if (this.storage) {
+      if (!this.storage.deleteAudit(auditIds, record)) return { ok: false, code: 'NOT_FOUND', status: 404 }
+      return { ok: true, data: { deletedIds: [...auditIds] } }
+    }
+    const selected = new Set(auditIds)
+    if (this.runtimeState.audit.filter(record => selected.has(record.auditId)).length !== auditIds.length) {
+      return { ok: false, code: 'NOT_FOUND', status: 404 }
+    }
+    this.runtimeState.audit = this.runtimeState.audit.filter(record => !selected.has(record.auditId))
+    const auditId = `AUD-P1-${String(this.runtimeState.nextAuditSequence++).padStart(4, '0')}`
+    this.runtimeState.audit.push({ auditId, ...record })
+    return { ok: true, data: { deletedIds: [...auditIds] } }
   }
 
   /**

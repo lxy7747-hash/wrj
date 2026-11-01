@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Link } from '../../contracts/domain-models'
+import type { RuntimeLinkQualityView } from '../../features/situation/runtime-quality-view'
+import { RUNTIME_STATUS_LABELS, runtimeDecisionReason } from '../../features/situation/runtime-quality-view'
+import { reportTime } from '../../features/reports/local-report'
 import {
   LINK_TYPE_LABELS,
   formatBer,
@@ -11,10 +14,25 @@ const props = defineProps<{
   modelValue: boolean
   link: SituationLinkView | null
   configuredLink?: Link | null
+  runtimeQuality?: RuntimeLinkQualityView | null
   fileLink?: { linkId: string; sourceName: string; destinationName: string; typeLabel: string; registeredAt: number; deviceStatus: string } | null
 }>()
 
 defineEmits<{ 'update:modelValue': [value: boolean] }>()
+
+/** 引擎可选提供的质量扩展字段；缺省显示“暂无数据”，有值后直接展示。 */
+function optionalMetric(value: number | null | undefined, digits: number, unit: string): string {
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : '暂无数据'
+}
+
+const runtimeMeasurement = computed(() => props.runtimeQuality?.measurement ?? null)
+const runtimeLossFields = [
+  { key: 'freeSpaceLossDb', label: '自由空间损耗' },
+  { key: 'seaMultipathLossDb', label: '海面多径损耗' },
+  { key: 'atmosphericLossDb', label: '大气损耗' },
+  { key: 'cloudRainLossDb', label: '云雨损耗' },
+  { key: 'jammingLossDb', label: '干扰损耗' },
+] as const
 
 const uiStatusLabel = computed(() => ({
   UP: '正常',
@@ -55,11 +73,34 @@ function reasonLabel(reason: string): string {
     <template #header>
       <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
+        <strong>{{ runtimeQuality ? `${runtimeQuality.linkId} · 本次运行 · 帧 ${runtimeQuality.frameId}` : link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
-    <div v-if="!link && fileLink" class="link-quality-dialog__body" data-testid="link-detail-file">
+    <div v-if="runtimeQuality && runtimeMeasurement" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-runtime" :data-frame-id="runtimeQuality.frameId">
+      <div class="link-quality-dialog__route"><span>{{ runtimeQuality.sourceName }}</span><i aria-hidden="true">→</i><span>{{ runtimeQuality.destinationName }}</span></div>
+      <dl class="link-quality-dialog__grid">
+        <div><dt>质量测量时刻</dt><dd>{{ reportTime(runtimeQuality.simulationTime) }}</dd></div>
+        <div><dt>数据年龄</dt><dd>{{ runtimeQuality.ageMs === null ? '暂无数据' : `${runtimeQuality.ageMs} ms` }}</dd></div>
+        <div><dt>信噪比 SNR</dt><dd>暂无数据</dd></div>
+        <div><dt>误码率 BER</dt><dd>{{ runtimeMeasurement.quality.ber === null ? '暂无数据' : formatBer(runtimeMeasurement.quality.ber) }}</dd></div>
+        <div><dt>干信比 GXB</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.gxbDb, 2, ' dB') }}</dd></div>
+        <div><dt>接收功率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.receivedPowerDbm, 2, ' dBm') }}</dd></div>
+        <div><dt>路径损耗</dt><dd>{{ optionalMetric(runtimeMeasurement.losses.totalLossDb, 2, ' dB') }}</dd></div>
+        <div><dt>传输距离</dt><dd>{{ optionalMetric(runtimeMeasurement.distanceMeters === null ? null : runtimeMeasurement.distanceMeters / 1000, 2, ' km') }}</dd></div>
+        <div><dt>计算输入速率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.inputTrace.dataRateMbps, 2, ' Mbps') }}</dd></div>
+        <div><dt>模型版本</dt><dd>{{ runtimeMeasurement.quality.modelVersion ?? '暂无数据' }}</dd></div>
+        <div><dt>调制方式</dt><dd>{{ runtimeMeasurement.quality.modulation ?? '暂无数据' }}</dd></div>
+        <div v-for="field in runtimeLossFields" :key="field.key"><dt>{{ field.label }}</dt><dd>{{ optionalMetric(runtimeMeasurement.losses[field.key], 2, ' dB') }}</dd></div>
+        <div><dt>界面状态</dt><dd>{{ runtimeQuality.assessment ? RUNTIME_STATUS_LABELS[runtimeQuality.assessment.status] : '暂无数据' }}</dd></div>
+        <div><dt>判定依据</dt><dd>{{ runtimeQuality.assessment ? runtimeDecisionReason(runtimeQuality.assessment.reason) : '暂无数据' }}</dd></div>
+        <div><dt>阈值版本</dt><dd>{{ runtimeQuality.assessment?.thresholdVersion ?? '暂无数据' }}</dd></div>
+        <div><dt>稳定帧数</dt><dd>{{ runtimeQuality.assessment?.stableFrames ?? '暂无数据' }}</dd></div>
+        <div v-for="label in ['时延', '可用率', '规范状态']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+        <div v-if="runtimeQuality.assessment"><dt>判定来源</dt><dd>本机质量快照与场景门限；引擎运行状态以实际反馈为准。</dd></div>
+      </dl>
+    </div>
+    <div v-else-if="!link && fileLink" class="link-quality-dialog__body" data-testid="link-detail-file">
       <p>{{ fileLink.sourceName }} → {{ fileLink.destinationName }}</p>
       <dl class="link-quality-dialog__grid">
         <div><dt>通信体制</dt><dd>{{ fileLink.typeLabel }}</dd></div>
@@ -103,7 +144,9 @@ function reasonLabel(reason: string): string {
         <div><dt>更新时间</dt><dd>{{ link.updatedAt }} s</dd></div>
         <div><dt>信噪比 SNR</dt><dd>{{ link.snrDb.toFixed(2) }} dB</dd></div>
         <div><dt>误码率 BER</dt><dd>{{ formatBer(link.ber) }}</dd></div>
-        <div v-for="label in ['干信比', '时延', '可用率']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div>
+        <div><dt>干信比</dt><dd>{{ optionalMetric(link.detailed?.jsrDb, 2, ' dB') }}</dd></div>
+        <div><dt>时延</dt><dd>{{ optionalMetric(link.detailed?.latencyMs, 1, ' ms') }}</dd></div>
+        <div><dt>可用率</dt><dd>{{ optionalMetric(link.detailed?.availabilityPercent, 1, ' %') }}</dd></div>
         <div><dt>数据年龄</dt><dd>{{ link.ageMs }} ms</dd></div>
         <div><dt>数据新鲜度</dt><dd>{{ freshnessLabel }}</dd></div>
         <div><dt>界面状态</dt><dd :class="`status--${link.status.toLowerCase()}`">{{ uiStatusLabel }}</dd></div>
@@ -129,6 +172,7 @@ function reasonLabel(reason: string): string {
 </template>
 
 <style scoped>
+.link-quality-dialog__runtime { max-height: 60dvh; overflow-y: auto; overflow-wrap: anywhere; }
 .link-quality-dialog__header {
   display: grid;
   gap: 0.15rem;

@@ -2,11 +2,13 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { POSITION_CSV } from '../fixtures/local-replay'
-import type { ScenarioDraft, AccessControlConfig } from '../../src/contracts/domain-models'
+import type { ScenarioDraft, AccessControlConfig, Report } from '../../src/contracts/domain-models'
+import type { MissionResultParameterComparison, MissionResultRecord } from '../../src/features/results/mission-result'
 const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
 const { once } = await import('node:' + 'events')
+const { createHash } = await import('node:' + 'crypto')
 const { default: request } = await import('super' + 'test')
 const { LocalMissionResults } = await import('../../server/local/' + 'mission-results.js')
 const { LocalMissionRunner } = await import('../../server/local/' + 'mission-runner.js')
@@ -27,7 +29,8 @@ async function setup() {
   const entry = join(root, 'execution'), output = join(entry, 'nested')
   await mkdir(output, { recursive: true })
   const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
-  await writeFile(join(entry, 'mapping.json'), JSON.stringify({ scenarioId: draft.config.scenario.id, revision: draft.revision, output: { resolvedDirectory: 'nested' } }))
+  await writeFile(join(entry, 'mapping.json'), JSON.stringify({ scenarioId: draft.config.scenario.id, revision: draft.revision, output: { resolvedDirectory: 'nested' },
+    devices: [{ linkId: 'L-FILE', source: { platformId: 'A', deviceId: 'tx' }, target: { platformId: 'B', deviceId: 'rx' }, relay: null }] }))
   await writeFile(join(output, 'scenario_events.csv'), REPORT_EVENT_CSV + '\n')
   await writeFile(join(output, 'position.csv'), POSITION_CSV)
   const results = new LocalMissionResults(join(root, 'results'))
@@ -35,6 +38,18 @@ async function setup() {
 }
 
 describe('真实仿真结果闭环', () => {
+  it('完成任务自动留存带 task_id 的事件 CSV，并明确标记缺少的引擎质量文件', async () => {
+    const { entry, output, draft, results } = await setup()
+    await results.capture(entry, draft, start, end, () => true, { taskId: 'TASK-CAPTURE', runId: 'RUN-CAPTURE' })
+    const published = (await readdir(output)).find((name: string) => name.startsWith('time-series-'))!
+    expect(published).toBeTruthy()
+    const manifest = JSON.parse(await readFile(join(output, published, 'manifest.json'), 'utf8'))
+    expect(manifest).toMatchObject({ taskId: 'TASK-CAPTURE', runId: 'RUN-CAPTURE', contractsComplete: false })
+    expect(manifest.files[0]).toMatchObject({ fileName: 'events.csv', rowCount: 9 })
+    expect(await readFile(join(output, published, 'events.csv'), 'utf8')).toContain('TASK-CAPTURE,1.1,')
+    expect(await results.list()).toHaveLength(1)
+  })
+
   it('重复执行独立编号；源文件变化、服务重建后仍读取已绑定快照', async () => {
     const { root, entry, output, draft, results } = await setup()
     expect(await results.list()).toEqual([])
@@ -51,6 +66,56 @@ describe('真实仿真结果闭环', () => {
     expect(await results.get('../scenarios.db')).toBeNull()
     await writeFile(join(root, 'results', `${first.resultId}.json`), '{}')
     await expect(results.get(first.resultId)).rejects.toThrow('完整性')
+  })
+
+  it('筛选索引与结果来源绑定，按节点和仿真时间精确重算事件及冻结位置', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const record = (await results.list())[0]!, snapshot = (await results.get(record.resultId))!
+    const filtered = await results.filter(record.resultId, snapshot.report.reportId, { nodeId: 'A', from: 1, to: 3 })
+    expect(filtered.report.localEvidence).toMatchObject({ positionCount: 2, eventCount: filtered.timelineTotal, simulationComplete: false })
+    expect(filtered.report.localEvidence?.nodes).toHaveLength(1)
+    expect(filtered.report.localEvidence?.nodes[0]?.platformId).toBe('A')
+    expect(filtered.timeline.every((event: { time: number; subject: string }) => event.time >= 1 && event.time <= 3 && event.subject === 'A')).toBe(true)
+    const nodeOnly = await results.filter(record.resultId, snapshot.report.reportId, { nodeId: 'A' })
+    expect(nodeOnly.report.localEvidence?.connections).toEqual([expect.objectContaining({ sourcePlatformId: 'A', targetPlatformId: 'B' })])
+    const noPosition = await results.filter(record.resultId, snapshot.report.reportId, { nodeId: 'B', from: 1, to: 3 })
+    expect(noPosition.report.localEvidence?.nodes[0]).toMatchObject({ positionCount: 0, firstTimeS: 1, lastTimeS: 1 })
+    await expect(results.filter(record.resultId, snapshot.report.reportId, { from: 99 })).rejects.toThrow('FILTER_INVALID')
+    const linkFiltered = await results.filter(record.resultId, snapshot.report.reportId, { linkId: 'L-FILE' })
+    expect(linkFiltered.links).toEqual(['L-FILE'])
+    expect(linkFiltered.report.localEvidence?.nodes.map((node: { platformId: string }) => node.platformId).sort()).toEqual(['A', 'B'])
+    const exported = await exportLocalReport(join(root, 'exports'), filtered.report, 'HTML', 'operator', undefined, [], filtered.filter)
+    expect(await readFile(exported.filePath, 'utf8')).toContain('已应用筛选')
+    expect(await readFile(exported.filePath, 'utf8')).toContain('<svg')
+    await writeFile(join(root, 'results', `${record.resultId}.report-index.ndjson`), '{}\n')
+    await expect(results.filter(record.resultId, snapshot.report.reportId, {})).rejects.toThrow('FILTER_UNSUPPORTED')
+    expect((await results.get(record.resultId))?.report.reportId).toBe(snapshot.report.reportId)
+  })
+
+  it('完成时冻结已保存参数；旧三字段快照仍可读且不补造参数', async () => {
+    const { root, entry, draft, results } = await setup()
+    await results.capture(entry, draft, start, end)
+    const first = (await results.list())[0]!, initial = await results.get(first.resultId)
+    expect(initial?.parameters).toMatchObject({ scenarioId: draft.config.scenario.id, revision: draft.revision, platformCount: draft.config.platforms.length,
+      links: expect.arrayContaining([expect.objectContaining({ id: draft.config.links[0]!.id, txPowerW: draft.config.links[0]!.txPower })]) })
+    draft.revision += 1
+    draft.config.links[0]!.txPower += 25
+    draft.config.jammers[0]!.bandwidth += 5
+    await writeFile(join(entry, 'mapping.json'), JSON.stringify({ scenarioId: draft.config.scenario.id, revision: draft.revision, output: { resolvedDirectory: 'nested' } }))
+    await results.capture(entry, draft, start, end)
+    const snapshots = await Promise.all((await results.list()).map((record: MissionResultRecord) => results.get(record.resultId)))
+    const changed = snapshots.find(item => item?.record.revision === draft.revision)
+    expect(changed?.parameters).toMatchObject({ revision: draft.revision,
+      links: expect.arrayContaining([expect.objectContaining({ txPowerW: initial!.parameters!.links[0]!.txPowerW + 25 })]),
+      jammers: expect.arrayContaining([expect.objectContaining({ bandwidthMHz: initial!.parameters!.jammers[0]!.bandwidthMHz + 5 })]) })
+    const stored = JSON.parse(await readFile(join(root, 'results', `${first.resultId}.json`), 'utf8'))
+    const legacy = JSON.parse(stored.payload); delete legacy.parameters
+    const payload = JSON.stringify(legacy)
+    await writeFile(join(root, 'results', `${first.resultId}.json`), JSON.stringify({ sha256: createHash('sha256').update(payload).digest('hex'), payload }))
+    const legacySnapshot = await new LocalMissionResults(join(root, 'results')).get(first.resultId)
+    expect(legacySnapshot).toMatchObject({ record: first })
+    expect(legacySnapshot?.parameters).toBeUndefined()
   })
 
   it('缺失、未完成、跨目录及版本不匹配的结果不发布', async () => {
@@ -93,14 +158,19 @@ describe('真实仿真结果闭环', () => {
   it('认证读取与 HTML/CSV 附件下载绑定同一次结果；拒绝错报告、错来源和无权限', async () => {
     const { root, entry, draft, results } = await setup()
     await results.capture(entry, draft, start, end)
-    const record = (await results.list())[0]!
+    const first = (await results.list())[0]!
+    draft.revision += 1
+    draft.config.links[0]!.txPower += 25
+    await writeFile(join(entry, 'mapping.json'), JSON.stringify({ scenarioId: draft.config.scenario.id, revision: draft.revision, output: { resolvedDirectory: 'nested' } }))
+    await results.capture(entry, draft, start, end)
+    const record = (await results.list()).find((item: MissionResultRecord) => item.revision === draft.revision)!
     const snapshot = await results.get(record.resultId)
     const auth = new AuthSqliteStorage(join(root, 'scenarios.db'), 'Results-test-1234')
     cleanup.push(() => auth.close())
     const access: AccessControlConfig = { version: 1, profiles: [], assignments: [] }
     const server = createMockServer({ port: 0, authStorage: auth, missionResults: results,
       accessControlStorage: { load: () => access, save: () => true },
-      exportLocalReport: (report: unknown, format: string, actor: string, source: unknown) => exportLocalReport(join(root, 'exports'), report, format, actor, source),
+      exportLocalReport: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string, source?: MissionResultRecord, comparisons?: MissionResultParameterComparison[]) => exportLocalReport(join(root, 'exports'), report, format, actor, source, comparisons),
     })
     cleanup.push(() => server.close())
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
@@ -111,12 +181,16 @@ describe('真实仿真结果闭环', () => {
     const login = await api.post('/api/v1/auth/login').set(headers).send({ username: 'admin', passwordFixture: 'Results-test-1234' }).expect(200)
     const cookie = login.headers['set-cookie']
     expect((await api.get(`/api/v1/mission-results/${record.resultId}`).set(headers).set('Cookie', cookie).expect(200)).body.data).toEqual(snapshot)
+    expect((await api.get(`/api/v1/reports/${snapshot.report.reportId}/filter?resultId=${record.resultId}&nodeId=A`).set(headers).set('Cookie', cookie).expect(200)).body.data.report.localEvidence.nodes).toHaveLength(1)
+    await api.get(`/api/v1/reports/${snapshot.report.reportId}/filter?resultId=${record.resultId}&nodeId=A&nodeId=B`).set(headers).set('Cookie', cookie).expect(422)
     for (const format of ['HTML', 'CSV']) {
       const response = await api.post(url).set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format }).expect(200)
       expect(response.headers['content-disposition']).toContain(`${record.resultId}.${format.toLowerCase()}`)
       // 跨源 UI 需读取附件头才能确认下载；暴露头须由服务端给出。
       expect(response.headers['access-control-expose-headers']).toBe('Content-Disposition')
       expect(response.text).toContain(record.resultId)
+      expect(response.text).toContain(first.resultId)
+      expect(response.text).toContain('同场景已完成运行参数对比')
       expect(response.text).toContain(draft.config.scenario.id)
       expect(response.text).toContain(snapshot.replay.sha256)
     }

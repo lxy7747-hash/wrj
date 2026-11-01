@@ -942,9 +942,12 @@ describe('P3-2 遥测 Store', () => {
 
     socket?.emit('open')
     expect(JSON.parse(socket?.sent[0] ?? '{}')).toMatchObject({
-      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'], lastSequence: 0,
+      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'],
+      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0 },
     })
-    socket?.emit('message', JSON.stringify({ type: 'subscribed' }))
+    socket?.emit('message', JSON.stringify({
+      type: 'subscribed', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'], lastSequence: 0, nextSequence: 1,
+    }))
     expect(store.connectionState).toBe('SUBSCRIBED')
     socket?.emit('message', '{bad json')
     const recover = vi.spyOn(store, 'recoverFromGap').mockResolvedValue()
@@ -959,6 +962,61 @@ describe('P3-2 遥测 Store', () => {
     expect(TestWebSocket.instances).toHaveLength(2)
     store.disconnectAndReset()
     expect(store).toMatchObject({ frame: null, connectionState: 'DISCONNECTED', capabilityState: 'EMPTY' })
+  })
+
+  it('重连时按主题发送真实游标，避免较快主题挤出较慢主题的续传窗口', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    store.topicSequences = {
+      'simulation.frame': 7,
+      'runtime.state': 3,
+      'link.metric': 5,
+      'jammer.event': 4,
+      'switch.event': 6,
+    }
+
+    store.connect()
+    const first = TestWebSocket.instances[0]
+    first?.emit('open')
+    expect(JSON.parse(first?.sent[0] ?? '{}')).toMatchObject({
+      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6 },
+    })
+
+    first?.emit('close')
+    await vi.advanceTimersByTimeAsync(250)
+    const resumed = TestWebSocket.instances[1]
+    resumed?.emit('open')
+    expect(JSON.parse(resumed?.sent[0] ?? '{}')).toMatchObject({
+      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6 },
+    })
+    store.disconnectAndReset()
+  })
+
+  it('收到运行切换后的续传拒绝会清零每个主题游标，再建立快照订阅', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    store.topicSequences = {
+      'simulation.frame': 7,
+      'runtime.state': 3,
+      'link.metric': 5,
+      'jammer.event': 4,
+      'switch.event': 6,
+    }
+    vi.spyOn(store, 'loadFrame').mockResolvedValue(true)
+
+    store.connect()
+    const stale = TestWebSocket.instances[0]
+    stale?.emit('open')
+    stale?.emit('message', JSON.stringify({ type: 'rejected', code: 'SEQUENCE_GAP' }))
+
+    await vi.waitFor(() => expect(TestWebSocket.instances).toHaveLength(2))
+    const recovered = TestWebSocket.instances[1]
+    recovered?.emit('open')
+    expect(JSON.parse(recovered?.sent[0] ?? '{}')).toMatchObject({
+      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0 },
+    })
+    store.disconnectAndReset()
   })
 
   it('处理无 WebSocket 环境、补偿失败和重试耗尽', async () => {

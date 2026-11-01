@@ -26,7 +26,7 @@ test.beforeEach(async ({ page }) => {
   store = new ArchiveSqliteStorage(join(directory, 'archives.db'))
   server = createMockServer({ port: 0, archiveStorage: store,
     loadLocalReplay: () => readLocalReplay(events, positions), loadLocalReport: () => readLocalReport(events, positions),
-    exportLocalReport: (report: Report, format: 'HTML' | 'CSV', actor: string) => exportLocalReport(directory, report, format, actor) })
+    exportLocalReport: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string) => exportLocalReport(directory, report, format, actor) })
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const address = server.httpServer.address()
   if (!address || typeof address === 'string') throw new Error('test server address missing')

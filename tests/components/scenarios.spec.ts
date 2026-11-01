@@ -6,7 +6,7 @@ import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ApiSuccess, ConfirmationContext, PageMeta, Principal, ScenarioConfig, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
-import { inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
+import { INFORMATION_NODE_LIMIT, inspectScenarioConfig, isBusinessInformationNodeType, LINK_MHZ_MINIMUM_STEP } from '../../src/features/scenarios/scenario-validation'
 import { scenarioPlatformLabel, SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import AdminPage from '../../src/pages/admin/admin.vue'
@@ -757,7 +757,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
-    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 200, frequency: 2400, bandwidth: 50, triggerTimeS: 300, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 1, frequency: 2400, bandwidth: 50, triggerTimeS: 300, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
     expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
@@ -823,6 +823,13 @@ describe('P2-1 场景管理页面', () => {
     const previousCount = scenario.draft!.config.sensors.length
     await wrapper.get('[data-testid="add-sensor"]').trigger('click')
     expect(scenario.draft!.config.sensors).toHaveLength(previousCount + 1)
+    const nativeSensorId = scenario.draft!.config.sensors.at(-1)!.id
+    expect(scenario.draft!.uiExtensions.sensors.at(-1)?.esm).toEqual({ sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 })
+    expect(wrapper.get(`[data-testid="native-esm-${nativeSensorId}"]`).text()).toContain('WSF_ESM_SENSOR')
+    wrapper.findAllComponents({ name: 'ElSwitch' }).find(item => item.attributes('data-testid') === `native-esm-enabled-${nativeSensorId}`)!
+      .vm.$emit('update:modelValue', false)
+    await nextTick()
+    expect(scenario.draft!.uiExtensions.sensors.at(-1)).not.toHaveProperty('esm')
     await checkPosition()
   })
 
@@ -896,7 +903,7 @@ describe('P2-1 场景管理页面', () => {
     const labels = (root: ReturnType<typeof wrapper.get>) => root.findAll('.el-form-item__label').map((item) => item.text())
     expect(labels(fields)).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
-      '仿真总时长（min）', '仿真时钟倍速（倍）', '海峡宽度（km）', '温度（℃）', '相对湿度（%）', '雨衰（dB/km）', '场景描述',
+      '仿真总时长（min）', '任务阶段（可选）', '仿真时钟倍速（倍）', '海峡宽度（km）', '温度（℃）', '相对湿度（%）', '雨衰（dB/km）', '场景描述',
     ])
     // 环境参数按《与前端字段确认说明》“环境参数（全局）”的五个小标题分组。
     const environment = wrapper.get('[data-testid="scenario-environment"]')
@@ -1232,6 +1239,14 @@ describe('P2-1 场景管理页面', () => {
     expect(messageSpy).toHaveBeenCalledTimes(4)
     expect(messageSpy).toHaveBeenCalledWith(scenario.templateResultMessage)
     expect(panel.find('[data-testid="template-feedback"]').exists()).toBe(false)
+
+    // 复制读取源模板完整配置另存为新模板，不使用当前草稿。
+    promptSpy.mockResolvedValueOnce({ value: '模板副本' } as never)
+    await panel.get('[data-testid="duplicate-template-TPL-SCN-001"]').trigger('click')
+    await flushPromises()
+    const source = template()
+    expect(createSpy).toHaveBeenLastCalledWith('模板副本', source.config, source.uiExtensions)
+    expect(messageSpy).toHaveBeenCalledTimes(5)
   })
 
   it('取消应用模板时保持当前场景不变并展示模板错误反馈', { timeout: 15_000 }, async () => {
@@ -1580,7 +1595,7 @@ describe('P2-1 场景管理页面', () => {
     const originalCount = scenario.draft!.config.platforms.length
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
-    expect(wrapper.text()).toContain('信息节点 6 / 50')
+    expect(wrapper.text()).toContain(`信息节点 6 / ${INFORMATION_NODE_LIMIT}`)
     expect(wrapper.text()).toContain('节点类型 4 / 4')
     expect(wrapper.text()).toContain('支撑实体 2')
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
@@ -1713,9 +1728,23 @@ describe('P2-1 场景管理页面', () => {
     await nextTick()
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await flushPromises()
+    expect(document.querySelector('[data-testid="platform-dialog"]')).not.toBeNull()
+    document.querySelector<HTMLElement>('[data-testid="cancel-platform"]')!.click()
 
-    expect(scenario.draft?.config.platforms).toHaveLength(50)
-    expect(document.body.textContent).toContain('信息节点已达 50 个上限，当前可新增支撑实体。')
+    scenario.draft!.config.platforms = Array.from({ length: INFORMATION_NODE_LIMIT }, (_, index) => ({
+      ...structuredClone(source),
+      id: `LIMIT-${String(index + 1).padStart(3, '0')}`,
+      name: `容量测试节点 ${index + 1}`,
+      linkIds: [],
+      sensorIds: [],
+      jammerIds: [],
+    }))
+    await nextTick()
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
+
+    expect(scenario.draft?.config.platforms).toHaveLength(INFORMATION_NODE_LIMIT)
+    expect(document.body.textContent).toContain(`信息节点已达 ${INFORMATION_NODE_LIMIT} 个上限，当前可新增支撑实体。`)
   })
 
   it.each([1, 2])('仅输入编队原点时按 %s km 平铺新增，并保存重载保持坐标', async spacingKm => {
@@ -1801,8 +1830,8 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     const quantity = wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === 'platform-quantity')!
-    expect(quantity.props('max')).toBe(44)
-    quantity.vm.$emit('update:modelValue', 44)
+    expect(quantity.props('max')).toBe(58)
+    quantity.vm.$emit('update:modelValue', 58)
     for (const [id, value] of [['platform-longitude', 119.5], ['platform-latitude', 25]] as const) {
       wrapper.findAllComponents({ name: 'ElInputNumber' }).find(component => component.attributes('data-testid') === id)!.vm.$emit('update:modelValue', value)
     }
@@ -1811,10 +1840,10 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
 
     const businessNodes = scenario.draft!.config.platforms.filter((platform) => isBusinessInformationNodeType(platform.type))
-    expect(businessNodes).toHaveLength(50)
-    expect(businessNodes.filter((platform) => platform.type === 'AIRBORNE_MISSION_CLUSTER')).toHaveLength(47)
+    expect(businessNodes).toHaveLength(INFORMATION_NODE_LIMIT)
+    expect(businessNodes.filter((platform) => platform.type === 'AIRBORNE_MISSION_CLUSTER')).toHaveLength(61)
     expect(new Set(scenario.draft!.config.platforms.map((platform) => platform.id)).size).toBe(scenario.draft!.config.platforms.length)
-    expect(wrapper.text()).toContain('信息节点 50 / 50')
+    expect(wrapper.text()).toContain(`信息节点 ${INFORMATION_NODE_LIMIT} / ${INFORMATION_NODE_LIMIT}`)
 
     await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
     await flushPromises()
@@ -2007,6 +2036,54 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.props('modelValue')).toBe('')
   })
 
+  it.each(['EQUIPMENT', 'MASTER_DATA'] as const)('引用 %s 的链路取消引用并保存前不得删除', async kind => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const scenario = useScenarioStore()
+    let persisted = draft()
+    persisted.config.links[0]!.parameterSource = { kind, sourceId: 'SOURCE-LINK', sourceVersion: 1, fields: ['bandwidth'] }
+    const fetchSpy = vi.fn<typeof fetch>().mockImplementation(async (input, options) => {
+      if (String(input).endsWith('/parameter-catalog')) {
+        return { ok: true, json: async () => ({ ok: true, data: { equipment: [], masterData: [] }, meta: META }) } as Response
+      }
+      if (options?.method === 'PUT') {
+        const body = JSON.parse(String(options.body))
+        persisted = { ...persisted, config: body.config, uiExtensions: body.uiExtensions, revision: persisted.revision + 1 }
+      }
+      return response(structuredClone(persisted))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    expect(await scenario.loadScenario(persisted.config.scenario.id)).toBe(true)
+    const error = vi.spyOn(ElMessage, 'error')
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: {
+      plugins: [pinia, ElementPlus],
+      stubs: { ElPopconfirm: { emits: ['confirm'], template: '<div @click="$emit(\'confirm\')"><slot name="reference" /></div>' } },
+    } })
+    await wrapper.get('#tab-links').trigger('click')
+    await flushPromises()
+    const before = JSON.stringify(scenario.draft)
+    await wrapper.get('[data-testid="delete-link-0"]').trigger('click')
+    expect(error).toHaveBeenCalledExactlyOnceWith('该链路仍引用基础数据，请先编辑链路，取消引用并保存后再删除。')
+    expect(JSON.stringify(scenario.draft)).toBe(before)
+    expect(scenario.dirty).toBe(false)
+    expect(fetchSpy.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(0)
+    await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="link-parameter-clear"]')!.click()
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
+    await flushPromises()
+    expect(persisted.config.links[0]!.parameterSource).toBeUndefined()
+    expect(scenario.draft!.config.links[0]!.parameterSource).toBeUndefined()
+    expect(fetchSpy.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1)
+    await wrapper.get('[data-testid="delete-link-0"]').trigger('click')
+    await flushPromises()
+    expect(scenario.draft!.config.links.some(link => link.id === persisted.config.links[0]!.id)).toBe(false)
+    expect(scenario.dirty).toBe(true)
+    wrapper.unmount()
+  })
+
   it('新增、编辑和删除链路时同步端点平台关联', async () => {
     const messageSpy = vi.spyOn(ElMessage, 'success')
     const pinia = createPinia()
@@ -2031,8 +2108,10 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === testId)!
     const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === testId)!
-    expect(inputNumber('link-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
-    expect(inputNumber('link-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-frequency').props()).toMatchObject({ step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-frequency').props('min')).toBeLessThan(0)
+    expect(inputNumber('link-bandwidth').props()).toMatchObject({ step: LINK_MHZ_MINIMUM_STEP })
+    expect(inputNumber('link-bandwidth').props('min')).toBeLessThan(0)
     document.querySelector<HTMLElement>('[data-testid="link-enabled"]')!.click()
     await nextTick()
     inputNumber('link-frequency').vm.$emit('input', 0)
@@ -2053,19 +2132,21 @@ describe('P2-1 场景管理页面', () => {
     expect(document.querySelector('[data-testid="link-dialog"]')).not.toBeNull()
     expect(document.body.textContent).toContain('链路带宽必须大于 0 MHz。')
     select('link-type').vm.$emit('update:modelValue', 'LASER')
+    select('link-type').vm.$emit('change', 'LASER')
     select('link-source').vm.$emit('update:modelValue', 'CMD-01')
     select('link-target').vm.$emit('update:modelValue', 'UAV-01')
-    select('link-modulation').vm.$emit('update:modelValue', 'BPSK')
     select('link-direction').vm.$emit('update:modelValue', 'REVERSE')
-    // 卫星、微波速率固定只读，切换为激光后才渲染可输入的数据速率；微波频率上限 10000 MHz，激光不设上限。
+    // 卫星、微波速率固定只读，切换为激光后才渲染可输入的数据速率。
     await nextTick()
     inputNumber('link-frequency').vm.$emit('update:modelValue', 193500000)
     inputNumber('link-bandwidth').vm.$emit('input', 1000)
     inputNumber('link-bandwidth').vm.$emit('update:modelValue', 1000)
     inputNumber('link-power').vm.$emit('update:modelValue', 20)
     inputNumber('link-data-rate').vm.$emit('update:modelValue', 100)
-    inputNumber('link-tx-gain').vm.$emit('update:modelValue', 30)
-    inputNumber('link-rx-gain').vm.$emit('update:modelValue', 30)
+    inputNumber('laser-tx-aperture').vm.$emit('update:modelValue', 0.1)
+    inputNumber('laser-rx-aperture').vm.$emit('update:modelValue', 0.1)
+    inputNumber('laser-pulse-width').vm.$emit('update:modelValue', 10)
+    select('laser-modulation').vm.$emit('update:modelValue', 'OOK')
     inputNumber('link-ber-threshold').vm.$emit('update:modelValue', 0.000001)
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
@@ -2080,6 +2161,7 @@ describe('P2-1 场景管理页面', () => {
       targetPlatformId: 'UAV-01',
       frequency: 193500000,
       modulation: 'BPSK',
+      laser: { txApertureDiameterM: 0.1, rxApertureDiameterM: 0.1, pulseWidthS: 1e-8, modulation: 'OOK' },
       direction: 'REVERSE',
     })
     expect(scenario.draft?.config.platforms[0]?.linkIds).toContain('L-CFG-001')
@@ -2184,7 +2266,7 @@ describe('P2-1 场景管理页面', () => {
     select('jammer-type').vm.$emit('update:modelValue', 'SPOT')
     select('jammer-platform').vm.$emit('update:modelValue', 'STN-01')
     autoDetect.vm.$emit('update:modelValue', true)
-    inputNumber('jammer-power').vm.$emit('update:modelValue', 60)
+    inputNumber('jammer-power').vm.$emit('update:modelValue', 30)
     inputNumber('jammer-range').vm.$emit('update:modelValue', 24)
     inputNumber('jammer-frequency').vm.$emit('input', 3200)
     inputNumber('jammer-frequency').vm.$emit('update:modelValue', 3200)
@@ -2213,7 +2295,7 @@ describe('P2-1 场景管理页面', () => {
       id: 'JAM-CFG-001',
       platformId: 'STN-01',
       type: 'SPOT',
-      defaultPower: 60,
+      defaultPower: 1,
       frequency: 3200,
       bandwidth: 15,
       autoDetect: true,

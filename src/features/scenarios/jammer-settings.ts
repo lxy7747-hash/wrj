@@ -5,9 +5,9 @@ export const METERS_PER_KILOMETER = 1000
 export const JAMMER_RANGE_METERS = { min: METERS_PER_KILOMETER, max: 100 * METERS_PER_KILOMETER }
 /** 释放范围缺省比干扰范围多 5 海里（文档默认触发 30、释放 35 海里）。 */
 export const JAMMER_RELEASE_MARGIN_METERS = 5 * METERS_PER_NAUTICAL_MILE
-/** 《与前端字段确认说明》新增干扰源默认参数：2.4 GHz、50 MHz、200 W，触发 30 海里、释放 35 海里。 */
+/** V1.2 新增干扰源默认参数：2.4 GHz、50 MHz、30 dBm（1 W），触发 30 海里、释放 35 海里。 */
 export const JAMMER_DEFAULTS = {
-  defaultPower: 200, frequency: 2400, bandwidth: 50, triggerTimeS: 300,
+  defaultPower: 1, frequency: 2400, bandwidth: 50, triggerTimeS: 300,
   // 探测范围文档未给出，取与干扰范围相同的 30 海里，避免新建即出现“干扰范围大于探测范围”提示。
   detectionRange: 30 * METERS_PER_NAUTICAL_MILE,
   jammingRange: 30 * METERS_PER_NAUTICAL_MILE, releaseRange: 35 * METERS_PER_NAUTICAL_MILE,

@@ -1,16 +1,19 @@
 <script setup lang="ts">
 import { apiFetch } from '../../features/shared/api-fetch'
+import { canVisitMenu } from '../../features/admin/access-control'
 
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { MAP_CONFIG } from '../../config/map.config'
-import type { DetectionEvent, Link, SwitchEvent, UiSimulationStatus } from '../../contracts/domain-models'
+import type { DetectionEvent, Link, SwitchEvent, UiLinkStatus, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
 import QualityMetricPanel from '../../components/situation/QualityMetricPanel.vue'
+import RuntimeLinkDecisionPanel from '../../components/situation/RuntimeLinkDecisionPanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
+import MissionConsoleLog from '../../components/situation/MissionConsoleLog.vue'
 import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
@@ -26,6 +29,8 @@ import {
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
 import { useTelemetryStore } from '../../stores/telemetry'
+import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../stores/runtime-quality'
+import { RUNTIME_STATUS_LABELS, runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { selectFileCommunicationLinks, FILE_COMMUNICATION_LABELS } from '../../features/situation/file-communication-links'
@@ -63,6 +68,7 @@ const savedNodeGroups = computed(() => [
 ])
 const otherSceneRun = computed(() => selectedScene.value && simulationStore.run?.scenarioId !== selectedScene.value.config.scenario.id)
 const telemetryStore = useTelemetryStore()
+const runtimeQualityStore = useRuntimeQualityStore()
 const {
   run: simulationRun,
   uiStatus: simulationStatus,
@@ -104,6 +110,17 @@ const missionPositionSource = computed(() => {
     && run.scenarioId === scene.config.scenario.id
     ? `${auth.principal.userId}:${run.runId}:${scene.config.scenario.id}:${scene.revision}:${run.startedAt}` : null
 })
+const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
+  const run = simulationRun.value
+  const scene = selectedScene.value
+  return useAuthStore().runtimeMode === 'LOCAL' && useAuthStore().principal && run?.startedAt
+    && scene && run.scenarioId === scene.config.scenario.id
+    ? { taskId: run.taskId, runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, startedAt: run.startedAt }
+    : null
+})
+watch([runtimeQualityScope, () => selectedScene.value?.config.links.map(link => link.id) ?? []], ([scope, ids]) => {
+  runtimeQualityStore.activate(scope, ids)
+}, { immediate: true, flush: 'sync' })
 // 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
 const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
@@ -306,6 +323,7 @@ onBeforeUnmount(() => {
   sourceRequest?.abort()
   if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
   telemetryStore.disconnectAndReset()
+  runtimeQualityStore.resetToSafeEmpty()
 })
 
 watch(frame, (nextFrame) => {
@@ -376,6 +394,16 @@ const displayedLinks = computed(() => {
   }))
 })
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
+const runtimeStatusMap = computed(() => new Map(runtimeQualityStore.linkStatuses.map(value => [value.linkId, value])))
+const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQualityStore.snapshot, runtimeQualityStore.bindings, displayedLinks.value, simulationTime.value, runtimeStatusMap.value))
+const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) })))
+const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries()]
+  .flatMap(([id, value]) => value.status === 'UNKNOWN' ? [] : [[id, value.status] as const])))
+const qualityLinks = computed(() => displayedLinks.value.map(link => ({
+  ...(link.live ?? link), runtimeQuality: runtimeQualityViews.value.get(link.linkId) ?? null,
+})))
+const selectedRuntimeQuality = computed(() => runtimeQualityViews.value.get(selectedLinkId.value) ?? null)
+const qualitySourceKey = computed(() => `${sourceState.value}:${selectedScene.value?.config.scenario.id ?? frame.value?.runId ?? ''}:${runtimeQualityScope.value?.runId ?? ''}:${runtimeQualityScope.value?.startedAt ?? ''}:${selectedScene.value?.revision ?? ''}`)
 const selectedConfiguredLink = computed(() => {
   const link = selectedScene.value?.config.links.find(link => link.id === selectedLinkId.value)
   return link ? { ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) } : null
@@ -764,6 +792,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           />
           <span class="toolbar-timeline__time">{{ fileTimeLabel(filePlayback.replay.durationS) }}</span>
         </div>
+        <MissionConsoleLog
+          v-else-if="realMissionMode && sourceState === 'SCENE' && !otherSceneRun && simulationRun?.runId && (simulationRun.canonical.processId !== null || simulationRun.startedAt)"
+          :run-id="simulationRun.runId"
+          :running="simulationStatus === 'RUNNING'"
+        />
       </template>
     </SimulationToolbar>
     </div>
@@ -794,7 +827,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         ><span aria-hidden="true">{{ sceneSummaryCollapsed ? '›' : '‹' }}</span></button>
         <div class="panel-heading">
           <div><strong>场景配置</strong></div>
-          <router-link to="/scenarios">进入场景配置</router-link>
+          <router-link v-if="canVisitMenu(useAuthStore().principal, '/scenarios')" to="/scenarios">进入场景配置</router-link>
         </div>
 
         <div class="scene-summary__tabs" role="tablist" aria-label="场景摘要分类">
@@ -971,6 +1004,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :frame="hasMapData ? frame : null"
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
+          :configured-link-statuses="runtimeMapStatuses"
+          :configured-jammers="selectedScene?.config.jammers"
           :file-links="hasMapData && sourceState === 'FILE' ? fileLinks : []"
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
           :file-device-events="hasMapData && sourceState === 'FILE' ? initialSnapshot?.deviceEvents : []"
@@ -1017,7 +1052,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <thead><tr><th>链路</th><th>体制</th><th v-if="MAP_CONFIG.showLinkQualityColumns">SNR</th><th v-if="MAP_CONFIG.showLinkQualityColumns">BER</th><th :title="sourceState === 'FILE' ? '展示约定：开启→正常，关闭→切换，未知→干扰；不代表实际质量、切换或干扰判定' : undefined">状态</th></tr></thead>
               <tbody>
                 <tr
-                  v-for="link in displayedLinks"
+                  v-for="link in displayedStatusLinks"
                   :key="link.linkId"
                   tabindex="0"
                   role="button"
@@ -1031,7 +1066,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
                   <td>
-                    <LinkStateBadge v-if="link.live" :link="link.live" />
+                    <el-tag v-if="link.runtimeStatus"
+                      :type="link.runtimeStatus.status === 'UP' ? 'success' : link.runtimeStatus.status === 'DOWN' ? 'danger' : link.runtimeStatus.status === 'DEGRADED' ? 'warning' : 'info'"
+                      :title="runtimeDecisionReason(link.runtimeStatus.reason)" :data-runtime-link-status="link.runtimeStatus.status">
+                      {{ RUNTIME_STATUS_LABELS[link.runtimeStatus.status] }}
+                    </el-tag>
+                    <LinkStateBadge v-else-if="link.live" :link="link.live" />
                     <span v-else-if="link.file" class="link-device-status" :data-status="link.file.status" :title="`设备启停证据：${link.file.status}；名称为展示约定，不代表实际质量、切换或干扰判定`">{{ FILE_LINK_STATUS_LABELS[link.file.status] }}</span>
                     <span v-else>暂无数据</span>
                   </td>
@@ -1061,7 +1101,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
             </article>
           </div>
-          <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无干扰 / 侦测设备运行数据'" :image-size="48" />
+          <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
           <p v-if="detectionEvent" class="detection-state">
             {{ detectionEvent.sensorId }} 已发现 {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
           </p>
@@ -1078,16 +1118,23 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
             </li>
           </ol>
-          <el-empty v-else class="telemetry-empty-state" description="暂无当前运行事件" :image-size="48" />
+          <el-empty v-else class="telemetry-empty-state" description="暂无数据" :image-size="48" />
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
+            <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
+              <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
+            </div>
             <QualityMetricPanel
-              :links="displayedLinks.map(link => link.live ?? link)"
+              :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
-              :source-key="`${sourceState}:${selectedScene?.config.scenario.id ?? frame?.runId ?? ''}`"
+              :source-key="qualitySourceKey"
               :selected-link-id="selectedLinkId"
             />
+          </el-tab-pane>
+          <el-tab-pane v-if="runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy>
+            <RuntimeLinkDecisionPanel :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
+              :decisions="runtimeQualityStore.routeDecisions" :events="runtimeQualityStore.decisionEvents" />
           </el-tab-pane>
         </el-tabs>
       </aside>
@@ -1113,7 +1160,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
       <p class="stop-dialog-copy">{{ realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
@@ -1192,7 +1239,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-tabs :deep(.el-tabs__header) { flex: 0 0 auto; margin: 0; padding: 0 .85rem 0 2.65rem; }
 .telemetry-tabs :deep(.el-tabs__content) { min-height: 0; overflow: hidden; }
 .telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .8fr); }
-.telemetry-quality-pane { height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
+.telemetry-quality-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
+.telemetry-quality-pane .quality-metric-panel { flex: 1; height: auto; }
+.runtime-quality-feedback { flex: 0 1 auto; max-height: 30%; overflow: auto; overflow-wrap: anywhere; font-size: var(--console-font-size-min); color: var(--console-danger); }
+.runtime-quality-feedback p { margin: 0 0 .4rem; }
 .floating-panel__toggle { position: absolute; z-index: 2; top: .3rem; display: grid; width: 1.75rem; height: 1.75rem; place-items: center; padding: 0; border: 1px solid var(--console-border-strong); border-radius: 5px; color: var(--console-cyan); background: rgba(7,21,34,.96); font-size: 1.1rem; line-height: 1; cursor: pointer; }
 .floating-panel__toggle--left { right: .35rem; }
 .floating-panel__toggle--right { left: .35rem; }

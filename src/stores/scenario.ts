@@ -5,22 +5,41 @@ import type {
   CapabilityState,
   ConfirmationContext,
   DeleteResult,
+  InformationDemand,
+  Link,
   ScenarioConfig,
   ScenarioDraft,
   ScenarioId,
   ScenarioImportResult,
   ScenarioTemplate,
+  ScenarioParameterCatalog,
   ScriptContract,
   ValidationIssue,
   ValidationResult,
 } from '../contracts/domain-models'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../features/scenarios/scenario-validation'
+import { inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../features/scenarios/scenario-validation'
+import { parseScenarioSnapshot } from '../features/scenarios/scenario-snapshot'
 import { createEmptyScenarioDraft, withScenarioBasicDefaults } from '../features/scenarios/scenario-basic'
 import { configuredScenarioOutput } from '../config/app.config.js'
 import { buildLocalSceneImport, type LocalSceneImport } from '../features/scenarios/local-scene-import'
+import { applyLinkEdit, copyScenarioEdit } from '../features/scenarios/link-edit'
 import { toRaw } from 'vue'
+import { isEquipmentParameter } from '../features/admin/equipment-contract'
+import { isMasterData } from '../features/admin/admin-contract'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { resolveMockOrigin, useAuthStore } from './auth'
+
+const parameterRequests = new WeakMap<object, AbortController>()
+
+function readParameterCatalog(payload: unknown): ScenarioParameterCatalog | undefined {
+  const data = unwrapSuccessData(payload)
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined
+  const catalog = data as ScenarioParameterCatalog
+  return Object.keys(data).length === 2 && Array.isArray(catalog.equipment) && Array.isArray(catalog.masterData)
+    && catalog.equipment.every(isEquipmentParameter) && catalog.masterData.every(isMasterData)
+    && new Set(catalog.equipment.map(row => row.equipmentId)).size === catalog.equipment.length
+    && new Set(catalog.masterData.map(row => row.dataId)).size === catalog.masterData.length ? catalog : undefined
+}
 
 /** 局域网 HTTP 不提供 randomUUID；用仍可用的安全随机字节生成同格式的 UUID v4。 */
 function createScenarioId(): ScenarioId {
@@ -229,9 +248,63 @@ export const useScenarioStore = defineStore('scenario', {
     listState: 'EMPTY' as CapabilityState,
     listMessage: '',
     listEpoch: 0,
+    parameterCatalog: null as ScenarioParameterCatalog | null,
+    parameterCatalogState: 'EMPTY' as CapabilityState,
+    parameterCatalogMessage: '',
+    parameterCatalogEpoch: 0,
   }),
 
   actions: {
+    clearParameterCatalog(): void {
+      this.parameterCatalogEpoch += 1
+      parameterRequests.get(this)?.abort()
+      parameterRequests.delete(this)
+      this.parameterCatalog = null
+      this.parameterCatalogState = 'EMPTY'
+      this.parameterCatalogMessage = ''
+    },
+    /** 仅为链路弹框读取只读目录；关闭、换场景和登出后不接收迟到数据。 */
+    async loadParameterCatalog(): Promise<boolean> {
+      this.clearParameterCatalog()
+      const epoch = this.parameterCatalogEpoch
+      const session = this.requestEpoch
+      const controller = new AbortController()
+      parameterRequests.set(this, controller)
+      this.parameterCatalogState = 'LOADING'
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        const { response, payload } = await Promise.race([
+          (async () => {
+            const response = await apiFetch(`${resolveMockOrigin()}/api/v1/scenarios/parameter-catalog`, {
+              signal: controller.signal, headers: { 'X-Demo-Role': useAuthStore().role },
+            })
+            const payload = await readJson(response)
+            return { response, payload }
+          })(),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => { reject(new Error('基础数据加载超时，请重试。')); controller.abort() }, 5_000)
+            controller.signal.addEventListener('abort', () => reject(new Error('基础数据请求已取消。')), { once: true })
+          }),
+        ])
+        if (epoch !== this.parameterCatalogEpoch || session !== this.requestEpoch) return false
+        this.parameterCatalogState = 'VALIDATING'
+        if (!response.ok) throw readApiFailure(payload) ?? new Error('基础数据加载失败。')
+        const catalog = readParameterCatalog(payload)
+        if (!catalog) throw new Error('基础数据响应格式不正确。')
+        this.parameterCatalog = catalog
+        this.parameterCatalogState = catalog.equipment.length || catalog.masterData.length ? 'SUCCESS' : 'EMPTY'
+        return true
+      } catch (error) {
+        if (epoch !== this.parameterCatalogEpoch || session !== this.requestEpoch) return false
+        this.parameterCatalog = null
+        this.parameterCatalogState = 'ERROR'
+        this.parameterCatalogMessage = readApiFailure(error)?.error.message ?? (error instanceof Error ? error.message : '基础数据加载失败。')
+        return false
+      } finally {
+        clearTimeout(timer)
+        if (parameterRequests.get(this) === controller) parameterRequests.delete(this)
+      }
+    },
     async loadScenes(): Promise<boolean> {
       const epoch = ++this.listEpoch
       const session = this.requestEpoch
@@ -365,6 +438,7 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 更新六态面板状态；成功时替换草稿并清除未保存标记。
      */
     async loadScenario(scenarioId?: ScenarioId): Promise<boolean> {
+      this.clearParameterCatalog()
       scenarioId ??= this.draft?.config.scenario.id ?? this.currentScenarioId ?? 'SCN-001'
       const requestEpoch = ++this.requestEpoch
       // 加载失败仍保留目标身份，不依赖即将清空的草稿。
@@ -646,6 +720,89 @@ export const useScenarioStore = defineStore('scenario', {
       }
     },
 
+    /** 只提交当前链路、关联业务和参数来源；其余本地草稿不随本次保存发送。 */
+    async saveLink(link: Link, demand: InformationDemand, previousLinkId = link.id, signal?: AbortSignal): Promise<boolean> {
+      if (['LOADING', 'VALIDATING', 'EXECUTING'].includes(this.panelState)) return false
+      const auth = useAuthStore()
+      if (!auth.authorize('SCENARIO_DRAFT_WRITE').allowed) {
+        this.showError(new Error('当前账号没有场景草稿编辑权限。'), '链路保存失败。', 'PERMISSION_DENIED')
+        return false
+      }
+      const local = this.draft
+      if (!local || local.revision === 0) {
+        this.showError(new Error('请先保存新场景，再保存链路及参数引用。'), '链路保存失败。', 'VALIDATION_FAILED')
+        return false
+      }
+      if (local.locked) {
+        this.showError(new Error('场景正在运行，当前配置已锁定。'), '链路保存失败。', 'CONFIG_LOCKED')
+        return false
+      }
+      const epoch = this.requestEpoch
+      const scriptEpoch = this.scriptEpoch
+      const importEpoch = this.localImportEpoch
+      const userId = auth.principal?.userId
+      const current = () => !signal?.aborted && epoch === this.requestEpoch && this.draft === local
+        && scriptEpoch === this.scriptEpoch && importEpoch === this.localImportEpoch && !local.locked
+        && userId === auth.principal?.userId && auth.authorize('SCENARIO_DRAFT_WRITE').allowed
+      const id = local.config.scenario.id
+      const url = `${resolveMockOrigin()}/api/v1/scenarios/${encodeURIComponent(id)}`
+      this.panelState = 'EXECUTING'
+      try {
+        const editedLink = copyScenarioEdit(link)
+        const editedDemand = copyScenarioEdit(demand)
+        if (!current()) return false
+        const response = await apiFetch(url, { signal, headers: { 'X-Demo-Role': auth.role } })
+        if (!current()) return false
+        const payload = await readJson(response)
+        if (!current()) return false
+        if (!response.ok) throw readApiFailure(payload) ?? new InvalidScenarioResponseError()
+        const baselineData = readScenarioDraft(payload)
+        if (!baselineData || baselineData.config.scenario.id !== id) throw new InvalidScenarioResponseError()
+        const baseline = copyScenarioEdit(baselineData)
+        if (baseline.revision !== local.revision) throw new Error('场景修订已变化，请重新加载后保存链路。')
+        if (baseline.locked) throw new Error('场景正在运行，当前配置已锁定。')
+        if ([editedLink.sourcePlatformId, editedLink.targetPlatformId, editedLink.relayPlatformId]
+          .some(platformId => platformId && !baseline.config.platforms.some(platform => platform.id === platformId))) {
+          throw new Error('链路包含尚未保存的新节点，请先保存节点所在场景。')
+        }
+        applyLinkEdit(baseline.config, editedLink, editedDemand, previousLinkId)
+        const inspection = inspectScenarioConfig(baseline.config, 'write')
+        if (!inspection.result.valid) throw new Error(inspection.result.errors[0]?.message ?? '链路配置校验失败。')
+        const savedResponse = await apiFetch(url, {
+          method: 'PUT', signal, headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+          body: JSON.stringify({ config: baseline.config, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision }),
+        })
+        if (!current()) return false
+        const savedPayload = await readJson(savedResponse)
+        if (!current()) return false
+        if (!savedResponse.ok) throw readApiFailure(savedPayload) ?? new InvalidScenarioResponseError()
+        const saved = readScenarioDraft(savedPayload)
+        const savedLink = saved?.config.links.find(item => item.id === editedLink.id)
+        const savedDemand = saved?.config.informationDemand.find(item => item.id === editedDemand.id)
+        if (!saved || saved.config.scenario.id !== id || saved.revision !== baseline.revision + 1 || !savedLink || !savedDemand) {
+          throw new InvalidScenarioResponseError()
+        }
+        const merged = copyScenarioEdit(local)
+        applyLinkEdit(merged.config, savedLink, savedDemand, previousLinkId)
+        merged.revision = saved.revision
+        merged.locked = saved.locked
+        this.draft = merged
+        this.dirty = JSON.stringify(merged.config) !== JSON.stringify(saved.config)
+          || JSON.stringify(merged.uiExtensions) !== JSON.stringify(saved.uiExtensions)
+        this.validation = { valid: true, errors: [], warnings: [] }
+        this.panelState = 'SUCCESS'
+        this.resultCode = 'SUCCESS'
+        this.resultMessage = '链路、关联业务及参数引用已保存。'
+        this.clearScriptPreview()
+        return true
+      } catch (error) {
+        if (current()) this.showError(error, '链路保存失败。')
+        return false
+      } finally {
+        if (this.draft === local && epoch === this.requestEpoch && this.panelState === 'EXECUTING') this.panelState = 'SUCCESS'
+      }
+    },
+
     /**
      * 加载可见模板列表。
      * @returns 成功时返回 `true`，合同或网络失败时返回 `false`。
@@ -770,15 +927,14 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 解析成功后复用新建模板动作；不读写真实文件。
      */
     async importTemplate(text: string): Promise<boolean> {
-      let value: unknown
-      try {
-        value = JSON.parse(text)
-      } catch {
+      const parsed = parseJsonText(text)
+      if (!parsed.valid) {
         this.templateState = 'ERROR'
-        this.templateResultCode = 'INVALID_REQUEST'
-        this.templateResultMessage = '模板 JSON 语法不正确。'
+        this.templateResultCode = 'JSON_SYNTAX_ERROR'
+        this.templateResultMessage = `模板 JSON ${parsed.issue.message}`
         return false
       }
+      const value = parsed.value
       if (typeof value !== 'object' || value === null || Array.isArray(value)
         || !Object.keys(value).every(key => ['name', 'config', 'uiExtensions'].includes(key)) || !Object.hasOwn(value, 'name') || !Object.hasOwn(value, 'config')
         || typeof (value as { name?: unknown }).name !== 'string') {
@@ -987,15 +1143,18 @@ export const useScenarioStore = defineStore('scenario', {
         this.showError(undefined, '当前账号没有场景快照导入权限。', 'PERMISSION_DENIED')
         return false
       }
-      let value: unknown
-      try {
-        value = JSON.parse(text)
-      } catch {
-        this.showError(undefined, '场景快照 JSON 语法不正确。', 'VALIDATION_FAILED')
+      const parsed = parseJsonText(text)
+      if (!parsed.valid) {
+        this.showError(undefined, `场景快照 JSON ${parsed.issue.message}`, 'VALIDATION_FAILED')
         return false
       }
+      const value = parsed.value
       if (Array.isArray(value)) {
         this.showError(undefined, '一次只能导入一个完整场景快照。', 'VALIDATION_FAILED')
+        return false
+      }
+      if (!parseScenarioSnapshot(value)) {
+        this.showError(undefined, '场景快照文件外壳或版本不受支持。', 'VALIDATION_FAILED')
         return false
       }
       const requestEpoch = this.requestEpoch
@@ -1192,6 +1351,7 @@ export const useScenarioStore = defineStore('scenario', {
      * @sideEffects 使在途请求失效，清除草稿、校验问题和未保存标记，并将面板状态重置为空。
      */
     resetToSafeEmpty(): void {
+      this.clearParameterCatalog()
       this.currentScenarioId = null
       this.listEpoch += 1
       this.scenes = []

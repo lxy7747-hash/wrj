@@ -39,6 +39,22 @@ const SAMPLE = [
   '3600.00100 SIMULATION_COMPLETE Year: 2003 Month: 6 Day: 1 Hour: 13 Minute: 0 Second: 0',
 ].join('\n')
 
+describe('读取前后文件版本比较', () => {
+  const base = { dev: 607485061n, ino: 56857945296054710n, size: 1924192n, mtimeNs: 1758101006000000000n, ctimeNs: 1758101006000000000n }
+
+  it('Windows 下一侧 dev=0 时不按设备号误判变化；其余字段变化仍判定变化', async () => {
+    const { sameFileVersion } = await import('../../server/local/' + 'afsim-log-reader.js')
+    expect(sameFileVersion(base, { ...base })).toBe(true)
+    // Node 22 路径 stat 返回 dev=0，句柄 stat 返回卷序列号。
+    expect(sameFileVersion(base, { ...base, dev: 0n })).toBe(true)
+    expect(sameFileVersion({ ...base, dev: 0n }, base)).toBe(true)
+    expect(sameFileVersion(base, { ...base, dev: 1n })).toBe(false)
+    for (const key of ['ino', 'size', 'mtimeNs', 'ctimeNs'] as const) {
+      expect(sameFileVersion(base, { ...base, dev: 0n, [key]: base[key] + 1n }), key).toBe(false)
+    }
+  })
+})
+
 describe('真实 AFSIM 事件日志解析', () => {
   it('合并并发初始快照读取并隔离返回对象，文件改写、替换和失败后重新校验', async () => {
     const readerModule = '../../server/local/' + 'afsim-log-reader.js'
@@ -105,7 +121,7 @@ describe('真实 AFSIM 事件日志解析', () => {
     }
   })
 
-  it('只展示含明确卫星或微波设备的跨平台登记，合并反向关联但保留证据与时间', async () => {
+  it('只展示含明确通信设备的跨平台登记，合并反向关联但保留证据与时间', async () => {
     const readerModule = '../../server/local/' + 'afsim-log-reader.js'
     const { readInitialNodes } = await import(readerModule)
     const directory = await mkdtemp(join(tmpdir(), 'wrj-file-connections-'))
@@ -122,6 +138,7 @@ describe('真实 AFSIM 事件日志解析', () => {
       expect(later.map(link => link.type)).toEqual(['SAT', 'MICROWAVE'])
       expect(later[1]?.records[0]?.targetType).toBe('c_band_relay_down')
       expect(fileCommunicationType('satcom_2')).toBe('SAT')
+      expect(fileCommunicationType('WSF_LASER_TRANSCEIVER')).toBe('LASER')
       expect(fileCommunicationType('satcom_unknown')).toBeNull()
       expect(selectFileCommunicationLinks([], 5)).toEqual([])
       const connection = snapshot.connections![0]!
@@ -140,6 +157,11 @@ describe('真实 AFSIM 事件日志解析', () => {
       expect(selectFileCommunicationLinks([{ ...connection, scope: 'INTERNAL' }], 5)).toEqual([])
       const mixed = selectFileCommunicationLinks([{ ...connection, targetType: 'microwave' }], 5)
       expect(mixed.map(link => link.type)).toEqual(['SAT', 'MICROWAVE'])
+      const laser = selectFileCommunicationLinks([{ ...connection,
+        sourceType: 'WSF_LASER_TRANSCEIVER', targetType: 'WSF_LASER_TRANSCEIVER' }], 5)
+      expect(laser).toMatchObject([{ type: 'LASER', sourcePlatformId: 'A', targetPlatformId: 'B' }])
+      expect(selectFileCommunicationLinks([{ ...connection,
+        sourceType: 'WSF_LASER_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER' }], 5)).toEqual([])
     } finally {
       await rm(directory, { recursive: true })
     }

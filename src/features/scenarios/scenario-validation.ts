@@ -8,6 +8,7 @@ import type {
   Platform,
   PlatformType,
   ScenarioIdentity,
+  TaskPhase,
   Sensor,
   SensorUiExtension,
   ValidationIssue,
@@ -15,9 +16,11 @@ import type {
 } from '../../contracts/domain-models'
 
 import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
-import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
+import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
 import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES } from './platform-position-rules'
+import { taskPhaseIssue } from './task-phases'
+import { isLinkParameterSource } from './link-parameter-source'
 
 const ROOT_KEYS = [
   'schemaVersion',
@@ -61,10 +64,11 @@ const GEO_POINT_KEYS = ['longitude', 'latitude'] as const
 /** 海面区域至少需要 3 个顶点才能围成多边形；上限防止误操作生成过大的脚本参数。 */
 export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
-const OPTIONAL_PLATFORM_KEYS = ['satelliteType'] as const
+const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'heading'] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
-  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb'] as const
+  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate'] as const
+const LASER_KEYS = ['txApertureDiameterM', 'rxApertureDiameterM', 'pulseWidthS', 'modulation'] as const
 export const DATALINK_BANDS = ['C', 'L'] as const
 export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
 const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId', 'toLinkId'] as const
@@ -76,10 +80,14 @@ const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'events
 const INFORMATION_DEMAND_KEYS = ['id', 'sourcePlatformId', 'destinationPlatformIds', 'informationType', 'volumeMb', 'frequencyHz', 'priority', 'maxLatencyMs', 'minDataRateMbps'] as const
 const UI_EXTENSION_KEYS = ['jammers', 'sensors'] as const
 const JAMMER_UI_EXTENSION_KEYS = ['jammerId', 'direction', 'duration', 'enabled'] as const
+const OPTIONAL_JAMMER_UI_EXTENSION_KEYS = ['elevation'] as const
 const SENSOR_UI_EXTENSION_KEYS = ['sensorId', 'type', 'direction', 'probability', 'enabled'] as const
+const OPTIONAL_SENSOR_UI_EXTENSION_KEYS = ['esm'] as const
+const NATIVE_ESM_KEYS = ['sensitivityDbw', 'detectionThresholdDb', 'dwellTimeS', 'revisitTimeS'] as const
 const ANTENNA_GAIN_KEYS = ['tx', 'rx'] as const
 const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
 const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
+const OPTIONAL_WAYPOINT_KEYS = ['heading', 'acceleration'] as const
 export const BUSINESS_INFORMATION_NODE_TYPES = [
   'REAR_COMMAND_NODE',
   'FORWARD_RELAY_NODE',
@@ -98,12 +106,16 @@ export const PLATFORM_TYPE_DOMAINS: Record<PlatformType, DeploymentDomain> = {
   AIRBORNE_JAMMER_PLATFORM: 'air',
 }
 export const SATELLITE_TYPES = ['TIANTONG', 'SHENTONG'] as const
-export const INFORMATION_NODE_LIMIT = 50
+/**
+ * 业务信息节点的受保护容量上限。50 节点是验收基线而非硬边界；保留有限上限，
+ * 让验收后的扩展配置在进入真实引擎压测前仍可被完整保存和校验。
+ */
+export const INFORMATION_NODE_LIMIT = 64
 export const INFORMATION_NODE_TYPE_LIMITS = {
   REAR_COMMAND_NODE: 1,
   FORWARD_RELAY_NODE: 2,
   GROUND_CLUSTER_COMMAND_NODE: 1,
-  AIRBORNE_MISSION_CLUSTER: 47,
+  AIRBORNE_MISSION_CLUSTER: 61,
 } as const
 const INFORMATION_NODE_TYPE_LABELS = {
   REAR_COMMAND_NODE: '后方指挥节点',
@@ -208,8 +220,63 @@ function addError(errors: ValidationIssue[], code: string, message: string, fiel
   errors.push({ severity: 'ERROR', code, message, fieldPath })
 }
 
+export type JsonTextParseResult =
+  | { valid: true; value: unknown }
+  | { valid: false; issue: ValidationIssue }
+
+function jsonTextLocationAtOffset(text: string, offset: number): { line: number; column: number } {
+  const boundedOffset = Math.min(Math.max(offset, 0), text.length)
+  const prefix = text.slice(0, boundedOffset)
+  return {
+    line: prefix.split('\n').length,
+    // String offsets and JSON parser "position" values are both UTF-16 code-unit based.
+    column: boundedOffset - prefix.lastIndexOf('\n'),
+  }
+}
+
+function jsonSyntaxIssueAt(line: number, column: number): ValidationIssue {
+  return {
+    severity: 'ERROR',
+    code: 'JSON_SYNTAX_ERROR',
+    message: `第 ${line} 行，第 ${column} 列 JSON 语法不正确。`,
+    fieldPath: `$[${line}:${column}]`,
+  }
+}
+
 /**
- * 判断场景实体是否计入 50 个业务信息节点容量。
+ * 解析 JSON 并把宿主返回的字符偏移转换为稳定的一基行列位置。
+ * @remarks 不同浏览器的 SyntaxError 文案不一致；无法取得偏移时仍返回根路径，
+ * 但不会伪造某个字段位置。
+ */
+export function parseJsonText(text: string): JsonTextParseResult {
+  try {
+    return { valid: true, value: JSON.parse(text) as unknown }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : ''
+    // Firefox reports an already-calculated line/column; retain it instead of
+    // reverse-engineering a byte offset from its localized message.
+    const hostLocation = /(?:\bat\s+)?\bline\s+(\d+)\s+column\s+(\d+)\b/i.exec(detail)
+    if (hostLocation !== null) return { valid: false, issue: jsonSyntaxIssueAt(Number(hostLocation[1]), Number(hostLocation[2])) }
+
+    const position = /(?:position|at)\s+(\d+)/i.exec(detail)?.[1]
+    if (position !== undefined) {
+      const location = jsonTextLocationAtOffset(text, Number(position))
+      return { valid: false, issue: jsonSyntaxIssueAt(location.line, location.column) }
+    }
+
+    // V8 omits an offset for EOF. Text length is the only exact position in
+    // that case, including trailing whitespace and CRLF line endings.
+    if (/unexpected end of (?:json )?input|unexpected end of data/i.test(detail)) {
+      const location = jsonTextLocationAtOffset(text, text.length)
+      return { valid: false, issue: jsonSyntaxIssueAt(location.line, location.column) }
+    }
+
+    return { valid: false, issue: { severity: 'ERROR', code: 'JSON_SYNTAX_ERROR', message: 'JSON 语法不正确，解析器未返回可定位的位置。', fieldPath: '$' } }
+  }
+}
+
+/**
+ * 判断场景实体是否计入业务信息节点容量。
  * @param type 场景实体类型。
  * @returns 属于文档规定的四类业务信息节点时返回 `true`。
  * @remarks 纯分类判断，不修改场景数据。
@@ -284,7 +351,7 @@ export function waypointSpeedError(value: unknown): string {
  * @remarks 只追加校验错误，不修改坐标或单位。
  */
 function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, errors: ValidationIssue[], mode: 'read' | 'write' = 'read'): void {
-  if (!isClosedObject(value, waypoint ? WAYPOINT_KEYS : POSITION_KEYS)) {
+  if (!isClosedObject(value, waypoint ? WAYPOINT_KEYS : POSITION_KEYS, waypoint ? OPTIONAL_WAYPOINT_KEYS : [])) {
     addError(errors, 'POSITION_SHAPE_INVALID', waypoint ? '航点结构不正确。' : '初始位置结构不正确。', fieldPath)
     return
   }
@@ -297,6 +364,8 @@ function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, e
       if (message) addError(errors, 'SPEED_INVALID', message, `${fieldPath}.speed`)
     } else if (!isFiniteNumber(value.speed, 0)) addError(errors, 'SPEED_INVALID', '速度不能小于 0。', `${fieldPath}.speed`)
     if (!isFiniteNumber(value.arrivalTime, 0)) addError(errors, 'ARRIVAL_TIME_INVALID', '到达时间不能小于 0。', `${fieldPath}.arrivalTime`)
+    if (Object.hasOwn(value, 'heading') && !isFiniteNumber(value.heading, 0, 360)) addError(errors, 'WAYPOINT_HEADING_INVALID', '航点航向必须在 0 至 360 度之间。', `${fieldPath}.heading`)
+    if (Object.hasOwn(value, 'acceleration') && !isFiniteNumber(value.acceleration)) addError(errors, 'WAYPOINT_ACCELERATION_INVALID', '航点加速度必须为有限数值。', `${fieldPath}.acceleration`)
   }
 }
 
@@ -309,7 +378,7 @@ function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, e
  * @returns 无返回值。
  * @remarks 只追加校验错误，不修改链路或平台关联数组。
  */
-function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[]): void {
+function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write'): void {
   const path = `links[${index}]`
   if (!isClosedObject(value, LINK_KEYS, OPTIONAL_LINK_KEYS)) {
     addError(errors, 'LINK_SHAPE_INVALID', '链路结构不正确。', path)
@@ -317,7 +386,27 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'LINK_ID_INVALID', '链路 ID 为必填项。', `${path}.id`)
   if (Object.hasOwn(value, 'enabled') && typeof value.enabled !== 'boolean') addError(errors, 'LINK_ENABLED_INVALID', '链路启用状态必须为布尔值。', `${path}.enabled`)
+  if (Object.hasOwn(value, 'parameterSource') && !isLinkParameterSource(value.parameterSource)) {
+    addError(errors, 'LINK_PARAMETER_SOURCE_INVALID', '链路参数来源结构不正确。', `${path}.parameterSource`)
+  }
   if (typeof value.type !== 'string' || !(LINK_TYPES as readonly string[]).includes(value.type)) addError(errors, 'LINK_TYPE_INVALID', '链路类型不正确。', `${path}.type`)
+  if (Object.hasOwn(value, 'laser')) {
+    if (value.type !== 'LASER') addError(errors, 'LASER_TYPE_INVALID', '光学参数仅用于激光链路。', `${path}.laser`)
+    if (!isClosedObject(value.laser, LASER_KEYS)) {
+      addError(errors, 'LASER_PARAMETERS_INVALID', '请填写完整的激光光学口径、脉宽和光调制方式。', `${path}.laser`)
+    } else {
+      for (const [key, label] of [['txApertureDiameterM', '发射光学口径（m）'], ['rxApertureDiameterM', '接收光学口径（m）'], ['pulseWidthS', '激光脉宽（s）']] as const) {
+        if (!isPositiveFiniteNumber(value.laser[key])) addError(errors, 'LASER_PARAMETER_INVALID', `${label}必须为大于 0 的有限数值。`, `${path}.laser.${key}`)
+      }
+      if (value.laser.modulation !== LASER_LINK_MODULATION) addError(errors, 'LASER_MODULATION_INVALID', '激光调制方式请选择 OOK。', `${path}.laser.modulation`)
+    }
+  } else if (mode === 'write' && value.type === 'LASER' && value.enabled !== false) {
+    addError(errors, 'LASER_PARAMETERS_REQUIRED', '启用的激光链路必须填写光学口径、脉宽和光调制方式。', `${path}.laser`)
+  }
+  if (mode === 'write' && value.type === 'LASER' && value.enabled !== false) {
+    if (!isPositiveFiniteNumber(value.txPower)) addError(errors, 'LASER_POWER_INVALID', '激光光功率必须大于 0 W。', `${path}.txPower`)
+    if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbps。', `${path}.dataRate`)
+  }
   if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
   if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前场景实体。', `${path}.targetPlatformId`)
   if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源平台和目标平台不能相同。', `${path}.targetPlatformId`)
@@ -333,6 +422,13 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
   if (typeof value.modulation !== 'string' || !(MODULATIONS as readonly string[]).includes(value.modulation)) addError(errors, 'MODULATION_INVALID', '调制方式不正确。', `${path}.modulation`)
   if (!isFiniteNumber(value.berThreshold, 0, 1)) addError(errors, 'BER_THRESHOLD_INVALID', 'BER 阈值必须在 0 至 1 之间。', `${path}.berThreshold`)
   if (!isFiniteNumber(value.dataRate, 0)) addError(errors, 'DATA_RATE_INVALID', '数据速率不能小于 0 Mbps。', `${path}.dataRate`)
+  for (const [key, label] of [['forwardDataRate', '前向数据速率'], ['reverseDataRate', '返向数据速率']] as const) {
+    if (Object.hasOwn(value, key) && !isPositiveFiniteNumber(value[key])) addError(errors, 'DIRECTIONAL_DATA_RATE_INVALID', `${label}必须大于 0 Mbps。`, `${path}.${key}`)
+  }
+  if (value.type === 'SAT') {
+    if (Object.hasOwn(value, 'forwardDataRate') && !isFiniteNumber(value.forwardDataRate, 0.128, 8)) addError(errors, 'SAT_FORWARD_RATE_INVALID', '卫星前向速率必须在 0.128～8 Mbps。', `${path}.forwardDataRate`)
+    if (Object.hasOwn(value, 'reverseDataRate') && !isFiniteNumber(value.reverseDataRate, 0.064, 2)) addError(errors, 'SAT_REVERSE_RATE_INVALID', '卫星返向速率必须在 0.064～2 Mbps。', `${path}.reverseDataRate`)
+  }
   if (typeof value.direction !== 'string' || !(LINK_DIRECTIONS as readonly string[]).includes(value.direction)) addError(errors, 'LINK_DIRECTION_INVALID', '链路方向不正确。', `${path}.direction`)
   for (const [key, label, minimum] of [
     ['antennaGainCorrectionDb', '天线增益修正值', -Infinity],
@@ -375,7 +471,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
   links: unknown = [], jammers: unknown = [], demands: unknown = []): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules', 'linkCalc', 'hotLinks'])) {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules', 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -398,6 +494,37 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     ))) addError(errors, 'SATELLITE_NOT_CONFIGURED', `请先在节点配置中配置${type === 'TIANTONG' ? '天通' : '神通'}卫星。`, path)
   }
   if (!isFiniteNumber(value.switchCooldownS, 0)) addError(errors, 'LINK_COOLDOWN_INVALID', '防乒乓滞回时间必须为非负有限秒数。', 'linkSettings.switchCooldownS')
+  if (Object.hasOwn(value, 'switchStableChecks') && !(Number.isInteger(value.switchStableChecks) && isFiniteNumber(value.switchStableChecks, 1, 100))) {
+    addError(errors, 'LINK_STABLE_CHECKS_INVALID', '连续稳定检查次数必须为 1～100 的整数。', 'linkSettings.switchStableChecks')
+  }
+  if (Object.hasOwn(value, 'switchConsistencyCheck') && typeof value.switchConsistencyCheck !== 'boolean') {
+    addError(errors, 'LINK_CONSISTENCY_CHECK_INVALID', '选路一致性校验开关必须为布尔值。', 'linkSettings.switchConsistencyCheck')
+  }
+  for (const [key, label, minimum, maximum, integer] of [
+    ['minimumGxbDb', '最小 GXB', -Infinity, Infinity, false],
+    ['maximumBer', '最大 BER', 0, 1, false],
+    ['minimumGxbImprovementDb', '最小 GXB 改善值', 0, Infinity, false],
+    ['minimumBerImprovementFactor', '最小 BER 改善倍数', 1, Infinity, false],
+    ['switchCooldownFrames', '切换冷却帧数', 0, Infinity, true],
+    ['minimumSpatialIsolationDb', '最小空域隔离量', 0, Infinity, false],
+    ['minimumReceivedPowerDbm', '最小接收功率', -Infinity, Infinity, false],
+    ['failureGxbDb', '失效 GXB 门限', -Infinity, Infinity, false],
+    ['failureBer', '失效 BER 门限', 0, 1, false],
+  ] as const) {
+    if (Object.hasOwn(value, key) && (!isFiniteNumber(value[key], minimum, maximum) || (integer && !Number.isSafeInteger(value[key])))) {
+      addError(errors, 'LINK_DECISION_SETTING_INVALID', `${label}取值不正确。`, `linkSettings.${key}`)
+    }
+  }
+  const effectiveMinimumGxb = Object.hasOwn(value, 'minimumGxbDb') ? value.minimumGxbDb : 6
+  const effectiveMaximumBer = Object.hasOwn(value, 'maximumBer') ? value.maximumBer : 1e-5
+  if (Object.hasOwn(value, 'failureGxbDb') && isFiniteNumber(value.failureGxbDb) && isFiniteNumber(effectiveMinimumGxb)
+    && value.failureGxbDb > effectiveMinimumGxb) {
+    addError(errors, 'FAILURE_GXB_THRESHOLD_INVALID', '失效 GXB 门限不能高于可用 GXB 门限。', 'linkSettings.failureGxbDb')
+  }
+  if (Object.hasOwn(value, 'failureBer') && isFiniteNumber(value.failureBer, 0, 1) && isFiniteNumber(effectiveMaximumBer, 0, 1)
+    && value.failureBer < effectiveMaximumBer) {
+    addError(errors, 'FAILURE_BER_THRESHOLD_INVALID', '失效 BER 门限不能低于可用 BER 门限。', 'linkSettings.failureBer')
+  }
   const priorityTypes = mode === 'read' && Array.isArray(value.priority) && value.priority.length === 4
     ? LINK_TYPES.filter(type => type !== 'FIBER') : LINK_TYPES
   if (!Array.isArray(value.priority) || value.priority.length !== priorityTypes.length
@@ -568,6 +695,47 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
 }
 
+/** 取对象的占用频段 [f-B/2, f+B/2]（MHz）；参数无效时返回 undefined，由字段校验另行报错。 */
+function occupiedBand(value: Record<string, unknown>): [number, number] | undefined {
+  if (!isPositiveFiniteNumber(value.frequency) || !isPositiveFiniteNumber(value.bandwidth)) return undefined
+  return [value.frequency - value.bandwidth / 2, value.frequency + value.bandwidth / 2]
+}
+
+function bandsOverlap(a: [number, number], b: [number, number]): boolean {
+  return a[0] < b[1] && b[0] < a[1]
+}
+
+/**
+ * 跨对象频段冲突检测，结果为可定位到字段的警告。
+ * 1. 两条启用链路终止于同一接收平台且发射频段重叠（同体制同信道的网络共用除外）：接收端存在同频互扰。
+ * 2. 干扰设备频段不与任何启用链路重叠：该干扰对场景内链路无作用。
+ * @remarks 不阻断保存，生成脚本前按警告确认；不判断阵营，也不推算实际干扰效果。
+ */
+function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly unknown[], warnings: ValidationIssue[]): void {
+  const active = links.flatMap((link, index) => {
+    if (!isClosedObject(link, LINK_KEYS, OPTIONAL_LINK_KEYS) || link.enabled === false || typeof link.targetPlatformId !== 'string') return []
+    const band = occupiedBand(link)
+    return band ? [{ index, id: String(link.id), type: link.type, target: link.targetPlatformId, band }] : []
+  })
+  // 同体制且频点、带宽完全相同视为同一网络共用信道（分时复用），不按互扰报警。
+  const sharedChannel = (a: typeof active[number], b: typeof active[number]) => a.type === b.type && a.band[0] === b.band[0] && a.band[1] === b.band[1]
+  for (const link of active) {
+    const other = active.find(candidate => candidate.index !== link.index && candidate.target === link.target
+      && bandsOverlap(candidate.band, link.band) && !sharedChannel(candidate, link))
+    if (!other) continue
+    warnings.push({ severity: 'WARNING', code: 'LINK_FREQUENCY_CONFLICT',
+      message: `与链路 ${other.id} 在同一接收平台 ${link.target} 的频段重叠（${link.band[0]}～${link.band[1]} MHz 与 ${other.band[0]}～${other.band[1]} MHz），接收端存在同频互扰，请调整频率或带宽。`,
+      fieldPath: `links[${link.index}].frequency` })
+  }
+  jammers.forEach((jammer, index) => {
+    if (!isClosedObject(jammer, JAMMER_KEYS, ['triggerTimeS', 'releaseRange'])) return
+    const band = occupiedBand(jammer)
+    if (!band || active.length === 0 || active.some(link => bandsOverlap(link.band, band))) return
+    warnings.push({ severity: 'WARNING', code: 'JAMMER_BAND_UNMATCHED',
+      message: `干扰频段 ${band[0]}～${band[1]} MHz 未覆盖任何启用链路，该干扰设备对场景链路无作用。`, fieldPath: `jammers[${index}].frequency` })
+  })
+}
+
 /** 校验一台传感器的规范参数和归属平台。 */
 function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], mode: 'read' | 'write'): void {
   const path = `sensors[${index}]`
@@ -680,13 +848,14 @@ export function inspectScenarioUiExtensions(
 
   value.jammers.forEach((extension, index) => {
     const path = `uiExtensions.jammers[${index}]`
-    if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS)) {
+    if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS, OPTIONAL_JAMMER_UI_EXTENSION_KEYS)) {
       addError(errors, 'JAMMER_UI_EXTENSION_SHAPE_INVALID', '干扰设备界面扩展结构不正确。', path)
       return
     }
     if (typeof extension.jammerId !== 'string' || extension.jammerId.trim() === '') addError(errors, 'JAMMER_UI_EXTENSION_ID_INVALID', '干扰设备扩展 ID 为必填项。', `${path}.jammerId`)
     if (!isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', '干扰方向必须在 0 至 360 度之间。', `${path}.direction`)
     if (!isFiniteNumber(extension.duration, 0)) addError(errors, 'JAMMER_UI_EXTENSION_DURATION_INVALID', '干扰持续时间不能小于 0 秒。', `${path}.duration`)
+    if (Object.hasOwn(extension, 'elevation') && !isFiniteNumber(extension.elevation, -10, 60)) addError(errors, 'JAMMER_UI_EXTENSION_ELEVATION_INVALID', '干扰俯仰角必须在 -10 至 60 度之间。', `${path}.elevation`)
     if (typeof extension.enabled !== 'boolean') addError(errors, 'JAMMER_UI_EXTENSION_ENABLED_INVALID', '干扰设备启用开关格式不正确。', `${path}.enabled`)
   })
 
@@ -703,7 +872,7 @@ export function inspectScenarioUiExtensions(
 
   value.sensors.forEach((extension, index) => {
     const path = `uiExtensions.sensors[${index}]`
-    if (!isClosedObject(extension, SENSOR_UI_EXTENSION_KEYS)) {
+    if (!isClosedObject(extension, SENSOR_UI_EXTENSION_KEYS, OPTIONAL_SENSOR_UI_EXTENSION_KEYS)) {
       addError(errors, 'SENSOR_UI_EXTENSION_SHAPE_INVALID', '传感器界面扩展结构不正确。', path)
       return
     }
@@ -712,6 +881,18 @@ export function inspectScenarioUiExtensions(
     if (extension.direction !== 'OMNI' && !isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'SENSOR_UI_EXTENSION_DIRECTION_INVALID', '传感器方向必须为全向或 0 至 360 度。', `${path}.direction`)
     if (!isFiniteNumber(extension.probability, 0, 1)) addError(errors, 'SENSOR_UI_EXTENSION_PROBABILITY_INVALID', '传感器侦测概率必须在 0 至 1 之间。', `${path}.probability`)
     if (typeof extension.enabled !== 'boolean') addError(errors, 'SENSOR_UI_EXTENSION_ENABLED_INVALID', '传感器启用开关格式不正确。', `${path}.enabled`)
+    // Native ESM 参数直接对应 WSF_ESM_SENSOR 的 mode 指令；没有把旧概率、距离或方向换算进去。
+    if (Object.hasOwn(extension, 'esm')) {
+      const esmPath = `${path}.esm`
+      if (!isClosedObject(extension.esm, NATIVE_ESM_KEYS)) {
+        addError(errors, 'NATIVE_ESM_SETTINGS_SHAPE_INVALID', '原生 ESM 参数结构不正确。', esmPath)
+      } else {
+        if (!isFiniteNumber(extension.esm.sensitivityDbw) || extension.esm.sensitivityDbw > 0) addError(errors, 'NATIVE_ESM_SENSITIVITY_INVALID', '原生 ESM 灵敏度必须为不大于 0 的有限 dBW 值。', `${esmPath}.sensitivityDbw`)
+        if (!isFiniteNumber(extension.esm.detectionThresholdDb, 0)) addError(errors, 'NATIVE_ESM_THRESHOLD_INVALID', '原生 ESM 检测阈值必须为不小于 0 的有限 dB 值。', `${esmPath}.detectionThresholdDb`)
+        if (!isPositiveFiniteNumber(extension.esm.dwellTimeS)) addError(errors, 'NATIVE_ESM_DWELL_INVALID', '原生 ESM 驻留时间必须大于 0 秒。', `${esmPath}.dwellTimeS`)
+        if (!isPositiveFiniteNumber(extension.esm.revisitTimeS)) addError(errors, 'NATIVE_ESM_REVISIT_INVALID', '原生 ESM 重访时间必须大于 0 秒。', `${esmPath}.revisitTimeS`)
+      }
+    }
   })
 
   const sensorExtensionIds = value.sensors.flatMap((extension) => (
@@ -787,7 +968,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode, value.links, value.jammers, value.informationDemand)
   if (Object.hasOwn(value, 'jammingEnabled') && typeof value.jammingEnabled !== 'boolean') addError(errors, 'JAMMING_ENABLED_INVALID', '干扰总开关必须为布尔值。', 'jammingEnabled')
 
-  if (!isClosedObject(value.scenario, SCENARIO_KEYS)) {
+  if (!isClosedObject(value.scenario, SCENARIO_KEYS, ['phases'])) {
     addError(errors, 'SCENARIO_IDENTITY_INVALID', '场景基础信息结构不正确。', 'scenario')
     return { result: { valid: false, errors, warnings } }
   }
@@ -798,6 +979,8 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (!isRfc3339DateTime(scenario.startTime)) addError(errors, 'START_TIME_INVALID', '开始时间必须是有效时间。', 'scenario.startTime')
   if (!isFiniteNumber(scenario.duration, Number.MIN_VALUE)) addError(errors, 'DURATION_INVALID', '仿真时长必须大于 0 秒。', 'scenario.duration')
   if (!isFiniteNumber(scenario.timeStep, Number.MIN_VALUE)) addError(errors, 'TIME_STEP_INVALID', '时间步长必须大于 0 秒。', 'scenario.timeStep')
+  const phaseIssue = taskPhaseIssue(scenario.phases, typeof scenario.duration === 'number' ? scenario.duration : 0)
+  if (phaseIssue) addError(errors, 'TASK_PHASE_INVALID', phaseIssue.message, phaseIssue.fieldPath)
 
   if (!isClosedObject(scenario.environment, ENVIRONMENT_KEYS, OPTIONAL_ENVIRONMENT_KEYS)) {
     addError(errors, 'ENVIRONMENT_INVALID', '环境参数结构不正确。', 'scenario.environment')
@@ -888,7 +1071,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     ])) as Record<(typeof BUSINESS_INFORMATION_NODE_TYPES)[number], number>
 
     if (businessNodeCount === 0) addError(errors, 'MINIMUM_BUSINESS_NODE', '场景至少需要一个业务信息节点。', 'platforms')
-    if (businessNodeCount > INFORMATION_NODE_LIMIT) addError(errors, 'NODE_LIMIT_EXCEEDED', '当前场景的信息节点不能超过 50 个。', 'platforms')
+    if (businessNodeCount > INFORMATION_NODE_LIMIT) addError(errors, 'NODE_LIMIT_EXCEEDED', `当前场景的信息节点不能超过 ${INFORMATION_NODE_LIMIT} 个。`, 'platforms')
     for (const type of BUSINESS_INFORMATION_NODE_TYPES) {
       const limit = INFORMATION_NODE_TYPE_LIMITS[type]
       if (businessTypeCounts[type] > limit) {
@@ -933,6 +1116,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         }
       } else if (Object.hasOwn(platform, 'satelliteType')) {
         addError(errors, 'SATELLITE_TYPE_NOT_APPLICABLE', '只有通信卫星可以配置卫星类型。', `${path}.satelliteType`)
+      }
+      if (Object.hasOwn(platform, 'heading') && !isFiniteNumber(platform.heading, 0, 360)) {
+        addError(errors, 'PLATFORM_HEADING_INVALID', '平台初始航向必须在 0 至 360 度之间。', `${path}.heading`)
       }
       const platformCategoryValid = typeof platform.category === 'string' && (DEPLOYMENT_DOMAINS as readonly string[]).includes(platform.category)
       if (!platformCategoryValid) {
@@ -994,7 +1180,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const platformIds = collectIds(value.platforms)
     if (linkIds.size !== value.links.length) addError(errors, 'LINK_ID_DUPLICATED', '链路 ID 不允许为空或重复。', 'links')
     value.links.forEach((link, index) => {
-      inspectLink(link, index, platformIds, errors)
+      inspectLink(link, index, platformIds, errors, mode)
       if (typeof link === 'object' && link !== null && typeof link.relayPlatformId === 'string'
         && Array.isArray(value.platforms) && !value.platforms.some((p) => (
           typeof p === 'object' && p !== null && p.id === link.relayPlatformId
@@ -1023,6 +1209,8 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       ? value.platforms.filter(platform => isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS) && isJammerPlatformType(platform.type)) : [])
     value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, warnings, mode, scenario.duration as number, jammerPlatformIds))
   }
+
+  if (Array.isArray(value.links)) inspectSpectrumConflicts(value.links, Array.isArray(value.jammers) ? value.jammers : [], warnings)
 
   if (Array.isArray(value.sensors)) {
     const sensorIds = collectIds(value.sensors)
@@ -1060,6 +1248,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       startTime: scenario.startTime as string,
       duration: scenario.duration as number,
       timeStep: scenario.timeStep as number,
+      ...(scenario.phases === undefined ? {} : { phases: (scenario.phases as TaskPhase[]).map(phase => ({ ...phase })) }),
       environment: {
         ...environment,
         seaState: environment.seaState as number,

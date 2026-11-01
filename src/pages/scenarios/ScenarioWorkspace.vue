@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ScenarioDraft } from '../../contracts/domain-models'
+import { createScenarioSnapshot, scenarioSnapshotId } from '../../features/scenarios/scenario-snapshot'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
 import { useSimulationStore } from '../../stores/simulation'
@@ -86,6 +87,60 @@ async function remove(scene: ScenarioDraft): Promise<void> {
   } catch { /* 取消不删除。 */ }
 }
 
+const jsonFile = ref<HTMLInputElement | null>(null)
+const importError = ref('')
+
+/** 将完整可编辑场景保存为本地 UTF-8 JSON 文件，不包含服务器修订和运行状态。 */
+function exportJson(scene: ScenarioDraft): void {
+  // 表格行来自 Pinia 的深度响应式集合；先在边界解除 Proxy，再交给可复用的纯快照构造器。
+  const text = `${JSON.stringify(createScenarioSnapshot(toRaw(scene)), null, 2)}\n`
+  const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `${scene.config.scenario.id}.json`
+  document.body.append(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 30_000)
+  ElMessage.success(`场景已导出为 ${link.download}。`)
+}
+
+/** 读取本地 JSON 文件并按完整场景快照导入；校验失败保留原场景，错误定位到字段路径。 */
+async function importJson(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !canWrite.value) return
+  importError.value = ''
+  if (file.size > 4 * 1024 * 1024) { importError.value = '场景 JSON 文件不能超过 4 MiB。'; return }
+  let text: string
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer()) }
+  catch { importError.value = '文件不是有效的 UTF-8 文本。'; return }
+  if (!active) return
+  const existing = (() => { try { return scenarioSnapshotId(JSON.parse(text)) } catch { return undefined } })()
+  if (existing && store.scenes.some(scene => scene.config.scenario.id === existing)) {
+    try {
+      await ElMessageBox.confirm(`场景编号 ${existing} 已存在，导入将以文件内容覆盖该场景（可在编辑页撤销）。`, '导入场景 JSON', { type: 'warning', confirmButtonText: '覆盖导入', cancelButtonText: '取消' })
+    } catch { return }
+  }
+  selecting.value = true
+  try {
+    const imported = await store.importScenarioSnapshot(text)
+    if (!active) return
+    if (!imported) {
+      const fieldPath = store.validation.errors[0]?.fieldPath
+      importError.value = `${store.resultMessage}${fieldPath ? `（字段：${fieldPath.replace(/^items\[0\]\./, '')}）` : ''}`
+      store.resetToSafeEmpty()
+      return
+    }
+    ElMessage.success(`已导入场景“${store.draft?.config.scenario.name ?? ''}”。`)
+    store.resetToSafeEmpty()
+  } finally {
+    selecting.value = false
+    await store.loadScenes()
+  }
+}
+
 async function chooseTemplate(): Promise<void> {
   templateId.value = ''
   templateName.value = ''
@@ -123,10 +178,13 @@ onMounted(() => { void store.loadScenes() })
     <header class="scene-list__toolbar">
       <h2>场景列表</h2>
       <el-button :disabled="busy" @click="store.loadScenes()">刷新</el-button>
+      <el-button :disabled="busy || !canWrite" data-testid="scene-import-json" @click="jsonFile?.click()">导入 JSON 文件</el-button>
+      <input ref="jsonFile" type="file" accept=".json,application/json" hidden aria-label="选择场景 JSON 文件" data-testid="scene-import-file" @change="importJson">
       <el-button :disabled="busy || !canWrite" data-testid="scene-from-template" @click="chooseTemplate">从模板创建</el-button>
       <el-button type="primary" :disabled="busy || !canWrite" data-testid="scene-create" @click="create">新建场景</el-button>
     </header>
     <el-alert v-if="store.listState === 'ERROR'" type="error" :closable="false" :title="store.listMessage" show-icon />
+    <el-alert v-if="importError" type="error" :title="`场景 JSON 导入失败：${importError}`" show-icon data-testid="scene-import-error" @close="importError = ''" />
     <p v-if="store.listState === 'LOADING'" role="status">正在加载场景列表…</p>
     <el-empty v-else-if="store.listState === 'EMPTY'" description="暂无场景，请新建场景或从模板创建。" />
     <el-table v-else :data="store.scenes" stripe row-key="config.scenario.id" data-testid="scene-table">
@@ -135,10 +193,11 @@ onMounted(() => { void store.loadScenes() })
       <el-table-column prop="revision" label="修订" width="90" />
       <el-table-column label="节点 / 链路" width="140"><template #default="{ row }">{{ row.config.platforms.length }} / {{ row.config.links.length }}</template></el-table-column>
       <el-table-column label="状态" width="130"><template #default="{ row }"><el-tag :type="row.locked ? 'warning' : 'success'">{{ row.locked ? '运行中 · 已锁定' : '已保存' }}</el-tag></template></el-table-column>
-      <el-table-column label="操作" width="250" fixed="right"><template #default="{ row }">
+      <el-table-column label="操作" width="310" fixed="right"><template #default="{ row }">
         <el-button link type="primary" :disabled="sceneSelectionDisabled" :data-testid="`scene-select-${row.config.scenario.id}`" @click="selectScene(row)">选用场景</el-button>
         <el-button link type="primary" :disabled="busy" :data-testid="`scene-edit-${row.config.scenario.id}`" @click="open(row)">{{ row.locked ? '查看' : '编辑' }}</el-button>
         <el-button link type="primary" :disabled="busy || !canWrite" :data-testid="`scene-copy-${row.config.scenario.id}`" @click="open(row, true)">复制</el-button>
+        <el-button link type="primary" :disabled="busy" :data-testid="`scene-export-${row.config.scenario.id}`" @click="exportJson(row)">导出</el-button>
         <el-button link type="danger" :disabled="busy || row.locked || !canWrite" :data-testid="`scene-delete-${row.config.scenario.id}`" @click="remove(row)">删除</el-button>
       </template></el-table-column>
     </el-table>

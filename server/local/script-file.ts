@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { ScenarioDraft, ScriptContract } from '../../src/contracts/domain-models.js'
-import { buildMissionPackage } from '../scripts/mission-generator.js'
+import { buildMissionPackage, SCENARIO_PREVIEW_FILE } from '../scripts/mission-generator.js'
 
 const LINK_CALC_START = '  add processor link_calc WSF_LINK_CALC_PROCESSOR'
 const LINK_CALC_END = '  end_processor'
@@ -52,7 +52,7 @@ export async function writeScriptText(directory: string, script: ScriptContract,
       for (const [name, content] of Object.entries(generated.files)) {
         await writeFile(join(owned, name), content, { encoding: 'utf8', flag: 'wx' })
       }
-      return join(owned, generated.manifest.entry)
+      return join(owned, SCENARIO_PREVIEW_FILE)
     }
     return path
   } catch (error) {

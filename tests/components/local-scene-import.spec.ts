@@ -6,6 +6,7 @@ import { toRaw } from 'vue'
 import LocalSceneImport from '../../src/components/scenarios/LocalSceneImport.vue'
 import { buildLocalSceneImport, localImportLinks, type LocalSceneImport as ImportInput } from '../../src/features/scenarios/local-scene-import'
 import type { ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models'
+import { INFORMATION_NODE_LIMIT, isBusinessInformationNodeType } from '../../src/features/scenarios/scenario-validation'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 
@@ -163,10 +164,15 @@ describe('本地场景导入候选', () => {
     }
   })
 
-  it('类型数量上限与50节点上限继续生效，不显示未来关联', () => {
+  it('类型数量上限与64节点保护上限继续生效，51节点仍可导入且不显示未来关联', () => {
     const input = source()
     const base = config()
-    for (let i = 0; i < 50; i++) base.platforms.push({ ...structuredClone(base.platforms.find(p => p.id === 'UAV-01')!), id: `LIMIT-${i}`, linkIds: [], sensorIds: [], jammerIds: [] })
+    const sourcePlatform = base.platforms.find(p => p.id === 'UAV-01')!
+    const businessCount = base.platforms.filter(platform => isBusinessInformationNodeType(platform.type)).length
+    for (let i = 0; i < 51 - businessCount; i += 1) base.platforms.push({ ...structuredClone(sourcePlatform), id: `ACCEPT-${i}`, linkIds: [], sensorIds: [], jammerIds: [] })
+    expect(buildLocalSceneImport(base, input).errors.map(e => e.code)).not.toContain('NODE_LIMIT_EXCEEDED')
+
+    for (let i = 51; i <= INFORMATION_NODE_LIMIT + 1; i += 1) base.platforms.push({ ...structuredClone(sourcePlatform), id: `LIMIT-${i}`, linkIds: [], sensorIds: [], jammerIds: [] })
     expect(buildLocalSceneImport(base, input).errors.map(e => e.code)).toContain('NODE_LIMIT_EXCEEDED')
     input.initial.connections![0]!.time = 500
     expect(localImportLinks(input.initial, input.positions)).toEqual([])

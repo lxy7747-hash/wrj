@@ -11,7 +11,7 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 
 it('保存场景 → Node 生成 → 写入真实 UTF-8 TXT；拒绝路径注入/旧修订/锁定/未授权，重复生成不覆盖旧文件', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'wrj-script-test-'))
-  const writer = vi.fn((script, revision) => writeScriptText(directory, script, revision))
+  const writer = vi.fn((script, revision, draft) => writeScriptText(directory, script, revision, draft))
   const server = createMockServer({ writeScriptText: writer })
   try {
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
@@ -33,10 +33,10 @@ it('保存场景 → Node 生成 → 写入真实 UTF-8 TXT；拒绝路径注入
     const contents = await readFile(file.path, 'utf8')
     expect(file).toMatchObject({ scriptId: script.scriptId, configVersion: `SCN-001-v${saved.revision}` })
     expect(file.path.startsWith(directory)).toBe(true)
-    expect(file.path.endsWith(`SCN-001-r${saved.revision}.txt`)).toBe(true)
+    expect(file.path.endsWith('scenario.txt')).toBe(true)
     expect(contents).toContain('落盘测试场景')
-    expect(contents).toContain(script.preview)
-    expect(contents).toContain('未经真实 AFSIM 运行验证')
+    expect(contents).toContain('引用顺序')
+    expect(contents).toContain('include_once comm_SimSetup.txt')
     const second = (await api.post(endpoint).set(headers).send({ checksum: script.checksum }).expect(200)).body.data
     expect(second.path).not.toBe(file.path)
     expect(await readFile(file.path, 'utf8')).toBe(contents)

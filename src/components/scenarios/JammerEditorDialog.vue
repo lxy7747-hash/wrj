@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
-import type { Jammer, JammerUiExtension, Platform } from '../../contracts/domain-models'
+import type { Jammer, JammerUiExtension, Platform, ValidationIssue } from '../../contracts/domain-models'
+import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
 import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
@@ -18,6 +19,7 @@ const props = defineProps<{
   platforms: readonly Platform[]
   jammerTypeOptions: readonly JammerTypeOption[]
   minimumStep: number
+  validate?: (jammer: Jammer, extension: JammerUiExtension) => ValidationIssue[]
 }>()
 
 const emit = defineEmits<{
@@ -30,6 +32,13 @@ const emit = defineEmits<{
 
 const editor = ref<Jammer | null>(null)
 const uiEditor = ref<JammerUiExtension | null>(null)
+const validationTick = ref(0)
+watch([editor, uiEditor], () => { validationTick.value += 1 }, { deep: true, flush: 'sync' })
+const issues = computed(() => {
+  void validationTick.value
+  return editor.value && uiEditor.value ? props.validate?.(editor.value, uiEditor.value) ?? [] : []
+})
+const fieldError = (path: string) => fieldValidationMessage(issues.value, path)
 const jammerPlatforms = computed(() => props.platforms.filter(platform => isJammerPlatformType(platform.type)))
 const legacyPlatformId = computed(() => editor.value?.platformId
   && !jammerPlatforms.value.some(platform => platform.id === editor.value?.platformId) ? editor.value.platformId : '')
@@ -48,10 +57,37 @@ const releaseRangeKm = computed<number | undefined>({
   get: () => editor.value ? Number((readJammerReleaseRange(editor.value) / METERS_PER_KILOMETER).toFixed(3)) : undefined,
   set: value => { if (editor.value) editor.value.releaseRange = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
 })
+const powerDbmInput = ref<number | undefined>(undefined)
+const powerDbmTouched = ref(false)
+function isControlledPowerDbm(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= -10 && value <= 30
+    && Math.abs((value + 10) / 5 - Math.round((value + 10) / 5)) < 1e-9
+}
+/** V1.2 的射频干扰输入使用 dBm，保存和脚本仍以 W 为合同单位。历史大功率 W 值不截断。 */
+function resetPowerDbmInput(): void {
+  powerDbmTouched.value = false
+  const watts = editor.value?.defaultPower
+  if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) { powerDbmInput.value = undefined; return }
+  const dbm = 10 * Math.log10(watts * 1000)
+  powerDbmInput.value = isControlledPowerDbm(dbm) ? Number(dbm.toFixed(6)) : undefined
+}
+const powerDbmError = computed(() => {
+  if (!powerDbmTouched.value) return ''
+  if (!isControlledPowerDbm(powerDbmInput.value)) return '功率必须为 -10～30 dBm 且按 5 dB 档位设置。'
+  return ''
+})
+function setPowerDbm(value: number | undefined): void {
+  powerDbmTouched.value = true
+  powerDbmInput.value = value
+  if (!editor.value) return
+  editor.value.defaultPower = isControlledPowerDbm(value) ? 10 ** ((value - 30) / 10) : Number.NaN
+}
+const legacyPower = computed(() => editor.value?.defaultPower !== undefined && !powerDbmTouched.value && powerDbmInput.value === undefined
+  ? `${editor.value.defaultPower} W（历史值，超出 -10～30 dBm 新建范围）` : '')
 
 /** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
 function apply(): void {
-  if (!props.pending && !props.locked && editor.value !== null && uiEditor.value !== null) emit('apply', editor.value, uiEditor.value)
+  if (!props.pending && !props.locked && !powerDbmError.value && editor.value !== null && uiEditor.value !== null) emit('apply', editor.value, uiEditor.value)
 }
 
 /** 写入触发秒数；清空视为非法输入，已有未设置字段在未编辑时继续保留缺省。 */
@@ -63,6 +99,7 @@ watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.jammer === null ? null : structuredClone(toRaw(props.jammer))
   uiEditor.value = props.uiExtension === null ? null : structuredClone(toRaw(props.uiExtension))
+  resetPowerDbmInput()
 }, { immediate: true })
 </script>
 
@@ -83,13 +120,13 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-basic-title">
         <h4 id="jammer-basic-title" class="link-editor-section__title">基本信息</h4>
         <div class="link-editor-grid">
-          <el-form-item required v-show="showIds" label="干扰设备 ID"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
-          <el-form-item required label="干扰方式">
+          <el-form-item required v-show="showIds" label="干扰设备 ID" :error="fieldError('id')"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
+          <el-form-item required label="干扰方式" :error="fieldError('type')">
             <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
               <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
-          <el-form-item required label="所属干扰节点">
+          <el-form-item required label="所属干扰节点" :error="fieldError('platformId')">
             <el-select v-model="editor.platformId" filterable placeholder="请选择所属干扰节点" style="width: 100%" data-testid="jammer-platform">
               <el-option v-if="legacyPlatformId" :label="`${legacyPlatformName}（${legacyPlatformId}，旧归属待修正）`" :value="legacyPlatformId" disabled />
               <el-option v-for="platform in jammerPlatforms" :key="platform.id" :label="scenarioPlatformLabel(jammerPlatforms, platform.id, showIds)" :value="platform.id" />
@@ -104,28 +141,33 @@ watch(() => props.modelValue, (visible) => {
       <section class="link-editor-section" aria-labelledby="jammer-parameter-title">
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
-          <el-form-item required label="单干扰源发射功率（W）"><el-input-number v-model="editor.defaultPower" :min="Number.MIN_VALUE" controls-position="right" data-testid="jammer-power" /></el-form-item>
-          <el-form-item required label="干扰中心频率（MHz）"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
-          <el-form-item required label="干扰带宽（MHz）"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
-          <el-form-item label="干扰触发时间（仿真秒）"><el-input-number :model-value="editor.triggerTimeS" :min="0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
-          <el-form-item required label="方向（°）"><el-input-number v-model="uiEditor.direction" :min="0" :max="360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
-          <el-form-item required label="持续时间（s）"><el-input-number v-model="uiEditor.duration" :min="0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
-          <el-form-item label="启用"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
+          <el-form-item required label="单干扰源发射功率（dBm）" :error="powerDbmError || fieldError('defaultPower')">
+            <el-input-number :model-value="powerDbmInput" :min="validate ? undefined : -10" :max="validate ? undefined : 30" :step="5" controls-position="right" data-testid="jammer-power" @update:modelValue="setPowerDbm" />
+            <small v-if="legacyPower" class="field-hint" data-testid="jammer-legacy-power">{{ legacyPower }}</small>
+            <small v-else class="field-hint">-10～30 dBm，步长 5 dB；保存时换算为 W。</small>
+          </el-form-item>
+          <el-form-item required label="干扰中心频率（MHz）" :error="fieldError('frequency')"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
+          <el-form-item required label="干扰带宽（MHz）" :error="fieldError('bandwidth')"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item label="干扰触发时间（仿真秒）" :error="fieldError('triggerTimeS')"><el-input-number :model-value="editor.triggerTimeS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
+          <el-form-item required label="方向（°）" :error="fieldError('direction')"><el-input-number v-model="uiEditor.direction" :min="validate ? undefined : 0" :max="validate ? undefined : 360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
+          <el-form-item label="俯仰角（°）" :error="fieldError('elevation')"><el-input-number v-model="uiEditor.elevation" :min="validate ? undefined : -10" :max="validate ? undefined : 60" controls-position="right" data-testid="jammer-elevation" /></el-form-item>
+          <el-form-item required label="持续时间（s）" :error="fieldError('duration')"><el-input-number v-model="uiEditor.duration" :min="validate ? undefined : 0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
+          <el-form-item label="启用" :error="fieldError('enabled')"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
         </div>
       </section>
       <section class="link-editor-section" aria-labelledby="jammer-detection-title">
         <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>
         <div class="link-editor-grid">
-          <el-form-item label="自动检测"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
-          <el-form-item required label="探测范围（km，1～100）">
+          <el-form-item label="自动检测" :error="fieldError('autoDetect')"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
+          <el-form-item required label="探测范围（km，1～100）" :error="fieldError('detectionRange')">
             <el-input-number v-model="detectionRangeKm" controls-position="right" data-testid="jammer-range" />
             <small class="field-hint">自动探测发现目标的距离；合同单位为米。</small>
           </el-form-item>
-          <el-form-item required label="干扰范围（km，1～100）">
+          <el-form-item required label="干扰范围（km，1～100）" :error="fieldError('jammingRange')">
             <el-input-number v-model="jammingRangeKm" controls-position="right" data-testid="jammer-jamming-range" />
             <small class="field-hint">干扰圈接触范围；自动探测仅在此范围内启停干扰，写入 jammer_param 时换算为海里。</small>
           </el-form-item>
-          <el-form-item required label="释放范围（km，1～100）">
+          <el-form-item required label="释放范围（km，1～100）" :error="fieldError('releaseRange')">
             <el-input-number v-model="releaseRangeKm" controls-position="right" data-testid="jammer-release-range" />
             <small class="field-hint">干扰机离开此距离后释放；不小于干扰范围，写入时换算为海里。</small>
           </el-form-item>

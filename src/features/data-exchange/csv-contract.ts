@@ -22,12 +22,13 @@ export interface CsvValidationResult {
 const NUMERIC_FIELDS = new Set([
   'Time', 'Frequency', 'Bandwidth', 'Distance', 'TxPower', 'TxAntennaGain', 'RxAntennaGain',
   'PathLoss', 'JammingPower', 'ReceivedPower', 'SNR', 'BER', 'BERThreshold', 'DataRate', 'Power',
-  'OldBER', 'NewBER',
+  'OldBER', 'NewBER', 'GXB', 'FreeSpaceLoss', 'SeaMultipathLoss', 'AtmosphericLoss',
+  'CloudRainLoss', 'JammingLoss', 'TotalLoss',
 ])
 const NON_NEGATIVE_FIELDS = new Set(['Time', 'Distance', 'TxPower', 'DataRate', 'Power'])
 const POSITIVE_FIELDS = new Set(['Frequency', 'Bandwidth'])
 const RATIO_FIELDS = new Set(['BER', 'BERThreshold', 'OldBER', 'NewBER'])
-const OPTIONAL_EVENT_FIELDS = new Set(['TargetPlatform', 'Power', 'Frequency', 'Bandwidth', 'Parameters'])
+const OPTIONAL_EVENT_FIELDS = new Set(['TargetPlatform', 'Status', 'Power', 'Frequency', 'Bandwidth', 'Parameters'])
 
 /**
  * 解析一条逗号分隔记录。
@@ -61,12 +62,17 @@ export function parseCsvLine(line: string): string[] | undefined {
 }
 
 /** 返回字段是否允许空值。 */
-function isOptionalField(contractName: string, field: string): boolean {
+function isOptionalField(contractName: string, field: string, eventType: string): boolean {
+  if (contractName === 'events.csv' && field === 'SourcePlatform') {
+    return eventType === 'SIMULATION_STARTING' || eventType === 'SIMULATION_COMPLETE'
+  }
   return contractName === 'events.csv' && OPTIONAL_EVENT_FIELDS.has(field)
 }
 
 /** 返回字段值是否符合 canonical CSV 的基本类型和枚举。 */
 function isValidField(field: string, value: string): boolean {
+  if (field === 'task_id') return /^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value)
+  if (field === 'SchemaVersion') return value === '1.1'
   if (NUMERIC_FIELDS.has(field)) {
     if (value.trim() === '') return false
     const number = Number(value)
@@ -77,11 +83,11 @@ function isValidField(field: string, value: string): boolean {
     return true
   }
   if (field === 'LinkType' || field === 'OldLinkType' || field === 'NewLinkType') {
-    return ['SAT', 'MICROWAVE', 'DATALINK', 'LASER'].includes(value)
+    return ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'].includes(value)
   }
   if (field === 'LinkStatus') return value === 'UP' || value === 'DOWN'
   if (field === 'Direction') return value === 'FORWARD' || value === 'REVERSE'
-  if (field === 'Modulation') return value === 'BPSK' || value === 'QPSK'
+  if (field === 'Modulation') return value === 'BPSK' || value === 'QPSK' || value === 'OOK'
   return value.trim().length > 0
 }
 
@@ -124,7 +130,7 @@ export function inspectCsvText(contract: ContractDescriptor, text: string): CsvV
     }
     cells.forEach((value, columnIndex) => {
       const field = contract.fields[columnIndex] ?? `column${columnIndex + 1}`
-      if (value.trim() === '' && isOptionalField(contract.name, field)) return
+      if (value.trim() === '' && isOptionalField(contract.name, field, cells[contract.fields.indexOf('EventType')] ?? '')) return
       if (!isValidField(field, value)) {
         result.issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${rowIndex}].${field}`, message: `第 ${row} 行字段 ${field} 的类型或取值不正确。` })
       }
@@ -142,6 +148,8 @@ function escapeCell(value: string): string {
 
 /** 按字段名生成不依赖运行时数据的合同示例值。 */
 function exampleValue(field: string): string {
+  if (field === 'task_id') return 'TASK-001'
+  if (field === 'SchemaVersion') return '1.1'
   if (field === 'Time') return '42'
   if (field === 'LinkType' || field === 'OldLinkType' || field === 'NewLinkType') return 'MICROWAVE'
   if (field === 'LinkStatus') return 'UP'

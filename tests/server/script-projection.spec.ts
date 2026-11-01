@@ -3,29 +3,45 @@ import type { ScenarioDraft, ScriptContract, ValidationResult } from '../../src/
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 
 let inspectScriptPreview: (preview: string) => ValidationResult
-let ScriptProjection: new () => {
-  preview(draft: ScenarioDraft): ScriptContract
-  preflight(scriptId: string, checksum: string): unknown
-  reset(): void
-}
+let ScriptProjection: new () => { preview(draft: ScenarioDraft): ScriptContract; get(scriptId: string): ScriptContract | undefined; preflight(scriptId: string, checksum: string): unknown; reset(): void }
 let ScenarioProjection: new () => { get(scenarioId: string): { ok: true; data: ScenarioDraft } | { ok: false } }
 
 beforeAll(async () => {
-  const modulePath = '../../server/scripts/' + 'projection.js'
-  ;({ inspectScriptPreview, ScriptProjection } = await import(modulePath) as {
-    inspectScriptPreview: typeof inspectScriptPreview
-    ScriptProjection: typeof ScriptProjection
-  })
-  ;({ ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js') as {
-    ScenarioProjection: typeof ScenarioProjection
-  })
+  const scriptModule = '../../server/scripts/' + 'projection.js'
+  const scenarioModule = '../../server/scenarios/' + 'projection.js'
+  ;({ inspectScriptPreview, ScriptProjection } = await import(scriptModule))
+  ;({ ScenarioProjection } = await import(scenarioModule))
 })
 
-describe('T-XQ-008 脚本结构预检', () => {
-  it('停用链路仅过滤关联业务指令，重新启用恢复且不改变业务配置', () => {
-    const result = new ScenarioProjection().get('SCN-001')
-    if (!result.ok) throw new Error('缺少场景夹具')
-    const draft = result.data
+function fixtureDraft(): ScenarioDraft {
+  const result = new ScenarioProjection().get('SCN-001')
+  if (!result.ok) throw new Error('缺少场景夹具')
+  return result.data
+}
+
+/** 从注释化工件读取原始 JSON，以区分原始配置与实际生成映射。 */
+function previewJson(preview: string, name: 'input.json' | 'mapping.json'): Record<string, unknown> {
+  const marker = `// ===== ${name} =====\n`
+  const start = preview.indexOf(marker)
+  if (start < 0) throw new Error(`缺少 ${name} 预览段`)
+  const contentStart = start + marker.length
+  const next = preview.indexOf('\n// ===== ', contentStart)
+  const lines = preview.slice(contentStart, next < 0 ? undefined : next).split('\n')
+  const jsonStart = lines.findIndex(line => line === '// {')
+  if (jsonStart < 0) throw new Error(`${name} 不含 JSON`)
+  return JSON.parse(lines.slice(jsonStart).filter(line => line.startsWith('// ')).map(line => line.slice(3)).join('\n')) as Record<string, unknown>
+}
+
+function mappedIds(mapping: Record<string, unknown>, key: 'devices' | 'businesses', idKey: 'linkId' | 'demandId'): string[] {
+  const values = mapping[key]
+  if (!Array.isArray(values)) return []
+  return values.flatMap(item => typeof item === 'object' && item !== null && typeof (item as Record<string, unknown>)[idKey] === 'string'
+    ? [(item as Record<string, string>)[idKey]] : [])
+}
+
+describe('T-XQ-008 原生脚本预览与预检', () => {
+  it('停用链路只过滤实际生成映射，恢复后保持配置不变', () => {
+    const draft = fixtureDraft()
     const generator = new ScriptProjection()
     const [link, otherLink] = draft.config.links.filter(item => item.type === 'MICROWAVE')
     if (!link || !otherLink) throw new Error('缺少微波链路夹具')
@@ -34,40 +50,39 @@ describe('T-XQ-008 脚本结构预检', () => {
     const legacy = structuredClone(draft.config.informationDemand[0]!)
     delete legacy.linkId
     legacy.enabled = true
-    const business = { ...structuredClone(legacy), id: 'INFO-LINK', linkId: link.id,
-      sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId], direction: link.direction }
-    const otherBusiness = { ...structuredClone(legacy), id: 'INFO-OTHER', linkId: otherLink.id,
-      sourcePlatformId: otherLink.sourcePlatformId, destinationPlatformIds: [otherLink.targetPlatformId], direction: otherLink.direction }
+    const business = { ...structuredClone(legacy), id: 'INFO-LINK', linkId: link.id, sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId], direction: link.direction }
+    const otherBusiness = { ...structuredClone(legacy), id: 'INFO-OTHER', linkId: otherLink.id, sourcePlatformId: otherLink.sourcePlatformId, destinationPlatformIds: [otherLink.targetPlatformId], direction: otherLink.direction }
     draft.config.informationDemand = [business, otherBusiness, legacy]
     const originalBusiness = structuredClone(draft.config.informationDemand)
+
     const initial = generator.preview(draft)
-    expect(initial.preview).toContain(`  information_demand "${business.id}" `)
+    expect(initial.preview).toContain('start_date')
+    expect(initial.preview).toContain(`message.SetSubType("${business.id}")`)
+    expect(mappedIds(previewJson(initial.preview, 'mapping.json'), 'devices', 'linkId')).toContain(link.id)
+    expect(mappedIds(previewJson(initial.preview, 'mapping.json'), 'businesses', 'demandId')).toEqual(expect.arrayContaining([business.id, otherBusiness.id, legacy.id]))
 
     link.enabled = false
-    const stoppedDraft = structuredClone(draft)
+    const beforeStopped = structuredClone(draft)
     const stopped = generator.preview(draft)
-    expect(stopped.preview).not.toContain(`  comm "${link.id}" `)
-    expect(stopped.preview).not.toContain(`  information_demand "${business.id}" `)
-    expect(stopped.preview).toContain(`  # 业务参数（参数记录） ${JSON.stringify(business)}`)
-    expect(stopped.preview).toContain(`  comm "${otherLink.id}" `)
-    expect(stopped.preview).toContain(`  information_demand "${otherBusiness.id}" `)
-    expect(stopped.preview).toContain(`  information_demand "${legacy.id}" `)
+    const mapping = previewJson(stopped.preview, 'mapping.json')
+    expect(mappedIds(mapping, 'devices', 'linkId')).not.toContain(link.id)
+    expect(mappedIds(mapping, 'devices', 'linkId')).toContain(otherLink.id)
+    expect(mappedIds(mapping, 'businesses', 'demandId')).not.toContain(business.id)
+    expect(mappedIds(mapping, 'businesses', 'demandId')).toEqual(expect.arrayContaining([otherBusiness.id, legacy.id]))
+    expect(JSON.stringify(previewJson(stopped.preview, 'input.json'))).toContain(`\"id\":\"${business.id}\"`)
+    expect(JSON.stringify(previewJson(stopped.preview, 'input.json'))).toContain(`\"linkId\":\"${link.id}\"`)
     expect(stopped.checksum).not.toBe(initial.checksum)
-    expect(draft).toEqual(stoppedDraft)
+    expect(draft).toEqual(beforeStopped)
 
     link.enabled = true
     const resumed = generator.preview(draft)
     expect(resumed.preview).toBe(initial.preview)
     expect(resumed.checksum).toBe(initial.checksum)
     expect(draft.config.informationDemand).toEqual(originalBusiness)
-    business.enabled = false
-    expect(generator.preview(draft).preview).not.toContain(`  information_demand "${business.id}" `)
   })
 
-  it('干扰默认禁用，总开关与单设备开关共同过滤且保留扫频触发参数', () => {
-    const result = new ScenarioProjection().get('SCN-001')
-    if (!result.ok) throw new Error('缺少场景夹具')
-    const draft = result.data
+  it('保留干扰触发和方向配置快照，生成映射反映总开关与设备开关', () => {
+    const draft = fixtureDraft()
     const generator = new ScriptProjection()
     draft.config.jammers.push({ ...draft.config.jammers[0]!, id: 'JAM-TEST-SECOND', type: 'SPOT' })
     draft.uiExtensions.jammers.push({ jammerId: 'JAM-TEST-SECOND', direction: 45, duration: 60, enabled: false })
@@ -77,94 +92,91 @@ describe('T-XQ-008 脚本结构预检', () => {
     draft.uiExtensions.jammers.forEach(item => { item.enabled = false })
     draft.uiExtensions.jammers[0]!.enabled = true
     const before = generator.preview(draft)
-    expect(before.preview).not.toContain('  jammer ')
-    expect(before.preview).toContain('"triggerTimeS":300')
+    expect(JSON.stringify(previewJson(before.preview, 'input.json'))).toContain('"triggerTimeS":300')
+    expect((previewJson(before.preview, 'mapping.json').jammers as Array<Record<string, unknown>>).find(item => item.jammerId === jammer.id)).toMatchObject({ configuredEnabled: false })
+
     draft.config.jammingEnabled = true
     const enabled = generator.preview(draft)
-    expect(enabled.preview).toContain(`  jammer ${JSON.stringify(jammer.id)} `)
-    expect(enabled.preview).toContain('type=SWEEP')
-    expect(enabled.preview).not.toContain(`  jammer ${JSON.stringify(draft.config.jammers[1]!.id)} `)
+    const jammers = previewJson(enabled.preview, 'mapping.json').jammers as Array<Record<string, unknown>>
+    expect(jammers.find(item => item.jammerId === jammer.id)).toMatchObject({ configuredEnabled: true, directionDeg: draft.uiExtensions.jammers[0]!.direction })
+    expect(jammers.find(item => item.jammerId === 'JAM-TEST-SECOND')).toMatchObject({ configuredEnabled: false })
     expect(enabled.checksum).not.toBe(before.checksum)
-    draft.config.jammingEnabled = false
-    expect(generator.preview(draft).preview).not.toContain('  jammer ')
-    expect(draft.uiExtensions.jammers[0]!.enabled).toBe(true)
   })
-  it('业务独立停用只过滤对应任务，方向与参数保留在预览中', () => {
-    const result = new ScenarioProjection().get('SCN-001')
-    if (!result.ok) throw new Error('缺少场景夹具')
-    const draft = result.data
+
+  it('业务独立停用只移出实际生成映射，输入快照仍保留方向和开关', () => {
+    const draft = fixtureDraft()
     const generator = new ScriptProjection()
-    const before = generator.preview(draft)
     const business = draft.config.informationDemand[0]!
-    business.direction = 'REVERSE'
     business.enabled = false
     const stopped = generator.preview(draft)
-    expect(stopped.preview).toContain('"direction":"REVERSE"')
-    expect(stopped.preview).not.toContain(`  information_demand ${JSON.stringify(business.id)} `)
-    expect(stopped.checksum).not.toBe(before.checksum)
+    expect(mappedIds(previewJson(stopped.preview, 'mapping.json'), 'businesses', 'demandId')).not.toContain(business.id)
+    expect(previewJson(stopped.preview, 'input.json')).toMatchObject({ config: { informationDemand: [{ id: business.id, enabled: false }] } })
     business.enabled = true
     const enabled = generator.preview(draft)
-    expect(enabled.preview).toContain(`  information_demand ${JSON.stringify(business.id)} `)
+    expect(mappedIds(previewJson(enabled.preview, 'mapping.json'), 'businesses', 'demandId')).toContain(business.id)
     expect(inspectScriptPreview(enabled.preview).valid).toBe(true)
   })
-  it('展示版本、路径、结构及一基行列错误', () => {
-    const result = inspectScriptPreview('# 错误头\nconfig_version 2.0\nscenario invalid {\n}')
 
+  it('预检识别原生入口、AFSIM 头、依赖和一基行列错误', () => {
+    const result = inspectScriptPreview('# 不是原生入口\ninclude_once comm_SimSetup.txt')
     expect(result.valid).toBe(false)
-    expect(result.errors.map((issue) => issue.code)).toEqual(expect.arrayContaining([
-      'SCRIPT_HEADER_INVALID',
-      'SCRIPT_VERSION_INVALID',
-      'SCRIPT_SCENARIO_INVALID',
-      'SCRIPT_OUTPUT_PATH_INVALID',
-    ]))
-    expect(result.errors.every((issue) => /^preview\[\d+:\d+\]$/.test(issue.fieldPath))).toBe(true)
-    expect(result.errors.every((issue) => /第 \d+ 行，第 \d+ 列/.test(issue.message))).toBe(true)
+    expect(result.errors.map(issue => issue.code)).toEqual(expect.arrayContaining(['SCRIPT_HEADER_INVALID', 'SCRIPT_ENTRY_INVALID', 'SCRIPT_AFSIM_HEADER_INVALID', 'SCRIPT_REFERENCE_INVALID', 'SCRIPT_OUTPUT_PATH_INVALID']))
+    expect(result.errors.every(issue => /^preview\[\d+:\d+\]$/.test(issue.fieldPath))).toBe(true)
+    expect(result.errors.every(issue => /第 \d+ 行，第 \d+ 列/.test(issue.message))).toBe(true)
   })
 
-  it('定位括号不匹配并覆盖空脚本的末行列号', () => {
-    const unclosed = inspectScriptPreview('# AFSIM 2.9.0 场景脚本预览；仅内存生成\nconfig_version 1.0\nscenario "SCN-TEST" {\n  output path="output/test" interval=1')
+  it('定位原生 AFSIM 块结构错误，并覆盖空预览的末行列号', () => {
+    const unclosed = inspectScriptPreview(['// ===== scenario.txt =====', 'include_once comm_SimSetup.txt', '// ===== comm_SimSetup.txt =====', 'start_date aug 06 2026', 'platform_type TEST {', '// ===== comm_PerDefinition.txt =====', '// ===== comm_platform_INS.txt =====', '// ===== observers.txt =====', '   file output/test.aer'].join('\n'))
     expect(unclosed.errors).toContainEqual(expect.objectContaining({ code: 'SCRIPT_STRUCTURE_INVALID' }))
-
-    const empty = inspectScriptPreview('')
-    expect(empty.errors).toContainEqual(expect.objectContaining({
-      code: 'SCRIPT_OUTPUT_PATH_INVALID',
-      fieldPath: 'preview[1:1]',
-    }))
+    expect(inspectScriptPreview('').errors).toContainEqual(expect.objectContaining({ code: 'SCRIPT_OUTPUT_PATH_INVALID', fieldPath: 'preview[1:1]' }))
   })
 
-  it('字符串字面量中的单侧花括号和转义引号不参与结构预检', () => {
-    const result = new ScenarioProjection().get('SCN-001')
-    if (!result.ok) throw new Error('缺少场景夹具')
-    result.data.config.scenario.name = '名称包含 { 和 \\"转义引号'
-    const preview = new ScriptProjection().preview(result.data).preview
+  it('忽略字符串与注释里的花括号，却能发现截断的原生块', () => {
+    const draft = fixtureDraft()
+    draft.config.scenario.name = '名称包含 { 和 \\"转义引号'
+    const preview = new ScriptProjection().preview(draft).preview
     expect(inspectScriptPreview(preview).valid).toBe(true)
-    const broken = inspectScriptPreview(preview.slice(0, preview.lastIndexOf('\n}')))
-    expect(broken.errors).toContainEqual(expect.objectContaining({ code: 'SCRIPT_STRUCTURE_INVALID', fieldPath: expect.stringMatching(/^preview\[\d+:\d+\]$/) }))
+    const snapshots = preview.indexOf('// ===== mapping.json =====')
+    const lastNativeClose = preview.lastIndexOf('\n}', snapshots)
+    const broken = preview.slice(0, lastNativeClose) + preview.slice(lastNativeClose + 2)
+    expect(inspectScriptPreview(broken).errors).toContainEqual(expect.objectContaining({ code: 'SCRIPT_STRUCTURE_INVALID', fieldPath: expect.stringMatching(/^preview\[\d+:\d+\]$/) }))
   })
 
-  it('生成完整预览并覆盖未知脚本、校验和和重置分支', () => {
-    const scenario = new ScenarioProjection().get('SCN-001')
-    expect(scenario.ok).toBe(true)
-    if (!scenario.ok) return
-    const projection = new ScriptProjection()
-    const script = projection.preview(scenario.data)
+  it('多余右括号定位到所在行列，末行注释里的括号不影响结构', () => {
+    const preview = new ScriptProjection().preview(fixtureDraft()).preview
+    const extraClose = `${preview}\n  }`
+    const line = extraClose.split('\n').length
+    expect(inspectScriptPreview(extraClose)).toMatchObject({ valid: false })
+    expect(inspectScriptPreview(extraClose).errors).toContainEqual(expect.objectContaining({
+      code: 'SCRIPT_STRUCTURE_INVALID', fieldPath: `preview[${line}:3]`,
+    }))
+    expect(inspectScriptPreview(`${preview}\n// 最后一行含未配对括号 } {，没有换行`).valid).toBe(true)
+  })
 
+  it('生成完整原生包预览并覆盖未知脚本、校验和和重置分支', () => {
+    const projection = new ScriptProjection()
+    const script = projection.preview(fixtureDraft())
     expect(script).toMatchObject({ scriptId: 'SCRIPT-P2-001', target: 'AFSIM 2.9.0' })
     expect(script.checksum).toMatch(/^FNV1A-MOCK-[0-9A-F]{8}$/)
-    expect(script.preview).toContain('platform "CMD-01"')
+    expect(script.preview).toContain('// ===== scenario.txt =====')
+    expect(script.preview).toContain('// ===== comm_SimSetup.txt =====')
+    expect(script.preview).toContain('platform_type ')
+    expect(script.preview).toContain('// ===== input.json =====')
+    expect(projection.get('SCRIPT-MISSING')).toBeUndefined()
+    const retrieved = projection.get(script.scriptId)!
+    expect(retrieved).toEqual(script)
+    retrieved.preview = '客户端修改副本'
+    expect(projection.get(script.scriptId)?.preview).toBe(script.preview)
     expect(projection.preflight(script.scriptId, 'FNV1A-MOCK-WRONG')).toMatchObject({ ok: false, fieldPath: 'checksum' })
     expect(projection.preflight('SCRIPT-MISSING', script.checksum)).toMatchObject({ ok: false, fieldPath: 'scriptId' })
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: true, data: { valid: true } })
-
     projection.reset()
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: false, fieldPath: 'scriptId' })
-    expect(projection.preview(scenario.data).scriptId).toBe('SCRIPT-P2-001')
+    expect(projection.preview(fixtureDraft()).scriptId).toBe('SCRIPT-P2-001')
   })
 
-  it('新参数影响预览校验和，停用链路和卫星保留配置但不生成通信段', () => {
-    const scenario = new ScenarioProjection().get('SCN-001')
-    if (!scenario.ok) throw new Error('缺少测试场景')
-    const draft = scenario.data
+  it('未映射配置仍在 input.json 可追溯，通信映射按停用链路和卫星过滤', () => {
+    const draft = fixtureDraft()
     const projection = new ScriptProjection()
     const before = projection.preview(draft)
     draft.config.linkSettings = readLinkSettings(draft.config)
@@ -173,29 +185,16 @@ describe('T-XQ-008 脚本结构预检', () => {
     enabledLink!.enabled = true
     draft.config.linkSettings.enabledSatellites.TIANTONG = false
     draft.config.linkSettings.enabledSatellites.SHENTONG = true
-    draft.config.platforms.push({ ...structuredClone(draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG', linkIds: [] })
+    draft.config.platforms.push({ ...structuredClone(draft.config.platforms.find(platform => platform.satelliteType === 'TIANTONG')!), id: 'SAT-ST', satelliteType: 'SHENTONG', linkIds: [] })
     draft.config.linkSettings.switchCooldownS = 8
-    draft.config.linkSettings.priority = ['SAT', 'LASER', 'DATALINK', 'MICROWAVE', 'FIBER']
-    draft.config.links[0]!.coding = 'CUSTOM-1/2'
-    draft.config.links[0]!.antennaGainCorrectionDb = -2
-    const satelliteLink = draft.config.links.find(link => link.type === 'SAT')!
-    const satelliteBusiness = draft.config.informationDemand[0]!
-    satelliteBusiness.linkId = satelliteLink.id
-    satelliteBusiness.sourcePlatformId = satelliteLink.sourcePlatformId
-    satelliteBusiness.destinationPlatformIds = [satelliteLink.targetPlatformId]
-    satelliteBusiness.direction = satelliteLink.direction
-    satelliteBusiness.enabled = true
     const after = projection.preview(draft)
+    const mapping = previewJson(after.preview, 'mapping.json')
     expect(after.checksum).not.toBe(before.checksum)
-    expect(after.preview).toContain('"switchCooldownS":8')
-    expect(after.preview).toContain('"coding":"CUSTOM-1/2"')
-    const communication = after.preview.split('\n').filter(line => line.startsWith('  comm '))
-    expect(communication.some(line => line.includes(JSON.stringify(disabledLink!.id)))).toBe(false)
-    expect(communication.some(line => line.includes(JSON.stringify(enabledLink!.id)))).toBe(true)
-    const satelliteId = draft.config.platforms.find(p => p.satelliteType === 'TIANTONG')!.id
-    expect(communication.some(line => line.includes(JSON.stringify(satelliteId)))).toBe(false)
-    expect(after.preview).not.toContain(`  information_demand ${JSON.stringify(satelliteBusiness.id)} `)
-    expect(satelliteBusiness.enabled).toBe(true)
-    expect(projection.preflight(after.scriptId, after.checksum)).toMatchObject({ ok: true, data: { valid: true } })
+    expect(JSON.stringify(previewJson(after.preview, 'input.json'))).toContain('"switchCooldownS":8')
+    expect(mappedIds(mapping, 'devices', 'linkId')).not.toContain(disabledLink!.id)
+    expect(mappedIds(mapping, 'devices', 'linkId')).toContain(enabledLink!.id)
+    expect(mappedIds(mapping, 'devices', 'linkId')).not.toEqual(expect.arrayContaining(draft.config.links.filter(link => link.type === 'SAT').map(link => link.id)))
+    expect(JSON.stringify(mapping)).toContain('"platformId":"SAT-01"')
+    expect(inspectScriptPreview(after.preview).valid).toBe(true)
   })
 })

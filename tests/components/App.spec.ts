@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
-import type { ApiSuccess, Batch, BatchRunResult, Replay, ScenarioConfig, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models'
+import type { ApiSuccess, Replay, ScenarioConfig, ScenarioDraft, SimulationRun } from '../../src/contracts/domain-models'
 
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
@@ -16,6 +16,8 @@ const mapControllerMock = vi.hoisted(() => ({
     setFilePlayback: vi.fn(),
     setFileDeviceStates: vi.fn(),
     setConfiguredLinks: vi.fn(),
+    setConfiguredLinkStatuses: vi.fn(),
+    setConfiguredJammers: vi.fn(),
     setSelectedNodeId: vi.fn(),
     focusTarget: vi.fn(),
     setLayerVisible: vi.fn(),
@@ -36,7 +38,6 @@ import App from '../../src/App.vue'
 import { APP_CONFIG } from '../../src/config/app.config'
 import { createAppRouter, routeRecords } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
-import { useBatchStore } from '../../src/stores/batch'
 import { useDataExchangeStore } from '../../src/stores/data-exchange'
 import { useReplayStore } from '../../src/stores/replay'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -109,7 +110,7 @@ describe('App shell', () => {
   })
 
   it.each([
-    ['showMasterData', '主数据管理'],
+    ['showMasterData', '基础数据管理'],
     ['showDatabaseBackup', '数据库备份 / 恢复'],
     ['showSimulationData', '仿真数据管理'],
     ['showRuntimeStatus', '系统运行状态'],
@@ -133,8 +134,9 @@ describe('App shell', () => {
         const hasEntry = role === 'ADMIN' || key === 'showDataExchange'
         expect(wrapper.find('nav a[href^="/admin"]').exists()).toBe(hasEntry)
         if (role === 'ADMIN') {
-          expect(items).toHaveLength(5)
-          expect(items).toEqual(expect.arrayContaining(['装备参数库', '场景模板维护', '操作审计日志', '账号管理', label]))
+          expect(items).toHaveLength(4)
+          expect(items).toEqual(expect.arrayContaining(['场景模板维护', '操作审计日志', '账号管理', label]))
+          expect(items).not.toContain('装备参数库')
           expect(wrapper.get('nav a[href="/admin"]').text()).toBe('系统管理')
         } else {
           expect(items).toEqual(hasEntry ? ['数据交换与接口'] : [])
@@ -170,7 +172,7 @@ describe('App shell', () => {
             requestId: 'REQ-APP',
             generatedAt: '2026-08-06T08:00:00Z',
             page: 1,
-            pageSize: Array.isArray(data) ? Math.max(1, data.length) : 1,
+            pageSize: url.includes('/admin/audit') ? 20 : Array.isArray(data) ? Math.max(1, data.length) : 1,
             total: Array.isArray(data) ? data.length : 1,
           },
         }),
@@ -194,7 +196,6 @@ describe('App shell', () => {
       '/login',
       '/situation',
       '/scenarios',
-      '/batches',
       '/reports',
       '/replays',
       '/admin',
@@ -206,8 +207,8 @@ describe('App shell', () => {
     expect(routeRecords.filter((record) => record.meta?.layout === 'standalone'))
       .toEqual([routeRecords[0]])
     expect(routeRecords[0]?.meta?.title).toBe('登录')
-    expect(routeRecords[8]?.meta?.title).toBe('数据交换与接口')
-    expect(routeRecords[10]?.meta?.title).toBe('感知、干扰与选路')
+    expect(routeRecords[7]?.meta?.title).toBe('数据交换与接口')
+    expect(routeRecords[9]?.meta?.title).toBe('感知、干扰与选路')
 
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -260,7 +261,6 @@ describe('App shell', () => {
     ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
     expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
-    expect(operatorWrapper.find('nav a[href="/batches"]').exists()).toBe(false)
     expect(operatorWrapper.find('nav a[href="/blueprint"]').exists()).toBe(false)
     expect(operatorWrapper.get('nav').text()).not.toMatch(/需求追踪矩阵|弹窗交互|登录页|可追溯性|交互管理/)
     expect(operatorWrapper.get('[data-testid="identity-username"]').text()).toBe('用户：operator')
@@ -306,6 +306,7 @@ describe('App shell', () => {
       permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'],
     })
 
+    APP_CONFIG.systemManagement.showMasterData = true
     const adminWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
     expect(adminWrapper.findAll('nav a').map((link) => link.text())).toEqual([
       '态势主界面', '场景配置', '历史回放', '系统管理',
@@ -323,14 +324,15 @@ describe('App shell', () => {
     expect(adminWrapper.get('.system-management-page').attributes('aria-labelledby')).toBeUndefined()
     const systemManagementNavigation = adminWrapper.get('[aria-label="系统管理导航"]')
     expect(systemManagementNavigation.findAll('.el-menu-item').map(item => item.text()))
-      .toEqual(['装备参数库', '场景模板维护', '操作审计日志', '账号管理'])
+      .toEqual(['基础数据管理', '场景模板维护', '操作审计日志', '账号管理'])
     expect(systemManagementNavigation.text()).not.toMatch(/数据与运行|数据交换/)
     expect(systemManagementNavigation.find('small').exists()).toBe(false)
     expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('账号管理')
 
     await router.push('/admin?section=equipment-library')
     await flushPromises()
-    expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('装备参数库')
+    expect(systemManagementNavigation.get('.el-menu-item.is-active').text()).toBe('基础数据管理')
+    expect(adminWrapper.get('[data-testid="basic-data-management"]').get('#tab-equipment').attributes('aria-selected')).toBe('true')
     expect(adminWrapper.get('[data-testid="equipment-library"]').attributes('aria-label')).toBe('装备参数库')
 
     await router.push('/admin?section=audit-logs')
@@ -341,7 +343,6 @@ describe('App shell', () => {
 
     const scenario = useScenarioStore(pinia)
     const simulation = useSimulationStore(pinia)
-    const batch = useBatchStore(pinia)
     const replay = useReplayStore(pinia)
     const dataExchange = useDataExchangeStore(pinia)
     scenario.$patch({ draft: scenarioDraft(), panelState: 'SUCCESS', dirty: true })
@@ -370,10 +371,6 @@ describe('App shell', () => {
         resourcesReleased: true,
       },
     })
-    batch.$patch({
-      batch: structuredClone(fixtureSource.batch) as Batch,
-      runs: structuredClone(fixtureSource.batchRuns) as BatchRunResult[],
-    })
     replay.$patch({ replay: structuredClone(fixtureSource.replay) as Replay, state: 'PAUSED' })
 
     await adminWrapper.get('[data-testid="logout"]').trigger('click')
@@ -387,7 +384,6 @@ describe('App shell', () => {
       jsonState: 'EMPTY', jsonResult: null,
       processState: 'EMPTY', processResult: null,
     })
-    expect(batch.$state).toMatchObject({ batch: null, runs: [], capabilityState: 'EMPTY' })
     expect(replay.$state).toMatchObject({ replay: null, events: [], state: 'EMPTY' })
     auth.$patch({
       principal: { userId: 'USR-OPERATOR-2', username: 'operator-2', role: 'OPERATOR', permissions: ['BUSINESS_READ'] },

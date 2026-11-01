@@ -30,14 +30,13 @@ export type Permission =
   | 'BUSINESS_READ' | 'SCENARIO_DRAFT_WRITE' | 'SIMULATION_CONTROL'
   | 'ORDINARY_REPORT_EXPORT' | 'OFFICIAL_TEMPLATE_MAINTAIN'
   | 'MASTER_DATA_MAINTAIN' | 'USER_ROLE_MAINTAIN'
-  | 'BACKUP_RESTORE' | 'AUDIT_READ' | 'FULL_CONFIG_EXPORT'
-  | 'BATCH_LEVEL_III_EXPORT';
+  | 'BACKUP_RESTORE' | 'AUDIT_READ' | 'FULL_CONFIG_EXPORT';
 export interface Principal { userId: Identifier; username: string; role: Role; permissions: readonly Permission[]; menuPaths?: string[]; }
 export interface RbacDecision { allowed: boolean; permission: Permission; reason?: 'PERMISSION_DENIED' | 'LAST_ADMIN_GUARD' | 'CONFIRMATION_REQUIRED'; }
 export interface LoginRequest { username: string; passwordFixture: string; }
 export interface AuthResult { authenticated: boolean; principal?: Principal; reason?: 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED'; sessionCreated: boolean; }
 
-/** Four business information-node roles counted by the 50-node capacity rule. */
+/** Four business information-node roles counted by the shared capacity rule. */
 export type BusinessInformationNodeType =
   | 'REAR_COMMAND_NODE' | 'FORWARD_RELAY_NODE'
   | 'GROUND_CLUSTER_COMMAND_NODE' | 'AIRBORNE_MISSION_CLUSTER';
@@ -52,10 +51,37 @@ export type LinkType = 'SAT' | 'MICROWAVE' | 'DATALINK' | 'LASER' | 'FIBER';
 export type InformationType = '态势信息' | '目标指令' | '侦察信息' | '状态信息';
 export type Modulation = 'BPSK' | 'QPSK';
 export type LinkDirection = 'FORWARD' | 'REVERSE';
+/** 激光链路的光学收发参数；波长由 frequency（MHz）换算，不重复存储。 */
+export interface LaserLinkParameters {
+  txApertureDiameterM: number;
+  rxApertureDiameterM: number;
+  pulseWidthS: number;
+  modulation: 'OOK';
+}
 /** SRS §3.5.3 Table 22 nested position object. */
 export interface Position { longitude: Degrees; latitude: Degrees; altitude: Meters; }
-export interface Waypoint extends Position { speed: MetersPerSecond; arrivalTime: Seconds; }
+export interface Waypoint extends Position {
+  speed: MetersPerSecond; arrivalTime: Seconds;
+  /** 航向角，0～360°；缺省时由运动器根据航线计算。 */
+  heading?: Degrees;
+  /** 期望加速度（m/s²）；当前候选原生路线没有一对一指令，保留用于支持该参数的运动器。 */
+  acceleration?: number;
+}
 export interface AntennaGain { tx: DecibelsIsotropic; rx: DecibelsIsotropic; }
+/** 可由基础数据快照填充的链路字段；来源元数据只记录显式应用的字段。 */
+export type LinkParameterField =
+  | 'frequency' | 'bandwidth' | 'txPower' | 'dataRate' | 'modulation' | 'berThreshold' | 'coding'
+  | 'rxFrequency' | 'rxBandwidth' | 'antennaGain.tx' | 'antennaGain.rx' | 'antennaGainCorrectionDb'
+  | 'noiseFigureDb' | 'txPolarization' | 'rxPolarization';
+/** 基础数据快照来源；目录实体的存在性和枚举 entryKey 的闭合由保存服务核对。 */
+export interface LinkParameterSource {
+  kind: 'EQUIPMENT' | 'MASTER_DATA';
+  sourceId: string;
+  sourceVersion: number;
+  fields: LinkParameterField[];
+  /** 仅 MASTER_DATA 枚举条目使用；未选择时不回退为任意默认项。 */
+  entryKey?: string;
+}
 export interface FrequencyRange { min: Megahertz; max: Megahertz; }
 export interface Environment {
   seaState: number; temperatureC: number; humidityPercent: Percent0To100;
@@ -96,11 +122,16 @@ export interface GeoPoint { longitude: Degrees; latitude: Degrees; }
 export interface ScenarioIdentity {
   id: ScenarioId; name: string; description: string; startTime: Iso8601Utc;
   duration: Seconds; timeStep: Seconds; environment: Environment;
+  /** 用户明确设置的任务阶段，区间不重叠；缺省时不推断阶段。 */
+  phases?: TaskPhase[];
 }
+export interface TaskPhase { id: Identifier; name: string; startTimeS: Seconds; endTimeS: Seconds; }
 export interface Platform {
   id: Identifier; name: string; type: PlatformType; category: DeploymentDomain; initialPosition: Position;
   /** 仅通信卫星使用；旧场景允许缺省，新增或编辑卫星时必须选择。 */
   satelliteType?: SatelliteType;
+  /** 初始航向角，0～360°；候选脚本以 platform heading 指令映射。 */
+  heading?: Degrees;
   waypoints: Waypoint[]; linkIds: Identifier[]; sensorIds: Identifier[]; jammerIds: Identifier[];
 }
 export interface Link {
@@ -109,6 +140,11 @@ export interface Link {
   enabled?: boolean;
   frequency: Megahertz; bandwidth: Megahertz; txPower: Watts; antennaGain: AntennaGain;
   modulation: Modulation; berThreshold: Ratio01; dataRate: MegabitsPerSecond; direction: LinkDirection;
+  /** 前向/返向独立传输速率；缺省时兼容历史 dataRate。 */
+  forwardDataRate?: MegabitsPerSecond;
+  reverseDataRate?: MegabitsPerSecond;
+  /** 仅 LASER 使用；通用 modulation 仍兼容既有 BPSK/QPSK 链路字段。 */
+  laser?: LaserLinkParameters;
   /** 链路增益修正，单位 dB；独立于收发天线绝对增益，缺省为 0。 */
   antennaGainCorrectionDb?: Decibels;
   /** 后端约定的编码标识；null 表示尚未指定，UNCODED 表示明确不编码。 */
@@ -128,6 +164,8 @@ export interface Link {
   rxPolarization?: Polarization;
   /** 接收机噪声系数（dB）；缺省时天通卫星 2 dB，其余 3 dB。 */
   noiseFigureDb?: Decibels;
+  /** 新增/编辑时用户选择的基础数据快照；旧场景可省略。 */
+  parameterSource?: LinkParameterSource;
 }
 export type DatalinkBand = 'C' | 'L';
 /** 链路切换触发条件：两端距离超过/低于阈值，或指定干扰设备开启/关闭。 */
@@ -147,6 +185,21 @@ export interface ScenarioLinkSettings {
   enabledTypes?: Record<Exclude<LinkType, 'FIBER'>, boolean> & { FIBER?: boolean };
   enabledSatellites: Record<SatelliteType, boolean>;
   switchCooldownS: Seconds;
+  /** 防抖：新链路须连续满足条件的检查次数；缺省按 3 帧。 */
+  switchStableChecks?: number;
+  /** 防抖：切换前复核选路结果一致；缺省 true，候选在稳定窗内变化时重新计数。 */
+  switchConsistencyCheck?: boolean;
+  /** 质量选路门限；缺省由 LINK_DECISION_DEFAULTS 补齐。 */
+  minimumGxbDb?: Decibels;
+  maximumBer?: Ratio01;
+  minimumGxbImprovementDb?: Decibels;
+  minimumBerImprovementFactor?: number;
+  switchCooldownFrames?: number;
+  minimumSpatialIsolationDb?: Decibels;
+  /** 可选的硬失效门限；未配置时不凭空把质量帧判为中断。 */
+  minimumReceivedPowerDbm?: Decibels;
+  failureGxbDb?: Decibels;
+  failureBer?: Ratio01;
   priority: LinkType[];
   /** 可配置的阶段切换规则；缺省表示只按优先级选主链路，不在仿真中切换。 */
   switchRules?: LinkSwitchRule[];
@@ -220,6 +273,8 @@ export interface LinkQualityData {
   pathLoss: Decibels; jammingPower: DecibelMilliwatts; receivedPower: DecibelMilliwatts;
   snr: Decibels; modulation: Modulation; ber: Ratio01; linkStatus: CanonicalLinkStatus;
   berThreshold: Ratio01; dataRate: MegabitsPerSecond;
+  /** 干信比（dB）、端到端时延（ms）、可用率（%）；引擎提供时展示，缺省显示“暂无数据”。 */
+  jsrDb?: Decibels; latencyMs?: number; availabilityPercent?: number;
 }
 export interface LinkStatusSummary {
   linkKey: string; sourcePlatform: Identifier; destPlatform: Identifier; linkType: LinkType;
@@ -246,7 +301,6 @@ export type CanonicalLinkStatus = 'UP' | 'DOWN';
 export type UiLinkStatus = CanonicalLinkStatus | 'DEGRADED';
 export type ConfirmationState = 'CLOSED' | 'AWAITING_CONFIRMATION' | 'CONFIRMED' | 'CANCELLED' | 'EXPIRED' | 'ERROR';
 export type ReplayState = 'EMPTY' | 'LOADING' | 'PAUSED' | 'PLAYING' | 'SEEKING' | 'COMPLETED' | 'CORRUPT' | 'ERROR';
-export type BatchState = 'DRAFT' | 'VALIDATING' | 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'PARTIAL_FAILURE' | 'CANCELLED' | 'ERROR';
 export type ConfigurationLockState = 'UNLOCKED' | 'LOCKING' | 'LOCKED' | 'UNLOCKING' | 'ERROR';
 export interface UiLinkProjection {
   linkId: Identifier; frameId: FrameId; status: UiLinkStatus; canonicalStatus: CanonicalLinkStatus;
@@ -260,16 +314,23 @@ export interface LinkStatusAggregateExtension {
 export interface ValidationIssue { severity: 'ERROR' | 'WARNING'; code: string; message: string; fieldPath: string; }
 export interface ValidationResult { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[]; }
 /** UI-only fields are kept beside, never inside, the canonical ScenarioConfig. */
-export interface JammerUiExtension { jammerId: Identifier; direction: Degrees; duration: Seconds; enabled: boolean; }
-export interface SensorUiExtension { sensorId: Identifier; type: 'ESM'; direction: 'OMNI' | Degrees; probability: Ratio01; enabled: boolean; }
+export interface JammerUiExtension {
+  jammerId: Identifier; direction: Degrees; duration: Seconds; enabled: boolean;
+  /** 干扰天线俯仰角，-10～60°；缺省为 0°。 */
+  elevation?: Degrees;
+}
+export interface NativeEsmSettings { sensitivityDbw: number; detectionThresholdDb: number; dwellTimeS: Seconds; revisitTimeS: Seconds; }
+export interface SensorUiExtension { sensorId: Identifier; type: 'ESM'; direction: 'OMNI' | Degrees; probability: Ratio01; enabled: boolean; esm?: NativeEsmSettings; }
 export interface ScenarioUiExtensions { jammers: JammerUiExtension[]; sensors: SensorUiExtension[]; }
+/** 本地场景文件格式，与纯 ScenarioConfig 导入保持兼容。 */
+export interface ScenarioSnapshot { format: 'wrj.scenario.snapshot'; version: 1; config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; }
 export interface ScenarioDraftUpdate { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; expectedRevision: number; }
 export interface ScenarioDraft { config: ScenarioConfig; uiExtensions: ScenarioUiExtensions; revision: number; officialLibraryChanged: false; locked: boolean; }
 export interface ScenarioTemplate { templateId: Identifier; name: string; version: string; official: boolean; config: ScenarioConfig; referenceCount: number; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface ScriptContract { scriptId: Identifier; taskId: TaskId; scenarioId: ScenarioId; configVersion: string; target: 'AFSIM 2.9.0'; checksum: string; preview: string; generatedTime: Iso8601Utc; }
 export interface ScenarioValidationRequest { config: ScenarioConfig; }
 export interface MutationRequest { expectedRevision: number; }
-export interface ScenarioImportRequest { items: ScenarioConfig[]; }
+export interface ScenarioImportRequest { items: Array<ScenarioConfig | ScenarioSnapshot>; }
 export interface ScenarioImportResult { imported: number; rejected: number; drafts: ScenarioDraft[]; }
 export interface TemplateMutationRequest { name: string; config: ScenarioConfig; uiExtensions?: ScenarioDraft['uiExtensions']; }
 export interface CopyTemplateRequest { name: string; scenarioId?: ScenarioId; }
@@ -282,7 +343,7 @@ export interface SimulationRun {
   runId: RunId; taskId: TaskId; scenarioId: ScenarioId; uiStatus: UiSimulationStatus;
   canonical: SimulationState; configLocked: boolean; startedAt?: Iso8601Utc; completedAt?: Iso8601Utc;
 }
-export type SimulationMode = 'INTERACTIVE_SINGLE' | 'BATCH_PARAMETER_TRAVERSAL' | 'PARAMETER_SCAN' | 'HISTORICAL_REPLAY';
+export type SimulationMode = 'INTERACTIVE_SINGLE' | 'PARAMETER_SCAN' | 'HISTORICAL_REPLAY';
 /** START requires mode; SET_SPEED requires speedMultiplier > 0; STEP requires stepCount=1. */
 export interface SimulationCommand {
   command: 'START' | 'PAUSE' | 'RESUME' | 'STEP' | 'STOP' | 'SET_SPEED';
@@ -359,15 +420,6 @@ export interface SwitchEvent {
   stabilityFrames: number; minimumStableFrames: number; hysteresisSatisfied: boolean; cooldownRemainingS: Seconds;
   decision: 'ACCEPTED' | 'REJECTED'; reason: string; dedupeKey: string;
 }
-export interface BatchRunResult {
-  runId: RunId; reportId: ReportId; powerW: Watts; distanceKm: Kilometers;
-  connectivityDurationS: Seconds; connectivityRate: Percent0To100; switchCount: number;
-  avgBer: Ratio01; maxBer: Ratio01; avgSnrDb: Decibels; minSnrDb: Decibels;
-  interferenceDurationS: Seconds; status: 'COMPLETED' | 'ERROR';
-}
-export interface Batch { batchId: Identifier; state: BatchState; runIds: RunId[]; reportIds: ReportId[]; aggregateReportId: ReportId; }
-export interface BatchRequest { scenarioId: ScenarioId; powersW: Watts[]; distancesKm: Kilometers[]; deterministicOrder: true; }
-export interface BatchCommand { command: 'START' | 'CANCEL'; }
 export type ReportClassification = 'LEVEL_II' | 'LEVEL_III';
 export interface ReportKpis {
   connectivityRate: Percent0To100; switchCount: number; avgBer: Ratio01; avgSnrDb: Decibels;
@@ -388,29 +440,62 @@ export interface LocalReportEvidence {
   waitingForPositionLine: boolean
   eventCount: number
   eventWarningCount: number
+  /** 大型 CSV 的事件分类计数与来源摘要完整，但逐消息明细未装入内存快照。旧快照省略时视为完整。 */
+  messageDetailsComplete?: boolean
+  messageDetailEventCount?: number
   nodes: Array<{ platformId: string; name: string; type: string; side: string; positionCount: number; firstTimeS: number; lastTimeS: number }>
+  /** 精确节点筛选中仅为关联登记保留的对端标识；不含位置或统计，避免混入节点范围。 */
+  relatedNodeIds?: string[]
   eventCounts: Array<{ type: string; count: number }>
   connections: Array<{ eventId: string; time: number; scope: 'INTERNAL' | 'INTER_PLATFORM'; sourcePlatformId: string; sourceDeviceId: string; targetPlatformId: string; targetDeviceId: string }>
   deviceEvents: Array<{ eventId: string; type: string; time: number; platformId: string; deviceId: string }>
+  /** ESM/传感器侦测规范事件（目标、频段、概率、时刻）；源文件未给出的字段为 null，不补默认值。旧报告省略。 */
+  detectionEvents?: LocalDetectionEvent[]
+  /** 链路切换事件；由引擎切换输出解析，旧报告或未发生切换时省略。 */
+  switchEvents?: LocalSwitchEvent[]
+  /** 评估指标；引擎提供质量与干扰输出时填写，缺省项在报表中显示“暂无数据”。 */
+  qualityKpis?: LocalQualityKpis
+}
+export interface LocalSwitchEvent {
+  eventId: string; time: number; demandId: string; ruleId: string | null; fromDeviceId: string; toDeviceId: string
+  fromLinkId: string | null; toLinkId: string | null; stableChecks: number | null
+}
+export interface LocalQualityKpis {
+  averageConnectedDurationS?: number; averageJsrDb?: number; averageBer?: number; jammingDurationS?: number
+}
+export interface LocalDetectionEvent {
+  eventId: string; time: number; type: string; platformId: string; sensorId: string; targetPlatformId: string | null
+  frequencyMinHz: number | null; frequencyMaxHz: number | null; probability: number | null; detected: boolean | null
 }
 export interface LocalReportExportResult {
   reportId: ReportId
   generated: true
   status: 'SUCCESS'
-  format: 'HTML' | 'CSV'
+  format: 'HTML' | 'PDF' | 'CSV'
   watermark: string
   verifiedAt: Iso8601Utc
   filePath: string
   sha256: string
 }
-export interface Report { reportId: ReportId; runId?: RunId; batchId?: Identifier; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; localEvidence?: LocalReportEvidence; }
-export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; }
+/** 真实运行结果的服务器端精确筛选条件；省略字段表示不过滤。 */
+export interface LocalReportFilter { nodeId?: string; linkId?: string; stage?: string; from?: number; to?: number; }
+/** 筛选后只返回有界时间线，聚合值始终由已绑定的结果索引计算。 */
+export interface LocalReportFilterResult {
+  report: Report
+  filter: LocalReportFilter
+  timeline: Array<{ id: string; time: number; type: string; subject: string; target?: string; device?: string; stage?: string }>
+  timelineTotal: number
+  stages: string[]
+  links: string[]
+}
+export interface Report { reportId: ReportId; runId?: RunId; classification: ReportClassification; generatedTime: Iso8601Utc; status: 'READY'; kpis?: ReportKpis; timeSeries?: ReportTimeSeries[]; localEvidence?: LocalReportEvidence; }
+export interface ReportExportRequest { reportId: ReportId; format: 'HTML' | 'PDF' | 'CSV'; confirmationId?: Identifier; filter?: LocalReportFilter; }
 export interface ReportExportResult { reportId: ReportId; generated: false; status: 'FIXTURE_SUCCESS'; watermark: string; verifiedAt: Iso8601Utc; }
 export interface Replay { replayId: ReplayId; runId: RunId; state: ReplayState; durationS: Seconds; currentTimeS: Seconds; eventIds: Identifier[]; }
 export interface ReplayCommand { command: 'PLAY' | 'PAUSE' | 'SEEK' | 'STEP_FORWARD' | 'STEP_BACK' | 'SPEED'; value?: number; }
 export type ConfirmationAction =
   | 'SCENARIO_WARNING_CONTINUE' | 'OFFICIAL_TEMPLATE_DELETE' | 'SIMULATION_STOP'
-  | 'MASTER_DATA_DELETE' | 'BATCH_LEVEL_III_EXPORT' | 'BACKUP_RESTORE' | 'FULL_CONFIG_EXPORT' | 'AUDIT_EXPORT';
+  | 'MASTER_DATA_DELETE' | 'BACKUP_RESTORE' | 'FULL_CONFIG_EXPORT' | 'AUDIT_EXPORT';
 export interface ConfirmationRequest { action: ConfirmationAction; objectId: Identifier; }
 export interface ConfirmationContext { confirmationId: Identifier; state: ConfirmationState; actor: string; role: Role; createdAt: Iso8601Utc; expiresAt: Iso8601Utc; }
 
@@ -422,7 +507,7 @@ export interface MasterData { dataId: Identifier; kind: string; version: number;
 export interface MasterDataReference { dataId: Identifier; dataVersion: number; targetType: 'SCENARIO' | 'TEMPLATE'; targetId: Identifier; targetVersion: string; }
 export interface MasterDataTarget { targetType: 'SCENARIO' | 'TEMPLATE'; targetId: Identifier; targetVersion: string; name: string; }
 export interface MasterDataDetails { dataId: Identifier; history: MasterData[]; references: MasterDataReference[]; }
-/** 管理员维护的装备默认参数；空值表示未配置，不代表零。频率单位 MHz，阈值为 BER。 */
+/** 管理员维护的装备默认参数；空值表示未配置，不代表零。频率单位 MHz，阈值为 BER。旧记录缺省 active 视为启用。 */
 export interface EquipmentParameter {
   equipmentId: string
   type: string
@@ -433,9 +518,13 @@ export interface EquipmentParameter {
   bandwidthMHz?: number | null
   txPowerW?: number | null
   dataRateMbps?: number | null
+  /** false 表示不再可被新场景选用或新登记引用；既有引用和历史保持原状。 */
+  active?: boolean
   readOnly: boolean
   version: number
 }
+/** 新建或编辑链路时可选择的基础数据目录快照。 */
+export interface ScenarioParameterCatalog { equipment: EquipmentParameter[]; masterData: MasterData[]; }
 export interface MasterDataRequest { operation: 'CREATE' | 'UPDATE' | 'DELETE'; data: MasterData; confirmationId?: Identifier; }
 export interface EquipmentReference { equipmentId: string; scenarioId: string; linkId: string; equipmentVersion: number; }
 export interface EquipmentDetails { history: EquipmentParameter[]; references: EquipmentReference[]; }
@@ -453,6 +542,8 @@ export interface AuditRecord { auditId: Identifier; actor: string; role: Role; m
 export interface AuditRequest { from?: Iso8601Utc; to?: Iso8601Utc; actor?: string; role?: Role; module?: string; action?: string; result?: AuditRecord['result']; export?: boolean; confirmationId?: Identifier; }
 export interface AuditExportRequest extends AuditRequest { export: true; confirmationId: Identifier; }
 export interface AuditExportResult { objectId: 'AUDIT-LOG'; generated: true; classification: 'INTERNAL'; watermark: string; verifiedAt: Iso8601Utc; fileName: string; content: string; recordCount: number; }
+export interface AuditDeleteRequest { auditIds: Identifier[]; }
+export interface AuditDeleteResult { deletedIds: Identifier[]; }
 export interface SystemHealth { ui: 'HEALTHY'; engine: 'NOT_CONNECTED_BY_DESIGN'; database: 'NOT_CONNECTED_BY_DESIGN'; channel: 'NOT_CONNECTED_BY_DESIGN'; }
 export interface ArchiveRecord { archiveId: ArchiveId; taskId: TaskId; scenarioId: ScenarioId; runId: RunId; replayId: ReplayId; reportId: ReportId; status: 'INDEXED'; }
 /** 真实文件快照不借用任务或运行编号；保留旧 ArchiveRecord 供旧合同读取。 */
@@ -481,7 +572,7 @@ export type ApiErrorCode =
   | 'INVALID_TRANSITION' | 'NODE_LIMIT_EXCEEDED' | 'DUPLICATE_EVENT' | 'VERSION_CONFLICT' | 'FRAME_MISMATCH'
   | 'HEADER_INVALID' | 'TYPE_INVALID' | 'ENCODING_INVALID' | 'ATOMIC_REPLACE_FAILED'
   | 'START_FAILED' | 'INTERNAL_ERROR' | 'TIMEOUT' | 'EXIT_NONZERO' | 'CORRUPT_FIXTURE'
-  | 'OUT_OF_RANGE' | 'DEVICE_DISABLED'
+  | 'OUT_OF_RANGE' | 'DEVICE_DISABLED' | 'FILTER_UNSUPPORTED'
   | 'LOOPBACK_ONLY' | 'TOPIC_FORBIDDEN' | 'SEQUENCE_GAP' | 'INTERNAL_FIXTURE_ERROR';
 export interface ListRequest { page?: number; pageSize?: number; query?: string; }
 export interface IdRequest<TId extends Identifier = Identifier> { id: TId; }
@@ -496,7 +587,7 @@ export interface ContractDescriptor { name: string; version: string; sourceRef: 
 export type WsTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event';
 export type WsConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'SUBSCRIBED' | 'RETRYING' | 'FAILED';
 export interface RealtimeEnvelope<T> { type: string; schemaVersion: '1.0'; topic: WsTopic; taskId: TaskId; sequence: SequenceNumber; simulationTime?: Seconds; frameId?: FrameId; payload: T; }
-export interface WsSubscribeRequest { type: 'subscribe'; schemaVersion: '1.0'; taskId: TaskId; topics: WsTopic[]; lastSequence?: SequenceNumber; }
+export interface WsSubscribeRequest { type: 'subscribe'; schemaVersion: '1.0'; taskId: TaskId; topics: WsTopic[]; lastSequence?: SequenceNumber; lastSequences?: Partial<Record<WsTopic, SequenceNumber>>; }
 export interface WsRejection { type: 'rejected'; code: 'LOOPBACK_ONLY' | 'TOPIC_FORBIDDEN' | 'INVALID_ENVELOPE' | 'SEQUENCE_GAP'; message: string; closeCode: 1008; }
 
 export interface FixtureValidationLink {
@@ -514,7 +605,6 @@ export interface FileArchiveFixture {
   fileId: Identifier; taskId: TaskId; contract: 'link_quality.csv' | 'events.csv' | 'link_switch.csv';
   status: 'VALID_FIXTURE'; createdAt: Iso8601Utc;
 }
-export interface BatchReportLink { reportId: ReportId; runId: RunId; }
 export interface ResetFixture {
   method: 'POST'; path: '/api/v1/reset'; requestId: 'REQ-RESET-001';
   responseGeneratedAt: Iso8601Utc; nextSequence: 1;
@@ -541,14 +631,15 @@ export interface DeterministicFixtureSet {
   backups: BackupRecord[]; audit: AuditRecord[]; diagnostics: SystemHealth; scenarioCoverage: ScenarioCoverageFixture;
   scenario: ScenarioConfig; task: TaskFixture; script: ScriptContract; run: SimulationRun;
   frame: TelemetryFrame; events: Array<DetectionEvent | SwitchEvent>; replay: Replay;
-  report: Report; archive: ArchiveRecord; batch: Batch;
-  batchRuns: BatchRunResult[]; batchReports: BatchReportLink[]; batchAggregateReport: Report;
+  report: Report; archive: ArchiveRecord;
   reset: ResetFixture; metadata: FixtureMetadata; contracts: FixtureContracts;
 }
 
-export const LINK_QUALITY_CSV_HEADER = 'Time,SourcePlatform,DestPlatform,LinkType,Frequency,Bandwidth,Distance,TxPower,TxAntennaGain,RxAntennaGain,PathLoss,JammingPower,ReceivedPower,SNR,Modulation,BER,LinkStatus,BERThreshold,DataRate' as const;
-export const EVENTS_CSV_HEADER = 'Time,EventType,SourcePlatform,TargetPlatform,Status,Power,Frequency,Bandwidth,Parameters' as const;
-export const LINK_SWITCH_CSV_HEADER = 'Time,SourcePlatform,DestPlatform,Direction,OldLinkType,NewLinkType,OldBER,NewBER,SwitchReason' as const;
+export const LINK_QUALITY_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,Frequency,Bandwidth,Distance,TxPower,TxAntennaGain,RxAntennaGain,PathLoss,JammingPower,ReceivedPower,SNR,GXB,Modulation,BER,LinkStatus,BERThreshold,DataRate' as const;
+export const EVENTS_CSV_HEADER = 'task_id,SchemaVersion,Time,EventType,SourcePlatform,TargetPlatform,Status,Power,Frequency,Bandwidth,Parameters' as const;
+export const LINK_SWITCH_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,Direction,OldLinkType,NewLinkType,OldBER,NewBER,SwitchReason' as const;
+export const LINK_STATE_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,LinkStatus,GXB,BER,ReceivedPower' as const;
+export const LINK_LOSS_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,FreeSpaceLoss,SeaMultipathLoss,AtmosphericLoss,CloudRainLoss,JammingLoss,TotalLoss' as const;
 
 /** Signatures only: later adapters own validation and projection implementations. */
 export declare function projectUiSimulationStatus(status: UiSimulationStatus): CanonicalSimulationStatus;

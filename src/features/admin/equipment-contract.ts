@@ -1,12 +1,17 @@
 import type { EquipmentDetails, EquipmentParameter, EquipmentReference } from '../../contracts/domain-models'
 import { isAdminObject, isAdminText } from './admin-contract'
+import { equipmentLinkIssues } from './equipment-link-rules'
 
 /** 前后端共享写入与响应校验，不解析展示字符串为数值，不接受额外字段。 */
-export function equipmentIssue(value: unknown): { fieldPath: string; message: string } | null {
+export function equipmentIssue(value: unknown, mode: 'read' | 'write' = 'read'): { fieldPath: string; message: string } | null {
   const issue = (fieldPath: string, message: string) => ({ fieldPath, message })
-  if (!isAdminObject(value, ['equipmentId', 'type', 'frequencyMinMHz', 'frequencyMaxMHz', 'modulation', 'berThreshold', 'readOnly', 'version'], ['bandwidthMHz', 'txPowerW', 'dataRateMbps'])) return issue('equipment', '装备参数结构不正确。')
+  if (!isAdminObject(value, ['equipmentId', 'type', 'frequencyMinMHz', 'frequencyMaxMHz', 'modulation', 'berThreshold', 'readOnly', 'version'], ['bandwidthMHz', 'txPowerW', 'dataRateMbps', 'active'])) return issue('equipment', '装备参数结构不正确。')
   if (typeof value.equipmentId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(value.equipmentId)) return issue('equipmentId', '编号须为 1–64 位字母、数字、下划线或连字符，首位为字母或数字。')
   if (!isAdminText(value.type) || value.type.length > 100) return issue('type', '请填写 1–100 字的装备类型。')
+  if (mode === 'write') {
+    const first = Object.entries(equipmentLinkIssues(value as unknown as EquipmentParameter))[0]
+    if (first) return issue(first[0], first[1])
+  }
   for (const key of ['frequencyMinMHz', 'frequencyMaxMHz'] as const) {
     const number = value[key]
     if (number !== null && (typeof number !== 'number' || !Number.isFinite(number) || number <= 0)) return issue(key, '频率必须为有限正数，未配置请留空。')
@@ -22,8 +27,14 @@ export function equipmentIssue(value: unknown): { fieldPath: string; message: st
     }
   }
   if (typeof value.readOnly !== 'boolean') return issue('readOnly', '只读标记不正确。')
+  if (value.active !== undefined && typeof value.active !== 'boolean') return issue('active', '启用状态不正确。')
   if (!Number.isSafeInteger(value.version) || Number(value.version) < 1) return issue('version', '版本须为正整数。')
   return null
+}
+
+/** 旧版持久化记录没有 active 字段时，保持其既有可用语义。 */
+export function isEquipmentActive(value: Pick<EquipmentParameter, 'active'>): boolean {
+  return value.active !== false
 }
 
 export function isEquipmentParameter(value: unknown): value is EquipmentParameter {

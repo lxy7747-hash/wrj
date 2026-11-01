@@ -7,7 +7,6 @@ import fixtureSource from '../../frontend-technical-design-v1/contracts/determin
 import App from '../../src/App.vue'
 import AdminPage from '../../src/pages/admin/admin.vue'
 import AdminDataExchangePage from '../../src/pages/admin-data-exchange/admin-data-exchange.vue'
-import BatchesPage from '../../src/pages/batches/batches.vue'
 import BlueprintPage from '../../src/pages/blueprint/blueprint.vue'
 import InteractionsPage from '../../src/pages/interactions/interactions.vue'
 import LoginPage from '../../src/pages/login/login.vue'
@@ -135,13 +134,12 @@ describe('P1 authentication and routing', () => {
     vi.restoreAllMocks()
   })
 
-  it('defines exactly the frozen 11 named routes', async () => {
-    expect(routeRecords).toHaveLength(11)
+  it('defines the remaining named routes', async () => {
+    expect(routeRecords).toHaveLength(10)
     expect(routeRecords.map(({ name, path, beforeEnter, meta }) => ({ name, path, beforeEnter, meta }))).toEqual([
       { name: 'login', path: '/login', beforeEnter: undefined, meta: { title: '登录', guard: 'public', layout: 'standalone' } },
       { name: 'situation', path: '/situation', beforeEnter: requirePrincipal, meta: { title: '态势展示', guard: 'principal', layout: 'workspace' } },
       { name: 'scenarios', path: '/scenarios', beforeEnter: requirePrincipal, meta: { title: '场景管理', guard: 'principal', layout: 'workspace' } },
-      { name: 'batches', path: '/batches', beforeEnter: requirePrincipal, meta: { title: '批量仿真', guard: 'principal', layout: 'workspace' } },
       { name: 'reports', path: '/reports', beforeEnter: requirePrincipal, meta: { title: '评估报表', guard: 'principal', layout: 'workspace' } },
       { name: 'replays', path: '/replays', beforeEnter: requirePrincipal, meta: { title: '历史回放', guard: 'principal', layout: 'workspace' } },
       { name: 'admin', path: '/admin', beforeEnter: requireAdmin, meta: { title: '用户与角色', guard: 'admin', layout: 'workspace' } },
@@ -153,7 +151,7 @@ describe('P1 authentication and routing', () => {
     expect(routeRecords[0]?.component).toBe(LoginPage)
 
     const lazyComponents = routeRecords.slice(1).map((record) => record.component)
-    const pageComponents = [SituationPage, ScenariosPage, BatchesPage, ReportsPage, ReplaysPage, AdminPage, BlueprintPage, AdminDataExchangePage, TraceabilityPage, InteractionsPage]
+    const pageComponents = [SituationPage, ScenariosPage, ReportsPage, ReplaysPage, AdminPage, BlueprintPage, AdminDataExchangePage, TraceabilityPage, InteractionsPage]
     expect(lazyComponents.every((component) => typeof component === 'function')).toBe(true)
     await Promise.all(lazyComponents.map(async (component, index) => {
       expect((await (component as () => Promise<{ default: unknown }>)()).default).toBe(pageComponents[index])

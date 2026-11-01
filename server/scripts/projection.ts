@@ -5,8 +5,7 @@ import type {
   ValidationIssue,
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
-import { isConfiguredLinkEnabled, LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings.js'
-import { configuredScenarioOutput } from '../../src/config/app.config.js'
+import { buildMissionPackage, SCENARIO_PREVIEW_FILE } from './mission-generator.js'
 
 export type ScriptProjectionResult<T> =
   | { ok: true; data: T }
@@ -24,86 +23,80 @@ function fnv1aMockChecksum(value: string): string {
   return `FNV1A-MOCK-${(hash >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
 }
 
-/** 从当前完整草稿生成不访问文件或进程的 AFSIM 文本预览。 */
-function buildPreview(draft: ScenarioDraft): string {
-  const config = { ...draft.config, output: configuredScenarioOutput(draft.config.scenario.timeStep) }
-  const linkSettings = readLinkSettings(config)
-  const lines = [
-    '# AFSIM 2.9.0 场景脚本预览；仅内存生成',
-    `config_version ${config.schemaVersion}`,
-    `scenario ${JSON.stringify(config.scenario.id)} {`,
-    `  name ${JSON.stringify(config.scenario.name)}`,
-    `  start_time ${JSON.stringify(config.scenario.startTime)}`,
-    `  duration ${config.scenario.duration}s`,
-    `  time_step ${config.scenario.timeStep}s`,
-    `  environment sea_state=${config.scenario.environment.seaState} temperature=${config.scenario.environment.temperatureC} humidity=${config.scenario.environment.humidityPercent} rain_rate=${config.scenario.environment.rainRateMmPerHour} rain_loss=${config.scenario.environment.rainLossDbPerKm} multipath=${config.scenario.environment.multipathEnabled}`,
-  ]
-  config.platforms.forEach((platform) => {
-    lines.push(`  platform ${JSON.stringify(platform.id)} type=${platform.type} domain=${platform.category} position=${platform.initialPosition.longitude},${platform.initialPosition.latitude},${platform.initialPosition.altitude}`)
-    platform.waypoints.forEach((waypoint) => {
-      lines.push(`    waypoint ${waypoint.longitude},${waypoint.latitude},${waypoint.altitude} speed=${waypoint.speed} arrival=${waypoint.arrivalTime}`)
-    })
-  })
-  // 真实 AFSIM 映射待后端规则确认；注释保留全部输入，不伪造引擎指令。
-  lines.push(`  # 链路设置（参数记录） ${JSON.stringify(linkSettings)}`)
-  const excludedLinkIds = new Set<string>()
-  config.links.forEach((link) => {
-    const enabled = isConfiguredLinkEnabled(link, linkSettings, config.platforms)
-    lines.push(`  # 链路参数（参数记录） ${JSON.stringify({ ...LINK_PARAMETER_DEFAULTS, ...link, enabled: readLinkEnabled(link, linkSettings), participates: enabled })}`)
-    if (!enabled) {
-      excludedLinkIds.add(link.id)
-      return
-    }
-    lines.push(`  comm ${JSON.stringify(link.id)} type=${link.type} source=${JSON.stringify(link.sourcePlatformId)} target=${JSON.stringify(link.targetPlatformId)} frequency=${link.frequency}MHz bandwidth=${link.bandwidth}MHz power=${link.txPower}W rate=${link.dataRate}Mbps`)
-  })
-  lines.push(`  # 干扰总开关（参数记录） ${config.jammingEnabled ?? false}`)
-  config.jammers.forEach((jammer) => {
-    const extension = draft.uiExtensions.jammers.find(item => item.jammerId === jammer.id)
-    const enabled = (config.jammingEnabled ?? false) && (extension?.enabled ?? true)
-    // 扫频和触发时刻只记录配置，不伪造真实 AFSIM 时序或扫频指令。
-    lines.push(`  # 干扰参数（参数记录） ${JSON.stringify({ ...jammer, direction: extension?.direction, duration: extension?.duration, enabled })}`)
-    if (!enabled) return
-    lines.push(`  jammer ${JSON.stringify(jammer.id)} platform=${JSON.stringify(jammer.platformId)} type=${jammer.type} frequency=${jammer.frequency}MHz bandwidth=${jammer.bandwidth}MHz power=${jammer.defaultPower}W range=${jammer.detectionRange}m`)
-  })
-  config.sensors.forEach((sensor) => {
-    lines.push(`  sensor ${JSON.stringify(sensor.id)} platform=${JSON.stringify(sensor.platformId)} frequency=${sensor.frequencyRange.min}..${sensor.frequencyRange.max}MHz range=${sensor.detectionRange}m`)
-  })
-  config.informationDemand.forEach((demand) => {
-    // 仅在生成阶段联动过滤，不修改业务配置；旧版未关联业务仍按自身开关处理。
-    lines.push(`  # 业务参数（参数记录） ${JSON.stringify(demand)}`)
-    if (demand.enabled === false) return
-    if (demand.linkId !== undefined && excludedLinkIds.has(demand.linkId)) return
-    lines.push(`  information_demand ${JSON.stringify(demand.id)} source=${JSON.stringify(demand.sourcePlatformId)} destinations=${demand.destinationPlatformIds.map((id) => JSON.stringify(id)).join(',')} type=${JSON.stringify(demand.informationType)} volume=${demand.volumeMb}MB frequency=${demand.frequencyHz}Hz priority=${demand.priority} latency=${demand.maxLatencyMs}ms rate=${demand.minDataRateMbps}Mbps`)
-  })
-  lines.push(`  output path=${JSON.stringify(config.output.directory)} interval=${config.output.writeInterval}s link_quality=${config.output.linkQualityEnabled} events=${config.output.eventsEnabled} link_switch=${config.output.linkSwitchEnabled}`)
-  lines.push('}')
-  return lines.join('\n')
+/** 将生成包中的 JSON 仅作为预览注释附加，不把参数快照伪装为 AFSIM 语法。 */
+function commentedJsonSection(name: string, guidance: string, content: string): string {
+  return [`// ===== ${name} =====`, `// ${guidance}`,
+    ...content.trimEnd().split('\n').map(line => `// ${line}`), ''].join('\n')
 }
 
-/** 对脚本预览执行结构、版本、输出路径和括号预检。 */
+/** 从生成器构建可展开的真实 scenario.txt 及其依赖内容，不访问文件或启动进程。 */
+function buildPreview(draft: ScenarioDraft): string {
+  const generated = buildMissionPackage(draft)
+  const generatedFiles: Record<string, string> = generated.files
+  const files = [SCENARIO_PREVIEW_FILE, ...generated.manifest.scriptFiles.filter(name => name !== SCENARIO_PREVIEW_FILE)]
+  const nativeSections = files.map((name) => `// ===== ${name} =====\n${generatedFiles[name] ?? ''}`)
+  const snapshots = [
+    commentedJsonSection('mapping.json', '生成映射快照：仅列出本次实际写入原生脚本的实体、通信和业务。', generatedFiles['mapping.json'] ?? '{}'),
+    commentedJsonSection('input.json', '配置快照：未映射字段不代表引擎生效；生成预览未执行引擎校验。', generatedFiles['input.json'] ?? '{}'),
+  ]
+  return [...nativeSections, ...snapshots].join('\n')
+}
+
+function previewLocation(preview: string, offset: number): { line: number; column: number } {
+  const prefix = preview.slice(0, offset)
+  return { line: prefix.split('\n').length, column: offset - prefix.lastIndexOf('\n') }
+}
+
+/** 只检查原生脚本段；注释中的 JSON 快照和说明不参与 AFSIM 块结构判断。 */
+function inspectNativeStructure(preview: string, addError: (code: string, message: string, line: number, column?: number) => void): void {
+  const openings: number[] = []
+  let quoted = false
+  let escaped = false
+  for (let index = 0; index < preview.length; index += 1) {
+    const character = preview[index]!
+    if (escaped) { escaped = false; continue }
+    if (quoted && character === '\\') { escaped = true; continue }
+    if (character === '"') { quoted = !quoted; continue }
+    if (!quoted && character === '/' && preview[index + 1] === '/') {
+      const lineEnd = preview.indexOf('\n', index)
+      if (lineEnd < 0) break
+      index = lineEnd
+      continue
+    }
+    if (quoted) continue
+    if (character === '{') openings.push(index)
+    if (character === '}') {
+      if (openings.length > 0) openings.pop()
+      else {
+        const location = previewLocation(preview, index)
+        addError('SCRIPT_STRUCTURE_INVALID', '原生脚本存在未匹配的右花括号。', location.line, location.column)
+        return
+      }
+    }
+  }
+  if (openings.length > 0) {
+    const location = previewLocation(preview, preview.length)
+    addError('SCRIPT_STRUCTURE_INVALID', '原生脚本存在未闭合的块结构。', location.line, location.column)
+  }
+}
+
+/** 对与本机生成包同源的 scenario.txt 预览执行入口、依赖和输出路径预检。 */
 export function inspectScriptPreview(preview: string): ValidationResult {
   const lines = preview.split('\n')
   const errors: ValidationIssue[] = []
   const addError = (code: string, message: string, line: number, column = 1): void => {
     errors.push({ severity: 'ERROR', code, message: `第 ${line} 行，第 ${column} 列：${message}`, fieldPath: `preview[${line}:${column}]` })
   }
-  if (lines[0] !== '# AFSIM 2.9.0 场景脚本预览；仅内存生成') addError('SCRIPT_HEADER_INVALID', '脚本头结构不正确。', 1)
-  if (lines[1] !== 'config_version 1.0') addError('SCRIPT_VERSION_INVALID', '脚本配置版本必须为 1.0。', 2)
-  if (!lines.some((line) => /^scenario "SCN-[^"]+" \{$/.test(line))) addError('SCRIPT_SCENARIO_INVALID', '缺少有效场景结构。', 3)
-  const outputLine = lines.findIndex((line) => /^  output path=".+" interval=/.test(line))
-  if (outputLine < 0) addError('SCRIPT_OUTPUT_PATH_INVALID', '缺少有效输出路径合同。', Math.max(1, lines.length - 1))
-  let openBraces = 0
-  let closeBraces = 0
-  let quoted = false
-  let escaped = false
-  for (const character of preview) {
-    if (escaped) { escaped = false; continue }
-    if (quoted && character === '\\') { escaped = true; continue }
-    if (character === '"') { quoted = !quoted; continue }
-    if (!quoted && character === '{') openBraces += 1
-    if (!quoted && character === '}') closeBraces += 1
+  if (lines[0] !== `// ===== ${SCENARIO_PREVIEW_FILE} =====`) addError('SCRIPT_HEADER_INVALID', '脚本入口结构不正确。', 1)
+  if (!lines.some(line => line === 'include_once comm_SimSetup.txt')) addError('SCRIPT_ENTRY_INVALID', '缺少 comm_SimSetup.txt 入口引用。', 1)
+  if (!lines.some(line => line === '// ===== comm_SimSetup.txt =====')) addError('SCRIPT_ENTRY_INVALID', '缺少 comm_SimSetup.txt 原生脚本段。', 1)
+  if (!lines.some(line => /^start_date \S+ \d+ \d+$/.test(line))) addError('SCRIPT_AFSIM_HEADER_INVALID', '缺少 AFSIM start_date 头。', 1)
+  for (const name of ['comm_PerDefinition.txt', 'comm_platform_INS.txt', 'observers.txt']) {
+    if (!lines.some(line => line === `// ===== ${name} =====`)) addError('SCRIPT_REFERENCE_INVALID', `缺少 ${name} 引用内容。`, 1)
   }
-  if (openBraces !== closeBraces) addError('SCRIPT_STRUCTURE_INVALID', '脚本结构括号不匹配。', lines.length, (lines.at(-1)?.length ?? 0) + 1)
+  const outputLine = lines.findIndex((line) => /^   file .+\.aer$/.test(line))
+  if (outputLine < 0) addError('SCRIPT_OUTPUT_PATH_INVALID', '缺少有效输出路径合同。', Math.max(1, lines.length - 1))
+  inspectNativeStructure(preview, addError)
   return { valid: errors.length === 0, errors, warnings: [] }
 }
 

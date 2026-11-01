@@ -13,6 +13,9 @@ export interface LocalReplaySnapshot {
   issueCount: number
   issues: Array<{ line: number; message: string }>
   waitingForLine: boolean
+  /** false 表示大型来源的消息分类统计完整，但逐消息动画未装入该回放快照。 */
+  messageDetailsComplete?: boolean
+  messageDetailEventCount?: number
 }
 
 /**
@@ -28,6 +31,9 @@ export function isLocalReplaySnapshot(value: unknown): value is LocalReplaySnaps
     || typeof snapshot.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.sha256)
     || !Number.isFinite(snapshot.durationS) || snapshot.durationS < 0
     || ![snapshot.recordCount, snapshot.issueCount].every((n) => Number.isSafeInteger(n) && n >= 0)
+    || (snapshot.messageDetailsComplete !== undefined && typeof snapshot.messageDetailsComplete !== 'boolean')
+    || (snapshot.messageDetailEventCount !== undefined && (!Number.isSafeInteger(snapshot.messageDetailEventCount) || snapshot.messageDetailEventCount < 0))
+    || (snapshot.messageDetailsComplete === false && snapshot.messageDetailEventCount === undefined)
     || typeof snapshot.waitingForLine !== 'boolean' || !Array.isArray(snapshot.tracks)
     || !Array.isArray(snapshot.issues) || snapshot.issues.length > snapshot.issueCount
     || !snapshot.issues.every((issue) => issue && Number.isSafeInteger(issue.line) && issue.line > 0 && typeof issue.message === 'string')) return false

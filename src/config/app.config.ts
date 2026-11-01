@@ -5,11 +5,12 @@ export const APP_CONFIG = {
   showReports: true,
   /** 系统管理可选入口；只控制显隐，不改变路由和角色权限。 */
   systemManagement: {
-    showMasterData: false, // 主数据管理
+    // 测试大纲 GNZB-22～28 需要以下入口可见；只控制显隐，路由和权限不变。
+    showMasterData: true, // 基础数据管理，含设备参数、体制、字典和枚举
     showDatabaseBackup: true, // 数据库备份 / 恢复
-    showSimulationData: false, // 仿真数据管理
-    showRuntimeStatus: false, // 系统运行状态
-    showDataExchange: false, // 数据交换与接口
+    showSimulationData: true, // 仿真数据管理
+    showRuntimeStatus: true, // 系统运行状态
+    showDataExchange: true, // 数据交换与接口
   },
   /** 仿真结果写入设置由系统统一维护，不由场景操作员逐项选择。 */
   scenarioOutput: {

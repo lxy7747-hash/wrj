@@ -162,6 +162,10 @@ describe('场景参数弹框的真实编辑路径', () => {
     await typed.setProps({ locked: false, pending: true })
     await wrapper.get('[data-testid="apply-link"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
+    expect(wrapper.get('[data-testid="cancel-link"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="cancel-link"]').trigger('click')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+    await wrapper.setProps({ pending: false } as never)
     await wrapper.get('[data-testid="cancel-link"]').trigger('click')
     expect(wrapper.emitted('update:modelValue')).toEqual([[false]])
     wrapper.unmount()
@@ -224,7 +228,55 @@ describe('场景参数弹框的真实编辑路径', () => {
     wrapper.unmount()
   })
 
-  it('脚本预览按真实操作生成、预检并展示错误位置', async () => {
+  it('dBm 功率只接受 -10～30 的 5 dB 档位，旧瓦特值未编辑时原样保留', async () => {
+    const config = scenario()
+    const jammer = { ...(structuredClone(config.jammers[0]) as Jammer), defaultPower: 200 }
+    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, duration: 60, enabled: true }
+    const wrapper = mount(JammerEditorDialog, {
+      props: { modelValue: true, jammer, uiExtension, editing: true, error: '', pending: false, locked: false,
+        platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001, validate: () => [] },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    expect(wrapper.get('[data-testid="jammer-legacy-power"]').text()).toContain('200 W')
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 35)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    expect(jammer.defaultPower).toBe(200)
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', undefined)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    inputNumber(wrapper, 'jammer-power').vm.$emit('update:modelValue', 30)
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect((wrapper.emitted('apply')!.at(-1)![0] as Jammer).defaultPower).toBeCloseTo(1)
+    wrapper.unmount()
+  })
+
+  it('卫星方向速率接受范围内数值，清空后删除字段并回退历史速率', async () => {
+    const config = scenario()
+    const link = { ...(structuredClone(config.links[0]) as Link), type: 'SAT' as const }
+    delete link.forwardDataRate
+    delete link.reverseDataRate
+    const wrapper = mount(LinkEditorDialog, {
+      props: { modelValue: true, link, editing: true, error: '', pending: false, locked: false,
+        platforms: config.platforms, linkTypeOptions: typeOptions, linkDirectionLabels: { FORWARD: '前向', REVERSE: '返向' }, minimumStep: 0.001 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    inputNumber(wrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', 3)
+    inputNumber(wrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', 1.5)
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ forwardDataRate: 3, reverseDataRate: 1.5 })
+    inputNumber(wrapper, 'link-forward-data-rate').vm.$emit('update:modelValue', undefined)
+    inputNumber(wrapper, 'link-reverse-data-rate').vm.$emit('update:modelValue', undefined)
+    await wrapper.get('[data-testid="apply-link"]').trigger('click')
+    const emitted = wrapper.emitted('apply')!.at(-1)![0] as Link
+    expect(Object.hasOwn(emitted, 'forwardDataRate')).toBe(false)
+    expect(Object.hasOwn(emitted, 'reverseDataRate')).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('脚本预览引导保存生成，保留预检操作和错误位置', async () => {
     const script: ScriptContract = {
       scriptId: 'SCRIPT-001', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v1', target: 'AFSIM 2.9.0',
       checksum: 'FNV1A-MOCK-TEST', preview: '# script', generatedTime: '2026-09-28T00:00:00Z',
@@ -233,8 +285,9 @@ describe('场景参数弹框的真实编辑路径', () => {
       props: { state: 'EMPTY', resultMessage: '', script: null, preflight: emptyValidation, locked: false, dirty: false, preflightPassed: false },
       global: { plugins: [ElementPlus] },
     })
-    await generate.get('[data-testid="generate-script"]').trigger('click')
-    expect(generate.emitted('generate')).toEqual([[]])
+    expect(generate.find('[data-testid="generate-script"]').exists()).toBe(false)
+    expect(generate.text()).toContain('请先点击上方“保存”')
+    expect(generate.emitted('generate')).toBeUndefined()
     expect(generate.get('[data-testid="preflight-script"]').attributes('disabled')).toBeDefined()
     generate.unmount()
 
@@ -258,7 +311,8 @@ describe('场景参数弹框的真实编辑路径', () => {
       global: { plugins: [ElementPlus] },
     })
     expect(dirty.text()).toContain('请先点击上方“保存”')
-    expect(dirty.get('[data-testid="generate-script"]').attributes('disabled')).toBeDefined()
+    expect(dirty.find('[data-testid="generate-script"]').exists()).toBe(false)
+    expect(dirty.get('[data-testid="preflight-script"]').attributes('disabled')).toBeDefined()
     dirty.unmount()
   })
 })

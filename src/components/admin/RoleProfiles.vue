@@ -4,7 +4,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import type { AccessControlConfig, Permission, RoleProfile, User } from '../../contracts/domain-models'
 import { isAccessControlConfig, isRoleProfile, MENU_LABELS, OPERATOR_PERMISSION_KEYS, PERMISSION_LABELS } from '../../features/admin/access-control'
 import { apiFetch } from '../../features/shared/api-fetch'
-import { useAuthStore } from '../../stores/auth'
+import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { APP_CONFIG } from '../../config/app.config'
 
 defineProps<{ users: User[] }>()
@@ -20,11 +20,10 @@ const permissions = computed(() => editor.value?.baseRole === 'OPERATOR' ? OPERA
 const menus = computed(() => {
   const visibility: Record<string, boolean> = {
     '/reports': APP_CONFIG.showReports,
-    // 与 App.vue 当前已隐藏的主导航入口一致；不删除已有角色授权或路由。
-    '/batches': false,
     '/blueprint': false,
     '/interactions': false,
     '/traceability': false,
+    '/admin?section=equipment-library': APP_CONFIG.systemManagement.showMasterData,
     '/admin?section=master-data': APP_CONFIG.systemManagement.showMasterData,
     '/admin?section=database-backup': APP_CONFIG.systemManagement.showDatabaseBackup,
     '/admin?section=simulation-data': APP_CONFIG.systemManagement.showSimulationData,
@@ -37,6 +36,7 @@ const menus = computed(() => {
 const ownProfileId = computed(() => config.value?.assignments.find(row => row.userId === auth.principal?.userId)?.profileId)
 async function request(save = false): Promise<void> {
   if (pending.value || (save && !config.value)) return
+  if (save && !isAccessControlConfig(config.value)) { error.value = '请为每个角色至少保留一个当前可用菜单后再保存。'; return }
   const current = ++epoch
   controller?.abort()
   const abort = new AbortController()
@@ -46,14 +46,14 @@ async function request(save = false): Promise<void> {
   pending.value = true
   error.value = ''
   try {
-    const response = await apiFetch(`${import.meta.env.VITE_MOCK_ORIGIN ?? 'http://127.0.0.1:4173'}/api/v1/admin/access-control`, {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/access-control`, {
       signal: abort.signal, headers: { 'X-Demo-Role': auth.role, 'Content-Type': 'application/json' },
       ...(save ? { method: 'PUT', body: payload } : {}),
     })
     const body = await response.json()
     if (current !== epoch) return
     if (!response.ok || body.ok !== true) throw new Error(body.error?.message ?? '角色配置请求失败。')
-    if (!isAccessControlConfig(body.data)) throw new Error('角色配置响应不正确。')
+    if (!isAccessControlConfig(body.data, save ? 'write' : 'read')) throw new Error('角色配置响应不正确。')
     config.value = body.data
     if (save) ElMessage.success('角色配置已保存，受影响账号需重新登录。')
   } catch (reason) { if (current === epoch) { if (!save) config.value = null; error.value = reason instanceof Error ? reason.message : '角色配置请求失败。' } }

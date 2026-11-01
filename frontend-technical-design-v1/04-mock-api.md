@@ -1,6 +1,6 @@
 # 04 本机确定性 Mock API
 
-`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。当前 83 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 40 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
+`contracts/mock-api.openapi.yaml` 使用 JSON 语法，因此同时是合法 YAML 1.2 并可直接 `JSON.parse`。它是本机 Express/`ws` 实现的权威合同。当前 81 个 operation 均有唯一 `operationId` 和具体业务 response schema；全部 39 个 POST/PUT/PATCH operation 均有独立 request schema，读操作也不使用空对象代替业务 `data`。批量仿真端点和 schema 已移除。V1.1 合同以两份 Word 文档和已评审通过的前端需求基线为准，HTML 只作界面参考。
 
 ## 启动与安全不变量
 
@@ -57,7 +57,7 @@
 - scenario/template：临时草稿可由两角色编辑；官方库写操作仅 ADMIN；校验含 schema/引用/单位/时序/频段、四类业务信息节点 50 个容量、至少一项信息需求、四类链路和两类干扰设备。WARNING 继续预览需一次性确认，ERROR 直接拒绝；官方模板删除需确认和引用检查。
 - script/contract：只返回预览、预检、五接口与三 CSV 描述。
 - simulation：命令仅改变 UI/canonical projection 与 lock；frame/event 为冻结事实。`POST /api/v1/simulations/{runId}/events` 输入 `ClosedLoopContext`、返回 `JammingDecision`，同目标同帧重复迁移返回 `DUPLICATE_EVENT`。任务级 RF 干扰控制使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/commands`；参数同步使用 `POST /api/v1/tasks/{taskId}/jammers/{jammerId}/parameters`，输入 `JammingParameterSet`、返回四端版本一致的 `SyncResult`，旧版本或错误生效帧被拒绝。Mock 依据场景设备参数形成确定性能力边界，不连接真实设备。
-- batch/report/replay：BATCH-001 固定 12 对；普通与批次 report source 不混用；回放只移动游标；export 始终 `generated:false`。
+- report/replay：报告只来自单次运行；回放只移动游标；普通 Level II 导出始终 `generated:false`，Level III 历史记录不可导出。
 - admin：纯 Mock 的 master/user/audit/backup/archive/health 为内存状态，本机 users/audit 已接 SQLite；恢复失败仅展示回滚合同。主数据删除、backup、restore、审计导出与 `/api/v1/admin/config/export` 均重验 ADMIN 和一次性 confirmationId，缺失时返回 HTTP 428/`CONFIRMATION_REQUIRED`；仅审计导出返回 `AuditExportResult/generated:true`，其他导出仍保留原 `generated:false` 合同。
 - reset：清理定时器、连接、确认和可变 projection，重载 fixture，并把 WS sequence 恢复为 1。
 
@@ -100,7 +100,7 @@ DELETE 使用 query `expectedVersion` 与 `X-Confirmation-Id`，确认动作复�
 
 ## 本机报告增量（OpenAPI 1.4.0，2026-09-20）
 
-复用 GET /reports、GET /reports/{reportId} 和 POST /reports/{reportId}/export，不增加操作数量（71 操作 / 35 个 POST、PUT、PATCH）。Report 新增可选 LocalReportEvidence；具有该字段的报告只能为 LEVEL_II，不能携带 Mock runId/batchId/kpis/timeSeries，报告编号绑定源文件内容摘要。纯 Mock 原有 Report 保持兼容。
+复用 GET /reports、GET /reports/{reportId} 和 POST /reports/{reportId}/export。Report 新增可选 LocalReportEvidence；具有该字段的报告只能为 LEVEL_II，不能携带 Mock runId/kpis/timeSeries，报告编号绑定源文件内容摘要。纯 Mock 原有 Report 保持兼容。
 
 本机入口仅返回当前配置的两份真实文件统计；未配置返回空目录，读取/解析失败 503，来源编号不匹配 409，不回退夹具。导出成功 data 为 LocalReportExportResult（generated:true、HTML/CSV、路径、摘要、水印、verifiedAt）；未注入本机入口的纯 Mock 仍返回 ReportExportResult（generated:false）。统一响应引用 ReportExportOutcome。真实 PDF 未实现，422 拒绝；源变化 409、写入/读取失败 503。文件仅写入服务端受控 output/reports/ 独占目录，不接受客户端文件路径或正文。
 
@@ -118,7 +118,7 @@ DELETE 使用 query `expectedVersion` 与 `X-Confirmation-Id`，确认动作复�
 ## 主数据真实存储增量（OpenAPI 1.7.0，2026-09-21）
 
 - 共 81 个操作、39 个 POST／PUT／PATCH。复用主数据 CRUD，增加 GET `/api/v1/admin/master-data/targets`、GET `/{dataId}/details`、PUT `/{dataId}/reference`；均在主数据管理权限下，引用 body 直接为 `MasterDataReference`。
-- MasterData 新增兼容可选 content；写入 MasterDataWrite 强制真实名称、说明及类型化条目。新写类型为通信体制／参数字典／枚举，设备参数继续由装备库维护。共享校验补足条目键唯一、数字上下限以及枚举文本值唯一等跨字段约束。旧元数据仅兼容读取。
+- MasterData 新增兼容可选 content；写入 MasterDataWrite 强制真实名称、说明及类型化条目。新写类型为通信体制／参数字典／枚举，设备参数继续由装备库维护；通信体制和参数字典不得写入 `frequencyMinMHz`、`frequencyMaxMHz`、带宽、功率、速率、调制或 BER 等设备固有键，枚举可保存受控文本选项。共享校验补足条目键唯一、数字上下限以及枚举文本值唯一等跨字段约束。旧元数据仅兼容读取。
 - targets 来自当前场景／模板目录，不填固定目标；登记核验目标版本、场景锁、主数据当前与选定版本的启用状态。引用只保存版本关系，不应用参数，不因目标以后变化而自动解除。引用按五字段复合键幂等登记，所有历史版本引用均阻止删除。非法 422、版本／锁／引用冲突 409、缺失 404、权限 403、存储失败 503，不回退演示数据。
 - 独立 master-data.db，空库起步、事务保存及版本条件更新；保留真实历史，删除无引用当前项不删除历史，禁止复用历史编号。旧主库备份暂不包含本库，须单独保护；回滚程序不删除新库。纯 Mock 保留原 MW-COMM 元数据及删除保护，不伪造其引用详情。
 

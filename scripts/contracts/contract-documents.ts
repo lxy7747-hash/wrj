@@ -44,9 +44,11 @@ const WRITE_METHODS = new Set<HttpMethod>(['post', 'put', 'patch'])
 const SCHEMA_REF_PREFIX = '#/components/schemas/'
 const DEMO_ROLE_REF = '#/components/parameters/DemoRole'
 const ERROR_ENVELOPE_REF = '#/components/schemas/ErrorEnvelope'
-const LINK_QUALITY_CSV_HEADER = 'Time,SourcePlatform,DestPlatform,LinkType,Frequency,Bandwidth,Distance,TxPower,TxAntennaGain,RxAntennaGain,PathLoss,JammingPower,ReceivedPower,SNR,Modulation,BER,LinkStatus,BERThreshold,DataRate'
-const EVENTS_CSV_HEADER = 'Time,EventType,SourcePlatform,TargetPlatform,Status,Power,Frequency,Bandwidth,Parameters'
-const LINK_SWITCH_CSV_HEADER = 'Time,SourcePlatform,DestPlatform,Direction,OldLinkType,NewLinkType,OldBER,NewBER,SwitchReason'
+const LINK_QUALITY_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,Frequency,Bandwidth,Distance,TxPower,TxAntennaGain,RxAntennaGain,PathLoss,JammingPower,ReceivedPower,SNR,GXB,Modulation,BER,LinkStatus,BERThreshold,DataRate'
+const EVENTS_CSV_HEADER = 'task_id,SchemaVersion,Time,EventType,SourcePlatform,TargetPlatform,Status,Power,Frequency,Bandwidth,Parameters'
+const LINK_SWITCH_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,Direction,OldLinkType,NewLinkType,OldBER,NewBER,SwitchReason'
+const LINK_STATE_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,LinkStatus,GXB,BER,ReceivedPower'
+const LINK_LOSS_CSV_HEADER = 'task_id,SchemaVersion,Time,SourcePlatform,DestPlatform,LinkType,FreeSpaceLoss,SeaMultipathLoss,AtmosphericLoss,CloudRainLoss,JammingLoss,TotalLoss'
 const EXPECTED_ERROR_CODES = [
   'INVALID_REQUEST',
   'VALIDATION_FAILED',
@@ -75,6 +77,7 @@ const EXPECTED_ERROR_CODES = [
   'CORRUPT_FIXTURE',
   'OUT_OF_RANGE',
   'DEVICE_DISABLED',
+  'FILTER_UNSUPPORTED',
   'LOOPBACK_ONLY',
   'TOPIC_FORBIDDEN',
   'SEQUENCE_GAP',
@@ -103,6 +106,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/meta/decisions', operationId: 'getapiV1MetaDecisions' },
   { method: 'get', path: '/api/v1/meta/routes', operationId: 'getapiV1MetaRoutes' },
   { method: 'get', path: '/api/v1/scenarios', operationId: 'getapiV1Scenarios' },
+  { method: 'get', path: '/api/v1/scenarios/parameter-catalog', operationId: 'getScenarioParameterCatalog' },
   { method: 'post', path: '/api/v1/scenarios', operationId: 'postapiV1Scenarios' },
   { method: 'get', path: '/api/v1/scenarios/{scenarioId}', operationId: 'getapiV1ScenariosScenarioId' },
   { method: 'delete', path: '/api/v1/scenarios/{scenarioId}', operationId: 'deleteapiV1ScenariosScenarioId' },
@@ -131,10 +135,6 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'get', path: '/api/v1/simulations/{runId}/frames/{frameId}', operationId: 'getapiV1SimulationsRunIdFramesFrameId' },
   { method: 'get', path: '/api/v1/simulations/{runId}/events', operationId: 'getapiV1SimulationsRunIdEvents' },
   { method: 'post', path: '/api/v1/simulations/{runId}/events', operationId: 'postapiV1SimulationsRunIdEvents' },
-  { method: 'get', path: '/api/v1/batches', operationId: 'getapiV1Batches' },
-  { method: 'post', path: '/api/v1/batches', operationId: 'postapiV1Batches' },
-  { method: 'get', path: '/api/v1/batches/{batchId}', operationId: 'getapiV1BatchesBatchId' },
-  { method: 'post', path: '/api/v1/batches/{batchId}/commands', operationId: 'postapiV1BatchesBatchIdCommands' },
   { method: 'get', path: '/api/v1/reports', operationId: 'getapiV1Reports' },
   { method: 'get', path: '/api/v1/reports/{reportId}', operationId: 'getapiV1ReportsReportId' },
   { method: 'post', path: '/api/v1/reports/{reportId}/export', operationId: 'postapiV1ReportsReportIdExport' },
@@ -152,6 +152,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'put', path: '/api/v1/admin/users/{userId}', operationId: 'putapiV1AdminUsersUserId' },
   { method: 'delete', path: '/api/v1/admin/users/{userId}', operationId: 'deleteapiV1AdminUsersUserId' },
   { method: 'get', path: '/api/v1/admin/audit', operationId: 'getapiV1AdminAudit' },
+  { method: 'post', path: '/api/v1/admin/audit/delete', operationId: 'postapiV1AdminAuditDelete' },
   { method: 'post', path: '/api/v1/admin/audit/export', operationId: 'postapiV1AdminAuditExport' },
   { method: 'get', path: '/api/v1/admin/backups', operationId: 'getapiV1AdminBackups' },
   { method: 'get', path: '/api/v1/admin/backup-plan', operationId: 'getapiV1AdminBackupPlan' },
@@ -176,6 +177,7 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'put', path: '/api/v1/admin/master-data/{dataId}/reference', operationId: 'putapiV1AdminMasterDataDataIdReference' },
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
+  getScenarioParameterCatalog: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioParameterCatalog'),
   getapiV1AdminMasterDataTargets: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataTargetList'),
   getapiV1AdminMasterDataDataIdDetails: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataDetails'),
   putapiV1AdminMasterDataDataIdReference: operationSchemaBinding('#/components/schemas/MasterDataReference', '200', '#/components/schemas/MasterDataDetails'),
@@ -185,7 +187,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1AdminEquipmentEquipmentIdDetails: operationSchemaBinding(null, '200', "#/components/schemas/EquipmentDetails"),
   putapiV1AdminEquipmentEquipmentIdReference: operationSchemaBinding("#/components/schemas/EquipmentReferenceRequest", '200', "#/components/schemas/EquipmentDetails"),
   getapiV1AdminAccessControl: operationSchemaBinding(null, '200', "#/components/schemas/AccessControlConfig"),
-  putapiV1AdminAccessControl: operationSchemaBinding("#/components/schemas/AccessControlConfig", '200', "#/components/schemas/AccessControlConfig"),
+  putapiV1AdminAccessControl: operationSchemaBinding("#/components/schemas/AccessControlConfigWrite", '200', "#/components/schemas/AccessControlConfig"),
   getapiV1AdminEquipment: operationSchemaBinding(null, '200', '#/components/schemas/EquipmentParameterList'),
   deleteapiV1AdminEquipmentEquipmentId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   postapiV1AdminEquipment: operationSchemaBinding('#/components/schemas/EquipmentCreateRequest', '201', '#/components/schemas/EquipmentParameter'),
@@ -227,10 +229,6 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1SimulationsRunIdFramesFrameId: operationSchemaBinding(null, '200', '#/components/schemas/TelemetryFrame'),
   getapiV1SimulationsRunIdEvents: operationSchemaBinding(null, '200', '#/components/schemas/EventList'),
   postapiV1SimulationsRunIdEvents: operationSchemaBinding('#/components/schemas/ClosedLoopContext', '200', '#/components/schemas/JammingDecision'),
-  getapiV1Batches: operationSchemaBinding(null, '200', '#/components/schemas/BatchList'),
-  postapiV1Batches: operationSchemaBinding('#/components/schemas/BatchRequest', '201', '#/components/schemas/Batch'),
-  getapiV1BatchesBatchId: operationSchemaBinding(null, '200', '#/components/schemas/BatchDetail'),
-  postapiV1BatchesBatchIdCommands: operationSchemaBinding('#/components/schemas/BatchCommand', '200', '#/components/schemas/Batch'),
   getapiV1Reports: operationSchemaBinding(null, '200', '#/components/schemas/ReportList'),
   getapiV1ReportsReportId: operationSchemaBinding(null, '200', '#/components/schemas/Report'),
   postapiV1ReportsReportIdExport: operationSchemaBinding('#/components/schemas/ReportExportRequest', '200', '#/components/schemas/ReportExportOutcome'),
@@ -248,6 +246,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   putapiV1AdminUsersUserId: operationSchemaBinding('#/components/schemas/UserRoleCommand', '200', '#/components/schemas/User'),
   deleteapiV1AdminUsersUserId: operationSchemaBinding(null, '200', '#/components/schemas/DeleteResult'),
   getapiV1AdminAudit: operationSchemaBinding(null, '200', '#/components/schemas/AuditList'),
+  postapiV1AdminAuditDelete: operationSchemaBinding('#/components/schemas/AuditDeleteRequest', '200', '#/components/schemas/AuditDeleteResult'),
   postapiV1AdminAuditExport: operationSchemaBinding('#/components/schemas/AuditExportRequest', '200', '#/components/schemas/AuditExportResult'),
   getapiV1AdminBackups: operationSchemaBinding(null, '200', '#/components/schemas/BackupList'),
   getapiV1AdminBackupPlan: operationSchemaBinding(null, '200', '#/components/schemas/BackupPlanStatus'),
@@ -261,6 +260,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  getScenarioParameterCatalog: ['401', '403', '503'],
   getapiV1AdminMasterDataTargets: ['401','403','503'],
   getapiV1AdminMasterDataDataIdDetails: ['401','403','404','503'],
   putapiV1AdminMasterDataDataIdReference: ['401','403','404','409','422','503'],
@@ -312,10 +312,6 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   getapiV1SimulationsRunIdFramesFrameId: ['401', '404'],
   getapiV1SimulationsRunIdEvents: ['401'],
   postapiV1SimulationsRunIdEvents: ['401', '403', '404', '409', '422'],
-  getapiV1Batches: ['401'],
-  postapiV1Batches: ['401', '422'],
-  getapiV1BatchesBatchId: ['401', '404', '409'],
-  postapiV1BatchesBatchIdCommands: ['401', '409'],
   getapiV1Reports: ['401', '503'],
   getapiV1ReportsReportId: ['401', '409', '503'],
   postapiV1ReportsReportIdExport: ['401', '403', '404', '409', '422', '428', '503'],
@@ -333,6 +329,7 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   putapiV1AdminUsersUserId: ['401', '409'],
   deleteapiV1AdminUsersUserId: ['401', '409'],
   getapiV1AdminAudit: ['401', '400', '403'],
+  postapiV1AdminAuditDelete: ['400', '401', '403', '404'],
   postapiV1AdminAuditExport: ['401', '400', '403', '409', '428'],
   getapiV1AdminBackups: ['401', '403', '503'],
   getapiV1AdminBackupPlan: ['401', '403', '503'],
@@ -346,6 +343,11 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ['#/components/schemas/LinkParameterField/enum', ['frequency','bandwidth','txPower','dataRate','modulation','berThreshold','coding','rxFrequency','rxBandwidth','antennaGain.tx','antennaGain.rx','antennaGainCorrectionDb','noiseFigureDb','txPolarization','rxPolarization']],
+  ['#/components/schemas/LinkParameterSource/oneOf/0/properties/kind/const', 'EQUIPMENT'],
+  ['#/components/schemas/LinkParameterSource/oneOf/0/properties/fields/items/enum', ['bandwidth','txPower','dataRate','modulation','berThreshold']],
+  ['#/components/schemas/LinkParameterSource/oneOf/1/properties/kind/const', 'MASTER_DATA'],
+  ['#/components/schemas/GetScenarioParameterCatalogResponse/properties/ok/const', true],
   ['#/components/schemas/BackupRecord/properties/format/enum', ['SYSTEM_SQLITE_V1', 'MAIN_SQLITE_V1']],
   ['#/components/schemas/BackupExecution/properties/result/enum', ['SUCCESS', 'FAILURE']],
   ['#/components/schemas/BackupExecution/allOf/0/if/properties/result/const', 'SUCCESS'],
@@ -357,6 +359,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/MasterDataEntry/oneOf/1/properties/valueType/const','BOOLEAN'],
   ['#/components/schemas/MasterDataEntry/oneOf/2/properties/valueType/const','NUMBER'],
   ['#/components/schemas/MasterDataWrite/allOf/1/properties/kind/enum',['COMMUNICATION_SYSTEM','PARAMETER_DICTIONARY','ENUMERATION']],
+  ['#/components/schemas/MasterDataWrite/allOf/2/if/properties/kind/enum',['COMMUNICATION_SYSTEM','PARAMETER_DICTIONARY']],
+  ['#/components/schemas/MasterDataWrite/allOf/2/then/properties/content/properties/entries/items/not/properties/key/enum',['frequencyMinMHz','frequencyMaxMHz','bandwidth','bandwidthMHz','txPower','txPowerW','dataRate','dataRateMbps','modulation','berThreshold']],
   ['#/components/schemas/MasterDataReference/properties/dataId/not/enum',['.','..']],
   ['#/components/schemas/MasterDataReference/properties/targetType/enum',['SCENARIO','TEMPLATE']],
   ['#/components/schemas/MasterDataTarget/properties/targetType/enum',['SCENARIO','TEMPLATE']],
@@ -372,12 +376,13 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
 ["#/components/schemas/GetapiV1AdminLocalArchivesResponse/properties/ok/const",true],
 ["#/components/schemas/PostapiV1AdminLocalArchivesResponse/properties/ok/const",true],
 ["#/components/schemas/GetapiV1ArchivesArchiveIdResponse/properties/ok/const",true],
-  ["#/components/schemas/MenuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/batches","/blueprint","/interactions","/traceability","/admin/data-exchange","/admin","/admin?section=equipment-library","/admin?section=scenario-templates","/admin?section=audit-logs","/admin?section=master-data","/admin?section=database-backup","/admin?section=simulation-data","/admin?section=runtime-status"]],
+  ["#/components/schemas/MenuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/blueprint","/interactions","/traceability","/admin/data-exchange","/admin","/admin?section=equipment-library","/admin?section=scenario-templates","/admin?section=audit-logs","/admin?section=master-data","/admin?section=database-backup","/admin?section=simulation-data","/admin?section=runtime-status"]],
+  ["#/components/schemas/RoleProfileMenuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/blueprint","/interactions","/traceability","/admin/data-exchange","/admin","/admin?section=equipment-library","/admin?section=scenario-templates","/admin?section=audit-logs","/admin?section=master-data","/admin?section=database-backup","/admin?section=simulation-data","/admin?section=runtime-status"]],
   ["#/components/schemas/RoleProfile/properties/baseRole/enum",["ADMIN","OPERATOR"]],
   ["#/components/schemas/RoleProfile/properties/permissions/contains/const","BUSINESS_READ"],
   ["#/components/schemas/RoleProfile/allOf/0/if/properties/baseRole/const","OPERATOR"],
   ["#/components/schemas/RoleProfile/allOf/0/then/properties/permissions/items/enum",["BUSINESS_READ","SCENARIO_DRAFT_WRITE","SIMULATION_CONTROL","ORDINARY_REPORT_EXPORT"]],
-  ["#/components/schemas/RoleProfile/allOf/0/then/properties/menuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/batches","/blueprint","/interactions","/traceability","/admin/data-exchange"]],
+  ["#/components/schemas/RoleProfile/allOf/0/then/properties/menuPaths/items/enum",["/situation","/scenarios","/reports","/replays","/blueprint","/interactions","/traceability","/admin/data-exchange"]],
   ["#/components/schemas/RoleProfile/allOf/0/else/properties/permissions/contains/const","USER_ROLE_MAINTAIN"],
   ["#/components/schemas/RoleProfile/allOf/0/else/properties/menuPaths/contains/const","/admin"],
   ["#/components/schemas/GetapiV1AdminEquipmentEquipmentIdDetailsResponse/properties/ok/const",true],
@@ -387,6 +392,19 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/readOnly/const', false],
   ['#/components/schemas/EquipmentCreateRequest/allOf/1/properties/version/const', 1],
   ['#/components/schemas/EquipmentUpdateRequest/allOf/1/properties/readOnly/const', false],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/0/if/properties/type/const', '卫星通信设备'],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/0/then/properties/modulation/enum', ['BPSK', 'QPSK', null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/0/then/properties/dataRateMbps/enum', [0.016, 16, null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/1/if/properties/type/const', '微波通信设备'],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/1/then/properties/modulation/enum', ['BPSK', 'QPSK', null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/1/then/properties/dataRateMbps/enum', [80, null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/2/if/properties/type/const', '数传通信设备'],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/2/then/properties/modulation/enum', ['BPSK', 'QPSK', null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/2/then/properties/dataRateMbps/enum', [0.0064, 0.0128, 0.0256, 0.0512, 2, 4, 8, 16, null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/3/if/properties/type/const', '激光通信设备'],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/3/then/properties/modulation/enum', ['OOK', null]],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/4/if/properties/type/const', '光纤通信设备'],
+  ['#/components/schemas/EquipmentLinkWriteParameters/allOf/4/then/properties/modulation/enum', ['BPSK', 'QPSK', null]],
   ['#/components/schemas/GetapiV1AdminEquipmentResponse/properties/ok/const', true],
   ['#/components/schemas/DeleteapiV1AdminEquipmentEquipmentIdResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminEquipmentResponse/properties/ok/const', true],
@@ -418,6 +436,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/Environment/properties/seaPolarization/enum', ['vertical','horizontal']],
   ['#/components/schemas/Link/properties/txPolarization/enum', ['vertical','horizontal']],
   ['#/components/schemas/Link/properties/rxPolarization/enum', ['vertical','horizontal']],
+  ['#/components/schemas/LaserLinkParameters/properties/modulation/const', 'OOK'],
   ['#/components/schemas/ScenarioLinkSettings/properties/linkCalc/properties/channelEncodingScheme/enum', [-1,0,5,6.5,3.5,8]],
   ['#/components/schemas/ScenarioLinkSettings/properties/hotLinks/properties/endPlatformType/enum', ['REAR_COMMAND_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER']],
   ['#/components/schemas/Platform/properties/type/enum', ['REAR_COMMAND_NODE','FORWARD_RELAY_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER','COMMUNICATION_SATELLITE','GROUND_JAMMER_DETECTION_STATION','AIRBORNE_JAMMER_PLATFORM']],
@@ -428,6 +447,10 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/LinkSwitchRule/properties/trigger/enum', ['DISTANCE_ABOVE','DISTANCE_BELOW','JAMMING_ACTIVE','JAMMING_STOPPED']],
   ['#/components/schemas/LinkSwitchRule/allOf/0/if/properties/trigger/enum', ['DISTANCE_ABOVE','DISTANCE_BELOW']],
   ['#/components/schemas/Link/allOf/1/if/properties/type/const', 'DATALINK'],
+  ['#/components/schemas/Link/allOf/2/if/properties/type/const', 'LASER'],
+  ['#/components/schemas/Link/allOf/3/if/properties/type/const', 'SAT'],
+  ['#/components/schemas/LinkWrite/allOf/1/if/properties/type/const', 'LASER'],
+  ['#/components/schemas/LinkWrite/allOf/1/if/properties/enabled/not/const', false],
   ['#/components/schemas/InformationDemandWrite/allOf/1/properties/informationType/enum', ['态势信息','目标指令','侦察信息','状态信息']],
   ['#/components/schemas/Link/allOf/0/if/properties/type/const', 'SAT'],
   ['#/components/schemas/ScenarioLinkSettings/properties/priority/items/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
@@ -439,6 +462,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/InformationDemand/properties/priority/enum', ['HIGH','NORMAL']],
   ['#/components/schemas/InformationDemand/properties/direction/enum', ['FORWARD','REVERSE']],
   ['#/components/schemas/ScenarioConfig/properties/schemaVersion/const', '1.0'],
+  ['#/components/schemas/ScenarioImportRequest/properties/items/items/oneOf/1/properties/format/const', 'wrj.scenario.snapshot'],
+  ['#/components/schemas/ScenarioImportRequest/properties/items/items/oneOf/1/properties/version/const', 1],
   ['#/components/schemas/LinkQualityData/properties/linkType/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
   ['#/components/schemas/LinkQualityData/properties/modulation/enum', ['BPSK','QPSK']],
   ['#/components/schemas/LinkQualityData/properties/linkStatus/enum', ['UP','DOWN']],
@@ -468,8 +493,6 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SensorUiExtension/properties/direction/oneOf/0/const', 'OMNI'],
   ['#/components/schemas/ScenarioDraft/properties/officialLibraryChanged/const', false],
   ['#/components/schemas/ScriptContract/properties/target/const', 'AFSIM 2.9.0'],
-  ['#/components/schemas/BatchRunResult/properties/status/enum', ['COMPLETED','ERROR']],
-  ['#/components/schemas/Batch/properties/state/enum', ['DRAFT','VALIDATING','QUEUED','RUNNING','COMPLETED','PARTIAL_FAILURE','CANCELLED','ERROR']],
   ['#/components/schemas/Report/properties/classification/enum', ['LEVEL_II','LEVEL_III']],
   ['#/components/schemas/Report/properties/status/const', 'READY'],
   ['#/components/schemas/Replay/properties/state/enum', ['EMPTY','LOADING','PAUSED','PLAYING','SEEKING','COMPLETED','CORRUPT','ERROR']],
@@ -485,7 +508,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/SystemHealth/properties/database/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/SystemHealth/properties/channel/const', 'NOT_CONNECTED_BY_DESIGN'],
   ['#/components/schemas/ArchiveRecord/properties/status/const', 'INDEXED'],
-  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','INTERNAL_ERROR','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
+  ['#/components/schemas/ErrorCode/enum', ['INVALID_REQUEST','VALIDATION_FAILED','NOT_FOUND','CONFLICT','INVALID_CREDENTIALS','ACCOUNT_LOCKED','PERMISSION_DENIED','LAST_ADMIN_GUARD','CONFIRMATION_REQUIRED','CONFIRMATION_EXPIRED','CONFIG_LOCKED','INVALID_TRANSITION','NODE_LIMIT_EXCEEDED','DUPLICATE_EVENT','VERSION_CONFLICT','FRAME_MISMATCH','HEADER_INVALID','TYPE_INVALID','ENCODING_INVALID','ATOMIC_REPLACE_FAILED','START_FAILED','INTERNAL_ERROR','TIMEOUT','EXIT_NONZERO','CORRUPT_FIXTURE','OUT_OF_RANGE','DEVICE_DISABLED','FILTER_UNSUPPORTED','LOOPBACK_ONLY','TOPIC_FORBIDDEN','SEQUENCE_GAP','INTERNAL_FIXTURE_ERROR']],
   ['#/components/schemas/ErrorEnvelope/properties/ok/const', false],
   ['#/components/schemas/AuthResult/properties/principal/properties/role/enum', ['ADMIN','OPERATOR']],
   ['#/components/schemas/AuthResult/properties/reason/enum', ['INVALID_CREDENTIALS','ACCOUNT_LOCKED']],
@@ -497,9 +520,10 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/InterfaceMetadata/properties/kind/enum', ['外部','内部']],
   ['#/components/schemas/ReportExportResult/properties/generated/const', false],
   ['#/components/schemas/LocalReportEvidence/properties/connections/items/properties/scope/enum', ['INTERNAL', 'INTER_PLATFORM']],
+  ['#/components/schemas/LocalReportEvidence/properties/detectionEvents/items/properties/type/enum', ['SENSOR_DETECTION_CHANGED', 'SENSOR_TRACK_INITIATED', 'SENSOR_TRACK_UPDATED', 'SENSOR_TRACK_DROPPED']],
   ['#/components/schemas/LocalReportExportResult/properties/generated/const', true],
   ['#/components/schemas/LocalReportExportResult/properties/status/const', 'SUCCESS'],
-  ['#/components/schemas/LocalReportExportResult/properties/format/enum', ['HTML', 'CSV']],
+  ['#/components/schemas/LocalReportExportResult/properties/format/enum', ['HTML', 'PDF', 'CSV']],
   ['#/components/schemas/Report/allOf/1/then/properties/classification/const', 'LEVEL_II'],
   ['#/components/schemas/ReportExportResult/properties/status/const', 'FIXTURE_SUCCESS'],
   ['#/components/schemas/ConfirmationContext/properties/state/enum', ['CLOSED','AWAITING_CONFIRMATION','CONFIRMED','CANCELLED','EXPIRED','ERROR']],
@@ -510,7 +534,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/ResetResult/properties/requestId/const', 'REQ-RESET-001'],
   ['#/components/schemas/ResetResult/properties/nextSequence/const', 1],
   ['#/components/schemas/SimulationCommand/properties/command/enum', ['START','PAUSE','RESUME','STEP','STOP','SET_SPEED']],
-  ['#/components/schemas/SimulationCommand/properties/mode/enum', ['INTERACTIVE_SINGLE','BATCH_PARAMETER_TRAVERSAL','PARAMETER_SCAN','HISTORICAL_REPLAY']],
+  ['#/components/schemas/SimulationCommand/properties/mode/enum', ['INTERACTIVE_SINGLE','PARAMETER_SCAN','HISTORICAL_REPLAY']],
   ['#/components/schemas/SimulationCommand/properties/stepCount/const', 1],
   ['#/components/schemas/JammerState/properties/executionStatus/const', 'SUCCESS'],
   ['#/components/schemas/RouteDecision/properties/direction/enum', ['FORWARD','REVERSE']],
@@ -518,12 +542,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/JammingDecision/properties/action/const', 'START'],
   ['#/components/schemas/JammingDecision/properties/linkStatus/enum', ['UP','DEGRADED','DOWN']],
   ['#/components/schemas/SyncResult/properties/status/const', 'SYNCHRONIZED'],
-  ['#/components/schemas/BatchRequest/properties/powersW/const', [50,100,150,200]],
-  ['#/components/schemas/BatchRequest/properties/distancesKm/const', [80,100,120]],
-  ['#/components/schemas/BatchRequest/properties/deterministicOrder/const', true],
-  ['#/components/schemas/BatchCommand/properties/command/enum', ['START','CANCEL']],
   ['#/components/schemas/ReportExportRequest/properties/format/enum', ['HTML','PDF','CSV']],
-  ['#/components/schemas/ConfirmationRequest/properties/action/enum', ['SCENARIO_WARNING_CONTINUE','OFFICIAL_TEMPLATE_DELETE','SIMULATION_STOP','BATCH_LEVEL_III_EXPORT','BACKUP_RESTORE','FULL_CONFIG_EXPORT','AUDIT_EXPORT','MASTER_DATA_DELETE']],
+  ['#/components/schemas/ConfirmationRequest/properties/action/enum', ['SCENARIO_WARNING_CONTINUE','OFFICIAL_TEMPLATE_DELETE','SIMULATION_STOP','BACKUP_RESTORE','FULL_CONFIG_EXPORT','AUDIT_EXPORT','MASTER_DATA_DELETE']],
   ['#/components/schemas/ConfirmRequest/properties/confirm/const', true],
   ['#/components/schemas/ReplayCommand/properties/command/enum', ['PLAY','PAUSE','SEEK','STEP_FORWARD','STEP_BACK','SPEED']],
   ['#/components/schemas/MasterData/properties/dataId/not/enum', ['.','..']],
@@ -590,10 +610,6 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/GetapiV1SimulationsRunIdFramesFrameIdResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1SimulationsRunIdEventsResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1SimulationsRunIdEventsResponse/properties/ok/const', true],
-  ['#/components/schemas/GetapiV1BatchesResponse/properties/ok/const', true],
-  ['#/components/schemas/PostapiV1BatchesResponse/properties/ok/const', true],
-  ['#/components/schemas/GetapiV1BatchesBatchIdResponse/properties/ok/const', true],
-  ['#/components/schemas/PostapiV1BatchesBatchIdCommandsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1ReportsResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1ReportsReportIdResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1ReportsReportIdExportResponse/properties/ok/const', true],
@@ -611,6 +627,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/PutapiV1AdminUsersUserIdResponse/properties/ok/const', true],
   ['#/components/schemas/DeleteapiV1AdminUsersUserIdResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AdminAuditResponse/properties/ok/const', true],
+  ['#/components/schemas/PostapiV1AdminAuditDeleteResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminAuditExportResponse/properties/ok/const', true],
   ['#/components/schemas/GetapiV1AdminBackupsResponse/properties/ok/const', true],
   ['#/components/schemas/PostapiV1AdminBackupResponse/properties/ok/const', true],
@@ -682,7 +699,6 @@ const EXPECTED_UI_ROUTES = Object.freeze([
   '/login',
   '/situation',
   '/scenarios',
-  '/batches',
   '/reports',
   '/replays',
   '/admin',
@@ -750,14 +766,13 @@ const EXPECTED_ROUTE_CONTRACTS = Object.freeze({
   '/login': routeContract('LoginPage', ['authStore', 'uiStore'], 'PUBLIC'),
   '/situation': routeContract('SituationPage', ['simulationStore', 'telemetryStore', 'uiStore'], 'requirePrincipal'),
   '/scenarios': routeContract('ScenariosPage', ['scenarioStore', 'uiStore'], 'requirePrincipal'),
-  '/batches': routeContract('BatchesPage', ['batchStore', 'scenarioStore', 'uiStore'], 'requirePrincipal'),
-  '/reports': routeContract('ReportsPage', ['reportStore', 'batchStore', 'telemetryStore', 'authStore', 'uiStore'], 'requirePrincipal'),
+  '/reports': routeContract('ReportsPage', ['reportStore', 'telemetryStore', 'authStore', 'uiStore'], 'requirePrincipal'),
   '/replays': routeContract('ReplaysPage', ['replayStore', 'telemetryStore', 'uiStore'], 'requirePrincipal'),
   '/admin': routeContract('AdminPage', ['adminStore', 'dataExchangeStore', 'authStore', 'uiStore'], 'requireAdmin'),
   '/blueprint': routeContract('BlueprintPage', ['traceabilityStore', 'authStore', 'uiStore'], 'requirePrincipal'),
   '/admin/data-exchange': routeContract('DataExchangePage', ['scenarioStore', 'simulationStore', 'telemetryStore', 'dataExchangeStore', 'uiStore'], 'requirePrincipal'),
   '/traceability': routeContract('TraceabilityPage', ['traceabilityStore', 'uiStore'], 'requirePrincipal'),
-  '/interactions': routeContract('InteractionsPage', ['authStore', 'scenarioStore', 'simulationStore', 'telemetryStore', 'batchStore', 'reportStore', 'replayStore', 'adminStore', 'traceabilityStore', 'uiStore'], 'requirePrincipal'),
+  '/interactions': routeContract('InteractionsPage', ['authStore', 'scenarioStore', 'simulationStore', 'telemetryStore', 'reportStore', 'replayStore', 'adminStore', 'traceabilityStore', 'uiStore'], 'requirePrincipal'),
 } satisfies Record<(typeof EXPECTED_UI_ROUTES)[number], {
   readonly page: string
   readonly stores: readonly string[]
@@ -884,6 +899,7 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
   ]),
   'DSDWRJQTLJS-XQ-XTGL-CZRZ': capabilityTrace('/admin', [
     operationReference('get', '/api/v1/admin/audit', 'getapiV1AdminAudit'),
+    operationReference('post', '/api/v1/admin/audit/delete', 'postapiV1AdminAuditDelete'),
     operationReference('post', '/api/v1/admin/audit/export', 'postapiV1AdminAuditExport'),
   ]),
 })
@@ -952,6 +968,26 @@ function sameOrderedStrings(actual: unknown, expected: readonly string[]): boole
   return Array.isArray(actual)
     && actual.length === expected.length
     && actual.every((value, index) => value === expected[index])
+}
+
+function hasFrozenAuditListParameters(parameters: unknown): boolean {
+  if (!Array.isArray(parameters)) return false
+  const queryParameters = parameters.filter(isObject)
+    .filter((parameter) => parameter.in === 'query')
+  if (!sameOrderedStrings(queryParameters.map((parameter) => parameter.name), [
+    'from', 'to', 'actor', 'role', 'module', 'action', 'result', 'page', 'pageSize', 'sortOrder',
+  ])) return false
+
+  const schema = (name: string): JsonObject | undefined => {
+    const parameter = queryParameters.find((candidate) => candidate.name === name)
+    return parameter && objectAt(parameter, 'schema')
+  }
+  const page = schema('page')
+  const pageSize = schema('pageSize')
+  const sortOrder = schema('sortOrder')
+  return page?.type === 'integer' && page.minimum === 1 && page.default === 1
+    && pageSize?.type === 'integer' && pageSize.minimum === 1 && pageSize.maximum === 100 && pageSize.default === 20
+    && sortOrder?.type === 'string' && sameOrderedStrings(sortOrder.enum, ['asc', 'desc']) && sortOrder.default === 'desc'
 }
 
 function operationSchemaBinding(
@@ -1317,6 +1353,9 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       if (route === '/api/v1/reset' && method === 'post' && operation['x-rbac'] !== 'ADMIN') {
         addFinding(findings, 'OPENAPI_RESET_RBAC', `${operationPath}.x-rbac`, 'Global reset must require ADMIN')
       }
+      if (route === '/api/v1/admin/audit/delete' && method === 'post' && operation['x-rbac'] !== 'ADMIN') {
+        addFinding(findings, 'OPENAPI_AUDIT_DELETE_RBAC', `${operationPath}.x-rbac`, 'Audit deletion must require ADMIN')
+      }
       const publicAuth = ['/api/v1/auth/login', '/api/v1/auth/session', '/api/v1/auth/logout'].includes(route)
       if (JSON.stringify(operation.security) !== JSON.stringify(publicAuth ? [] : [{ SessionCookie: [] }])) {
         addFinding(findings, 'OPENAPI_SESSION_SECURITY', `${operationPath}.security`, 'Local authentication must use the frozen session cookie requirement')
@@ -1347,6 +1386,15 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       }
 
       const operationParameterValues = Array.isArray(operation.parameters) ? operation.parameters : []
+      if (route === '/api/v1/admin/audit' && method === 'get'
+        && !hasFrozenAuditListParameters(operationParameterValues)) {
+        addFinding(
+          findings,
+          'OPENAPI_AUDIT_LIST_PARAMETERS',
+          `${operationPath}.parameters`,
+          'Audit listing must expose only the frozen filters plus page, pageSize, and sortOrder defaults',
+        )
+      }
       if (!['/api/v1/auth/login', '/api/v1/auth/session', '/api/v1/auth/logout'].includes(route)
         && !parameterReferences(operationParameterValues).includes(DEMO_ROLE_REF)) {
         addFinding(
@@ -1584,12 +1632,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 83) {
+  if (operationCount !== 81) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 83 operations, found ${operationCount}`,
+      `Expected exactly 81 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1608,12 +1656,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 40 || requestSchemaOwners.size !== 40) {
+  if (writeCount !== 39 || requestSchemaOwners.size !== 39) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 40 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 39 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 
@@ -1732,25 +1780,6 @@ function expectValue(
 ): void {
   if (actual !== expected) {
     addFinding(findings, code, path, `Expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`)
-  }
-}
-
-function expectSameIds(
-  actual: readonly string[],
-  expected: ReadonlySet<string>,
-  path: string,
-  findings: ValidationFinding[],
-): void {
-  const actualIds = expectUnique(actual, path, findings)
-  const missing = [...expected].filter((value) => !actualIds.has(value))
-  const extra = [...actualIds].filter((value) => !expected.has(value))
-  if (missing.length > 0 || extra.length > 0) {
-    addFinding(
-      findings,
-      'FIXTURE_BATCH_PAIR',
-      path,
-      `ID set mismatch; missing [${missing.join(', ')}], extra [${extra.join(', ')}]`,
-    )
   }
 }
 
@@ -2026,35 +2055,6 @@ export function auditFixtureClosure(fixtures: DeterministicFixtureSet): Validati
   expectReference(replayIds, fixtures.archive.replayId, '$.archive.replayId', 'replay', findings)
   expectReference(reportIds, fixtures.archive.reportId, '$.archive.reportId', 'report', findings)
 
-  const batchRunIds = expectUnique(fixtures.batchRuns.map(({ runId }) => runId), '$.batchRuns[].runId', findings)
-  const batchRunReportIds = expectUnique(fixtures.batchRuns.map(({ reportId }) => reportId), '$.batchRuns[].reportId', findings)
-  const batchReportRunIds = expectUnique(fixtures.batchReports.map(({ runId }) => runId), '$.batchReports[].runId', findings)
-  const batchReportIds = expectUnique(fixtures.batchReports.map(({ reportId }) => reportId), '$.batchReports[].reportId', findings)
-  expectValue(fixtures.batch.batchId, 'BATCH-001', '$.batch.batchId', 'FIXTURE_BATCH_PAIR', findings)
-  expectValue(fixtures.batchRuns.length, 12, '$.batchRuns.length', 'FIXTURE_BATCH_PAIR', findings)
-  expectValue(fixtures.batchReports.length, 12, '$.batchReports.length', 'FIXTURE_BATCH_PAIR', findings)
-  expectValue(fixtures.batch.runIds.length, 12, '$.batch.runIds.length', 'FIXTURE_BATCH_PAIR', findings)
-  expectValue(fixtures.batch.reportIds.length, 12, '$.batch.reportIds.length', 'FIXTURE_BATCH_PAIR', findings)
-  expectSameIds(fixtures.batch.runIds, batchRunIds, '$.batch.runIds', findings)
-  expectSameIds(fixtures.batch.reportIds, batchRunReportIds, '$.batch.reportIds', findings)
-  expectSameIds([...batchReportRunIds], batchRunIds, '$.batchReports[].runId', findings)
-  expectSameIds([...batchReportIds], batchRunReportIds, '$.batchReports[].reportId', findings)
-  fixtures.batchRuns.forEach((run, index) => {
-    const report = fixtures.batchReports[index]
-    if (!report || report.runId !== run.runId || report.reportId !== run.reportId
-      || fixtures.batch.runIds[index] !== run.runId
-      || fixtures.batch.reportIds[index] !== run.reportId) {
-      addFinding(
-        findings,
-        'FIXTURE_BATCH_PAIR',
-        `$.batchRuns[${index}]`,
-        'BATCH-001 run/report arrays must preserve the same deterministic pair order',
-      )
-    }
-  })
-  expectValue(fixtures.batchAggregateReport.batchId, fixtures.batch.batchId, '$.batchAggregateReport.batchId', 'FIXTURE_BATCH_PAIR', findings)
-  expectValue(fixtures.batchAggregateReport.reportId, fixtures.batch.aggregateReportId, '$.batchAggregateReport.reportId', 'FIXTURE_BATCH_PAIR', findings)
-
   expectValue(fixtures.frame.simulationTime, 42, '$.frame.simulationTime', 'FIXTURE_TIME_42', findings)
   expectValue(fixtures.frame.sequence, 42, '$.frame.sequence', 'FIXTURE_TIME_42', findings)
   expectValue(fixtures.frame.evidence.synchronization.effectiveSimulationTime, 42, '$.frame.evidence.synchronization.effectiveSimulationTime', 'FIXTURE_TIME_42', findings)
@@ -2064,11 +2064,13 @@ export function auditFixtureClosure(fixtures: DeterministicFixtureSet): Validati
     { name: 'link_quality.csv', header: LINK_QUALITY_CSV_HEADER },
     { name: 'events.csv', header: EVENTS_CSV_HEADER },
     { name: 'link_switch.csv', header: LINK_SWITCH_CSV_HEADER },
+    { name: 'link_state.csv', header: LINK_STATE_CSV_HEADER },
+    { name: 'link_loss.csv', header: LINK_LOSS_CSV_HEADER },
   ] as const
-  expectValue(fixtures.contracts.csv.length, 3, '$.contracts.csv.length', 'FIXTURE_CSV_ORDER', findings)
+  expectValue(fixtures.contracts.csv.length, 5, '$.contracts.csv.length', 'FIXTURE_CSV_ORDER', findings)
   expectedCsv.forEach((expected, index) => {
     const actual = fixtures.contracts.csv[index]
-    if (!actual || actual.name !== expected.name || actual.fields.join(',') !== expected.header) {
+    if (!actual || actual.version !== '1.1' || actual.name !== expected.name || actual.fields.join(',') !== expected.header) {
       addFinding(
         findings,
         'FIXTURE_CSV_ORDER',

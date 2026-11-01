@@ -24,6 +24,9 @@ export interface InitialNodeSnapshot {
   deviceEvents?: FileDeviceEvent[]
   /** 由消息收发证据推导的业务链路；与仅表示登记关联的 connections 语义不同。 */
   messageLinks?: FileMessageLink[]
+  /** 大型事件 CSV 仅在此标记下省略逐消息链路动画；计数仍在报告来源中完整保留。 */
+  messageDetailsComplete?: boolean
+  messageDetailEventCount?: number
   /** 平台退出时刻；用于回放游标到达后移除节点。 */
   platformDeletions?: FilePlatformDeletion[]
 }
@@ -38,7 +41,10 @@ export function isInitialNodeSnapshot(value: unknown): value is InitialNodeSnaps
   const snapshot = value as InitialNodeSnapshot
   if (typeof snapshot.fileName !== 'string' || snapshot.fileName.trim().length === 0
     || typeof snapshot.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(snapshot.sha256)
-    || !Array.isArray(snapshot.nodes) || snapshot.nodes.length === 0) return false
+    || !Array.isArray(snapshot.nodes) || snapshot.nodes.length === 0
+    || (snapshot.messageDetailsComplete !== undefined && typeof snapshot.messageDetailsComplete !== 'boolean')
+    || (snapshot.messageDetailEventCount !== undefined && (!Number.isSafeInteger(snapshot.messageDetailEventCount) || snapshot.messageDetailEventCount < 0))
+    || (snapshot.messageDetailsComplete === false && snapshot.messageDetailEventCount === undefined)) return false
   const ids = new Set<string>()
   const validNodes = snapshot.nodes.every((node) => {
     if (!node || typeof node !== 'object') return false

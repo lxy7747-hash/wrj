@@ -274,7 +274,7 @@ describe('P8 元数据与确定性重置', () => {
 
   it('三个新增目录兑现既有合同，拒绝匿名并允许两种角色读取', async () => {
     const { baseUrl } = await startServer()
-    for (const [section, count] of [['capabilities', 29], ['decisions', 8], ['routes', 11]] as const) {
+    for (const [section, count] of [['capabilities', 29], ['decisions', 8], ['routes', 10]] as const) {
       await request(baseUrl).get(`/api/v1/meta/${section}`).set('Origin', ORIGIN).expect(403)
       for (const role of ['ADMIN', 'OPERATOR']) {
         const result = await request(baseUrl).get(`/api/v1/meta/${section}`).set({ ...headers, 'X-Demo-Role': role }).expect(200)
@@ -290,7 +290,7 @@ describe('P8 元数据与确定性重置', () => {
     const read = async () => ({
       scene: await get('scenarios/SCN-001'), run: await get('simulations'), frame: await get('simulations/RUN-001/frames/F-00042'),
       events: await get('simulations/RUN-001/events'), replay: await get('replays/REPLAY-001'), report: await get('reports/RPT-001'),
-      archive: await get('admin/archives'), batch: await get('batches/BATCH-001'), source: server.projection.snapshot(),
+      archive: await get('admin/archives'), source: server.projection.snapshot(),
     })
     const firstReset = await reset()
     const first = await read()
@@ -341,7 +341,7 @@ describe('P7 系统维护接口', () => {
     }
   })
 
-  it('主数据创建、版本更新、引用保护和删除均保持服务端约束', async () => {
+  it('通用数据创建、版本更新、引用保护和删除均保持服务端约束', async () => {
     const { baseUrl, server } = await startServer()
     const collection = '/api/v1/admin/master-data'
     const initial = await request(baseUrl).get(collection).set(headers).expect(200)
@@ -401,7 +401,7 @@ describe('P7 系统维护接口', () => {
     await request(baseUrl).post('/api/v1/admin/backup').set(headers).send({ operation: 'BACKUP', confirmationId: resetId }).expect(409)
   })
 
-  it('拒绝创建点路径编号并保留原主数据目录', async () => {
+  it('拒绝创建点路径编号并保留原通用数据目录', async () => {
     const { baseUrl } = await startServer()
     const collection = '/api/v1/admin/master-data'
     const initial = await request(baseUrl).get(collection).set(headers).expect(200)
@@ -841,8 +841,8 @@ describe('P0 deterministic mock server', () => {
     const csvData = (csv.body as { data: Array<{ name: string }> }).data
     const interfaceData = (interfaces.body as { data: Array<{ kind: string }> }).data
     expect(frontendData).toHaveLength(5)
-    expect(csvData).toHaveLength(3)
-    expect(csvData.map((item) => item.name)).toEqual(['link_quality.csv', 'events.csv', 'link_switch.csv'])
+    expect(csvData).toHaveLength(5)
+    expect(csvData.map((item) => item.name)).toEqual(['link_quality.csv', 'events.csv', 'link_switch.csv', 'link_state.csv', 'link_loss.csv'])
     expect(interfaceData).toHaveLength(7)
     expect(interfaceData.filter((item) => item.kind === '外部')).toHaveLength(3)
     expect(interfaceData.filter((item) => item.kind === '内部')).toHaveLength(4)
@@ -1043,13 +1043,33 @@ describe('P0 deterministic mock server', () => {
       error: { code: 'VALIDATION_FAILED', fieldPath: 'links[0].bandwidth' },
     })
 
-    const overLimit = structuredClone(linkMutation)
-    const sourcePlatform = structuredClone(overLimit.platforms[3]!)
+    const withinMargin = structuredClone(linkMutation)
+    const sourcePlatform = structuredClone(withinMargin.platforms[3]!)
     for (let index = 0; index < 45; index += 1) {
-      overLimit.platforms.push({
+      withinMargin.platforms.push({
         ...structuredClone(sourcePlatform),
         id: `LIMIT-${String(index + 1).padStart(3, '0')}`,
         name: `容量测试节点 ${index + 1}`,
+        linkIds: [],
+        sensorIds: [],
+        jammerIds: [],
+      })
+    }
+    const marginSaved = await request(baseUrl)
+      .put('/api/v1/scenarios/SCN-001')
+      .set('Origin', ORIGIN)
+      .set('X-Demo-Role', 'OPERATOR')
+      .send({ config: withinMargin, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
+      .expect(200)
+    const marginSavedDraft = (marginSaved.body as { data: ScenarioDraft }).data
+    expect(marginSavedDraft.config.platforms.filter(platform => !['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'].includes(platform.type))).toHaveLength(51)
+
+    const overLimit = structuredClone(marginSavedDraft.config)
+    for (let index = 52; index <= 65; index += 1) {
+      overLimit.platforms.push({
+        ...structuredClone(sourcePlatform),
+        id: `LIMIT-${String(index).padStart(3, '0')}`,
+        name: `容量测试节点 ${index}`,
         linkIds: [],
         sensorIds: [],
         jammerIds: [],
@@ -1059,14 +1079,14 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: overLimit, uiExtensions: original.uiExtensions, expectedRevision: jammerSavedDraft.revision })
+      .send({ config: overLimit, uiExtensions: original.uiExtensions, expectedRevision: marginSavedDraft.revision })
       .expect(422)
     expect(limitRejected.body).toMatchObject({
       ok: false,
       error: { code: 'NODE_LIMIT_EXCEEDED', fieldPath: 'platforms' },
     })
 
-    const completeMutation = structuredClone(jammerSavedDraft.config)
+    const completeMutation = structuredClone(marginSavedDraft.config)
     completeMutation.sensors[0]!.detectionRange = 120000
     completeMutation.output.directory = './scene-output'
     completeMutation.informationDemand[0]!.maxLatencyMs = 800
@@ -1076,10 +1096,10 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: completeMutation, uiExtensions: completeExtensions, expectedRevision: jammerSavedDraft.revision })
+      .send({ config: completeMutation, uiExtensions: completeExtensions, expectedRevision: marginSavedDraft.revision })
       .expect(200)
     expect((completeSaved.body as { data: ScenarioDraft }).data).toMatchObject({
-      revision: 9,
+      revision: 10,
       config: {
         sensors: [{ detectionRange: 120000 }],
         output: { directory: 'output' },
@@ -1192,7 +1212,8 @@ describe('P0 deterministic mock server', () => {
       .expect(200)
     const script = (previewResponse.body as { data: ScriptContract }).data
     expect(script).toMatchObject({ target: 'AFSIM 2.9.0', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4' })
-    expect(script.preview).toContain(`output path=`)
+    expect(script.preview).toContain('// ===== scenario.txt =====')
+    expect(script.preview).toContain('include_once comm_SimSetup.txt')
 
     const preflight = await request(baseUrl)
       .post(`/api/v1/scripts/${script.scriptId}/preflight`)
@@ -2358,8 +2379,8 @@ describe('P0 deterministic mock server', () => {
     const list = await request(baseUrl).get('/api/v1/reports').set(operatorHeaders).expect(200)
     expect(list.body).toMatchObject({
       ok: true,
-      data: [{ reportId: 'RPT-001', classification: 'LEVEL_II' }, { reportId: 'RPT-BATCH-001', classification: 'LEVEL_III' }],
-      meta: { total: 2 },
+      data: [{ reportId: 'RPT-001', classification: 'LEVEL_II' }],
+      meta: { total: 1 },
     })
     const report = await request(baseUrl).get('/api/v1/reports/RPT-001').set(operatorHeaders).expect(200)
     const reportBody = report.body as ApiSuccess<Report>
@@ -2367,7 +2388,7 @@ describe('P0 deterministic mock server', () => {
       { linkId: 'L-MW-01', sourcePlatformId: 'UAV-01', targetPlatformId: 'GCC-01' },
     ])
     expect(reportBody.data.timeSeries?.[0].points).toHaveLength(3)
-    await request(baseUrl).get('/api/v1/reports/RPT-BATCH-001').set(operatorHeaders).expect(200)
+    await request(baseUrl).get('/api/v1/reports/RPT-BATCH-001').set(operatorHeaders).expect(404)
     await request(baseUrl).get('/api/v1/reports/RPT-MISSING').set(operatorHeaders).expect(404)
     await request(baseUrl).get('/api/v1/reports').set('Origin', ORIGIN).expect(403)
 
@@ -2380,41 +2401,6 @@ describe('P0 deterministic mock server', () => {
       data: { reportId: 'RPT-001', generated: false, status: 'FIXTURE_SUCCESS', verifiedAt: '2026-08-06T10:06:30Z' },
     })
 
-    await request(baseUrl)
-      .post('/api/v1/reports/RPT-BATCH-001/export')
-      .set(operatorHeaders)
-      .send({ reportId: 'RPT-BATCH-001', format: 'CSV' })
-      .expect(403)
-    await request(baseUrl)
-      .post('/api/v1/reports/RPT-BATCH-001/export')
-      .set(adminHeaders)
-      .send({ reportId: 'RPT-BATCH-001', format: 'PDF' })
-      .expect(428)
-
-    const awaitingResponse = await request(baseUrl)
-      .post('/api/v1/confirmations')
-      .set(adminHeaders)
-      .send({ action: 'BATCH_LEVEL_III_EXPORT', objectId: 'RPT-BATCH-001' })
-      .expect(201)
-    const awaiting = (awaitingResponse.body as { data: ConfirmationContext }).data
-    await request(baseUrl)
-      .post(`/api/v1/confirmations/${awaiting.confirmationId}`)
-      .set(adminHeaders)
-      .send({ confirm: true })
-      .expect(200)
-    const aggregate = await request(baseUrl)
-      .post('/api/v1/reports/RPT-BATCH-001/export')
-      .set(adminHeaders)
-      .send({ reportId: 'RPT-BATCH-001', format: 'PDF', confirmationId: awaiting.confirmationId })
-      .expect(200)
-    expect(aggregate.body).toMatchObject({
-      data: { reportId: 'RPT-BATCH-001', generated: false, verifiedAt: '2026-08-06T10:08:00Z' },
-    })
-    await request(baseUrl)
-      .post('/api/v1/reports/RPT-BATCH-001/export')
-      .set(adminHeaders)
-      .send({ reportId: 'RPT-BATCH-001', format: 'PDF', confirmationId: awaiting.confirmationId })
-      .expect(409)
   })
 
   it('拒绝 P3 报告导出的无角色、无效请求和未知报告', async () => {
@@ -2463,7 +2449,7 @@ describe('P0 deterministic mock server', () => {
       .expect(200)
     expect((filtered.body as { data: unknown[] }).data).toHaveLength(1)
     const empty = await request(baseUrl).get('/api/v1/admin/audit?module=REPORTING').set(adminHeaders).expect(200)
-    expect(empty.body).toMatchObject({ data: [], meta: { total: 0, pageSize: 1 } })
+    expect(empty.body).toMatchObject({ data: [], meta: { total: 0, pageSize: 20 } })
 
     await request(baseUrl).get('/api/v1/admin/audit').set('Origin', ORIGIN).expect(403)
     await request(baseUrl).get('/api/v1/admin/audit').set({ Origin: ORIGIN, 'X-Demo-Role': 'ROOT' }).expect(403)
@@ -2538,49 +2524,15 @@ describe('P0 deterministic mock server', () => {
     expect(exported.headers['cache-control']).toBe('no-store')
   })
 
-  it('提供 P6 固定批次的创建、控制和 12 行结果', async () => {
-    const { server, baseUrl } = await startServer()
-    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
-    const listed = await request(baseUrl).get('/api/v1/batches').set(headers).expect(200)
-    expect(listed.body).toMatchObject({ data: [{ batchId: 'BATCH-001', state: 'COMPLETED' }] })
-    const detail = await request(baseUrl).get('/api/v1/batches/BATCH-001').set(headers).expect(200)
-    expect((detail.body as { data: { runs: unknown[] } }).data.runs).toHaveLength(12)
-
-    const created = await request(baseUrl)
-      .post('/api/v1/batches')
-      .set(headers)
-      .send({ scenarioId: 'SCN-001', powersW: [50, 100, 150, 200], distancesKm: [80, 100, 120], deterministicOrder: true })
-      .expect(201)
-    expect(created.body).toMatchObject({ data: { state: 'QUEUED' } })
-    await request(baseUrl).get('/api/v1/batches/BATCH-001').set(headers).expect(409)
-    const started = await request(baseUrl)
-      .post('/api/v1/batches/BATCH-001/commands')
-      .set(headers)
-      .send({ command: 'START' })
-      .expect(200)
-    expect(started.body).toMatchObject({ data: { state: 'COMPLETED' } })
-    expect(server.auditSnapshot()).toEqual(expect.arrayContaining([
-      expect.objectContaining({ action: 'BATCH_CREATE', result: 'SUCCESS' }),
-      expect.objectContaining({ action: 'BATCH_COMMAND', result: 'SUCCESS' }),
-    ]))
-  })
-
-  it('拒绝 P6 批次的无角色、无效请求、未知编号和非法迁移', async () => {
+  it('已移除批量 API，同时回放仍可用', async () => {
     const { baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
-    await request(baseUrl).get('/api/v1/batches').set('Origin', ORIGIN).expect(403)
-    await request(baseUrl).post('/api/v1/batches').set('Origin', ORIGIN).send({}).expect(403)
-    await request(baseUrl).get('/api/v1/batches/BATCH-001').set('Origin', ORIGIN).expect(403)
-    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set('Origin', ORIGIN).send({ command: 'START' }).expect(403)
-    await request(baseUrl).post('/api/v1/batches').set(headers).send({}).expect(422)
-    await request(baseUrl).post('/api/v1/batches').set(headers)
-      .send({ scenarioId: 'SCN-001', powersW: [50], distancesKm: [80], deterministicOrder: true }).expect(422)
-    await request(baseUrl).post('/api/v1/batches').set(headers)
-      .send({ scenarioId: 'SCN-001', powersW: [1, 2, 3], distancesKm: [4, 5, 6, 7], deterministicOrder: true }).expect(422)
-    await request(baseUrl).get('/api/v1/batches/BATCH-MISSING').set(headers).expect(404)
-    await request(baseUrl).post('/api/v1/batches/BATCH-MISSING/commands').set(headers).send({ command: 'START' }).expect(404)
-    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set(headers).send({ command: 'BAD' }).expect(422)
-    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set(headers).send({ command: 'START' }).expect(409)
+    await request(baseUrl).get('/api/v1/batches').set(headers).expect(404)
+    await request(baseUrl).post('/api/v1/batches').set(headers).send({}).expect(404)
+    await request(baseUrl).get('/api/v1/batches/BATCH-001').set(headers).expect(404)
+    await request(baseUrl).post('/api/v1/batches/BATCH-001/commands').set(headers).send({ command: 'START' }).expect(404)
+    await request(baseUrl).get('/api/v1/replays/REPLAY-001').set(headers).expect(200)
+    await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'PLAY' }).expect(200)
   })
 
   it('提供 P6 只读回放命令并在全局重置后恢复游标', async () => {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
 import { ElDialog, ElForm } from 'element-plus'
-import type { InformationDemand, Platform } from '../../contracts/domain-models'
+import type { InformationDemand, Platform, ValidationIssue } from '../../contracts/domain-models'
 import { changeBusinessDirection } from '../../features/scenarios/business-defaults'
+import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
 
 const props = defineProps<{
   modelValue: boolean
@@ -12,6 +13,8 @@ const props = defineProps<{
   disabled: boolean
   platforms: readonly Platform[]
   embedded?: boolean
+  /** 由父级按当前场景上下文校验此业务的临时副本。 */
+  validate?: (demand: InformationDemand) => ValidationIssue[]
 }>()
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
@@ -21,6 +24,13 @@ const emit = defineEmits<{
 const localEditor = ref<InformationDemand | null>(null)
 // 嵌入链路时编辑的仍是父弹框临时副本，统一确认前不写入场景。
 const editor = computed(() => props.embedded ? props.demand : localEditor.value)
+const validationTick = ref(0)
+watch(editor, () => { validationTick.value += 1 }, { deep: true, flush: 'sync' })
+const validationIssues = computed(() => {
+  void validationTick.value
+  return editor.value && props.validate ? props.validate(structuredClone(toRaw(editor.value))) : []
+})
+const fieldError = (fieldPath: string): string => fieldValidationMessage(validationIssues.value, fieldPath)
 const volumeUnit = ref<'B' | 'KB' | 'MB'>('MB')
 const unitFactors = { B: 1_000_000, KB: 1000, MB: 1 }
 // 已确认选择：中文业务类型限定四枚举；不再提供视频帧语义选项。
@@ -61,29 +71,29 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
     :data-testid="embedded ? 'link-business-fields' : 'business-dialog'" @opened="emit('opened')" @update:model-value="emit('update:modelValue', $event)">
     <el-alert v-if="error" :title="error" type="error" :closable="false" show-icon />
     <component :is="embedded ? 'div' : ElForm" v-if="editor" label-position="top" :disabled="disabled" class="business-editor">
-      <el-form-item v-if="!embedded" label="业务方向"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
+      <el-form-item v-if="!embedded" label="业务方向" :error="fieldError('direction')"><el-select :model-value="editor.direction" placeholder="旧业务未设置方向" data-testid="demand-direction" @change="changeDirection">
         <el-option label="前向" value="FORWARD" /><el-option label="返向" value="REVERSE" />
       </el-select></el-form-item>
-      <el-form-item required label="信息类型"><el-select v-model="editor.informationType" data-testid="demand-type">
+      <el-form-item required label="信息类型" :error="fieldError('informationType')"><el-select v-model="editor.informationType" data-testid="demand-type">
         <el-option v-for="type in typeOptions" :key="type" :label="type" :value="type" />
       </el-select></el-form-item>
-      <el-form-item required v-if="!embedded" label="源平台"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
+      <el-form-item required v-if="!embedded" label="源平台" :error="fieldError('sourcePlatformId')"><el-select v-model="editor.sourcePlatformId" filterable data-testid="demand-source">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item required v-if="!embedded" label="目标平台"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
+      <el-form-item required v-if="!embedded" label="目标平台" :error="fieldError('destinationPlatformIds')"><el-select v-model="editor.destinationPlatformIds" multiple collapse-tags filterable data-testid="demand-destinations">
         <el-option v-for="platform in platforms" :key="platform.id" :label="`${platform.name}（${platform.id}）`" :value="platform.id" />
       </el-select></el-form-item>
-      <el-form-item required :label="'单报文信息量'">
-        <div class="business-editor__volume"><el-input-number v-model="volume" :min="0" controls-position="right" data-testid="demand-volume" />
+      <el-form-item required :label="'单报文信息量'" :error="fieldError('volumeMb')">
+        <div class="business-editor__volume"><el-input-number v-model="volume" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-volume" />
           <el-select v-model="volumeUnit" aria-label="信息量单位" data-testid="demand-volume-unit">
             <el-option label="字节" value="B" /><el-option label="KB" value="KB" /><el-option label="MB" value="MB" />
           </el-select></div>
       </el-form-item>
-      <el-form-item required :label="'传输频次（次/秒）'">
-        <el-input-number v-model="editor.frequencyHz" :min="0" controls-position="right" data-testid="demand-frequency" />
+      <el-form-item required :label="'传输频次（次/秒）'" :error="fieldError('frequencyHz')">
+        <el-input-number v-model="editor.frequencyHz" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-frequency" />
       </el-form-item>
-      <el-form-item required label="最低业务速率（Mbps）"><el-input-number v-model="editor.minDataRateMbps" :min="0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
-      <el-form-item required label="最大时延（ms）"><el-input-number v-model="editor.maxLatencyMs" :min="0" controls-position="right" data-testid="demand-latency" /></el-form-item>
+      <el-form-item required label="最低业务速率（Mbps）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
+      <el-form-item required label="最大时延（ms）" :error="fieldError('maxLatencyMs')"><el-input-number v-model="editor.maxLatencyMs" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-latency" /></el-form-item>
     </component>
     <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
   </component>

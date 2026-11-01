@@ -7,7 +7,7 @@ const { join } = await import('node:' + 'path')
 const { createMockServer } = await tsImport('../../server/app.ts', import.meta.url)
 const { createBackupFixture, BACKUP_TEST_PASSWORD } = await tsImport('../fixtures/system-backup.ts', import.meta.url)
 
-test('SQLite 完整备份、计划保存、损坏拒绝和恢复后主数据回退', async ({ page }) => {
+test('SQLite 完整备份、计划保存、损坏拒绝和恢复后通用数据回退', async ({ page }) => {
   const f = createBackupFixture()
   const server = createMockServer({ port: 0, backupStorage: f.backup, authStorage: f.auth, scenarioStorage: f.scenario,
     templateStorage: f.template, equipmentStorage: f.equipment, masterDataStorage: f.master, accessControlStorage: f.access, archiveStorage: f.archive })
@@ -50,10 +50,10 @@ test('SQLite 完整备份、计划保存、损坏拒绝和恢复后主数据回�
     await page.reload()
     await expect(panel.getByRole('textbox', { name: '计划名称', exact: true })).toHaveValue('浏览器计划')
     await expect(panel.getByRole('switch', { name: '启用备份计划' })).toBeChecked()
-    await page.goto('/admin?section=master-data')
+    await page.goto('/admin?section=master-data&category=master')
     const masterRow = page.getByTestId('master-table').locator('.el-table__row').filter({ hasText: 'DICT-TEST' })
     await masterRow.getByRole('button', { name: '编辑', exact: true }).click()
-    const edit = page.getByRole('dialog', { name: '编辑主数据', exact: true })
+    const edit = page.getByRole('dialog', { name: '编辑通用数据', exact: true })
     await edit.getByTestId('master-name').fill('备份之后修改')
     await edit.getByTestId('master-save').click()
     await expect(edit).not.toBeVisible()
@@ -73,7 +73,7 @@ test('SQLite 完整备份、计划保存、损坏拒绝和恢复后主数据回�
     await page.getByRole('dialog', { name: '恢复备份', exact: true }).getByRole('button', { name: '确认执行' }).click()
     await page.waitForURL('**/login')
     await login()
-    await page.goto('/admin?section=master-data')
+    await page.goto('/admin?section=master-data&category=master')
     await expect(masterRow).toContainText('测试字典')
     await expect(masterRow).not.toContainText('备份之后修改')
     expect(f.master.load()[0].version).toBe(1)

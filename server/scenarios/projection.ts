@@ -10,8 +10,11 @@ import type {
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
 import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { parseScenarioSnapshot, scenarioSnapshotId } from '../../src/features/scenarios/scenario-snapshot.js'
 import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
+import { ParameterSourceError } from './parameter-sources.js'
+import { readLinkParameterSource } from './parameter-sources.js'
 
 export type ScenarioProjectionResult<T> =
   | { ok: true; data: T }
@@ -22,6 +25,12 @@ export interface ScenarioStorage {
   list(): ScenarioDraft[]
   save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean
   delete(id: string, revision: number): boolean
+}
+
+/** In-memory mode uses this to validate and register parameter-source references with one commit. */
+export interface ScenarioParameterSourceCoordinator {
+  validate(previous: ScenarioConfig | undefined, draft: ScenarioDraft): void
+  commit(previous: ScenarioConfig | undefined, draft: ScenarioDraft): void
 }
 
 /**
@@ -134,7 +143,8 @@ class ScenarioDocument {
   private history: ScenarioDraft[] = []
   private persisted: { id: string; revision: number } | undefined
 
-  constructor(private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null) {
+  constructor(private readonly storage?: Pick<ScenarioStorage, 'load' | 'save'>, initial: ScenarioDraft | null = null,
+    private readonly sourceCoordinator?: ScenarioParameterSourceCoordinator) {
     const loaded = storage ? storage.load() ?? null : initial
     this.draft = loaded ? { ...loaded, config: withScenarioBasicDefaults(loaded.config) } : null
     this.persisted = this.draft && storage ? { id: this.draft.config.scenario.id, revision: this.draft.revision } : undefined
@@ -143,16 +153,31 @@ class ScenarioDocument {
   // 先提交数据库再更新内存和撤销栈，落盘失败不能留下“保存成功”的半成品。
   private commit(draft: ScenarioDraft, undo = false): ScenarioProjectionResult<ScenarioDraft> {
     draft = { ...draft, config: withScenarioBasicDefaults(draft.config) }
+    const previous = this.draft?.config
+    if (!this.storage && !this.sourceCoordinator && draft.config.links.some(link => readLinkParameterSource(link) !== undefined)) {
+      return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, fieldPath: 'links', message: '参数来源需要可原子登记的来源存储。' }
+    }
+    try { this.sourceCoordinator?.validate(previous, draft) }
+    catch (error) {
+      if (error instanceof ParameterSourceError) return { ok: false, code: error.code, status: error.code === 'CONFLICT' ? 409 : 422, fieldPath: error.fieldPath, message: error.message }
+      return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '参数来源校验失败，请检查来源数据后重试。' }
+    }
     if (this.storage) {
       try {
         if (!this.storage.save(draft, this.persisted)) {
           return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'revision', message: '数据库场景已变化，请重新加载后再操作。' }
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof ParameterSourceError) {
+          return { ok: false, code: error.code, status: error.code === 'CONFLICT' ? 409 : 422, fieldPath: error.fieldPath, message: error.message }
+        }
         return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '场景写入数据库失败，原数据未改变，请检查数据库是否可写后重试。' }
       }
       this.persisted = { id: draft.config.scenario.id, revision: draft.revision }
     }
+    // In-memory source registration is deterministic after validate; run it before replacing the draft so a failure cannot report a saved scene.
+    try { this.sourceCoordinator?.commit(previous, draft) }
+    catch { return { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '参数来源引用登记失败，请刷新后重试。' } }
     if (undo) this.history.pop()
     else if (this.draft) {
       this.history.push(structuredClone(this.draft))
@@ -372,15 +397,32 @@ class ScenarioDocument {
     }
 
     const item = (value as { items: unknown[] }).items[0]
-    const inspection = inspectScenarioConfig(item, 'write')
+    const snapshot = parseScenarioSnapshot(item)
+    if (!snapshot) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'items[0]', message: '场景快照文件外壳或版本不受支持。' }
+    }
+    const inspection = inspectScenarioConfig(snapshot.config, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }
     }
-    const config = structuredClone(item as ScenarioConfig)
+    const config = structuredClone(snapshot.config as ScenarioConfig)
+    const extensions = snapshot.uiExtensions ?? createUiExtensions(config)
+    const extensionInspection = inspectScenarioUiExtensions(
+      extensions,
+      config.jammers.map(jammer => jammer.id),
+      config.sensors.map(sensor => sensor.id),
+    )
+    if (!extensionInspection.result.valid) {
+      const issue = extensionInspection.result.errors[0]!
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].uiExtensions.${issue.fieldPath}`, message: issue.message }
+    }
     const draft: ScenarioDraft = {
       config,
-      uiExtensions: createUiExtensions(config),
+      uiExtensions: {
+        jammers: structuredClone(extensionInspection.jammers!),
+        sensors: structuredClone(extensionInspection.sensors!),
+      },
       revision: (this.draft?.revision ?? 0) + 1,
       officialLibraryChanged: false,
       locked: false,
@@ -433,12 +475,12 @@ class ScenarioDocument {
 export class ScenarioProjection {
   private documents = new Map<string, ScenarioDocument>()
 
-  constructor(private readonly storage?: ScenarioStorage) { this.reset() }
+  constructor(private readonly storage?: ScenarioStorage, private readonly sourceCoordinator?: ScenarioParameterSourceCoordinator) { this.reset() }
 
   /** 仅纯内存模式使用；持久化模式由装备库跨库事务提交，再由 get 按修订号重载。 */
   applyEquipmentScenes(updates: { after: ScenarioDraft }[]): void {
     if (this.storage) throw new Error('持久化场景必须在装备保存事务中更新。')
-    for (const { after } of updates) this.documents.set(after.config.scenario.id, new ScenarioDocument(undefined, structuredClone(after)))
+    for (const { after } of updates) this.documents.set(after.config.scenario.id, new ScenarioDocument(undefined, structuredClone(after), this.sourceCoordinator))
   }
 
   private document(id: string): ScenarioDocument {
@@ -447,7 +489,7 @@ export class ScenarioProjection {
       document = new ScenarioDocument(this.storage ? {
         load: () => this.storage!.load(id),
         save: (draft, expected) => this.storage!.save(draft, expected),
-      } : undefined)
+      } : undefined, null, this.sourceCoordinator)
       this.documents.set(id, document)
     }
     return document
@@ -504,7 +546,8 @@ export class ScenarioProjection {
     return this.document(id).copyTemplate(candidate, name, extensions)
   }
   importSnapshots(value: unknown): ScenarioProjectionResult<ScenarioImportResult> {
-    const id = (value as { items?: ScenarioConfig[] } | null)?.items?.[0]?.scenario?.id
+    const item = (value as { items?: unknown[] } | null)?.items?.[0]
+    const id = scenarioSnapshotId(item)
     if (typeof id !== 'string' || !id.trim()) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: 'items', message: '场景快照导入请求结构不正确。' }
     const current = this.get(id)
     if (!current.ok && current.status !== 404) return current
@@ -529,7 +572,7 @@ export class ScenarioProjection {
     this.documents.clear()
     if (!this.storage) {
       const initial = createDraft()
-      this.documents.set(initial.config.scenario.id, new ScenarioDocument(undefined, initial))
+      this.documents.set(initial.config.scenario.id, new ScenarioDocument(undefined, initial, this.sourceCoordinator))
     }
   }
 }

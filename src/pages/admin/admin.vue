@@ -2,7 +2,7 @@
 import { computed, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import type { ScenarioTemplate } from '../../contracts/domain-models'
 import AccountManagement from '../../components/admin/AccountManagement.vue'
 import AuditLog from '../../components/admin/AuditLog.vue'
@@ -13,6 +13,8 @@ import ArchivePanel from '../../components/admin/ArchivePanel.vue'
 import HealthPanel from '../../components/admin/HealthPanel.vue'
 import TemplateLibrary from '../../components/scenarios/TemplateLibrary.vue'
 import { useScenarioStore } from '../../stores/scenario'
+import { useAuthStore } from '../../stores/auth'
+import { canVisitMenu } from '../../features/admin/access-control'
 
 const scenarioStore = useScenarioStore()
 const {
@@ -24,18 +26,29 @@ const {
   lastConfirmation,
 } = storeToRefs(scenarioStore)
 const route = useRoute()
+const router = useRouter()
+const auth = useAuthStore()
+const basicDataVisible = computed(() => ['master-data', 'equipment-library'].includes(String(route.query.section)))
+const canViewEquipment = computed(() => canVisitMenu(auth.principal, '/admin?section=equipment-library'))
+const canViewMasterData = computed(() => canVisitMenu(auth.principal, '/admin?section=master-data'))
+const basicCategory = computed(() => {
+  const requested = route.query.section === 'equipment-library' ? 'equipment' : route.query.category
+  if (requested === 'equipment' && canViewEquipment.value) return 'equipment'
+  if (requested === 'master' && canViewMasterData.value) return 'master'
+  return canViewEquipment.value ? 'equipment' : canViewMasterData.value ? 'master' : ''
+})
+
+function selectBasicCategory(category: string | number): void {
+  if ((category === 'equipment' && canViewEquipment.value) || (category === 'master' && canViewMasterData.value)) {
+    void router.replace({ path: '/admin', query: { ...route.query, section: 'master-data', category } })
+  }
+}
 
 /**
  * 判断当前是否显示系统管理中的场景模板维护页面。
  * @returns 路由查询参数选中场景模板维护时返回 `true`。
  */
 const templateMaintenanceVisible = computed(() => route.query.section === 'scenario-templates')
-
-/**
- * 判断当前是否显示装备参数库页面。
- * @returns 路由查询参数选中装备参数库时返回 `true`。
- */
-const equipmentLibraryVisible = computed(() => route.query.section === 'equipment-library')
 
 /**
  * 判断当前是否显示操作审计日志页面。
@@ -77,6 +90,29 @@ async function createTemplate(): Promise<void> {
   } catch {
     // 用户取消输入时保持模板库不变。
   }
+}
+
+/**
+ * 复制已有模板为新模板；读取源模板完整详情，不依赖当前场景草稿。
+ * @param template 作为复制来源的模板。
+ * @returns 操作结束后无返回值。
+ * @sideEffects 确认名称后新建模板；源模板及其历史引用保持不变。
+ */
+async function duplicateTemplate(template: ScenarioTemplate): Promise<void> {
+  let name: string
+  try {
+    ({ value: name } = await ElMessageBox.prompt(`将复制“${template.name}”的完整场景配置为新模板。`, '复制场景模板', {
+      confirmButtonText: '复制',
+      cancelButtonText: '取消',
+      inputValue: `${template.name} 副本`,
+      inputValidator: (value) => value.trim() !== '' || '请输入模板名称。',
+    }))
+  } catch {
+    return
+  }
+  const source = await scenarioStore.loadTemplate(template.templateId)
+  if (source === undefined) return
+  if (await scenarioStore.createTemplate(name, source.config, source.uiExtensions)) ElMessage.success(templateResultMessage.value)
 }
 
 /**
@@ -157,21 +193,30 @@ watch(templateMaintenanceVisible, (visible) => {
       @create="createTemplate"
       @import="importTemplate"
       @load="scenarioStore.loadTemplate"
+      @duplicate="duplicateTemplate"
       @update="updateTemplate"
       @export="exportTemplate"
       @delete="deleteTemplate"
     />
   </section>
 
-  <section v-else-if="equipmentLibraryVisible" class="page admin-page">
-    <EquipmentLibrary />
+  <section v-else-if="basicDataVisible" class="page admin-page basic-data-page" aria-label="基础数据管理" data-testid="basic-data-management">
+    <h2 class="basic-data-title">基础数据管理</h2>
+    <el-tabs :model-value="basicCategory" aria-label="基础数据分类" @update:model-value="selectBasicCategory">
+      <el-tab-pane v-if="canViewEquipment" label="设备参数" name="equipment">
+        <EquipmentLibrary v-if="basicCategory === 'equipment'" />
+      </el-tab-pane>
+      <el-tab-pane v-if="canViewMasterData" label="通用基础数据" name="master">
+        <MasterDataPanel v-if="basicCategory === 'master'" :show-title="false" />
+      </el-tab-pane>
+    </el-tabs>
+    <el-empty v-if="!basicCategory" description="当前账号没有基础数据访问权限" />
   </section>
 
   <section v-else-if="auditLogsVisible" class="page admin-page" aria-label="操作审计日志">
     <AuditLog />
   </section>
 
-  <section v-else-if="route.query.section === 'master-data'" class="page admin-page"><MasterDataPanel /></section>
   <section v-else-if="route.query.section === 'database-backup'" class="page admin-page"><BackupRestoreWizard /></section>
   <section v-else-if="route.query.section === 'simulation-data'" class="page admin-page"><ArchivePanel /></section>
   <section v-else-if="route.query.section === 'runtime-status'" class="page admin-page"><HealthPanel /></section>
@@ -188,6 +233,9 @@ watch(templateMaintenanceVisible, (visible) => {
   gap: var(--space-4, 1rem);
   padding-top: var(--space-3, 0.75rem) !important;
 }
+
+.basic-data-page { align-content: start; }
+.basic-data-title { margin: 0; font-size: 18px; }
 
 .admin-page :deep(.maintenance-card) { display: grid; gap: 16px; min-width: 0; padding: 16px; border: 1px solid var(--el-border-color); border-radius: 8px; align-content: start; }
 .admin-page :deep(.maintenance-toolbar) { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }

@@ -52,7 +52,7 @@ UI：`UP ↔ DEGRADED ↔ DOWN`；状态改变必须满足连续帧和滞回规�
 
 ### 批次
 
-`DRAFT → VALIDATING → QUEUED → RUNNING → COMPLETED | PARTIAL_FAILURE | ERROR`；`QUEUED|RUNNING → CANCELLED`。BATCH-001 的冻结夹具直接呈现 `COMPLETED`，12 个 run/report 对必须一一对应；聚合报告只从同一 12 行 registry 计算。
+批量仿真已移除；当前仿真只保留单次参数扫描与历史回放。冻结夹具和报告只保留单次运行来源，禁止重新引入批次状态机或聚合报告。
 
 ### 配置锁
 

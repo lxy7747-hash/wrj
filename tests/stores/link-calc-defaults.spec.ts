@@ -41,4 +41,11 @@ describe('《与前端字段确认说明》默认值', () => {
     expect(fixedLinkDataRate({ ...link, type: 'MICROWAVE' }, [])).toBe(80)
     expect(fixedLinkDataRate({ ...link, type: 'DATALINK' }, [])).toBeNull()
   })
+
+  it('卫星可覆盖历史固定速率，按方向读取独立速率', () => {
+    const link = { type: 'SAT' as const, sourcePlatformId: 'CMD-01', targetPlatformId: 'SAT-01', relayPlatformId: null,
+      direction: 'FORWARD' as const, forwardDataRate: 4, reverseDataRate: 0.512 }
+    expect(fixedLinkDataRate(link, [])).toBe(4)
+    expect(fixedLinkDataRate({ ...link, direction: 'REVERSE' }, [])).toBe(0.512)
+  })
 })

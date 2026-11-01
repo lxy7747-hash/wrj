@@ -36,7 +36,7 @@
 
 - `UiSimulationStatus` 比 canonical 多 `STOPPED`；`projectUiSimulationStatus` 是唯一写出边界。
 - `UiLinkStatus` 比 canonical 多 `DEGRADED`；`projectUiLinkStatus` 必须结合 BER/阈值，禁止直接 cast。
-- capability、confirmation、replay、batch、configuration lock 均使用独立 union，禁止复用一个宽泛 `status: string`。
+- capability、confirmation、replay、configuration lock 均使用独立 union，禁止复用一个宽泛 `status: string`；批量仿真领域类型已移除。
 - adapter 返回 `ApiResult<T>`，错误必须包含 error code、message、retryable、correlationId，可定位字段时必须有 fieldPath。
 
 ## CSV 合同

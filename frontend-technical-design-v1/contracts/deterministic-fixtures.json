@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.0",
-  "fixtureVersion": "2026-09-08.1",
+  "fixtureVersion": "2026-10-28.1",
   "epoch": "2026-08-06T08:00:00Z",
   "clock": {
     "scenarioCreatedAt": "2026-08-06T08:00:00Z",
@@ -10,7 +10,6 @@
     "runStartedAt": "2026-08-06T08:05:00Z",
     "runCompletedAt": "2026-08-06T10:05:00Z",
     "reportGeneratedAt": "2026-08-06T10:06:30Z",
-    "batchReportGeneratedAt": "2026-08-06T10:07:00Z",
     "levelThreeVerifiedAt": "2026-08-06T10:08:00Z"
   },
   "principals": [
@@ -367,6 +366,12 @@
       {
         "id": "L-LASER-04",
         "type": "LASER",
+        "laser": {
+          "txApertureDiameterM": 0.1,
+          "rxApertureDiameterM": 0.1,
+          "pulseWidthS": 1e-8,
+          "modulation": "OOK"
+        },
         "sourcePlatformId": "CMD-01",
         "targetPlatformId": "UAV-01",
         "frequency": 193500000,
@@ -1197,278 +1202,6 @@
     "reportId": "RPT-001",
     "status": "INDEXED"
   },
-  "batch": {
-    "batchId": "BATCH-001",
-    "state": "COMPLETED",
-    "runIds": [
-      "RUN-B01",
-      "RUN-B02",
-      "RUN-B03",
-      "RUN-B04",
-      "RUN-B05",
-      "RUN-B06",
-      "RUN-B07",
-      "RUN-B08",
-      "RUN-B09",
-      "RUN-B10",
-      "RUN-B11",
-      "RUN-B12"
-    ],
-    "reportIds": [
-      "RPT-B01",
-      "RPT-B02",
-      "RPT-B03",
-      "RPT-B04",
-      "RPT-B05",
-      "RPT-B06",
-      "RPT-B07",
-      "RPT-B08",
-      "RPT-B09",
-      "RPT-B10",
-      "RPT-B11",
-      "RPT-B12"
-    ],
-    "aggregateReportId": "RPT-BATCH-001"
-  },
-  "batchRuns": [
-    {
-      "runId": "RUN-B01",
-      "powerW": 50,
-      "distanceKm": 80,
-      "connectivityDurationS": 6703,
-      "connectivityRate": 93.1,
-      "switchCount": 1,
-      "avgBer": 0.0000012,
-      "maxBer": 0.0000081,
-      "avgSnrDb": 20.4,
-      "minSnrDb": 11.2,
-      "interferenceDurationS": 720,
-      "status": "COMPLETED",
-      "reportId": "RPT-B01"
-    },
-    {
-      "runId": "RUN-B02",
-      "powerW": 50,
-      "distanceKm": 100,
-      "connectivityDurationS": 6437,
-      "connectivityRate": 89.4,
-      "switchCount": 2,
-      "avgBer": 0.0000028,
-      "maxBer": 0.000012,
-      "avgSnrDb": 18.3,
-      "minSnrDb": 8.8,
-      "interferenceDurationS": 900,
-      "status": "COMPLETED",
-      "reportId": "RPT-B02"
-    },
-    {
-      "runId": "RUN-B03",
-      "powerW": 50,
-      "distanceKm": 120,
-      "connectivityDurationS": 6062,
-      "connectivityRate": 84.2,
-      "switchCount": 3,
-      "avgBer": 0.0000062,
-      "maxBer": 0.000022,
-      "avgSnrDb": 15.8,
-      "minSnrDb": 6.3,
-      "interferenceDurationS": 1080,
-      "status": "COMPLETED",
-      "reportId": "RPT-B03"
-    },
-    {
-      "runId": "RUN-B04",
-      "powerW": 100,
-      "distanceKm": 80,
-      "connectivityDurationS": 6286,
-      "connectivityRate": 87.3,
-      "switchCount": 3,
-      "avgBer": 0.0000046,
-      "maxBer": 0.000038,
-      "avgSnrDb": 16.8,
-      "minSnrDb": 4.2,
-      "interferenceDurationS": 1470,
-      "status": "COMPLETED",
-      "reportId": "RPT-B04"
-    },
-    {
-      "runId": "RUN-B05",
-      "powerW": 100,
-      "distanceKm": 100,
-      "connectivityDurationS": 5947,
-      "connectivityRate": 82.6,
-      "switchCount": 4,
-      "avgBer": 0.0000084,
-      "maxBer": 0.000051,
-      "avgSnrDb": 14.5,
-      "minSnrDb": 3.6,
-      "interferenceDurationS": 1650,
-      "status": "COMPLETED",
-      "reportId": "RPT-B05"
-    },
-    {
-      "runId": "RUN-B06",
-      "powerW": 100,
-      "distanceKm": 120,
-      "connectivityDurationS": 5746,
-      "connectivityRate": 79.8,
-      "switchCount": 5,
-      "avgBer": 0.000011,
-      "maxBer": 0.000068,
-      "avgSnrDb": 12.9,
-      "minSnrDb": 2.8,
-      "interferenceDurationS": 1830,
-      "status": "COMPLETED",
-      "reportId": "RPT-B06"
-    },
-    {
-      "runId": "RUN-B07",
-      "powerW": 150,
-      "distanceKm": 80,
-      "connectivityDurationS": 5796,
-      "connectivityRate": 80.5,
-      "switchCount": 5,
-      "avgBer": 0.000016,
-      "maxBer": 0.000082,
-      "avgSnrDb": 11.8,
-      "minSnrDb": 2.2,
-      "interferenceDurationS": 1980,
-      "status": "COMPLETED",
-      "reportId": "RPT-B07"
-    },
-    {
-      "runId": "RUN-B08",
-      "powerW": 150,
-      "distanceKm": 100,
-      "connectivityDurationS": 5537,
-      "connectivityRate": 76.9,
-      "switchCount": 6,
-      "avgBer": 0.000024,
-      "maxBer": 0.00011,
-      "avgSnrDb": 10.2,
-      "minSnrDb": 1.5,
-      "interferenceDurationS": 2160,
-      "status": "COMPLETED",
-      "reportId": "RPT-B08"
-    },
-    {
-      "runId": "RUN-B09",
-      "powerW": 150,
-      "distanceKm": 120,
-      "connectivityDurationS": 5285,
-      "connectivityRate": 73.4,
-      "switchCount": 7,
-      "avgBer": 0.000031,
-      "maxBer": 0.00014,
-      "avgSnrDb": 9.1,
-      "minSnrDb": 0.8,
-      "interferenceDurationS": 2340,
-      "status": "COMPLETED",
-      "reportId": "RPT-B09"
-    },
-    {
-      "runId": "RUN-B10",
-      "powerW": 200,
-      "distanceKm": 80,
-      "connectivityDurationS": 5148,
-      "connectivityRate": 71.5,
-      "switchCount": 7,
-      "avgBer": 0.000038,
-      "maxBer": 0.00018,
-      "avgSnrDb": 8.5,
-      "minSnrDb": 0.4,
-      "interferenceDurationS": 2520,
-      "status": "COMPLETED",
-      "reportId": "RPT-B10"
-    },
-    {
-      "runId": "RUN-B11",
-      "powerW": 200,
-      "distanceKm": 100,
-      "connectivityDurationS": 4910,
-      "connectivityRate": 68.2,
-      "switchCount": 8,
-      "avgBer": 0.000049,
-      "maxBer": 0.00021,
-      "avgSnrDb": 7.4,
-      "minSnrDb": -0.6,
-      "interferenceDurationS": 2700,
-      "status": "COMPLETED",
-      "reportId": "RPT-B11"
-    },
-    {
-      "runId": "RUN-B12",
-      "powerW": 200,
-      "distanceKm": 120,
-      "connectivityDurationS": 4666,
-      "connectivityRate": 64.8,
-      "switchCount": 9,
-      "avgBer": 0.000063,
-      "maxBer": 0.00027,
-      "avgSnrDb": 6.2,
-      "minSnrDb": -1.4,
-      "interferenceDurationS": 2880,
-      "status": "COMPLETED",
-      "reportId": "RPT-B12"
-    }
-  ],
-  "batchReports": [
-    {
-      "reportId": "RPT-B01",
-      "runId": "RUN-B01"
-    },
-    {
-      "reportId": "RPT-B02",
-      "runId": "RUN-B02"
-    },
-    {
-      "reportId": "RPT-B03",
-      "runId": "RUN-B03"
-    },
-    {
-      "reportId": "RPT-B04",
-      "runId": "RUN-B04"
-    },
-    {
-      "reportId": "RPT-B05",
-      "runId": "RUN-B05"
-    },
-    {
-      "reportId": "RPT-B06",
-      "runId": "RUN-B06"
-    },
-    {
-      "reportId": "RPT-B07",
-      "runId": "RUN-B07"
-    },
-    {
-      "reportId": "RPT-B08",
-      "runId": "RUN-B08"
-    },
-    {
-      "reportId": "RPT-B09",
-      "runId": "RUN-B09"
-    },
-    {
-      "reportId": "RPT-B10",
-      "runId": "RUN-B10"
-    },
-    {
-      "reportId": "RPT-B11",
-      "runId": "RUN-B11"
-    },
-    {
-      "reportId": "RPT-B12",
-      "runId": "RUN-B12"
-    }
-  ],
-  "batchAggregateReport": {
-    "reportId": "RPT-BATCH-001",
-    "batchId": "BATCH-001",
-    "classification": "LEVEL_III",
-    "generatedTime": "2026-08-06T10:07:00Z",
-    "status": "READY"
-  },
   "reset": {
     "method": "POST",
     "path": "/api/v1/reset",
@@ -1486,7 +1219,6 @@
       "simulationRun": "$.run",
       "telemetryFrame": "$.frame",
       "events": "$.events",
-      "batchRuns": "$.batchRuns",
       "metadata": "$.metadata",
       "contracts": "$.contracts"
     },
@@ -2022,7 +1754,7 @@
       {
         "id": "DEC-007",
         "conflict": "report authorization/classification",
-        "adopted": "ordinary Level II; batch Level III admin plus confirmation",
+        "adopted": "ordinary Level II export only; Level III exports are unavailable",
         "effect": "generated false status only"
       },
       {
@@ -2062,21 +1794,10 @@
         "guard": "requirePrincipal"
       },
       {
-        "path": "/batches",
-        "page": "BatchesPage",
-        "stores": [
-          "batchStore",
-          "scenarioStore",
-          "uiStore"
-        ],
-        "guard": "requirePrincipal"
-      },
-      {
         "path": "/reports",
         "page": "ReportsPage",
         "stores": [
           "reportStore",
-          "batchStore",
           "telemetryStore",
           "authStore",
           "uiStore"
@@ -2143,7 +1864,6 @@
           "scenarioStore",
           "simulationStore",
           "telemetryStore",
-          "batchStore",
           "reportStore",
           "replayStore",
           "adminStore",
@@ -2261,9 +1981,11 @@
     "csv": [
       {
         "name": "link_quality.csv",
-        "version": "1.0",
-        "sourceRef": "SRS §3.5.2 Table 18",
+        "version": "1.1",
+        "sourceRef": "软件测试大纲 表30/53/65",
         "fields": [
+          "task_id",
+          "SchemaVersion",
           "Time",
           "SourcePlatform",
           "DestPlatform",
@@ -2278,6 +2000,7 @@
           "JammingPower",
           "ReceivedPower",
           "SNR",
+          "GXB",
           "Modulation",
           "BER",
           "LinkStatus",
@@ -2287,9 +2010,11 @@
       },
       {
         "name": "events.csv",
-        "version": "1.0",
-        "sourceRef": "SRS §3.5.2 Table 19",
+        "version": "1.1",
+        "sourceRef": "软件测试大纲 表30/53/65",
         "fields": [
+          "task_id",
+          "SchemaVersion",
           "Time",
           "EventType",
           "SourcePlatform",
@@ -2303,9 +2028,11 @@
       },
       {
         "name": "link_switch.csv",
-        "version": "1.0",
-        "sourceRef": "SRS §3.5.2 Table 20",
+        "version": "1.1",
+        "sourceRef": "软件测试大纲 表30/53/65",
         "fields": [
+          "task_id",
+          "SchemaVersion",
           "Time",
           "SourcePlatform",
           "DestPlatform",
@@ -2315,6 +2042,42 @@
           "OldBER",
           "NewBER",
           "SwitchReason"
+        ]
+      },
+      {
+        "name": "link_state.csv",
+        "version": "1.1",
+        "sourceRef": "软件测试大纲 表30/53/65",
+        "fields": [
+          "task_id",
+          "SchemaVersion",
+          "Time",
+          "SourcePlatform",
+          "DestPlatform",
+          "LinkType",
+          "LinkStatus",
+          "GXB",
+          "BER",
+          "ReceivedPower"
+        ]
+      },
+      {
+        "name": "link_loss.csv",
+        "version": "1.1",
+        "sourceRef": "软件测试大纲 表30/53/65",
+        "fields": [
+          "task_id",
+          "SchemaVersion",
+          "Time",
+          "SourcePlatform",
+          "DestPlatform",
+          "LinkType",
+          "FreeSpaceLoss",
+          "SeaMultipathLoss",
+          "AtmosphericLoss",
+          "CloudRainLoss",
+          "JammingLoss",
+          "TotalLoss"
         ]
       }
     ]

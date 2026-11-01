@@ -24,7 +24,7 @@ export type SimulationProjectionResult<T> =
 const STARTED_AT = '2026-08-06T08:05:00Z'
 const FIXTURE_PROCESS_ID = 2900
 const ACTIVE_STATUSES = new Set<SimulationRun['uiStatus']>(['RUNNING', 'PAUSED'])
-const MODES = new Set(['INTERACTIVE_SINGLE', 'BATCH_PARAMETER_TRAVERSAL', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'])
+const MODES = new Set(['INTERACTIVE_SINGLE', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'])
 
 /** 从未受信任值读取闭合的 RF 干扰控制命令。 */
 function readJammingCommand(value: unknown): JammingCommand | undefined {
@@ -147,7 +147,8 @@ function createIdleRun(request: SimulationCreateRequest, totalDuration: number, 
 
 /** 固定证据仅属于默认演示场景，不能作为其他场景的运行结果。 */
 export function ownsFixedEvidence(run: SimulationRun | undefined): boolean {
-  return run?.scenarioId === loadFixtureProjection().scenario.scenario.id
+  const fixture = loadFixtureProjection()
+  return run?.taskId === fixture.task.taskId && run.scenarioId === fixture.scenario.scenario.id
 }
 
 /** 固定演示帧只替换运行身份；测量与业务证据仍来自同一冻结夹具。 */
@@ -164,7 +165,7 @@ export class SimulationProjection {
   private readonly processedClosedLoops = new Set<string>()
   private readonly jammerParameterVersions = new Map<string, number>()
 
-  constructor(private readonly scenarios: ScenarioProjection) {}
+  constructor(private readonly scenarios: ScenarioProjection, private readonly taskId = loadFixtureProjection().task.taskId) {}
 
   startMission(pid: number, startedAt: string): SimulationRun {
     this.run.uiStatus = 'RUNNING'
@@ -247,7 +248,7 @@ export class SimulationProjection {
    * @returns 新的空闲运行，或请求、场景及单实例冲突错误。
    * @remarks 只创建内存投影和配置锁，不启动进程或浏览器计时器。
    */
-  create(value: unknown): SimulationProjectionResult<SimulationRun> {
+  create(value: unknown, assignedRunId?: SimulationRun['runId']): SimulationProjectionResult<SimulationRun> {
     const request = readCreateRequest(value)
     if (request === undefined) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '仿真创建请求结构不正确。' }
@@ -255,14 +256,13 @@ export class SimulationProjection {
     if (ACTIVE_STATUSES.has(this.run.uiStatus) || this.run.configLocked) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '当前已有仿真运行，不能重复创建。' }
     }
-    const fixture = loadFixtureProjection()
-    if (request.taskId !== fixture.task.taskId) {
+    if (request.taskId !== this.taskId) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'taskId', message: '任务编号与当前演示任务不匹配。' }
     }
     const locked = this.scenarios.setLocked(request.scenarioId, true)
     if (!locked.ok) return locked
 
-    const runId: SimulationRun['runId'] = `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
+    const runId: SimulationRun['runId'] = assignedRunId ?? `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
     this.nextRunSequence += 1
     this.run = createIdleRun(request, locked.data.config.scenario.duration, runId)
     this.processedClosedLoops.clear()

@@ -10,6 +10,9 @@ const { DatabaseSync } = await import('node:' + 'sqlite')
 const { once } = await import('node:' + 'events')
 const { default: request } = await import('super' + 'test')
 const { ArchiveSqliteStorage } = await import('../../server/local/' + 'archive-sqlite.js')
+const { TemplateSqliteStorage } = await import('../../server/local/' + 'template-sqlite.js')
+const { TemplateProjection } = await import('../../server/templates/' + 'projection.js')
+const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const { readLocalReplay } = await import('../../server/local/' + 'afsim-replay-reader.js')
 const { readLocalReport, exportLocalReport } = await import('../../server/local/' + 'report-file.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
@@ -58,6 +61,23 @@ describe('真实归档独立持久化', () => {
     expect(reopened.get('bad')).toBeNull()
     expect(reopened.get(`ARCH-LOCAL-${'0'.repeat(64)}`)).toBeNull()
   })
+  it('删除持久化模板不影响已登记归档快照', async () => {
+    const { dir, event, position, store } = await setup()
+    await writeFile(event, REPORT_EVENT_CSV)
+    const archived = store.register('模板删除前快照', 'admin', await readLocalReplay(event, position), (await readLocalReport(event, position))!)
+    const before = store.get(archived.archiveId)
+    const templates = new TemplateSqliteStorage(join(dir, 'templates.db'))
+    try {
+      const projection = new TemplateProjection(templates)
+      const source = new ScenarioProjection().get('SCN-001')
+      if (!source.ok) throw new Error('缺少测试场景')
+      const created = projection.create({ name: '可删除模板', config: source.data.config })
+      if (!created.ok) throw new Error('测试模板创建失败')
+      expect(projection.delete(created.data.templateId)).toMatchObject({ ok: true })
+      expect(templates.load()).toEqual([])
+      expect(store.get(archived.archiveId)).toEqual(before)
+    } finally { templates.close() }
+  })
   it('跨文件版本拒绝、损坏拒绝、不产生假成功', async () => {
     const { event, position, path, store } = await setup()
     const replay = await readLocalReplay(event, position), report = (await readLocalReport(event, position))!
@@ -74,7 +94,7 @@ describe('真实归档独立持久化', () => {
     const { dir, event, position, store } = await setup()
     const server = createMockServer({ port: 0, archiveStorage: store,
       loadLocalReplay: () => readLocalReplay(event, position), loadLocalReport: () => readLocalReport(event, position),
-      exportLocalReport: (report: Report, format: 'HTML' | 'CSV', actor: string) => exportLocalReport(dir, report, format, actor) })
+      exportLocalReport: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string) => exportLocalReport(dir, report, format, actor) })
     servers.push(server)
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
     const api = request(server.httpServer), base = '/api/v1/admin/local-archives'

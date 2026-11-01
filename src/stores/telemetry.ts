@@ -122,9 +122,16 @@ function isLinkSummary(value: unknown): value is LinkStatusSummary {
 }
 
 /** 校验链路详情面板会读取的完整遥测成员。 */
+/** 引擎可选提供的质量扩展字段；缺省时界面显示“暂无数据”。 */
+const OPTIONAL_LINK_METRICS = ['jsrDb', 'latencyMs', 'availabilityPercent'] as const
+
 function isTelemetryLink(value: unknown): boolean {
   if (!isRecord(value)) return false
-  return Object.keys(value).length === 22
+  const optional = OPTIONAL_LINK_METRICS.filter(key => Object.hasOwn(value, key))
+  return Object.keys(value).length === 22 + optional.length
+    && optional.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
+    && (!Object.hasOwn(value, 'latencyMs') || Number(value.latencyMs) >= 0)
+    && (!Object.hasOwn(value, 'availabilityPercent') || (Number(value.availabilityPercent) >= 0 && Number(value.availabilityPercent) <= 100))
     && hasNonEmptyStrings(value, ['linkId', 'sourcePlatform', 'destPlatform'])
     && LINK_TYPES.has(String(value.linkType))
     && hasFiniteNumbers(value, [
@@ -757,6 +764,9 @@ export const useTelemetryStore = defineStore('telemetry', {
   state: () => ({
     frame: null as TelemetryFrame | null,
     events: [] as SituationEvent[],
+    // A runtime-only task may have no telemetry frame; retain the task chosen
+    // for the socket so reconnects cannot silently fall back to TASK-001.
+    realtimeTaskId: null as TaskId | null,
     topicSequences: {
       'simulation.frame': 0,
       'runtime.state': 0,
@@ -1194,6 +1204,8 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
       runtime.manuallyClosed = false
       this.connectionState = runtime.retryAttempt === 0 ? 'CONNECTING' : 'RETRYING'
+      const taskId = useSimulationStore().run?.taskId ?? this.frame?.taskId ?? this.realtimeTaskId ?? 'TASK-001'
+      this.realtimeTaskId = taskId
       const socket = new WebSocket(resolveRealtimeUrl(useAuthStore().role))
       runtime.socket = socket
 
@@ -1202,9 +1214,9 @@ export const useTelemetryStore = defineStore('telemetry', {
         socket.send(JSON.stringify({
           type: 'subscribe',
           schemaVersion: '1.0',
-          taskId: this.frame?.taskId ?? 'TASK-001',
+          taskId,
           topics: TOPICS,
-          lastSequence: 0,
+          lastSequences: { ...this.topicSequences },
         }))
       })
       socket.addEventListener('message', (event) => {
@@ -1216,8 +1228,17 @@ export const useTelemetryStore = defineStore('telemetry', {
           return
         }
         if (isRecord(message) && message.type === 'subscribed') {
-          runtime.retryAttempt = 0
-          this.connectionState = 'SUBSCRIBED'
+          const subscribedTopics = message.topics
+          if (message.schemaVersion === '1.0'
+            && message.taskId === taskId
+            && Array.isArray(subscribedTopics)
+            && subscribedTopics.length === TOPICS.length
+            && TOPICS.every((topic) => subscribedTopics.includes(topic))
+            && Number.isSafeInteger(message.lastSequence)
+            && Number.isSafeInteger(message.nextSequence)) {
+            runtime.retryAttempt = 0
+            this.connectionState = 'SUBSCRIBED'
+          }
           return
         }
         if (isRecord(message) && message.type === 'rejected' && message.code === 'SEQUENCE_GAP') {
@@ -1305,6 +1326,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      */
     resetToSafeEmpty(): void {
       this.requestEpoch += 1
+      this.realtimeTaskId = null
       this.frame = null
       this.events = []
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })

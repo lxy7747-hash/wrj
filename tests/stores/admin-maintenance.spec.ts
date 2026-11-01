@@ -2,7 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtures from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ConfirmationContext, MasterData, MasterDataDetails, RestoreResult } from '../../src/contracts/domain-models'
-import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isRestoreResult, isSystemHealth } from '../../src/features/admin/admin-contract'
+import { EQUIPMENT_PARAMETER_KEYS, isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isRestoreResult, isSystemHealth } from '../../src/features/admin/admin-contract'
 import { useAdminStore } from '../../src/stores/admin'
 import { useAuthStore } from '../../src/stores/auth'
 
@@ -35,6 +35,82 @@ function actionResponses(result: unknown) {
 describe('P7 系统维护状态', () => {
   beforeEach(() => { setActivePinia(createPinia()); useAuthStore().$patch({ role: 'ADMIN' }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks() })
+
+  const withEntries = (...entries: unknown[]) => ({ content: { ...master.content!, entries } })
+  it.each([
+    ['空编号', { dataId: '' }, 'dataId', '编号不能为空'],
+    ['空白编号', { dataId: '  ' }, 'dataId', '编号不能为空'],
+    ['点编号', { dataId: '.' }, 'dataId', '编号不能为 . 或 ..'],
+    ['双点编号', { dataId: '..' }, 'dataId', '编号不能为 . 或 ..'],
+    ['未选类型', { kind: '' }, 'kind', '类型必须选择'],
+    ['错误类型', { kind: 'DEVICE' }, 'kind', '类型必须选择'],
+    ['数组类型', { kind: ['ENUMERATION'] }, 'kind', '类型必须选择'],
+    ['缺少内容', { content: undefined }, 'content', '请填写通用数据内容'],
+    ['空名称', { content: { ...master.content!, name: '' } }, 'content.name', '名称不能为空'],
+    ['空白名称', { content: { ...master.content!, name: '  ' } }, 'content.name', '名称不能为空'],
+    ['超长名称', { content: { ...master.content!, name: '名'.repeat(81) } }, 'content.name', '名称最多填写 80 字'],
+    ['超长说明', { content: { ...master.content!, description: '述'.repeat(1001) } }, 'content.description', '说明必须为文本'],
+    ['没有条目', withEntries(), 'content.entries', '请至少新增并填写一条参数'],
+    ['条目超限', withEntries(...Array(101).fill(master.content!.entries[0])), 'content.entries', '最多填写 100 条'],
+    ['参数键缺失', withEntries({ valueType: 'TEXT', value: 'valid' }), 'content.entries[0].key', '第 1 条参数：参数键不能为空'],
+    ['参数键格式错误', withEntries({ key: '1bad', valueType: 'TEXT', value: 'valid' }), 'content.entries[0].key', '参数键须以英文字母开头'],
+    ['参数键重复', withEntries({ key: 'mode', valueType: 'TEXT', value: 'a' }, { key: 'mode', valueType: 'TEXT', value: 'b' }), 'content.entries[1].key', '第 2 条参数：参数键 mode 重复'],
+    ['文本值未填', withEntries({ key: 'mode', valueType: 'TEXT', value: '  ' }), 'content.entries[0].value', '文本值不能为空'],
+    ['文本值过长', withEntries({ key: 'mode', valueType: 'TEXT', value: '值'.repeat(1001) }), 'content.entries[0].value', '文本值最多填写 1000 字'],
+    ['数值未填', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: NaN }), 'content.entries[0].value', '数值不能为空'],
+    ['数值非有限', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: Infinity }), 'content.entries[0].value', '必须为有效的整数或小数'],
+    ['单位过长', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 0, unit: 'x'.repeat(25) }), 'content.entries[0].unit', '单位必须为文本，最多 24 字符'],
+    ['最小值非法', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 0, minimum: NaN }), 'content.entries[0].minimum', '最小值必须为有效数值'],
+    ['最大值非法', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 0, maximum: Infinity }), 'content.entries[0].maximum', '最大值必须为有效数值'],
+    ['上下限倒置', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 5, minimum: 10, maximum: 0 }), 'content.entries[0].maximum', '最大值不能小于最小值'],
+    ['低于下限', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 0, minimum: 1 }), 'content.entries[0].value', '数值不能小于最小值 1'],
+    ['高于上限', withEntries({ key: 'noiseFigureDb', valueType: 'NUMBER', value: 2, maximum: 1 }), 'content.entries[0].value', '数值不能大于最大值 1'],
+    ['布尔值非法', withEntries({ key: 'enabled', valueType: 'BOOLEAN', value: 'yes' }), 'content.entries[0].value', '布尔值必须通过开关选择'],
+    ['文本携带数值约束', withEntries({ key: 'mode', valueType: 'TEXT', value: 'a', minimum: 0 }), 'content.entries[0].minimum', 'TEXT 类型不能设置单位、最小值或最大值'],
+    ['未知值类型', withEntries({ key: 'mode', valueType: 'OTHER', value: 'a' }), 'content.entries[0].valueType', '值类型必须选择'],
+    ['枚举不是文本', { ...withEntries({ key: 'one', valueType: 'NUMBER', value: 1 }), kind: 'ENUMERATION' }, 'content.entries[0].valueType', '枚举类型仅允许 TEXT'],
+    ['枚举值重复', { ...withEntries({ key: 'one', valueType: 'TEXT', value: 'A' }, { key: 'two', valueType: 'TEXT', value: 'A' }), kind: 'ENUMERATION' }, 'content.entries[1].value', '第 2 条参数：枚举文本值 A 重复'],
+  ])('%s 定位具体字段，拒绝保存且保留已加载数据', async (_name, patch, fieldPath, message) => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([master]))
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAdminStore()
+    expect(await store.loadMaintenance('master')).toBe(true)
+    const invalid = Object.assign(structuredClone(master), patch)
+    expect(await store.saveMasterData(invalid, true)).toBe(false)
+    expect(store.maintenance.master).toMatchObject({ state: 'ERROR', fieldPath, message: expect.stringContaining(message) })
+    expect(store.masterData).toEqual([master])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(EQUIPMENT_PARAMETER_KEYS)('通用数据不重复保存设备字段 %s，且不发写入请求', async key => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAdminStore()
+    const entry = key === 'modulation' ? { key, valueType: 'TEXT' as const, value: 'QPSK' } : { key, valueType: 'NUMBER' as const, value: 20 }
+    const duplicated: MasterData = { ...master, content: { ...master.content!, entries: [entry] } }
+    for (const kind of ['COMMUNICATION_SYSTEM', 'PARAMETER_DICTIONARY']) {
+      expect(await store.saveMasterData({ ...duplicated, kind }, true)).toBe(false)
+      expect(store.maintenance.master).toMatchObject({ state: 'ERROR', fieldPath: 'content.entries[0].key', message: expect.stringContaining('设备固有参数') })
+    }
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('旧设备字段可从响应读取；公共参数和显式枚举仍走正式保存动作', async () => {
+    const legacy: MasterData = { ...master, content: { ...master.content!, entries: [{ key: 'bandwidthMHz', valueType: 'NUMBER', value: 5 }] } }
+    const common: MasterData = { ...master, content: { ...master.content!, entries: [{ key: 'noiseFigureDb', valueType: 'NUMBER', value: 3, unit: 'dB' }] } }
+    const enumeration: MasterData = { ...master, dataId: 'ENUM-CODING', kind: 'ENUMERATION', content: { ...master.content!, entries: [{ key: 'coding.UNCODED', valueType: 'TEXT', value: 'UNCODED' }] } }
+    const fetchMock = vi.fn().mockResolvedValueOnce(response([legacy])).mockResolvedValueOnce(response({ ...common, version: 2 })).mockResolvedValueOnce(response(enumeration))
+    vi.stubGlobal('fetch', fetchMock)
+    const store = useAdminStore()
+    expect(await store.loadMaintenance('master')).toBe(true)
+    expect(store.masterData).toEqual([legacy])
+    expect(await store.saveMasterData(legacy, false)).toBe(false)
+    expect(store.masterData).toEqual([legacy])
+    expect(await store.saveMasterData(common, false)).toBe(true)
+    expect(await store.saveMasterData(enumeration, true)).toBe(true)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(store.masterData).toEqual([{ ...common, version: 2 }, enumeration])
+  })
 
   it('真实 SQLite 备份和恢复使用正式响应，不再显示未生成文件；非法摘要拒绝入库', async () => {
     const store = useAdminStore()
@@ -77,7 +153,7 @@ describe('P7 系统维护状态', () => {
     expect(store.health).toBeNull()
   })
 
-  it('主数据保存使用当前版本，返回不匹配时保留旧数据', async () => {
+  it('通用数据保存使用当前版本，返回不匹配时保留旧数据', async () => {
     const store = useAdminStore()
     const fetchMock = vi.fn().mockResolvedValueOnce(response(master)).mockResolvedValueOnce(response({ ...master, version: 2, active: false }))
       .mockResolvedValueOnce(response({ ...master, dataId: 'WRONG' })).mockResolvedValueOnce(response({ ...master, version: 2, referenceCount: 9 }))
@@ -130,7 +206,7 @@ describe('P7 系统维护状态', () => {
     expect(store.masterDetailsState).toBe('ERROR')
   })
 
-  it('主数据详情与引用登记拒绝错目标、停用版本、重复请求和迟到结果', async () => {
+  it('通用数据详情与引用登记拒绝错目标、停用版本、重复请求和迟到结果', async () => {
     const store = useAdminStore()
     const target = { targetType: 'SCENARIO' as const, targetId: 'SCN-REAL', targetVersion: '8', name: '真实场景' }
     const details: MasterDataDetails = { dataId: master.dataId, history: [master], references: [] }
@@ -194,7 +270,7 @@ describe('P7 系统维护状态', () => {
     expect(store.masterDetails).toBeNull()
   })
 
-  it('拒绝会被 URL 规范化的主数据编号且不发送写入请求', async () => {
+  it('拒绝会被 URL 规范化的通用数据编号且不发送写入请求', async () => {
     const store = useAdminStore()
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)

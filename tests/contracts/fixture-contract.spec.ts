@@ -50,7 +50,7 @@ describe('deterministic fixture contract', () => {
     expect(auditFixtureClosure(fixtures as DeterministicFixtureSet)).toEqual([])
   })
 
-  it('合同数量规则与共享校验一致，中继上限为 2，总容量仍为 50', () => {
+  it('合同数量规则与共享校验一致，中继上限为 2，总容量为 64 并支持超过 50 的扩展', () => {
     const schemas = asObject(asObject(buildDeterministicFixtureSchema(openApi)).$defs)
     const platforms = asObject(asObject(asObject(schemas.ScenarioConfig).properties).platforms)
     expect(platforms['x-business-information-node-limits']).toEqual(INFORMATION_NODE_TYPE_LIMITS)
@@ -123,6 +123,54 @@ describe('deterministic fixture contract', () => {
     expect(validate(config)).toBe(false)
   })
 
+  it('V1.2 可选运动、方向速率、干扰俯仰和质量门限均有一致的接口边界', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const compile = (name: string) => ajv.compile({ ...schema, $ref: `#/$defs/${name}` })
+    const waypoint = compile('Waypoint')
+    const position = { longitude: 120, latitude: 30, altitude: 100, speed: 20, arrivalTime: 10 }
+    expect(waypoint({ ...position, heading: 360, acceleration: -1 })).toBe(true)
+    expect(waypoint({ ...position, heading: 361 })).toBe(false)
+    expect(waypoint({ ...position, acceleration: '1' })).toBe(false)
+    const scene = (fixtures as DeterministicFixtureSet).scenario
+    const platform = compile('Platform')
+    expect(platform({ ...scene.platforms[0]!, heading: 30 })).toBe(true)
+    expect(platform({ ...scene.platforms[0]!, heading: -1 })).toBe(false)
+    const link = compile('Link')
+    const satellite = { ...scene.links.find(item => item.type === 'SAT')!, forwardDataRate: 2, reverseDataRate: 0.256 }
+    expect(link(satellite), JSON.stringify(link.errors)).toBe(true)
+    for (const invalid of [{ forwardDataRate: 0.127 }, { forwardDataRate: 8.001 }, { reverseDataRate: 0.063 }, { reverseDataRate: 2.001 }, { forwardDataRate: '2' }]) {
+      expect(link({ ...satellite, ...invalid })).toBe(false)
+    }
+    const settings = compile('ScenarioLinkSettings')
+    const value = { ...readLinkSettings(scene), failureGxbDb: 0, failureBer: 1e-3, minimumReceivedPowerDbm: -100 }
+    expect(settings(value), JSON.stringify(settings.errors)).toBe(true)
+    for (const invalid of [{ switchCooldownFrames: 0.5 }, { switchCooldownFrames: Number.MAX_SAFE_INTEGER + 1 }, { maximumBer: 1.1 }, { minimumBerImprovementFactor: 0.9 }]) {
+      expect(settings({ ...value, ...invalid })).toBe(false)
+    }
+    const jammer = compile('JammerUiExtension')
+    const extension = { jammerId: 'J-A', direction: 0, duration: 30, enabled: true }
+    for (const elevation of [-10, 60]) expect(jammer({ ...extension, elevation })).toBe(true)
+    for (const elevation of [-11, 61, '0']) expect(jammer({ ...extension, elevation })).toBe(false)
+  })
+
+  it('场景导入合同兼容纯配置与完整快照，拒绝未知快照版本和外壳字段', () => {
+    const schema = asObject(buildDeterministicFixtureSchema(openApi))
+    const ajv = new Ajv2020({ allErrors: true, strict: false })
+    addFormats(ajv)
+    const validate = ajv.compile({ ...schema, $ref: '#/$defs/ScenarioImportRequest' })
+    const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
+    const snapshot = { format: 'wrj.scenario.snapshot', version: 1, config, uiExtensions: {
+      jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, duration: 120, enabled: true, elevation: 60 })),
+      sensors: config.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
+    } }
+    expect(validate({ items: [config] }), JSON.stringify(validate.errors)).toBe(true)
+    expect(validate({ items: [snapshot] }), JSON.stringify(validate.errors)).toBe(true)
+    expect(validate({ items: [{ ...snapshot, version: 2 }] })).toBe(false)
+    expect(validate({ items: [{ ...snapshot, locked: false }] })).toBe(false)
+  })
+
   it('约束实体类型与部署域及卫星字段，同时兼容旧卫星读取', () => {
     const schema = asObject(buildDeterministicFixtureSchema(openApi))
     const ajv = new Ajv2020({ allErrors: true, strict: false })
@@ -193,7 +241,7 @@ describe('deterministic fixture contract', () => {
       },
     ]))
 
-    expect(fixture.fixtureVersion).toBe('2026-09-08.1')
+    expect(fixture.fixtureVersion).toBe('2026-10-28.1')
     expect(frameCoordinates).toEqual(scenarioCoordinates)
     Object.entries(expectedCoreCoordinates).forEach(([platformId, coordinates]) => {
       expect(frameCoordinates[platformId]).toEqual(coordinates)

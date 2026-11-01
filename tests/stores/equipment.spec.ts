@@ -113,6 +113,24 @@ describe('装备参数正式 Store 入口', () => {
     expect(store.equipment).toEqual([])
   })
 
+  it.each([
+    [{ type: '微波通信设备', frequencyMinMHz: 201, frequencyMaxMHz: 200 }, 'frequencyMaxMHz'],
+    [{ type: '微波通信设备', bandwidthMHz: 0 }, 'bandwidthMHz'],
+    [{ type: '微波通信设备', txPowerW: 101 }, 'txPowerW'],
+    [{ type: '微波通信设备', modulation: 'OOK' }, 'modulation'],
+    [{ type: '微波通信设备', dataRateMbps: 2 }, 'dataRateMbps'],
+    [{ type: '卫星通信设备', txPowerW: 1001 }, 'txPowerW'],
+    [{ type: '激光通信设备', frequencyMinMHz: null, frequencyMaxMHz: null, modulation: 'OOK', txPowerW: 0 }, 'txPowerW'],
+  ] as const)('保存入口按设备类型拒绝非法链路参数 %j', async (change, fieldPath) => {
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    const store = useAdminStore()
+    expect(await store.saveEquipment({ ...EQUIPMENT, ...change }, true)).toBe(false)
+    expect(store.maintenance.equipment).toMatchObject({ state: 'ERROR', fieldPath })
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(store.equipment).toEqual([])
+  })
+
   it.each([{ frequencyMinMHz: Infinity }, { readOnly: 'false' }, { modulation: 'x'.repeat(33) }, { type: 'x'.repeat(101) }, { version: 1.5 }])('共享规则拒绝 %j', change => {
     expect(equipmentIssue({ ...EQUIPMENT, ...change })).not.toBeNull()
   })

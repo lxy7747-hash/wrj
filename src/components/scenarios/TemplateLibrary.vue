@@ -21,6 +21,7 @@ const emit = defineEmits<{
   import: []
   load: [templateId: string]
   copy: [template: ScenarioTemplate]
+  duplicate: [template: ScenarioTemplate]
   update: [template: ScenarioTemplate]
   export: [template: ScenarioTemplate]
   delete: [templateId: string]
@@ -71,11 +72,12 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       <el-table-column prop="version" label="版本" width="80" />
       <el-table-column label="类型" width="90"><template #default>场景模板</template></el-table-column>
       <el-table-column prop="referenceCount" label="历史引用" width="90" />
-      <el-table-column label="操作" fixed="right" :width="canMaintain ? 270 : 210">
+      <el-table-column label="操作" fixed="right" :width="canMaintain ? 310 : 210">
         <template #default="{ row }">
           <el-button link type="primary" :disabled="pending" :data-testid="`load-template-${row.templateId}`" @click="emit('load', row.templateId)">查看详情</el-button>
           <el-button v-if="allowApply" link type="primary" :disabled="pending || draftLocked" :data-testid="`copy-template-${row.templateId}`" @click="emit('copy', row)">应用到当前场景</el-button>
           <template v-if="canMaintain">
+            <el-button link type="primary" :disabled="pending" :data-testid="`duplicate-template-${row.templateId}`" @click="emit('duplicate', row)">复制</el-button>
             <el-button link type="primary" :disabled="pending || !draftAvailable" :data-testid="`update-template-${row.templateId}`" @click="emit('update', row)">更新</el-button>
             <el-button link type="primary" :disabled="pending" :data-testid="`export-template-${row.templateId}`" @click="emit('export', row)">导出</el-button>
             <el-popconfirm title="确认删除该场景模板？" confirm-button-text="删除" cancel-button-text="取消" @confirm="emit('delete', row.templateId)">
