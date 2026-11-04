@@ -2,6 +2,7 @@ import type { EquipmentParameter, EquipmentReference, Link, LinkParameterSource,
 import { isLinkParameterSource } from '../../src/features/scenarios/link-parameter-source.js'
 import { prepareLinkEquipment } from '../../src/features/scenarios/link-equipment-parameters.js'
 import { prepareLinkMasterData } from '../../src/features/scenarios/link-master-parameters.js'
+import { matchesPortSource, portParameterTargets, preparePortEquipment, preparePortMasterData } from '../../src/features/scenarios/port-parameter-source.js'
 
 export class ParameterSourceError extends Error {
   constructor(readonly code: 'CONFLICT' | 'VALIDATION_FAILED', readonly fieldPath: string, message: string) {
@@ -43,9 +44,48 @@ export interface MemoryParameterSourceAccess {
   addMasterReference(reference: MasterDataReference): void
 }
 
+export function portParameterSourceChanges(previous: ScenarioConfig | undefined, draft: ScenarioDraft) {
+  const before = new Map(previous ? portParameterTargets(previous).map(target => [target.id, target]) : [])
+  const after = new Map(portParameterTargets(draft.config).map(target => [target.id, target]))
+  return [...new Set([...before.keys(), ...after.keys()])].map(id => {
+    const target = after.get(id)
+    const old = before.get(id)?.parameters.parameterSource
+    const source = target?.parameters.parameterSource
+    if (source && !isLinkParameterSource(source)) throw new ParameterSourceError('VALIDATION_FAILED', `${target!.path}.parameterSource`, '端口来源格式不正确。')
+    const unchanged = source !== undefined && old !== undefined && source.kind === old.kind && source.sourceId === old.sourceId
+      && source.sourceVersion === old.sourceVersion && source.entryKey === old.entryKey && sameFields(source.fields, old.fields)
+    return { id, target, old, source, unchanged }
+  })
+}
+
+export function validatePortParameterSources(previous: ScenarioConfig | undefined, draft: ScenarioDraft, read: {
+  equipment(id: string, version: number, historical: boolean): EquipmentParameter | undefined
+  master(id: string, version: number, historical: boolean): MasterData | undefined
+}): void {
+  for (const { target, source, unchanged } of portParameterSourceChanges(previous, draft)) {
+    if (!target || !source) continue
+    const path = `${target.path}.parameterSource`
+    if (source.entryKey !== undefined) throw new ParameterSourceError('VALIDATION_FAILED', path, '端口仅引用公共数字参数，不接受枚举条目选择。')
+    const record = source.kind === 'EQUIPMENT' ? read.equipment(source.sourceId, source.sourceVersion, unchanged) : read.master(source.sourceId, source.sourceVersion, unchanged)
+    if (!record || record.version !== source.sourceVersion || (!unchanged && (record.active === false || ('readOnly' in record && record.readOnly)))) {
+      throw new ParameterSourceError('CONFLICT', path, '端口参数来源不存在、已停用、只读或版本已变化。')
+    }
+    const prepared = source.kind === 'EQUIPMENT'
+      ? preparePortEquipment(target, { ...record, active: true, readOnly: false } as EquipmentParameter)
+      : preparePortMasterData(target, { ...record, active: true } as MasterData, unchanged)
+    if (!prepared.ok || !sameFields(source.fields, prepared.fields) || !matchesPortSource(target.parameters, prepared.parameters, source.fields)) {
+      throw new ParameterSourceError('VALIDATION_FAILED', path, prepared.ok ? '端口参数与所选来源不一致。' : prepared.message)
+    }
+  }
+}
+
 /** Pure Mock uses the same mapping guards before committing its in-memory scene. */
 export function createMemoryParameterSourceCoordinator(access: MemoryParameterSourceAccess) {
   const validate = (previous: ScenarioConfig | undefined, draft: ScenarioDraft): void => {
+    validatePortParameterSources(previous, draft, {
+      equipment: (id, version, historical) => (historical ? access.equipmentHistory(id) : access.equipment()).find(record => record.equipmentId === id && record.version === version),
+      master: (id, version, historical) => (historical ? access.masterHistory(id) : access.masterData()).find(record => record.dataId === id && record.version === version),
+    })
     for (const [index, link] of draft.config.links.entries()) {
       const source = readLinkParameterSource(link)
       if (!source) continue
@@ -71,6 +111,14 @@ export function createMemoryParameterSourceCoordinator(access: MemoryParameterSo
     }
   }
   const commit = (previous: ScenarioConfig | undefined, draft: ScenarioDraft): void => {
+    for (const { id, old, source, unchanged } of portParameterSourceChanges(previous, draft)) {
+      if (old?.kind === 'EQUIPMENT' && (!source || source.kind !== old.kind || source.sourceId !== old.sourceId || source.sourceVersion !== old.sourceVersion)) {
+        access.setEquipmentReference({ equipmentId: old.sourceId, scenarioId: draft.config.scenario.id, linkId: id, equipmentVersion: old.sourceVersion }, true)
+      }
+      if (!source || unchanged) continue
+      if (source.kind === 'EQUIPMENT') access.setEquipmentReference({ equipmentId: source.sourceId, scenarioId: draft.config.scenario.id, linkId: id, equipmentVersion: source.sourceVersion }, false)
+      else access.addMasterReference({ dataId: source.sourceId, dataVersion: source.sourceVersion, targetType: 'SCENARIO', targetId: draft.config.scenario.id, targetVersion: String(draft.revision) })
+    }
     for (const link of draft.config.links) {
       const source = readLinkParameterSource(link)
       const oldSource = previous?.links.find(item => item.id === link.id) && readLinkParameterSource(previous.links.find(item => item.id === link.id)!)

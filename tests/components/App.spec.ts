@@ -49,7 +49,7 @@ function scenarioDraft(): ScenarioDraft {
     config: structuredClone(fixtureSource.scenario) as ScenarioConfig,
     uiExtensions: {
       jammers: [
-        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
+        { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
       ],
       sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },

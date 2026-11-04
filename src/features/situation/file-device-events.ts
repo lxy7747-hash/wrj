@@ -61,6 +61,8 @@ export function selectFileDeviceStates(events: FileDeviceEvent[], time: number):
   const states = new Map<string, FileDeviceEvent>()
   for (const event of events) {
     if (event.time > time) continue
+    // 端口只有和平台一起才唯一。配置中复用同一平台端口的多条链路因此共享这一份事件状态；
+    // 事件日志没有按链路区分的状态。
     const key = JSON.stringify([event.platformId, event.kind, event.deviceId])
     const previous = states.get(key)
     if (!previous || event.time >= previous.time) states.set(key, event)

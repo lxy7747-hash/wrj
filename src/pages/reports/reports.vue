@@ -145,7 +145,7 @@ async function applyLocalFilter(reset = false): Promise<void> {
           <el-form-item><el-button type="primary" :disabled="filterRangeError || !localFilterResult" @click="applyLocalFilter()">应用精确筛选</el-button><el-button :disabled="!localFilterResult" @click="applyLocalFilter(true)">重置</el-button></el-form-item>
         </el-form>
         <el-alert v-if="filterRangeError" type="error" :closable="false" title="开始时刻不得晚于结束时刻。" />
-        <LocalReportTabs :evidence="localEvidence!" :comparison="resultComparisons" :precise-filter="!!resultSource" :timeline="localFilterResult?.timeline" :timeline-total="localFilterResult?.timelineTotal" />
+        <LocalReportTabs :evidence="localEvidence!" :generated-time="localFilterResult?.report.generatedTime ?? selectedReport.generatedTime" :filter="localFilterResult?.filter" :comparison="resultComparisons" :precise-filter="!!resultSource" :timeline="localFilterResult?.timeline" :timeline-total="localFilterResult?.timelineTotal" />
       </template>
       <ReportTabs
         v-else-if="selectedReport"

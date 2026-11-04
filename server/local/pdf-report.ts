@@ -39,7 +39,7 @@ export async function createLocalReportPdf(input: {
   title: string
   notes: string[]
   sections: ReportTable[]
-  charts: Array<{ title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; kind?: 'BAR' | 'LINE' | 'RADAR'; unit?: string }>
+  charts: Array<{ title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; kind?: 'BAR' | 'LINE' | 'RADAR'; unit?: string; scope?: string }>
   chartScope: string
 }): Promise<Buffer> {
   const fontPath = chineseFontPath()
@@ -58,8 +58,8 @@ export async function createLocalReportPdf(input: {
       for (const chart of input.charts) {
         document.x = document.page.margins.left
         document.moveDown(0.6).fontSize(14).text(`统计图表：${chart.title}`)
-        document.fontSize(9).text(chart.kind === 'LINE' ? input.chartScope.replace('；单位：条', '') : input.chartScope)
-        if (!chart.rows.length) document.fontSize(10).text('当前范围没有记录。')
+        document.fontSize(9).text(chart.scope ?? input.chartScope)
+        if (!chart.rows.length || (chart.kind === 'RADAR' && chart.rows.length < 3)) { document.fontSize(10).text('暂无数据'); continue }
         if (chart.kind === 'LINE') {
           const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = Math.max(1e-12, maximum - minimum)
           const times = chart.rows.map((row, index) => row.time ?? index), startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
@@ -74,13 +74,25 @@ export async function createLocalReportPdf(input: {
           })
           document.stroke('#2f6b8f').fillColor('#17212b'); document.y = startY + 145; document.x = startX
           for (const row of chart.rows) document.fontSize(9).text(`${row.label}：${row.value} ${chart.unit ?? ''}`)
+        } else if (chart.kind === 'RADAR') {
+          document.fontSize(9).text('雷达图范围 0–100%；仅统计连续有效观测区间，缺口和末帧不计。')
+          if (document.y + 180 > document.page.height - document.page.margins.bottom) document.addPage()
+          const centerX = document.page.margins.left + 90, centerY = document.y + 80
+          const point = (index: number, ratio: number): [number, number] => {
+            const angle = index * Math.PI * 2 / chart.rows.length - Math.PI / 2
+            return [centerX + 70 * ratio * Math.cos(angle), centerY + 70 * ratio * Math.sin(angle)]
+          }
+          document.circle(centerX, centerY, 70).stroke('#8795a1')
+          chart.rows.forEach((_, index) => { document.moveTo(centerX, centerY).lineTo(...point(index, 1)).stroke('#8795a1') })
+          document.polygon(...chart.rows.map((row, index) => point(index, row.value / 100))).stroke('#2f6b8f')
+          document.y = centerY + 85; document.x = document.page.margins.left
+          for (const row of chart.rows) document.fontSize(9).text(`${row.label}：${row.value} %`)
         } else {
-          if (chart.kind === 'RADAR') document.fontSize(9).text(chart.rows.length >= 3 ? '雷达图数据：仅统计连续有效观测区间；缺口和末帧不计。' : '有效观测链路不足 3 条，不能绘制雷达图。')
           const maximum = Math.max(...chart.rows.map(row => row.value), 1)
           for (const row of chart.rows) {
             if (document.y + 44 > document.page.height - document.page.margins.bottom) document.addPage()
             document.x = document.page.margins.left
-            document.fontSize(10).text(`${row.label}：${row.value} 条`)
+            document.fontSize(10).text(`${row.label}：${row.value} ${chart.unit ?? '条'}`)
             const startX = document.page.margins.left, startY = document.y + 3, width = Math.max(0, row.value / maximum * 380)
             document.rect(startX, startY, width, 8).fill('#2f6b8f').fillColor('#17212b')
             document.y = startY + 14; document.x = startX

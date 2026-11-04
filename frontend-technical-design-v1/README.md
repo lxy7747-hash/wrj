@@ -2,7 +2,48 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、10 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为本文末尾的“2026-10-29 装备链路写入规则与类型匹配”；下方其余记录均为历史，旧哈希保持原样。
+当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-03 D1 运动与干扰方位配置恢复”；下方其余记录均为历史，旧哈希保持原样。
+
+## D1 运动与干扰方位配置恢复（2026-11-03，当前冻结记录）
+
+依据 V1.2 测试大纲 GNZB-08 / GNZB-15，OpenAPI 更新为 **1.9.4**（84 操作 / 40 写操作不变）：普通航点恢复必填 `arrivalTime`、可选 `heading` / `acceleration`，干扰界面扩展恢复必填 `direction`。平台初始航向、干扰持续时间、自动检测、温湿度、雨衰等不恢复；盘旋/返航点仍使用原 `TemplateRoutePoint`。
+
+场景库、模板库、导入和前端响应读取只对缺失字段补默认值，不改既有值、不自动改写磁盘记录；普通 PUT 不补字段。时刻顺序及场景时长只在写入时检查。配置与生成清单 `motion` / `jammerPointing` 对应，映射标志均为 false，对接方 TXT 不变，界面不加“不写入脚本”提示。前后端应同时升级；旧版程序仍可能丢弃这些字段，回退前须保留新版场景文件。本次不修改用户数据库或备份。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts` | `3122A762162FC527056C0056B050350C038D27F33A1ED241E03F88FB80978DFE` |
+| `contracts/mock-api.openapi.yaml` | `45A749CD75774118D6F9ED1A4A085EA8534F798576A164675D8415D293B83C07` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `C8CDB0FC5B2049829C6D56B91DC1FD2E97971DF74D288BF413A33DB8D1E0006E` |
+| `contracts/deterministic-fixtures.json` | `6A1B90E0B6932DE7518775B0F2107767906755C56D47F329F7092DB05245F616` |
+| `../tests/contracts/fixture-contract.spec.ts` | `7DA45E7AFCC7F279FAD8DEB4607C9A6C89AF5688D858290355E21A2FCAB94081` |
+
+## 退役模板外场景字段（2026-11-02，历史冻结记录）
+
+新模板、前端参数表、技术要求和测试大纲均没有温度、相对湿度、雨衰（dB/km）、干扰方向／持续时间及自动检测的对应语句，用户确认删除。`Environment`、`Jammer` 和 `JammerUiExtension` 的新写入合同均不再接受这些属性；旧场景与模板在运行时读取、保存前统一丢弃它们，避免旧值回写。保留时间步长、雨强、干扰触发时刻和交互页 RF 命令的方向／持续时间合同；本次不新增 REST operation。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `69731AA8EAD7025AAA0F812A09FF90ABEAC3677195C243ECE083609C1ABAF17A` |
+| `contracts/mock-api.openapi.yaml` | `1CD525E10A6C4216FA1C8FA3BA912581DF79878F38AC7F5921945AC49258C774` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `37B7A3D294630822F6284E5CC851A69F5702A82609B73FFD2DAF1D8272D86660` |
+| `contracts/deterministic-fixtures.json` | `3CECA3992D9D227E033A8D2584FADD5191B8DB59A28D5D4D1632F4FE0506A525` |
+| `../tests/contracts/fixture-contract.spec.ts` | `A2B9B2AED525F767AD433EE9C76410D674CF4DBA96AF4684876333BDB7024782` |
+
+## 新模板通信参数（2026-11-01，历史冻结记录）
+
+按 2026-11-01 AFSIM 新模板兼容扩展五类模板通信平台、固定端口和天线图。`ScenarioConfig.deviceParameters`、实时开关、盘旋／返航路线及干扰最小探测距离均为可选字段，旧场景读取不迁移、不注入默认字段；默认值仅由共享读取模块在预览和生成时提供副本。端口名称、天线名称、正数数值和端口来源字段受合同约束：装备来源仅可引用带宽、功率和速率，通用数据来源可引用七项端口数值字段，不接受枚举条目。`ScenarioConfigWrite` 保持已有端点、跨对象和时长关系由运行时校验的边界；JSON Schema 仅表达单对象的正数／闭合约束。
+
+本次仅扩展现有组件 schema 和领域模型，不新增 REST operation，不修改确定性 fixture。OpenAPI schema snapshot 和字面量审计已同步；`tests/contracts/template-parameters.spec.ts` 覆盖模板完整正例、旧数据兼容、端口／来源负例、盘旋返航和干扰最小距离边界。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts`（与 `src/contracts/domain-models.ts` 一致） | `9191C8EFB60734BD4ED33FD4F215A06A934C0873F6DB8B2AF346F069E4BBE4BC` |
+| `contracts/mock-api.openapi.yaml` | `D74CE9E56859FE799DB149D7E83E11FC2D4402F36AA5A6F15B6B9AD80357EFA4` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `877024D1469F04D6DC7900A5F1AB8F8AA056351563D0B37A8D59F1B6299E2C19` |
+| `../scripts/contracts/contract-documents.ts` | `CA4BFE2054F36CFEF059E6FD3D8B16D2CDF7ECE6BA7D42B735B502E744635090` |
+| `../tests/contracts/template-parameters.spec.ts` | `482B30D6BBA550099FF3EC1C929C50A50BD4CA6F9E363120428DB51FA2CDD34F` |
+| `contracts/deterministic-fixtures.json`（未修改） | `AA5C02D41D386844A2BE64B0B9883145AEDFA77D20EEB6E2919E0B86A388F1CB` |
 
 ## 批量仿真移除合同（2026-10-28，历史冻结记录）
 

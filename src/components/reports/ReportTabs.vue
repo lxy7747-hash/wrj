@@ -52,11 +52,22 @@ function average(values: number[]): number {
   return values.length === 0 ? 0 : values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
+// 普通报告未携带场景门限，使用组织运用约束，不借用另一场景的实时配置。
+const ORDINARY_BER_THRESHOLD = 1e-5
+const barCharts = computed(() => [
+  { title: '各链路平均 SNR', unit: 'dB', rows: series.value.map(row => ({ label: row.linkId, value: average(row.points.map(point => point.snrDb)) })) },
+  { title: '各链路平均干扰功率', unit: 'dBm', rows: series.value.map(row => ({ label: row.linkId, value: average(row.points.map(point => point.interferencePowerDbm)) })) },
+  { title: '各链路切换次数', unit: '次', rows: series.value.map(row => ({ label: row.linkId,
+    value: ordinarySwitchEvents.value.filter(event => event.newLinkId === row.linkId || event.oldLinkId === row.linkId).length })) },
+])
+const connectivityRates = computed(() => series.value.map(row => ({ label: row.linkId,
+  value: row.points.filter(point => point.ber <= ORDINARY_BER_THRESHOLD).length / row.points.length * 100 })))
+
 const kpis = computed<Partial<ReportKpis> | null>(() => {
   if (!hasFilters.value) return props.report.kpis ?? null
   const points = series.value.flatMap(row => row.points)
   if (!points.length) return null
-  // 时序只有采样值；不从 BER/SNR 推算连通率或持续时长。
+  // 汇总的时长指标需要区间证据，不能用雷达图的样本达标比例替代。
   return { avgSnrDb: average(points.map(point => point.snrDb)), avgBer: average(points.map(point => point.ber)),
     switchCount: ordinarySwitchEvents.value.filter(event => event.decision === 'ACCEPTED').length }
 })
@@ -67,6 +78,8 @@ const sourceRange = computed(() => {
   if (hasFilters.value) return '当前筛选范围暂无时序数据'
   return ordinaryFrame.value ? `${props.report.runId} · ${reportTime(ordinaryFrame.value.simulationTime)}` : '暂无数据'
 })
+
+const chartSourceRange = computed(() => `${sourceRange.value} · ${node.value || '全部节点'} · ${linkId.value || '全部链路'}`)
 
 type CurveMetric = 'snrDb' | 'ber' | 'interferencePowerDbm'
 const CURVE_METRICS: readonly CurveMetric[] = ['snrDb', 'ber', 'interferencePowerDbm']
@@ -101,7 +114,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-form-item label="起始时刻（秒）"><el-input-number v-model="from" :min="0" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="to" :min="0" /></el-form-item>
       <el-form-item label="任务阶段"><el-select disabled placeholder="暂无数据" style="width: 140px" /></el-form-item><el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
     </el-form>
-    <p v-if="hasFilters">汇总按筛选后的采样值统计；连通率和持续时长缺少区间证据，显示暂无数据。任务阶段尚无来源字段。</p>
+    <p v-if="hasFilters">汇总按筛选后的采样值统计；汇总连通率和持续时长缺少区间证据，显示暂无数据。任务阶段尚无来源字段。</p>
     <el-alert v-if="rangeError" title="开始时刻不得晚于结束时刻。" type="error" :closable="false" />
     <el-tabs v-model="activeTab" class="report-tabs__body" data-testid="report-content-tabs">
       <el-tab-pane label="汇总" name="summary">
@@ -181,6 +194,23 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
           </article>
         </div>
         <el-empty v-else description="暂无数据" :image-size="72" />
+      </el-tab-pane>
+      <el-tab-pane label="柱状图" name="bars" lazy>
+        <div data-testid="report-bar-charts" class="report-series">
+          <template v-if="series.length">
+            <ReportChart v-for="chart in barCharts" :key="chart.title" :title="chart.title" :unit="chart.unit" :rows="chart.rows" :source-range="chartSourceRange" :generated-time="report.generatedTime" />
+          </template>
+          <el-empty v-else description="暂无数据" />
+        </div>
+      </el-tab-pane>
+      <el-tab-pane label="雷达图" name="radar" lazy>
+        <div data-testid="report-radar-chart">
+          <template v-if="series.length">
+            <p>报告未提供场景 BER 门限，采用组织运用约束 1E-5；连通率按 BER ≤ 门限的样本占比计算。</p>
+            <ReportChart title="各链路样本连通率" unit="%" :rows="connectivityRates" radar :source-range="chartSourceRange" :generated-time="report.generatedTime" />
+          </template>
+          <el-empty v-else description="暂无数据" />
+        </div>
       </el-tab-pane>
       <el-tab-pane label="事件时间线" lazy>
         <el-timeline v-if="ordinarySwitchEvents.length"><el-timeline-item v-for="event in ordinarySwitchEvents" :key="event.eventId" :timestamp="reportTime(event.time)">{{ event.oldLinkId }} → {{ event.newLinkId }} · {{ event.reason }} · {{ event.decision }}</el-timeline-item></el-timeline>

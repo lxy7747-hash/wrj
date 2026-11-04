@@ -17,14 +17,13 @@ beforeAll(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 const meta = { requestId: 'REQ-TXT', generatedAt: '2026-08-06T08:00:00Z', page: 1, pageSize: 1, total: 1 }
 const reply = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data, meta }) }) as Response
-const path = 'H:\\output\\scripts\\script-test\\SCN-001-r2.txt'
+const path = 'H:\\output\\scripts\\script-test\\comm_SimSetup.txt'
 
 async function setup(preview?: () => Promise<Response>, write?: () => Promise<Response>, warnings = false) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] })
   let persisted = new ScenarioProjection().get('SCN-001').data
-  persisted.config.scenario.environment.rainLossDbPerKm = 0.08
   const generator = new ScriptProjection()
   let script: ScriptContract
   const fetchSpy = vi.fn(async (url: unknown, init?: RequestInit): Promise<Response> => {
@@ -36,7 +35,7 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
       const current = useScenarioStore().script!
       return write ? write() : reply({ scriptId: current.scriptId, configVersion: current.configVersion, path })
     }
-    if (String(url).endsWith('/validate')) return reply({ valid: true, errors: [], warnings: warnings ? [{ severity: 'WARNING', code: 'RAIN', message: '雨衰警告。', fieldPath: 'scenario.environment.rainLossDbPerKm' }] : [] })
+    if (String(url).endsWith('/validate')) return reply({ valid: true, errors: [], warnings: warnings ? [{ severity: 'WARNING', code: 'RAIN_RATE_CAPPED', message: '雨强值需要确认。', fieldPath: 'scenario.environment.rainRateMmPerHour' }] : [] })
     if (String(url).endsWith('/preflight')) return reply({ valid: true, errors: [], warnings: [] })
     if (String(url).includes('/confirmations')) return reply({ confirmationId: 'CONF-TXT', state: String(url).endsWith('/confirmations') ? 'AWAITING_CONFIRMATION' : 'CONFIRMED', actor: 'operator', role: 'OPERATOR', createdAt: meta.generatedAt, expiresAt: '2026-08-06T08:05:00Z' })
     if (init?.method === 'PUT') {
@@ -79,7 +78,8 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(wrapper.get('[data-testid="script-preview-panel"]').text()).toContain('scenario.txt')
     expect(wrapper.find('[data-testid="generate-script"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(path)
-    expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('引用顺序')
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(`已生成脚本入口：${path}`)
+    expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('可追溯入口')
     expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/local-file'))).toHaveLength(1)
     expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
   })

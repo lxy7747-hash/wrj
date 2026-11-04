@@ -224,7 +224,7 @@ export class LocalMissionRunner implements MissionExecution {
           }
           const receipt = {
             taskId, runId, scenarioId: draft.config.scenario.id, revision: draft.revision, entryPath,
-            linkCalcCompatibility: linkCalcAvailable ? 'PRESERVED' : 'MISSING_PROCESSOR_STRIPPED',
+            linkCalcCompatibility: linkCalcAvailable ? 'PRESERVED' : 'MISSING_PROCESSOR_STUBBED',
             executable: this.executable, pid: child.pid ?? null, startedAt, ...outcome,
           }
           await writeFile(join(cwd, 'execution.json'), JSON.stringify(receipt, null, 2), { flag: 'wx' })

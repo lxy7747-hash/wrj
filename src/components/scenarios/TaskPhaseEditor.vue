@@ -70,7 +70,7 @@ watch([() => props.modelValue, () => props.duration, () => props.disabled], () =
     <p v-if="issue" class="phase-error" role="alert">{{ issue.message }}</p>
     <el-button :disabled="addDisabled" @click="add">添加任务阶段</el-button>
     <el-dialog :model-value="adding !== null" title="添加任务阶段" width="min(560px, calc(100vw - 2rem))"
-      class="task-phase-dialog" top="10vh" destroy-on-close append-to-body @update:model-value="!$event && (adding = null)">
+      class="task-phase-dialog scenario-dialog" top="10vh" destroy-on-close append-to-body @update:model-value="!$event && (adding = null)">
       <el-form v-if="adding" :model="adding" label-position="top" :disabled="disabled" @submit.prevent="confirmAdd">
         <div class="phase-form-grid">
           <el-form-item required label="阶段编号" :error="addingFieldMessage('id')">
@@ -106,7 +106,5 @@ watch([() => props.modelValue, () => props.duration, () => props.disabled], () =
 .phase-error { color: var(--el-color-danger); }
 .phase-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
 .phase-form-grid :deep(.el-input-number) { width: 100%; }
-:global(.task-phase-dialog) { display: flex; flex-direction: column; max-height: 80vh; }
-:global(.task-phase-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
 @media (max-width: 540px) { .phase-form-grid { grid-template-columns: 1fr; } }
 </style>

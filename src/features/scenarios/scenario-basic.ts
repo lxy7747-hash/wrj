@@ -33,8 +33,8 @@ export function createEmptyScenarioDraft(id: ScenarioId): ScenarioDraft {
         timeStep: 1,
         environment: {
           // 海况 3 级、小雨 10 mm/h 为《与前端字段确认说明》默认值。
-          seaState: 3, temperatureC: 0, humidityPercent: 0,
-          rainRateMmPerHour: RAIN_TIER_RATES[SCENARIO_BASIC_DEFAULTS.rainCloudAttenuation], rainLossDbPerKm: 0, multipathEnabled: false,
+          seaState: 3,
+          rainRateMmPerHour: RAIN_TIER_RATES[SCENARIO_BASIC_DEFAULTS.rainCloudAttenuation], multipathEnabled: false,
         },
       },
       platforms: [], links: [], jammers: [], sensors: [], informationDemand: [],

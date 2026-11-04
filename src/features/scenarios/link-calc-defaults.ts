@@ -59,8 +59,8 @@ export function defaultPolarization(type: LinkType): Polarization {
   return type === 'MICROWAVE' ? 'horizontal' : 'vertical'
 }
 
+/** 接收机噪声系数缺省值；2026-11-01 模板确认天通也统一为 3 dB。 */
 export const RECEIVER_NOISE_FIGURE_DB = 3
-export const TIANTONG_NOISE_FIGURE_DB = 2
 export const MICROWAVE_DATA_RATE_MBPS = 80
 export const SATELLITE_DATA_RATE_MBPS = { TIANTONG: 0.016, SHENTONG: 16 } as const
 export const LINK_MODULATIONS: readonly Modulation[] = ['BPSK', 'QPSK']
@@ -102,7 +102,7 @@ type LinkParameterDefaults = Pick<Link, 'frequency' | 'bandwidth' | 'rxFrequency
 
 /**
  * 文档按链路类型给出的端口默认值（任务机/中继机口径）；频率单位 MHz，速率 Mbps。
- * 噪声系数不写入链路，留给生成器按设备取缺省值（天通 2 dB，其余 3 dB）。
+ * 噪声系数不写入链路，留给生成器取缺省值（3 dB）。
  * 激光链路文档未给出，沿用项目原有新建链路默认值。
  */
 export function linkTypeDefaults(type: LinkType, band: DatalinkBand = 'C', direction: LinkDirection = 'FORWARD'): LinkParameterDefaults {

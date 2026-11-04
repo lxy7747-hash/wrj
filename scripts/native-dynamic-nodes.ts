@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
+import { metersBetween } from '../src/features/scenarios/position-distance.js'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { ScenarioProjection } from '../server/scenarios/projection.js'
-import { withoutLinkCalc } from '../server/local/script-file.js'
 import { buildMissionPackage } from '../server/scripts/mission-generator.js'
 import type { Platform, ScenarioDraft } from '../src/contracts/domain-models.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
@@ -13,12 +14,10 @@ import { parseCsvLine } from '../src/features/data-exchange/csv-contract.js'
 const executable = resolve(process.argv[2] ?? 'H:/Project/newWrj/Release/Release/mission.exe')
 const root = resolve('output', 'local-remediation-20261027', 'dynamic', `run-${randomUUID()}`)
 const packageRoot = join(root, 'package')
-const informationNodeCount = Number(process.argv[3] ?? '50')
 const DYNAMIC_TYPES = ['FORWARD_RELAY_NODE', 'AIRBORNE_MISSION_CLUSTER'] as const
 const STATIC_TYPES = ['REAR_COMMAND_NODE', 'GROUND_CLUSTER_COMMAND_NODE'] as const
 const timeoutMs = 120_000
 const scenarioDurationS = 90
-assert(informationNodeCount === 50 || informationNodeCount === 51, 'node count must be 50 or 51')
 
 type PositionRow = { time: number; name: string; longitude: number; latitude: number; altitude: number; speed: number; heading: number }
 
@@ -29,7 +28,8 @@ function prototype(draft: ScenarioDraft, type: Platform['type']): Platform {
 }
 
 /** 四类信息节点共 50/51 个；仅飞行/中继节点带实际航点，地面/后方节点保持静态。 */
-function dynamicDraft(): ScenarioDraft {
+export function dynamicDraft(informationNodeCount = 50): ScenarioDraft {
+  assert(informationNodeCount === 50 || informationNodeCount === 51, 'node count must be 50 or 51')
   const current = new ScenarioProjection().get('SCN-001')
   assert(current.ok)
   const draft = current.data
@@ -68,25 +68,18 @@ function dynamicDraft(): ScenarioDraft {
   draft.config.scenario.id = 'SCN-NATIVE-DYNAMIC' as typeof draft.config.scenario.id
   draft.config.scenario.name = '动态信息节点本机原生验证'
   draft.config.scenario.duration = scenarioDurationS
+  draft.config.scenario.realtime = false
   draft.config.scenario.timeStep = 1
   draft.config.output = { ...draft.config.output, directory: 'output', eventsEnabled: true, linkQualityEnabled: false, linkSwitchEnabled: false }
   draft.uiExtensions = { jammers: [], sensors: [] }
   delete draft.config.linkSettings
-  const validation = inspectScenarioConfig(draft.config)
+  const validation = inspectScenarioConfig(draft.config, 'write')
   assert(validation.result.valid, JSON.stringify(validation.result.errors))
   assert.equal(draft.config.platforms.length, informationNodeCount)
   for (const type of [...STATIC_TYPES, ...DYNAMIC_TYPES]) assert(draft.config.platforms.some(platform => platform.type === type), `missing ${type}`)
   assert.equal(draft.config.platforms.filter(platform => DYNAMIC_TYPES.includes(platform.type as typeof DYNAMIC_TYPES[number])).length, informationNodeCount - 2)
   assert.equal(draft.config.platforms.filter(platform => STATIC_TYPES.includes(platform.type as typeof STATIC_TYPES[number])).length, 2)
   return draft
-}
-
-function metersBetween(left: PositionRow, right: PositionRow): number {
-  const radians = Math.PI / 180
-  const latitude = (right.latitude - left.latitude) * radians
-  const longitude = (right.longitude - left.longitude) * radians
-  const a = Math.sin(latitude / 2) ** 2 + Math.cos(left.latitude * radians) * Math.cos(right.latitude * radians) * Math.sin(longitude / 2) ** 2
-  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
 function bearingDegrees(left: PositionRow, right: PositionRow): number {
@@ -155,67 +148,71 @@ async function hashFiles(directory: string): Promise<Array<{ path: string; bytes
   return output
 }
 
-await mkdir(packageRoot, { recursive: true })
-const draft = dynamicDraft()
-const generated = buildMissionPackage(draft)
-await mkdir(join(packageRoot, generated.manifest.output.resolvedDirectory), { recursive: true })
-for (const [name, content] of Object.entries(generated.files)) {
-  const path = join(packageRoot, name)
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, withoutLinkCalc(content), { encoding: 'utf8', flag: 'wx' })
-}
-await writeFile(join(root, 'execution-adaptation.json'), JSON.stringify({ linkCalcCompatibility: 'MISSING_PROCESSOR_STRIPPED',
-  note: '已由独立质量探针证实当前引擎缺 WSF_LINK_CALC_PROCESSOR；本动态节点验证不将其视为质量能力通过。' }, null, 2) + '\n', 'utf8')
+async function main(): Promise<void> {
+  const informationNodeCount = Number(process.argv[3] ?? '50')
+  await mkdir(packageRoot, { recursive: true })
+  const draft = dynamicDraft(informationNodeCount)
+  const generated = buildMissionPackage(draft, draft.config.output, { linkCalc: 'STUB' })
+  await mkdir(join(packageRoot, generated.manifest.output.resolvedDirectory), { recursive: true })
+  for (const [name, content] of Object.entries(generated.files)) {
+    const path = join(packageRoot, name)
+    await mkdir(dirname(path), { recursive: true })
+    await writeFile(path, content, { encoding: 'utf8', flag: 'wx' })
+  }
+  await writeFile(join(root, 'execution-adaptation.json'), JSON.stringify(JSON.parse(generated.files['mapping.json']!).localRuntime, null, 2) + '\n', 'utf8')
 
-const startedAt = new Date().toISOString()
-let report: Record<string, unknown>
-try {
-  const run = await runNative(generated.manifest.entry)
-  await writeFile(join(root, 'mission-console.log'), `${run.stdout}${run.stderr}`, 'utf8')
-  assert.equal(run.code, 0, `native exit ${run.code}; see mission-console.log`)
-  assert((run.stdout + run.stderr).includes('Simulation complete'), 'native completion marker missing')
-  const outputRoot = join(packageRoot, generated.manifest.output.resolvedDirectory)
-  const positions = await readPositions(join(outputRoot, 'position.csv'))
-  const expected = new Set(draft.config.platforms.map(platform => platform.id))
-  assert.deepEqual(new Set(positions.keys()), expected, `position output must cover exactly the ${informationNodeCount} information nodes`)
-  const dynamics = draft.config.platforms.filter(platform => DYNAMIC_TYPES.includes(platform.type as typeof DYNAMIC_TYPES[number]))
-  const statics = draft.config.platforms.filter(platform => STATIC_TYPES.includes(platform.type as typeof STATIC_TYPES[number]))
-  const dynamicEvidence = dynamics.map(platform => {
-    const rows = positions.get(platform.id)!
-    assertTrackBaseline(platform, rows)
-    const waypoint = platform.waypoints[0]
-    assert(waypoint, `${platform.id} has no configured route target`)
-    const displacementM = metersBetween(rows[0]!, rows.at(-1)!)
-    assert(displacementM > 50, `${platform.id} did not move enough: ${displacementM}m`)
-    const maximumSpeedMps = Math.max(...rows.map(row => Math.abs(row.speed)))
-    assert(Math.abs(maximumSpeedMps - waypoint.speed) <= 0.5, `${platform.id} route speed differs from configured waypoint speed`)
-    const expectedBearing = bearingDegrees(rows[0]!, { time: 0, name: platform.id, ...waypoint, heading: 0 })
-    const actualBearing = bearingDegrees(rows[0]!, rows.at(-1)!)
-    const bearingDifferenceDegrees = angleDifference(actualBearing, expectedBearing)
-    assert(bearingDifferenceDegrees <= 5, `${platform.id} trajectory direction differs from configured waypoint`)
-    return { platformId: platform.id, samples: rows.length, startTime: rows[0]!.time, endTime: rows.at(-1)!.time, displacementM,
-      configuredSpeedMps: waypoint.speed, maximumSpeedMps, expectedBearing, actualBearing, bearingDifferenceDegrees }
-  })
-  const staticEvidence = statics.map(platform => {
-    const rows = positions.get(platform.id)!
-    assertTrackBaseline(platform, rows)
-    const displacementM = metersBetween(rows[0]!, rows.at(-1)!)
-    const maximumSpeedMps = Math.max(...rows.map(row => Math.abs(row.speed)))
-    assert(rows.every(row => metersBetween(rows[0]!, row) <= 2 && Math.abs(row.altitude - rows[0]!.altitude) <= 2 && Math.abs(row.speed) <= 0.01), `${platform.id} unexpectedly moved`)
-    return { platformId: platform.id, samples: rows.length, displacementM, maximumSpeedMps }
-  })
-  const events = await readFile(join(outputRoot, 'scenario_events.csv'), 'utf8')
-  assert(events.includes('SIMULATION_COMPLETE'), 'native event completion missing')
-  report = { status: 'PASS', startedAt, finishedAt: new Date().toISOString(), executable,
-    engineSha256: createHash('sha256').update(await readFile(executable)).digest('hex'), scenarioDurationS: draft.config.scenario.duration,
-    nodeCount: draft.config.platforms.length, categories: Object.fromEntries([...STATIC_TYPES, ...DYNAMIC_TYPES].map(type => [type, draft.config.platforms.filter(platform => platform.type === type).length])),
-    dynamicNodes: dynamicEvidence, staticNodes: staticEvidence,
-    positionCadence: 'MOVER_UPDATED position samples only; not a 0.25 s quality frame or quality-performance claim.',
-    linkQuality: 'REQUIRES_ENGINE: no verified quality source or WSF_LINK_CALC_PROCESSOR.',
-    output: generated.manifest.output.resolvedDirectory }
-} catch (error) {
-  report = { status: 'FAILED', startedAt, finishedAt: new Date().toISOString(), executable, error: error instanceof Error ? error.stack : String(error) }
-  process.exitCode = 1
+  const startedAt = new Date().toISOString()
+  let report: Record<string, unknown>
+  try {
+    const run = await runNative(generated.manifest.entry)
+    await writeFile(join(root, 'mission-console.log'), `${run.stdout}${run.stderr}`, 'utf8')
+    assert.equal(run.code, 0, `native exit ${run.code}; see mission-console.log`)
+    assert((run.stdout + run.stderr).includes('Simulation complete'), 'native completion marker missing')
+    const outputRoot = join(packageRoot, generated.manifest.output.resolvedDirectory)
+    const positions = await readPositions(join(outputRoot, 'position.csv'))
+    const expected = new Set(draft.config.platforms.map(platform => platform.id))
+    assert.deepEqual(new Set(positions.keys()), expected, `position output must cover exactly the ${informationNodeCount} information nodes`)
+    const dynamics = draft.config.platforms.filter(platform => DYNAMIC_TYPES.includes(platform.type as typeof DYNAMIC_TYPES[number]))
+    const statics = draft.config.platforms.filter(platform => STATIC_TYPES.includes(platform.type as typeof STATIC_TYPES[number]))
+    const dynamicEvidence = dynamics.map(platform => {
+      const rows = positions.get(platform.id)!
+      assertTrackBaseline(platform, rows)
+      const waypoint = platform.waypoints[0]
+      assert(waypoint, `${platform.id} has no configured route target`)
+      const displacementM = metersBetween(rows[0]!, rows.at(-1)!)
+      assert(displacementM > 50, `${platform.id} did not move enough: ${displacementM}m`)
+      const maximumSpeedMps = Math.max(...rows.map(row => Math.abs(row.speed)))
+      assert(Math.abs(maximumSpeedMps - waypoint.speed) <= 0.5, `${platform.id} route speed differs from configured waypoint speed`)
+      const expectedBearing = bearingDegrees(rows[0]!, { time: 0, name: platform.id, ...waypoint, heading: 0 })
+      const actualBearing = bearingDegrees(rows[0]!, rows.at(-1)!)
+      const bearingDifferenceDegrees = angleDifference(actualBearing, expectedBearing)
+      assert(bearingDifferenceDegrees <= 5, `${platform.id} trajectory direction differs from configured waypoint`)
+      return { platformId: platform.id, samples: rows.length, startTime: rows[0]!.time, endTime: rows.at(-1)!.time, displacementM,
+        configuredSpeedMps: waypoint.speed, maximumSpeedMps, expectedBearing, actualBearing, bearingDifferenceDegrees }
+    })
+    const staticEvidence = statics.map(platform => {
+      const rows = positions.get(platform.id)!
+      assertTrackBaseline(platform, rows)
+      const displacementM = metersBetween(rows[0]!, rows.at(-1)!)
+      const maximumSpeedMps = Math.max(...rows.map(row => Math.abs(row.speed)))
+      assert(rows.every(row => metersBetween(rows[0]!, row) <= 2 && Math.abs(row.altitude - rows[0]!.altitude) <= 2 && Math.abs(row.speed) <= 0.01), `${platform.id} unexpectedly moved`)
+      return { platformId: platform.id, samples: rows.length, displacementM, maximumSpeedMps }
+    })
+    const events = await readFile(join(outputRoot, 'scenario_events.csv'), 'utf8')
+    assert(events.includes('SIMULATION_COMPLETE'), 'native event completion missing')
+    report = { status: 'PASS', startedAt, finishedAt: new Date().toISOString(), executable,
+      engineSha256: createHash('sha256').update(await readFile(executable)).digest('hex'), scenarioDurationS: draft.config.scenario.duration,
+      nodeCount: draft.config.platforms.length, categories: Object.fromEntries([...STATIC_TYPES, ...DYNAMIC_TYPES].map(type => [type, draft.config.platforms.filter(platform => platform.type === type).length])),
+      dynamicNodes: dynamicEvidence, staticNodes: staticEvidence,
+      positionCadence: 'MOVER_UPDATED position samples only; not a 0.25 s quality frame or quality-performance claim.',
+      linkQuality: 'REQUIRES_ENGINE: no verified quality source or WSF_LINK_CALC_PROCESSOR.',
+      output: generated.manifest.output.resolvedDirectory }
+  } catch (error) {
+    report = { status: 'FAILED', startedAt, finishedAt: new Date().toISOString(), executable, error: error instanceof Error ? error.stack : String(error) }
+    process.exitCode = 1
+  }
+  await writeFile(join(root, 'summary.json'), JSON.stringify({ ...report, files: await hashFiles(root) }, null, 2) + '\n', 'utf8')
+  console.log(JSON.stringify({ root, status: report.status, summary: join(root, 'summary.json') }))
 }
-await writeFile(join(root, 'summary.json'), JSON.stringify({ ...report, files: await hashFiles(root) }, null, 2) + '\n', 'utf8')
-console.log(JSON.stringify({ root, status: report.status, summary: join(root, 'summary.json') }))
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) await main()

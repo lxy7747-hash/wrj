@@ -1,12 +1,14 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus, { ElInputNumber, ElSelect } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import ReportChart from '../../src/components/reports/ReportChart.vue'
+import { formatDateTime } from '../../src/features/shared/date-time'
 import ReportTabs from '../../src/components/reports/ReportTabs.vue'
 import ReportsPage from '../../src/pages/reports/reports.vue'
-import type { Principal, Report, ReportExportResult } from '../../src/contracts/domain-models'
+import type { Principal, Report, ReportExportResult, SwitchEvent } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
 import { useReportStore } from '../../src/stores/report'
 
@@ -47,7 +49,7 @@ describe('P3 报表内容', () => {
     expect(wrapper.get('#tab-summary').attributes('aria-selected')).toBe('true')
     expect(wrapper.find('[data-testid="report-time-series-table"]').exists()).toBe(false)
     expect(wrapper.findAll('.el-tabs__item').map((tab) => tab.text())).toEqual([
-      '汇总', '分链路', '干扰影响', '切换事件', '时序曲线', '事件时间线',
+      '汇总', '分链路', '干扰影响', '切换事件', '时序曲线', '柱状图', '雷达图', '事件时间线',
     ])
 
     await wrapper.findAll('.el-tabs__item')[1]!.trigger('click')
@@ -64,13 +66,69 @@ describe('P3 报表内容', () => {
     expect(wrapper.findAll('[data-testid="report-time-series"]')).toHaveLength(1)
     expect(wrapper.findAll('[data-testid="report-time-series"] polyline')).toHaveLength(3)
     expect(wrapper.findAll('[data-testid="report-time-series-table"] .el-table__row')).toHaveLength(3)
-    expect(wrapper.text()).toContain('L-MW-01 · UAV-01 → GCC-01')
+    expect(wrapper.text()).toContain('L-MW-01 · UAV-01 → CMD-01')
     expect(wrapper.text()).toContain('3.2e-7')
     await wrapper.get('#tab-summary').trigger('click')
     expect(wrapper.find('[data-testid="report-time-series-table"]').exists()).toBe(false)
     await wrapper.get('#tab-timeline').trigger('click')
     await flushPromises()
     expect(wrapper.findAll('[data-testid="report-time-series-table"] .el-table__row')).toHaveLength(3)
+  })
+
+  it('柱状图和雷达图使用同一筛选样本、真实单位及门限，切换涉及同一链路只计一次', async () => {
+    const report: Report = { ...structuredClone(fixtureSource.report) as Report, timeSeries: [
+      { linkId: 'L-A', sourcePlatformId: 'A', targetPlatformId: 'B', points: [
+        { time: 0, snrDb: 10, ber: 1e-5, interferencePowerDbm: -80 }, { time: 10, snrDb: 20, ber: 1e-4, interferencePowerDbm: -60 }] },
+      { linkId: 'L-B', sourcePlatformId: 'B', targetPlatformId: 'C', points: [
+        { time: 0, snrDb: 30, ber: 1e-6, interferencePowerDbm: -90 }, { time: 10, snrDb: 50, ber: 1e-7, interferencePowerDbm: -70 }] },
+      { linkId: 'L-C', sourcePlatformId: 'D', targetPlatformId: 'C', points: [
+        { time: 0, snrDb: -4, ber: 1e-4, interferencePowerDbm: -100 }, { time: 10, snrDb: 0, ber: 1e-3, interferencePowerDbm: -90 }] },
+    ] }
+    const event = fixtureSource.events.find(row => row.type === 'LINK_SWITCH') as SwitchEvent
+    const wrapper: VueWrapper = mount(ReportTabs, { props: { report, events: [
+      { ...event, eventId: 'SW-A', time: 0, oldLinkId: 'L-A', newLinkId: 'L-B' },
+      { ...event, eventId: 'SW-B', time: 10, oldLinkId: 'L-A', newLinkId: 'L-A' },
+    ] }, global: { plugins: [ElementPlus] } })
+    expect(wrapper.find('[data-testid="report-bar-charts"]').exists()).toBe(false)
+    await wrapper.get('#tab-bars').trigger('click'); await flushPromises()
+    const charts = (): VueWrapper[] => wrapper.findAllComponents(ReportChart)
+    const bars = () => charts().filter(chart => !chart.get('h4').text().includes('样本连通率'))
+    expect(bars().map(chart => chart.get('h4').text())).toEqual(['各链路平均 SNR（dB）', '各链路平均干扰功率（dBm）', '各链路切换次数（次）'])
+    expect(bars().map(chart => chart.findAll('.bar-row strong').map(row => Number.parseFloat(row.text())))).toEqual([[15, 40, -2], [-70, -80, -95], [2, 1, 0]])
+    for (const chart of bars()) {
+      expect(chart.text()).toContain('RUN-001 · 0分0秒～0分10秒 · 全部节点 · 全部链路')
+      expect(chart.text()).toContain(`生成时刻 ${formatDateTime(report.generatedTime)}`)
+    }
+    expect(bars()[1]!.findAll('.bar-track > div').every(bar => !bar.attributes('style')?.includes('width: 0%;'))).toBe(true)
+    await wrapper.get('#tab-radar').trigger('click'); await flushPromises()
+    const radar = () => charts().find(chart => chart.get('h4').text().includes('样本连通率'))!
+    expect(radar().findAll('li').map(row => Number.parseFloat(row.text().split('：')[1]!))).toEqual([50, 100, 0])
+    expect(radar().get('svg').attributes('aria-label')).toContain('0–100%')
+    expect(wrapper.get('[data-testid="report-radar-chart"]').text()).toContain('组织运用约束 1E-5')
+    expect(radar().text()).toContain(`生成时刻 ${formatDateTime(report.generatedTime)}`)
+    const inputs = wrapper.findAllComponents(ElInputNumber)
+    inputs[1]!.vm.$emit('update:modelValue', 0); await flushPromises()
+    expect(radar().findAll('li').map(row => Number.parseFloat(row.text().split('：')[1]!))).toEqual([100, 100, 0])
+    await wrapper.get('#tab-bars').trigger('click'); await flushPromises()
+    expect(bars().map(chart => chart.findAll('.bar-row strong').map(row => Number.parseFloat(row.text())))).toEqual([[10, 30, -4], [-80, -90, -100], [1, 1, 0]])
+    const selects = wrapper.findAllComponents(ElSelect)
+    selects[1]!.vm.$emit('update:modelValue', 'L-A'); await flushPromises()
+    expect(bars()[0]!.findAll('.bar-row').map(row => row.text())).toEqual(['L-A10 dB'])
+    expect(bars()[0]!.text()).toContain('0分0秒～0分0秒 · 全部节点 · L-A')
+    await wrapper.get('#tab-radar').trigger('click'); await flushPromises()
+    expect(radar().find('svg[role="img"]').exists()).toBe(false)
+    expect(radar().text()).toContain('暂无数据')
+    selects[1]!.vm.$emit('update:modelValue', '')
+    selects[0]!.vm.$emit('update:modelValue', 'A'); await flushPromises()
+    expect(radar().text()).toContain(' · A · 全部链路')
+    expect(radar().find('svg[role="img"]').exists()).toBe(false)
+    inputs[1]!.vm.$emit('update:modelValue', 30); inputs[0]!.vm.$emit('update:modelValue', 20); await flushPromises()
+    expect(wrapper.get('[data-testid="report-radar-chart"]').text()).toBe('暂无数据')
+    await wrapper.get('#tab-bars').trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="report-bar-charts"]').text()).toBe('暂无数据')
+    await wrapper.setProps({ report: { ...report, timeSeries: undefined } })
+    expect(wrapper.get('[data-testid="report-bar-charts"]').text()).toBe('暂无数据')
+    wrapper.unmount()
   })
 
   it('质量筛选同时更新样本汇总、详情、时间线与范围，不保留全量持续时长', async () => {

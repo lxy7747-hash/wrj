@@ -22,6 +22,49 @@ const CSV = [
 const read = (text = CSV) => buildFileDeviceEvents(parseAfsimEventLog(text).events, new Set(['A', 'B']))
 
 describe('文件设备事件投影', () => {
+  it('以平台和端口匹配原生与归档记录；跨平台同端口独立，同平台复用端口共享状态并支持回退', () => {
+    const native = parseAfsimEventLog([
+      '! COMM_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>',
+      '! COMM_TURNED_OFF,time<time>,event<string>,platform<string>,side<string>,type<string>,system<string>,system_type<string>',
+      '0,COMM_TURNED_ON,UAV-01,blue,Comm,microwave_link,WSF_RADIO_TRANSCEIVER',
+      '0,COMM_TURNED_ON,CMD-01,blue,Comm,microwave_link,WSF_RADIO_TRANSCEIVER',
+      '0,COMM_TURNED_ON,RELAY-01,blue,Comm,microwave_link,WSF_RADIO_TRANSCEIVER',
+      '5,COMM_TURNED_OFF,UAV-01,blue,Comm,microwave_link,WSF_RADIO_TRANSCEIVER',
+    ].join('\n'))
+    const archived = parseAfsimEventLog([
+      '0 COMM_TURNED_ON UAV-01 Comm: comm_4c_2d_4c_41_53_45_52_2d_30_34_src Type: WSF_RADIO_TRANSCEIVER',
+      '0 COMM_TURNED_ON CMD-01 Comm: comm_4c_2d_4c_41_53_45_52_2d_30_34_dst Type: WSF_RADIO_TRANSCEIVER',
+    ].join('\n'))
+    const platforms = new Set(['UAV-01', 'CMD-01', 'RELAY-01'])
+    const nativeStates = buildFileDeviceEvents(native.events, platforms)
+    const archivedStates = buildFileDeviceEvents(archived.events, platforms)
+
+    // 新模板 CSV 的系统名为小写；归档记录逐字保留旧编号。
+    expect(nativeStates.map(state => [state.platformId, state.deviceId])).toEqual([
+      ['UAV-01', 'microwave_link'], ['CMD-01', 'microwave_link'], ['RELAY-01', 'microwave_link'], ['UAV-01', 'microwave_link'],
+    ])
+    expect(archivedStates.map(state => state.deviceId)).toEqual([
+      'comm_4c_2d_4c_41_53_45_52_2d_30_34_src', 'comm_4c_2d_4c_41_53_45_52_2d_30_34_dst',
+    ])
+
+    const connection = (target: string): FileCommunicationLink => ({
+      id: `MICROWAVE-UAV-01-${target}`, type: 'MICROWAVE', sourcePlatformId: 'UAV-01', targetPlatformId: target,
+      records: [{ sourceEventId: `LINK-${target}`, time: 0, scope: 'INTER_PLATFORM', sourceType: 'WSF_RADIO_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER',
+        source: { platformName: 'UAV-01', communicationName: 'microwave_link', address: '1' },
+        target: { platformName: target, communicationName: 'microwave_link', address: '2' } }],
+    })
+    const links = [connection('CMD-01'), connection('RELAY-01')]
+    const beforeOff = selectFileDeviceStates(nativeStates, 0)
+    const afterOff = selectFileDeviceStates(nativeStates, 5)
+    expect(beforeOff).toHaveLength(3)
+    expect(beforeOff.filter(state => state.deviceId === 'microwave_link')).toHaveLength(3)
+    expect(links.map(link => fileLinkDeviceStatus(link, beforeOff))).toEqual(['开启', '开启'])
+    // UAV-01 的共享微波端口关闭时，两条配置链路同时关闭；CMD-01 与 RELAY-01 互不影响。
+    expect(links.map(link => fileLinkDeviceStatus(link, afterOff))).toEqual(['关闭', '关闭'])
+    expect(afterOff.filter(state => state.platformId !== 'UAV-01').map(state => state.active)).toEqual([true, true])
+    expect(selectFileDeviceStates(nativeStates, 0)).toEqual(beforeOff)
+  })
+
   it('关联按两端设备证据判定开启、关闭、未知，合并线保留仍开启的关联', () => {
     const link: FileCommunicationLink = {
       id: 'SAT-A-B', type: 'SAT', sourcePlatformId: 'A', targetPlatformId: 'B', records: [{

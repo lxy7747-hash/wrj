@@ -55,9 +55,9 @@ function applyDefaults(jammerId: string): void {
     frequency: evidence?.jammerId === jammerId ? evidence.frequency : jammer.frequency,
     bandwidth: evidence?.jammerId === jammerId ? evidence.bandwidth : jammer.bandwidth,
     power: evidence?.jammerId === jammerId ? evidence.power : jammer.defaultPower,
+    // 持续时间沿用命令默认值；方向来自场景配置。
     direction: extension.direction,
-    // 历史固定帧的持续时间不属于当前场景命令，使用当前设备配置。
-    duration: extension.duration,
+    duration: 1,
   })
 }
 

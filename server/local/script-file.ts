@@ -20,15 +20,18 @@ export function withoutLinkCalc(content: string): string {
   return lines.join('\n')
 }
 
-/** 每次执行重新生成已保存修订的独占包，禁止复用旧输出或接受客户端脚本路径。 */
+/**
+ * 每次执行重新生成已保存修订的独占包，禁止复用旧输出或接受客户端脚本路径。
+ * 本地运行包总是拆分共享介质（E1）；引擎缺少 link_calc 时以 local_link_stub 原位替代（D4）。
+ */
 export async function writeMissionPackage(directory: string, draft: ScenarioDraft, stripLinkCalc = false): Promise<string> {
-  const generated = buildMissionPackage(draft)
+  const generated = buildMissionPackage(draft, undefined, { linkCalc: stripLinkCalc ? 'STUB' : 'PRESERVE' })
   await mkdir(resolve(directory), { recursive: true })
   const owned = await mkdtemp(join(resolve(directory), 'mission-'))
   try {
     await mkdir(join(owned, generated.manifest.output.resolvedDirectory), { recursive: true })
     for (const [name, content] of Object.entries(generated.files)) {
-      await writeFile(join(owned, name), stripLinkCalc ? withoutLinkCalc(content) : content, { encoding: 'utf8', flag: 'wx' })
+      await writeFile(join(owned, name), content, { encoding: 'utf8', flag: 'wx' })
     }
     return join(owned, generated.manifest.entry)
   } catch (error) {
@@ -44,15 +47,23 @@ export async function writeScriptText(directory: string, script: ScriptContract,
   await mkdir(root, { recursive: true })
   const owned = await mkdtemp(join(root, 'script-'))
   const filename = `${script.scenarioId.replace(/[^A-Za-z0-9_-]/g, '_')}-r${revision}.txt`
-  const path = join(owned, filename)
+  const metadata = generated ? join(owned, 'metadata') : owned
+  const path = join(metadata, filename)
   try {
+    await mkdir(metadata, { recursive: true })
     await writeFile(path, `\uFEFF# Mock 脚本预览，未经真实 AFSIM 运行验证。\r\n# 场景修订：${revision}\r\n${script.preview}`, { encoding: 'utf8', flag: 'wx' })
     if (generated) {
       await mkdir(join(owned, generated.manifest.output.resolvedDirectory), { recursive: true })
+      // 仅调整保存包的布局；运行包及其历史结果读者继续使用原来的路径。
+      const scriptFiles = generated.manifest.scriptFiles.filter(name => name !== SCENARIO_PREVIEW_FILE)
       for (const [name, content] of Object.entries(generated.files)) {
-        await writeFile(join(owned, name), content, { encoding: 'utf8', flag: 'wx' })
+        let savedContent = content
+        if (name === SCENARIO_PREVIEW_FILE) savedContent = content.replace(`include_once ${generated.manifest.entry}`, `include_once ../${generated.manifest.entry}`)
+        if (name === 'mapping.json') savedContent = JSON.stringify({ ...generated.manifest, scriptFiles }, null, 2) + '\n'
+        if (name === 'README.txt') savedContent += `本目录保存辅助资料；执行入口为上级目录的 ${generated.manifest.entry}，映射中的文件路径相对于包根目录。\n`
+        await writeFile(join(scriptFiles.includes(name) ? owned : metadata, name), savedContent, { encoding: 'utf8', flag: 'wx' })
       }
-      return join(owned, SCENARIO_PREVIEW_FILE)
+      return join(owned, generated.manifest.entry)
     }
     return path
   } catch (error) {

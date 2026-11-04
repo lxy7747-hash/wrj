@@ -2327,8 +2327,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "maximum": 360
       },
       "acceleration": {
-        "type": "number",
-        "description": "期望加速度，m/s²；原生执行映射尚未核实。"
+        "type": "number"
       }
     }
   },
@@ -2371,10 +2370,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "additionalProperties": false,
     "required": [
       "seaState",
-      "temperatureC",
-      "humidityPercent",
       "rainRateMmPerHour",
-      "rainLossDbPerKm",
       "multipathEnabled"
     ],
     "properties": {
@@ -2537,19 +2533,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0
       },
-      "temperatureC": {
-        "type": "number"
-      },
-      "humidityPercent": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 100
-      },
       "rainRateMmPerHour": {
-        "type": "number",
-        "minimum": 0
-      },
-      "rainLossDbPerKm": {
         "type": "number",
         "minimum": 0
       },
@@ -2606,6 +2590,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "$ref": "#/components/schemas/TaskPhase"
         },
         "description": "用户保存的任务阶段计划；阶段不重叠且不超过duration；缺省时不推断阶段。"
+      },
+      "realtime": {
+        "type": "boolean",
+        "description": "新模板实时运行开关；旧场景缺省时按实时模式读取。"
       }
     }
   },
@@ -2786,10 +2774,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         },
         "uniqueItems": true
       },
-      "heading": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 360
+      "loiterWaypoints": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "$ref": "#/components/schemas/TemplateRoutePoint"
+        }
+      },
+      "returnPlan": {
+        "$ref": "#/components/schemas/ReturnPlan"
       }
     },
     "allOf": [
@@ -3081,7 +3074,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "if": {
           "properties": {
             "type": {
-              "const": "SAT"
+              "enum": ["SAT", "MICROWAVE", "DATALINK"]
             }
           }
         },
@@ -3239,7 +3232,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "maximum": 100,
-        "description": "接收机噪声系数，单位 dB；缺省时天通卫星 2 dB，其余 3 dB。"
+        "description": "接收机噪声系数，单位 dB；缺省 3 dB（含天通卫星）。"
       },
       "parameterSource": {
         "$ref": "#/components/schemas/LinkParameterSource",
@@ -3371,7 +3364,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "defaultPower",
       "frequency",
       "bandwidth",
-      "autoDetect",
       "detectionRange",
       "jammingRange"
     ],
@@ -3404,9 +3396,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "exclusiveMinimum": 0
       },
-      "autoDetect": {
-        "type": "boolean"
-      },
       "triggerTimeS": {
         "type": "number",
         "minimum": 0
@@ -3424,6 +3413,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "description": "干扰机离开后的释放距离，单位 m；缺省为干扰范围加 5 海里。"
+      },
+      "detectionMinimumRange": {
+        "type": "number",
+        "minimum": 0,
+        "description": "自动探测的最小有效距离，必须小于 detectionRange；缺省 1000 m。"
       }
     }
   },
@@ -4170,10 +4164,101 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "jammingEnabled": {
         "type": "boolean"
+      },
+      "deviceParameters": {
+        "$ref": "#/components/schemas/DeviceParameters"
       }
     },
     "x-fixture-path": "$.scenario",
     "x-source": "SRS §1.2.2 and §3.5.3 Table 22; approved frontend baseline V1.1 §6.1"
+  },
+  "TemplateRoutePoint": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["longitude", "latitude", "altitude", "speed"],
+    "properties": {
+      "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
+      "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
+      "altitude": { "type": "number", "minimum": 0 },
+      "speed": { "type": "number", "exclusiveMinimum": 0 }
+    }
+  },
+  "ReturnPlan": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["timeS", "waypoints"],
+    "properties": {
+      "timeS": { "type": "number", "exclusiveMinimum": 0 },
+      "waypoints": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/TemplateRoutePoint" } }
+    }
+  },
+  "PortParameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["txFrequency", "txBandwidth", "txPower", "rxFrequency", "rxBandwidth", "noiseFigureDb", "transferRate"],
+    "properties": {
+      "txFrequency": { "type": "number", "exclusiveMinimum": 0 },
+      "txBandwidth": { "type": "number", "exclusiveMinimum": 0 },
+      "txPower": { "type": "number", "exclusiveMinimum": 0 },
+      "rxFrequency": { "type": "number", "exclusiveMinimum": 0 },
+      "rxBandwidth": { "type": "number", "exclusiveMinimum": 0 },
+      "noiseFigureDb": { "type": "number", "minimum": 0 },
+      "transferRate": { "type": "number", "exclusiveMinimum": 0 },
+      "parameterSource": { "$ref": "#/components/schemas/PortParameterSource" }
+    }
+  },
+  "PortParameterSource": {
+    "oneOf": [
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "sourceId", "sourceVersion", "fields"],
+        "properties": {
+          "kind": { "const": "EQUIPMENT" },
+          "sourceId": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "sourceVersion": { "type": "integer", "minimum": 1 },
+          "fields": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["bandwidth", "txPower", "dataRate"] } }
+        }
+      },
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "sourceId", "sourceVersion", "fields"],
+        "properties": {
+          "kind": { "const": "MASTER_DATA" },
+          "sourceId": { "type": "string", "minLength": 1, "pattern": "\\S" },
+          "sourceVersion": { "type": "integer", "minimum": 1 },
+          "fields": { "type": "array", "minItems": 1, "maxItems": 7, "uniqueItems": true, "items": { "enum": ["frequency", "bandwidth", "txPower", "rxFrequency", "rxBandwidth", "dataRate", "noiseFigureDb"] } }
+        }
+      }
+    ]
+  },
+  "DeviceParameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "ports": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MISSION_UAV_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" }, "microwave_link": { "$ref": "#/components/schemas/PortParameters" }, "c_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "c_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_downlink": { "$ref": "#/components/schemas/PortParameters" } } },
+          "COMMAND_VEHICLE_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "c_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "c_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "fiber_link": { "$ref": "#/components/schemas/PortParameters" } } },
+          "REAR_COMM_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "sat_link_a": { "$ref": "#/components/schemas/PortParameters" }, "sat_link_b": { "$ref": "#/components/schemas/PortParameters" }, "microwave_link": { "$ref": "#/components/schemas/PortParameters" }, "fiber_link": { "$ref": "#/components/schemas/PortParameters" } } },
+          "TIAN_TONG_SAT": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" } } },
+          "SHEN_TONG_SAT": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" } } }
+        }
+      },
+      "antennaGains": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MICRO_UAV_OMNI_ANTENNA": { "type": "number" }, "MICRO_REAR_PLATFORM_DIR_ANTENNA": { "type": "number" }, "OMNI_ANTENNA_HIGHGAIN": { "type": "number" },
+          "C_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "C_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
+          "L_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "L_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
+          "SAT_GROUND_MOBILE_ANTENNA": { "type": "number" }, "SAT_SPACE_BEAM_ANTENNA": { "type": "number" }, "SAT_UAV_CLUSTER_WIDEBAND_ANTENNA": { "type": "number" }, "LASER_COMM_ANTENNA": { "type": "number" }
+        }
+      }
+    }
   },
   "LinkQualityData": {
     "type": "object",
@@ -5153,23 +5238,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     "additionalProperties": false,
     "required": [
       "jammerId",
-      "direction",
-      "duration",
-      "enabled"
+      "enabled",
+      "direction"
     ],
     "properties": {
       "jammerId": {
         "type": "string",
         "minLength": 1
-      },
-      "direction": {
-        "type": "number",
-        "minimum": 0,
-        "maximum": 360
-      },
-      "duration": {
-        "type": "number",
-        "minimum": 0
       },
       "enabled": {
         "type": "boolean"
@@ -5179,6 +5254,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minimum": -10,
         "maximum": 60,
         "description": "俯仰角，度；原生映射未核实。"
+      },
+      "direction": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 360
       }
     }
   },

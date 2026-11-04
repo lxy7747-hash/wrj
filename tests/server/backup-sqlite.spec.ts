@@ -285,3 +285,61 @@ it('HTTP 管理员真实备份/恢复需一次性确认，操作员及匿名拒�
   await api.get('/api/v1/admin/backups').set(headers).set('Cookie', cookie).expect(401)
   expect(auth.readAudit()).toEqual(expect.arrayContaining([expect.objectContaining({ action: 'BACKUP_RESTORE', result: 'SUCCESS' })]))
 })
+
+it('D1 旧场景和模板可备份恢复，读取补全但快照字节及恢复原始行不变', () => {
+  const { db, scenes, templates, backups } = setup()
+  for (const table of ['scenarios', 'scenario_templates']) {
+    for (const row of db.prepare(`SELECT * FROM ${table}`).all()) {
+      const config = JSON.parse(String(row.config_json)) as import('../../src/contracts/domain-models').ScenarioConfig
+      const platform = config.platforms.find(item => item.id === 'UAV-01')!
+      platform.waypoints = [platform.waypoints[0]!, { ...platform.waypoints[0]!, longitude: 120.01 }]
+      for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
+      Object.assign(config.scenario.environment, { temperatureC: 20 })
+      const extensions = row.ui_extensions_json === null ? undefined : JSON.parse(String(row.ui_extensions_json))
+      if (extensions) {
+        Reflect.deleteProperty(extensions.jammers[0], 'direction')
+        extensions.jammers[0].duration = 5
+      }
+      db.prepare(`UPDATE ${table} SET config_json=?, ui_extensions_json=?`).run(JSON.stringify(config), extensions ? JSON.stringify(extensions) : null)
+    }
+  }
+  const original = Object.fromEntries(['scenarios', 'scenario_templates'].map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]))
+  expect(backups.backup('LEGACY-MOTION')).toMatchObject({ ok: true, data: { status: 'VALID' } })
+  expect(backups.listBackups()[0]?.status).toBe('VALID')
+  const file = join(backups.directory, 'LEGACY-MOTION.db')
+  const before = createHash('sha256').update(readFileSync(file)).digest('hex')
+  db.exec('DELETE FROM scenarios; DELETE FROM scenario_templates')
+  expect(backups.restore('LEGACY-MOTION')).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true } })
+  const restored = scenes.load('SCN-001')!
+  for (const config of [restored.config, templates.load()[0]!.config]) {
+    const points = config.platforms.find((item: { id: string }) => item.id === 'UAV-01')!.waypoints
+    expect(points).toHaveLength(2)
+    expect(points[0]!.arrivalTime).toBeGreaterThanOrEqual(1)
+    expect(points[1]!.arrivalTime).toBeGreaterThan(points[0]!.arrivalTime)
+    expect(config.scenario.environment).not.toHaveProperty('temperatureC')
+  }
+  expect(restored.uiExtensions.jammers[0]).toHaveProperty('direction', 0)
+  expect(restored.uiExtensions.jammers[0]).not.toHaveProperty('duration')
+  for (const table of ['scenarios', 'scenario_templates']) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual(original[table])
+  expect(createHash('sha256').update(readFileSync(file)).digest('hex')).toBe(before)
+})
+
+it.each(['platforms', 'speed'])('D1 兼容不放过真正的 %s 错误，拒绝恢复且保留原报错', field => {
+  const { db, backups } = setup()
+  expect(backups.backup('INVALID-MOTION').ok).toBe(true)
+  const file = join(backups.directory, 'INVALID-MOTION.db')
+  const snapshot = new DatabaseSync(file)
+  try {
+    snapshot.exec(field === 'platforms'
+      ? "UPDATE scenarios SET config_json=json_set(config_json, '$.platforms', 'invalid')"
+      : "UPDATE scenarios SET config_json=json_set(config_json, '$.platforms[3].waypoints[0].speed', 'invalid')")
+    expect(() => (backups as unknown as { validate(db: InstanceType<typeof DatabaseSync>): void }).validate(snapshot)).toThrow('备份场景数据无效。')
+  } finally { snapshot.close() }
+  // 登记实际摘要，证明拒绝源于业务校验而不是摘要不匹配。
+  const catalog = new DatabaseSync(join(backups.directory, 'catalog.db'))
+  try { catalog.prepare('UPDATE backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(readFileSync(file)).digest('hex').toUpperCase(), 'INVALID-MOTION') }
+  finally { catalog.close() }
+  const before = db.prepare('SELECT * FROM scenarios').all()
+  expect(backups.restore('INVALID-MOTION')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
+  expect(db.prepare('SELECT * FROM scenarios').all()).toEqual(before)
+})

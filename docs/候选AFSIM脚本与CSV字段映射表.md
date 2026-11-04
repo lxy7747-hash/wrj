@@ -2,7 +2,13 @@
 
 整理日期：2026-09-22。
 
-## 当前权威口径（2026-09-28，2026-10-27 补充）
+## 0. 当前权威口径（2026-11-01）
+
+**当前生成标准与下游对接以第 24 节“新模板对齐与 P5 下游适配”为准。** 数据模型、生成器、界面和本机运行兼容均已切换到 2026-11-01 新模板；旧节中的每链路独立设备、原生激光/ESM 输出、删除 link_calc、timeStep 控制运动器及倍速不生效等描述仅保留为历史记录，不再描述当前生成包。
+
+对外交付 TXT 与本地执行包必须区分：前者按新模板生成；后者始终拆分共享介质，引擎明确缺少 `WSF_LINK_CALC_PROCESSOR` 时在原位置注入 `local_link_stub`。新旧运行记录保留各自原始设备标识，按“平台编号＋通信端口/设备编号”关联事件；不从启停或消息记录推断 SNR、BER、物理通断或干扰效果。
+
+### 0.1 历史口径（2026-09-28～2026-10-27，仅供追溯）
 
 2026-10-27 激光接入以第 23 节为准：本机已确认内置 `WSF_LASER_TRANSCEIVER`，并用生成器输出完成隔离的双端消息收发验证。后文“激光仅有天线图形／继续阻断”描述保留为此前的候选脚本结论；本次不再适用。现行执行器先探测 `WSF_LINK_CALC_PROCESSOR`，引擎明确缺失时只在本次运行包移除该段，不将探测失败当作所有场景可原样执行的证据。
 
@@ -171,7 +177,7 @@
 | `platforms[].satelliteType`：天通／神通 | `TIAN_TONG_SAT/SHEN_TONG_SAT` | 平台事件 `type` | 未输出平台子类型 | 字段已有、模型选择未接通；仅保留 `COMMUNICATION_SATELLITE` 会丢失子类型语义 |
 | `platforms[].initialPosition.longitude/latitude/altitude` | `position/altitude` 或路线起点 | `LON/LAT/ALT` 和初始化事件位置 | 输出经度、纬度、高度三元组 | 有字段可转换，注意脚本纬度在前；不改存储字段名 |
 | `platforms[].waypoints[].longitude/latitude/altitude/speed` | `route` 中的点位、高度、速度 | 位置序列及速度 | 输出自定义 `waypoint` 行 | 有字段可转换；正式生成路线并处理初始位置与首航点关系 |
-| `platforms[].waypoints[].arrivalTime`：到达时间 | 候选路线示例没有同名到达时间约束 | 位置 `TIME` 是实际采样时刻 | 输出 `arrival` | 需明确速度与到达时间冲突时的控制规则，不能把预期到达时间冒充实际采样时间 |
+| `platforms[].waypoints[].arrivalTime`：到达时间 | 候选路线示例没有同名到达时间约束 | 位置 `TIME` 是实际采样时刻 | 输出 `arrival` | 保留，记录到 mapping.json，不强制（arrivalTimeEnforced=false）；不写入对接方 TXT，实际运动按速度推进 |
 | 批量数量、编队原点与间距 | 多个 `platform` 实例及其坐标 | 多个节点的独立记录 | 页面已展开为多个 `platforms[]`，生成器逐项遍历 | 数量、间距不是单独持久化的编队合同；不得再展开一次，也不自动套用示例中继机／任务机角色 |
 | `platforms[].linkIds/sensorIds/jammerIds` | 平台内部设备及相关引用 | 设备／关联事件中的节点、设备身份 | 不直接生成这些反向关联数组 | 属于项目内引用关系，生成时用来检查归属，不要求输出同名数组 |
 | 当前无平台 `side`、独立初始 `heading` 字段 | `side/heading` | 事件 `side`、位置 `HEADING` 等 | 无对应输出 | 若要求可配置则存在输入缺口；也可另行确认模板规则，不能从中文名称或位置自行推断 |
@@ -203,8 +209,8 @@
 | `jammers[].id/platformId/type` | 平台内 `weapon` 编号和 `mode` | `platform/weapon/current_mode` | 输出自定义 `jammer` 行 | 编号、归属可对应；`BARRAGE/SPOT/SWEEP` 到模式标识需显式绑定，不原样作为引擎类型 |
 | `jammers[].defaultPower/frequency/bandwidth` | 干扰发射机参数 | 请求的 `frequency/bandwidth`；当前无功率回显 | 输出自定义参数 | 字段已有、需生成真实设备区段；MHz 转输出 Hz，不伪造功率测量值 |
 | `jammingEnabled`、`draft.uiExtensions.jammers[].enabled` | 总体和单设备启用规则 | 设备启停及干扰请求事件 | 已决定是否输出预览干扰器行 | 过滤规则已有，真实启用／停用机制尚未生成 |
-| `jammers[].autoDetect/detectionRange/triggerTimeS` | 探测触发、距离检查、定时执行 | 触发后的事件，仅部分含目标 | 范围写自定义行；自动探测、触发时间仅 JSON 注释 | 自动探测与定时触发的优先关系待确认；范围不能直接代替干扰有效距离 |
-| `draft.uiExtensions.jammers[].direction/duration` | 方向控制、持续时间与停止逻辑 | 当前无完整配置回显 | 仅 JSON 注释 | 字段已有但执行规则未接通，不用固定示例启停时间替代 |
+| `jammers[].detectionRange/triggerTimeS` | 探测范围、定时执行 | 触发后的事件，仅部分含目标 | 范围写自定义行；触发时间仅 JSON 注释 | 范围不能直接代替干扰有效距离 |
+| `jammers[].autoDetect`、`draft.uiExtensions.jammers[].direction/duration` | — | — | — | 2026-11-02 删除；旧数据读取和保存时丢弃 |
 | `sensors[].id/platformId/frequencyRange/detectionRange` | 平台内传感器配置 | 有实际侦测事件时可关联设备和目标；当前无相应记录 | 输出自定义 `sensor` 行 | 候选脚本使用 `WSF_RADAR_SENSOR`，不能直接当成前端 ESM；频率范围也不等于单发射频率 |
 | `draft.uiExtensions.sensors[].type/direction/probability/enabled` | 侦测模型、方向、概率和启用设置 | 当前无完整结果 | 未读取这些扩展 | ESM 模型及参数规则待确认；不能把概率直接当作每次检测结果 |
 
@@ -360,7 +366,7 @@
 - **数传链路**：`links[].type = DATALINK` 按已确认选择固定为 **C 波段**，由 `direction` 决定上下行角色（`FORWARD → UPLINK`、`REVERSE → DOWNLINK`），并按候选脚本的合同固定值写入 `bit_error_probability 0.00001`；L 波段未使用。设备频率、带宽与功率仍取自配置，不使用候选模型的示例数值。
 - **高空中继**：`FORWARD_RELAY_NODE` 按已确认选择复用 `MISSION_UAV_PLATFORM` 生成（`WSF_AIR_MOVER`），`mapping.json` 标注 `relayRole: true`。本轮不生成中继转发行为，因此该节点当前只是普通空中端点。
 - **航点运动**：`platforms[].waypoints[]` 生成候选 `route` 区段。路线首点固定为 `initialPosition`——运动器会把平台起点设为路线首点，不写就会丢掉配置的初始位置。每个航点的 `speed` 作用于抵达该航点的那一段，末点速度不参与推进；`speed` 为 0 时按 `platforms[i].waypoints[j].speed` 阻断，避免引擎静默停在起点。`arrivalTime` 不作为引擎约束，`mapping.json` 记录 `arrivalTimeS` 与 `arrivalTimeEnforced: false`，实际到达时刻以引擎位置采样为准。
-- **干扰完整启停**：不再写 weapon 的常开 `on`。`jammingEnabled` 与单设备 `enabled` 决定是否生成启停动作；`triggerTimeS` 作为引擎绝对触发时刻（`at_time <秒> sec absolute`，起点触发使用引擎允许的最小正时刻 `0.001`），在该时刻 `TurnOn()` 并 `SelectMode(<映射模式>)`；配置的持续时间在同一处理器生成第二个 `TurnOff()`。关闭时刻晚于仿真结束时只保留启动动作，不写永不执行的关闭。
+- **干扰完整启停**：不再写 weapon 的常开 `on`。`jammingEnabled` 与单设备 `enabled` 决定是否生成启停动作；`triggerTimeS` 作为引擎绝对触发时刻（`at_time <秒> sec absolute`，起点触发使用引擎允许的最小正时刻 `0.001`），在该时刻 `TurnOn()` 并 `SelectMode(<映射模式>)`。场景干扰设备的持续时间字段已于 2026-11-02 删除，不再按该字段生成 `TurnOff()`。
 - **环境、时钟与开始时刻**：`environment.seaState/rainRateMmPerHour` 生成 `global_environment` 区段（`sea_state`、`rain_rate <值> mm/hr`）；`environment.simClockSpeed` 生成 `clock_rate`；`scenario.startTime` 生成 `start_date <三字母月份> <两位日> <四位年>` 与 `start_time <时:分:秒.毫秒>`。候选脚本入口用的正是这一格式（`start_date sep 15 2025`、`start_time 00:00:00.0`）；全称月份和“年在前”写法都会被引擎拒绝。脚本没有时区标记，因此按配置存储的 UTC 分量原样写入，界面按 UTC+8 编辑的口径未换算，`mapping.json` 记 `convention: AS_STORED_UTC`。事件输出同时启用 `SIMULATION_STARTING/COMPLETE`，其回显的年月日时分秒是运行结果与配置开始时刻绑定的唯一证据。
 
 ### 17.2 本批仍阻断的项与实测依据
@@ -419,7 +425,7 @@
 
 | 缺口 | 状态 | 行为 |
 |---|---|---|
-| 干扰自动探测（选择 A） | 已落地 | `autoDetect=true` 时生成 `at_interval_of 3 sec` 处理器，对全部其他平台 `SlantRangeTo`，距离 ≤ `detectionRange`（米）则 `TurnOn`/`SelectMode`；与定时触发并存时优先自动探测 |
+| 干扰自动探测（选择 A） | 已于 2026-11-02 删除 | 不再保留 `autoDetect` 配置；旧数据读取和保存时丢弃 |
 | 中继转发（固定单跳） | 已落地 | `SAT` + `relayPlatformId` 指向通信卫星时生成源/星/目标三端设备与两跳网络，卫星 `on_message` 转发到目标；高空中继平台仍只标注 `relayRole`，不自动转发 |
 | 业务四枚举 | 已落地 | 合同 `InformationType` 限定为态势信息/目标指令/侦察信息/状态信息；界面与校验同步；生成拒绝自由文本与视频 |
 | 输出路径与质量/切换标志 | 部分落地 | `csv_event_output`/`position.csv` 使用配置 `output.directory`；`linkQualityEnabled` 复用 MESSAGE/SENSOR 事件作代理；`linkSwitchEnabled` 仅记录标志，无专用切换统计事件 |
@@ -486,8 +492,8 @@
 
 | 字段 | UI 标签 | 语义 | 生成行为 |
 |---|---|---|---|
-| `detectionRange` | 探测范围 | 自动探测发现目标的最大斜距 | `autoDetect` 时对全部其他平台 `SlantRangeTo`；需 `rangeM <= detectionRange` |
-| `jammingRange` | 干扰范围 | 干扰有效作用距离 | 自动探测在满足探测范围后，仅当 `rangeM <= jammingRange` 才 `TurnOn`/`SelectMode` |
+| `detectionRange` | 探测范围 | 干扰设备的探测距离参数 | 当前模板不按场景自动探测生成行为 |
+| `jammingRange` | 干扰范围 | 干扰有效作用距离 | 不以场景自动探测推断启停 |
 
 - 候选 `WSF_RF_JAMMER` **weapon 区段无** `maximum_range`（传感器雷达才有）；故干扰范围**不**写入假造 DSL，只用脚本距离门控。
 - 定时启停（`triggerTimeS`）仍按绝对时刻启停，**不**按 `jammingRange` 门控。
@@ -517,7 +523,7 @@
 
 | 位置 | 固定值 |
 |---|---|
-| 收发机 | `on`；极化：微波 `horizontal`，其余 `vertical`；衰减模型：卫星 `attenuation_model none`，其余 `itu`；`noise_figure`：天通 2 dB，其余 3 dB；`channels 4`；`bit_error_probability 0.00001`（所有无线链路） |
+| 收发机 | `on`；极化：微波 `horizontal`，其余 `vertical`；衰减模型：卫星 `attenuation_model none`，其余 `itu`；`noise_figure`：统一 3 dB（2026-11-01 模板起天通也为 3 dB）；`channels 4`；`bit_error_probability 0.00001`（所有无线链路） |
 | 数传 C 波段 | 天线俯仰波束 88°，收发 `antenna_tilt -3 deg`；L 波段为全向 180°，不下倾 |
 | 平台类型 | `radar_signature`：无人机/空中干扰 `DRONE_SIG`，指挥车/地面干扰站 `COMMAND_VEHICLE_SIG`，后方 `COMM_VEHICLE_SIG`，卫星 `SAT_SIG` |
 | 平台实例 | `side`：干扰平台 red，其余 blue；`icon`：指挥车 737、无人机 F-18、干扰 triangle、卫星 satellite、后方不写；`heading 90 deg`（指挥车、无人机）；`creation_time 0 sec`（干扰平台、卫星） |
@@ -575,7 +581,7 @@
 
 - “海面多径衰落”启用后，场景环境出现“框选海面区域”，在离线卫星地图上依次单击放置顶点（3～64 个），首尾闭合，可撤销、清空；组件 `src/components/scenarios/SeaAreaMapPicker.vue`。
 - 保存为 `environment.seaPolygon: [{longitude, latitude}]`，生成为 `sea_polygon: [{lat, lon}]`。**未框选时写空列表 `[]`，不再使用示例的台湾海峡 4 点坐标。**
-- 温度、湿度在示例中无对应语句，仍只保存不写入脚本；多径开关现通过 `sea_state.enabled` 进入 `link_calc`。
+- 温度、湿度和雨衰（dB/km）在示例中无对应语句，已于 2026-11-02 删除；多径开关现通过 `sea_state.enabled` 进入 `link_calc`。
 
 ### 22.8 合同与校验
 
@@ -598,7 +604,7 @@
 
 ## 23. 对齐《与前端字段确认说明》（2026-10-22）
 
-依据 `场景配置参数对接/与前端字段确认说明.docx` 及对接方澄清：`traffice_type` 按文档拼写；编码增加 -1（关闭）；干扰范围界面统一用 km，写入 `jammer_param` 时换算为海里；单位按设备类型不强求统一；光纤按文档写传输速率与发送频率；仅指挥车 C 波段为定向天线（俯仰 88°、下倾 3°），任务机 C 波段为全向 180°；文档未覆盖的项（激光、温度、湿度）沿用项目原口径。默认值集中在 `src/features/scenarios/link-calc-defaults.ts`，界面、校验、生成器共用。
+依据 `场景配置参数对接/与前端字段确认说明.docx` 及对接方澄清：`traffice_type` 按文档拼写；编码增加 -1（关闭）；干扰范围界面统一用 km，写入 `jammer_param` 时换算为海里；单位按设备类型不强求统一；光纤按文档写传输速率与发送频率；仅指挥车 C 波段为定向天线（俯仰 88°、下倾 3°），任务机 C 波段为全向 180°；文档未覆盖的激光沿用项目原口径。默认值集中在 `src/features/scenarios/link-calc-defaults.ts`，界面、校验、生成器共用。
 
 | 字段 | 界面 | 生成 |
 |---|---|---|
@@ -606,7 +612,7 @@
 | `environment.rainCloudAttenuation` 新增 `stormRain` | 雨强档位（0/10/25/50/100 mm/h），选择后同步降雨强度 | — |
 | `environment.rainEnabled/rainAltitudeLimitM/rainAttenuationDb/cloudEnabled/atmosphereModel/simplifiedAttenuationDbPerKm/polarizationMismatchDb/pointingErrorDb/seaLowAltitudeThresholdM/seaPathOverSeaThresholdKm/seaModel/seaPolarization/seaWaterTempC/seaSurfaceRoughnessM` | 场景环境：链路计算环境参数（折叠区） | `natural_environment`；大气默认 `itu`、简化衰减率 0（原示例 `ITU-R_P676` + 0.02 会让简化模型覆盖 ITU）；贴海高度默认 100 m（原 300） |
 | `environment.seaState` | 0～9 整数（写入校验） | `sea_state_level` |
-| `links[].rxFrequency/rxBandwidth/txPolarization/rxPolarization/noiseFigureDb` | 链路编辑：收发参数分开；缺省接收同发射、微波水平其余垂直、噪声系数 3 dB（天通 2 dB） | 设备 `transmitter`/`receiver` 与 `port_params` |
+| `links[].rxFrequency/rxBandwidth/txPolarization/rxPolarization/noiseFigureDb` | 链路编辑：收发参数分开；缺省接收同发射、微波水平其余垂直、噪声系数 3 dB（2026-11-01 起天通也为 3 dB） | 设备 `transmitter`/`receiver` 与 `port_params` |
 | 卫星/微波 `dataRate` | 只读固定：卫星 16 Mbit/s（天通 16 kbit/s）、微波 80 Mbit/s | 生成器按固定值写出，不读配置值 |
 | 数传 `dataRate` | 按波段与方向分档下拉（C 上行 25.6k/2M/4M 等） | 原样写出 |
 | `jammers[].releaseRange` | 干扰编辑：释放范围（km），缺省干扰范围 + 5 海里 | `jammer_param.release_radius_nm` |
@@ -616,7 +622,7 @@
 
 新建链路按类型套用文档端口默认值（切换类型、数传波段或方向时重新套用）；新建干扰源默认 2.4 GHz、50 MHz、200 W，干扰 30 海里、释放 35 海里。
 
-界面分组按文档标题：场景基础页下单列“环境参数（全局）”区块，分“降雨参数（NERain）/云雾参数（NECloud）/大气参数（NEAtmosphere）/极化失配（MiscLossDB）/海况参数（SeaState）”五个小标题；温度、湿度、雨衰（dB/km）不在文档中，留在场景基础，只保存不写入 `link_calc`。链路设置中“编码方案（全局）”“链路计算阈值（全局）”“热链配置（全局）”各自单列。
+界面分组按文档标题：场景基础页下单列“环境参数（全局）”区块，分“降雨参数（NERain）/云雾参数（NECloud）/大气参数（NEAtmosphere）/极化失配（MiscLossDB）/海况参数（SeaState）”五个小标题。温度、湿度、雨衰（dB/km）不在文档中，已于 2026-11-02 删除。链路设置中“编码方案（全局）”“链路计算阈值（全局）”“热链配置（全局）”各自单列。
 ### 23.1 热链配置（全局）
 
 文档示例的热链是跨多条链路的端到端路径（任务机 →C 下行→ 指挥车 →光纤→ 后方车），不能按单条链路生成，因此改为可配置：
@@ -645,3 +651,114 @@
 可复验命令：设置 `MISSION_SMOKE_EXECUTABLE` 为本机完整引擎目录中的 `mission.exe`，运行 `npx vitest run --config vitest.config.ts tests/server/laser-generator.spec.ts`；未设置时两个原生引擎用例明确跳过。
 
 本轮最终验证：激光编辑器、合同、生成器及既有生成器聚焦 **4 文件／106 项通过**（含两个真实激光引擎用例）；`npm run p0:check` 退出码 0，unit **1063**、contracts **143**、server **599 通过／18 条件跳过**，coverage **1805 通过／18 条件跳过**。覆盖率 statements **93.58%**／branches **90.56%**／functions **95.17%**／lines **97.37%**，未降低门槛。未运行 E2E、视觉验收或实际设备标定；未重启服务或提交 Git。
+
+## 24. 新模板对齐与 P5 下游适配（2026-11-01，当前权威）
+
+### 24.1 依据与生成文件
+
+依据《新模板对齐开发计划》第 13 节执行，仅适配已完成 P1～P4 的下游读者。对接模板位于 `H:\Project\newWrj\场景配置参数对接\afsim_script_template\afsim_script_template`；10 个 TXT 的原字节副本保存在 `tests/fixtures/afsim-template-20261101/`。不改写对接方目录、现用场景库或旧运行记录。
+
+生成器固定输出 7 个平台类型，按五类通信平台共享端口，不再按实例派生平台类型或按链路派生独立通信设备。文件集合为 `comm_SimSetup.txt`、`comm_PerDefinition.txt`、5 个 `comm_platform_*.txt`、`comm_platform_INS.txt`、`observers.txt`、`ad_hoc_comm.txt`，另附 `scenario.txt`、`mapping.json`、`input.json`、`README.txt`。`scenario.txt` 是可追溯预览入口，原生执行入口为 `comm_SimSetup.txt`；预览检查覆盖全部原生文件段及映射、配置快照。
+
+2026-11-02 保存包目录整理：`output/scripts/script-*/` 根目录仅放模板对应的 10 个脚本；`scenario.txt`、`mapping.json`、`input.json`、`README.txt` 和汇总预览 TXT 收入 `metadata/`，`output/` 保留为输出目录。保存成功返回 `comm_SimSetup.txt` 路径；辅助预览引用 `../comm_SimSetup.txt`，映射中的入口和脚本清单仍以包根目录为基准。独立运行包保持原路径，旧保存包和历史运行记录不移动。
+
+### 24.2 字段与单位
+
+- `scenario.startTime` → `start_date/start_time` 和卫星 `epoch_date_time`；`duration` → `end_time`；`realtime` 缺省为 true；`environment.simClockSpeed` → `clock_rate`。
+- `platform.id` 是节点、事件与消息的关联标识；名称仅用于展示。实例使用固定平台类型；普通航点、`loiterWaypoints`、`returnPlan.timeS/waypoints` 分别写入初始路线、循环路线和 `FollowRoute` 返航指令。位置结果继续来自 `position.csv` 的 `TIME,NAME,LON,LAT,ALT,SPEED,HEADING`。
+- `deviceParameters.ports[平台类型][端口]` 是实际通信参数来源。`txFrequency/rxFrequency` 的 MHz 除以 1000 写 GHz；带宽仍为 MHz，功率为 W，噪声系数为 dB。领域速率为 Mbps，按模板换算为 `bit/s`、`kbits/sec` 或 `mbits/sec`。光纤固定 1000 Mbps。
+- `deviceParameters.antennaGains` 控制模板 11 个天线图的增益；波束宽度和极化按模板/已确认例外固定，不使用旧链路上的增益修正覆盖。
+- 同一平台类型的端口参数同时作用于该类型全部实例。端口上的 `parameterSource` 保存已选装备/通用数据的版本及字段，不自动升级；保存沿用服务端校验、原子登记和引用保护。
+- 微波端口为 `microwave_link`；C/L 数传按方向使用 `c_band_uplink/downlink`、`l_band_uplink/downlink`；卫星端为 `sat_link`，后方节点为 `sat_link_a/b`；光纤为 `fiber_link`。中继跳保留同一原生端口作为 inPort/outPort，`manifest.relayDeviceId` 对应该中继实际端口。
+- `Jammer.detectionMinimumRange` 缺省 1000 m，并且必须小于最大探测距离；`jammingRange` 可为 0，含义是不按距离触发，释放范围仍不得小于触发范围。模板两类干扰平台同类参数必须一致，每个平台最多一台干扰设备。
+- `link_calc` 的 7 段 JSON 直接输出，不额外包引号，按模板顺序排列键。设备参数与端口 JSON 共用相同数据；环境、阈值、信道编码、热链、业务与干扰参数仍取受控配置。
+
+### 24.3 事件身份、新旧记录及共享端口限制
+
+`mapping.json.devices[]` 仍按配置链路记录，但新的 `source.deviceId`、`target.deviceId`、`relayDeviceId` 是上述端口名。事件 CSV 的 `comm/system` 等设备字段必须与所属平台联合匹配。单独使用端口名会把不同平台的同名端口混在一起，单独保存“端口→一条链路”则会丢掉共享端口的其他链路。
+
+本轮核对并保留了态势设备状态、通信关联、消息关联、地图、节点明细、回放快照和本地报告中已有的联合匹配。报告索引为同一“平台＋端口”保留全部相关链路；单端设备事件属于这些共享链路，两端登记事件则按端点成员交集确定对应链路。中继同时识别旧 `relay.ingressDeviceId/egressDeviceId` 和新 `relayPlatformId/relayDeviceId`。
+
+旧归档中的 `comm_<编码>_src/dst` 是不透明标识，保留原文，与旧记录所属平台联合匹配；不批量改名为新端口，也不改写旧归档。已有解析器保留原始事件字段和声明，`afsim-event-log.ts` 的用户改动没有被覆盖。新旧记录分别补测，包含跨平台同名端口、同平台端口复用和回放倒退。
+
+旧通用收发器的类别只有在保存的 manifest 中存在唯一、完整的端点对（含旧中继 ingress/egress 跳）时，才附加可选 `resolvedType` 展示分类；原始设备名称和收发器类型保留。该分类必须是原始收发器支持的明确字符串枚举，不能覆盖已知新端口类别，也不能把混合激光/射频伪装为同类链路。
+
+报表私有索引 v2 保存共享端口的多链路归属。v1 中原有独立编码设备及旧中继仍可按链路筛选，干扰/侦测事件不会被误当作通信端口。若 v1 已含新模板共享端口，其历史索引可能永久丢失第一条链路的归属，缺少原始绑定时拒绝不可靠的逐链路筛选并返回 `FILTER_UNSUPPORTED`；原报告、回放及不依赖该归属的节点/时间筛选仍保留，不自动改写历史归档。
+
+**限制：同一平台、同一端口被多条链路复用时，这些链路共享同一份设备启停证据；源数据没有每条链路独立状态，不能把共享事件解释成独立物理质量。** 无关闭记录仍是未知，不据此认定始终畅通；通信关联仍是登记信息，不代表当前消息正在沿该线转发。
+
+### 24.4 对照允许差异
+
+严格逐文件对照只允许以下 10 项；其余语句、块结构和固定值需一致。数字按值比较，JSON 同时检查语义与键顺序。
+
+1. 速度/高度单位等价转换。
+2. 起止时间及日期语法的等价表示。
+3. 输出路径分隔符统一为 `/`。
+4. 卫星纪元跟随开始时间。
+5. 模板端口 JSON 自身不一致值按设备/天线定义推导：后方卫通功率 20 W、C 波段峰值增益 25 dB。
+6. 干扰 `platform_name` 使用实际实例编号。
+7. 删除示例剧情 `uav_role/writeln` 及未引用的 `relay_loiter/return_relay`。
+8. 配置决定的环境值，例如简化大气衰减 0.02。
+9. 路线/标签名称按声明与引用关系对应，`label/goto`、`route/FollowRoute` 必须闭合。
+10. 后方 `microwave_link` 收发极化采用已确认的 `vertical`，不再沿用原模板的 `horizontal`。
+
+事件订阅另按计划第 5.1 节去重，不额外扩充事件。上述例外不授权改写对接方原始模板。
+
+### 24.5 D1 保留项与本机运行补丁
+
+（航点加速度、航向、到达时间与干扰方位角按 V1.2 测试大纲 GNZB-08 / GNZB-15 于 2026-11-03 恢复（保留配置、记录到 mapping.json、不写入 TXT，界面不加脚本提示）；平台初始航向、干扰持续时间、自动检测、温湿度、雨衰（dB/km）仍删除。）激光通信设备、侦测/ESM 扩展、链路调制/BER/编码/增益修正、链路切换规则与优先级、`timeStep` 和业务 QoS 等旧配置继续保存，但不按旧生成器方式写入当前模板。全局 `link_calc.channel_encoding_scheme` 等仍受控生效，不能与被保留的逐链路字段混淆。仅能经激光到达的目标以可定位警告列入 `mapping.json.retainedButNotEmitted`；不改成微波或光纤，不误删同业务其他可用目标。
+
+激光链路、ESM 传感器、干扰触发时间按 2026-11-02 用户裁定保留配置、不写入脚本，界面不显示提示（C-1～C-3）。激光独占目标由生成器直接识别，仍在对接文件中记录，不再依赖界面校验警告。新增前出中继预填模板起飞点、中继点和 3 个盘旋点，不预填返航路线（C-4）。
+
+本地执行统一通过 `buildMissionPackage(draft, output, runtime)`：
+
+- 本地包始终把共享介质拆为 `UAV_MESH_MEDIUM__<平台类型>__<端口>`，防止不同端口速率互相覆盖。
+- `runtime.linkCalc='PRESERVE'` 保留真实插件；`'STUB'` 在原位置注入 `local_link_stub`。替身按主路由写入 4 个 AuxData 键，复用模板本身的消息处理器，并每 3 秒按触发/释放半径控制干扰；触发半径 0 不开启。
+- `mapping.json.localRuntime` 和执行记录分别标明 `PRESERVED` 或 `MISSING_PROCESSOR_STUBBED`。新运行不再产生旧 `MISSING_PROCESSOR_STRIPPED`。
+- 对外交付 TXT、预览和 `writeScriptText` 不拆介质、不注入替身。替身不实现真实链路质量计算，不生成 SNR、BER 或测量 CSV。
+
+三个本机验证脚本已改为读取新模板包和端口身份。`native-dynamic-nodes.ts` 不再直接删除 link_calc，而使用正式的 STUB 生成路径；`functional-parameters-probe.ts` 验证真实端口参数并明确 ESM/旧增益修正仅保留；`native-integration.ts` 使用模板允许的端点拓扑并显式选择探针的非实时模式。探针自行生成独立输入，不改变产品场景运行模式或数据库。
+
+### 24.6 E1～E7 结论与边界
+
+- E1：已实测共享 `UAV_MESH_MEDIUM` 时，2 Mbps 上行被后配置的 8 Mbps 覆盖；本地执行包用独立介质解决，对外交付仍保留模板。
+- E2：`mission -es` 下实时模式和 `clock_rate` 有效；已有短测中 3 秒仿真约用 3.00 秒/1.51 秒，分别对应 1 倍/2 倍。不擅自把用户场景改成非实时。
+- E3：卫星 `position` 与 `orbital_state` 初始化未冲突，指定初始位置在实际 CSV 中有效；短测不等于证明整个长时轨道静止。
+- E4：没有 commander 的短测未报指挥链错误，保留模板的 `report_to commander`。
+- E5：带连字符的路线/标签、`FollowRoute` 和空中继数组均经真实引擎接受。
+- E6：跨平台写 AuxData 可由模板处理器读取；本机替身据此接通消息发送和转发，不复制求解算法。
+- E7：完整模板夹具本地包已实测产生 `MESSAGE_TRANSMITTED`、`MESSAGE_RECEIVED` 和 `WEAPON_TURNED_ON`。P5 本轮设置真实 `MISSION_SMOKE_EXECUTABLE` 后，`tests/server/mission-execution.spec.ts` 53 项全部通过，无条件跳过。
+
+仍需注意：后方节点 12° 定向微波和 4° 动中通没有自动指向，不能凭脚本生成成功推断任意几何布局可收发。本轮端口参数实机探针明确布置了定向天线的接收方向，只证明该合成工况，不证明任意距离、天气、跟踪或设备性能。
+
+### 24.7 SCN-001 示例迁移
+
+本轮沿用 P2 已完成的冻结示例迁移，不再次修改夹具：L-MW-01 为 UAV-01→CMD-01；L-SAT-02 为 CMD-01→UAV-01，经 SAT-01 中继；L-MW-05/06 为 CMD-01→AIR-01/AIR-03，经 UAV-01 中继；L-DL-05 为 FIBER；L-DL-07 为 GCC-01→AIR-02。运行帧与报告示例端点已由前阶段同步。卫星链路可由一端或中继为通信卫星满足界面规则，MICROWAVE/DATALINK 可配置高空中继。
+
+这些是冻结示例和回归证据，不代表每次真实运行都使用 RUN-001/F-00042，也不向用户现用 SQLite 场景写入迁移。
+
+### 24.8 导入导出、模板与备份核对
+
+承载 `ScenarioConfig` 的路径已核对：场景 JSON 快照导入导出、场景 SQLite 保存/重载、模板 `ScenarioTemplate.config`、本地节点导入、完整系统备份/恢复均保留 `deviceParameters`、`scenario.realtime`、`detectionMinimumRange`、`loiterWaypoints`、`returnPlan`。新增 HTTP 往返用例通过正式场景导入和模板接口验证，存储/备份用例仅使用临时库。
+
+`ScenarioConfigExport.vue` 当前仍是固定 `FULL-CONFIG` 的完整配置导出流程演示；`POST /api/v1/admin/config/export` 仅返回 `ExportStatus`，`generated:false`，没有当前场景内容或配置文件载荷。历史文件归档 `LocalArchiveSnapshot` 仅承载 `record/replay/report`，没有 `ScenarioConfig`。这两条路径不适用新场景字段往返，不扩展冻结合同、不虚称已完成场景内容导出；真实运行包的 `input.json` 与本机结果记录另行保留执行快照。
+
+### 24.9 后续模板只读比对
+
+用法：`node --import tsx scripts/compare-afsim-template.ts <新模板目录>`，或 `npx tsx scripts/compare-afsim-template.ts <新模板目录>`。
+
+默认以 `tests/fixtures/afsim-template-20261101/` 为基准，只读遍历，输出文件及语句的新增、删除、改动和“界面配置”标记。按第 8.2 节规范化注释、空白、换行、数字、等价单位、日期/路径和对应引用；JSON 同时报告键顺序变化。实际参数值变化仍列为差异，不因带“界面配置”注释而隐藏，不擅自把新模板套入旧默认值。缺少参数退出码为 2，目录/读取错误为 1；正常完成比对返回 0，差异由报告列明。脚本不改任何模板。
+
+### 24.10 P5 本轮实际验证（2026-11-01）
+
+- `npm run typecheck`、`npm run validate:contracts` 通过；OpenAPI 仍为 84 operations / 40 typed POST/PUT/PATCH writes，本轮没有改动冻结合同。
+- 最终 `npm run test` 退出码 0：unit 86 文件 / 1371 通过；contracts 18 文件 / 280 通过；server 62 文件 / 674 通过、15 条件跳过。合计 166 文件 / 2325 通过，未降低此前 159 文件 / 2305 的通过基线，未放宽门槛。
+- 设置 `MISSION_SMOKE_EXECUTABLE=H:/Project/newWrj/Release/Release/mission.exe` 后运行 `tests/server/mission-execution.spec.ts`：53/53 通过，无跳过。
+- `npm run build`、`npm run build:lan` 均通过，后者包含局域网/麒麟服务端包。
+- `npx playwright test tests/e2e/scenario-parameters.spec.ts tests/e2e/situation-scene-refresh.spec.ts tests/e2e/report-filter.spec.ts`：1920×1080、1366×768 合计 6/6；最终报表代码另跑 `report-filter.spec.ts`，2/2 通过。Playwright 独占纯 Mock 4173，没有复用真实账号/场景服务，也没有停止已有服务。
+- 只读模板比对脚本聚焦 3/3，通过基准目录实跑显示 0 语义差异、0 标记变更；测试还覆盖实际参数改动、文件增删、JSON 键序、标识前导零和字符串内空格。
+- `functional-parameters-probe.ts` 使用本机真实引擎通过，获得实际接收事件；`native-integration.ts prepare` 通过。50/51 节点工具的输入和正式 STUB 生成路径有聚焦回归，未把这些生成检查宣称为本轮长时负载或性能验收。
+- 场景 JSON/SQLite/模板 HTTP 往返、现有本地导入和系统备份恢复用例均随全量测试通过；完整配置演示、文件归档不承载 ScenarioConfig 的边界保持不变。
+- 现用 `output/local-deployment/data/scenarios.db` 与 10 个对接方原模板文件共 11 项 SHA-256 前后相同。`git diff --check` 通过；未暂存、提交、推送或重启现有服务。
+
+本轮未运行覆盖率统计或全部 E2E 文件，不沿用历史覆盖率数字。现有指向限制和 v1 原生共享端口索引无法可靠恢复逐链路归属的限制见第 24.3、24.6 节，未通过伪造数据、改写旧归档或扩大 P1～P4 来掩盖。

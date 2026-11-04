@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { LocalReportEvidence, LocalReportExportResult, LocalReportFilter, Report } from '../../src/contracts/domain-models.js'
-import { EVENT_LABELS, isLocalReport, localReportTables, reportTime } from '../../src/features/reports/local-report.js'
+import { EVENT_LABELS, isLocalReport, localReportTables, localReportChartRange, reportTime } from '../../src/features/reports/local-report.js'
 import { qualityReportView } from '../../src/features/reports/quality-report.js'
 import { readAfsimLogFile, readLocalFileDigest } from './afsim-log-reader.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
@@ -62,14 +62,14 @@ export const csvCell = (value: string) => `"${(/^[\s]*[=+@-]/.test(value) ? `'${
 
 export function reportChartSvg(chart: { title: string; rows: Array<{ label: string; value: number }> }, scope: string): string {
   const maximum = Math.max(1, ...chart.rows.map(row => row.value))
-  return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><svg viewBox="0 0 640 ${Math.max(90, chart.rows.length * 34 + 30)}" role="img" aria-label="${escapeHtml(chart.title)}柱状图">${chart.rows.length ? '' : '<text x="0" y="25">当前范围没有记录。</text>'}${chart.rows.map((row, index) => {
+  return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><svg viewBox="0 0 640 ${Math.max(90, chart.rows.length * 34 + 30)}" role="img" aria-label="${escapeHtml(chart.title)}柱状图">${chart.rows.length ? '' : '<text x="0" y="25">暂无数据</text>'}${chart.rows.map((row, index) => {
     const y = 12 + index * 34, width = Math.round(row.value / maximum * 360)
     return `<text x="0" y="${y + 14}">${escapeHtml(row.label)}</text><rect x="220" y="${y}" width="${width}" height="18" fill="#2f6b8f"/><text x="${228 + width}" y="${y + 14}">${row.value} 条</text>`
   }).join('')}</svg>`
 }
 
 export function reportCurveSvg(chart: { title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; unit: string }, scope: string): string {
-  if (!chart.rows.length) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>当前范围没有测量记录。</p>`
+  if (!chart.rows.length) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>暂无数据</p>`
   const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = Math.max(1e-12, maximum - minimum)
   const times = chart.rows.map((row, index) => row.time ?? index), startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
   const points = chart.rows.map((row, index) => {
@@ -84,7 +84,7 @@ export function reportCurveSvg(chart: { title: string; rows: Array<{ label: stri
 }
 
 export function reportRadarSvg(chart: { title: string; rows: Array<{ label: string; value: number }> }, scope: string): string {
-  if (chart.rows.length < 3) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>有效观测链路不足 3 条，不能绘制雷达图。</p>`
+  if (chart.rows.length < 3) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>暂无数据</p>`
   const point = (index: number, value: number) => { const angle = index * Math.PI * 2 / chart.rows.length - Math.PI / 2; return `${150 + 90 * value / 100 * Math.cos(angle)},${120 + 90 * value / 100 * Math.sin(angle)}` }
   return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}；仅统计连续有效观测区间，缺口和末帧不计。</p><svg viewBox="0 0 300 240" role="img" aria-label="${escapeHtml(chart.title)}雷达图"><circle cx="150" cy="120" r="90" fill="none" stroke="#17212b"/><polygon points="${chart.rows.map((row, index) => point(index, row.value)).join(' ')}" fill="#2f6b8f" fill-opacity=".2" stroke="#2f6b8f"/>${chart.rows.map((row, index) => `<text x="${point(index, 1).split(',')[0]}" y="${point(index, 1).split(',')[1]}">${escapeHtml(row.label)}</text>`).join('')}</svg>`
 }
@@ -116,23 +116,33 @@ export async function exportLocalReport(directory: string, report: Report, forma
     rows: parameterRows.length ? parameterRows : [['当前结果未保存参数快照', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据']],
   }]
   const sections = [{ title: '来源与范围', columns: ['项目', '值'], rows: metadata }, ...parameterSection, ...tables]
-  const chartScope = `${reportTime(report.localEvidence.startTimeS)}～${reportTime(report.localEvidence.endTimeS)}；单位：条；生成时刻：${report.generatedTime}`
-  const charts: Array<{ title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; kind?: 'BAR' | 'LINE' | 'RADAR'; unit?: string }> = [
-    { title: '事件分类统计', rows: report.localEvidence.eventCounts.map(row => ({ label: EVENT_LABELS[row.type] ?? row.type, value: row.count })) },
-    { title: '节点位置记录数', rows: report.localEvidence.nodes.map(node => ({ label: node.name, value: node.positionCount })) },
+  const eventRange = localReportChartRange(report.localEvidence, report.localEvidence.eventFile.fileName, filter)
+  const positionRange = localReportChartRange(report.localEvidence, report.localEvidence.positionFile.fileName, filter)
+  const qualityRange = localReportChartRange(report.localEvidence, quality?.dataset.source.fileName ?? '未导入质量数据', filter)
+  const charts: Array<{ title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; kind?: 'BAR' | 'LINE' | 'RADAR'; unit: string; sourceRange: string }> = [
+    { title: '事件分类统计', unit: '条', sourceRange: eventRange, rows: report.localEvidence.eventCounts.map(row => ({ label: EVENT_LABELS[row.type] ?? row.type, value: row.count })) },
+    { title: '节点位置记录数', unit: '条', sourceRange: positionRange, rows: report.localEvidence.nodes.map(node => ({ label: node.name, value: node.positionCount })) },
     ...(quality === undefined ? [] : quality.series.flatMap(series => [
-      { title: `GXB 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, unit: 'dB', rows: series.gxbCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
-      { title: `误码率随时间变化 · ${series.linkId}`, kind: 'LINE' as const, unit: 'BER', rows: series.berCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
+      { title: `GXB 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'dB', rows: series.gxbCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
+      { title: `误码率随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'BER', rows: series.berCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
     ])),
-    ...(quality === undefined ? [] : [{ title: '各链路有效观测区间连通率', kind: 'RADAR' as const, unit: '%', rows: qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value })) }]),
+    { title: '各链路有效观测区间连通率', kind: 'RADAR', unit: '%', sourceRange: qualityRange, rows: qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value })) },
   ]
+  const scopedCharts = charts.map(chart => ({ ...chart, scope: `${chart.sourceRange}；单位：${chart.unit}；生成时刻：${report.generatedTime}` }))
+  sections.push(...charts.filter(chart => chart.kind !== 'LINE').map(chart => ({
+    title: `${chart.kind === 'RADAR' ? '雷达图' : '柱状图'}数据表：${chart.title}`,
+    columns: ['标签', '数值', '单位', '数据范围', '生成时刻'],
+    rows: chart.rows.length
+      ? chart.rows.map(row => [row.label, String(row.value), chart.unit, chart.sourceRange, report.generatedTime])
+      : [['暂无数据', '', chart.unit, chart.sourceRange, report.generatedTime]],
+  })))
   const content = format === 'CSV'
     ? '\uFEFF' + [...notes.map(note => [note]), ...sections.flatMap(section => [[section.title], section.columns, ...section.rows, []])].map(row => row.map(csvCell).join(',')).join('\r\n')
     : format === 'PDF'
       ? await createLocalReportPdf({ title: '本地运行数据报告', notes, sections,
-          charts, chartScope })
+          charts: scopedCharts, chartScope: eventRange })
       : '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>本地运行数据报告</title><style>body{font-family:system-ui,sans-serif;margin:32px;color:#17212b}table{border-collapse:collapse;width:100%;margin-bottom:24px}td,th{border:1px solid #ccc;padding:8px;text-align:left;overflow-wrap:anywhere}th{background:#eef3f7}p{line-height:1.6}</style><h1>本地运行数据报告</h1>'
-        + notes.map(note => `<p>${escapeHtml(note)}</p>`).join('') + charts.map(chart => chart.kind === 'LINE' ? reportCurveSvg({ title: chart.title, rows: chart.rows, unit: chart.unit! }, chartScope.replace('；单位：条', '')) : chart.kind === 'RADAR' ? reportRadarSvg(chart, chartScope.replace('；单位：条', '')) : reportChartSvg(chart, chartScope)).join('')
+        + notes.map(note => `<p>${escapeHtml(note)}</p>`).join('') + scopedCharts.map(chart => chart.kind === 'LINE' ? reportCurveSvg(chart, chart.scope) : chart.kind === 'RADAR' ? reportRadarSvg(chart, chart.scope) : reportChartSvg(chart, chart.scope)).join('')
         + sections.map(section => `<h2>${escapeHtml(section.title)}</h2><table><thead><tr>${section.columns.map(text => `<th>${escapeHtml(text)}</th>`).join('')}</tr></thead><tbody>${section.rows.map(row => `<tr>${row.map(text => `<td>${escapeHtml(text)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('') + '</html>'
   const root = resolve(directory)
   await mkdir(root, { recursive: true })

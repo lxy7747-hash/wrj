@@ -15,7 +15,8 @@ import type {
   ScriptContract,
   ValidationResult,
 } from '../../src/contracts/domain-models'
-import { inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../../src/features/scenarios/scenario-validation'
+import { dropRetiredScenarioFields, inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../../src/features/scenarios/scenario-validation'
+import { synchronizePlatformLinkIds } from '../../src/features/scenarios/link-edit'
 import { withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic'
 import { configuredScenarioOutput } from '../../src/config/app.config'
 import { getLinkExclusionReason, isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../src/features/scenarios/link-settings'
@@ -87,7 +88,7 @@ describe('链路新增参数边界', () => {
     expect(getLinkExclusionReason(link, settings, config.platforms)).toBe('天通卫星')
     expect(isConfiguredLinkEnabled(link, settings, config.platforms)).toBe(false)
     expect(getLinkExclusionReason({ ...link, enabled: false }, settings, config.platforms)).toBe('链路停用')
-    expect(getLinkExclusionReason({ ...link, type: 'MICROWAVE', sourcePlatformId: 'CMD-01' }, settings, config.platforms)).toBeNull()
+    expect(getLinkExclusionReason({ ...link, type: 'MICROWAVE', sourcePlatformId: 'CMD-01', relayPlatformId: null }, settings, config.platforms)).toBeNull()
   })
 
   it('中继卫星默认选择天通，显式开关原样保留，无实体时不启用', () => {
@@ -221,14 +222,17 @@ const ADMIN: Principal = {
 /** 创建与服务端基线一致、可独立修改的场景草稿。 */
 function scenarioDraft(revision = 4): ScenarioDraft {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', type: 'SPOT', autoDetect: false })
-  config.platforms.find(platform => platform.id === 'STN-01')!.jammerIds.push('JAM-SPOT-01-TX')
+  // 每个干扰节点只允许一台干扰设备（D6）：第二台设备挂到独立的地面干扰站。
+  const station = config.platforms.find(platform => platform.id === 'STN-01')!
+  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '地面干扰侦测站 2', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
+    initialPosition: { ...station.initialPosition, longitude: station.initialPosition.longitude + 0.05 } })
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT' })
   return {
     config,
     uiExtensions: {
       jammers: [
-        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
-        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+        { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
       ],
       sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },
@@ -468,6 +472,26 @@ describe('P2-1 场景 Store', () => {
     sessionStorage.clear()
   })
 
+  it.each([
+    [599, 'ARRIVAL_TIME_NOT_INCREASING'],
+    [600, 'ARRIVAL_TIME_NOT_INCREASING'],
+    [5401, 'ARRIVAL_TIME_EXCEEDS_DURATION'],
+  ])('航点到达时间 %s 在保存前拒绝，不发 PUT', async (arrivalTime, code) => {
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    const value = scenarioDraft()
+    value.config.scenario.duration = 5400
+    const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success(value)))
+    vi.stubGlobal('fetch', fetchSpy)
+    const store = useScenarioStore()
+    expect(await store.loadScenario()).toBe(true)
+    store.draft!.config.platforms[1]!.waypoints.push({ longitude: 119.6, latitude: 24.9, altitude: 3100, speed: 45, arrivalTime: Number(arrivalTime) })
+    store.markDirty()
+    expect(await store.saveScenario()).toBe(false)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(store.validation.errors).toContainEqual(expect.objectContaining({ code, fieldPath: 'platforms[1].waypoints[1].arrivalTime' }))
+    expect(store.dirty).toBe(true)
+  })
+
   it.each([0, -1, undefined, NaN])('航点速度 %s 在写入前被共享校验拒绝，不发保存请求', async speed => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const value = scenarioDraft()
@@ -475,7 +499,7 @@ describe('P2-1 场景 Store', () => {
     vi.stubGlobal('fetch', fetchSpy)
     const store = useScenarioStore()
     await expect(store.loadScenario()).resolves.toBe(true)
-    store.draft!.config.platforms[3]!.waypoints = [{ ...value.config.platforms[3]!.initialPosition, speed: speed as number, arrivalTime: 10 }]
+    store.draft!.config.platforms[3]!.waypoints = [{ ...value.config.platforms[3]!.initialPosition, speed: speed as number, arrivalTime: 0 }]
     store.markDirty()
     await expect(store.saveScenario()).resolves.toBe(false)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
@@ -582,6 +606,24 @@ describe('P2-1 场景 Store', () => {
     expect(scenario.resultMessage).toContain('修订号为 5')
   })
 
+  it('正式加载旧草稿接受退役字段但丢弃值，不污染响应对象与仍保留的传感器方向', async () => {
+    const clean = scenarioDraft()
+    const legacy = structuredClone(clean)
+    Object.assign(legacy.config.scenario.environment, { temperatureC: null, humidityPercent: 101, rainLossDbPerKm: -1 })
+    legacy.config.jammers.forEach(jammer => Object.assign(jammer, { autoDetect: ['invalid'] }))
+    legacy.uiExtensions.jammers.forEach(jammer => Object.assign(jammer, { duration: -1 }))
+    expect(inspectScenarioConfig(legacy.config, 'write').result.valid).toBe(true)
+    expect(inspectScenarioUiExtensions(legacy.uiExtensions, legacy.config.jammers.map(item => item.id), legacy.config.sensors.map(item => item.id)).result.valid).toBe(true)
+    useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(success(legacy))))
+    const store = useScenarioStore()
+    expect(await store.loadScenario()).toBe(true)
+    expect(store.draft!.config).toEqual(withScenarioBasicDefaults(clean.config))
+    expect(store.draft!.uiExtensions).toEqual(clean.uiExtensions)
+    expect(legacy.config.scenario.environment).toHaveProperty('humidityPercent', 101)
+    expect(legacy.uiExtensions.jammers[0]).toHaveProperty('duration', -1)
+  })
+
   it('在无权限、空草稿和本地字段错误时拒绝保存且不发请求', async () => {
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
@@ -596,12 +638,12 @@ describe('P2-1 场景 Store', () => {
     expect(scenario.resultCode).toBe('EMPTY')
 
     scenario.draft = scenarioDraft()
-    scenario.draft.config.scenario.environment.humidityPercent = 101
+    scenario.draft.config.scenario.environment.seaState = -1
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('VALIDATION_FAILED')
-    expect(scenario.validation.errors[0]?.fieldPath).toBe('scenario.environment.humidityPercent')
+    expect(scenario.validation.errors[0]?.fieldPath).toBe('scenario.environment.seaState')
 
-    scenario.draft.config.scenario.environment.humidityPercent = 80
+    scenario.draft.config.scenario.environment.seaState = 3
     scenario.draft.uiExtensions.jammers[0]!.enabled = 'yes' as unknown as boolean
     await expect(scenario.saveScenario()).resolves.toBe(false)
     expect(scenario.resultCode).toBe('VALIDATION_FAILED')
@@ -707,9 +749,9 @@ describe('P2-1 场景 Store', () => {
 
   it('通过整体校验接口处理通过、警告、错误和配置锁', async () => {
     const validDraft = scenarioDraft()
-    validDraft.config.scenario.environment.rainLossDbPerKm = 0.08
     const validResult = inspectScenarioConfig(validDraft.config).result
     const warningDraft = scenarioDraft()
+    warningDraft.config.scenario.environment.rainRateMmPerHour = 101
     const warningResult = inspectScenarioConfig(warningDraft.config).result
     const invalidDraft = scenarioDraft()
     invalidDraft.config.links[0]!.txPower = -1
@@ -736,7 +778,7 @@ describe('P2-1 场景 Store', () => {
     scenario.draft = warningDraft
     await expect(scenario.validateScenario()).resolves.toBe(true)
     expect(scenario.resultCode).toBe('VALIDATION_WARNING')
-    expect(scenario.validation.warnings[0]?.fieldPath).toBe('scenario.environment.rainLossDbPerKm')
+    expect(scenario.validation.warnings[0]?.fieldPath).toBe('scenario.environment.rainRateMmPerHour')
 
     scenario.draft = invalidDraft
     await expect(scenario.validateScenario()).resolves.toBe(false)
@@ -782,7 +824,7 @@ describe('P2-6 场景模板 Store', () => {
     useAuthStore().$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
     const store = useScenarioStore()
     const saved = scenarioDraft()
-    saved.uiExtensions.jammers[0]!.direction = 123
+    saved.uiExtensions.jammers[0]!.elevation = 30
     const extended = { ...template(), config: saved.config, uiExtensions: saved.uiExtensions }
     const fetchSpy = vi.fn().mockResolvedValue(jsonResponse(success(extended)))
     vi.stubGlobal('fetch', fetchSpy)
@@ -1196,7 +1238,9 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     const invalidDraft = scenarioDraft()
     invalidDraft.config.output.directory = ''
     const blocked = inspectScenarioConfig(invalidDraft.config).result
-    const warning = inspectScenarioConfig(scenarioDraft().config).result
+    const warningDraft = scenarioDraft()
+    warningDraft.config.scenario.environment.rainRateMmPerHour = 101
+    const warning = inspectScenarioConfig(warningDraft.config).result
     const awaiting: ConfirmationContext = {
       confirmationId: 'CONF-P2-SCRIPT', state: 'AWAITING_CONFIRMATION', actor: 'operator', role: 'OPERATOR',
       createdAt: META.generatedAt, expiresAt: '2026-08-06T08:05:00Z',
@@ -1223,7 +1267,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     await expect(scenario.generateScriptPreview()).resolves.toBe(false)
     expect(scenario.scriptResultCode).toBe('VALIDATION_FAILED')
     expect(scenario.script).toBeNull()
-    scenario.draft = scenarioDraft()
+    scenario.draft = warningDraft
 
     await expect(scenario.generateScriptPreview()).resolves.toBe(false)
     expect(scenario.scriptResultCode).toBe('CONFIRMATION_REQUIRED')
@@ -1288,7 +1332,6 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     auth.$patch({ principal: { ...OPERATOR, permissions: [...OPERATOR.permissions] }, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const scenario = useScenarioStore()
     const config = scenarioDraft()
-    config.config.scenario.environment.rainLossDbPerKm = 0.08
     scenario.draft = config
     const cleanValidation: ValidationResult = { valid: true, errors: [], warnings: [] }
     const validScript: ScriptContract = {
@@ -1359,6 +1402,7 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     expect(scenario.scriptResultCode).toBe('PERMISSION_DENIED')
 
     auth.$patch({ principal: OPERATOR, permissions: [...OPERATOR.permissions] })
+    scenario.draft.config.scenario.environment.rainRateMmPerHour = 101
     const warning = inspectScenarioConfig(scenario.draft.config).result
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse(success(warning)))
@@ -1367,7 +1411,6 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
     expect(scenario.scriptResultCode).toBe('CONFLICT')
 
     const cleanDraft = scenarioDraft()
-    cleanDraft.config.scenario.environment.rainLossDbPerKm = 0.08
     scenario.draft = cleanDraft
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse(success({ valid: true, errors: [], warnings: [] })))
@@ -1397,9 +1440,11 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
       confirmationId: 'CONF-P2-LATE', state: 'AWAITING_CONFIRMATION', actor: principal.username, role: principal.role,
       createdAt: META.generatedAt, expiresAt: '2026-08-06T08:05:00Z',
     }
+    const warningDraft = scenarioDraft()
+    warningDraft.config.scenario.environment.rainRateMmPerHour = 101
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(jsonResponse(success(scenarioDraft())))
-      .mockResolvedValueOnce(jsonResponse(success(inspectScenarioConfig(scenarioDraft().config).result)))
+      .mockResolvedValueOnce(jsonResponse(success(warningDraft)))
+      .mockResolvedValueOnce(jsonResponse(success(inspectScenarioConfig(warningDraft.config).result)))
     if (stage === 'confirm') fetchSpy.mockResolvedValueOnce(jsonResponse(success(awaiting)))
     const pendingResponse = { ok: true, json: () => { entered.resolve(); return confirmation.promise } } as Response
     if (boundary === 'json') fetchSpy.mockResolvedValueOnce(pendingResponse)
@@ -1437,7 +1482,6 @@ describe('P2-7/P2-8 场景快照与脚本 Store', () => {
   ))('编辑草稿后丢弃迟到的 $stage/$boundary', async ({ stage, boundary }) => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const cleanDraft = scenarioDraft()
-    cleanDraft.config.scenario.environment.rainLossDbPerKm = 0.08
     const script: ScriptContract = {
       scriptId: 'SCRIPT-P2-LATE', taskId: 'TASK-001', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4',
       target: 'AFSIM 2.9.0', checksum: 'FNV1A-MOCK-LATE', preview: 'preview', generatedTime: META.generatedAt,
@@ -1512,7 +1556,7 @@ describe('P2-1 场景基础字段校验', () => {
     const normalized = withScenarioBasicDefaults(original)
     expect(original.scenario.environment).not.toHaveProperty('simClockSpeed')
     expect(normalized.scenario.duration).toBe(original.scenario.duration)
-    expect(normalized.scenario.environment.rainLossDbPerKm).toBe(original.scenario.environment.rainLossDbPerKm)
+    expect(normalized.scenario.environment.rainRateMmPerHour).toBe(original.scenario.environment.rainRateMmPerHour)
     normalized.scenario.environment.simClockSpeed = 15
     normalized.scenario.environment.transmissionDistance = 410
     normalized.scenario.environment.rainCloudAttenuation = 'none'
@@ -1548,14 +1592,8 @@ describe('P2-1 场景基础字段校验', () => {
     const defaultResult = inspectScenarioConfig(scenarioDraft().config).result
     expect(defaultResult.valid).toBe(true)
     expect(defaultResult.errors).toEqual([])
-    expect(defaultResult.warnings).toContainEqual(expect.objectContaining({
-      severity: 'WARNING',
-      code: 'RAIN_LOSS_DEFAULT_MISMATCH',
-      fieldPath: 'scenario.environment.rainLossDbPerKm',
-    }))
 
     const incompleteCoverage = scenarioDraft().config
-    incompleteCoverage.scenario.environment.rainLossDbPerKm = 0.08
     incompleteCoverage.platforms = incompleteCoverage.platforms.filter((platform) => platform.type !== 'FORWARD_RELAY_NODE')
     expect(inspectScenarioConfig(incompleteCoverage).result.warnings).toContainEqual(expect.objectContaining({
       code: 'CAPABILITY_COVERAGE_NOTICE',
@@ -1572,10 +1610,7 @@ describe('P2-1 场景基础字段校验', () => {
       ['scenario.duration', (config) => { config.scenario.duration = 0 }],
       ['scenario.timeStep', (config) => { config.scenario.timeStep = -1 }],
       ['scenario.environment.seaState', (config) => { config.scenario.environment.seaState = -1 }],
-      ['scenario.environment.temperatureC', (config) => { config.scenario.environment.temperatureC = Number.NaN }],
-      ['scenario.environment.humidityPercent', (config) => { config.scenario.environment.humidityPercent = 101 }],
       ['scenario.environment.rainRateMmPerHour', (config) => { config.scenario.environment.rainRateMmPerHour = -1 }],
-      ['scenario.environment.rainLossDbPerKm', (config) => { config.scenario.environment.rainLossDbPerKm = -1 }],
       ['scenario.environment.multipathEnabled', (config) => { config.scenario.environment.multipathEnabled = 'yes' as never }],
     ]
 
@@ -1777,40 +1812,30 @@ describe('P2-2 平台与航点字段校验', () => {
     }))
   })
 
-  it.each([
-    {
-      name: '倒序到达时间',
-      mutate: (config: ScenarioConfig) => {
-        config.platforms[1]!.waypoints.push({ longitude: 119.6, latitude: 24.9, altitude: 3100, speed: 45, arrivalTime: 599 })
-      },
-      code: 'ARRIVAL_TIME_NOT_INCREASING',
-      fieldPath: 'platforms[1].waypoints[1].arrivalTime',
-    },
-    {
-      name: '相等到达时间',
-      mutate: (config: ScenarioConfig) => {
-        config.platforms[1]!.waypoints.push({ longitude: 119.6, latitude: 24.9, altitude: 3100, speed: 45, arrivalTime: 600 })
-      },
-      code: 'ARRIVAL_TIME_NOT_INCREASING',
-      fieldPath: 'platforms[1].waypoints[1].arrivalTime',
-    },
-    {
-      name: '到达时间超过场景时长',
-      mutate: (config: ScenarioConfig) => {
-        config.platforms[1]!.waypoints[0]!.arrivalTime = config.scenario.duration + 1
-      },
-      code: 'ARRIVAL_TIME_EXCEEDS_DURATION',
-      fieldPath: 'platforms[1].waypoints[0].arrivalTime',
-    },
-  ])('拒绝$name并定位到对应航点', ({ mutate, code, fieldPath }) => {
+  it('只有任务无人机和前出中继可以配置普通航点：其他平台写入被拒、读取不报错，中继可写入', () => {
+    for (const type of ['REAR_COMMAND_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION', 'AIRBORNE_JAMMER_PLATFORM'] as const) {
+      const config = scenarioDraft().config
+      // 示例场景没有机载干扰平台，借用地面干扰站改类型。
+      if (type === 'AIRBORNE_JAMMER_PLATFORM') Object.assign(config.platforms.find(item => item.type === 'GROUND_JAMMER_DETECTION_STATION')!, { type, category: 'air' })
+      const index = config.platforms.findIndex(item => item.type === type)
+      expect(index).toBeGreaterThanOrEqual(0)
+      config.platforms[index]!.waypoints = [{ ...config.platforms[index]!.initialPosition, speed: 20, arrivalTime: 0 }]
+      expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({
+        code: 'WAYPOINTS_NOT_APPLICABLE', fieldPath: `platforms[${index}].waypoints`,
+      }))
+      expect(inspectScenarioConfig(config, 'read').result.errors.filter(item => item.code === 'WAYPOINTS_NOT_APPLICABLE')).toEqual([])
+      // 界面不显示这些航点，读写时直接丢弃。
+      expect(dropRetiredScenarioFields(config).platforms[index]!.waypoints).toEqual([])
+      expect(inspectScenarioConfig(config, 'write').result.errors.filter(item => item.code === 'WAYPOINTS_NOT_APPLICABLE')).toEqual([])
+    }
     const config = scenarioDraft().config
-    mutate(config)
-
-    expect(inspectScenarioConfig(config).result.errors).toContainEqual(expect.objectContaining({ code, fieldPath }))
+    const relay = config.platforms.find(item => item.type === 'FORWARD_RELAY_NODE')!
+    expect(relay.waypoints.length).toBeGreaterThan(0)
+    expect(inspectScenarioConfig(config, 'write').result.errors.filter(item => item.code === 'WAYPOINTS_NOT_APPLICABLE')).toEqual([])
   })
 
   it.each([
-    { name: '链路', field: 'linkIds' as const, id: 'L-MW-01' },
+    { name: '链路', field: 'linkIds' as const, id: 'L-DL-06' },
     { name: '传感器', field: 'sensorIds' as const, id: 'ESM-01' },
     { name: '干扰器', field: 'jammerIds' as const, id: 'JAM-WB-01-TX' },
   ])('拒绝归属于其他平台的$name关联', ({ field, id }) => {
@@ -1850,31 +1875,37 @@ describe('跨对象频段冲突检测', () => {
 
   it('同一接收平台的启用链路频段部分重叠时警告并定位到两条链路频率；同体制同信道共用、错开或停用不报', () => {
     const config = scenarioDraft().config
-    const index = config.links.findIndex(link => link.id === 'L-DL-05')
-    // 示例 L-DL-03/L-DL-05 同收端、同体制、同频点同带宽，按网络共用信道处理。
+    // 示例 L-DL-05 已改为光纤（不占射频）：把 L-DL-07 改为同样到达 AIR-01，
+    // 与 L-DL-06 同收端、同体制、同频点同带宽，按网络共用信道处理。
+    const index = config.links.findIndex(link => link.id === 'L-DL-07')
+    const base = config.links.find(link => link.id === 'L-DL-06')!
+    Object.assign(config.links[index]!, { targetPlatformId: 'AIR-01', frequency: base.frequency, bandwidth: base.bandwidth })
+    synchronizePlatformLinkIds(config, 'L-DL-07')
     expect(codes(config)).toEqual([])
-    config.links[index]!.frequency = 2205
+    config.links[index]!.frequency = base.frequency + base.bandwidth / 2
     const conflicts = codes(config)
     expect(conflicts).toEqual([
-      expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${config.links.findIndex(link => link.id === 'L-DL-03')}].frequency` }),
+      expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${config.links.findIndex(link => link.id === 'L-DL-06')}].frequency` }),
       expect.objectContaining({ code: 'LINK_FREQUENCY_CONFLICT', fieldPath: `links[${index}].frequency` }),
     ])
-    expect(conflicts[1]!.message).toContain('L-DL-03')
+    expect(conflicts[1]!.message).toContain('L-DL-06')
     expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
-    config.links[index]!.frequency = 2300
+    config.links[index]!.frequency = base.frequency + base.bandwidth * 10
     expect(codes(config)).toEqual([])
-    config.links[index]!.frequency = 2205
+    config.links[index]!.frequency = base.frequency + base.bandwidth / 2
     config.links[index]!.enabled = false
     expect(codes(config)).toEqual([])
   })
 
   it('同一接收平台不同体制链路同信道也视为互扰', () => {
     const config = scenarioDraft().config
+    // L-MW-01（微波）与 L-SAT-05（卫通）都到达后方指挥节点 CMD-01。
     const microwave = config.links.find(link => link.id === 'L-MW-01')!
-    const datalink = config.links.find(link => link.id === 'L-DL-03')!
-    microwave.frequency = datalink.frequency
-    microwave.bandwidth = datalink.bandwidth
-    expect(codes(config).map(warning => warning.code)).toEqual(['LINK_FREQUENCY_CONFLICT', 'LINK_FREQUENCY_CONFLICT', 'LINK_FREQUENCY_CONFLICT'])
+    const satellite = config.links.find(link => link.id === 'L-SAT-05')!
+    microwave.frequency = satellite.frequency
+    microwave.bandwidth = satellite.bandwidth
+    expect(codes(config).filter(warning => warning.code === 'LINK_FREQUENCY_CONFLICT').map(warning => warning.fieldPath).sort())
+      .toEqual([`links[${config.links.indexOf(microwave)}].frequency`, `links[${config.links.indexOf(satellite)}].frequency`].sort())
   })
 
   it('干扰频段未覆盖任何启用链路时警告并定位到干扰频率', () => {
@@ -1887,9 +1918,9 @@ describe('跨对象频段冲突检测', () => {
 })
 
 describe('P2-3 链路字段校验', () => {
-  it('覆盖四类链路并允许没有链路的场景', () => {
+  it('覆盖五类链路并允许没有链路的场景', () => {
     const config = scenarioDraft().config
-    expect(new Set(config.links.map((link) => link.type))).toEqual(new Set(['SAT', 'MICROWAVE', 'DATALINK', 'LASER']))
+    expect(new Set(config.links.map((link) => link.type))).toEqual(new Set(['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER']))
 
     config.links = []
     config.platforms.forEach((platform) => { platform.linkIds = [] })
@@ -1960,7 +1991,8 @@ describe('P2-4 干扰设备字段校验', () => {
     config.jammers[0]!.type = 'SWEEP'
     config.jammers[0]!.triggerTimeS = 300
     for (const range of [1000, 100000]) {
-      config.jammers[0]!.detectionRange = range
+      // 同类干扰节点探测距离须一致（D6），两台地面设备同步修改。
+      config.jammers.forEach(jammer => { jammer.detectionRange = range })
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     }
@@ -1971,13 +2003,14 @@ describe('P2-4 干扰设备字段校验', () => {
     config.jammers[0]!.detectionRange = 150000
     expect(inspectScenarioConfig(config, 'read').result.valid).toBe(true)
     expect(config.jammers[0]!.detectionRange).toBe(150000)
-    config.jammers[0]!.detectionRange = 44448
+    config.jammers.forEach(jammer => { jammer.detectionRange = 44448 })
     config.jammers[0]!.jammingRange = 44448
-    for (const range of [1000, 100000]) {
+    // 干扰范围 0～100 km，0 表示不触发。
+    for (const range of [0, 1000, 100000]) {
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     }
-    for (const range of [0, 999, 100001, Number.NaN]) {
+    for (const range of [-1, 100001, Number.NaN]) {
       config.jammers[0]!.jammingRange = range
       expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.fieldPath)).toContain('jammers[0].jammingRange')
     }
@@ -1990,14 +2023,14 @@ describe('P2-4 干扰设备字段校验', () => {
     config.jammers[0]!.releaseRange = 64820
     expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     delete config.jammers[0]!.releaseRange
-    config.jammers[0]!.detectionRange = 1852
+    config.jammers.forEach(jammer => { jammer.detectionRange = 1852 })
     config.jammers[0]!.jammingRange = 44448
     {
       const inspected = inspectScenarioConfig(config, 'write')
       expect(inspected.result.valid).toBe(true)
       expect(inspected.result.warnings.some(issue => issue.code === 'JAMMER_RANGE_ORDER')).toBe(true)
     }
-    config.jammers[0]!.detectionRange = 44448
+    config.jammers.forEach(jammer => { jammer.detectionRange = 44448 })
     config.jammers[0]!.jammingRange = 44448
     for (const trigger of [-1, config.scenario.duration + 1, Number.NaN]) {
       config.jammers[0]!.triggerTimeS = trigger
@@ -2038,7 +2071,6 @@ describe('P2-4 干扰设备字段校验', () => {
       ['jammers[0].defaultPower', (config) => { config.jammers[0]!.defaultPower = -1 }],
       ['jammers[0].frequency', (config) => { config.jammers[0]!.frequency = 0 }],
       ['jammers[0].bandwidth', (config) => { config.jammers[0]!.bandwidth = 0 }],
-      ['jammers[0].autoDetect', (config) => { config.jammers[0]!.autoDetect = 'true' as never }],
       ['jammers[0].detectionRange', (config) => { config.jammers[0]!.detectionRange = -1 }],
     ]
 
@@ -2058,8 +2090,6 @@ describe('P2-4 干扰设备字段校验', () => {
     const cases = [
       ['uiExtensions.jammers', [{ ...uiExtensions.jammers[0] }, { ...uiExtensions.jammers[0] }]],
       ['uiExtensions.jammers[0].jammerId', [{ ...uiExtensions.jammers[0], jammerId: '' }, uiExtensions.jammers[1]]],
-      ['uiExtensions.jammers[0].direction', [{ ...uiExtensions.jammers[0], direction: 361 }, uiExtensions.jammers[1]]],
-      ['uiExtensions.jammers[0].duration', [{ ...uiExtensions.jammers[0], duration: -1 }, uiExtensions.jammers[1]]],
       ['uiExtensions.jammers[0].enabled', [{ ...uiExtensions.jammers[0], enabled: 'yes' }, uiExtensions.jammers[1]]],
     ] as const
     for (const [fieldPath, jammers] of cases) {

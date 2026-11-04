@@ -5,7 +5,7 @@ import type {
   ScenarioTemplate,
   TemplateMutationRequest,
 } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 
 export type TemplateProjectionResult<T> =
@@ -80,8 +80,8 @@ export function inspectTemplateMutation(value: unknown): TemplateProjectionResul
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: issue.fieldPath, message: issue.message }
     }
   }
-  return { ok: true, data: { name: candidate.name.trim(), config: candidate.config as ScenarioConfig,
-    ...(candidate.uiExtensions === undefined ? {} : { uiExtensions: structuredClone(candidate.uiExtensions) }) } }
+  return { ok: true, data: { name: candidate.name.trim(), config: dropRetiredScenarioFields(structuredClone(candidate.config as ScenarioConfig)),
+    ...(candidate.uiExtensions === undefined ? {} : { uiExtensions: dropRetiredUiExtensionFields(structuredClone(candidate.uiExtensions)) }) } }
 }
 
 export class TemplateProjection {
@@ -207,7 +207,12 @@ export class TemplateProjection {
       this.state = createRuntimeState()
       return
     }
-    const templates = this.storage.load()
+    const templates = structuredClone(this.storage.load())
+    for (const template of templates) {
+      dropRetiredScenarioFields(template.config)
+      dropRetiredUiExtensionFields(template.uiExtensions)
+      restoreRequiredMotionFields(template.config, template.uiExtensions)
+    }
     this.state = { templates, nextSequence: Math.max(0, ...templates.map(item => Number(/^TPL-SCN-(\d+)$/.exec(item.templateId)?.[1] ?? 0))) + 1 }
   }
 }

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { LocalReportEvidence } from '../../contracts/domain-models'
+import type { LocalReportEvidence, LocalReportFilter } from '../../contracts/domain-models'
 import type { MissionResultParameterComparison } from '../../features/results/mission-result'
-import { EVENT_LABELS, localReportTables, reportTime } from '../../features/reports/local-report'
+import { EVENT_LABELS, localReportTables, localReportChartRange, reportTime } from '../../features/reports/local-report'
 import { qualityReportView } from '../../features/reports/quality-report'
 import ReportChart from './ReportChart.vue'
 
-const props = withDefaults(defineProps<{ evidence: LocalReportEvidence; comparison?: MissionResultParameterComparison[]; preciseFilter?: boolean; timeline?: Array<{ id: string; time: number; type: string; subject: string; target?: string }>; timelineTotal?: number }>(), { comparison: () => [], preciseFilter: false, timeline: () => [], timelineTotal: 0 })
+const props = withDefaults(defineProps<{ evidence: LocalReportEvidence; generatedTime?: string; filter?: LocalReportFilter; comparison?: MissionResultParameterComparison[]; preciseFilter?: boolean; timeline?: Array<{ id: string; time: number; type: string; subject: string; target?: string }>; timelineTotal?: number }>(), { comparison: () => [], preciseFilter: false, timeline: () => [], timelineTotal: 0 })
 const tables = computed(() => localReportTables(props.evidence))
 const qualityView = computed(() => props.evidence.quality === undefined ? null : qualityReportView(props.evidence.quality, props.evidence))
 const qualityConnectivityRates = computed(() => props.evidence.qualityConnectivityRates ?? qualityView.value?.connectivityRates ?? [])
+const barSourceRange = computed(() => localReportChartRange(props.evidence, props.evidence.eventFile.fileName, props.filter))
+const qualitySourceRange = computed(() => localReportChartRange(props.evidence, props.evidence.quality?.source.fileName ?? '质量数据', props.filter))
 const activeTab = ref('汇总')
 const isNodeTab = computed(() => activeTab.value === '节点与位置')
 const isEventTab = computed(() => ['通信关联登记', '设备与干扰请求', '事件时间线'].includes(activeTab.value))
@@ -105,15 +107,22 @@ watch(connectionPageSize, () => { connectionPage.value = 1 })
       <el-tab-pane label="链路质量与曲线" name="链路质量与曲线" lazy>
         <template v-if="qualityView && qualityView.samples.length">
           <p class="scope-note">数据源：{{ qualityView.dataset.source.fileName }} · SHA-256 {{ qualityView.dataset.source.sha256 }}；仅显示已导入的实际测量值。</p>
-          <ReportChart title="各链路有效观测区间连通率" unit="%" :rows="qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value }))" radar />
           <template v-for="series in qualityView.series" :key="series.linkId">
-            <ReportChart :title="`GXB 随时间变化 · ${series.linkId}`" unit="dB" :rows="series.gxbCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line />
-            <ReportChart :title="`误码率随时间变化 · ${series.linkId}`" unit="BER" :rows="series.berCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line />
+            <ReportChart :title="`GXB 随时间变化 · ${series.linkId}`" unit="dB" :rows="series.gxbCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line :source-range="qualitySourceRange" :generated-time="generatedTime" />
+            <ReportChart :title="`误码率随时间变化 · ${series.linkId}`" unit="BER" :rows="series.berCurve.map(point => ({ label: `${reportTime(point.time)}`, time: point.time, value: point.value, breakBefore: point.breakBefore }))" line :source-range="qualitySourceRange" :generated-time="generatedTime" />
           </template>
         </template>
         <el-empty v-else description="暂无数据" data-testid="report-quality-curves" />
       </el-tab-pane>
-      <el-tab-pane label="柱状图" name="柱状图" lazy><ReportChart :title="preciseFilter ? '筛选范围事件记录数' : '完整快照事件记录数'" unit="条" :rows="bars" /></el-tab-pane>
+      <el-tab-pane label="柱状图" name="柱状图" lazy>
+        <ReportChart data-testid="report-bar-charts" :title="preciseFilter ? '筛选范围事件记录数' : '完整快照事件记录数'" unit="条" :rows="bars" :source-range="barSourceRange" :generated-time="generatedTime" />
+      </el-tab-pane>
+      <el-tab-pane label="雷达图" name="雷达图" lazy>
+        <div data-testid="report-radar-chart">
+          <ReportChart v-if="qualityView && qualityView.samples.length" title="各链路有效观测区间连通率" unit="%" :rows="qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value }))" radar :source-range="qualitySourceRange" :generated-time="generatedTime" />
+          <el-empty v-else description="暂无数据" />
+        </div>
+      </el-tab-pane>
       <el-tab-pane label="事件时间线" name="事件时间线" lazy>
         <el-timeline v-if="timeline.length" data-testid="report-event-timeline">
           <el-timeline-item v-for="event in timeline.slice((page - 1) * 50, page * 50)" :key="event.id" :timestamp="reportTime(event.time)">{{ event.text }} · {{ event.id }}</el-timeline-item>

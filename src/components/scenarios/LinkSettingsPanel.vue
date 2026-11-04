@@ -235,13 +235,14 @@ function linkLabel(link: Link): string {
   <div data-testid="link-settings">
     <el-button size="small" :disabled="disabled" data-testid="open-link-settings" @click="emit('update:dialogVisible', true)">链路设置</el-button>
   </div>
-  <el-dialog :model-value="dialogVisible" class="link-settings-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
+  <el-dialog :model-value="dialogVisible" class="link-settings-dialog scenario-dialog" title="链路设置" width="max(80vw, min(760px, calc(100vw - 2rem)))" top="5vh"
     destroy-on-close append-to-body data-testid="link-settings-dialog" @closed="resetDrag" @update:model-value="emit('update:dialogVisible', $event)">
     <el-form label-position="top" :disabled="disabled" class="link-settings__fields">
       <!-- 左列：选路策略与全局计算参数；右列：热链与切换规则（可增删的列表，内容较长）。 -->
       <div class="link-settings__column" data-testid="link-settings-left">
       <el-form-item class="link-settings__strategy" :error="fieldMessage?.('priority') ?? ''">
         <div class="link-settings__heading">链路优先级 <small>拖拽排序，越靠上优先级越高</small></div>
+        <small class="link-settings__hint">不单独写入脚本；未手动配置热链时，用于自动串联热链的分支选择。</small>
         <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
           <li v-for="(type, index) in settings.priority" :key="type"
             :class="{ 'is-dragging': draggedType === type, 'is-drop-target': !disabled && dropTarget === type && draggedType !== type }"
@@ -285,6 +286,7 @@ function linkLabel(link: Link): string {
       </el-form-item>
       <section class="link-settings__rules" data-testid="quality-decision-settings" aria-label="质量选路与切换门限">
         <div class="link-settings__heading"><span>质量选路与切换门限</span></div>
+        <small class="link-settings__hint">新模板无对应参数，不写入脚本。</small>
         <el-form-item v-for="field in decisionFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
           <el-input-number :model-value="settings[field.key] ?? LINK_DECISION_DEFAULTS[field.key]"
             :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined"
@@ -369,7 +371,7 @@ function linkLabel(link: Link): string {
       <section class="link-settings__rules" data-testid="link-switch-rules" aria-labelledby="link-switch-rules-title">
         <div class="link-settings__heading">
           <span id="link-switch-rules-title">阶段切换规则</span>
-          <small>条件满足时，源到目标的业务改走指定链路；两次切换间隔不少于滞回时间</small>
+          <small>条件满足时，源到目标的业务改走指定链路；两次切换间隔不少于滞回时间。新模板无对应参数，不写入脚本。</small>
         </div>
         <p v-if="rules.length === 0" class="link-settings__empty">未配置规则时，仿真全程使用优先级最高的链路。</p>
         <div v-for="(rule, index) in rules" :key="rule.id" class="link-settings__rule" :data-testid="`switch-rule-${index}`">
@@ -432,8 +434,6 @@ function linkLabel(link: Link): string {
 
 <style scoped>
 /* 弹框高度不超过视口，标题与底部按钮固定，内容区单独滚动。 */
-:global(.link-settings-dialog) { display: flex; flex-direction: column; max-height: 90vh; }
-:global(.link-settings-dialog .el-dialog__body) { min-height: 0; overflow-y: auto; }
 .link-settings__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 0 2rem; }
 .link-settings__column { display: grid; align-content: start; gap: 0.75rem; min-width: 0; }
 .link-settings__hint { display: block; width: 100%; margin-top: 4px; color: var(--console-text-muted); font-size: 12px; line-height: 1.4; }

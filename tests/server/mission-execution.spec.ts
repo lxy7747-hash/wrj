@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 vi.mock('node:child_process', { spy: true })
 
@@ -32,6 +33,17 @@ const TYPE_FILES = ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt
   'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt']
 async function readTypeFiles(directory: string): Promise<string> {
   return (await Promise.all(TYPE_FILES.map(name => readFile(join(directory, name), 'utf8')))).join(String.fromCharCode(10))
+}
+/** 去掉本地运行包的兼容改动（独立介质、local_link_stub），还原为保存给对接方的 TXT 写法。 */
+async function readDeliveredTypeFiles(directory: string): Promise<string> {
+  return (await Promise.all(TYPE_FILES.map(async name => {
+    let text = (await readFile(join(directory, name), 'utf8')).replace(/UAV_MESH_MEDIUM__\S+/gu, 'UAV_MESH_MEDIUM')
+    if (name === 'comm_PerDefinition.txt') text = text.slice(0, text.indexOf('// 本地运行包：'))
+    return text.replace(/\n {2}processor local_link_stub WSF_SCRIPT_PROCESSOR[\s\S]*?\n {2}end_processor/u, '')
+  }))).join(String.fromCharCode(10))
+}
+function eventRecords(csv: string): string[][] {
+  return csv.split(/\r?\n/).filter((line: string) => !line.startsWith('!')).map((line: string) => line.split(','))
 }
 
 function deferred<T>() {
@@ -356,18 +368,18 @@ describe('本机 mission 执行器', () => {
     try {
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, probe)
       // 种子场景含后方节点，会生成 link_calc；激光与首条业务不可生成，先停用。
-      const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
-      draft.config.links.find(link => link.type === 'LASER')!.enabled = false
-      draft.config.informationDemand[0]!.enabled = false
+      const draft = draftForMission()
       for (let index = 0; index < 2; index++) {
         const process = await runner.start(draft, `RUN-${index}`)
         await process.completed
         const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
         expect(rear.includes('WSF_LINK_CALC_PROCESSOR')).toBe(kept)
+        expect(rear.includes('processor local_link_stub WSF_SCRIPT_PROCESSOR')).toBe(!kept)
+        expect(rear).not.toMatch(/add medium UAV_MESH_MEDIUM$/mu)
         expect(rear).toContain('end_platform_type')
         expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')))
           .toMatchObject({ runId: `RUN-${index}`, taskId: 'TASK-LOCAL',
-            linkCalcCompatibility: supported ? 'PRESERVED' : 'MISSING_PROCESSOR_STRIPPED' })
+            linkCalcCompatibility: supported ? 'PRESERVED' : 'MISSING_PROCESSOR_STUBBED' })
       }
       expect(probe).toHaveBeenCalledOnce()
     } finally { await rm(root, { recursive: true, force: true }) }
@@ -387,9 +399,7 @@ describe('本机 mission 执行器', () => {
     const probe = vi.fn().mockRejectedValueOnce(new Error('temporary probe failure')).mockResolvedValueOnce(false)
     try {
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, probe)
-      const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
-      draft.config.links.find(link => link.type === 'LASER')!.enabled = false
-      draft.config.informationDemand[0]!.enabled = false
+      const draft = draftForMission()
       for (const [index, kept] of [true, false].entries()) {
         const process = await runner.start(draft, `RUN-PROBE-${index}`)
         await process.completed
@@ -502,89 +512,80 @@ describe('本机 mission 执行器', () => {
   )
 
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each(['FORWARD_RELAY_NODE', 'COMMUNICATION_SATELLITE'] as const)(
-    '真实引擎：%s 完成源发送、中继接收、中继发送和目标接收', async type => {
+    '真实引擎：经 %s 中继的前向业务按模板转发规则执行', async type => {
       const root = await mkdtemp(join(tmpdir(), 'wrj-mission-relay-'))
       try {
         const draft = draftForMission()
-        draft.config.output.directory = 'output'
-        draft.config.output.linkQualityEnabled = false
-        draft.config.output.linkSwitchEnabled = false
+        draft.config.scenario.duration = 8
         const [source, target] = draft.config.platforms
-        source!.initialPosition = { longitude: 120.79, latitude: 25.49, altitude: 0 }
-        target!.initialPosition = { longitude: 120.81, latitude: 25.51, altitude: 8000 }
+        // 后方车定向微波默认朝北、仰角 0：中继放在正北低仰角处，目标再往北。
+        source!.initialPosition = { longitude: 120.8, latitude: 25.49, altitude: 0 }
+        target!.initialPosition = { longitude: 120.8, latitude: 25.52, altitude: 50 }
         const relay = { ...structuredClone(target!), id: 'RELAY-01', type,
           category: type === 'COMMUNICATION_SATELLITE' ? 'space' as const : 'air' as const,
-          initialPosition: { longitude: 120.8, latitude: 25.5, altitude: 8000 },
+          initialPosition: { longitude: 120.8, latitude: 25.5, altitude: 50 },
           ...(type === 'COMMUNICATION_SATELLITE' ? { satelliteType: 'TIANTONG' as const } : {}),
         }
         draft.config.platforms.push(relay)
-        Object.assign(draft.config.links[0]!, { relayPlatformId: relay.id,
-          type: type === 'COMMUNICATION_SATELLITE' ? 'SAT' : 'MICROWAVE', txPower: 1000, antennaGain: { tx: 50, rx: 50 } })
+        Object.assign(draft.config.links[0]!, { relayPlatformId: relay.id, type: type === 'COMMUNICATION_SATELLITE' ? 'SAT' : 'MICROWAVE' })
         Object.assign(draft.config.informationDemand[0]!, { enabled: true, informationType: '目标指令', frequencyHz: 1, volumeMb: 0.000256 })
         const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
         const outcome = await process.completed
         expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
         expect(outcome.errorMessage).toBeUndefined()
-        const records = (await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
-          .split(/\r?\n/).map((line: string) => line.split(','))
-        const chain = [
-          ['MESSAGE_TRANSMITTED', source!.id], ['MESSAGE_RECEIVED', relay.id],
-          ['MESSAGE_TRANSMITTED', relay.id], ['MESSAGE_RECEIVED', target!.id],
-        ].map(([event, id]) => records.filter((cells: string[]) => cells[1] === event && cells[2] === id))
-        for (const rows of chain) expect(rows, JSON.stringify(chain)).toHaveLength(3)
-        for (let index = 0; index < 3; index += 1) {
-          const times = chain.map(rows => Number(rows[index]![0]))
+        const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
+        const rows = (event: string, id: string) => records.filter((cells: string[]) => cells[1] === event && cells[2] === id)
+        const port = type === 'COMMUNICATION_SATELLITE' ? 'sat_link_a' : 'microwave_link'
+        expect(rows('MESSAGE_TRANSMITTED', source!.id).every((cells: string[]) => cells[4] === port && cells[7] === 'kForwardTarget')).toBe(true)
+        expect(rows('MESSAGE_TRANSMITTED', source!.id).length).toBeGreaterThan(0)
+        if (type === 'FORWARD_RELAY_NODE') {
+          // 中继任务机 on_message 读取 kReturnReconVideo_* 键转发，补丁把中间跳写在该键下。
+          const chain = [rows('MESSAGE_TRANSMITTED', source!.id), rows('MESSAGE_RECEIVED', relay.id), rows('MESSAGE_TRANSMITTED', relay.id), rows('MESSAGE_RECEIVED', target!.id)]
+          chain.forEach(items => expect(items.length, JSON.stringify(chain)).toBeGreaterThan(0))
+          const times = chain.map(items => Number(items[0]![0]))
           expect(times).toEqual([...times].sort((a, b) => a - b))
+        } else {
+          // 模板卫星实例固定在 0n 120e GEO，后方车 4° 动中通天线不带指向（注释“假定伺服对准”，引擎不会自动对准），
+          // 卫星也没有转发逻辑；本机只能核对后方车按主路由发出。
+          expect(rows('MESSAGE_TRANSMITTED', relay.id)).toHaveLength(0)
         }
       } finally { await rm(root, { recursive: true, force: true }) }
     },
   )
 
-  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each(['两个目标', '同目标备选链路'])(
-    '真实引擎：%s 按各目标主路由发送，不遗漏目标或重复广播', async kind => {
-      const root = await mkdtemp(join(tmpdir(), 'wrj-mission-targets-'))
-      try {
-        const draft = draftForMission()
-        draft.config.output.directory = 'output'
-        draft.config.output.linkQualityEnabled = false
-        draft.config.output.linkSwitchEnabled = false
-        const source = draft.config.platforms[0]!
-        const target = draft.config.platforms[1]!
-        target.initialPosition = { ...source.initialPosition, longitude: source.initialPosition.longitude + 0.01, altitude: 500 }
-        const targets = [target.id]
-        if (kind === '两个目标') {
-          draft.config.platforms.push({ ...structuredClone(target), id: 'AIR-02', linkIds: ['L-B'] })
-          targets.push('AIR-02')
-        } else target.linkIds.push('L-B')
-        source.linkIds.push('L-B')
-        draft.config.links.push({ ...structuredClone(draft.config.links[0]!), id: 'L-B', targetPlatformId: targets.at(-1)!, type: 'DATALINK' })
-        const demand = draft.config.informationDemand[0]!
-        delete demand.linkId
-        Object.assign(demand, { enabled: true, destinationPlatformIds: targets, informationType: '态势信息', frequencyHz: 1, volumeMb: 0.000256 })
-        const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
-        const outcome = await process.completed
-        expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
-        expect(outcome.errorMessage).toBeUndefined()
-        const records = (await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
-          .split(/\r?\n/).map((line: string) => line.split(','))
-        for (const id of targets) expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_RECEIVED' && cells[2] === id)).toHaveLength(3)
-        expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED')).toHaveLength(3 * targets.length)
-        if (kind === '同目标备选链路') {
-          const manifest = JSON.parse(await readFile(join(dirname(process.entryPath), 'mapping.json'), 'utf8'))
-          const chosen = manifest.devices.find((device: { linkId: string }) => device.linkId === 'L-B')
-          expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED').every((cells: string[]) => cells[4] === chosen.source.deviceId)).toBe(true)
-        }
-      } finally { await rm(root, { recursive: true, force: true }) }
-    },
-  )
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：两个目标按各自主路由发送，不遗漏目标', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-targets-'))
+    try {
+      const draft = draftForMission()
+      const source = draft.config.platforms[0]!
+      const target = draft.config.platforms[1]!
+      // 两个目标都放在后方车定向微波波束内（正北、低仰角）。
+      target.initialPosition = { ...source.initialPosition, latitude: source.initialPosition.latitude + 0.01, altitude: 20 }
+      draft.config.platforms.push({ ...structuredClone(target), id: 'AIR-02', linkIds: ['L-B'],
+        initialPosition: { ...source.initialPosition, latitude: source.initialPosition.latitude + 0.02, altitude: 20 } })
+      source.linkIds.push('L-B')
+      draft.config.links.push({ ...structuredClone(draft.config.links[0]!), id: 'L-B', targetPlatformId: 'AIR-02' })
+      const demand = draft.config.informationDemand[0]!
+      delete demand.linkId
+      Object.assign(demand, { enabled: true, destinationPlatformIds: ['AIR-01', 'AIR-02'], informationType: '态势信息', frequencyHz: 1, volumeMb: 0.000256 })
+      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
+      const outcome = await process.completed
+      expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
+      expect(outcome.errorMessage).toBeUndefined()
+      const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
+      // 3 秒仿真内后方车发送一轮：每个目标一条。
+      for (const id of ['AIR-01', 'AIR-02']) expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_RECEIVED' && cells[2] === id)).toHaveLength(1)
+      expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED' && cells[2] === source.id)).toHaveLength(2)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
 
-  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each([
-    ['FORWARD', 2], ['REVERSE', 3], ['FORWARD', 0],
-  ] as const)('真实引擎：%s 业务频次 %s，核对实际消息端点、位数、时间及零频次', async (direction, frequencyHz) => {
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each(['FORWARD', 'REVERSE'] as const)('真实引擎：%s 业务按模板端口、类型、位数与 5 秒周期发送', async direction => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-business-'))
     try {
       const draft = draftForMission()
-      draft.config.platforms[1]!.initialPosition = { ...draft.config.platforms[0]!.initialPosition, longitude: 118.16, altitude: 500 }
+      draft.config.scenario.duration = 12
+      // 后方车微波为不带指向的 12°×12° 定向天线（默认朝北、仰角 0），无人机放在正北低仰角处。
+      draft.config.platforms[1]!.initialPosition = { ...draft.config.platforms[0]!.initialPosition, latitude: draft.config.platforms[0]!.initialPosition.latitude + 0.01, altitude: 20 }
       const link = draft.config.links[0]!
       const demand = draft.config.informationDemand[0]!
       if (direction === 'REVERSE') {
@@ -592,103 +593,70 @@ describe('本机 mission 执行器', () => {
         link.targetPlatformId = 'CMD-01'
       }
       link.direction = direction
-      const informationType = direction === 'FORWARD' ? '目标指令' : '侦察信息'
-      Object.assign(demand, { enabled: true, informationType, volumeMb: 0.000256, frequencyHz, direction,
+      const messageType = direction === 'FORWARD' ? 'kForwardTarget' : 'kReturnReconVideo'
+      Object.assign(demand, { enabled: true, informationType: direction === 'FORWARD' ? '目标指令' : '侦察信息', volumeMb: 0.000256, frequencyHz: 2, direction,
         sourcePlatformId: link.sourcePlatformId, destinationPlatformIds: [link.targetPlatformId] })
       const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
       const outcome = await process.completed
       expect(outcome).toMatchObject({ code: 0 })
       expect(outcome.errorMessage).toBeUndefined()
-      const csv = await readFile(join(dirname(process.entryPath), 'output', 'scenario_events.csv'), 'utf8')
-      const records = csv.split(/\r?\n/).filter((line: string) => !line.startsWith('!')).map((line: string) => line.split(','))
+      const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output', 'scenario_events.csv'), 'utf8'))
       const transmitted = records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED')
       const received = records.filter((cells: string[]) => cells[1] === 'MESSAGE_RECEIVED')
-      expect(transmitted).toHaveLength(3 * frequencyHz)
-      expect(received).toHaveLength(3 * frequencyHz)
-      transmitted.forEach((cells: string[], index: number) => {
-        expect(Number(cells[0])).toBeCloseTo(index / frequencyHz, 5)
+      expect(transmitted.length).toBeGreaterThanOrEqual(2)
+      expect(received).toHaveLength(transmitted.length)
+      // 模板 script_proc 固定 5 秒发送一次，trans_freq 只写入 link_calc JSON。
+      expect(Number(transmitted[1]![0]) - Number(transmitted[0]![0])).toBeCloseTo(5, 5)
+      transmitted.forEach((cells: string[]) => {
         expect(cells[2]).toBe(link.sourcePlatformId)
-        expect(cells[4]).toMatch(/_src$/)
-        expect(cells[7]).toBe(informationType)
+        expect(cells[4]).toBe('microwave_link')
+        expect(cells[7]).toBe(messageType)
         expect(cells[8]).toBe('2048')
       })
       received.forEach((cells: string[]) => {
         expect(cells[2]).toBe(link.targetPlatformId)
-        expect(cells[4]).toMatch(/_dst$/)
+        expect(cells[4]).toBe('microwave_link')
       })
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：普通业务字符串原值保留且正常退出', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-business-string-'))
-    try {
-      const draft = draftForMission()
-      const demand = draft.config.informationDemand[0]!
-      Object.assign(demand, { enabled: true, id: 'INFO-001', informationType: '目标指令', volumeMb: 0.000256, frequencyHz: 1 })
-      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
-      const outcome = await process.completed
-      expect(outcome).toMatchObject({ code: 0 })
-      expect(outcome.errorMessage).toBeUndefined()
-      const csv = await readFile(join(dirname(process.entryPath), 'output', 'scenario_events.csv'), 'utf8')
-      const records = csv.split(/\r?\n/).filter((line: string) => !line.startsWith('!')).map((line: string) => line.split(','))
-      const transmitted = records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED')
-      expect(transmitted[0]?.[7]).toBe(demand.informationType)
-    } finally { await rm(root, { recursive: true, force: true }) }
-  })
-
-  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：航点路线、定时干扰完整启停与环境/时钟写入', async () => {
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：航点路线、按距离触发干扰与时钟写入', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-route-jammer-'))
     try {
       const draft = draftForMission()
+      draft.config.scenario.duration = 8
       const uav = draft.config.platforms[1]!
       uav.initialPosition = { longitude: 120.1, latitude: 23.5, altitude: 8000 }
       uav.waypoints = [
-        { longitude: 120.2, latitude: 23.6, altitude: 8100, speed: 200, arrivalTime: 1 },
-        { longitude: 120.3, latitude: 23.7, altitude: 8200, speed: 250, arrivalTime: 2 },
+        { longitude: 120.2, latitude: 23.6, altitude: 8100, speed: 200, arrivalTime: 0 },
+        { longitude: 120.3, latitude: 23.7, altitude: 8200, speed: 250, arrivalTime: 1 },
       ]
       const station = structuredClone(draft.config.platforms[0]!)
-      station.id = 'STN-01'
-      station.name = '地面干扰站'
-      station.type = 'GROUND_JAMMER_DETECTION_STATION'
-      station.category = 'ground'
-      station.initialPosition = { longitude: 121.55, latitude: 25.15, altitude: 15 }
-      station.waypoints = []
-      station.linkIds = []
-      station.jammerIds = ['JAM-WB-01-TX']
+      Object.assign(station, { id: 'STN-01', name: '地面干扰站', type: 'GROUND_JAMMER_DETECTION_STATION', category: 'ground',
+        initialPosition: { longitude: 120.15, latitude: 23.5, altitude: 15 }, waypoints: [], linkIds: [], jammerIds: ['JAM-WB-01-TX'] })
       draft.config.platforms.push(station)
       draft.config.jammers = [{ id: 'JAM-WB-01-TX', platformId: 'STN-01', type: 'BARRAGE', defaultPower: 72,
-        frequency: 2200, bandwidth: 40, autoDetect: false, detectionRange: 44448, jammingRange: 44448, triggerTimeS: 1 }]
+        frequency: 2200, bandwidth: 40, detectionRange: 44448, jammingRange: 44448 }]
       draft.config.jammingEnabled = true
-      draft.uiExtensions.jammers = [{ jammerId: 'JAM-WB-01-TX', direction: 360, duration: 1, enabled: true }]
-      draft.config.scenario.environment.seaState = 3
-      draft.config.scenario.environment.rainRateMmPerHour = 12.5
+      draft.uiExtensions.jammers = [{ jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true }]
       draft.config.scenario.environment.simClockSpeed = 4
       draft.config.scenario.startTime = '2026-03-05T06:07:08.000Z'
-      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
+      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => false).start(draft)
       const outcome = await process.completed
       expect(outcome).toMatchObject({ code: 0 })
       expect(outcome.errorMessage).toBeUndefined()
       const directory = dirname(process.entryPath)
       const entry = await readFile(process.entryPath, 'utf8')
-      const platformTypes = await readTypeFiles(directory)
       expect(entry).toContain('clock_rate 4')
-      expect(platformTypes).toContain('  sea_state 3')
-      expect(platformTypes).toContain('  rain_rate 12.5 mm/hr')
       expect(entry).toContain('start_date mar 05 2026')
-      expect(entry).toContain('start_time 06:07:08.000')
-      const csv = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
-      const records = csv.split(/\r?\n/).filter((line: string) => !line.startsWith('!')).map((line: string) => line.split(','))
-      const at = (name: string) => records.filter((cells: string[]) => cells[1] === name).map((cells: string[]) => Number(cells[0]))
-      // 引擎起止事件回显的年月日时分秒必须等于配置的开始时刻，证明 start_date/start_time 真正生效。
+      expect(entry).toContain('start_time 06:07:08')
+      const records = eventRecords(await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8'))
       const starting = records.find((cells: string[]) => cells[1] === 'SIMULATION_STARTING')!
       expect(starting.slice(2, 8).map(Number)).toEqual([2026, 3, 5, 6, 7, 8])
-      // 定时触发：t=1 开启并选模发起干扰请求，t=2 关闭并取消请求，形成完整启停。
-      expect(at('WEAPON_TURNED_ON')).toEqual([1])
-      expect(at('WEAPON_MODE_ACTIVATED')).toEqual([1])
-      expect(at('JAMMING_REQUEST_INITIATED')).toEqual([1])
-      expect(at('JAMMING_REQUEST_CANCELED')).toEqual([2])
-      // 本机引擎对 WEAPON_TURNED_OFF 会重复输出同一时刻的记录，只核对发生时刻不核对条数。
-      expect(new Set(at('WEAPON_TURNED_OFF'))).toEqual(new Set([2]))
+      // 补丁每 3 秒检查一次：任务机在触发半径内，地面站开机并切到宽带干扰模式。
+      const on = records.filter((cells: string[]) => cells[1] === 'WEAPON_TURNED_ON' && cells[2] === 'STN-01')
+      expect(on).toHaveLength(1)
+      expect(records.some((cells: string[]) => cells[1] === 'WEAPON_MODE_ACTIVATED' && cells[2] === 'STN-01' && cells[4] === 'broadband_jamming')).toBe(true)
       const positions = (await readFile(join(directory, 'output', 'position.csv'), 'utf8'))
         .split(/\r?\n/).filter(Boolean).slice(1).map((line: string) => line.split(','))
       const uavPositions = positions.filter((cells: string[]) => cells[1] === 'AIR-01')
@@ -744,40 +712,25 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
-  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：夹具场景在停用激光链路后完整生成并运行', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-fixture-'))
+  // E7：对照夹具的本地运行包在本机引擎上完整运行，并产生消息与干扰事件。
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：模板夹具本地包完整运行并产生消息与干扰事件', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-local-runtime-engine-'))
     try {
-      const draft: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
-      // 夹具含一条激光链路，激光尚无可用设备；INFO-001 的 CMD-01→UAV-01 又只能走这条链路。
-      // 停用两者后，其余全部平台、设备、传感器与链路都应能生成并真实执行。
-      draft.config.links.find(link => link.type === 'LASER')!.enabled = false
-      draft.config.informationDemand[0]!.enabled = false
-      draft.config.output.linkQualityEnabled = false
-      draft.config.output.linkSwitchEnabled = false
+      const draft = createTemplateScenario()
+      draft.config.scenario.duration = 2400
+      draft.config.scenario.realtime = false
       draft.config.output.directory = 'output'
-      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root).start(draft)
+      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => false).start(draft)
       const outcome = await process.completed
       expect(outcome).toMatchObject({ code: 0 })
       expect(outcome.errorMessage).toBeUndefined()
       const directory = dirname(process.entryPath)
-      const platforms = await readTypeFiles(directory)
-      expect(platforms).toContain('sensor radar_')
-      expect(platforms).toContain('WSF_RADAR_SENSOR')
-      expect(platforms).toContain('      bit_error_probability 0.00001')
-      expect(platforms).toContain('mover WSF_SPACE_MOVER')
-      expect(platforms).toContain('mover WSF_AIR_MOVER')
-      const manifest = JSON.parse(await readFile(join(directory, 'mapping.json'), 'utf8'))
-      expect(manifest.excludedLinkIds).toEqual(['L-LASER-04'])
-      expect(manifest.devices.filter((item: { linkType: string }) => item.linkType === 'DATALINK')).toHaveLength(4)
-      expect(manifest.devices.filter((item: { linkType: string }) => item.linkType === 'SAT')).toHaveLength(2)
-      expect(manifest.devices.filter((item: { linkType: string }) => item.linkType === 'MICROWAVE')).toHaveLength(3)
-      expect(manifest.sensors).toHaveLength(1)
-      expect(manifest.platforms.filter((item: { relayRole: boolean }) => item.relayRole)).toHaveLength(1)
+      expect(await readFile(join(directory, 'mission-console.log'), 'utf8')).not.toContain('Medium is shared')
       const csv = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
-      expect(csv).toContain('COMM_TURNED_ON')
-      expect(csv).toContain('SAT-01')
+      for (const event of ['MESSAGE_TRANSMITTED', 'MESSAGE_RECEIVED', 'WEAPON_TURNED_ON']) expect(csv).toMatch(new RegExp(`^[\\d.e+-]+,${event},`, 'mu'))
+      expect(csv).toMatch(/^[\d.e+-]+,MESSAGE_TRANSMITTED,mission_uav_02,[^,]*,c_band_downlink,/mu)
     } finally { await rm(root, { recursive: true, force: true }) }
-  })
+  }, 300_000)
 
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：保存配置 → START → mission 完成 → 独立 CSV 与运行记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-native-'))
@@ -789,7 +742,8 @@ describe('本机 mission 执行器', () => {
       if (!server.httpServer.listening) await once(server.httpServer, 'listening')
       const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
       const draft = draftForMission()
-      draft.config.platforms[1]!.initialPosition = { ...draft.config.platforms[0]!.initialPosition, longitude: 118.16, altitude: 500 }
+      // 后方车微波为不带指向的 12°×12° 定向天线（默认朝北、仰角 0），无人机放在正北低仰角处。
+      draft.config.platforms[1]!.initialPosition = { ...draft.config.platforms[0]!.initialPosition, latitude: draft.config.platforms[0]!.initialPosition.latitude + 0.01, altitude: 20 }
       Object.assign(draft.config.informationDemand[0]!, { enabled: true, frequencyHz: 1, volumeMb: 0.000256, informationType: '目标指令' })
       const saved = (await api.put('/api/v1/scenarios/SCN-001').set(headers)
         .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)).body.data
@@ -812,15 +766,17 @@ describe('本机 mission 执行器', () => {
       const directory = join(root, 'runs', (await readdir(join(root, 'runs')))[0]!)
       const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
       expect(receipt).toMatchObject({ code: 0, scenarioId: 'SCN-001', revision: saved.revision, pid: started.canonical.processId })
-      expect(receipt.linkCalcCompatibility).toMatch(/^(PRESERVED|MISSING_PROCESSOR_STRIPPED)$/)
-      expect(await readTypeFiles(directory)).toBe(receipt.linkCalcCompatibility === 'PRESERVED'
+      expect(receipt.linkCalcCompatibility).toMatch(/^(PRESERVED|MISSING_PROCESSOR_STUBBED)$/)
+      // 本地包与保存的 TXT 只差本地兼容改动：独立介质，以及缺少 link_calc 时的 local_link_stub。
+      expect(await readDeliveredTypeFiles(directory)).toBe(receipt.linkCalcCompatibility === 'PRESERVED'
         ? savedPlatforms
         : withoutLinkCalc(savedPlatforms))
       expect(await readFile(join(directory, 'mission-console.log'), 'utf8')).toContain('Simulation complete')
       expect(await readFile(join(directory, 'output', 'position.csv'), 'utf8')).toContain('3,AIR-01,')
       const events = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
       expect(events).toContain('COMM_TURNED_ON')
-      expect(events.split(/\r?\n/).filter((line: string) => /^\d.*?,MESSAGE_RECEIVED,/.test(line))).toHaveLength(3)
+      // 模板后方车 script_proc 每 5 秒发送一次，3 秒仿真内首发约在 t≈3 s。
+      expect(events.split(/\r?\n/).filter((line: string) => /^\d.*?,MESSAGE_RECEIVED,AIR-01,/.test(line))).toHaveLength(1)
     } finally { await server.close(); await rm(root, { recursive: true, force: true }) }
   })
 

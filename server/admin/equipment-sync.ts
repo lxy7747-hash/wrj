@@ -1,6 +1,7 @@
 import type { EquipmentParameter, EquipmentReference, ScenarioDraft, Link } from '../../src/contracts/domain-models.js'
 import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation.js'
 import { prepareLinkEquipment } from '../../src/features/scenarios/link-equipment-parameters.js'
+import { portParameterTargets, preparePortEquipment } from '../../src/features/scenarios/port-parameter-source.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
 import type { AdminResult } from './projection.js'
 
@@ -19,6 +20,15 @@ export function prepareEquipmentScenes(record: EquipmentParameter, references: E
       update = { before: current.data, after: structuredClone(current.data) }
       update.after.revision++
       updates.set(reference.scenarioId, update)
+    }
+    const port = portParameterTargets(update.after.config).find(item => item.id === reference.linkId)
+    if (port) {
+      const prepared = preparePortEquipment(port, record)
+      if (!prepared.ok) return { ok: false, status: 422, code: 'VALIDATION_FAILED', fieldPath: `scenarios[${reference.scenarioId}].${port.path}`, message: prepared.message }
+      const source = port.parameters.parameterSource
+      Object.assign(port.parameters, prepared.parameters)
+      if (source?.kind === 'EQUIPMENT' && source.sourceId === record.equipmentId) port.parameters.parameterSource = { ...source, sourceVersion: record.version, fields: prepared.fields }
+      continue
     }
     const link = update.after.config.links.find(item => item.id === reference.linkId)
     if (!link) return { ok: false, status: 409, code: 'CONFLICT', fieldPath, message: `场景 ${reference.scenarioId} 的引用链路 ${reference.linkId} 已不存在。` }

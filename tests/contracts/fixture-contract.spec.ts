@@ -66,7 +66,7 @@ describe('deterministic fixture contract', () => {
     const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
     const legacy = { name: '旧模板', config }
     expect(validate(legacy)).toBe(true)
-    const uiExtensions = { jammers: config.jammers.map(item => ({ jammerId: item.id, direction: 123, duration: 87, enabled: false })),
+    const uiExtensions = { jammers: config.jammers.map(item => ({ jammerId: item.id, direction: 0, enabled: false })),
       sensors: config.sensors.map(item => ({ sensorId: item.id, type: 'ESM', direction: 'OMNI', probability: 0.37, enabled: true })) }
     expect(validate({ ...legacy, uiExtensions })).toBe(true)
     expect(validate({ ...legacy, uiExtensions: null })).toBe(false)
@@ -129,14 +129,18 @@ describe('deterministic fixture contract', () => {
     addFormats(ajv)
     const compile = (name: string) => ajv.compile({ ...schema, $ref: `#/$defs/${name}` })
     const waypoint = compile('Waypoint')
-    const position = { longitude: 120, latitude: 30, altitude: 100, speed: 20, arrivalTime: 10 }
-    expect(waypoint({ ...position, heading: 360, acceleration: -1 })).toBe(true)
+    const position = { longitude: 120, latitude: 30, altitude: 100, speed: 20, arrivalTime: 0 }
+    expect(waypoint(position)).toBe(true)
+    // 航点字段按 V1.2 恢复；平台初始航向仍不接受。
+    expect(waypoint({ ...position, heading: 90 })).toBe(true)
+    expect(waypoint({ ...position, arrivalTime: 10 })).toBe(true)
+    expect(waypoint({ ...position, acceleration: 1 })).toBe(true)
     expect(waypoint({ ...position, heading: 361 })).toBe(false)
-    expect(waypoint({ ...position, acceleration: '1' })).toBe(false)
+    expect(waypoint({ ...position, arrivalTime: undefined })).toBe(false)
     const scene = (fixtures as DeterministicFixtureSet).scenario
     const platform = compile('Platform')
-    expect(platform({ ...scene.platforms[0]!, heading: 30 })).toBe(true)
-    expect(platform({ ...scene.platforms[0]!, heading: -1 })).toBe(false)
+    expect(platform(scene.platforms[0]!)).toBe(true)
+    expect(platform({ ...scene.platforms[0]!, heading: 30 })).toBe(false)
     const link = compile('Link')
     const satellite = { ...scene.links.find(item => item.type === 'SAT')!, forwardDataRate: 2, reverseDataRate: 0.256 }
     expect(link(satellite), JSON.stringify(link.errors)).toBe(true)
@@ -149,10 +153,24 @@ describe('deterministic fixture contract', () => {
     for (const invalid of [{ switchCooldownFrames: 0.5 }, { switchCooldownFrames: Number.MAX_SAFE_INTEGER + 1 }, { maximumBer: 1.1 }, { minimumBerImprovementFactor: 0.9 }]) {
       expect(settings({ ...value, ...invalid })).toBe(false)
     }
+    const environment = compile('Environment')
+    const environmentValue = scene.scenario.environment
+    expect(environment(environmentValue)).toBe(true)
+    for (const retired of [{ temperatureC: 20 }, { humidityPercent: 80 }, { rainLossDbPerKm: 0.02 }]) {
+      expect(environment({ ...environmentValue, ...retired })).toBe(false)
+    }
+    const jammerConfig = compile('Jammer')
+    const jammerValue = scene.jammers[0]!
+    expect(jammerConfig(jammerValue)).toBe(true)
+    expect(jammerConfig({ ...jammerValue, autoDetect: true })).toBe(false)
     const jammer = compile('JammerUiExtension')
-    const extension = { jammerId: 'J-A', direction: 0, duration: 30, enabled: true }
+    const extension = { jammerId: 'J-A', direction: 0, enabled: true }
     for (const elevation of [-10, 60]) expect(jammer({ ...extension, elevation })).toBe(true)
     for (const elevation of [-11, 61, '0']) expect(jammer({ ...extension, elevation })).toBe(false)
+    expect(jammer({ ...extension, direction: 0 })).toBe(true)
+    expect(jammer({ ...extension, direction: 360 })).toBe(true)
+    for (const direction of [-1, 361, undefined, '0']) expect(jammer({ ...extension, direction })).toBe(false)
+    expect(jammer({ ...extension, duration: 30 })).toBe(false)
   })
 
   it('场景导入合同兼容纯配置与完整快照，拒绝未知快照版本和外壳字段', () => {
@@ -162,7 +180,7 @@ describe('deterministic fixture contract', () => {
     const validate = ajv.compile({ ...schema, $ref: '#/$defs/ScenarioImportRequest' })
     const config = structuredClone((fixtures as DeterministicFixtureSet).scenario)
     const snapshot = { format: 'wrj.scenario.snapshot', version: 1, config, uiExtensions: {
-      jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, duration: 120, enabled: true, elevation: 60 })),
+      jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true, elevation: 60 })),
       sensors: config.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
     } }
     expect(validate({ items: [config] }), JSON.stringify(validate.errors)).toBe(true)
@@ -226,7 +244,8 @@ describe('deterministic fixture contract', () => {
       'UAV-01': { longitude: 119.35, latitude: 24.70 },
       'GCC-01': { longitude: 118.65, latitude: 23.55 },
       'AIR-01': { longitude: 120.15, latitude: 23.95 },
-      'SAT-01': { longitude: 121.25, latitude: 25.75 },
+      // 卫星按 GEO 定点；地图另用临时示意位置显示。
+      'SAT-01': { longitude: 120, latitude: 0 },
       'STN-01': { longitude: 119.55, latitude: 25.25 },
     }
     const frameCoordinates = Object.fromEntries(fixture.frame.platforms.map((platform) => [

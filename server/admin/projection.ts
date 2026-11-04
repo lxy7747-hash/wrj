@@ -1,6 +1,7 @@
 import type { ApiErrorCode, BackupRecord, BackupPlan, BackupPlanStatus, DeleteResult, MasterData, MasterDataDetails, MasterDataReference, RestoreResult } from '../../src/contracts/domain-models.js'
 import { isAdminObject, isAdminText, isMasterData, isMasterReference, isMasterWrite, masterDataEquipmentFieldIssue } from '../../src/features/admin/admin-contract.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
+import { portParameterTargets } from '../../src/features/scenarios/port-parameter-source.js'
 import type { EquipmentDetails, EquipmentParameter, EquipmentReference } from '../../src/contracts/domain-models.js'
 import { equipmentIssue, isEquipmentActive } from '../../src/features/admin/equipment-contract.js'
 import { prepareEquipmentScenes, type EquipmentSceneUpdate } from './equipment-sync.js'
@@ -60,8 +61,8 @@ export class AdminProjection {
   }
 
   private hasScenarioParameterSource(kind: 'EQUIPMENT' | 'MASTER_DATA', sourceId: string): boolean {
-    return this.scenarios?.list().some(scene => scene.config.links.some(link =>
-      link.parameterSource?.kind === kind && link.parameterSource.sourceId === sourceId)) ?? false
+    return this.scenarios?.list().some(scene => [...scene.config.links, ...portParameterTargets(scene.config).map(target => target.parameters)].some(item =>
+      item.parameterSource?.kind === kind && item.parameterSource.sourceId === sourceId)) ?? false
   }
 
   setEquipmentReference(reference: EquipmentReference, remove: boolean): void {

@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest'
-import { LOCAL_REPORT } from '../fixtures/local-report'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { LOCAL_REPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { INITIAL_LOG, POSITION_CSV } from '../fixtures/local-replay'
 const { appendFile, mkdtemp, readFile, writeFile, rm, readdir, stat } = await import('node:fs/' + 'promises')
@@ -14,6 +14,7 @@ const { readLocalReport, exportLocalReport } = await import('../../server/local/
 const { readAfsimLogFile } = await import('../../server/local/' + 'afsim-log-reader.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
+const { default: PDFDocument } = await import('pdf' + 'kit')
 const dirs: string[] = []
 const servers: Array<ReturnType<typeof createMockServer>> = []
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
@@ -116,6 +117,28 @@ describe('本地报告读取和真实文件导出', () => {
     const second = await exportLocalReport(dir, report, format, 'operator')
     expect(second.filePath).not.toBe(first.filePath)
     expect(await readFile(first.filePath, 'utf8')).toBe(content)
+  })
+  for (const format of ['HTML', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 导出包含柱状图、雷达图数据表及真实单位、来源和生成时刻`, async () => {
+    const dir = await directory()
+    const textCalls = vi.spyOn(PDFDocument.prototype, 'text')
+    const result = await exportLocalReport(dir, LOCAL_QUALITY_REPORT, format, 'operator', undefined, [], { nodeId: 'A', from: 0, to: 10 })
+    const content = format === 'HTML' ? await readFile(result.filePath, 'utf8') : textCalls.mock.calls.map(call => String(call[0])).join('\n')
+    for (const text of ['柱状图数据表：事件分类统计', '雷达图数据表：各链路有效观测区间连通率', '标签', '数值', '单位', '数据范围', '生成时刻',
+      'quality.csv · 筛选范围 · 0分0秒～0分10秒 · 节点 A', 'scenario_events.csv · 筛选范围', LOCAL_REPORT.generatedTime, '单位：%', '单位：条']) expect(content).toContain(text)
+    for (const [link, rate] of [['L-1', '100'], ['L-2', '0'], ['L-3', '100']]) {
+      expect(content).toContain(format === 'HTML' ? `<td>${link}</td><td>${rate}</td><td>%</td>` : `标签：${link}； 数值：${rate}； 单位：%`)
+    }
+    if (format === 'PDF') {
+      expect((await readFile(result.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
+      expect(content).toContain('雷达图范围 0–100%')
+      expect(content).not.toContain('L-1：100 条')
+    } else {
+      expect(content).toContain('<polygon')
+      const empty = await exportLocalReport(dir, LOCAL_REPORT, format, 'operator')
+      const emptyHtml = await readFile(empty.filePath, 'utf8')
+      expect(emptyHtml).toContain('雷达图数据表：各链路有效观测区间连通率')
+      expect(emptyHtml).toContain('<td>暂无数据</td><td></td><td>%</td>')
+    }
   })
   it.skipIf(!pdfFont)('PDF 真实生成、嵌入中文字体、包含页面和统计来源', async () => {
     const dir = await directory()

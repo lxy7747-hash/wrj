@@ -490,3 +490,84 @@ it('正式计划 API 校验权限、参数、版本和存储故障', async () =>
     await api.put(path).set(headers).send(plan).expect(503)
   } finally { await server.close() }
 })
+
+it('D1 六库备份兼容旧运动字段，恢复原始行并在读取时补全，快照不改写', () => {
+  const f = setup()
+  const db = new DatabaseSync(f.path)
+  try {
+    const row = db.prepare("SELECT * FROM scenarios WHERE id='SCN-001'").get()!
+    const config = JSON.parse(String(row.config_json)) as import('../../src/contracts/domain-models').ScenarioConfig
+    const extensions = JSON.parse(String(row.ui_extensions_json))
+    const platform = config.platforms.find(item => item.id === 'UAV-01')!
+    platform.waypoints = [platform.waypoints[0]!, { ...platform.waypoints[0]!, longitude: 120.01 }]
+    for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
+    Reflect.deleteProperty(extensions.jammers[0], 'direction')
+    Object.assign(config.scenario.environment, { temperatureC: 20 })
+    extensions.jammers[0].duration = 5
+    db.prepare('UPDATE scenarios SET config_json=?, ui_extensions_json=?').run(JSON.stringify(config), JSON.stringify(extensions))
+    db.prepare('INSERT INTO scenario_templates VALUES (?, ?, ?, ?, ?, ?, ?)').run('TPL-OLD', '旧模板', 1, 0, JSON.stringify(config), JSON.stringify(extensions), 0)
+    const original = Object.fromEntries(['scenarios', 'scenario_templates'].map(table => [table, db.prepare(`SELECT * FROM ${table}`).all()]))
+    expect(f.backup.backup('LEGACY-MOTION')).toMatchObject({ ok: true, data: { status: 'VALID' } })
+    const file = join(f.backup.directory, 'LEGACY-MOTION.system.db')
+    const before = createHash('sha256').update(readFileSync(file)).digest('hex')
+    db.exec('DELETE FROM scenarios; DELETE FROM scenario_templates')
+    expect(f.backup.restore('LEGACY-MOTION')).toMatchObject({ ok: true, data: { result: 'SUCCESS', integrityValid: true } })
+    for (const restored of [f.scenario.load('SCN-001')!, f.template.load()[0]!]) {
+      const points = restored.config.platforms.find((item: { id: string }) => item.id === 'UAV-01')!.waypoints
+      expect(points).toHaveLength(2)
+      expect(points[0]!.arrivalTime).toBeGreaterThanOrEqual(1)
+      expect(points[1]!.arrivalTime).toBeGreaterThan(points[0]!.arrivalTime)
+      expect(restored.uiExtensions!.jammers[0]).toHaveProperty('direction', 0)
+      expect(restored.uiExtensions!.jammers[0]).not.toHaveProperty('duration')
+      expect(restored.config.scenario.environment).not.toHaveProperty('temperatureC')
+    }
+    for (const table of ['scenarios', 'scenario_templates']) expect(db.prepare(`SELECT * FROM ${table}`).all()).toEqual(original[table])
+    expect(createHash('sha256').update(readFileSync(file)).digest('hex')).toBe(before)
+  } finally { db.close() }
+})
+
+it.each(['platforms', 'speed'])('D1 六库兼容仍拒绝 %s 结构错误，保留场景内容无效报错', field => {
+  const f = setup()
+  expect(f.backup.backup('INVALID-MOTION').ok).toBe(true)
+  const file = join(f.backup.directory, 'INVALID-MOTION.system.db')
+  const snapshot = new DatabaseSync(file)
+  try {
+    const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()!.payload)) as Array<{ scope: string; table: string; rows: Array<{ config_json: string }> }>
+    const row = tables.find(item => item.scope === 'main' && item.table === 'scenarios')!.rows[0]!
+    const config = JSON.parse(row.config_json)
+    if (field === 'platforms') config.platforms = 'invalid'
+    else config.platforms[3].waypoints[0].speed = 'invalid'
+    row.config_json = JSON.stringify(config)
+    snapshot.prepare('UPDATE snapshot SET payload=?').run(JSON.stringify(tables))
+  } finally { snapshot.close() }
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try { catalog.prepare('UPDATE system_backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(readFileSync(file)).digest('hex').toUpperCase(), 'INVALID-MOTION') }
+  finally { catalog.close() }
+  expect(() => (f.backup as unknown as { readSnapshot(path: string): unknown }).readSnapshot(file)).toThrow('场景内容无效。')
+  const before = f.scenario.load('SCN-001')
+  expect(f.backup.restore('INVALID-MOTION')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
+  expect(f.scenario.load('SCN-001')).toEqual(before)
+})
+
+it('D1 校验版本更新后重新校验旧版本登记的 INVALID，不沿用失败缓存', () => {
+  const f = setup()
+  expect(f.backup.backup('OLD-VALIDATION').ok).toBe(true)
+  const schema = (f.backup as unknown as { schema: Map<string, string> }).schema
+  const oldKey = createHash('sha256').update(JSON.stringify([2, ...schema])).digest('hex')
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try {
+    const row = catalog.prepare("SELECT checksum FROM system_backups WHERE backup_id='OLD-VALIDATION'").get()!
+    catalog.prepare("UPDATE system_backups SET validation_key=?, valid=0 WHERE backup_id='OLD-VALIDATION'").run(`${oldKey}:${row.checksum}`)
+    const reopened = new SystemBackupSqliteStorage(f.path)
+    try {
+      const read = vi.spyOn(reopened as unknown as { readSnapshot(path: string): unknown }, 'readSnapshot')
+      expect(reopened.listBackups()[0]?.status).toBe('VALID')
+      expect(read).toHaveBeenCalledTimes(1)
+      const updated = catalog.prepare("SELECT validation_key, valid FROM system_backups WHERE backup_id='OLD-VALIDATION'").get()!
+      expect(updated.validation_key).not.toBe(`${oldKey}:${row.checksum}`)
+      expect(updated.valid).toBe(1)
+      expect(reopened.listBackups()[0]?.status).toBe('VALID')
+      expect(read).toHaveBeenCalledTimes(1)
+    } finally { reopened.close() }
+  } finally { catalog.close() }
+})

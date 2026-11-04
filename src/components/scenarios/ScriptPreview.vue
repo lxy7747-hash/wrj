@@ -52,6 +52,7 @@ function scriptLocation(fieldPath: string): string {
         <el-descriptions-item label="脚本编号">{{ script.scriptId }}</el-descriptions-item>
         <el-descriptions-item label="生成时间">{{ formatDateTime(script.generatedTime) }}</el-descriptions-item>
         <el-descriptions-item label="预览入口">scenario.txt</el-descriptions-item>
+        <el-descriptions-item label="执行入口">comm_SimSetup.txt</el-descriptions-item>
         <el-descriptions-item label="生成路径">{{ outputPath || '尚未写入本机文件' }}</el-descriptions-item>
       </el-descriptions>
       <details v-if="generationLog?.length" class="script-log" data-testid="script-generation-log">

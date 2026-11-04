@@ -1,18 +1,43 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus, { ElInputNumber, ElSelect } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import ReportsPage from '../../src/pages/reports/reports.vue'
+import ReportChart from '../../src/components/reports/ReportChart.vue'
+import { formatDateTime } from '../../src/features/shared/date-time'
 import LocalReportTabs from '../../src/components/reports/LocalReportTabs.vue'
 import { useReportStore, isReport } from '../../src/stores/report'
 import { useAuthStore } from '../../src/stores/auth'
 import { isLocalReport, isLocalReportExport, localReportTables } from '../../src/features/reports/local-report'
-import { LOCAL_REPORT, LOCAL_EXPORT } from '../fixtures/local-report'
+import { LOCAL_REPORT, LOCAL_EXPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
 
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 describe('本地文件报告页面与信任边界', () => {
+  it('质量曲线、柱状图与雷达图独立，图表注明来源、已应用范围和生成时刻', async () => {
+    const wrapper: VueWrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_QUALITY_REPORT.localEvidence!, generatedTime: LOCAL_QUALITY_REPORT.generatedTime }, global: { plugins: [ElementPlus] } })
+    const tabs = wrapper.findAll('.el-tabs__item').map(tab => tab.text())
+    expect(tabs.indexOf('雷达图')).toBe(tabs.indexOf('柱状图') + 1)
+    await wrapper.get('#tab-链路质量与曲线').trigger('click'); await flushPromises()
+    expect(wrapper.findAllComponents(ReportChart)).toHaveLength(6)
+    expect(wrapper.findAllComponents(ReportChart).every(chart => /GXB|误码率/.test(chart.get('h4').text()))).toBe(true)
+    expect(wrapper.find('polygon').exists()).toBe(false)
+    await wrapper.get('#tab-柱状图').trigger('click'); await flushPromises()
+    const bars = wrapper.get('[data-testid="report-bar-charts"]')
+    expect(bars.text()).toContain('scenario_events.csv · 完整快照 · 0分0秒～0分10秒')
+    expect(bars.text()).toContain(`生成时刻 ${formatDateTime(LOCAL_REPORT.generatedTime)}`)
+    await wrapper.get('#tab-雷达图').trigger('click'); await flushPromises()
+    const radar = wrapper.get('[data-testid="report-radar-chart"]')
+    expect(radar.text()).toContain('quality.csv · 完整快照')
+    expect(radar.text()).toContain(`生成时刻 ${formatDateTime(LOCAL_REPORT.generatedTime)}`)
+    expect(radar.findAll('li').map(row => row.text())).toEqual(['L-1：100 %', 'L-2：0 %', 'L-3：100 %'])
+    await wrapper.setProps({ preciseFilter: true, filter: { nodeId: 'A', linkId: 'L-1', stage: 'PH-1', from: 0, to: 1 } })
+    expect(radar.text()).toContain('quality.csv · 筛选范围 · 0分0秒～0分1秒 · 节点 A · 链路 L-1 · 阶段 PH-1')
+    await wrapper.setProps({ evidence: LOCAL_REPORT.localEvidence })
+    expect(radar.text()).toBe('暂无数据')
+    wrapper.unmount()
+  })
   it('表单编辑不改变已应用范围，非法区间仍可重置，重新加载清除旧条件', async () => {
     const pinia = createPinia(); setActivePinia(pinia)
     const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-001', scenarioName: '运行结果', revision: 1,

@@ -29,7 +29,7 @@ describe('P3-3 同帧链路计算合同', () => {
     expect(wrapper.get('[data-testid="link-contract-state"]').text()).toBe('同帧通过')
     expect(wrapper.text()).toContain('F-00042')
     expect(wrapper.text()).toContain('高空前出中继节点')
-    expect(wrapper.text()).toContain('地面无人集群指挥车')
+    expect(wrapper.text()).toContain('后方指挥节点')
     expect(wrapper.text()).toContain('4500 MHz')
     expect(wrapper.text()).toContain('3.2e-7')
     expect(wrapper.text()).toContain('浏览器仅校验和展示结果证据')
@@ -74,7 +74,7 @@ describe('P3-3 同帧链路计算合同', () => {
 
   it.each([
     ['发送端', 'UAV-01'],
-    ['接收端', 'GCC-01'],
+    ['接收端', 'CMD-01'],
   ])('%s平台缺失时进入错误态', async (endpoint, platformId) => {
     const telemetryStore = useTelemetryStore()
     const missingEndpointFrame = structuredClone(frame)
@@ -97,7 +97,7 @@ describe('P3-3 同帧链路计算合同', () => {
     const summaries = structuredClone(frame.linkSummaries)
     const target = summaries.find((summary) => (
       summary.sourcePlatform === 'UAV-01'
-      && summary.destPlatform === 'GCC-01'
+      && summary.destPlatform === 'CMD-01'
       && summary.linkType === 'MICROWAVE'
     ))
     if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 链路摘要')

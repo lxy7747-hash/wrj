@@ -15,8 +15,8 @@ const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id)
 const validName = (name: string) => typeof name === 'string' && name.trim().length > 0 && name.length <= 80
 const unavailable = (message = '备份存储不可用或被占用，操作未成功；请检查磁盘和数据库后重试。'): AdminResult<never> => ({ ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message })
 const schemaQuery = "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name"
-/** 校验规则变化时递增，使已登记的列表校验结果全部重检；2 起不再登记临时读取失败。 */
-const VALIDATION_VERSION = 2
+/** 校验规则变化时递增，使登记结果重检；2 起不登记临时读取失败，3 起兼容旧场景运动字段。 */
+const VALIDATION_VERSION = 3
 
 /** 一个受控 SQLite 包保存所有业务库；恢复只复制表数据，不替换正在使用的数据库文件。 */
 export class SystemBackupSqliteStorage implements BackupStorage {

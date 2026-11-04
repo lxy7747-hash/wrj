@@ -134,10 +134,7 @@
       "timeStep": 1,
       "environment": {
         "seaState": 3,
-        "temperatureC": 26,
-        "humidityPercent": 80,
         "rainRateMmPerHour": 12,
-        "rainLossDbPerKm": 0.07,
         "multipathEnabled": true
       }
     },
@@ -154,8 +151,12 @@
         },
         "waypoints": [],
         "linkIds": [
+          "L-MW-01",
+          "L-SAT-02",
           "L-LASER-04",
           "L-SAT-05",
+          "L-MW-05",
+          "L-MW-06",
           "L-DL-05"
         ],
         "sensorIds": [],
@@ -203,10 +204,10 @@
         },
         "waypoints": [],
         "linkIds": [
-          "L-MW-01",
           "L-DL-03",
           "L-DL-05",
-          "L-DL-06"
+          "L-DL-06",
+          "L-DL-07"
         ],
         "sensorIds": [],
         "jammerIds": []
@@ -232,8 +233,7 @@
         ],
         "linkIds": [
           "L-MW-05",
-          "L-DL-06",
-          "L-DL-07"
+          "L-DL-06"
         ],
         "sensorIds": [],
         "jammerIds": []
@@ -279,8 +279,8 @@
         "satelliteType": "TIANTONG",
         "category": "space",
         "initialPosition": {
-          "longitude": 121.25,
-          "latitude": 25.75,
+          "longitude": 120,
+          "latitude": 0,
           "altitude": 35786000
         },
         "waypoints": [],
@@ -316,7 +316,7 @@
         "id": "L-MW-01",
         "type": "MICROWAVE",
         "sourcePlatformId": "UAV-01",
-        "targetPlatformId": "GCC-01",
+        "targetPlatformId": "CMD-01",
         "frequency": 4500,
         "bandwidth": 20,
         "txPower": 100,
@@ -349,7 +349,7 @@
       {
         "id": "L-SAT-02",
         "type": "SAT",
-        "sourcePlatformId": "SAT-01",
+        "sourcePlatformId": "CMD-01",
         "targetPlatformId": "UAV-01",
         "frequency": 12000,
         "bandwidth": 25,
@@ -361,7 +361,8 @@
         "modulation": "BPSK",
         "berThreshold": 0.000005,
         "dataRate": 15,
-        "direction": "FORWARD"
+        "direction": "FORWARD",
+        "relayPlatformId": "SAT-01"
       },
       {
         "id": "L-LASER-04",
@@ -406,7 +407,7 @@
       {
         "id": "L-MW-05",
         "type": "MICROWAVE",
-        "sourcePlatformId": "UAV-01",
+        "sourcePlatformId": "CMD-01",
         "targetPlatformId": "AIR-01",
         "frequency": 4500,
         "bandwidth": 20,
@@ -418,12 +419,13 @@
         "modulation": "QPSK",
         "berThreshold": 0.00001,
         "dataRate": 20,
-        "direction": "FORWARD"
+        "direction": "FORWARD",
+        "relayPlatformId": "UAV-01"
       },
       {
         "id": "L-MW-06",
         "type": "MICROWAVE",
-        "sourcePlatformId": "UAV-01",
+        "sourcePlatformId": "CMD-01",
         "targetPlatformId": "AIR-03",
         "frequency": 4500,
         "bandwidth": 20,
@@ -435,11 +437,12 @@
         "modulation": "QPSK",
         "berThreshold": 0.00001,
         "dataRate": 20,
-        "direction": "FORWARD"
+        "direction": "FORWARD",
+        "relayPlatformId": "UAV-01"
       },
       {
         "id": "L-DL-05",
-        "type": "DATALINK",
+        "type": "FIBER",
         "sourcePlatformId": "CMD-01",
         "targetPlatformId": "GCC-01",
         "frequency": 2200,
@@ -474,7 +477,7 @@
       {
         "id": "L-DL-07",
         "type": "DATALINK",
-        "sourcePlatformId": "AIR-01",
+        "sourcePlatformId": "GCC-01",
         "targetPlatformId": "AIR-02",
         "frequency": 2200,
         "bandwidth": 10,
@@ -497,7 +500,6 @@
         "defaultPower": 72,
         "frequency": 2200,
         "bandwidth": 40,
-        "autoDetect": true,
         "detectionRange": 44448,
         "jammingRange": 44448
       }
@@ -585,8 +587,12 @@
         "altitude": 20,
         "speed": 0,
         "linkIds": [
+          "L-MW-01",
+          "L-SAT-02",
           "L-LASER-04",
           "L-SAT-05",
+          "L-MW-05",
+          "L-MW-06",
           "L-DL-05"
         ],
         "jammers": [],
@@ -620,10 +626,10 @@
         "altitude": 20,
         "speed": 0,
         "linkIds": [
-          "L-MW-01",
           "L-DL-03",
           "L-DL-05",
-          "L-DL-06"
+          "L-DL-06",
+          "L-DL-07"
         ],
         "jammers": [],
         "updatedAt": 42
@@ -638,8 +644,7 @@
         "speed": 42,
         "linkIds": [
           "L-MW-05",
-          "L-DL-06",
-          "L-DL-07"
+          "L-DL-06"
         ],
         "jammers": [],
         "updatedAt": 42
@@ -676,8 +681,8 @@
         "platformId": "SAT-01",
         "name": "通信卫星",
         "type": "COMMUNICATION_SATELLITE",
-        "longitude": 121.25,
-        "latitude": 25.75,
+        "longitude": 120,
+        "latitude": 0,
         "altitude": 35786000,
         "speed": 0,
         "linkIds": [
@@ -716,7 +721,7 @@
         "linkId": "L-MW-01",
         "time": 42,
         "sourcePlatform": "UAV-01",
-        "destPlatform": "GCC-01",
+        "destPlatform": "CMD-01",
         "linkType": "MICROWAVE",
         "frequency": 4500,
         "bandwidth": 20,
@@ -985,9 +990,9 @@
     },
     "linkSummaries": [
       {
-        "linkKey": "UAV-01>GCC-01>MICROWAVE",
+        "linkKey": "UAV-01>CMD-01>MICROWAVE",
         "sourcePlatform": "UAV-01",
-        "destPlatform": "GCC-01",
+        "destPlatform": "CMD-01",
         "linkType": "MICROWAVE",
         "currentSnr": 18.62,
         "currentBer": 3.2e-7,
@@ -1005,8 +1010,8 @@
         "updatedAt": 42
       },
       {
-        "linkKey": "SAT-01>UAV-01>SAT",
-        "sourcePlatform": "SAT-01",
+        "linkKey": "CMD-01>UAV-01>SAT",
+        "sourcePlatform": "CMD-01",
         "destPlatform": "UAV-01",
         "linkType": "SAT",
         "currentSnr": 15.4,
@@ -1036,7 +1041,7 @@
       },
       {
         "linkKey": "L-MW-05",
-        "sourcePlatform": "UAV-01",
+        "sourcePlatform": "CMD-01",
         "destPlatform": "AIR-01",
         "linkType": "MICROWAVE",
         "currentSnr": 17.9,
@@ -1046,7 +1051,7 @@
       },
       {
         "linkKey": "L-MW-06",
-        "sourcePlatform": "UAV-01",
+        "sourcePlatform": "CMD-01",
         "destPlatform": "AIR-03",
         "linkType": "MICROWAVE",
         "currentSnr": 17.4,
@@ -1058,7 +1063,7 @@
         "linkKey": "L-DL-05",
         "sourcePlatform": "CMD-01",
         "destPlatform": "GCC-01",
-        "linkType": "DATALINK",
+        "linkType": "FIBER",
         "currentSnr": 16.8,
         "currentBer": 7e-7,
         "status": "UP",
@@ -1076,7 +1081,7 @@
       },
       {
         "linkKey": "L-DL-07",
-        "sourcePlatform": "AIR-01",
+        "sourcePlatform": "GCC-01",
         "destPlatform": "AIR-02",
         "linkType": "DATALINK",
         "currentSnr": 14.7,
@@ -1169,7 +1174,7 @@
       {
         "linkId": "L-MW-01",
         "sourcePlatformId": "UAV-01",
-        "targetPlatformId": "GCC-01",
+        "targetPlatformId": "CMD-01",
         "points": [
           {
             "time": 0,

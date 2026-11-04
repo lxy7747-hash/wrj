@@ -201,7 +201,7 @@ onMounted(() => { void store.loadScenes() })
         <el-button link type="danger" :disabled="busy || row.locked || !canWrite" :data-testid="`scene-delete-${row.config.scenario.id}`" @click="remove(row)">删除</el-button>
       </template></el-table-column>
     </el-table>
-    <el-dialog v-model="templateDialog" title="从模板创建场景" width="480px" :close-on-click-modal="!selecting" :show-close="!selecting">
+    <el-dialog v-model="templateDialog" class="scenario-dialog" title="从模板创建场景" width="min(480px, calc(100vw - 2rem))" :close-on-click-modal="!selecting" :show-close="!selecting">
       <el-form label-position="top">
         <el-form-item label="场景模板"><el-select v-model="templateId" :loading="store.templateState === 'LOADING'" :disabled="selecting" placeholder="请选择场景模板" data-testid="scene-template-select">
           <el-option v-for="item in store.templates" :key="item.templateId" :label="item.name" :value="item.templateId" />

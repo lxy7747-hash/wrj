@@ -48,8 +48,7 @@ async function start(file: string) {
 
 function source(): ScenarioDraft {
   const draft = new ScenarioProjection().get('SCN-001').data as ScenarioDraft
-  draft.uiExtensions.jammers[0]!.direction = 123
-  draft.uiExtensions.jammers[0]!.duration = 87
+  draft.uiExtensions.jammers[0]!.elevation = 30
   draft.uiExtensions.sensors[0]!.probability = 0.37
   return draft
 }
@@ -76,6 +75,44 @@ afterEach(async () => {
 })
 
 describe('SQLite 模板持久化', () => {
+  it('旧模板退役字段在读取、保存和应用时清理，不修改输入或传感器方向', async () => {
+    const file = await path()
+    const server = await start(file)
+    const input = body()
+    const created = (await server.api.post('/api/v1/templates').set(headers).send(input).expect(201)).body.data
+    const addLegacyFields = (value: typeof input) => {
+      Object.assign(value.config.scenario.environment, { temperatureC: null, humidityPercent: 101, rainLossDbPerKm: -1 })
+      value.config.jammers.forEach(jammer => Object.assign(jammer, { autoDetect: 'invalid' }))
+      value.uiExtensions.jammers.forEach(jammer => Object.assign(jammer, { duration: -1 }))
+    }
+    const legacy = structuredClone(input)
+    addLegacyFields(legacy)
+    const raw = new DatabaseSync(file)
+    raw.prepare('UPDATE scenario_templates SET config_json = ?, ui_extensions_json = ? WHERE id = ?')
+      .run(JSON.stringify(legacy.config), JSON.stringify(legacy.uiExtensions), created.templateId)
+    raw.close()
+    const reloaded = (await server.api.get('/api/v1/templates/' + created.templateId).set(headers).expect(200)).body.data
+    expect(reloaded).toEqual(created)
+    const saved = (await server.api.put('/api/v1/templates/' + created.templateId).set(headers).send(legacy).expect(200)).body.data
+    expect(saved).toMatchObject({ config: input.config, uiExtensions: input.uiExtensions, version: '2' })
+    const check = new DatabaseSync(file)
+    const row = check.prepare('SELECT config_json, ui_extensions_json FROM scenario_templates WHERE id = ?').get(created.templateId)
+    check.close()
+    expect(JSON.parse(row.config_json)).toEqual(input.config)
+    expect(JSON.parse(row.ui_extensions_json)).toEqual(input.uiExtensions)
+    const copied = (await server.api.post('/api/v1/templates/' + created.templateId + '/copy').set(headers).send({ name: '退役字段清理后副本' }).expect(201)).body.data
+    expect(copied.uiExtensions).toEqual(input.uiExtensions)
+    expect(copied.config.scenario.environment).toEqual(input.config.scenario.environment)
+    expect(copied.config.jammers).toEqual(input.config.jammers)
+    // 无 SQLite 的模板流程也须返回干净数据，且不能修改调用者对象。
+    const projection = new TemplateProjection()
+    const result = projection.create(legacy)
+    expect(result.ok).toBe(true)
+    expect(result.data).toMatchObject({ config: input.config, uiExtensions: input.uiExtensions })
+    expect(legacy.config.scenario.environment).toHaveProperty('humidityPercent', 101)
+    expect(legacy.uiExtensions.jammers[0]).toHaveProperty('duration', -1)
+  })
+
   it('空库无默认模板，另存不改原场景；重启、复制、再编辑场景均保持模板完整独立', async () => {
     const file = await path()
     const first = await start(file)
@@ -168,4 +205,26 @@ describe('SQLite 模板持久化', () => {
     expect(projection.delete(template.templateId)).toMatchObject({ ok: false, status: 409 })
     expect(first.delete(template.templateId, '3')).toBe(false)
   })
+})
+
+
+it('旧模板缺少运动时刻和方向时读取补齐，后续保存及应用成功', async () => {
+  const file = await path()
+  const server = await start(file)
+  const input = body()
+  const created = (await server.api.post('/api/v1/templates').set(headers).send(input).expect(201)).body.data
+  for (const platform of input.config.platforms) for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
+  for (const extension of input.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
+  const raw = new DatabaseSync(file)
+  raw.prepare('UPDATE scenario_templates SET config_json = ?, ui_extensions_json = ? WHERE id = ?')
+    .run(JSON.stringify(input.config), JSON.stringify(input.uiExtensions), created.templateId)
+  raw.close()
+  const restored = (await server.api.get('/api/v1/templates/' + created.templateId).set(headers).expect(200)).body.data
+  expect(restored.config.platforms[3].waypoints[0].arrivalTime).toBeGreaterThan(0)
+  expect(restored.uiExtensions.jammers[0].direction).toBe(0)
+  await server.api.put('/api/v1/templates/' + created.templateId).set(headers)
+    .send({ name: restored.name, config: restored.config, uiExtensions: restored.uiExtensions }).expect(200)
+  const copied = (await server.api.post('/api/v1/templates/' + created.templateId + '/copy').set(headers).send({ name: '兼容模板副本' }).expect(201)).body.data
+  expect(copied.config).toEqual({ ...restored.config, scenario: { ...restored.config.scenario, name: '兼容模板副本' } })
+  expect(copied.uiExtensions).toEqual(restored.uiExtensions)
 })

@@ -91,7 +91,9 @@ export function inspectScriptPreview(preview: string): ValidationResult {
   if (!lines.some(line => line === 'include_once comm_SimSetup.txt')) addError('SCRIPT_ENTRY_INVALID', '缺少 comm_SimSetup.txt 入口引用。', 1)
   if (!lines.some(line => line === '// ===== comm_SimSetup.txt =====')) addError('SCRIPT_ENTRY_INVALID', '缺少 comm_SimSetup.txt 原生脚本段。', 1)
   if (!lines.some(line => /^start_date \S+ \d+ \d+$/.test(line))) addError('SCRIPT_AFSIM_HEADER_INVALID', '缺少 AFSIM start_date 头。', 1)
-  for (const name of ['comm_PerDefinition.txt', 'comm_platform_INS.txt', 'observers.txt']) {
+  for (const name of ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt',
+    'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt', 'comm_platform_INS.txt',
+    'observers.txt', 'ad_hoc_comm.txt', 'mapping.json', 'input.json']) {
     if (!lines.some(line => line === `// ===== ${name} =====`)) addError('SCRIPT_REFERENCE_INVALID', `缺少 ${name} 引用内容。`, 1)
   }
   const outputLine = lines.findIndex((line) => /^   file .+\.aer$/.test(line))

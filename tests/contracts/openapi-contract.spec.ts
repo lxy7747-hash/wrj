@@ -63,9 +63,9 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
-  it('declares the 1.9.3 equipment write boundary', () => {
+  it('declares the 1.9.4 equipment write boundary', () => {
     const { openApi } = loadContractDocuments()
-    expect(asObject(asObject(openApi).info).version).toBe('1.9.3')
+    expect(asObject(asObject(openApi).info).version).toBe('1.9.4')
   })
 
   it('exposes the read-only scenario parameter catalog to both scenario roles', () => {

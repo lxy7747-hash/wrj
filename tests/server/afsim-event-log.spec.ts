@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log'
 import * as eventParser from '../../src/features/data-exchange/afsim-event-log'
 import { isInitialNodeSnapshot } from '../../src/features/situation/initial-nodes'
-import { fileCommunicationType, selectFileCommunicationLinks } from '../../src/features/situation/file-communication-links'
+import { fileCommunicationType, fileConnectionTypes, selectFileCommunicationLinks } from '../../src/features/situation/file-communication-links'
 import { POSITION_HEADER } from '../../src/features/situation/position-updates'
 
 // 与已有服务端测试一致：Node 专用模块只在测试运行时加载，不纳入浏览器类型工程。
@@ -162,6 +162,23 @@ describe('真实 AFSIM 事件日志解析', () => {
       expect(laser).toMatchObject([{ type: 'LASER', sourcePlatformId: 'A', targetPlatformId: 'B' }])
       expect(selectFileCommunicationLinks([{ ...connection,
         sourceType: 'WSF_LASER_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER' }], 5)).toEqual([])
+      // 归档的通用收发器由服务端按完整 manifest 端点对分类；浏览器保留原始端口标识且不自行猜测。
+      const archived = { ...connection, sourceType: 'WSF_RADIO_TRANSCEIVER', targetType: 'WSF_RADIO_TRANSCEIVER',
+        source: { ...connection.source, communicationName: 'comm_4c_2d_4c_41_53_45_52_2d_30_34_src' },
+        target: { ...connection.target, communicationName: 'comm_4c_2d_4c_41_53_45_52_2d_30_34_dst' }, resolvedType: 'DATALINK' as const }
+      expect(fileConnectionTypes(archived)).toEqual(['DATALINK'])
+      expect(selectFileCommunicationLinks([archived], 5)[0]).toMatchObject({ type: 'DATALINK', records: [archived] })
+      expect(isInitialNodeSnapshot({ ...snapshot, connections: [archived] })).toBe(true)
+      const resolvedArray = { ...archived, resolvedType: ['DATALINK'] } as unknown as typeof archived
+      const unknownResolvedType = { ...archived, resolvedType: 'UNKNOWN' } as unknown as typeof archived
+      const mixedLaser = { ...archived, sourceType: 'WSF_LASER_TRANSCEIVER', resolvedType: 'LASER' as const }
+      const conflictingNativePort = { ...archived,
+        source: { ...archived.source, communicationName: 'sat_link' }, target: { ...archived.target, communicationName: 'sat_link' },
+        resolvedType: 'MICROWAVE' as const }
+      for (const invalid of [resolvedArray, unknownResolvedType, mixedLaser, conflictingNativePort]) {
+        expect(fileConnectionTypes(invalid)).toEqual([])
+        expect(isInitialNodeSnapshot({ ...snapshot, connections: [invalid] })).toBe(false)
+      }
     } finally {
       await rm(directory, { recursive: true })
     }

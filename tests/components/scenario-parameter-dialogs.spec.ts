@@ -133,11 +133,17 @@ describe('场景参数弹框的真实编辑路径', () => {
     select(wrapper, 'link-type').vm.$emit('change', 'MICROWAVE')
     await flushPromises()
     expect(wrapper.get('[data-testid="link-data-rate"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('按对接文档固定，不可修改')
+    expect(wrapper.text()).toContain('按对接文档固定显示；脚本速率以“通信设备参数”为准')
+    expect(wrapper.get('[data-testid="link-retained-hint"]').text()).toContain('此处参数暂保留，不写入脚本')
     expect(select(wrapper, 'link-tx-polarization').props('modelValue')).toBe('horizontal')
+    select(wrapper, 'link-type').vm.$emit('update:modelValue', 'LASER')
+    select(wrapper, 'link-type').vm.$emit('change', 'LASER')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="link-retained-hint"]').exists()).toBe(false)
     select(wrapper, 'link-type').vm.$emit('update:modelValue', 'FIBER')
     select(wrapper, 'link-type').vm.$emit('change', 'FIBER')
     await flushPromises()
+    expect(wrapper.find('[data-testid="link-retained-hint"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('10～1000 Mbps')
     expect(wrapper.find('[data-testid="link-bandwidth"]').exists()).toBe(false)
     expect(inputNumber(wrapper, 'link-data-rate').props('min')).toBe(10)
@@ -175,23 +181,23 @@ describe('场景参数弹框的真实编辑路径', () => {
     const config = scenario()
     const jammer = structuredClone(config.jammers[0]) as Jammer
     delete jammer.releaseRange
-    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 15, duration: 30, enabled: true }
+    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: true, showIds: true, error: '', pending: false, locked: false,
         platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }, { value: 'SPOT', label: '瞄准式' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
     expect(wrapper.get('[data-testid="jammer-id"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-testid="jammer-trigger-time"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('新模板无对应参数，不写入脚本；干扰按干扰范围 / 释放范围启停。')
     expect(inputNumber(wrapper, 'jammer-release-range').props('modelValue')).toBeCloseTo((jammer.jammingRange + 9260) / 1000, 3)
     inputNumber(wrapper, 'jammer-range').vm.$emit('update:modelValue', 12.5)
     inputNumber(wrapper, 'jammer-jamming-range').vm.$emit('update:modelValue', 16)
     inputNumber(wrapper, 'jammer-release-range').vm.$emit('update:modelValue', 18)
-    inputNumber(wrapper, 'jammer-direction').vm.$emit('update:modelValue', 270)
-    inputNumber(wrapper, 'jammer-duration').vm.$emit('update:modelValue', 120)
     wrapper.findComponent({ name: 'ElSwitch' }).vm.$emit('update:modelValue', false)
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ detectionRange: 12_500, jammingRange: 16_000, releaseRange: 18_000 })
-    expect(wrapper.emitted('apply')!.at(-1)![1]).toMatchObject({ direction: 270, duration: 120, enabled: false })
+    expect(wrapper.emitted('apply')!.at(-1)![1]).toMatchObject({ enabled: false })
     expect(jammer.releaseRange).toBeUndefined()
 
     inputNumber(wrapper, 'jammer-trigger-time').vm.$emit('update:modelValue', undefined)
@@ -208,7 +214,7 @@ describe('场景参数弹框的真实编辑路径', () => {
   it('干扰设备取消及锁定不回写原对象', async () => {
     const config = scenario()
     const jammer = structuredClone(config.jammers[0]) as Jammer
-    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, duration: 60, enabled: true }
+    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: false, error: '频率非法', pending: false, locked: true,
         platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
@@ -231,7 +237,7 @@ describe('场景参数弹框的真实编辑路径', () => {
   it('dBm 功率只接受 -10～30 的 5 dB 档位，旧瓦特值未编辑时原样保留', async () => {
     const config = scenario()
     const jammer = { ...(structuredClone(config.jammers[0]) as Jammer), defaultPower: 200 }
-    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, duration: 60, enabled: true }
+    const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: true, error: '', pending: false, locked: false,
         platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001, validate: () => [] },

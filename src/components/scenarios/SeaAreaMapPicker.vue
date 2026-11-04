@@ -122,6 +122,7 @@ onBeforeUnmount(destroyMap)
 <template>
   <el-dialog
     :model-value="modelValue"
+    class="scenario-dialog"
     title="框选海面区域"
     width="min(760px, calc(100vw - 2rem))"
     append-to-body

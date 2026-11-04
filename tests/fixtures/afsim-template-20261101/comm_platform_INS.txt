@@ -1,0 +1,203 @@
+
+// -------------------------------------------------------
+// 5.1 后方通信车（福建沿海附近）
+// -------------------------------------------------------
+platform rear_comm_vehicle REAR_COMM_PLATFORM
+  side blue
+  position 24.80n 118.50e   //界面配置的具体位置
+  altitude 0 m
+end_platform
+
+// -------------------------------------------------------
+// 5.2 指挥车（福建沿海）
+// -------------------------------------------------------
+platform command_vehicle COMMAND_VEHICLE_PLATFORM
+  side blue
+  icon 737
+  position 24.66n 118.50e   //界面配置的具体位置
+  altitude 0 m
+  heading 90 deg
+end_platform
+
+// -------------------------------------------------------
+// 5.3 天通卫星（GEO，东经120°）
+// -------------------------------------------------------
+platform tiantong_sat TIAN_TONG_SAT
+  side blue
+  icon satellite
+  creation_time 0 sec
+  position 0n 120e altitude 35786 km heading 90 degrees
+end_platform
+
+// -------------------------------------------------------
+// 5.4 神通卫星（GEO，东经120°，与天通相同）
+// -------------------------------------------------------
+platform shentong_sat SHEN_TONG_SAT
+  side blue
+  icon satellite
+  creation_time 0 sec
+  position 0n 120e altitude 35786 km heading 90 degrees
+end_platform
+
+// ============================================================
+// 无人机编队：福建基地起飞
+// ============================================================
+// 编队参数：
+//   mission_uav_01 → 中继机（距指挥车200km处盘旋）
+//   mission_uav_02 → 任务机A（飞向台北侦查区）
+//   mission_uav_03 → 任务机B（飞向台北侦查区）
+//   三机间距2km，初始编队从福建基地出发
+// ============================================================
+
+// ── 全局路线定义 ──
+
+// 中继机盘旋路线（在200km位置绕圈）
+route relay_loiter
+  position 25.00n 120.80e altitude 8000 m speed 150 kts
+  label LOITER
+  position 25.02n 120.82e altitude 8000 m speed 150 kts
+  position 25.04n 120.80e altitude 8000 m speed 150 kts
+  position 25.02n 120.78e altitude 8000 m speed 150 kts
+  goto LOITER
+end_route
+
+// 任务机A返航路线
+route return_a
+  position 25.03n 121.12e altitude 3200 m speed 200 kts
+  position 24.80n 119.60e altitude 3200 m speed 200 kts
+end_route
+
+// 任务机B返航路线
+route return_b
+  position 25.03n 121.17e altitude 3200 m speed 200 kts
+  position 24.80n 119.60e altitude 3200 m speed 200 kts
+end_route
+
+// 中继机返航路线
+route return_relay
+  position 24.90n 120.00e altitude 8000 m speed 200 kts
+  position 24.66n 119.55e altitude 3200 m speed 200 kts
+end_route
+
+// ── 中继机（任务机01）──
+// 从福建基地起飞 → 飞到距指挥车200km处 → 盘旋充当跳板中继
+platform mission_uav_01 MISSION_UAV_PLATFORM
+  side blue
+  icon F-18
+  heading 90 deg
+
+  route
+    // 福建基地起飞
+    position 24.66n 119.55e altitude 3200 m speed 200 kts
+    // 继位置（距指挥车200km处）
+    position 25.00n 120.80e altitude 8000 m speed 200 kts
+    label RELAY_START
+    // 到达后开始盘旋中继
+    position 25.02n 120.82e altitude 8000 m speed 150 kts
+    position 25.04n 120.80e altitude 8000 m speed 150 kts
+    position 25.02n 120.78e altitude 8000 m speed 150 kts
+    goto RELAY_START
+  end_route
+end_platform
+
+// ── 任务机A（任务机02）──
+// 从福建基地起飞 → 飞过中继机 → 到24海里侦查区 → 侦查20分钟返航
+platform mission_uav_02 MISSION_UAV_PLATFORM
+  side blue
+  icon F-18
+  heading 90 deg
+
+  route
+    //★ 从福建基地起飞（远在 24nm 之外）
+    position 24.66n 119.57e altitude 8000 m speed 200 kts
+    // ★ 飞向侦察区，途中会进入 24nm 范围
+    position 25.03n 121.17e altitude 3200 m speed 150 kts
+    label RECON_A
+    
+    // 侦察盘旋
+    position 25.12n 121.42e altitude 3200 m speed 120 kts
+    position 25.08n 121.42e altitude 3200 m speed 120 kts
+    position 25.08n 121.38e altitude 3200 m speed 120 kts
+    position 25.12n 121.38e altitude 3200 m speed 120 kts
+    goto RECON_A
+  end_route
+
+  execute at_time 2220 sec absolute  // 侦查N分钟后返航
+    PLATFORM.FollowRoute("return_a");
+  end_execute
+end_platform
+
+// ── 任务机B（任务机03）──
+// 从福建基地起飞 → 飞过中继机 → 到24海里侦查区 → 侦查20分钟返航
+platform mission_uav_03 MISSION_UAV_PLATFORM
+  side blue
+  icon F-18
+  heading 90 deg
+
+  route
+    // 福建基地起飞（与任务机A间距5km）
+    position 24.66n 119.62e altitude 3200 m speed 200 kts
+    // 飞向台北侦查区
+    position 25.00n 120.80e altitude 8000 m speed 200 kts
+    // 进入24海里侦查区（更靠近干扰站）
+    position 25.10n 121.45e altitude 3200 m speed 150 kts
+    label RECON_B
+    // 侦查盘旋
+    position 25.12n 121.47e altitude 3200 m speed 120 kts
+    position 25.08n 121.47e altitude 3200 m speed 120 kts
+    position 25.08n 121.43e altitude 3200 m speed 120 kts
+    position 25.12n 121.43e altitude 3200 m speed 120 kts
+    goto RECON_B
+  end_route
+
+  script_variables
+    string uav_role = "TASK_B";
+  end_script_variables
+
+  execute at_time 2220 sec absolute
+    // 侦查20分钟后返航
+    writeln("SCENARIO: [PHASE5] mission_uav_03 returning to base");
+    PLATFORM.FollowRoute("return_b");
+  end_execute
+end_platform
+
+// ============================================================
+// 5.x 干扰源配置
+// ============================================================
+
+// 地面干扰站"预言家"（阳明山主峰附近）
+// 设置30海里（44.448km）侦测范围
+platform jammer_station_01 GROUND_JAMMER_STATION
+  side red
+  icon triangle
+  creation_time 0 sec
+
+  route
+    position 25.15n 121.55e
+  end_route
+
+  script_variables
+    double detection_range_nm = 30.0;   //界面配置，设置30海里
+  end_script_variables
+end_platform
+
+// 空中干扰机（AN/ALQ-99，在台北上空盘旋）
+platform jammer_airborne_01 AIRBORNE_JAMMER_PLATFORM
+  side red
+  icon triangle
+  creation_time 0 sec
+
+  route
+    // 起始点
+    position 25.0345n 121.56e altitude 3000 m heading 0 deg speed 300 km/h
+    label orbit_loop
+    position 25.0345n 121.564e altitude 3000 m speed 300 km/h turn left
+    position 25.03n   121.564e altitude 3000 m speed 300 km/h turn left
+    position 25.0255n 121.564e altitude 3000 m speed 300 km/h turn left
+    position 25.0255n 121.56e  altitude 3000 m speed 300 km/h turn left
+    position 25.0255n 121.556e altitude 3000 m speed 300 km/h turn left
+    position 25.03n   121.556e altitude 3000 m speed 300 km/h turn left
+    position 25.0345n 121.556e altitude 3000 m speed 300 km/h turn left
+    goto orbit_loop
+  end_route
+end_platform

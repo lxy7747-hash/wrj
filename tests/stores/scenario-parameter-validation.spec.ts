@@ -78,6 +78,55 @@ describe('新增场景参数的写入边界', () => {
     expect(config.scenario.environment.rainRateMmPerHour).toBe(101)
   })
 
+  it('写入时三类航点速度至少为 1 m/s，读取旧场景保留正数兼容', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const platformIndex = config.platforms.findIndex(platform => platform.id === 'AIR-01')
+    const platform = config.platforms[platformIndex]!
+    const { longitude, latitude, altitude, speed } = platform.waypoints[0]!
+    const point = { longitude, latitude, altitude, speed }
+    platform.waypoints[0]!.speed = 0.5
+    platform.loiterWaypoints = [{ ...point, speed: 0.5 }, { ...point, longitude: point.longitude + 0.01, speed: 0.5 }]
+    platform.returnPlan = { timeS: 600, waypoints: [{ ...point, speed: 0.5 }] }
+
+    const expectedErrors = [
+      { code: 'SPEED_INVALID', fieldPath: `platforms[${platformIndex}].waypoints[0].speed`, message: '航点速度必填且必须至少为 1 m/s；固定节点请删除航点，仅设置初始位置。' },
+      { code: 'TEMPLATE_ROUTE_SPEED_INVALID', fieldPath: `platforms[${platformIndex}].loiterWaypoints[0].speed`, message: '模板路线点速度必须至少为 1 m/s。' },
+      { code: 'TEMPLATE_ROUTE_SPEED_INVALID', fieldPath: `platforms[${platformIndex}].loiterWaypoints[1].speed`, message: '模板路线点速度必须至少为 1 m/s。' },
+      { code: 'TEMPLATE_ROUTE_SPEED_INVALID', fieldPath: `platforms[${platformIndex}].returnPlan.waypoints[0].speed`, message: '模板路线点速度必须至少为 1 m/s。' },
+    ]
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining(expectedErrors.map(issue => expect.objectContaining(issue))))
+
+    platform.waypoints[0]!.speed = 1
+    platform.loiterWaypoints = platform.loiterWaypoints!.map(routePoint => ({ ...routePoint, speed: 1 }))
+    platform.returnPlan!.waypoints[0]!.speed = 1
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
+  })
+
+  it('前出中继初始位置和普通航点写入时按无人机范围限位，读取旧位置保持兼容', () => {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    const platformIndex = config.platforms.findIndex(platform => platform.type === 'FORWARD_RELAY_NODE')
+    const platform = config.platforms[platformIndex]!
+    Object.assign(platform.initialPosition, { longitude: 117, latitude: 26, altitude: 3200 })
+    platform.waypoints = [{ longitude: 122, latitude: 21, altitude: 5000, speed: 1, arrivalTime: 0 }]
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
+
+    Object.assign(platform.initialPosition, { longitude: 116.999999, latitude: 26 })
+    platform.waypoints[0]!.latitude = 26.000001
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'RELAY_LONGITUDE_INVALID', fieldPath: `platforms[${platformIndex}].initialPosition.longitude`, message: '前出中继初始位置经度必须在 117°E～122°E 范围内。' }),
+      expect.objectContaining({ code: 'RELAY_LATITUDE_INVALID', fieldPath: `platforms[${platformIndex}].waypoints[0].latitude`, message: '前出中继航点纬度必须在 21°N～26°N 范围内。' }),
+    ]))
+    Object.assign(platform.initialPosition, { longitude: 122, latitude: 20.999999 })
+    Object.assign(platform.waypoints[0]!, { longitude: 122.000001, latitude: 21 })
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'RELAY_LATITUDE_INVALID', fieldPath: `platforms[${platformIndex}].initialPosition.latitude`, message: '前出中继初始位置纬度必须在 21°N～26°N 范围内。' }),
+      expect.objectContaining({ code: 'RELAY_LONGITUDE_INVALID', fieldPath: `platforms[${platformIndex}].waypoints[0].longitude`, message: '前出中继航点经度必须在 117°E～122°E 范围内。' }),
+    ]))
+  })
+
   it.each([
     ['rxFrequency', 0, 'LINK_RX_INVALID'], ['rxBandwidth', Number.NaN, 'LINK_RX_INVALID'],
     ['txPolarization', 'circular', 'LINK_POLARIZATION_INVALID'], ['rxPolarization', '', 'LINK_POLARIZATION_INVALID'],

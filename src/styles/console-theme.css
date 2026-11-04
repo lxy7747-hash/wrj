@@ -160,6 +160,27 @@ body {
   text-align: center;
 }
 
+.el-dialog.scenario-dialog {
+  display: flex;
+  flex-direction: column;
+  max-height: 90vh;
+  max-height: 90dvh;
+  margin: 5vh auto;
+  margin: 5dvh auto;
+  overflow: hidden;
+}
+
+.scenario-dialog > .el-dialog__header,
+.scenario-dialog > .el-dialog__footer {
+  flex-shrink: 0;
+}
+
+.scenario-dialog > .el-dialog__body {
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
 .el-table {
   --el-table-bg-color: var(--console-surface);
   --el-table-tr-bg-color: var(--console-surface);

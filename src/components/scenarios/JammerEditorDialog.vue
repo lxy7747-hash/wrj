@@ -6,6 +6,8 @@ import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange } fr
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
+/** 模板 detection_radar 的 minimum_range 1 km。 */
+const DEFAULT_DETECTION_MINIMUM_RANGE_M = 1000
 
 const props = defineProps<{
   modelValue: boolean
@@ -57,6 +59,11 @@ const releaseRangeKm = computed<number | undefined>({
   get: () => editor.value ? Number((readJammerReleaseRange(editor.value) / METERS_PER_KILOMETER).toFixed(3)) : undefined,
   set: value => { if (editor.value) editor.value.releaseRange = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
 })
+/** 侦测最小距离；旧记录缺省时展示模板默认 1 km，编辑后才写入字段。 */
+const detectionMinimumRangeKm = computed<number | undefined>({
+  get: () => editor.value ? Number(((editor.value.detectionMinimumRange ?? DEFAULT_DETECTION_MINIMUM_RANGE_M) / METERS_PER_KILOMETER).toFixed(3)) : undefined,
+  set: value => { if (editor.value) editor.value.detectionMinimumRange = typeof value === 'number' ? value * METERS_PER_KILOMETER : Number.NaN },
+})
 const powerDbmInput = ref<number | undefined>(undefined)
 const powerDbmTouched = ref(false)
 function isControlledPowerDbm(value: unknown): value is number {
@@ -106,7 +113,7 @@ watch(() => props.modelValue, (visible) => {
 <template>
   <el-dialog
     :model-value="modelValue"
-    class="link-editor-dialog"
+    class="link-editor-dialog scenario-dialog"
     :title="editing ? '编辑干扰设备' : '新增干扰设备'"
     width="min(760px, calc(100vw - 2rem))"
     destroy-on-close
@@ -148,26 +155,31 @@ watch(() => props.modelValue, (visible) => {
           </el-form-item>
           <el-form-item required label="干扰中心频率（MHz）" :error="fieldError('frequency')"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
           <el-form-item required label="干扰带宽（MHz）" :error="fieldError('bandwidth')"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
-          <el-form-item label="干扰触发时间（仿真秒）" :error="fieldError('triggerTimeS')"><el-input-number :model-value="editor.triggerTimeS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" /></el-form-item>
+          <el-form-item label="干扰触发时间（仿真秒）" :error="fieldError('triggerTimeS')">
+            <el-input-number :model-value="editor.triggerTimeS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" />
+          </el-form-item>
           <el-form-item required label="方向（°）" :error="fieldError('direction')"><el-input-number v-model="uiEditor.direction" :min="validate ? undefined : 0" :max="validate ? undefined : 360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
           <el-form-item label="俯仰角（°）" :error="fieldError('elevation')"><el-input-number v-model="uiEditor.elevation" :min="validate ? undefined : -10" :max="validate ? undefined : 60" controls-position="right" data-testid="jammer-elevation" /></el-form-item>
-          <el-form-item required label="持续时间（s）" :error="fieldError('duration')"><el-input-number v-model="uiEditor.duration" :min="validate ? undefined : 0" controls-position="right" data-testid="jammer-duration" /></el-form-item>
           <el-form-item label="启用" :error="fieldError('enabled')"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
         </div>
+        <small class="field-hint" data-testid="jammer-retained-hint">同类干扰节点的频率、带宽、功率与探测距离须一致，每个干扰节点只能配置一台干扰设备。</small>
       </section>
       <section class="link-editor-section" aria-labelledby="jammer-detection-title">
         <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>
         <div class="link-editor-grid">
-          <el-form-item label="自动检测" :error="fieldError('autoDetect')"><el-switch v-model="editor.autoDetect" inline-prompt active-text="开启" inactive-text="关闭" data-testid="jammer-auto-detect" /></el-form-item>
           <el-form-item required label="探测范围（km，1～100）" :error="fieldError('detectionRange')">
             <el-input-number v-model="detectionRangeKm" controls-position="right" data-testid="jammer-range" />
-            <small class="field-hint">自动探测发现目标的距离；合同单位为米。</small>
+            <small class="field-hint">同时写入侦测雷达 maximum_range 与地面站 detection_range_nm（换算为海里）。</small>
           </el-form-item>
-          <el-form-item required label="干扰范围（km，1～100）" :error="fieldError('jammingRange')">
+          <el-form-item required label="侦测最小距离（km）" :error="fieldError('detectionMinimumRange')">
+            <el-input-number v-model="detectionMinimumRangeKm" :min="validate ? undefined : 0" :step="0.1" controls-position="right" data-testid="jammer-detection-minimum-range" />
+            <small class="field-hint">写入侦测雷达 minimum_range，须小于探测范围；默认 1 km。</small>
+          </el-form-item>
+          <el-form-item required label="干扰范围（km，0～100）" :error="fieldError('jammingRange')">
             <el-input-number v-model="jammingRangeKm" controls-position="right" data-testid="jammer-jamming-range" />
-            <small class="field-hint">干扰圈接触范围；自动探测仅在此范围内启停干扰，写入 jammer_param 时换算为海里。</small>
+            <small class="field-hint">干扰机进入此距离后开启，写入 jammer_param 的 trigger_radius_nm（海里）；0 表示不触发。</small>
           </el-form-item>
-          <el-form-item required label="释放范围（km，1～100）" :error="fieldError('releaseRange')">
+          <el-form-item required label="释放范围（km，0～100）" :error="fieldError('releaseRange')">
             <el-input-number v-model="releaseRangeKm" controls-position="right" data-testid="jammer-release-range" />
             <small class="field-hint">干扰机离开此距离后释放；不小于干扰范围，写入时换算为海里。</small>
           </el-form-item>

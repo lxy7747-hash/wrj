@@ -8,6 +8,7 @@ import type {
   Platform,
   PlatformType,
   ScenarioIdentity,
+  ScenarioConfig,
   TaskPhase,
   Sensor,
   SensorUiExtension,
@@ -15,12 +16,15 @@ import type {
   ValidationResult,
 } from '../../contracts/domain-models'
 
+import { metersBetween } from './position-distance'
 import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
 import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
-import { PLATFORM_POSITION_RULES } from './platform-position-rules'
+import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
 import { taskPhaseIssue } from './task-phases'
 import { isLinkParameterSource } from './link-parameter-source'
+import { isConfiguredLinkEnabled, readLinkSettings } from './link-settings'
+import { TEMPLATE_ANTENNA_NAMES, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS, readPortParameters, resolveTemplateLinkPorts } from './template-defaults'
 
 const ROOT_KEYS = [
   'schemaVersion',
@@ -35,13 +39,11 @@ const ROOT_KEYS = [
 const SCENARIO_KEYS = ['id', 'name', 'description', 'startTime', 'duration', 'timeStep', 'environment'] as const
 const ENVIRONMENT_KEYS = [
   'seaState',
-  'temperatureC',
-  'humidityPercent',
   'rainRateMmPerHour',
-  'rainLossDbPerKm',
   'multipathEnabled',
 ] as const
-const OPTIONAL_ENVIRONMENT_KEYS = ['simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation',
+const RETIRED_ENVIRONMENT_KEYS = ['temperatureC', 'humidityPercent', 'rainLossDbPerKm'] as const
+const OPTIONAL_ENVIRONMENT_KEYS = [...RETIRED_ENVIRONMENT_KEYS, 'simClockSpeed', 'transmissionDistance', 'rainCloudAttenuation',
   'cloudAltitudeMinM', 'cloudAltitudeMaxM', 'cloudWaterDensityGM3', 'seaPolygon',
   'rainEnabled', 'rainAltitudeLimitM', 'rainAttenuationDb', 'cloudEnabled', 'atmosphereModel', 'simplifiedAttenuationDbPerKm',
   'polarizationMismatchDb', 'pointingErrorDb', 'seaLowAltitudeThresholdM', 'seaPathOverSeaThresholdKm', 'seaModel',
@@ -64,7 +66,9 @@ const GEO_POINT_KEYS = ['longitude', 'latitude'] as const
 /** 海面区域至少需要 3 个顶点才能围成多边形；上限防止误操作生成过大的脚本参数。 */
 export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
-const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'heading'] as const
+/** 已删除的平台字段（初始航向）：旧数据中接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
+const RETIRED_PLATFORM_KEYS = ['heading'] as const
+const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
   'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate'] as const
@@ -73,14 +77,17 @@ export const DATALINK_BANDS = ['C', 'L'] as const
 export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
 const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId', 'toLinkId'] as const
 const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
-const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'autoDetect', 'detectionRange', 'jammingRange'] as const
+const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
+const RETIRED_JAMMER_KEYS = ['autoDetect'] as const
+const OPTIONAL_JAMMER_KEYS = ['triggerTimeS', 'releaseRange', 'detectionMinimumRange', ...RETIRED_JAMMER_KEYS] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
 const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
 const INFORMATION_DEMAND_KEYS = ['id', 'sourcePlatformId', 'destinationPlatformIds', 'informationType', 'volumeMb', 'frequencyHz', 'priority', 'maxLatencyMs', 'minDataRateMbps'] as const
 const UI_EXTENSION_KEYS = ['jammers', 'sensors'] as const
-const JAMMER_UI_EXTENSION_KEYS = ['jammerId', 'direction', 'duration', 'enabled'] as const
-const OPTIONAL_JAMMER_UI_EXTENSION_KEYS = ['elevation'] as const
+const JAMMER_UI_EXTENSION_KEYS = ['jammerId', 'direction', 'enabled'] as const
+const RETIRED_JAMMER_UI_EXTENSION_KEYS = ['duration'] as const
+const OPTIONAL_JAMMER_UI_EXTENSION_KEYS = ['elevation', ...RETIRED_JAMMER_UI_EXTENSION_KEYS] as const
 const SENSOR_UI_EXTENSION_KEYS = ['sensorId', 'type', 'direction', 'probability', 'enabled'] as const
 const OPTIONAL_SENSOR_UI_EXTENSION_KEYS = ['esm'] as const
 const NATIVE_ESM_KEYS = ['sensitivityDbw', 'detectionThresholdDb', 'dwellTimeS', 'revisitTimeS'] as const
@@ -88,6 +95,11 @@ const ANTENNA_GAIN_KEYS = ['tx', 'rx'] as const
 const POSITION_KEYS = ['longitude', 'latitude', 'altitude'] as const
 const WAYPOINT_KEYS = [...POSITION_KEYS, 'speed', 'arrivalTime'] as const
 const OPTIONAL_WAYPOINT_KEYS = ['heading', 'acceleration'] as const
+/**
+ * 可配置普通航点的平台类型，与 2026-11-01 新模板一致：只有任务无人机和前出中继。
+ * 机载干扰平台从初始位置直接进入盘旋，只配盘旋航点；后方通信车、指挥车、卫星、地面干扰站位置固定，只设初始位置。
+ */
+export const WAYPOINT_PLATFORM_TYPES = ['AIRBORNE_MISSION_CLUSTER', 'FORWARD_RELAY_NODE'] as const
 export const BUSINESS_INFORMATION_NODE_TYPES = [
   'REAR_COMMAND_NODE',
   'FORWARD_RELAY_NODE',
@@ -169,6 +181,105 @@ function isClosedObject(value: unknown, keys: readonly string[], optionalKeys: r
     && !Array.isArray(value)
     && Object.keys(value).every((key) => keys.includes(key) || optionalKeys.includes(key))
     && keys.every((key) => Object.hasOwn(value, key))
+}
+
+/**
+ * 原地删除场景中已下线的温湿度、雨衰、干扰自动检测和平台初始航向，
+ * 以及不可配置普通航点的平台上残留的航点（界面不显示这些航点），返回同一对象。
+ * 通信卫星的初始位置同样不在界面显示，统一改为 GEO 定点。
+ * 只处理结构正确的部分，结构错误留给 inspectScenarioConfig 报告。
+ * @param config 从数据库、备份或请求中得到的场景配置。
+ */
+export function dropRetiredScenarioFields<T>(config: T): T {
+  if (typeof config !== 'object' || config === null || Array.isArray(config)) return config
+  const root = config as Record<string, unknown>
+  const scenario = typeof root.scenario === 'object' && root.scenario !== null ? root.scenario as Record<string, unknown> : undefined
+  const environment = scenario?.environment
+  if (typeof environment === 'object' && environment !== null && !Array.isArray(environment)) {
+    for (const key of RETIRED_ENVIRONMENT_KEYS) delete (environment as Record<string, unknown>)[key]
+  }
+  if (Array.isArray(root.jammers)) for (const jammer of root.jammers) {
+    if (typeof jammer !== 'object' || jammer === null || Array.isArray(jammer)) continue
+    for (const key of RETIRED_JAMMER_KEYS) delete jammer[key]
+  }
+  const platforms = typeof config === 'object' && config !== null ? (config as { platforms?: unknown }).platforms : undefined
+  if (!Array.isArray(platforms)) return config
+  for (const platform of platforms) {
+    if (typeof platform !== 'object' || platform === null) continue
+    for (const key of RETIRED_PLATFORM_KEYS) delete (platform as Record<string, unknown>)[key]
+    if ((platform as { type?: unknown }).type === 'COMMUNICATION_SATELLITE') {
+      const position = (platform as { initialPosition?: unknown }).initialPosition
+      if (typeof position === 'object' && position !== null && !Array.isArray(position)) Object.assign(position, SATELLITE_GEO_POSITION)
+    }
+    const waypoints = (platform as { waypoints?: unknown }).waypoints
+    if (!Array.isArray(waypoints)) continue
+    const type = (platform as { type?: unknown }).type
+    if (typeof type === 'string' && type in PLATFORM_TYPE_DOMAINS && !(WAYPOINT_PLATFORM_TYPES as readonly string[]).includes(type)) {
+      waypoints.length = 0
+      continue
+    }
+  }
+  return config
+}
+
+/** 原地删除旧场景界面扩展中的干扰持续时间；交互页的运行命令不受影响。 */
+export function dropRetiredUiExtensionFields<T>(uiExtensions: T): T {
+  const jammers = typeof uiExtensions === 'object' && uiExtensions !== null ? (uiExtensions as { jammers?: unknown }).jammers : undefined
+  if (Array.isArray(jammers)) for (const jammer of jammers) {
+    if (typeof jammer !== 'object' || jammer === null || Array.isArray(jammer)) continue
+    for (const key of RETIRED_JAMMER_UI_EXTENSION_KEYS) delete jammer[key]
+  }
+  return uiExtensions
+}
+
+/** 只用于旧数据读取/导入：原地补回必填运动字段，不改已有值，不在保存入口调用。 */
+export function restoreRequiredMotionFields(config: unknown, uiExtensions?: unknown): void {
+  const root = config as { scenario?: { duration?: unknown }; platforms?: unknown }
+  if (typeof root === 'object' && root !== null && Array.isArray(root.platforms)) {
+    for (const platform of root.platforms) {
+      if (typeof platform !== 'object' || platform === null || !Array.isArray(platform.waypoints)) continue
+      let previous = platform.initialPosition
+      let previousTime = 0
+      const restored = new Set<number>()
+      platform.waypoints.forEach((point: unknown, index: number) => {
+        if (typeof point !== 'object' || point === null || Array.isArray(point)) return
+        const waypoint = point as Record<string, unknown>
+        if (!Object.hasOwn(waypoint, 'arrivalTime') && previous
+          && isFiniteNumber(previous.longitude, -180, 180) && isFiniteNumber(previous.latitude, -90, 90)
+          && isFiniteNumber(waypoint.longitude, -180, 180) && isFiniteNumber(waypoint.latitude, -90, 90)
+          && isFiniteNumber(waypoint.speed, Number.MIN_VALUE)) {
+          waypoint.arrivalTime = previousTime + Math.max(1, metersBetween(previous, {
+            longitude: waypoint.longitude, latitude: waypoint.latitude,
+          }) / waypoint.speed)
+          restored.add(index)
+        }
+        if (isFiniteNumber(waypoint.arrivalTime, 0)) previousTime = waypoint.arrivalTime
+        previous = waypoint
+      })
+      // 从末点向前为缺失值预留 1 秒；无法容纳时留给写入校验，绝不改写已有时刻。
+      let nextTime = isFiniteNumber(root.scenario?.duration, 0) ? root.scenario.duration + 1 : Infinity
+      for (let index = platform.waypoints.length - 1; index >= 0; index -= 1) {
+        const waypoint = platform.waypoints[index]
+        if (typeof waypoint !== 'object' || waypoint === null || !isFiniteNumber(waypoint.arrivalTime, 0)) continue
+        if (restored.has(index) && nextTime >= 1) waypoint.arrivalTime = Math.min(waypoint.arrivalTime, nextTime - 1)
+        nextTime = waypoint.arrivalTime
+      }
+    }
+  }
+  const extensions = uiExtensions as { jammers?: unknown }
+  if (typeof extensions === 'object' && extensions !== null && Array.isArray(extensions.jammers)) {
+    for (const jammer of extensions.jammers) {
+      if (typeof jammer === 'object' && jammer !== null && !Array.isArray(jammer) && !Object.hasOwn(jammer, 'direction')) jammer.direction = 0
+    }
+  }
+}
+
+/** 存储读取和备份校验共用：原地清理已下线字段，再补缺失必填字段；不写回存储。 */
+export function normalizeStoredScenario<C, U>(config: C, uiExtensions?: U): { config: C; uiExtensions: U | undefined } {
+  dropRetiredScenarioFields(config)
+  if (uiExtensions !== undefined) dropRetiredUiExtensionFields(uiExtensions)
+  restoreRequiredMotionFields(config, uiExtensions)
+  return { config, uiExtensions }
 }
 
 /**
@@ -338,7 +449,7 @@ function collectOwnedIds(items: unknown, platformId: string, fields: readonly st
 }
 
 export function waypointSpeedError(value: unknown): string {
-  return isPositiveFiniteNumber(value) ? '' : '航点速度必填且必须大于 0 m/s；固定节点请删除航点，仅设置初始位置。'
+  return isFiniteNumber(value, 1) ? '' : '航点速度必填且必须至少为 1 m/s；固定节点请删除航点，仅设置初始位置。'
 }
 
 /**
@@ -351,7 +462,7 @@ export function waypointSpeedError(value: unknown): string {
  * @remarks 只追加校验错误，不修改坐标或单位。
  */
 function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, errors: ValidationIssue[], mode: 'read' | 'write' = 'read'): void {
-  if (!isClosedObject(value, waypoint ? WAYPOINT_KEYS : POSITION_KEYS, waypoint ? OPTIONAL_WAYPOINT_KEYS : [])) {
+  if (!isClosedObject(value, waypoint ? WAYPOINT_KEYS.filter(key => key !== 'arrivalTime') : POSITION_KEYS, waypoint ? [...OPTIONAL_WAYPOINT_KEYS, 'arrivalTime'] : [])) {
     addError(errors, 'POSITION_SHAPE_INVALID', waypoint ? '航点结构不正确。' : '初始位置结构不正确。', fieldPath)
     return
   }
@@ -363,7 +474,7 @@ function inspectPosition(value: unknown, fieldPath: string, waypoint: boolean, e
       const message = waypointSpeedError(value.speed)
       if (message) addError(errors, 'SPEED_INVALID', message, `${fieldPath}.speed`)
     } else if (!isFiniteNumber(value.speed, 0)) addError(errors, 'SPEED_INVALID', '速度不能小于 0。', `${fieldPath}.speed`)
-    if (!isFiniteNumber(value.arrivalTime, 0)) addError(errors, 'ARRIVAL_TIME_INVALID', '到达时间不能小于 0。', `${fieldPath}.arrivalTime`)
+    if (!isFiniteNumber(value.arrivalTime, 0)) addError(errors, 'ARRIVAL_TIME_INVALID', '到达时间必填且不能小于 0。', `${fieldPath}.arrivalTime`)
     if (Object.hasOwn(value, 'heading') && !isFiniteNumber(value.heading, 0, 360)) addError(errors, 'WAYPOINT_HEADING_INVALID', '航点航向必须在 0 至 360 度之间。', `${fieldPath}.heading`)
     if (Object.hasOwn(value, 'acceleration') && !isFiniteNumber(value.acceleration)) addError(errors, 'WAYPOINT_ACCELERATION_INVALID', '航点加速度必须为有限数值。', `${fieldPath}.acceleration`)
   }
@@ -660,13 +771,109 @@ function inspectSwitchRules(value: unknown, platforms: unknown, links: unknown, 
  * @returns 无返回值。
  * @remarks 只追加校验错误，不修改干扰设备或平台关联数组。
  */
+function inspectTemplateRoutePoints(value: unknown, fieldPath: string, errors: ValidationIssue[], mode: 'read' | 'write'): boolean {
+  if (!Array.isArray(value) || value.length === 0) {
+    addError(errors, 'TEMPLATE_ROUTE_INVALID', '模板路线至少需要一个位置点。', fieldPath)
+    return false
+  }
+  value.forEach((point, index) => {
+    const path = `${fieldPath}[${index}]`
+    if (!isClosedObject(point, [...POSITION_KEYS, 'speed'])) {
+      addError(errors, 'TEMPLATE_ROUTE_POINT_INVALID', '模板路线点必须包含经度、纬度、高度和速度。', path)
+      return
+    }
+    if (!isFiniteNumber(point.longitude, -180, 180)) addError(errors, 'LONGITUDE_INVALID', '经度必须在 -180 至 180 之间。', `${path}.longitude`)
+    if (!isFiniteNumber(point.latitude, -90, 90)) addError(errors, 'LATITUDE_INVALID', '纬度必须在 -90 至 90 之间。', `${path}.latitude`)
+    if (!isFiniteNumber(point.altitude, 0)) addError(errors, 'ALTITUDE_INVALID', '高度不能小于 0。', `${path}.altitude`)
+    if (mode === 'write' ? !isFiniteNumber(point.speed, 1) : !isPositiveFiniteNumber(point.speed)) {
+      addError(errors, 'TEMPLATE_ROUTE_SPEED_INVALID', mode === 'write' ? '模板路线点速度必须至少为 1 m/s。' : '模板路线点速度必须大于 0 m/s。', `${path}.speed`)
+    }
+  })
+  return true
+}
+
+function inspectTemplatePlatformRoutes(value: Record<string, unknown>, index: number, duration: number, errors: ValidationIssue[], mode: 'read' | 'write'): void {
+  const path = `platforms[${index}]`
+  const loiterSupported = value.type === 'AIRBORNE_MISSION_CLUSTER' || value.type === 'FORWARD_RELAY_NODE' || value.type === 'AIRBORNE_JAMMER_PLATFORM'
+  const returnSupported = value.type === 'AIRBORNE_MISSION_CLUSTER' || value.type === 'FORWARD_RELAY_NODE'
+  if (Object.hasOwn(value, 'loiterWaypoints')) {
+    if (!loiterSupported) addError(errors, 'LOITER_NOT_APPLICABLE', '盘旋路线仅支持任务无人机、前出中继或机载干扰平台。', `${path}.loiterWaypoints`)
+    else {
+      const valid = inspectTemplateRoutePoints(value.loiterWaypoints, `${path}.loiterWaypoints`, errors, mode)
+      if (valid && Array.isArray(value.loiterWaypoints) && value.loiterWaypoints.length < 2) addError(errors, 'LOITER_POINT_COUNT_INVALID', '盘旋路线至少需要两个位置点。', `${path}.loiterWaypoints`)
+    }
+  }
+  if (Object.hasOwn(value, 'returnPlan')) {
+    if (!returnSupported) {
+      addError(errors, 'RETURN_NOT_APPLICABLE', '返航计划仅支持任务无人机或前出中继。', `${path}.returnPlan`)
+    } else if (!isClosedObject(value.returnPlan, ['timeS', 'waypoints'])) {
+      addError(errors, 'RETURN_PLAN_INVALID', '返航计划必须包含返航时刻和航点。', `${path}.returnPlan`)
+    } else {
+      if (!isPositiveFiniteNumber(value.returnPlan.timeS) || (isPositiveFiniteNumber(duration) && value.returnPlan.timeS >= duration)) {
+        addError(errors, 'RETURN_TIME_INVALID', '返航时刻必须大于 0 且早于仿真结束时刻。', `${path}.returnPlan.timeS`)
+      }
+      inspectTemplateRoutePoints(value.returnPlan.waypoints, `${path}.returnPlan.waypoints`, errors, mode)
+    }
+  }
+}
+
+function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): void {
+  if (!isClosedObject(value, [], ['ports', 'antennaGains'])) {
+    addError(errors, 'DEVICE_PARAMETERS_INVALID', '通信设备参数结构不正确。', 'deviceParameters')
+    return
+  }
+  if (Object.hasOwn(value, 'ports')) {
+    if (value.ports === null || typeof value.ports !== 'object' || Array.isArray(value.ports)) {
+      addError(errors, 'DEVICE_PORTS_INVALID', '通信端口参数必须为对象。', 'deviceParameters.ports')
+    } else for (const [platformType, ports] of Object.entries(value.ports)) {
+      const platformPath = `deviceParameters.ports.${platformType}`
+      if (!(TEMPLATE_PLATFORM_TYPES as readonly string[]).includes(platformType) || ports === null || typeof ports !== 'object' || Array.isArray(ports)) {
+        addError(errors, 'DEVICE_PORTS_INVALID', '通信平台类型或端口参数不正确。', platformPath)
+        continue
+      }
+      for (const [portName, parameters] of Object.entries(ports)) {
+        const path = `${platformPath}.${portName}`
+        if (readPortParameters({ deviceParameters: undefined }, platformType as (typeof TEMPLATE_PLATFORM_TYPES)[number], portName) === undefined) {
+          addError(errors, 'DEVICE_PORT_UNKNOWN', '该平台类型不包含指定通信端口。', path)
+          continue
+        }
+        if (!isClosedObject(parameters, ['txFrequency', 'txBandwidth', 'txPower', 'rxFrequency', 'rxBandwidth', 'noiseFigureDb', 'transferRate'], ['parameterSource'])) {
+          addError(errors, 'DEVICE_PORT_INVALID', '通信端口参数结构不正确。', path)
+          continue
+        }
+        for (const [key, label] of [['txFrequency', '发射频率'], ['txBandwidth', '发射带宽'], ['txPower', '发射功率'], ['rxFrequency', '接收频率'], ['rxBandwidth', '接收带宽'], ['transferRate', '传输速率']] as const) {
+          if (!isPositiveFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${label}必须大于 0。`, `${path}.${key}`)
+        }
+        if (!isFiniteNumber(parameters.noiseFigureDb, 0)) addError(errors, 'DEVICE_PORT_VALUE_INVALID', '接收机噪声系数必须为非负有限数值。', `${path}.noiseFigureDb`)
+        if (Object.hasOwn(parameters, 'parameterSource')) {
+          if (!isLinkParameterSource(parameters.parameterSource)) addError(errors, 'DEVICE_PORT_SOURCE_INVALID', '通信端口参数来源结构不正确。', `${path}.parameterSource`)
+          else if (parameters.parameterSource.fields.some(field => !(TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS as readonly string[]).includes(field))) {
+            addError(errors, 'DEVICE_PORT_SOURCE_FIELD_INVALID', '通信端口来源只能引用频率、带宽、功率、接收参数、速率或噪声系数。', `${path}.parameterSource.fields`)
+          } else if (parameters.parameterSource.entryKey !== undefined) {
+            addError(errors, 'DEVICE_PORT_SOURCE_ENTRY_INVALID', '通信端口来源不支持枚举条目。', `${path}.parameterSource.entryKey`)
+          }
+        }
+      }
+    }
+  }
+  if (Object.hasOwn(value, 'antennaGains')) {
+    if (value.antennaGains === null || typeof value.antennaGains !== 'object' || Array.isArray(value.antennaGains)) {
+      addError(errors, 'ANTENNA_GAINS_INVALID', '天线增益必须为对象。', 'deviceParameters.antennaGains')
+    } else for (const [name, gain] of Object.entries(value.antennaGains)) {
+      if (!(TEMPLATE_ANTENNA_NAMES as readonly string[]).includes(name) || !isFiniteNumber(gain)) {
+        addError(errors, 'ANTENNA_GAIN_INVALID', '天线类型或峰值增益不正确。', `deviceParameters.antennaGains.${name}`)
+      }
+    }
+  }
+}
+
 function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], warnings: ValidationIssue[], mode: 'read' | 'write', duration: number, jammerPlatformIds: ReadonlySet<string>): void {
   const path = `jammers[${index}]`
   if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'jammingRange')) {
     addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '缺少必填的干扰范围 jammingRange，不支持该旧格式，请使用新版场景数据。', `${path}.jammingRange`)
     return
   }
-  if (!isClosedObject(value, JAMMER_KEYS, ['triggerTimeS', 'releaseRange'])) {
+  if (!isClosedObject(value, JAMMER_KEYS, OPTIONAL_JAMMER_KEYS)) {
     addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
     return
   }
@@ -679,20 +886,58 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   }
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
-  if (typeof value.autoDetect !== 'boolean') addError(errors, 'JAMMER_AUTO_DETECT_INVALID', '自动检测开关格式不正确。', `${path}.autoDetect`)
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '探测范围不能小于 0 m。', `${path}.detectionRange`)
   else if (mode === 'write' && !isFiniteNumber(value.detectionRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RANGE_INVALID', '干扰探测范围必须在 1～100 km 之间。', `${path}.detectionRange`)
   if (!isFiniteNumber(value.jammingRange, 0)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围不能小于 0 m。', `${path}.jammingRange`)
-  else if (mode === 'write' && !isFiniteNumber(value.jammingRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围必须在 1～100 km 之间。', `${path}.jammingRange`)
+  else if (mode === 'write' && !isFiniteNumber(value.jammingRange, 0, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围必须在 0～100 km 之间，0 表示不触发。', `${path}.jammingRange`)
   else if (isFiniteNumber(value.detectionRange, 0) && value.jammingRange > value.detectionRange) {
     warnings.push({ severity: 'WARNING', code: 'JAMMER_RANGE_ORDER', message: '干扰范围大于探测范围；自动探测仍先按探测范围发现目标，仅在干扰范围内启停干扰。', fieldPath: `${path}.jammingRange` })
   }
   if (Object.hasOwn(value, 'releaseRange')) {
-    if (!isFiniteNumber(value.releaseRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RELEASE_RANGE_INVALID', '释放范围必须在 1～100 km 之间。', `${path}.releaseRange`)
+    if (!isFiniteNumber(value.releaseRange, 0, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RELEASE_RANGE_INVALID', '释放范围必须在 0～100 km 之间。', `${path}.releaseRange`)
     else if (isFiniteNumber(value.jammingRange, 0) && value.releaseRange < value.jammingRange) addError(errors, 'JAMMER_RELEASE_RANGE_INVALID', '释放范围不能小于干扰范围。', `${path}.releaseRange`)
+  }
+  if (Object.hasOwn(value, 'detectionMinimumRange')) {
+    if (!isFiniteNumber(value.detectionMinimumRange, 0)) addError(errors, 'JAMMER_DETECTION_MINIMUM_RANGE_INVALID', '最小探测距离必须为非负有限数值。', `${path}.detectionMinimumRange`)
+    else if (isFiniteNumber(value.detectionRange, 0) && value.detectionMinimumRange >= value.detectionRange) addError(errors, 'JAMMER_DETECTION_MINIMUM_RANGE_INVALID', '最小探测距离必须小于探测范围。', `${path}.detectionMinimumRange`)
   }
   // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
   if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
+}
+
+/** D6：同类干扰平台共用参数，每个平台至多挂接一台干扰设备。 */
+function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown[], errors: ValidationIssue[]): void {
+  const platformTypes = new Map<string, string>()
+  platforms.forEach((platform) => {
+    const entry = platform as { id?: unknown; type?: unknown }
+    if (typeof platform === 'object' && platform !== null && typeof entry.id === 'string' && typeof entry.type === 'string') platformTypes.set(entry.id, entry.type)
+  })
+  const byPlatform = new Set<string>()
+  const baselineByType = new Map<string, { frequency: unknown; bandwidth: unknown; defaultPower: unknown; detectionRange: unknown; detectionMinimumRange: unknown }>()
+  jammers.forEach((jammer, index) => {
+    const entry = jammer as { platformId?: unknown; frequency?: unknown; bandwidth?: unknown; defaultPower?: unknown; detectionRange?: unknown; detectionMinimumRange?: unknown }
+    if (typeof jammer !== 'object' || jammer === null || typeof entry.platformId !== 'string') return
+    const path = `jammers[${index}]`
+    if (byPlatform.has(entry.platformId)) addError(errors, 'JAMMER_PLATFORM_DUPLICATED', '每个干扰平台只允许配置一台干扰设备。', `${path}.platformId`)
+    byPlatform.add(entry.platformId)
+    const platformType = platformTypes.get(entry.platformId)
+    if (!platformType) return
+    const current = {
+      frequency: entry.frequency,
+      bandwidth: entry.bandwidth,
+      defaultPower: entry.defaultPower,
+      detectionRange: entry.detectionRange,
+      detectionMinimumRange: Object.hasOwn(jammer, 'detectionMinimumRange') ? entry.detectionMinimumRange : 1000,
+    }
+    const baseline = baselineByType.get(platformType)
+    if (!baseline) {
+      baselineByType.set(platformType, current)
+      return
+    }
+    for (const [key, label] of [['frequency', '频率'], ['bandwidth', '带宽'], ['defaultPower', '功率'], ['detectionRange', '探测范围'], ['detectionMinimumRange', '最小探测距离']] as const) {
+      if (baseline[key] !== current[key]) addError(errors, 'JAMMER_PLATFORM_PARAMETER_CONFLICT', `同一干扰平台类型的${label}必须保持一致。`, `${path}.${key}`)
+    }
+  })
 }
 
 /** 取对象的占用频段 [f-B/2, f+B/2]（MHz）；参数无效时返回 undefined，由字段校验另行报错。 */
@@ -713,7 +958,8 @@ function bandsOverlap(a: [number, number], b: [number, number]): boolean {
  */
 function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly unknown[], warnings: ValidationIssue[]): void {
   const active = links.flatMap((link, index) => {
-    if (!isClosedObject(link, LINK_KEYS, OPTIONAL_LINK_KEYS) || link.enabled === false || typeof link.targetPlatformId !== 'string') return []
+    // 光纤为导引介质，不占用射频频段，不参与同频互扰与干扰覆盖判断。
+    if (!isClosedObject(link, LINK_KEYS, OPTIONAL_LINK_KEYS) || link.enabled === false || link.type === 'FIBER' || typeof link.targetPlatformId !== 'string') return []
     const band = occupiedBand(link)
     return band ? [{ index, id: String(link.id), type: link.type, target: link.targetPlatformId, band }] : []
   })
@@ -778,6 +1024,60 @@ function inspectOutput(value: unknown, timeStep: unknown, errors: ValidationIssu
   if (typeof value.linkQualityEnabled !== 'boolean') addError(errors, 'OUTPUT_LINK_QUALITY_INVALID', '链路质量输出开关格式不正确。', 'output.linkQualityEnabled')
   if (typeof value.eventsEnabled !== 'boolean') addError(errors, 'OUTPUT_EVENTS_INVALID', '事件输出开关格式不正确。', 'output.eventsEnabled')
   if (typeof value.linkSwitchEnabled !== 'boolean') addError(errors, 'OUTPUT_LINK_SWITCH_INVALID', '链路切换输出开关格式不正确。', 'output.linkSwitchEnabled')
+}
+
+/** 在指定方向上判断两端是否可由启用链路连通；仅用于生成器识别无法写入模板的目标。 */
+function isDemandReachable(links: readonly Link[], sourcePlatformId: string, targetPlatformId: string, direction: 'FORWARD' | 'REVERSE' | undefined, includeLaser: boolean): boolean {
+  const queue = [sourcePlatformId]
+  const visited = new Set(queue)
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    if (current === targetPlatformId) return true
+    for (const link of links) {
+      if (link.enabled === false || (!includeLaser && link.type === 'LASER') || (direction !== undefined && link.direction !== direction)) continue
+      if (link.sourcePlatformId !== current || visited.has(link.targetPlatformId)) continue
+      visited.add(link.targetPlatformId)
+      queue.push(link.targetPlatformId)
+    }
+  }
+  return false
+}
+
+/**
+ * 激光链路只保留天线图、不会进入新模板通信端口。业务绑定激光链路，或同方向仅能
+ * 通过激光到达目标时返回精确的业务/目标索引，供生成器过滤；不作为界面校验警告。
+ */
+export function laserOnlyBusinessPaths(config: ScenarioConfig): Array<{ fieldPath: string; demandIndex: number; targetIndex: number | 'ALL' }> {
+  const paths: Array<{ fieldPath: string; demandIndex: number; targetIndex: number | 'ALL' }> = []
+  const settings = readLinkSettings(config)
+  const links = config.links.filter(link => isConfiguredLinkEnabled(link, settings, config.platforms))
+  const demands = config.informationDemand
+  demands.forEach((demand, index) => {
+    if (!isClosedObject(demand, INFORMATION_DEMAND_KEYS, ['direction', 'enabled', 'linkId']) || demand.enabled === false) return
+    const path = `informationDemand[${index}]`
+    if (typeof demand.linkId === 'string') {
+      const bound = links.find(link => link.id === demand.linkId)
+      if (bound?.enabled !== false && bound?.type === 'LASER') {
+        paths.push({ fieldPath: path + '.linkId', demandIndex: index, targetIndex: 'ALL' })
+      }
+      return
+    }
+    const sourcePlatformId = demand.sourcePlatformId
+    const destinationPlatformIds = demand.destinationPlatformIds
+    if (typeof sourcePlatformId !== 'string' || !Array.isArray(destinationPlatformIds)) return
+    const direction = demand.direction === 'FORWARD' || demand.direction === 'REVERSE'
+      ? demand.direction
+      : typeof demand.informationType === 'string' && Object.hasOwn(INFORMATION_TYPE_DIRECTIONS, demand.informationType)
+        ? INFORMATION_TYPE_DIRECTIONS[demand.informationType as InformationTypeName]
+        : undefined
+    destinationPlatformIds.forEach((target, targetIndex) => {
+      if (typeof target !== 'string'
+        || !isDemandReachable(links, sourcePlatformId, target, direction, true)
+        || isDemandReachable(links, sourcePlatformId, target, direction, false)) return
+      paths.push({ fieldPath: path + '.destinationPlatformIds[' + targetIndex + ']', demandIndex: index, targetIndex })
+    })
+  })
+  return paths
 }
 
 /** 校验一项信息需求的引用、数量、优先级和性能约束。 */
@@ -848,13 +1148,12 @@ export function inspectScenarioUiExtensions(
 
   value.jammers.forEach((extension, index) => {
     const path = `uiExtensions.jammers[${index}]`
-    if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS, OPTIONAL_JAMMER_UI_EXTENSION_KEYS)) {
+    if (!isClosedObject(extension, JAMMER_UI_EXTENSION_KEYS.filter(key => key !== 'direction'), [...OPTIONAL_JAMMER_UI_EXTENSION_KEYS, 'direction'])) {
       addError(errors, 'JAMMER_UI_EXTENSION_SHAPE_INVALID', '干扰设备界面扩展结构不正确。', path)
       return
     }
     if (typeof extension.jammerId !== 'string' || extension.jammerId.trim() === '') addError(errors, 'JAMMER_UI_EXTENSION_ID_INVALID', '干扰设备扩展 ID 为必填项。', `${path}.jammerId`)
     if (!isFiniteNumber(extension.direction, 0, 360)) addError(errors, 'JAMMER_UI_EXTENSION_DIRECTION_INVALID', '干扰方向必须在 0 至 360 度之间。', `${path}.direction`)
-    if (!isFiniteNumber(extension.duration, 0)) addError(errors, 'JAMMER_UI_EXTENSION_DURATION_INVALID', '干扰持续时间不能小于 0 秒。', `${path}.duration`)
     if (Object.hasOwn(extension, 'elevation') && !isFiniteNumber(extension.elevation, -10, 60)) addError(errors, 'JAMMER_UI_EXTENSION_ELEVATION_INVALID', '干扰俯仰角必须在 -10 至 60 度之间。', `${path}.elevation`)
     if (typeof extension.enabled !== 'boolean') addError(errors, 'JAMMER_UI_EXTENSION_ENABLED_INVALID', '干扰设备启用开关格式不正确。', `${path}.enabled`)
   })
@@ -954,7 +1253,7 @@ function inspectPlatformReferences(
 export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = 'read'): ScenarioInspection {
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
-  if (!isClosedObject(value, ROOT_KEYS, ['linkSettings', 'jammingEnabled'])) {
+  if (!isClosedObject(value, ROOT_KEYS, ['linkSettings', 'jammingEnabled', 'deviceParameters'])) {
     addError(errors, 'SCENARIO_SHAPE_INVALID', '场景配置结构不正确。', 'config')
     return { result: { valid: false, errors, warnings } }
   }
@@ -968,7 +1267,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Object.hasOwn(value, 'linkSettings')) inspectLinkSettings(value.linkSettings, value.platforms, errors, mode, value.links, value.jammers, value.informationDemand)
   if (Object.hasOwn(value, 'jammingEnabled') && typeof value.jammingEnabled !== 'boolean') addError(errors, 'JAMMING_ENABLED_INVALID', '干扰总开关必须为布尔值。', 'jammingEnabled')
 
-  if (!isClosedObject(value.scenario, SCENARIO_KEYS, ['phases'])) {
+  if (!isClosedObject(value.scenario, SCENARIO_KEYS, ['phases', 'realtime'])) {
     addError(errors, 'SCENARIO_IDENTITY_INVALID', '场景基础信息结构不正确。', 'scenario')
     return { result: { valid: false, errors, warnings } }
   }
@@ -979,6 +1278,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (!isRfc3339DateTime(scenario.startTime)) addError(errors, 'START_TIME_INVALID', '开始时间必须是有效时间。', 'scenario.startTime')
   if (!isFiniteNumber(scenario.duration, Number.MIN_VALUE)) addError(errors, 'DURATION_INVALID', '仿真时长必须大于 0 秒。', 'scenario.duration')
   if (!isFiniteNumber(scenario.timeStep, Number.MIN_VALUE)) addError(errors, 'TIME_STEP_INVALID', '时间步长必须大于 0 秒。', 'scenario.timeStep')
+  if (Object.hasOwn(scenario, 'realtime') && typeof scenario.realtime !== 'boolean') addError(errors, 'REALTIME_INVALID', '实时运行开关必须为布尔值。', 'scenario.realtime')
   const phaseIssue = taskPhaseIssue(scenario.phases, typeof scenario.duration === 'number' ? scenario.duration : 0)
   if (phaseIssue) addError(errors, 'TASK_PHASE_INVALID', phaseIssue.message, phaseIssue.fieldPath)
 
@@ -1039,19 +1339,8 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   else if (mode === 'write' && !(Number.isInteger(environment.seaState) && environment.seaState <= SEA_STATE_MAX)) {
     addError(errors, 'SEA_STATE_INVALID', `海况等级须为 0～${SEA_STATE_MAX} 的整数，0 表示不启用海况损耗。`, 'scenario.environment.seaState')
   }
-  if (!isFiniteNumber(environment.temperatureC)) addError(errors, 'TEMPERATURE_INVALID', '温度必须是有效数值。', 'scenario.environment.temperatureC')
-  if (!isFiniteNumber(environment.humidityPercent, 0, 100)) addError(errors, 'HUMIDITY_INVALID', '相对湿度必须在 0 至 100 之间。', 'scenario.environment.humidityPercent')
   if (!isFiniteNumber(environment.rainRateMmPerHour, 0)) addError(errors, 'RAIN_RATE_INVALID', '降雨率不能小于 0。', 'scenario.environment.rainRateMmPerHour')
-  if (!isFiniteNumber(environment.rainLossDbPerKm, 0)) addError(errors, 'RAIN_LOSS_INVALID', '雨衰不能小于 0。', 'scenario.environment.rainLossDbPerKm')
   if (typeof environment.multipathEnabled !== 'boolean') addError(errors, 'MULTIPATH_INVALID', '多径效应开关格式不正确。', 'scenario.environment.multipathEnabled')
-  if (environment.rainLossDbPerKm === 0.07) {
-    warnings.push({
-      severity: 'WARNING',
-      code: 'RAIN_LOSS_DEFAULT_MISMATCH',
-      message: '当前雨衰值未匹配设备默认值，生成脚本前需要确认。',
-      fieldPath: 'scenario.environment.rainLossDbPerKm',
-    })
-  }
 
   if (Array.isArray(value.platforms)) {
     const platforms = value.platforms
@@ -1117,8 +1406,8 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       } else if (Object.hasOwn(platform, 'satelliteType')) {
         addError(errors, 'SATELLITE_TYPE_NOT_APPLICABLE', '只有通信卫星可以配置卫星类型。', `${path}.satelliteType`)
       }
-      if (Object.hasOwn(platform, 'heading') && !isFiniteNumber(platform.heading, 0, 360)) {
-        addError(errors, 'PLATFORM_HEADING_INVALID', '平台初始航向必须在 0 至 360 度之间。', `${path}.heading`)
+      if (Object.hasOwn(platform, 'loiterWaypoints') || Object.hasOwn(platform, 'returnPlan')) {
+        inspectTemplatePlatformRoutes(platform, index, typeof scenario.duration === 'number' ? scenario.duration : 0, errors, mode)
       }
       const platformCategoryValid = typeof platform.category === 'string' && (DEPLOYMENT_DOMAINS as readonly string[]).includes(platform.category)
       if (!platformCategoryValid) {
@@ -1127,41 +1416,54 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         addError(errors, 'PLATFORM_CATEGORY_MISMATCH', '部署域必须与场景实体类型一致。', `${path}.category`)
       }
       inspectPosition(platform.initialPosition, `${path}.initialPosition`, false, errors)
-      if (mode === 'write' && platform.type === 'AIRBORNE_MISSION_CLUSTER' && isClosedObject(platform.initialPosition, POSITION_KEYS)) {
-        const rule = PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER!
+      if (mode === 'write' && typeof platform.type === 'string'
+        && (WAYPOINT_PLATFORM_TYPES as readonly string[]).includes(platform.type)
+        && isClosedObject(platform.initialPosition, POSITION_KEYS)) {
+        const rule = PLATFORM_POSITION_RULES[platform.type as PlatformType]!
+        const relay = platform.type === 'FORWARD_RELAY_NODE'
         if (!isFiniteNumber(platform.initialPosition.longitude, rule.minLongitude, rule.maxLongitude)) {
-          addError(errors, 'FORMATION_LONGITUDE_INVALID', '无人机集群编队原点经度必须在 117°E～122°E 范围内。', `${path}.initialPosition.longitude`)
+          addError(errors, relay ? 'RELAY_LONGITUDE_INVALID' : 'FORMATION_LONGITUDE_INVALID',
+            relay ? '前出中继初始位置经度必须在 117°E～122°E 范围内。' : '无人机集群编队原点经度必须在 117°E～122°E 范围内。', `${path}.initialPosition.longitude`)
         }
         if (!isFiniteNumber(platform.initialPosition.latitude, rule.minLatitude, rule.maxLatitude)) {
-          addError(errors, 'FORMATION_LATITUDE_INVALID', '无人机集群编队原点纬度必须在 21°N～26°N 范围内。', `${path}.initialPosition.latitude`)
+          addError(errors, relay ? 'RELAY_LATITUDE_INVALID' : 'FORMATION_LATITUDE_INVALID',
+            relay ? '前出中继初始位置纬度必须在 21°N～26°N 范围内。' : '无人机集群编队原点纬度必须在 21°N～26°N 范围内。', `${path}.initialPosition.latitude`)
         }
       }
       if (!Array.isArray(platform.waypoints)) {
         addError(errors, 'WAYPOINTS_INVALID', '航点必须是数组。', `${path}.waypoints`)
+      } else if (mode === 'write' && platform.waypoints.length > 0 && typeof platform.type === 'string'
+        && !(WAYPOINT_PLATFORM_TYPES as readonly string[]).includes(platform.type)) {
+        // 只拦写入；旧场景读取不报错，打开后在平台弹框里删除航点即可保存。
+        addError(errors, 'WAYPOINTS_NOT_APPLICABLE', '该类平台位置固定，不能配置航点，请删除航点，仅设置初始位置。', `${path}.waypoints`)
       } else {
         let previousArrivalTime: number | undefined
         platform.waypoints.forEach((waypoint, waypointIndex) => {
           const waypointPath = `${path}.waypoints[${waypointIndex}]`
           inspectPosition(waypoint, waypointPath, true, errors, mode)
-          if (mode === 'write' && platform.type === 'AIRBORNE_MISSION_CLUSTER' && isClosedObject(waypoint, WAYPOINT_KEYS)) {
-            const rule = PLATFORM_POSITION_RULES.AIRBORNE_MISSION_CLUSTER!
+          if (mode === 'write' && typeof waypoint === 'object' && waypoint !== null && isFiniteNumber(waypoint.arrivalTime, 0)) {
+            if (isPositiveFiniteNumber(scenario.duration) && waypoint.arrivalTime > scenario.duration) {
+              addError(errors, 'ARRIVAL_TIME_EXCEEDS_DURATION', '航点到达时间不能超过场景仿真时长。', `${waypointPath}.arrivalTime`)
+            }
+            if (previousArrivalTime !== undefined && waypoint.arrivalTime <= previousArrivalTime) {
+              addError(errors, 'ARRIVAL_TIME_NOT_INCREASING', '航点到达时间必须严格递增。', `${waypointPath}.arrivalTime`)
+            }
+            previousArrivalTime = waypoint.arrivalTime
+          }
+          if (mode === 'write' && typeof platform.type === 'string'
+            && (WAYPOINT_PLATFORM_TYPES as readonly string[]).includes(platform.type)
+            && isClosedObject(waypoint, WAYPOINT_KEYS, OPTIONAL_WAYPOINT_KEYS)) {
+            const rule = PLATFORM_POSITION_RULES[platform.type as PlatformType]!
+            const relay = platform.type === 'FORWARD_RELAY_NODE'
             if (!isFiniteNumber(waypoint.longitude, rule.minLongitude, rule.maxLongitude)) {
-              addError(errors, 'WAYPOINT_LONGITUDE_INVALID', '无人机集群航点经度必须在 117°E～122°E 范围内。', `${waypointPath}.longitude`)
+              addError(errors, relay ? 'RELAY_LONGITUDE_INVALID' : 'WAYPOINT_LONGITUDE_INVALID',
+                relay ? '前出中继航点经度必须在 117°E～122°E 范围内。' : '无人机集群航点经度必须在 117°E～122°E 范围内。', `${waypointPath}.longitude`)
             }
             if (!isFiniteNumber(waypoint.latitude, rule.minLatitude, rule.maxLatitude)) {
-              addError(errors, 'WAYPOINT_LATITUDE_INVALID', '无人机集群航点纬度必须在 21°N～26°N 范围内。', `${waypointPath}.latitude`)
+              addError(errors, relay ? 'RELAY_LATITUDE_INVALID' : 'WAYPOINT_LATITUDE_INVALID',
+                relay ? '前出中继航点纬度必须在 21°N～26°N 范围内。' : '无人机集群航点纬度必须在 21°N～26°N 范围内。', `${waypointPath}.latitude`)
             }
           }
-          if (typeof waypoint !== 'object' || waypoint === null) return
-          const arrivalTime = (waypoint as { arrivalTime?: unknown }).arrivalTime
-          if (!isFiniteNumber(arrivalTime, 0)) return
-          if (isFiniteNumber(scenario.duration, Number.MIN_VALUE) && arrivalTime > scenario.duration) {
-            addError(errors, 'ARRIVAL_TIME_EXCEEDS_DURATION', '航点到达时间不能超过场景仿真时长。', `${waypointPath}.arrivalTime`)
-          }
-          if (previousArrivalTime !== undefined && arrivalTime <= previousArrivalTime) {
-            addError(errors, 'ARRIVAL_TIME_NOT_INCREASING', '航点到达时间必须严格递增。', `${waypointPath}.arrivalTime`)
-          }
-          previousArrivalTime = arrivalTime
         })
       }
       const platformId = typeof platform.id === 'string' ? platform.id : ''
@@ -1181,6 +1483,11 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     if (linkIds.size !== value.links.length) addError(errors, 'LINK_ID_DUPLICATED', '链路 ID 不允许为空或重复。', 'links')
     value.links.forEach((link, index) => {
       inspectLink(link, index, platformIds, errors, mode)
+      if (mode === 'write' && typeof link === 'object' && link !== null && Array.isArray(value.platforms)) {
+        const resolution = resolveTemplateLinkPorts({ platforms: value.platforms as Platform[] }, link as Link)
+        if (resolution.status === 'ERROR') addError(errors, 'TEMPLATE_PORT_MAPPING_INVALID', resolution.message, `links[${index}]`)
+        else if (resolution.status === 'WARNING' && link.type !== 'LASER') warnings.push({ severity: 'WARNING', code: 'TEMPLATE_PORT_MAPPING_WARNING', message: resolution.message, fieldPath: `links[${index}]` })
+      }
       if (typeof link === 'object' && link !== null && typeof link.relayPlatformId === 'string'
         && Array.isArray(value.platforms) && !value.platforms.some((p) => (
           typeof p === 'object' && p !== null && p.id === link.relayPlatformId
@@ -1208,7 +1515,10 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     const jammerPlatformIds = collectIds(Array.isArray(value.platforms)
       ? value.platforms.filter(platform => isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS) && isJammerPlatformType(platform.type)) : [])
     value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, warnings, mode, scenario.duration as number, jammerPlatformIds))
+    if (mode === 'write' && Array.isArray(value.platforms)) inspectTemplateJammerConsistency(value.jammers, value.platforms, errors)
   }
+
+  if (Object.hasOwn(value, 'deviceParameters')) inspectDeviceParameters(value.deviceParameters, errors)
 
   if (Array.isArray(value.links)) inspectSpectrumConflicts(value.links, Array.isArray(value.jammers) ? value.jammers : [], warnings)
 
@@ -1252,10 +1562,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       environment: {
         ...environment,
         seaState: environment.seaState as number,
-        temperatureC: environment.temperatureC as number,
-        humidityPercent: environment.humidityPercent as number,
         rainRateMmPerHour: environment.rainRateMmPerHour as number,
-        rainLossDbPerKm: environment.rainLossDbPerKm as number,
         multipathEnabled: environment.multipathEnabled as boolean,
       },
     },

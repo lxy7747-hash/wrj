@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
-import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime } from '../../src/features/scenarios/scenario-validation.js'
+import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime, normalizeStoredScenario } from '../../src/features/scenarios/scenario-validation.js'
 import { isEquipmentParameter, isEquipmentDetails } from '../../src/features/admin/equipment-contract.js'
 import { isAccessControlConfig } from '../../src/features/admin/access-control.js'
 import { isMasterData, isMasterDetails } from '../../src/features/admin/admin-contract.js'
@@ -36,10 +36,13 @@ export function validateSystemSnapshot(db: DatabaseSync): void {
       || !/^[a-f0-9]{64}$/i.test(String(row.password_hash)) || (row.last_login_at !== null && !isRfc3339DateTime(row.last_login_at))) throw new Error('账号内容无效。')
   }
   for (const table of ['scenarios', 'scenario_templates']) for (const row of db.prepare(`SELECT * FROM main.${table}`).all()) {
-    const config = inspectScenarioConfig(JSON.parse(String(row.config_json)), 'read')
+    // 仅整理校验副本；旧字段在恢复后的正常读取中按同样规则处理。
+    const parsedExtensions: unknown = row.ui_extensions_json === null ? undefined : JSON.parse(String(row.ui_extensions_json))
+    const { config: stored, uiExtensions } = normalizeStoredScenario(JSON.parse(String(row.config_json)) as unknown, parsedExtensions)
+    const config = inspectScenarioConfig(stored, 'read')
     if (!config.result.valid || !config.identity || !config.jammers || !config.sensors
       || (table === 'scenarios' && (config.identity.id !== row.id || config.identity.name !== row.name))) throw new Error('场景内容无效。')
-    if (row.ui_extensions_json !== null && !inspectScenarioUiExtensions(JSON.parse(String(row.ui_extensions_json)), config.jammers.map(jammer => jammer.id), config.sensors.map(sensor => sensor.id)).result.valid) throw new Error('场景扩展无效。')
+    if (uiExtensions !== undefined && !inspectScenarioUiExtensions(uiExtensions, config.jammers.map(jammer => jammer.id), config.sensors.map(sensor => sensor.id)).result.valid) throw new Error('场景扩展无效。')
   }
   const accessRows = db.prepare('SELECT * FROM access.access_control').all()
   const access: unknown = JSON.parse(String(accessRows[0]?.config))

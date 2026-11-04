@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
 import type { EquipmentParameter, LinkParameterSource, MasterData, ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { prepareLinkEquipment } from '../../src/features/scenarios/link-equipment-parameters.js'
 import { prepareLinkMasterData } from '../../src/features/scenarios/link-master-parameters.js'
 import type { ScenarioStorage } from '../scenarios/projection.js'
-import { ParameterSourceError, readLinkParameterSource } from '../scenarios/parameter-sources.js'
+import { ParameterSourceError, portParameterSourceChanges, readLinkParameterSource, validatePortParameterSources } from '../scenarios/parameter-sources.js'
+import { portParameterTargets } from '../../src/features/scenarios/port-parameter-source.js'
 
 /** 仅限非敏感开发数据；普通 SQLite 不提供本项目要求的加密或密钥管理。 */
 export class ScenarioSqliteStorage implements ScenarioStorage {
@@ -57,12 +58,13 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   private readRow(row: Record<string, unknown>): ScenarioDraft {
     if (typeof row.config_json !== 'string' || typeof row.ui_extensions_json !== 'string'
       || !Number.isSafeInteger(row.revision) || Number(row.revision) < 1) throw new Error('场景存储结构不正确。')
-    const config: unknown = JSON.parse(row.config_json)
+    const config: unknown = dropRetiredScenarioFields(JSON.parse(row.config_json))
+    const uiExtensions: unknown = dropRetiredUiExtensionFields(JSON.parse(row.ui_extensions_json))
+    restoreRequiredMotionFields(config, uiExtensions)
     const inspection = inspectScenarioConfig(config, 'read')
     if (!inspection.result.valid || !inspection.identity || inspection.identity.id !== row.id || inspection.identity.name !== row.name) {
       throw new Error('数据库场景配置校验失败。')
     }
-    const uiExtensions: unknown = JSON.parse(row.ui_extensions_json)
     const extensions = inspectScenarioUiExtensions(uiExtensions, inspection.jammers!.map(item => item.id), inspection.sensors!.map(item => item.id))
     if (!extensions.result.valid) throw new Error('数据库场景界面扩展校验失败。')
     return {
@@ -76,7 +78,8 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   }
 
   save(draft: ScenarioDraft, expected: { id: string; revision: number } | undefined): boolean {
-    if (!this.hasSources && draft.config.links.some(link => readLinkParameterSource(link) !== undefined)) {
+    if (!this.hasSources && (draft.config.links.some(link => readLinkParameterSource(link) !== undefined)
+      || portParameterTargets(draft.config).some(target => target.parameters.parameterSource))) {
       throw new Error('参数来源需要附加的装备和通用数据存储。')
     }
     this.db.exec('BEGIN IMMEDIATE')
@@ -91,7 +94,8 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
       }
       if (this.hasSources) {
         // 仅跨库引用写入要求回滚日志；不修改现有模式，也不阻断旧场景读取或普通保存。
-        if ([...(current?.config.links ?? []), ...draft.config.links].some(link => link.parameterSource)) {
+        if ([...(current?.config.links ?? []), ...draft.config.links].some(link => link.parameterSource)
+          || [...(current ? portParameterTargets(current.config) : []), ...portParameterTargets(draft.config)].some(target => target.parameters.parameterSource)) {
           for (const scope of ['main', 'equipment', 'master']) {
             const mode = Object.values(this.db.prepare(`PRAGMA ${scope}.journal_mode`).get()!)[0]
             if (!['delete', 'truncate', 'persist'].includes(String(mode))) throw new Error('参数来源保存需要所有数据库使用回滚日志模式。')
@@ -104,7 +108,7 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET name = excluded.name, config_json = excluded.config_json,
           ui_extensions_json = excluded.ui_extensions_json, revision = excluded.revision
-      `).run(draft.config.scenario.id, draft.config.scenario.name, JSON.stringify(draft.config), JSON.stringify(draft.uiExtensions), draft.revision)
+      `).run(draft.config.scenario.id, draft.config.scenario.name, JSON.stringify(dropRetiredScenarioFields(structuredClone(draft.config))), JSON.stringify(dropRetiredUiExtensionFields(structuredClone(draft.uiExtensions))), draft.revision)
       this.db.exec('COMMIT')
       return true
     } catch (error) {
@@ -140,6 +144,25 @@ export class ScenarioSqliteStorage implements ScenarioStorage {
   }
 
   private syncParameterSources(previous: ScenarioConfig | undefined, draft: ScenarioDraft): void {
+    validatePortParameterSources(previous, draft, {
+      equipment: (id, version, historical) => (historical ? this.sourceRecord('equipment', id, version, 'equipment_parameters', 'equipment_history', 'parameters_json') : this.currentSource('equipment', id, 'equipment_parameters', 'parameters_json')) as EquipmentParameter | undefined,
+      master: (id, version, historical) => (historical ? this.sourceRecord('master', id, version, 'master_data', 'master_data_history', 'data_json') : this.currentSource('master', id, 'master_data', 'data_json')) as MasterData | undefined,
+    })
+    for (const { id, old, source, unchanged, target } of portParameterSourceChanges(previous, draft)) {
+      if (old?.kind === 'EQUIPMENT' && (!source || source.kind !== old.kind || source.sourceId !== old.sourceId || source.sourceVersion !== old.sourceVersion)) {
+        this.db.prepare('DELETE FROM equipment.equipment_references WHERE scenario_id = ? AND link_id = ? AND equipment_id = ?').run(draft.config.scenario.id, id, old.sourceId)
+      }
+      if (!source || unchanged) continue
+      if (source.kind === 'EQUIPMENT') {
+        const saved = this.db.prepare(`INSERT INTO equipment.equipment_references (scenario_id, link_id, equipment_id, equipment_version)
+          SELECT ?, ?, id, version FROM equipment.equipment_parameters WHERE id = ? AND version = ? AND COALESCE(json_extract(parameters_json, '$.active'), 1) = 1
+          ON CONFLICT(scenario_id, link_id) DO UPDATE SET equipment_id = excluded.equipment_id, equipment_version = excluded.equipment_version`)
+          .run(draft.config.scenario.id, id, source.sourceId, source.sourceVersion)
+        if (saved.changes !== 1) throw new ParameterSourceError('CONFLICT', `${target!.path}.parameterSource`, '端口装备来源已停用或版本已变化。')
+      } else this.db.prepare(`INSERT INTO master.master_data_references (data_id, data_version, target_type, target_id, target_version)
+        VALUES (?, ?, 'SCENARIO', ?, ?) ON CONFLICT(data_id, data_version, target_type, target_id, target_version) DO NOTHING`)
+        .run(source.sourceId, source.sourceVersion, draft.config.scenario.id, String(draft.revision))
+    }
     for (const [index, link] of draft.config.links.entries()) {
       const source = readLinkParameterSource(link)
       const oldLink = previous?.links.find(item => item.id === link.id)

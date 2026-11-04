@@ -2,10 +2,10 @@ import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
-import { parseAfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
+import { parseAfsimEventLog, type AfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../src/features/situation/initial-nodes.js'
-import { fileConnectionTypes, type FileCommunicationConnection } from '../../src/features/situation/file-communication-links.js'
+import { FILE_COMMUNICATION_LABELS, fileConnectionTypes, type FileCommunicationConnection, type FileCommunicationType } from '../../src/features/situation/file-communication-links.js'
 import { buildFileDeviceEvents } from '../../src/features/situation/file-device-events.js'
 import { buildFileMessageLinks } from '../../src/features/situation/file-message-links.js'
 import { buildFilePlatformDeletions } from '../../src/features/situation/platform-lifecycle.js'
@@ -347,16 +347,7 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
       time: state.time, sourceEventId: state.sourceEventId }
   })
   const systems = new Map(parsed.communicationSystems.map(system => [JSON.stringify([system.platformName, system.name]), system.type]))
-  const connections: FileCommunicationConnection[] = []
-  for (const record of parsed.connections) {
-    if (record.scope !== 'INTER_PLATFORM') continue
-    const sourceType = systems.get(JSON.stringify([record.source.platformName, record.source.communicationName]))
-    const targetType = systems.get(JSON.stringify([record.target.platformName, record.target.communicationName]))
-    if (sourceType && targetType) {
-      const connection = { ...record, sourceType, targetType }
-      if (fileConnectionTypes(connection).length) connections.push(connection)
-    }
-  }
+  const connections = resolveManifestConnections(parsed)
   const deviceEvents = buildFileDeviceEvents(parsed.events, new Set(nodes.map(node => node.platformId)))
   // 业务链路在服务端推导：浏览器不接触原始事件，且 systems 的键与设备类型索引同形。
   const messageLinks = buildFileMessageLinks(parsed.events, new Set(nodes.map(node => node.platformId)), systems).links
@@ -366,4 +357,57 @@ async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot>
     ...(incompleteMessages ? { messageDetailsComplete: false, messageDetailEventCount: parsed.messageDetailEventCount } : {}) }
   if (!isInitialNodeSnapshot(snapshot)) throw new Error('日志初始位置为空或格式不正确。')
   return snapshot
+}
+
+const platformPortKey = (platformId: string, portId: string) => JSON.stringify([platformId, portId])
+const connectionKey = (sourcePlatformId: string, sourcePortId: string, targetPlatformId: string, targetPortId: string) => JSON.stringify([
+  platformPortKey(sourcePlatformId, sourcePortId), platformPortKey(targetPlatformId, targetPortId),
+])
+const knownConnectionType = (value: unknown): value is FileCommunicationType => typeof value === 'string' && Object.hasOwn(FILE_COMMUNICATION_LABELS, value)
+
+/**
+ * 把事件中的连接注册转换为可显示的连接记录。新模板端口按事件里的系统类型和端口名分类；
+ * 已归档的通用射频记录，只有当可选的 manifest 中完整的“平台 + 端口”端点对恰好对应一种链路类型时，
+ * 才由 manifest 补充类型。归档设备编号视为不透明标识，不改写，也不按文本推断类型。
+ */
+export function resolveManifestConnections(parsed: Pick<AfsimEventLog, 'communicationSystems' | 'connections'>, manifestDevices?: unknown): FileCommunicationConnection[] {
+  const systems = new Map(parsed.communicationSystems.map(system => [platformPortKey(system.platformName, system.name), system.type]))
+  const manifestTypes = new Map<string, Set<FileCommunicationType>>()
+  const bind = (source: { platformId: string; deviceId: string }, target: { platformId: string; deviceId: string }, type: FileCommunicationType) => {
+    for (const key of [connectionKey(source.platformId, source.deviceId, target.platformId, target.deviceId), connectionKey(target.platformId, target.deviceId, source.platformId, source.deviceId)]) {
+      const current = manifestTypes.get(key) ?? new Set<FileCommunicationType>(); current.add(type); manifestTypes.set(key, current)
+    }
+  }
+  if (Array.isArray(manifestDevices)) for (const raw of manifestDevices) {
+    if (!raw || typeof raw !== 'object') continue
+    const item = raw as Record<string, unknown>, type = item.linkType
+    const source = item.source as Record<string, unknown> | undefined, target = item.target as Record<string, unknown> | undefined
+    if (!knownConnectionType(type) || !source || !target || typeof source.platformId !== 'string' || typeof source.deviceId !== 'string' || typeof target.platformId !== 'string' || typeof target.deviceId !== 'string') continue
+    const relay = typeof item.relayPlatformId === 'string' && typeof item.relayDeviceId === 'string'
+      ? { platformId: item.relayPlatformId, deviceId: item.relayDeviceId }
+      : undefined
+    if (relay) { bind(source as { platformId: string; deviceId: string }, relay, type); bind(relay, target as { platformId: string; deviceId: string }, type) }
+    else {
+      const legacyRelay = item.relay as Record<string, unknown> | undefined
+      if (legacyRelay && typeof legacyRelay.platformId === 'string' && typeof legacyRelay.ingressDeviceId === 'string' && typeof legacyRelay.egressDeviceId === 'string') {
+        bind(source as { platformId: string; deviceId: string }, { platformId: legacyRelay.platformId, deviceId: legacyRelay.ingressDeviceId }, type)
+        bind({ platformId: legacyRelay.platformId, deviceId: legacyRelay.egressDeviceId }, target as { platformId: string; deviceId: string }, type)
+      } else bind(source as { platformId: string; deviceId: string }, target as { platformId: string; deviceId: string }, type)
+    }
+  }
+  const connections: FileCommunicationConnection[] = []
+  for (const record of parsed.connections) {
+    if (record.scope !== 'INTER_PLATFORM') continue
+    const sourceType = systems.get(platformPortKey(record.source.platformName, record.source.communicationName))
+    const targetType = systems.get(platformPortKey(record.target.platformName, record.target.communicationName))
+    if (!sourceType || !targetType) continue
+    const connection = { ...record, sourceType, targetType }
+    if (fileConnectionTypes(connection).length) { connections.push(connection); continue }
+    const resolved = manifestTypes.get(connectionKey(record.source.platformName, record.source.communicationName, record.target.platformName, record.target.communicationName))
+    if (resolved?.size === 1) {
+      const mapped = { ...connection, resolvedType: [...resolved][0]! } as FileCommunicationConnection
+      if (fileConnectionTypes(mapped).length) connections.push(mapped)
+    }
+  }
+  return connections
 }

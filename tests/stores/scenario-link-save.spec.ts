@@ -10,14 +10,17 @@ const OPERATOR: Principal = { userId: 'USR-OPERATOR', username: 'operator', role
 
 function draft(revision = 4): ScenarioDraft {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', type: 'SPOT', autoDetect: false })
-  config.platforms.find(platform => platform.id === 'STN-01')!.jammerIds.push('JAM-SPOT-01-TX')
+  // 每个干扰节点只允许一台干扰设备（D6）：第二台设备挂到独立的地面干扰站。
+  const station = config.platforms.find(platform => platform.id === 'STN-01')!
+  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '地面干扰侦测站 2', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
+    initialPosition: { ...station.initialPosition, longitude: station.initialPosition.longitude + 0.05 } })
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT' })
   return {
     config,
     uiExtensions: {
       jammers: [
-        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
-        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+        { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
       ],
       sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },

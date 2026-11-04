@@ -9,7 +9,7 @@ import type {
   ScenarioValidationRequest,
   ValidationResult,
 } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { parseScenarioSnapshot, scenarioSnapshotId } from '../../src/features/scenarios/scenario-snapshot.js'
 import { SCENARIO_BASIC_DEFAULTS, withScenarioBasicDefaults } from '../../src/features/scenarios/scenario-basic.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
@@ -61,8 +61,7 @@ function createUiExtensions(config: ScenarioConfig): ScenarioDraft['uiExtensions
   return {
     jammers: config.jammers.map((jammer) => ({
       jammerId: jammer.id,
-      direction: jammer.type === 'BARRAGE' ? 360 : 45,
-      duration: jammer.type === 'BARRAGE' ? 120 : 60,
+      direction: 0,
       enabled: jammer.type === 'BARRAGE',
     })),
     sensors: config.sensors.map((sensor) => ({
@@ -247,7 +246,7 @@ class ScenarioDocument {
     if (name.trim() === '') {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'name', message: '临时场景名称不能为空。' }
     }
-    const candidate = structuredClone(config)
+    const candidate = dropRetiredScenarioFields(structuredClone(config))
     candidate.scenario.id = this.draft?.config.scenario.id ?? candidate.scenario.id
     candidate.scenario.name = name.trim()
     const inspection = inspectScenarioConfig(candidate, 'write')
@@ -261,7 +260,7 @@ class ScenarioDocument {
         message: issue.message,
       }
     }
-    const extensions = uiExtensions ?? createUiExtensions(candidate)
+    const extensions = dropRetiredUiExtensionFields(structuredClone(uiExtensions ?? createUiExtensions(candidate)))
     const extensionInspection = inspectScenarioUiExtensions(extensions, candidate.jammers.map(item => item.id), candidate.sensors.map(item => item.id))
     if (!extensionInspection.result.valid) {
       const issue = extensionInspection.result.errors[0]!
@@ -340,7 +339,8 @@ class ScenarioDocument {
     if (update.expectedRevision !== (this.draft?.revision ?? 0)) {
       return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'expectedRevision', message: '场景已被更新，请重新加载后再保存。' }
     }
-    const candidate = withDerivedPlatformAssociations(update.config)
+    // 先深拷贝：派生关联只做浅拷贝，原地删除旧字段不能改到调用方传入的对象。
+    const candidate = dropRetiredScenarioFields(withDerivedPlatformAssociations(structuredClone(update.config)))
     const inspection = inspectScenarioConfig(candidate, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
@@ -357,7 +357,7 @@ class ScenarioDocument {
     }
 
     const extensionInspection = inspectScenarioUiExtensions(
-      update.uiExtensions,
+      dropRetiredUiExtensionFields(structuredClone(update.uiExtensions)),
       inspection.jammers!.map((jammer) => jammer.id),
       inspection.sensors!.map((sensor) => sensor.id),
     )
@@ -401,15 +401,16 @@ class ScenarioDocument {
     if (!snapshot) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'items[0]', message: '场景快照文件外壳或版本不受支持。' }
     }
-    const inspection = inspectScenarioConfig(snapshot.config, 'write')
+    const config = dropRetiredScenarioFields(structuredClone(snapshot.config as ScenarioConfig))
+    const extensions = dropRetiredUiExtensionFields(structuredClone(snapshot.uiExtensions))
+    restoreRequiredMotionFields(config, extensions)
+    const inspection = inspectScenarioConfig(config, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }
     }
-    const config = structuredClone(snapshot.config as ScenarioConfig)
-    const extensions = snapshot.uiExtensions ?? createUiExtensions(config)
     const extensionInspection = inspectScenarioUiExtensions(
-      extensions,
+      extensions ?? createUiExtensions(config),
       config.jammers.map(jammer => jammer.id),
       config.sensors.map(sensor => sensor.id),
     )
@@ -541,7 +542,7 @@ export class ScenarioProjection {
   copyTemplate(config: ScenarioConfig, name: string, extensions?: ScenarioDraft['uiExtensions'], id = 'SCN-001'): ScenarioProjectionResult<ScenarioDraft> {
     const current = this.get(id)
     if (!current.ok && current.status !== 404) return current
-    const candidate = structuredClone(config)
+    const candidate = dropRetiredScenarioFields(structuredClone(config))
     candidate.scenario.id = id as ScenarioId
     return this.document(id).copyTemplate(candidate, name, extensions)
   }

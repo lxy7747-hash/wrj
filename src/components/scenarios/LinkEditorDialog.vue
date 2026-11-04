@@ -190,10 +190,24 @@ function validateBusiness(demand: InformationDemand): ValidationIssue[] {
     .map(issue => ({ ...issue, fieldPath: issue.fieldPath === 'business' ? '' : issue.fieldPath.slice('business.'.length) }))
 }
 
-/** 改为非卫星链路时清除旧版中继引用；数传默认 C 波段，其他类型不保留波段。按新类型套用文档端口默认值。 */
+/** 可选中继：卫星链路经通信卫星，微波 / 数传经高空中继节点；光纤、激光不支持中继。 */
+function relayCandidates(type: LinkType | undefined): Platform[] {
+  if (type === 'SAT') return props.platforms.filter(platform => platform.type === 'COMMUNICATION_SATELLITE')
+  if (type === 'MICROWAVE' || type === 'DATALINK') return props.platforms.filter(platform => platform.type === 'FORWARD_RELAY_NODE')
+  return []
+}
+const relayOptions = computed(() => relayCandidates(editor.value?.type))
+function setRelay(value: string | undefined): void {
+  if (!editor.value) return
+  // 清空时与旧数据一致：原有中继写 null 表示移除，新链路不写该字段。
+  if (value) editor.value.relayPlatformId = value
+  else if (editor.value.relayPlatformId !== undefined) editor.value.relayPlatformId = null
+}
+
+/** 改类型后清除不再适用的中继引用；数传默认 C 波段，其他类型不保留波段。按新类型套用文档端口默认值。 */
 function changeType(type: LinkType): void {
   if (!editor.value) return
-  if (editor.value.relayPlatformId && type !== 'SAT') editor.value.relayPlatformId = null
+  if (editor.value.relayPlatformId && !relayCandidates(type).some(platform => platform.id === editor.value!.relayPlatformId)) editor.value.relayPlatformId = null
   if (type === 'DATALINK') editor.value.band ??= 'C'
   else delete editor.value.band
   if (type === 'LASER') {
@@ -268,7 +282,7 @@ function clearEmptyLaser(): void {
   if (txApertureDiameterM === undefined && rxApertureDiameterM === undefined && pulseWidthS === undefined && modulation === undefined) delete editor.value.laser
 }
 
-/** 清空噪声系数时恢复设备缺省（天通 2 dB，其余 3 dB）。 */
+/** 清空噪声系数时恢复设备缺省（3 dB）。 */
 function setNoiseFigure(value: number | null | undefined): void {
   if (!editor.value) return
   if (typeof value === 'number') editor.value.noiseFigureDb = value
@@ -339,7 +353,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
     :close-on-click-modal="!pending"
     :close-on-press-escape="!pending"
     :show-close="!pending"
-    class="link-editor-dialog"
+    class="link-editor-dialog scenario-dialog"
     :title="editing ? '编辑链路' : '新增链路'"
     width="min(760px, calc(100vw - 2rem))"
     top="5vh"
@@ -384,11 +398,18 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
               <el-option v-for="platform in platforms" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
           </el-form-item>
+          <el-form-item v-if="editor.type === 'SAT' || editor.type === 'MICROWAVE' || editor.type === 'DATALINK'" label="中继平台（可选）" :error="fieldError('relayPlatformId')">
+            <el-select :model-value="editor.relayPlatformId ?? ''" clearable placeholder="不经中继" style="width: 100%" data-testid="link-relay" @update:model-value="setRelay">
+              <el-option v-for="platform in relayOptions" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
+            </el-select>
+            <small class="link-editor-hint">{{ editor.type === 'SAT' ? '后方指挥节点与任务无人机之间的卫通须经通信卫星中继。' : '经高空中继节点转发，中继收发使用同名端口。' }}</small>
+          </el-form-item>
         </div>
       </section>
 
       <section class="link-editor-section" aria-labelledby="link-communication-title">
         <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
+        <p v-if="!laser" class="link-editor-hint" data-testid="link-retained-hint">AFSIM 脚本的收发参数以“通信设备参数”为准，此处参数暂保留，不写入脚本。</p>
         <div class="link-parameter-source" data-testid="link-parameter-source">
           <div class="link-parameter-source__controls">
             <el-select v-model="selectedParameter" placeholder="选择设备参数或通用基础数据" aria-label="链路基础数据" filterable clearable :loading="parameterLoading" :disabled="referenceDisabled"
@@ -435,7 +456,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </el-select>
             <el-input-number v-else v-model="editor.dataRate" :min="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.min : 0" :max="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.max : Infinity"
               controls-position="right" data-testid="link-data-rate" />
-            <small class="link-editor-hint">{{ fixedDataRate !== null ? '按对接文档固定，不可修改' : editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : laser ? '控制报文传输时间；光学脉宽单独配置，须显式填写' : '单位 Mbps' }}</small>
+            <small class="link-editor-hint">{{ fixedDataRate !== null ? '按对接文档固定显示；脚本速率以“通信设备参数”为准' : editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : laser ? '控制报文传输时间；光学脉宽单独配置，须显式填写' : '单位 Mbps' }}</small>
           </el-form-item>
           <template v-if="editor.type === 'SAT'">
             <el-form-item label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
@@ -512,6 +533,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 
       <section class="link-editor-section" aria-labelledby="link-quality-title">
         <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
+        <p class="link-editor-hint">调制方式、信道编码类型、BER 阈值：新模板无对应参数，不写入脚本；通信方向决定数传上行 / 下行端口。</p>
         <div class="link-editor-grid">
           <el-form-item v-if="!laser" required label="调制方式" :error="fieldError('modulation')">
             <el-select v-model="editor.modulation" style="width: 100%" data-testid="link-modulation">
@@ -552,17 +574,6 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
 </template>
 
 <style scoped>
-:global(.link-editor-dialog) {
-  display: flex;
-  flex-direction: column;
-  max-height: 90vh;
-}
-
-:global(.link-editor-dialog .el-dialog__body) {
-  min-height: 0;
-  overflow-y: auto;
-}
-
 .platform-feedback {
   margin-bottom: 1rem;
 }

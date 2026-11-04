@@ -61,10 +61,12 @@ export interface LaserLinkParameters {
 /** SRS §3.5.3 Table 22 nested position object. */
 export interface Position { longitude: Degrees; latitude: Degrees; altitude: Meters; }
 export interface Waypoint extends Position {
-  speed: MetersPerSecond; arrivalTime: Seconds;
+  speed: MetersPerSecond;
+  /** 期望到达时刻（仿真秒），严格递增且不超过场景时长；引擎按速度推进，不强制到达时刻。 */
+  arrivalTime: Seconds;
   /** 航向角，0～360°；缺省时由运动器根据航线计算。 */
   heading?: Degrees;
-  /** 期望加速度（m/s²）；当前候选原生路线没有一对一指令，保留用于支持该参数的运动器。 */
+  /** 期望加速度（m/s²）；仅保留配置和清单记录。 */
   acceleration?: number;
 }
 export interface AntennaGain { tx: DecibelsIsotropic; rx: DecibelsIsotropic; }
@@ -82,10 +84,39 @@ export interface LinkParameterSource {
   /** 仅 MASTER_DATA 枚举条目使用；未选择时不回退为任意默认项。 */
   entryKey?: string;
 }
+/** 新模板中通信设备按五类平台、端口及天线图统一配置。 */
+export type TemplatePlatformType =
+  | 'MISSION_UAV_PLATFORM'
+  | 'COMMAND_VEHICLE_PLATFORM'
+  | 'REAR_COMM_PLATFORM'
+  | 'TIAN_TONG_SAT'
+  | 'SHEN_TONG_SAT';
+export type TemplateAntennaName =
+  | 'MICRO_UAV_OMNI_ANTENNA'
+  | 'MICRO_REAR_PLATFORM_DIR_ANTENNA'
+  | 'OMNI_ANTENNA_HIGHGAIN'
+  | 'C_BAND_DIRECTIONAL_VEHICLE_ANTENNA'
+  | 'C_BAND_DIRECTIONAL_UAV_ANTENNA'
+  | 'L_BAND_DIRECTIONAL_VEHICLE_ANTENNA'
+  | 'L_BAND_DIRECTIONAL_UAV_ANTENNA'
+  | 'SAT_GROUND_MOBILE_ANTENNA'
+  | 'SAT_SPACE_BEAM_ANTENNA'
+  | 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA'
+  | 'LASER_COMM_ANTENNA';
+/** 一个模板通信端口的可编辑参数；省略时只在读取/生成时采用模板默认值。 */
+export interface PortParameters {
+  txFrequency: Megahertz; txBandwidth: Megahertz; txPower: Watts;
+  rxFrequency: Megahertz; rxBandwidth: Megahertz; noiseFigureDb: Decibels;
+  transferRate: MegabitsPerSecond;
+  parameterSource?: LinkParameterSource;
+}
+export interface DeviceParameters {
+  ports?: Partial<Record<TemplatePlatformType, Partial<Record<string, PortParameters>>>>;
+  antennaGains?: Partial<Record<TemplateAntennaName, Decibels>>;
+}
 export interface FrequencyRange { min: Megahertz; max: Megahertz; }
 export interface Environment {
-  seaState: number; temperatureC: number; humidityPercent: Percent0To100;
-  rainRateMmPerHour: number; rainLossDbPerKm: number; multipathEnabled: boolean;
+  seaState: number; rainRateMmPerHour: number; multipathEnabled: boolean;
   /** 仿真时钟倍速；旧场景缺省时使用文档默认值 2。 */
   simClockSpeed?: number;
   /** 海峡宽度，单位 km；不是各条链路的实际通信距离。 */
@@ -124,14 +155,21 @@ export interface ScenarioIdentity {
   duration: Seconds; timeStep: Seconds; environment: Environment;
   /** 用户明确设置的任务阶段，区间不重叠；缺省时不推断阶段。 */
   phases?: TaskPhase[];
+  /** 新模板运行模式；旧场景读取时按实时模式处理。 */
+  realtime?: boolean;
 }
 export interface TaskPhase { id: Identifier; name: string; startTimeS: Seconds; endTimeS: Seconds; }
+/** 模板盘旋、返航路线点，仅要求位置和速度。 */
+export interface TemplateRoutePoint extends Position { speed: MetersPerSecond; }
+export interface ReturnPlan { timeS: Seconds; waypoints: TemplateRoutePoint[]; }
 export interface Platform {
   id: Identifier; name: string; type: PlatformType; category: DeploymentDomain; initialPosition: Position;
   /** 仅通信卫星使用；旧场景允许缺省，新增或编辑卫星时必须选择。 */
   satelliteType?: SatelliteType;
-  /** 初始航向角，0～360°；候选脚本以 platform heading 指令映射。 */
-  heading?: Degrees;
+  /** 仅任务无人机、前出中继和机载干扰平台支持；缺省表示不盘旋。 */
+  loiterWaypoints?: TemplateRoutePoint[];
+  /** 仅任务无人机、前出中继支持；缺省表示不生成返航路线。 */
+  returnPlan?: ReturnPlan;
   waypoints: Waypoint[]; linkIds: Identifier[]; sensorIds: Identifier[]; jammerIds: Identifier[];
 }
 export interface Link {
@@ -162,7 +200,7 @@ export interface Link {
   /** 收发极化；缺省时微波为水平极化，其余为垂直极化。 */
   txPolarization?: Polarization;
   rxPolarization?: Polarization;
-  /** 接收机噪声系数（dB）；缺省时天通卫星 2 dB，其余 3 dB。 */
+  /** 接收机噪声系数（dB）；缺省 3 dB（含天通卫星）。 */
   noiseFigureDb?: Decibels;
   /** 新增/编辑时用户选择的基础数据快照；旧场景可省略。 */
   parameterSource?: LinkParameterSource;
@@ -227,11 +265,13 @@ export interface LinkCalcSettings {
 }
 export interface Jammer {
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
-  frequency: Megahertz; bandwidth: Megahertz; autoDetect: boolean; detectionRange: Meters;
+  frequency: Megahertz; bandwidth: Megahertz; detectionRange: Meters;
   /** 干扰有效作用距离（触发半径），合同单位 m；界面按 km 编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */
   jammingRange: Meters;
   /** 干扰机离开后的释放距离，合同单位 m；界面按 km 编辑，缺省为干扰范围加 5 海里。 */
   releaseRange?: Meters;
+  /** 自动探测最小有效距离，单位 m；旧场景缺省时按模板的 1000 m 生成。 */
+  detectionMinimumRange?: Meters;
   /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
   triggerTimeS?: Seconds;
 }
@@ -263,6 +303,8 @@ export interface ScenarioConfig {
   linkSettings?: ScenarioLinkSettings;
   /** 场景干扰总开关，缺省为禁用；不覆盖单设备启停设置。 */
   jammingEnabled?: boolean;
+  /** 新模板通信设备快照；缺省场景在读取/生成时采用模板默认值。 */
+  deviceParameters?: DeviceParameters;
 }
 
 /** Five complete SRS §3.5.4 frontend interfaces (canonical superset). */
@@ -315,7 +357,10 @@ export interface ValidationIssue { severity: 'ERROR' | 'WARNING'; code: string; 
 export interface ValidationResult { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[]; }
 /** UI-only fields are kept beside, never inside, the canonical ScenarioConfig. */
 export interface JammerUiExtension {
-  jammerId: Identifier; direction: Degrees; duration: Seconds; enabled: boolean;
+  jammerId: Identifier;
+  /** 干扰指向方位角，0～360°。 */
+  direction: Degrees;
+  enabled: boolean;
   /** 干扰天线俯仰角，-10～60°；缺省为 0°。 */
   elevation?: Degrees;
 }

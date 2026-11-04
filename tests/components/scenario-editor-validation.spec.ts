@@ -28,7 +28,7 @@ async function loadPage() {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
   const current: ScenarioDraft = { config, revision: 4, locked: false, officialLibraryChanged: false,
     uiExtensions: {
-      jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, duration: 60, enabled: true })),
+      jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true })),
       sensors: config.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
     },
   }
@@ -91,13 +91,15 @@ describe('场景实体弹框确认校验', () => {
     await flushPromises()
     await confirm('apply-link')
     expect(wrapper.findComponent({ name: 'LinkEditorDialog' }).props('modelValue')).toBe(true)
-    expectValidationMessage('卫星链路的源平台或目标平台至少有一端必须选择通信卫星。')
+    expectValidationMessage('卫星链路的一端或中继须选择通信卫星。')
     expect(document.querySelector('.el-message--warning .el-message__closeBtn')).not.toBeNull()
     expect(wrapper.findComponent({ name: 'LinkEditorDialog' }).props('error')).toBe('')
     expect(store.draft).toEqual(original)
     expect(store.dirty).toBe(false)
 
     select(`link-${endpoint}`, 'SAT-01')
+    // 新模板卫通端口为“后方指挥节点 ↔ 卫星”：卫星作源端时目标改为后方节点。
+    if (endpoint === 'source') select('link-target', 'CMD-01')
     await flushPromises()
     await confirm('apply-link')
     expect(wrapper.findComponent({ name: 'LinkEditorDialog' }).props('modelValue')).toBe(false)
@@ -126,7 +128,7 @@ describe('场景实体弹框确认校验', () => {
     expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
   })
 
-  it('节点初始位置缺失、航点速度无效或到达时间超长均在确认时阻止；修正后才新增', async () => {
+  it('节点初始位置缺失或航点速度无效均在确认时阻止；修正后才新增', async () => {
     const { wrapper, store, fetch, number, confirm } = await loadPage()
     const original = structuredClone(toRaw(store.draft!))
     await wrapper.get('#tab-platforms').trigger('click')
@@ -140,17 +142,13 @@ describe('场景实体弹框确认校验', () => {
     number('platform-longitude', 120)
     document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
     await flushPromises()
-    await confirm('apply-platform')
-    expectValidationMessage('航点速度必填且必须大于 0 m/s')
-    expect(store.draft).toEqual(original)
-    number('waypoint-speed-0', 20)
-    number('waypoint-arrival-0', original.config.scenario.duration + 1)
+    number('waypoint-speed-0', undefined)
     await flushPromises()
     await confirm('apply-platform')
-    expectValidationMessage('航点到达时间不能超过场景仿真时长。')
+    expectValidationMessage('航点速度必填且必须至少为 1 m/s')
     expect(store.draft).toEqual(original)
     expect(store.dirty).toBe(false)
-    number('waypoint-arrival-0', 10)
+    number('waypoint-speed-0', 20)
     await flushPromises()
     await confirm('apply-platform')
     expect(wrapper.findComponent({ name: 'PlatformEditorDialog' }).props('modelValue')).toBe(false)
@@ -158,8 +156,73 @@ describe('场景实体弹框确认校验', () => {
     expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
   })
 
+  it('新增盘旋和开启返航不提前报错，确认后定位错误，逐项修正即时消失', async () => {
+    const { wrapper, store, fetch, number, confirm } = await loadPage()
+    const original = structuredClone(toRaw(store.draft!))
+    await wrapper.get('#tab-platforms').trigger('click')
+    await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent({ name: 'PlatformEditorDialog' })
+    const click = async (id: string) => {
+      document.querySelector<HTMLElement>(`[data-testid="${id}"]`)!.click()
+      await flushPromises()
+    }
+    const listError = (list: string) => document.querySelector(`[data-testid="${list}-list-error"]`)
+    const fieldError = (id: string) => document.querySelector(`[data-testid="${id}"]`)!
+      .closest('.el-form-item')!.querySelector('.el-form-item__error')?.textContent ?? ''
+
+    await click('add-loiter-waypoint')
+    await click('return-enabled')
+    expect(listError('loiter')).toBeNull()
+    expect(listError('return')).toBeNull()
+    expect(fieldError('return-time')).toBe('')
+    // 编辑当前字段才显示该字段错误，仍不提前报整条路线的点数不足。
+    number('return-time', 0)
+    await vi.waitFor(() => expect(fieldError('return-time')).toContain('返航时刻必须大于 0'))
+    expect(listError('loiter')).toBeNull()
+    expect(listError('return')).toBeNull()
+    number('return-time', undefined)
+    await confirm('apply-platform')
+    expect(dialog.props('modelValue')).toBe(true)
+    expect(store.draft).toEqual(original)
+    expect(listError('loiter')?.textContent).toContain('至少需要两个位置点')
+    expect(listError('return')?.textContent).toContain('至少需要一个位置点')
+    expect(fieldError('return-time')).toContain('返航时刻必须大于 0')
+
+    await click('add-loiter-waypoint')
+    expect(listError('loiter')).toBeNull()
+    expect(listError('return')).not.toBeNull()
+    expect(fieldError('return-time')).toContain('返航时刻必须大于 0')
+    number('return-time', original.config.scenario.duration)
+    await vi.waitFor(() => expect(fieldError('return-time')).toContain('早于仿真结束时刻'))
+    number('return-time', original.config.scenario.duration / 2)
+    await vi.waitFor(() => expect(fieldError('return-time')).toBe(''))
+    expect(listError('return')).not.toBeNull()
+    await click('add-return-waypoint')
+    expect(listError('return')).toBeNull()
+
+    number('return-speed-0', undefined)
+    await vi.waitFor(() => expect(fieldError('return-speed-0')).not.toBe(''))
+    await confirm('apply-platform')
+    expect(dialog.props('modelValue')).toBe(true)
+    expect(store.draft).toEqual(original)
+    number('return-speed-0', 1)
+    await vi.waitFor(() => expect(fieldError('return-speed-0')).toBe(''))
+    expect(store.draft).toEqual(original)
+    await confirm('apply-platform')
+    expect(dialog.props('modelValue')).toBe(false)
+    expect(store.draft!.config.platforms[3]!.loiterWaypoints).toHaveLength(2)
+    expect(store.draft!.config.platforms[3]!.returnPlan).toMatchObject({
+      timeS: original.config.scenario.duration / 2, waypoints: [expect.objectContaining({ speed: 1 })],
+    })
+    expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+  })
+
   it('干扰设备缺少归属、功率或范围/触发时间异常均在确认时阻止，修正后才新增', async () => {
     const { wrapper, store, fetch, select, number, confirm } = await loadPage()
+    // 每个干扰节点只允许一台干扰设备：新增设备挂到尚无设备的机载干扰平台。
+    const station = store.draft!.config.platforms.find(platform => platform.id === 'STN-01')!
+    store.draft!.config.platforms.push({ ...structuredClone(toRaw(station)), id: 'AJ-T01', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
     const original = structuredClone(toRaw(store.draft!))
     await wrapper.get('#tab-jammers').trigger('click')
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
@@ -167,7 +230,7 @@ describe('场景实体弹框确认校验', () => {
     await confirm('apply-jammer')
     expectValidationMessage('干扰设备必须归属于当前场景实体。')
     expect(store.draft).toEqual(original)
-    select('jammer-platform', 'STN-01')
+    select('jammer-platform', 'AJ-T01')
     number('jammer-power', undefined)
     await flushPromises()
     await confirm('apply-jammer')
@@ -182,7 +245,7 @@ describe('场景实体弹框确认校验', () => {
     number('jammer-jamming-range', 101)
     await flushPromises()
     await confirm('apply-jammer')
-    expectValidationMessage('干扰范围必须在 1～100 km 之间。')
+    expectValidationMessage('干扰范围必须在 0～100 km 之间，0 表示不触发。')
     expect(store.draft).toEqual(original)
     number('jammer-jamming-range', 24)
     number('jammer-trigger-time', original.config.scenario.duration + 1)
@@ -228,7 +291,7 @@ describe('5.2.2 输入时字段下即时校验', () => {
     expect(errorFor('scenario-env-rainAltitudeLimitM')).toBe('')
   })
 
-  it('干扰范围/功率/方向越界未确认即红字，修正清除，取消不写入草稿', async () => {
+  it('干扰范围和功率越界未确认即红字，修正清除，取消不写入草稿', async () => {
     const { wrapper, store, confirm } = await loadPage()
     const original = structuredClone(toRaw(store.draft!))
     await wrapper.get('#tab-jammers').trigger('click')
@@ -243,10 +306,6 @@ describe('5.2.2 输入时字段下即时校验', () => {
     expect(errorFor('jammer-power')).toContain('-10～30 dBm')
     await input('jammer-power', '30')
     expect(errorFor('jammer-power')).toBe('')
-    await input('jammer-direction', '361')
-    expect(errorFor('jammer-direction')).toContain('360')
-    await input('jammer-direction', '180')
-    expect(errorFor('jammer-direction')).toBe('')
     await confirm('cancel-jammer')
     expect(store.draft).toEqual(original)
   })
@@ -254,11 +313,13 @@ describe('5.2.2 输入时字段下即时校验', () => {
   it('编辑冲突两端中任意链路即时提示频段警告，修正消失且草稿未变', async () => {
     const { wrapper, store, confirm } = await loadPage()
     const original = structuredClone(toRaw(store.draft!))
-    const index = store.draft!.config.links.findIndex(link => link.id === 'L-DL-03')
+    // L-DL-06（数传）与 L-MW-05（微波）都到达 AIR-01：把数传频率调到微波频点即同频互扰。
+    const index = store.draft!.config.links.findIndex(link => link.id === 'L-DL-06')
+    const microwave = store.draft!.config.links.find(link => link.id === 'L-MW-05')!
     await wrapper.get('#tab-links').trigger('click')
     await wrapper.get(`[data-testid="edit-link-${index}"]`).trigger('click')
     await flushPromises()
-    await input('link-frequency', '2205')
+    await input('link-frequency', String(microwave.frequency))
     expect(errorFor('link-frequency')).toContain('警告：')
     expect(errorFor('link-frequency')).toContain('同频互扰')
     expect(store.draft).toEqual(original)
@@ -288,4 +349,36 @@ describe('5.2.2 输入时字段下即时校验', () => {
     await input(`native-esm-dwell-${sensorId}`, '2')
     expect(errorFor(`native-esm-dwell-${sensorId}`)).toBe('')
   })
+})
+
+
+it('到达时间超长在确认时阻止，修正后才更新草稿', async () => {
+  const { wrapper, store, fetch, number, confirm } = await loadPage()
+  const original = structuredClone(toRaw(store.draft!))
+  await wrapper.get('#tab-platforms').trigger('click')
+  await wrapper.get('[data-testid="edit-platform-3"]').trigger('click')
+  await flushPromises()
+  number('waypoint-arrival-0', original.config.scenario.duration + 1)
+  await confirm('apply-platform')
+  expectValidationMessage('航点到达时间不能超过场景仿真时长。')
+  expect(store.draft).toEqual(original)
+  number('waypoint-arrival-0', 500)
+  await confirm('apply-platform')
+  expect(store.draft!.config.platforms[3]!.waypoints[0]!.arrivalTime).toBe(500)
+  expect(fetch.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
+})
+
+it('干扰方向越界时原位报错且阻止确认，修正后保存方向', async () => {
+  const { wrapper, store, number, confirm } = await loadPage()
+  const original = structuredClone(toRaw(store.draft!))
+  await wrapper.get('#tab-jammers').trigger('click')
+  await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
+  await flushPromises()
+  number('jammer-direction', 361)
+  await confirm('apply-jammer')
+  await vi.waitFor(() => expect(document.querySelector('[data-testid="jammer-direction"]')!.closest('.el-form-item')!.textContent).toContain('干扰方向必须在 0 至 360 度之间。'))
+  expect(store.draft).toEqual(original)
+  number('jammer-direction', 90)
+  await confirm('apply-jammer')
+  expect(store.draft!.uiExtensions.jammers[0]!.direction).toBe(90)
 })

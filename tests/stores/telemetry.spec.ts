@@ -573,7 +573,7 @@ describe('P3-2 遥测 Store', () => {
     const recent = structuredClone(frame.linkSummaries)
     const target = recent.find((summary) => (
       summary.sourcePlatform === 'UAV-01'
-      && summary.destPlatform === 'GCC-01'
+      && summary.destPlatform === 'CMD-01'
       && summary.linkType === 'MICROWAVE'
     ))
     if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 摘要')

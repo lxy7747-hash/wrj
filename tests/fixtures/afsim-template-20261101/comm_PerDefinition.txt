@@ -1,0 +1,157 @@
+
+
+// ============================================================
+// 第1部分：天线方向图定义  除了peak_gain，其余固定写死
+// ============================================================
+
+// ========== 微波链路（X/Ku） ==========
+//普通集群任务无人机机载宽波束
+antenna_pattern MICRO_UAV_OMNI_ANTENNA
+    uniform_pattern
+        peak_gain 3 dB     //界面配置项
+        azimuth_beamwidth 360 deg
+        elevation_beamwidth 65 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+//后方公共服务平台地面车载微波定向
+antenna_pattern MICRO_REAR_PLATFORM_DIR_ANTENNA
+    uniform_pattern
+        peak_gain 18 dB   //界面配置项
+        azimuth_beamwidth 12 deg
+        elevation_beamwidth 12 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 1.2 高增益全向天线（干扰站专用，8dB增益）
+antenna_pattern OMNI_ANTENNA_HIGHGAIN
+    uniform_pattern
+        peak_gain 8 dB   //界面配置项
+        azimuth_beamwidth 360 deg
+        elevation_beamwidth 180 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 1.3 C波段定向天线（指挥车专用，25dB增益，俯仰-3°~+85°）
+antenna_pattern C_BAND_DIRECTIONAL_VEHICLE_ANTENNA
+    uniform_pattern
+      peak_gain 25 dB     //界面配置项
+      azimuth_beamwidth 15 deg
+      elevation_beamwidth 88 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 1.3 C波段定向天线（无人机专用，25dB增益，俯仰-3°~+85°）
+antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+    uniform_pattern
+      peak_gain 25 dB     //界面配置项
+      azimuth_beamwidth 360 deg
+      elevation_beamwidth 88 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// L波段新一代数传 (集群指挥车专用，定向跟踪天线)
+// 说明：方位360°×n连续、俯仰‑3°~+85°为伺服转台机械运动范围；天线电磁波为窄波束；仿真假定伺服始终对准目标
+antenna_pattern L_BAND_DIRECTIONAL_VEHICLE_ANTENNA
+    uniform_pattern
+      peak_gain 14 dB     //界面配置项
+      azimuth_beamwidth 20 deg
+      elevation_beamwidth 88 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// L波段新一代数传 无人集群无人机机载全向天线
+// 适配中小型无人机机动翻滚，无需伺服跟踪，水平360°全域覆盖
+antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+    uniform_pattern
+      peak_gain 4 dB    //界面配置项
+      azimuth_beamwidth 360 deg
+      elevation_beamwidth 70 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 地面车载卫星通信动中通天线（后方公共服务平台）
+// 25dBi；方位360°、俯仰大角度为伺服转台机械运动范围；电磁波为窄波束；仿真假定伺服对准卫星
+antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+    uniform_pattern
+      peak_gain 25 dB    //界面配置项
+      azimuth_beamwidth 4 deg
+      elevation_beamwidth 4 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 卫星星载对地通信点波束天线(卫星专用)
+antenna_pattern SAT_SPACE_BEAM_ANTENNA
+    uniform_pattern
+      peak_gain 30 dB     //界面配置项
+      azimuth_beamwidth 45 deg
+      elevation_beamwidth 45 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// 普通无人集群任务无人机 轻量化机载卫星通信宽波束天线
+// 中小型集群无人机载荷受限，宽波束电扫覆盖卫星视域，无机械伺服(无人机专用)
+antenna_pattern SAT_UAV_CLUSTER_WIDEBAND_ANTENNA
+  uniform_pattern
+    peak_gain 30 dB     //界面配置项
+    azimuth_beamwidth 110 deg
+    elevation_beamwidth 100 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+// 1.5 激光通信天线（窄波束，40dB增益，5°×5°）
+antenna_pattern LASER_COMM_ANTENNA
+    uniform_pattern
+      peak_gain 40 dB   //界面配置项
+      azimuth_beamwidth 5 deg
+      elevation_beamwidth 5 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+// ============================================================
+// 第2部分：雷达散射截面积定义(固定写死)
+// ============================================================
+
+radar_signature DRONE_SIG
+  constant 1.0 m^2
+end_radar_signature
+
+radar_signature COMMAND_VEHICLE_SIG
+  constant 5.0 m^2
+end_radar_signature
+
+radar_signature SAT_SIG
+  constant 3.0 m^2
+end_radar_signature
+
+
+// ============================================================
+// 第3部分：网络拓扑定义
+// ============================================================
+
+network COM_MESH_NET WSF_COMM_NETWORK_MESH
+end_network
+
+network FIBER_NET WSF_COMM_NETWORK_P2P
+end_network
+
+medium UAV_MESH_MEDIUM WSF_COMM_MEDIUM_UNGUIDED
+    channels 4
+    default_mode_name "default"
+    mode "default"
+      propagation_speed constant 299792458 m/sec
+      transfer_rate constant 4000000 bit/s
+      packet_loss_time constant 0 sec
+    end_mode
+end_medium
+
+// 光缆介质定义
+medium FIBER_MEDIUM WSF_COMM_MEDIUM_GUIDED
+    channels 4
+    default_mode_name "default"
+    mode "default"
+        propagation_speed constant 200000000 m/sec   
+        transfer_rate constant 1000000 bit/s 
+        packet_loss_time constant 0 sec
+    end_mode
+end_medium

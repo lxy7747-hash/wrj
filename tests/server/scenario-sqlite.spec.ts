@@ -105,18 +105,73 @@ describe('SQLite 场景开发持久化', () => {
     expect((await api.get(endpoint).set(headers).expect(200)).body.data).toEqual(saved)
   })
 
-  it('零速度航点在保存前返回字段错误，不写入或增加修订；正速度可保存', async () => {
+  it('低于 1 m/s 的航点速度在保存前返回字段错误，不写入或增加修订；合法速度可保存', async () => {
     const { api, storage } = await start(await databasePath())
     const value = draft()
     const saved = (await api.put(endpoint).set(headers).send(update(value)).expect(200)).body.data
     const platform = value.config.platforms[3]!
-    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 10 }]
+    platform.waypoints = [{ ...platform.initialPosition, speed: 0.5, arrivalTime: 0 }]
     const failed = await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(422)
-    expect(failed.body.error).toMatchObject({ fieldPath: 'platforms[3].waypoints[0].speed', message: expect.stringContaining('必须大于 0') })
+    expect(failed.body.error).toMatchObject({ fieldPath: 'platforms[3].waypoints[0].speed', message: expect.stringContaining('至少为 1 m/s') })
     expect(storage.load()).toEqual(saved)
     platform.waypoints[0]!.speed = 20
     await api.put(endpoint).set(headers).send(update(value, saved.revision)).expect(200)
     expect(storage.load().config.platforms[3].waypoints[0].speed).toBe(20)
+  })
+
+  it('旧库丢弃仍退役的字段，保留航点运动参数和干扰方位角', async () => {
+    const path = await databasePath()
+    let { api, storage, stop } = await start(path)
+    const saved = (await api.put(endpoint).set(headers).send(update(draft())).expect(200)).body.data
+    expect(saved.config.platforms[3].waypoints.length).toBeGreaterThan(0)
+    // 航点运动参数保留；只有仍退役的字段会被清理。
+    const legacyFields = (config: { platforms: Array<Record<string, unknown> & { waypoints: Array<Record<string, unknown>> }>; scenario: { duration: number; environment: object }; jammers: object[] }) => {
+      Object.assign(config.scenario.environment, { temperatureC: 'invalid', humidityPercent: 101, rainLossDbPerKm: -1 })
+      config.jammers.forEach(jammer => Object.assign(jammer, { autoDetect: null }))
+      Object.assign(config.platforms[3]!, { heading: 45 })
+      Object.assign(config.platforms[3]!.waypoints[0]!, { acceleration: 2, heading: 90, arrivalTime: 900 })
+      // 后方节点位置固定，界面不显示其航点，读写时丢弃。
+      config.platforms[0]!.waypoints = [{ longitude: 119, latitude: 24.5, altitude: 0, speed: 20 }]
+      // 卫星位置不在界面显示，旧坐标读写时统一改为 GEO 定点。
+      const satellite = config.platforms.find(item => item.type === 'COMMUNICATION_SATELLITE')!
+      satellite.initialPosition = { longitude: 121.25, latitude: 25.75, altitude: 550000 }
+    }
+    const raw = new DatabaseSync(path)
+    const stored = JSON.parse(String((raw.prepare('SELECT config_json FROM scenarios WHERE id = ?').get('SCN-001') as { config_json: string }).config_json))
+    legacyFields(stored)
+    const legacyExtensions = structuredClone(saved.uiExtensions)
+    legacyExtensions.jammers.forEach((jammer: object) => Object.assign(jammer, { duration: -1 }))
+    raw.prepare('UPDATE scenarios SET config_json = ?, ui_extensions_json = ? WHERE id = ?').run(JSON.stringify(stored), JSON.stringify(legacyExtensions), 'SCN-001')
+    raw.close()
+    await stop()
+    ;({ api, storage } = await start(path))
+    const reloaded = (await api.get(endpoint).set(headers).expect(200)).body.data
+    const retained = structuredClone(saved.config)
+    Object.assign(retained.platforms[3].waypoints[0], { acceleration: 2, heading: 90, arrivalTime: 900 })
+    expect(reloaded.config).toEqual(retained)
+    expect(reloaded.uiExtensions).toEqual(saved.uiExtensions)
+    // 旧客户端仍提交这些字段时可以保存，但入库前去掉。
+    const legacy = structuredClone(reloaded) as ScenarioDraft
+    legacyFields(legacy.config as never)
+    legacy.uiExtensions = legacyExtensions
+    const body = update(legacy, reloaded.revision)
+    await api.put(endpoint).set(headers).send(body).expect(200)
+    const check = new DatabaseSync(path)
+    const json = String((check.prepare('SELECT config_json FROM scenarios WHERE id = ?').get('SCN-001') as { config_json: string }).config_json)
+    check.close()
+    expect(json).not.toMatch(/temperatureC|humidityPercent|rainLossDbPerKm|autoDetect/)
+    expect(storage.load().uiExtensions).toEqual(saved.uiExtensions)
+    const rawCheck = new DatabaseSync(path)
+    const extensionJson = String(rawCheck.prepare('SELECT ui_extensions_json FROM scenarios WHERE id = ?').get('SCN-001').ui_extensions_json)
+    rawCheck.close()
+    expect(JSON.parse(extensionJson)).toEqual(saved.uiExtensions)
+    expect(legacy.uiExtensions).toEqual(legacyExtensions)
+    expect(legacy.config.scenario.environment).toHaveProperty('humidityPercent', 101)
+    const platform = storage.load().config.platforms[3]!
+    expect(platform).not.toHaveProperty('heading')
+    expect(platform.waypoints[0]).toEqual(retained.platforms[3].waypoints[0])
+    expect(storage.load().config.platforms.find((item: { type: string }) => item.type === 'COMMUNICATION_SATELLITE')!.initialPosition)
+      .toEqual({ longitude: 120, latitude: 0, altitude: 35_786_000 })
   })
 
   it('新干扰范围可保存重读，缺少 jammingRange 的旧格式不能新建、保存或导入', async () => {
@@ -455,4 +510,45 @@ describe('SQLite 场景开发持久化', () => {
     await api.post('/api/v1/scenarios/import').set(headers).send({ items: [original.config] }).expect(503)
     expect((await api.get(endpoint).set(headers).expect(200)).body.data.config.scenario.id).toBe('SCN-001')
   })
+})
+
+
+it('旧库缺失必填运动字段读取补齐但不写库，再次保存完整保留', async () => {
+  const path = await databasePath()
+  const first = await start(path)
+  const saved = (await first.api.put(endpoint).set(headers).send(update(draft())).expect(200)).body.data as ScenarioDraft
+  await first.stop()
+  const legacy = structuredClone(saved)
+  for (const platform of legacy.config.platforms) for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
+  for (const extension of legacy.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
+  const raw = new DatabaseSync(path)
+  raw.prepare('UPDATE scenarios SET config_json = ?, ui_extensions_json = ? WHERE id = ?')
+    .run(JSON.stringify(legacy.config), JSON.stringify(legacy.uiExtensions), 'SCN-001')
+  raw.close()
+  const second = await start(path)
+  const restored = (await second.api.get(endpoint).set(headers).expect(200)).body.data as ScenarioDraft
+  expect(restored.config.platforms[3]!.waypoints[0]!.arrivalTime).toBeGreaterThan(0)
+  expect(restored.uiExtensions.jammers.every(item => item.direction === 0)).toBe(true)
+  const check = new DatabaseSync(path)
+  expect(check.prepare('SELECT config_json FROM scenarios WHERE id = ?').get('SCN-001').config_json).toBe(JSON.stringify(legacy.config))
+  check.close()
+  await second.api.put(endpoint).set(headers).send(update(restored, restored.revision)).expect(200)
+  expect(second.storage.load('SCN-001').config).toEqual(restored.config)
+  expect(second.storage.load('SCN-001').uiExtensions).toEqual(restored.uiExtensions)
+  // 文件导入兼容同样的缺省快照，而不是在普通 PUT 上补默认值。
+  legacy.config.scenario.id = 'SCN-LEGACY-IMPORT'
+  const imported = (await second.api.post('/api/v1/scenarios/import').set(headers)
+    .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: legacy.config, uiExtensions: legacy.uiExtensions }] }).expect(200)).body.data.drafts[0]
+  expect(imported.config.platforms[3].waypoints[0].arrivalTime).toBe(restored.config.platforms[3]!.waypoints[0]!.arrivalTime)
+  expect(imported.uiExtensions.jammers[0].direction).toBe(0)
+})
+
+it.each(['arrivalTime', 'direction'] as const)('PUT 缺失 %s 返回字段错误，不补默认值、不写入', async (field) => {
+  const { api, storage } = await start(await databasePath())
+  const value = draft()
+  if (field === 'arrivalTime') Reflect.deleteProperty(value.config.platforms[3]!.waypoints[0]!, field)
+  else Reflect.deleteProperty(value.uiExtensions.jammers[0]!, field)
+  const result = await api.put(endpoint).set(headers).send(update(value)).expect(422)
+  expect(result.body.error.fieldPath).toBe(field === 'arrivalTime' ? 'platforms[3].waypoints[0].arrivalTime' : 'uiExtensions.jammers[0].direction')
+  expect(storage.load('SCN-001')).toBeUndefined()
 })

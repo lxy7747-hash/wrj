@@ -76,8 +76,7 @@ export function buildLocalSceneImport(base: ScenarioConfig, input: LocalSceneImp
     const rule = PLATFORM_POSITION_RULES[type]
     // 导入不绕过节点编辑器的受控位置规则，也不将真实坐标静默裁剪成合法值。
     if (rule && (longitude < rule.minLongitude || longitude > rule.maxLongitude
-      || latitude < rule.minLatitude || latitude > rule.maxLatitude
-      || (rule.altitude !== undefined && altitude !== rule.altitude))) {
+      || latitude < rule.minLatitude || latitude > rule.maxLatitude)) {
       fail('文件坐标不符合该节点类型的位置约束；请核对来源或取消选择，不会自动修正坐标。', `${path}.position`)
     }
     const node = existing ? { ...existing, initialPosition: { longitude, latitude, altitude } } : {

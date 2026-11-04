@@ -129,8 +129,8 @@ describe('P4-2 RF 干扰机控制', () => {
       uiExtensions: {
         ...scenarioDraft.uiExtensions,
         jammers: [
-          { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
-          { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+          { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+          { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
         ],
       },
     }
@@ -161,7 +161,7 @@ describe('P4-2 RF 干扰机控制', () => {
     expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
     expect(wrapper.text()).toContain('任务手动启扰，生效帧 F-00042。')
     expect(wrapper.text()).toContain('72 W / 2200 MHz / 120 s')
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ duration: 120 })
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ direction: 0, duration: 1 })
   })
 
   it('覆盖六态并优先显示加载错误且不展示其他设备的旧结果', async () => {
@@ -180,8 +180,8 @@ describe('P4-2 RF 干扰机控制', () => {
       uiExtensions: {
         ...scenarioDraft.uiExtensions,
         jammers: [
-          { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
-          { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+          { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+          { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
         ],
       },
     }

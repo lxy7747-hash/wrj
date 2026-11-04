@@ -66,7 +66,7 @@ const errorMessage = computed(() => {
  * 将所选设备的场景能力和当前固定帧证据填入控制表单。
  * @param jammerId 需要载入的干扰设备编号。
  * @returns 无返回值。
- * @sideEffects 覆盖表单中的启停、频段、功率、方向和持续时间。
+ * @sideEffects 覆盖表单中的启停、频段、功率及命令默认方向和持续时间。
  */
 function applyDefaults(jammerId: string): void {
   const jammer = jammers.value.find((item) => item.id === jammerId)
@@ -78,9 +78,9 @@ function applyDefaults(jammerId: string): void {
     frequency: evidence?.jammerId === jammerId ? evidence.frequency : jammer.frequency,
     bandwidth: evidence?.jammerId === jammerId ? evidence.bandwidth : jammer.bandwidth,
     power: evidence?.jammerId === jammerId ? evidence.power : jammer.defaultPower,
+    // 持续时间沿用命令默认值；方向来自场景配置。
     direction: extension.direction,
-    // 历史固定帧的持续时间不属于当前场景命令，使用当前设备配置。
-    duration: extension.duration,
+    duration: 1,
   })
 }
 

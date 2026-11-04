@@ -1,7 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { isAbsolute } from 'node:path'
 import type { ScenarioConfig, ScenarioTemplate } from '../../src/contracts/domain-models.js'
-import { inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions } from '../../src/features/scenarios/scenario-validation.js'
 import { inspectTemplateMutation, type TemplateStorage } from '../templates/projection.js'
 
 /** 与场景共用数据库文件，但独立存表；空库不导入演示模板。仅限非敏感开发数据。 */
@@ -37,7 +37,8 @@ export class TemplateSqliteStorage implements TemplateStorage {
         || !Number.isSafeInteger(row.version) || Number(row.version) < 1
         || !Number.isSafeInteger(row.reference_count) || Number(row.reference_count) < 0
         || (row.official !== 0 && row.official !== 1) || typeof row.config_json !== 'string') throw new Error('模板存储结构不正确。')
-      const config: unknown = JSON.parse(row.config_json)
+      const config: unknown = dropRetiredScenarioFields(JSON.parse(row.config_json))
+      restoreRequiredMotionFields(config)
       const inspection = inspectScenarioConfig(config, 'read')
       if (!inspection.result.valid) throw new Error('模板配置无效。')
       const template: ScenarioTemplate = {
@@ -46,7 +47,8 @@ export class TemplateSqliteStorage implements TemplateStorage {
       }
       if (row.ui_extensions_json !== null) {
         if (typeof row.ui_extensions_json !== 'string') throw new Error('模板扩展结构不正确。')
-        const extensions: unknown = JSON.parse(row.ui_extensions_json)
+        const extensions: unknown = dropRetiredUiExtensionFields(JSON.parse(row.ui_extensions_json))
+        restoreRequiredMotionFields(config, extensions)
         const result = inspectScenarioUiExtensions(extensions, template.config.jammers.map(item => item.id), template.config.sensors.map(item => item.id))
         if (!result.result.valid) throw new Error('模板扩展无效。')
         template.uiExtensions = { jammers: result.jammers!, sensors: result.sensors! }
@@ -75,7 +77,7 @@ export class TemplateSqliteStorage implements TemplateStorage {
           official = excluded.official, config_json = excluded.config_json,
           ui_extensions_json = excluded.ui_extensions_json, reference_count = excluded.reference_count
       `).run(template.templateId, template.name, Number(template.version), Number(template.official),
-        JSON.stringify(template.config), template.uiExtensions === undefined ? null : JSON.stringify(template.uiExtensions), template.referenceCount)
+        JSON.stringify(dropRetiredScenarioFields(structuredClone(template.config))), template.uiExtensions === undefined ? null : JSON.stringify(dropRetiredUiExtensionFields(structuredClone(template.uiExtensions))), template.referenceCount)
       this.db.exec('COMMIT')
       return true
     } catch (error) {

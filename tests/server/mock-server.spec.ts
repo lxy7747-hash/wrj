@@ -13,7 +13,7 @@ describe('集群航点写入范围', () => {
       const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
       const config = structuredClone(original.config)
       const index = config.platforms.findIndex(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')
-      config.platforms[index]!.waypoints = [{ longitude, latitude, altitude: 0, speed: 1, arrivalTime: 1 }]
+      config.platforms[index]!.waypoints = [{ longitude, latitude, altitude: 0, speed: 1, arrivalTime: 0 }]
       const response = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(valid ? 200 : 422)
       if (valid) {
         expect((response.body as ApiSuccess<ScenarioDraft>).data.config.platforms[index]!.waypoints).toEqual(config.platforms[index]!.waypoints)
@@ -205,7 +205,8 @@ describe('敌方干扰配置保存', () => {
     expect(reset.config.jammingEnabled).toBeUndefined()
     const undone = ((await request(baseUrl).post(`${path}/undo`).set(headers).send({ expectedRevision: reset.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(undone.config).toEqual(config)
-    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 100_001 }, { jammingRange: 0 }, { jammingRange: 100_001 }, { releaseRange: 100 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
+    // 干扰范围 0 表示不触发，属于合法写入。
+    for (const mutation of [{ detectionRange: 0 }, { detectionRange: 100_001 }, { jammingRange: -1 }, { jammingRange: 100_001 }, { releaseRange: 100 }, { triggerTimeS: config.scenario.duration + 1 }, { triggerTimeS: -1 }]) {
       const invalid = structuredClone(config)
       Object.assign(invalid.jammers[0]!, mutation)
       await request(baseUrl).put(path).set(headers).send({ config: invalid, uiExtensions: original.uiExtensions, expectedRevision: undone.revision }).expect(422)
@@ -913,7 +914,7 @@ describe('P0 deterministic mock server', () => {
 
     const changed = structuredClone(original.config)
     changed.scenario.name = '台海通联验证场景'
-    changed.scenario.environment.humidityPercent = 75
+    changed.scenario.environment.seaState = 4
     changed.scenario.environment.simClockSpeed = 3
     changed.scenario.environment.transmissionDistance = 350
     changed.scenario.environment.rainCloudAttenuation = 'heavyRain'
@@ -926,7 +927,7 @@ describe('P0 deterministic mock server', () => {
     expect((saved.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 5,
       config: { scenario: { name: '台海通联验证场景', environment: {
-        humidityPercent: 75, simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain',
+        seaState: 4, simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain',
       } } },
     })
     const reloaded = await load().expect(200)
@@ -934,7 +935,7 @@ describe('P0 deterministic mock server', () => {
     expect((reloaded.body as { data: ScenarioDraft }).data.config.platforms).toEqual(original.config.platforms)
 
     const invalid = structuredClone(changed)
-    invalid.scenario.environment.humidityPercent = 101
+    invalid.scenario.environment.seaState = -1
     const rejected = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
@@ -943,7 +944,7 @@ describe('P0 deterministic mock server', () => {
       .expect(422)
     expect(rejected.body).toMatchObject({
       ok: false,
-      error: { code: 'VALIDATION_FAILED', fieldPath: 'scenario.environment.humidityPercent' },
+      error: { code: 'VALIDATION_FAILED', fieldPath: 'scenario.environment.seaState' },
     })
 
     const platformMutation = structuredClone(changed)
@@ -1122,7 +1123,7 @@ describe('P0 deterministic mock server', () => {
     const reset = await load().expect(200)
     expect((reset.body as { data: ScenarioDraft }).data).toMatchObject({
       revision: 4,
-      config: { scenario: { name: '跨海通联演示', environment: { humidityPercent: 80 } } },
+      config: { scenario: { name: '跨海通联演示', environment: { seaState: 3 } } },
     })
   })
 
@@ -1185,6 +1186,10 @@ describe('P0 deterministic mock server', () => {
   it('按 T-XQ-008 阻断错误、一次确认警告并执行脚本预检', async () => {
     const { server, baseUrl } = await startServer()
     const roleHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const original = ((await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(roleHeaders).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    original.config.scenario.environment.rainRateMmPerHour = 101
+    const saved = ((await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(roleHeaders)
+      .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
 
     const blocked = await request(baseUrl)
       .post('/api/v1/scripts/preview')
@@ -1211,7 +1216,7 @@ describe('P0 deterministic mock server', () => {
       .send({ scenarioId: 'SCN-001', warningConfirmationId: awaiting.confirmationId })
       .expect(200)
     const script = (previewResponse.body as { data: ScriptContract }).data
-    expect(script).toMatchObject({ target: 'AFSIM 2.9.0', scenarioId: 'SCN-001', configVersion: 'SCN-001-v4' })
+    expect(script).toMatchObject({ target: 'AFSIM 2.9.0', scenarioId: 'SCN-001', configVersion: `SCN-001-v${saved.revision}` })
     expect(script.preview).toContain('// ===== scenario.txt =====')
     expect(script.preview).toContain('include_once comm_SimSetup.txt')
 
@@ -1277,16 +1282,19 @@ describe('P0 deterministic mock server', () => {
       .expect(200)
     const original = (loaded.body as { data: ScenarioDraft }).data
 
+    const warningConfig = structuredClone(original.config)
+    warningConfig.scenario.environment.rainRateMmPerHour = 101
     const warningResponse = await request(baseUrl)
       .post('/api/v1/scenarios/SCN-001/validate')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: original.config })
+      .send({ config: warningConfig })
       .expect(200)
     expect((warningResponse.body as { data: ValidationResult }).data).toMatchObject({
       valid: true,
       errors: [],
-      warnings: [{ severity: 'WARNING', fieldPath: 'scenario.environment.rainLossDbPerKm' }],
+      warnings: [
+        { severity: 'WARNING', code: 'RAIN_RATE_CAPPED', fieldPath: 'scenario.environment.rainRateMmPerHour' }],
     })
 
     const invalid = structuredClone(original.config)
@@ -1362,13 +1370,16 @@ describe('P0 deterministic mock server', () => {
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    original.config.scenario.environment.rainRateMmPerHour = 101
+    const saved = ((await request(baseUrl).put(path).set(headers)
+      .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const confirmation = (await request(baseUrl).post('/api/v1/confirmations').set(headers)
       .send({ action: 'SCENARIO_WARNING_CONTINUE', objectId: 'SCN-001' }).expect(201)).body as ApiSuccess<ConfirmationContext>
     const confirmationId = confirmation.data.confirmationId
     await request(baseUrl).post(`/api/v1/confirmations/${confirmationId}`).set(headers)
       .send({ confirm: true }).expect(200)
     await request(baseUrl).put(path).set(headers)
-      .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)
+      .send({ config: saved.config, uiExtensions: saved.uiExtensions, expectedRevision: saved.revision }).expect(200)
     const rejected = await request(baseUrl).post('/api/v1/scripts/preview').set(headers)
       .send({ scenarioId: 'SCN-001', warningConfirmationId: confirmationId }).expect(409)
     expect(rejected.body).toMatchObject({ error: { code: 'CONFIRMATION_EXPIRED' } })
@@ -1515,7 +1526,8 @@ describe('P0 deterministic mock server', () => {
       .set('X-Demo-Role', 'OPERATOR')
     const original = (await load().expect(200)).body as { data: ScenarioDraft }
     const inconsistent = structuredClone(original.data.config)
-    inconsistent.links[0]!.targetPlatformId = 'AIR-02'
+    // 微波端口为“无人机 ↔ 后方指挥节点”：改源端为 AIR-02，仍连到后方节点。
+    inconsistent.links[0]!.sourcePlatformId = 'AIR-02'
     inconsistent.platforms.push({ ...structuredClone(inconsistent.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001',
       name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', sensorIds: [] })
     inconsistent.jammers[0]!.platformId = 'AJ-001'
@@ -1534,7 +1546,7 @@ describe('P0 deterministic mock server', () => {
     expect(saved.revision).toBe(original.data.revision + 1)
     saved.config.platforms.forEach((platform) => {
       expect(platform.linkIds).toEqual(saved.config.links
-        .filter((link) => link.sourcePlatformId === platform.id || link.targetPlatformId === platform.id)
+        .filter((link) => link.sourcePlatformId === platform.id || link.targetPlatformId === platform.id || link.relayPlatformId === platform.id)
         .map((link) => link.id))
       expect(platform.jammerIds).toEqual(saved.config.jammers
         .filter((jammer) => jammer.platformId === platform.id)
@@ -1592,7 +1604,7 @@ describe('P0 deterministic mock server', () => {
 
     const changedExtensions = structuredClone(original.uiExtensions)
     changedExtensions.jammers.reverse()
-    changedExtensions.jammers[0]!.direction = 270
+    changedExtensions.jammers[0]!.elevation = 30
     changedExtensions.jammers.find((extension) => extension.jammerId === 'JAM-WB-01-TX')!.enabled = false
     changedExtensions.sensors[0]!.probability = 0.8
 
@@ -1612,10 +1624,10 @@ describe('P0 deterministic mock server', () => {
         uiExtensions: { ...changedExtensions, jammers: [] },
       },
       {
-        fieldPath: 'uiExtensions.jammers[0].duration',
+        fieldPath: 'uiExtensions.jammers[0].elevation',
         uiExtensions: {
           ...changedExtensions,
-          jammers: [{ ...changedExtensions.jammers[0]!, duration: -1 }],
+          jammers: [{ ...changedExtensions.jammers[0]!, elevation: 61 }],
         },
       },
       {
@@ -2385,7 +2397,7 @@ describe('P0 deterministic mock server', () => {
     const report = await request(baseUrl).get('/api/v1/reports/RPT-001').set(operatorHeaders).expect(200)
     const reportBody = report.body as ApiSuccess<Report>
     expect(reportBody.data.timeSeries).toMatchObject([
-      { linkId: 'L-MW-01', sourcePlatformId: 'UAV-01', targetPlatformId: 'GCC-01' },
+      { linkId: 'L-MW-01', sourcePlatformId: 'UAV-01', targetPlatformId: 'CMD-01' },
     ])
     expect(reportBody.data.timeSeries?.[0].points).toHaveLength(3)
     await request(baseUrl).get('/api/v1/reports/RPT-BATCH-001').set(operatorHeaders).expect(404)

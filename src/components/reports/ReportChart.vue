@@ -13,6 +13,9 @@ const props = defineProps<{
 }>()
 const rows = computed(() => props.rows.filter(row => Number.isFinite(row.value)))
 const maximum = computed(() => props.radar ? 100 : Math.max(1, ...rows.value.map(row => row.value)))
+const barMinimum = computed(() => Math.min(0, ...rows.value.map(row => row.value)))
+const barRange = computed(() => Math.max(1, Math.max(0, ...rows.value.map(row => row.value)) - barMinimum.value))
+const barZero = computed(() => -barMinimum.value / barRange.value * 100)
 const lineMinimum = computed(() => Math.min(...rows.value.map(row => row.value)))
 const lineMaximum = computed(() => Math.max(...rows.value.map(row => row.value)))
 const lineRange = computed(() => Math.max(1e-12, lineMaximum.value - lineMinimum.value))
@@ -68,7 +71,10 @@ const polygon = computed(() => rows.value.map((row, index) => point(index, row.v
     <div v-else class="bars">
       <div v-for="row in rows" :key="row.label" class="bar-row">
         <span>{{ row.label }}</span>
-        <div class="bar-track"><div :style="{ width: `${Math.max(0, row.value) / maximum * 100}%` }" /></div>
+        <div class="bar-track">
+          <div :style="{ left: `${(Math.min(0, row.value) - barMinimum) / barRange * 100}%`, width: `${Math.abs(row.value) / barRange * 100}%` }" />
+          <i v-if="barMinimum < 0" class="bar-zero" :style="{ left: `${barZero}%` }" aria-hidden="true" />
+        </div>
         <strong>{{ row.value }} {{ unit }}</strong>
       </div>
     </div>
@@ -81,6 +87,7 @@ h4 { margin: 0 0 12px; } small { font-weight: normal; }
 svg { display: block; max-width: 360px; width: 100%; }
 .bars { display: grid; gap: 10px; }
 .bar-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 0.5fr); gap: 12px; align-items: center; }
-.bar-track { background: var(--el-fill-color); height: 12px; border-radius: 4px; }
-.bar-track div { background: var(--console-cyan); height: 100%; border-radius: 4px; }
+.bar-track { position: relative; background: var(--el-fill-color); height: 12px; border-radius: 4px; }
+.bar-track div { position: absolute; background: var(--console-cyan); height: 100%; border-radius: 4px; }
+.bar-zero { position: absolute; top: -2px; bottom: -2px; border-left: 1px solid var(--console-text-muted); }
 </style>

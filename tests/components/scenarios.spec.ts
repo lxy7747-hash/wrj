@@ -1,3 +1,4 @@
+import { RELAY_DEFAULT_ROUTE } from '../../src/features/scenarios/platform-position-rules'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElMessage, ElMessageBox } from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
@@ -53,14 +54,17 @@ const META: PageMeta = {
 function draft(revision = 4): ScenarioDraft {
   // 多设备交互用例自行创建合规的第二台设备，不恢复已删除的默认旧归属。
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', type: 'SPOT', autoDetect: false })
-  config.platforms.find(platform => platform.id === 'STN-01')!.jammerIds.push('JAM-SPOT-01-TX')
+  // 每个干扰节点只允许一台干扰设备（D6）：第二台设备挂到独立的地面干扰站。
+  const station = config.platforms.find(platform => platform.id === 'STN-01')!
+  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '地面干扰侦测站 2', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
+    initialPosition: { ...station.initialPosition, longitude: station.initialPosition.longitude + 0.05 } })
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT' })
   return {
     config,
     uiExtensions: {
       jammers: [
-        { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 120, enabled: true },
-        { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+        { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+        { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
       ],
       sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
     },
@@ -239,13 +243,13 @@ describe('P2-1 场景管理页面', () => {
     useAuthStore().$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
     const value = draft()
     const platform = value.config.platforms[3]!
-    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 10 }]
+    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 0 }]
     const fetchSpy = vi.fn().mockResolvedValue(response(value))
     vi.stubGlobal('fetch', fetchSpy)
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
     await flushPromises()
     expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('platforms[3].waypoints[0].speed')
-    expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('必须大于 0')
+    expect(wrapper.get('[data-testid="scenario-live-validation"]').text()).toContain('至少为 1 m/s')
     await wrapper.get('[data-testid="save-scenario"]').trigger('click')
     await flushPromises()
     expect(fetchSpy.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
@@ -261,7 +265,6 @@ describe('P2-1 场景管理页面', () => {
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: structuredClone(ADMIN), role: 'ADMIN', permissions: [...ADMIN.permissions] })
     const initial = draft()
-    initial.uiExtensions.jammers[0]!.direction = 123
     const fetchSpy = vi.fn().mockResolvedValueOnce(response(initial))
       .mockResolvedValue({ ok: true, json: async () => ({ ok: true, data: {
         ...template(), name: '另存测试', config: initial.config, uiExtensions: initial.uiExtensions,
@@ -477,7 +480,7 @@ describe('P2-1 场景管理页面', () => {
     const numbers = wrapper.findAllComponents({ name: 'ElInputNumber' })
     for (const [field, value] of [['longitude', 120.5], ['latitude', 26], ['altitude', 5000]] as const) {
       const number = numbers.find(c => c.attributes('data-testid') === `platform-${field}`)!
-      expect(number.props('disabled')).toBe(false)
+      expect(number.get('input').attributes('disabled')).toBeUndefined()
       number.vm.$emit('update:modelValue', value)
     }
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
@@ -568,7 +571,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     const original = structuredClone(toRaw(scenario.draft!.config))
     await wrapper.get('#tab-links').trigger('click')
-    expect(wrapper.findAll('[role="tab"]')).toHaveLength(5)
+    expect(wrapper.findAll('[role="tab"]')).toHaveLength(6)
     expect(wrapper.find('[data-testid="add-information-demand"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('未关联的旧业务')
@@ -605,13 +608,14 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config).toEqual(original)
     volume.vm.$emit('update:modelValue', 3)
     selector('link-direction').vm.$emit('update:modelValue', 'REVERSE')
-    selector('link-target').vm.$emit('update:modelValue', 'GCC-01')
+    // 新模板微波端口为“后方指挥节点 ↔ 任务/中继无人机”，目标选任务无人机 AIR-01。
+    selector('link-target').vm.$emit('update:modelValue', 'AIR-01')
     await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
-    const savedDemand = { ...initialDemand, linkId: 'L-CFG-001', direction: 'REVERSE', informationType: '侦察信息', frequencyHz: 30, minDataRateMbps: 2, volumeMb: 3, destinationPlatformIds: ['GCC-01'] }
+    const savedDemand = { ...initialDemand, linkId: 'L-CFG-001', direction: 'REVERSE', informationType: '侦察信息', frequencyHz: 30, minDataRateMbps: 2, volumeMb: 3, destinationPlatformIds: ['AIR-01'] }
     expect(scenario.draft!.config.informationDemand).toEqual([...original.informationDemand, savedDemand])
-    expect(scenario.draft!.config.links.at(-1)).toMatchObject({ id: 'L-CFG-001', direction: 'REVERSE', targetPlatformId: 'GCC-01' })
+    expect(scenario.draft!.config.links.at(-1)).toMatchObject({ id: 'L-CFG-001', direction: 'REVERSE', targetPlatformId: 'AIR-01' })
     expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
     expect(await scenario.saveScenario()).toBe(true)
     expect(await scenario.loadScenario()).toBe(true)
@@ -744,6 +748,8 @@ describe('P2-1 场景管理页面', () => {
     setActivePinia(pinia)
     const scenario = useScenarioStore(pinia)
     const current = draft()
+    // 同类干扰节点的探测距离须一致（D6）；第二台所在节点改为机载，才能逐台修正旧超界距离。
+    Object.assign(current.config.platforms.find(platform => platform.id === 'STN-02')!, { type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air' })
     current.config.jammers.forEach(jammer => { jammer.detectionRange = 150000 })
     scenario.$patch({ draft: current, panelState: 'SUCCESS' })
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
@@ -820,6 +826,7 @@ describe('P2-1 场景管理页面', () => {
     }
     await checkPosition()
     await wrapper.get('#tab-data').trigger('click')
+    expect(wrapper.find('[data-testid="sensor-retained-hint"]').exists()).toBe(false)
     const previousCount = scenario.draft!.config.sensors.length
     await wrapper.get('[data-testid="add-sensor"]').trigger('click')
     expect(scenario.draft!.config.sensors).toHaveLength(previousCount + 1)
@@ -856,7 +863,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      '场景基础', '节点配置', '链路配置', '干扰设备', '传感器',
+      '场景基础', '节点配置', '链路配置', '通信设备参数', '干扰设备', '传感器',
     ])
     expect(wrapper.find('.scenario-workflow-hint').exists()).toBe(false)
     expect(wrapper.get('.scenario-workflow-bar').text()).toContain('已就绪')
@@ -903,13 +910,13 @@ describe('P2-1 场景管理页面', () => {
     const labels = (root: ReturnType<typeof wrapper.get>) => root.findAll('.el-form-item__label').map((item) => item.text())
     expect(labels(fields)).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
-      '仿真总时长（min）', '任务阶段（可选）', '仿真时钟倍速（倍）', '海峡宽度（km）', '温度（℃）', '相对湿度（%）', '雨衰（dB/km）', '场景描述',
+      '仿真总时长（min）', '任务阶段（可选）', '运行模式', '仿真时钟倍速（倍）', '海峡宽度（km）', '场景描述',
     ])
     // 环境参数按《与前端字段确认说明》“环境参数（全局）”的五个小标题分组。
     const environment = wrapper.get('[data-testid="scenario-environment"]')
     expect(environment.get('.environment-section__title').text()).toBe('环境参数（全局）')
     expect(environment.findAll('.environment-group__title').map(item => item.text())).toEqual([
-      '降雨参数（NERain）', '云雾参数（NECloud）', '大气参数（NEAtmosphere）', '极化失配（MiscLossDB）', '海况参数（SeaState）',
+      '降雨参数', '云雾参数', '大气参数', '极化失配', '海况参数',
     ])
     expect(labels(environment.get('[data-testid="environment-rain"]'))).toEqual(['是否开启', '雨强档位', '降雨强度（mm/h）', '雨区顶部高度（m）', '固定雨衰兜底值（dB）'])
     expect(labels(environment.get('[data-testid="environment-cloud"]'))).toEqual(['是否开启', '云层底边高度（m）', '云层顶边高度（m）', '云中含水量（g/m³）'])
@@ -1304,12 +1311,16 @@ describe('P2-1 场景管理页面', () => {
     // 按字段定位既有 P2-1 参数，避免新增表单项改变输入框顺序或总数。
     const numericFields = [
       ['scenario-duration', '120.5'], ['scenario-time-step', '2'], ['scenario-sea-state', '4'],
-      ['scenario-temperature', '27'], ['scenario-humidity', '75'],
-      ['scenario-rain-rate', '10'], ['scenario-rain-loss', '0.08'],
+      ['scenario-rain-rate', '10'],
     ]
     for (const [testId, value] of numericFields) {
       await wrapper.get(`[data-testid="${testId}"] input[type="number"]`).setValue(value)
     }
+    expect(wrapper.find('[data-testid="scenario-temperature"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-humidity"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-rain-loss"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-time-step"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="scenario-rain-rate"]').exists()).toBe(true)
     await wrapper.get('[data-testid="scenario-multipath"]').trigger('click')
 
     expect(scenario.draft?.config.scenario).toMatchObject({
@@ -1319,10 +1330,7 @@ describe('P2-1 场景管理页面', () => {
       timeStep: 2,
       environment: {
         seaState: 4,
-        temperatureC: 27,
-        humidityPercent: 75,
         rainRateMmPerHour: 10,
-        rainLossDbPerKm: 0.08,
         multipathEnabled: false,
       },
     })
@@ -1527,7 +1535,9 @@ describe('P2-1 场景管理页面', () => {
       auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
       const scenario = useScenarioStore(pinia)
       const currentDraft = draft()
-      currentDraft.config.scenario.environment.rainLossDbPerKm = 0.08
+      // 激光链路不写入新模板脚本会给出本地警告；本用例需要“没有本地问题”，去掉激光链路。
+      currentDraft.config.links = currentDraft.config.links.filter(link => link.type !== 'LASER')
+      currentDraft.config.platforms.forEach(platform => { platform.linkIds = platform.linkIds.filter(id => currentDraft.config.links.some(link => link.id === id)) })
       scenario.$patch({ draft: currentDraft, panelState: 'SUCCESS' })
       vi.stubGlobal('fetch', vi.fn().mockImplementation(failure.reply))
       const wrapper = mount(ScenariosPage, { global: { plugins: [pinia, ElementPlus] } })
@@ -1587,6 +1597,38 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
+  it('新增中继使用模板起飞点，初始位置可编辑且确认前不污染草稿', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    scenario.$patch({ draft: draft(), panelState: 'SUCCESS' })
+    const original = structuredClone(toRaw(scenario.draft!))
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('#tab-platforms').trigger('click')
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
+    const dialog = wrapper.findComponent({ name: 'PlatformEditorDialog' })
+    const type = dialog.findAllComponents({ name: 'ElSelect' }).find(item => item.attributes('data-testid') === 'platform-type')!
+    type.vm.$emit('update:modelValue', 'FORWARD_RELAY_NODE')
+    type.vm.$emit('change', 'FORWARD_RELAY_NODE')
+    await flushPromises()
+    for (const [field, expected] of [['longitude', 119.55], ['latitude', 24.66], ['altitude', 3200]] as const) {
+      const input = document.querySelector<HTMLInputElement>(`[data-testid="platform-${field}"] input`)
+      expect(input).not.toBeNull()
+      expect(input!.value).toBe(String(expected))
+      expect(input!.disabled).toBe(false)
+    }
+    expect(scenario.draft).toEqual(original)
+    document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
+    await flushPromises()
+    expect(scenario.draft!.config.platforms.at(-1)).toMatchObject({ type: 'FORWARD_RELAY_NODE',
+      initialPosition: { longitude: 119.55, latitude: 24.66, altitude: 3200 },
+      waypoints: RELAY_DEFAULT_ROUTE.waypoints, loiterWaypoints: RELAY_DEFAULT_ROUTE.loiterWaypoints })
+    expect(scenario.draft!.config.platforms.at(-1)!.returnPlan).toBeUndefined()
+    expect(scenario.dirty).toBe(true)
+    wrapper.unmount()
+  })
+
   it('使用平台对话框新增业务信息节点和航点且确认前不污染草稿', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -1597,7 +1639,7 @@ describe('P2-1 场景管理页面', () => {
 
     expect(wrapper.text()).toContain(`信息节点 6 / ${INFORMATION_NODE_LIMIT}`)
     expect(wrapper.text()).toContain('节点类型 4 / 4')
-    expect(wrapper.text()).toContain('支撑实体 2')
+    expect(wrapper.text()).toContain('支撑实体 3')
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await nextTick()
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
@@ -1607,6 +1649,9 @@ describe('P2-1 场景管理页面', () => {
     document.querySelector<HTMLElement>('[data-testid="add-waypoint"]')!.click()
     await flushPromises()
     expect(document.querySelector('[data-testid="waypoint-table"]')?.textContent).toContain('经度')
+    // 新增航点默认速度为 1 m/s；输入框最小值为 1，清空速度（必填）后确认应被拦下。
+    wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!.vm.$emit('update:modelValue', undefined)
+    await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
     expect(document.querySelector<HTMLButtonElement>('[data-testid="apply-platform"]')!.disabled).toBe(false)
@@ -1622,7 +1667,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
       name: '新增空中无人作业集群',
       type: 'AIRBORNE_MISSION_CLUSTER',
-      waypoints: [{ longitude: 117, latitude: 21, altitude: 0, speed: 20, arrivalTime: 0 }],
+      waypoints: [{ longitude: 117, latitude: 21, altitude: 0, speed: 20 }],
     })
     expect(scenario.dirty).toBe(true)
     wrapper.unmount()
@@ -2100,7 +2145,7 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('#tab-links').trigger('click')
     await nextTick()
-    expect(wrapper.text()).toContain('已配置 4 / 5 类')
+    expect(wrapper.text()).toContain('已配置 5 / 5 类')
     const originalCount = scenario.draft!.config.links.length
     await wrapper.get('[data-testid="add-link"]').trigger('click')
     await flushPromises()
@@ -2178,14 +2223,15 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.links[0]?.enabled).toBeUndefined()
     await wrapper.get('[data-testid="edit-link-0"]').trigger('click')
     await flushPromises()
-    select('link-target').vm.$emit('update:modelValue', 'AIR-03')
+    // 微波端口为“无人机 ↔ 后方指挥节点”：把源端从 UAV-01 改为任务无人机 AIR-03。
+    select('link-source').vm.$emit('update:modelValue', 'AIR-03')
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
     await flushPromises()
-    expect(scenario.draft?.config.links[0]?.targetPlatformId).toBe('AIR-03')
+    expect(scenario.draft?.config.links[0]?.sourcePlatformId).toBe('AIR-03')
     expect(messageSpy).toHaveBeenLastCalledWith('链路已更新，保存草稿后生效。')
     expect(scenario.draft?.config.links[0]?.enabled).toBe(true)
     expect(scenario.draft?.config.links.at(-1)?.enabled).toBe(false)
-    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'GCC-01')?.linkIds).not.toContain('L-MW-01')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'UAV-01')?.linkIds).not.toContain('L-MW-01')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AIR-03')?.linkIds).toContain('L-MW-01')
 
     await wrapper.get('[data-testid="delete-link-0"]').trigger('click')
@@ -2241,6 +2287,9 @@ describe('P2-1 场景管理页面', () => {
       },
     })
 
+    // 每个干扰节点只允许一台干扰设备：新增设备挂到尚无设备的机载干扰平台。
+    const station = scenario.draft!.config.platforms.find(p => p.id === 'STN-01')!
+    scenario.draft!.config.platforms.push({ ...structuredClone(toRaw(station)), id: 'AJ-002', name: '机载干扰平台 2', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
     await wrapper.get('#tab-jammers').trigger('click')
     await nextTick()
     expect(wrapper.text()).toContain('已配置 2 / 3 种手段')
@@ -2251,10 +2300,11 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === testId)!
     const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === testId)!
-    const autoDetect = wrapper.findAllComponents({ name: 'ElSwitch' })
-      .find((component) => component.attributes('data-testid') === 'jammer-auto-detect')!
     expect(inputNumber('jammer-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
     expect(inputNumber('jammer-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    expect(document.querySelector('[data-testid="jammer-auto-detect"]')).toBeNull()
+    expect(document.querySelector('[data-testid="jammer-direction"]')).not.toBeNull()
+    expect(document.querySelector('[data-testid="jammer-duration"]')).toBeNull()
 
     inputNumber('jammer-frequency').vm.$emit('input', 0)
     inputNumber('jammer-frequency').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
@@ -2264,8 +2314,7 @@ describe('P2-1 场景管理页面', () => {
     expect(document.body.textContent).toContain('干扰频率必须大于 0 MHz。')
 
     select('jammer-type').vm.$emit('update:modelValue', 'SPOT')
-    select('jammer-platform').vm.$emit('update:modelValue', 'STN-01')
-    autoDetect.vm.$emit('update:modelValue', true)
+    select('jammer-platform').vm.$emit('update:modelValue', 'AJ-002')
     inputNumber('jammer-power').vm.$emit('update:modelValue', 30)
     inputNumber('jammer-range').vm.$emit('update:modelValue', 24)
     inputNumber('jammer-frequency').vm.$emit('input', 3200)
@@ -2276,8 +2325,6 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     expect(scenario.draft?.config.jammers).toHaveLength(originalCount)
     expect(document.body.textContent).toContain('干扰带宽必须大于 0 MHz。')
-    inputNumber('jammer-direction').vm.$emit('update:modelValue', 270)
-    inputNumber('jammer-duration').vm.$emit('update:modelValue', 90)
     wrapper.findAllComponents({ name: 'ElSwitch' })
       .find((component) => component.attributes('data-testid') === 'jammer-enabled')!
       .vm.$emit('update:modelValue', false)
@@ -2293,24 +2340,20 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
       id: 'JAM-CFG-001',
-      platformId: 'STN-01',
+      platformId: 'AJ-002',
       type: 'SPOT',
       defaultPower: 1,
       frequency: 3200,
       bandwidth: 15,
-      autoDetect: true,
       // 探测范围按 km 输入；干扰与释放范围取文档默认的 30、35 海里。
       detectionRange: 24000,
       jammingRange: 55560,
       releaseRange: 64820,
       triggerTimeS: 300,
     })
-    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).toContain('JAM-CFG-001')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AJ-002')?.jammerIds).toContain('JAM-CFG-001')
     expect(scenario.draft?.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
-      jammerId: 'JAM-CFG-001',
-      direction: 270,
-      duration: 90,
-      enabled: false,
+      jammerId: 'JAM-CFG-001', direction: 0, enabled: false,
     })
 
     wrapper.findAllComponents({ name: 'ElSwitch' })
@@ -2322,15 +2365,16 @@ describe('P2-1 场景管理页面', () => {
 
     await wrapper.get('[data-testid="edit-jammer-0"]').trigger('click')
     await flushPromises()
+    // 改挂到新的地面干扰站：同类地面站的设备参数一致，不触发 D6 冲突。
     scenario.draft!.config.platforms.push({ ...structuredClone(toRaw(scenario.draft!.config.platforms.find(p => p.id === 'STN-01')!)),
-      id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
-    select('jammer-platform').vm.$emit('update:modelValue', 'AJ-001')
+      id: 'STN-03', name: '地面干扰侦测站 3', jammerIds: [], sensorIds: [] })
+    select('jammer-platform').vm.$emit('update:modelValue', 'STN-03')
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
-    expect(scenario.draft?.config.jammers[0]?.platformId).toBe('AJ-001')
+    expect(scenario.draft?.config.jammers[0]?.platformId).toBe('STN-03')
     expect(messageSpy).toHaveBeenLastCalledWith('干扰设备已更新，保存草稿后生效。')
     expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-01')?.jammerIds).not.toContain('JAM-WB-01-TX')
-    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'AJ-001')?.jammerIds).toContain('JAM-WB-01-TX')
+    expect(scenario.draft?.config.platforms.find((platform) => platform.id === 'STN-03')?.jammerIds).toContain('JAM-WB-01-TX')
 
     await wrapper.get('[data-testid="delete-jammer-0"]').trigger('click')
     await nextTick()

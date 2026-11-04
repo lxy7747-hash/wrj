@@ -7,6 +7,8 @@ export type FileCommunicationType = keyof typeof FILE_COMMUNICATION_LABELS
 export interface FileCommunicationConnection extends AfsimConnectionRecord {
   sourceType: string
   targetType: string
+  /** 归档的通用射频记录可由服务端按 manifest 端点对精确匹配后分类；端点编号保持原样。 */
+  resolvedType?: FileCommunicationType
 }
 
 export interface FileCommunicationLink {
@@ -28,8 +30,31 @@ export function fileCommunicationType(type: string, name = ''): FileCommunicatio
   return type === 'WSF_COMM_TRANSCEIVER' && name === 'fiber_link' ? 'FIBER' : null
 }
 
+function isFileCommunicationType(value: unknown): value is FileCommunicationType {
+  return typeof value === 'string' && Object.hasOwn(FILE_COMMUNICATION_LABELS, value)
+}
+
+/** 服务端提供的归档分类，只在原始收发机类型兼容时才接受。 */
+function isCompatibleResolvedType(record: FileCommunicationConnection): boolean {
+  const type = record.resolvedType
+  if (!isFileCommunicationType(type)) return false
+  const source = record.sourceType, target = record.targetType
+  if (source === 'WSF_RADIO_TRANSCEIVER' && target === 'WSF_RADIO_TRANSCEIVER') {
+    if (type !== 'SAT' && type !== 'MICROWAVE' && type !== 'DATALINK') return false
+    const nativeTypes = [
+      fileCommunicationType(source, record.source.communicationName),
+      fileCommunicationType(target, record.target.communicationName),
+    ].filter((candidate): candidate is FileCommunicationType => candidate !== null)
+    // 已知的新模板端口本身就能说明类型，归档映射不能改写它。
+    return nativeTypes.every(nativeType => nativeType === type)
+  }
+  if (source === 'WSF_COMM_TRANSCEIVER' && target === 'WSF_COMM_TRANSCEIVER') return type === 'FIBER'
+  return source === 'WSF_LASER_TRANSCEIVER' && target === 'WSF_LASER_TRANSCEIVER' && type === 'LASER'
+}
+
 /** 保留旧类型投影；新增名称映射要求两端同类，不能由单端推断跨用途登记的类别。 */
 export function fileConnectionTypes(record: FileCommunicationConnection): FileCommunicationType[] {
+  if (record.resolvedType !== undefined) return isCompatibleResolvedType(record) ? [record.resolvedType] : []
   // 激光是生成器写出的专用收发器；一端为激光而另一端不是时，不把异构登记误画为激光链路。
   const sourceLaser = record.sourceType === 'WSF_LASER_TRANSCEIVER'
   const targetLaser = record.targetType === 'WSF_LASER_TRANSCEIVER'
@@ -53,6 +78,7 @@ export function isFileCommunicationConnection(value: unknown, platformIds: Reado
       && platformIds.has(endpoint.platformName))
     && record.source.platformName !== record.target.platformName
     && text(record.sourceType) && text(record.targetType)
+    && (record.resolvedType === undefined || isCompatibleResolvedType(record))
     && fileConnectionTypes(record).length > 0
 }
 

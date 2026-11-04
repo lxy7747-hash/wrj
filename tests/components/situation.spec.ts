@@ -368,7 +368,7 @@ describe('态势主界面', () => {
       schemaVersion: '1.0', scope,
       source: { kind: 'FILE_IMPORT', fileName: 'quality.json', sha256: 'a'.repeat(64), importedAt: '2026-10-31T01:02:00Z', frameIdKind: 'PROVIDED' },
       expectedStepS: 1,
-      samples: [{ time: 5, frameId: 7, linkId: 'L-MW-01', sourcePlatform: 'UAV-01', destPlatform: 'GCC-01', linkType: 'MICROWAVE',
+      samples: [{ time: 5, frameId: 7, linkId: 'L-MW-01', sourcePlatform: 'UAV-01', destPlatform: 'CMD-01', linkType: 'MICROWAVE',
         frequency: 4500, bandwidth: 20, distance: 12_500, txPower: 100, txAntennaGain: 18, rxAntennaGain: 12,
         pathLoss: 100, jammingPower: -95, receivedPower: -70, snr: 11, modulation: 'QPSK', ber: 1e-6,
         linkStatus: 'UP', berThreshold: 1e-5, dataRate: 20, jsrDb: 8 }],
@@ -2145,7 +2145,7 @@ describe('态势主界面', () => {
     const updatedSummaries = structuredClone(SITUATION_FRAME_F00042.linkSummaries)
     const target = updatedSummaries.find((summary) => (
       summary.sourcePlatform === 'UAV-01'
-      && summary.destPlatform === 'GCC-01'
+      && summary.destPlatform === 'CMD-01'
       && summary.linkType === 'MICROWAVE'
     ))
     if (target === undefined) throw new Error('测试固定帧缺少 L-MW-01 链路摘要')
@@ -3611,7 +3611,8 @@ describe('Leaflet 控制器回归', () => {
     controller.focusTarget({ kind: 'link', targetId: 'L-MW-01' })
     const linkBounds = fitBoundsSpy.mock.calls[0]?.[0] as L.LatLngBounds
     expect(linkBounds.contains([24.70, 119.35])).toBe(true)
-    expect(linkBounds.contains([23.55, 118.65])).toBe(true)
+    // L-MW-01 按新模板为高空前出中继节点 → 后方指挥节点（CMD-01）。
+    expect(linkBounds.contains([24.45, 118.15])).toBe(true)
     expect(fitBoundsSpy.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
       padding: [24, 24],
       maxZoom: 10,
@@ -4009,7 +4010,9 @@ describe('Leaflet 控制器回归', () => {
       expect(curve[curve.length - 1]).toEqual(destination)
       expect(linkKeyboardCalls[index]?.[0]).toEqual(curve[16])
       const middle = [(source[0] + destination[0]) / 2, (source[1] + destination[1]) / 2]
-      if (index > 1) {
+      // UAV-01 与 CMD-01 之间有激光、微波、卫星三种制式：按类型排序后微波居中保持直线，
+      // 激光（L-LASER-04）与卫星（L-SAT-02）向两侧分离；其余节点对只有一种制式，保持直线。
+      if (summary.sourcePlatform !== 'CMD-01' || summary.destPlatform !== 'UAV-01') {
         expect(curve[16]?.[0]).toBeCloseTo(middle[0]!)
         expect(curve[16]?.[1]).toBeCloseTo(middle[1]!)
       } else {

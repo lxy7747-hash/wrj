@@ -133,7 +133,7 @@ watch(visible, value => { if (!value) clear() }, { flush: 'sync' })
 
 <template>
   <el-button :disabled="disabled" data-testid="open-local-scene-import" @click="load">从本地数据导入</el-button>
-  <el-dialog v-model="visible" title="本地数据导入" width="min(840px, calc(100vw - 2rem))" top="6vh" destroy-on-close append-to-body class="local-scene-import" data-testid="local-scene-import" @close="clear">
+  <el-dialog v-model="visible" title="本地数据导入" width="min(840px, calc(100vw - 2rem))" top="6vh" destroy-on-close append-to-body class="local-scene-import scenario-dialog" data-testid="local-scene-import" @close="clear">
     <p v-if="loading" role="status">正在读取本地文件快照…</p>
     <el-alert v-if="message" :title="message" type="warning" :closable="false" data-testid="local-import-message" />
     <template v-if="initial">
@@ -163,7 +163,4 @@ watch(visible, value => { if (!value) clear() }, { flush: 'sync' })
 .import-node-name small { display: block; color: var(--el-text-color-secondary); }
 .import-hint { color: var(--el-text-color-secondary); }
 .import-error { color: var(--el-color-warning); }
-</style>
-<style>
-.local-scene-import .el-dialog__body { max-height: 70vh; overflow: auto; }
 </style>

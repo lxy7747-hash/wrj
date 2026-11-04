@@ -8,7 +8,7 @@ export type LinkMasterDataPreparation =
 
 type NumberMapping = { field: Exclude<LinkParameterField, 'modulation' | 'coding' | 'txPolarization' | 'rxPolarization'>; unit?: 'MHz' | 'W' | 'Mbps' | 'dBi' | 'dB' }
 
-const NUMBER_MAPPINGS: Readonly<Record<string, NumberMapping>> = {
+export const NUMBER_MAPPINGS: Readonly<Record<string, NumberMapping>> = {
   frequency: { field: 'frequency', unit: 'MHz' }, frequencyMHz: { field: 'frequency', unit: 'MHz' },
   bandwidth: { field: 'bandwidth', unit: 'MHz' }, bandwidthMHz: { field: 'bandwidth', unit: 'MHz' },
   txPower: { field: 'txPower', unit: 'W' }, txPowerW: { field: 'txPower', unit: 'W' },

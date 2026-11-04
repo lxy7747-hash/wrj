@@ -38,8 +38,8 @@ describe('P4 剩余交互能力', () => {
         uiExtensions: {
           sensors: [{ sensorId: 'ESM-01', type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true }],
           jammers: [
-            { jammerId: 'JAM-WB-01-TX', direction: 360, duration: 1470, enabled: true },
-            { jammerId: 'JAM-SPOT-01-TX', direction: 45, duration: 60, enabled: false },
+            { jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true },
+            { jammerId: 'JAM-SPOT-01-TX', direction: 0, enabled: false },
           ],
         },
         revision: 4,
@@ -76,9 +76,7 @@ describe('P4 剩余交互能力', () => {
   })
 
   it('展示四端同步、正反向排名以及接受和拒绝切换记录', async () => {
-    // 当前场景时长与历史固定帧不同，发送当前场景扩展中的持续时间。
-    useScenarioStore().draft!.config.scenario.duration = 1200
-    useScenarioStore().draft!.uiExtensions.jammers[0]!.duration = 120
+    // 场景不再提供方向和持续时间，发送命令默认值。
     const syncResult = {
       taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
       configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
@@ -89,7 +87,7 @@ describe('P4 剩余交互能力', () => {
     const sync = mount(JammerSyncPanel, { global: { plugins: [ElementPlus] } })
     await sync.findAll('button').find((button) => button.text().includes('同步参数'))?.trigger('click')
     await vi.waitFor(() => expect(useTelemetryStore().syncState).toBe('SUCCESS'))
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ parameters: { duration: 120 } })
+    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ parameters: { direction: 0, duration: 1 } })
     expect(sync.text()).toContain('配置端')
     expect(sync.text()).toContain('AFSIM 引擎')
     expect(sync.text()).toContain('v5')

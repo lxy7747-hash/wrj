@@ -216,3 +216,9 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
 function kpi(value: number | undefined, format: (value: number) => string): string {
   return typeof value === 'number' && Number.isFinite(value) ? format(value) : NO_DATA
 }
+
+/** 图表与导出共用已应用的范围，不读取尚未提交的筛选输入。 */
+export function localReportChartRange(evidence: LocalReportEvidence, fileName: string, filter?: LocalReportFilter): string {
+  const selection = [filter?.nodeId && `节点 ${filter.nodeId}`, filter?.linkId && `链路 ${filter.linkId}`, filter?.stage && `阶段 ${filter.stage}`].filter(Boolean)
+  return `${fileName} · ${filter ? '筛选范围' : '完整快照'} · ${reportTime(filter?.from ?? evidence.startTimeS)}～${reportTime(filter?.to ?? evidence.endTimeS)}${selection.length ? ` · ${selection.join(' · ')}` : ''}`
+}

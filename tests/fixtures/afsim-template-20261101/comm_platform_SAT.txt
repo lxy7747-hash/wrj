@@ -1,0 +1,112 @@
+include_once comm_PerDefinition.txt
+
+// -------------------------------------------------------
+// 4.6 天通卫星（GEO轨道，通信中继）
+// 仅承载卫星通信链路
+// -------------------------------------------------------
+platform_type TIAN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time sep 15 2025 00:00:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+
+  // 天通链路A
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+        channels 4
+        mode "default"
+          transfer_rate 16 kbits/sec      //界面配置
+      end_mode
+    end_medium
+    
+    transmitter
+      frequency 11.8 GHz    //界面配置
+      bandwidth 54 MHz    //界面配置
+      power 40 W    //界面配置
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 14.2 GHz    //界面配置
+      bandwidth 54 MHz    //界面配置
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB    //界面配置
+    end_receiver
+    internal_link script_proc
+  end_comm
+  
+  processor script_proc WSF_SCRIPT_PROCESSOR
+  end_processor
+end_platform_type
+
+// -------------------------------------------------------
+// 4.7 神通卫星（GEO轨道，与天通相同，通信中继）
+// 仅承载卫星通信链路
+// -------------------------------------------------------
+platform_type SHEN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time sep 15 2025 00:00:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 mbits/sec     //界面配置
+      end_mode
+    end_medium
+
+    transmitter
+      frequency 11.8 GHz    //界面配置
+      bandwidth 54 MHz    //界面配置
+      power 40 W    //界面配置
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 14.2 GHz    //界面配置
+      bandwidth 54 MHz    //界面配置
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB    //界面配置
+    end_receiver
+    internal_link script_proc
+  end_comm
+
+  processor script_proc WSF_SCRIPT_PROCESSOR
+      on_message
+      end_on_message
+  end_processor
+end_platform_type

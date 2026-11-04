@@ -57,7 +57,7 @@ describe('场景拆分面板', () => {
     config.platforms.push({ ...structuredClone(config.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001', name: '机载干扰平台', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', jammerIds: [], sensorIds: [] })
     const jammer = { ...config.jammers[0]!, platformId: 'CMD-01' }
     const wrapper = mount(JammerEditorDialog, {
-      props: { modelValue: true, jammer, uiExtension: { jammerId: jammer.id, direction: 0, duration: 60, enabled: true },
+      props: { modelValue: true, jammer, uiExtension: { jammerId: jammer.id, direction: 0, enabled: true },
         editing: true, error: '', pending: false, locked: false, platforms: config.platforms,
         jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' } } },
@@ -70,7 +70,7 @@ describe('场景拆分面板', () => {
     expect(owner.findAllComponents({ name: 'ElOption' }).filter(c => !c.props('disabled')).map(c => c.props('value'))).toEqual(['STN-01', 'AJ-001'])
     expect(owner.findAllComponents({ name: 'ElOption' }).find(c => c.props('value') === 'CMD-01')!.props('disabled')).toBe(true)
     const detection = wrapper.get('[aria-labelledby="jammer-detection-title"]')
-    expect(detection.find('[data-testid="jammer-auto-detect"]').exists()).toBe(true)
+    expect(detection.find('[data-testid="jammer-auto-detect"]').exists()).toBe(false)
     expect(detection.find('[data-testid="jammer-range"]').exists()).toBe(true)
     await wrapper.get('[data-testid="cancel-jammer"]').trigger('click')
     expect(wrapper.emitted('apply')).toBeUndefined()
@@ -311,7 +311,7 @@ describe('场景拆分面板', () => {
   })
 
   it.each([false, true])('新增/编辑链路弹框仅包含当前链路开关并仅确认时提交（编辑=%s）', async (editing) => {
-    const link = structuredClone(fixtureSource.scenario.links.find(l => l.type === 'SAT')) as Link
+    const link = structuredClone(fixtureSource.scenario.links.find(l => l.id === 'L-SAT-05')) as Link
     if (editing) link.relayPlatformId = 'SAT-01'
     const wrapper = mount(LinkEditorDialog, {
       props: { modelValue: true, link, editing, error: '', pending: false, locked: false,
@@ -332,7 +332,8 @@ describe('场景拆分面板', () => {
       wrapper.findAllComponents({ name: 'ElInputNumber' }).find(c => c.attributes('data-testid') === id)!.vm.$emit('update:modelValue', value)
     }
     wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'link-coding')!.vm.$emit('update:modelValue', 'UNCODED')
-    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(false)
+    // 卫星 / 微波 / 数传链路可选中继；卫星中继改成微波后不再适用，提交时写 null。
+    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(true)
     await flushPromises()
     await wrapper.get('[data-testid="apply-link"]').trigger('click')
     expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ antennaGainCorrectionDb: -2, antiJammingGainDb: 10, spatialIsolationDb: 3, coding: 'UNCODED' })
@@ -352,7 +353,8 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'MICROWAVE')
     type.vm.$emit('change', 'MICROWAVE')
     await flushPromises()
-    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(false)
+    // 卫星 / 微波 / 数传链路可选中继；卫星中继改成微波后不再适用，提交时写 null。
+    expect(wrapper.find('[data-testid="link-relay"]').exists()).toBe(true)
     await wrapper.get('[data-testid="apply-link"]').trigger('click')
     if (editing) {
       expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('relayPlatformId', null)
@@ -361,7 +363,7 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it('新增航点不立即报错，确认时拦截零值或空速度，修改正确后可确认，重开不保留提示', async () => {
+  it('新增航点默认 1 且不立即报错，确认时拦截空速度，修改正确后可确认，重开不保留提示', async () => {
     const platform = structuredClone(fixtureSource.scenario.platforms[3]) as Platform
     platform.waypoints = []
     const wrapper = mount(PlatformEditorDialog, {
@@ -378,19 +380,18 @@ describe('场景拆分面板', () => {
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
     await flushPromises()
     const speed = wrapper.findAllComponents({ name: 'ElInputNumber' }).find(item => item.attributes('data-testid') === 'waypoint-speed-0')!
-    expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0')
+    expect(speed.props('modelValue')).toBe(1)
+    expect(speed.props('min')).toBe(1)
+    expect(wrapper.text()).not.toContain('航点速度必填且必须至少为 1')
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.findAllComponents({ name: 'ElFormItem' }).find(item => item.props('label') === '名称')!.props('required')).toBe(true)
-    for (const value of [undefined, -1, 0]) {
-      speed.vm.$emit('update:modelValue', value)
-      await flushPromises()
-      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
-      expect(wrapper.emitted('apply')).toBeUndefined()
-      await vi.waitFor(() => expect(wrapper.text()).toContain('航点速度必填且必须大于 0'))
-    }
+    await wrapper.get('[data-testid="waypoint-speed-0"] input').setValue('')
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    await vi.waitFor(() => expect(wrapper.text()).toContain('航点速度必填且必须至少为 1'))
     speed.vm.$emit('update:modelValue', 20)
     await flushPromises()
-    await vi.waitFor(() => expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0'))
+    await vi.waitFor(() => expect(wrapper.text()).not.toContain('航点速度必填且必须至少为 1'))
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ waypoints: [expect.objectContaining({ speed: 20 })] })
@@ -400,7 +401,7 @@ describe('场景拆分面板', () => {
     await dialogWrapper.setProps({ modelValue: true })
     await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).not.toContain('航点速度必填且必须大于 0')
+    expect(wrapper.text()).not.toContain('航点速度必填且必须至少为 1')
     wrapper.unmount()
   })
 
@@ -452,7 +453,7 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it.each(['TIANTONG', 'SHENTONG'] as const)('新增 %s 卫星可地图选点，取消不回填，确认仅改经纬度且原对象不被修改', async satelliteType => {
+  it.each(['TIANTONG', 'SHENTONG'] as const)('新增 %s 卫星不显示初始位置，确认时写入 GEO 定点且原对象不被修改', async satelliteType => {
     const platform = structuredClone(fixtureSource.scenario.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!) as Platform
     platform.satelliteType = satelliteType
     platform.initialPosition = { longitude: 120, latitude: 25, altitude: 550000 }
@@ -469,47 +470,24 @@ describe('场景拆分面板', () => {
       },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' } } },
     })
-    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
-    const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
-    expect(picker.props()).toMatchObject({ modelValue: true, longitude: 120, latitude: 25, purpose: 'satellite' })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="satellite-geo-position"]').text()).toBe('GEO 轨道，定点 0°N 120°E，高度 35786 km')
+    for (const field of ['longitude', 'latitude', 'altitude']) expect(wrapper.find(`[data-testid="platform-${field}"]`).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pick-satellite-position"]').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
-    picker.vm.$emit('update:modelValue', false)
-    await flushPromises()
-    expect(wrapper.get('[data-testid="platform-longitude"] input').element).toHaveProperty('value', '120')
-    expect(wrapper.get('[data-testid="platform-latitude"] input').element).toHaveProperty('value', '25')
-    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
-    picker.vm.$emit('confirm', { longitude: 120.82767, latitude: 26.018571 })
-    await flushPromises()
-    expect(picker.props('modelValue')).toBe(false)
-    expect(wrapper.get('[data-testid="platform-longitude"] input').element).toHaveProperty('value', '120.82767')
-    expect(wrapper.get('[data-testid="platform-latitude"] input').element).toHaveProperty('value', '26.018571')
-    expect(wrapper.get('[data-testid="platform-altitude"] input').element).toHaveProperty('value', '550000')
-    expect(platform).toEqual(original)
-    expect(wrapper.emitted('apply')).toBeUndefined()
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
-    expect(wrapper.emitted('apply')).toHaveLength(1)
     expect(wrapper.emitted('apply')![0]![0]).toMatchObject({
       satelliteType, category: 'space', waypoints: [],
-      initialPosition: { longitude: 120.82767, latitude: 26.018571, altitude: 550000 },
+      initialPosition: { longitude: 120, latitude: 0, altitude: 35_786_000 },
     })
-    const dialog = wrapper as unknown as VueWrapper<{ $props: { modelValue: boolean; locked: boolean } }>
-    await wrapper.get('[data-testid="pick-satellite-position"]').trigger('click')
-    await dialog.setProps({ modelValue: false })
-    expect(picker.props('modelValue')).toBe(false)
-    picker.vm.$emit('confirm', { longitude: 121, latitude: 26 })
-    await dialog.setProps({ modelValue: true, locked: true })
-    expect(wrapper.get('[data-testid="pick-satellite-position"]').attributes('disabled')).toBeDefined()
-    picker.vm.$emit('confirm', { longitude: 121, latitude: 26 })
-    await dialog.setProps({ locked: false })
-    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: original.initialPosition })
     expect(platform).toEqual(original)
     wrapper.unmount()
   })
 
-  it('卫星不能新增航点，历史航点须明确删除；移动节点仍可新增', async () => {
+  it('卫星不显示航点区，残留航点不提交；切到移动节点可新增航点', async () => {
     const platform = structuredClone(fixtureSource.scenario.platforms.find(p => p.type === 'COMMUNICATION_SATELLITE')!) as Platform
-    platform.waypoints = [{ longitude: 120, latitude: 25, altitude: 1000, speed: 20, arrivalTime: 1 }]
+    platform.waypoints = [{ longitude: 120, latitude: 25, altitude: 1000, speed: 20, arrivalTime: 0 }]
     const wrapper = mount(PlatformEditorDialog, {
       props: {
         modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
@@ -522,13 +500,8 @@ describe('场景拆分面板', () => {
       },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
     })
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="satellite-waypoint-warning"]').text()).toContain('主动清除')
-    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.emitted('apply')).toBeUndefined()
-    await wrapper.get('[data-testid="clear-satellite-waypoints"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="satellite-waypoint-warning"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')![0]![0]).toHaveProperty('waypoints', [])
@@ -543,8 +516,8 @@ describe('场景拆分面板', () => {
     type.vm.$emit('change', 'COMMUNICATION_SATELLITE')
     await flushPromises()
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-testid="clear-satellite-waypoints"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
     wrapper.unmount()
   })
 
@@ -599,8 +572,8 @@ describe('场景拆分面板', () => {
     expect(wrapper.text()).toContain(`当前 ${count} / 2 个`)
     const disabled = !editing && count === 2
     expect(wrapper.get('[data-testid="apply-platform"]').attributes('disabled') !== undefined).toBe(disabled)
-    expect(wrapper.get('[data-testid="platform-longitude"] input').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="platform-longitude"] input').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(true)
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
     expect(wrapper.emitted('apply')?.length ?? 0).toBe(disabled ? 0 : 1)
     wrapper.unmount()
@@ -608,7 +581,6 @@ describe('场景拆分面板', () => {
 
   it('后方指挥与干扰节点初始位置按类型限制范围，边界可确认', async () => {
     const platform = structuredClone(fixtureSource.scenario.platforms[0]) as Platform
-    platform.waypoints = [{ ...platform.initialPosition, speed: 0, arrivalTime: 1 }]
     const originalPosition = { ...platform.initialPosition }
     const wrapper = mount(PlatformEditorDialog, {
       props: {
@@ -673,15 +645,15 @@ describe('场景拆分面板', () => {
       expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ waypoints: [{ longitude: expectedLng, latitude: expectedLat }] })
     }
     expect(platform.initialPosition).toEqual(originalPosition)
-    expect(platform.waypoints).toHaveLength(1)
+    expect(platform.waypoints).toHaveLength(0)
     type.vm.$emit('update:modelValue', 'GROUND_JAMMER_DETECTION_STATION')
     type.vm.$emit('change', 'GROUND_JAMMER_DETECTION_STATION')
     await flushPromises()
     expect(longitude.attributes()).toMatchObject({ min: '121.2', max: '121.8' })
     expect(latitude.attributes()).toMatchObject({ min: '24.8', max: '25.4' })
-    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).props('bounds')).toBeUndefined()
-    expect(waypointLongitude.attributes()).toMatchObject({ min: '-180', max: '180' })
-    expect(waypointLatitude.attributes()).toMatchObject({ min: '-90', max: '90' })
+    // 地面干扰站位置固定：航点区隐藏，切换前填的航点不提交。
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
     expect(longitude.attributes('disabled')).toBeUndefined()
     expect(latitude.attributes('disabled')).toBeUndefined()
     for (const [lng, lat, expectedLng, expectedLat] of [
@@ -694,6 +666,7 @@ describe('场景拆分面板', () => {
       expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({
         type: 'GROUND_JAMMER_DETECTION_STATION',
         initialPosition: { longitude: expectedLng, latitude: expectedLat, altitude: originalPosition.altitude },
+        waypoints: [],
       })
     }
     expect(platform.initialPosition).toEqual(originalPosition)
@@ -705,9 +678,8 @@ describe('场景拆分面板', () => {
     wrapper.unmount()
   })
 
-  it.each([[24.7, 25.3], [25.3, 25.3], [25.5, 25.5], [25.7, 25.7], [26, 25.7], [NaN, 25.3]])('高空中继初始位置只读，纬度 %s 收敛为 %s', async (latitude, expectedLatitude) => {
+  it('高空中继初始位置可编辑，按 117～122°E、21～26°N 限位', async () => {
     const platform = structuredClone(fixtureSource.scenario.platforms[1]) as Platform
-    platform.initialPosition.latitude = latitude
     const originalPosition = { ...platform.initialPosition }
     const wrapper = mount(PlatformEditorDialog, {
       props: {
@@ -721,22 +693,38 @@ describe('场景拆分面板', () => {
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
     })
     await flushPromises()
-    for (const [field, expected] of [['longitude', 120.8], ['latitude', expectedLatitude], ['altitude', 8000]] as const) {
+    for (const [field, expected] of Object.entries(originalPosition)) {
       const input = wrapper.get(`[data-testid="platform-${field}"] input`)
-      expect(input.attributes('disabled')).toBeDefined()
+      expect(input.attributes('disabled')).toBeUndefined()
       expect(Number((input.element as HTMLInputElement).value)).toBe(expected)
     }
-    expect(wrapper.get('[data-testid="platform-latitude"] input').attributes()).toMatchObject({ min: '25.3', max: '25.7' })
+    const longitude = wrapper.get('[data-testid="platform-longitude"] input')
+    const latitude = wrapper.get('[data-testid="platform-latitude"] input')
+    expect(longitude.attributes()).toMatchObject({ min: '117', max: '122' })
+    expect(latitude.attributes()).toMatchObject({ min: '21', max: '26' })
     expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
     expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
-    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
-    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
+    // 起飞点之后配置普通航点（模板中的爬升点），选点框默认关闭。
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(true)
+    expect(wrapper.getComponent({ name: 'WaypointMapPicker' }).props('modelValue')).toBe(false)
     expect(platform.initialPosition).toEqual(originalPosition)
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: 120.8, latitude: expectedLatitude, altitude: 8000 } })
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toEqual(platform)
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', fixtureSource.scenario.platforms[1]!.waypoints)
     expect(platform.waypoints).toEqual(fixtureSource.scenario.platforms[1]!.waypoints)
+    for (const [lng, lat, expectedLng, expectedLat] of [
+      [116, 20, 117, 21], [123, 27, 122, 26], [119.55, 24.66, 119.55, 24.66],
+    ]) {
+      await longitude.setValue(String(lng))
+      await latitude.setValue(String(lat))
+      await wrapper.get('[data-testid="platform-altitude"] input').setValue('3200')
+      await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+      expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: expectedLng, latitude: expectedLat, altitude: 3200 } })
+    }
+    await wrapper.get('[data-testid="add-waypoint"]').trigger('click')
+    await wrapper.get('[data-testid="pick-waypoint-0"]').trigger('click')
+    expect(wrapper.getComponent({ name: 'WaypointMapPicker' }).props('bounds')).toEqual({ minLongitude: 117, maxLongitude: 122, minLatitude: 21, maxLatitude: 26 })
     const type = wrapper.findAllComponents({ name: 'ElSelect' }).find(c => c.attributes('data-testid') === 'platform-type')!
     type.vm.$emit('update:modelValue', 'AIRBORNE_MISSION_CLUSTER')
     type.vm.$emit('change', 'AIRBORNE_MISSION_CLUSTER')
@@ -751,13 +739,14 @@ describe('场景拆分面板', () => {
     type.vm.$emit('update:modelValue', 'FORWARD_RELAY_NODE')
     type.vm.$emit('change', 'FORWARD_RELAY_NODE')
     await flushPromises()
-    expect(wrapper.get('[data-testid="platform-altitude"] input').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="platform-altitude"] input').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
     expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
-    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
+    // 切回中继：前面在无人机集群下新增的航点仍保留，中继同样可以带普通航点。
+    expect(wrapper.find('#platform-waypoint-title').exists()).toBe(true)
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: 120.8, latitude: expectedLatitude, altitude: 8000 } })
-    expect(wrapper.emitted('apply')!.at(-1)![0]).toHaveProperty('waypoints', [])
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ initialPosition: { longitude: 119.55, latitude: 24.66, altitude: 1000 } })
+    expect(platform.initialPosition).toEqual(originalPosition)
     wrapper.unmount()
   })
 
@@ -782,9 +771,9 @@ describe('场景拆分面板', () => {
   it('展示错误和警告并向父级发送定位问题', async () => {
     const warning = {
       severity: 'WARNING' as const,
-      code: 'RAIN_LOSS_DEFAULT',
-      message: '雨衰参数需要确认。',
-      fieldPath: 'scenario.environment.rainLossDbPerKm',
+      code: 'TIME_STEP_NOTICE',
+      message: '时间步长参数需要确认。',
+      fieldPath: 'scenario.timeStep',
     }
     const wrapper = mountValidationPanel({
       completed: true,

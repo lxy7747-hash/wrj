@@ -13,40 +13,63 @@ import type { LocalReplaySnapshot } from '../../src/features/replays/local-repla
 import type { MissionResultRecord, MissionResultSnapshot } from '../../src/features/results/mission-result.js'
 import { readStableUtf8Lines } from './afsim-log-reader.js'
 
-interface IndexedEvent { time: number; type: string; id: string; subject?: string; target?: string; device?: string; linkId?: string; stage?: string; scope?: 'INTERNAL' | 'INTER_PLATFORM'; sourceDeviceId?: string; targetDeviceId?: string }
+interface IndexedEvent { time: number; type: string; id: string; subject?: string; target?: string; device?: string; linkId?: string; linkIds?: string[]; stage?: string; scope?: 'INTERNAL' | 'INTER_PLATFORM'; sourceDeviceId?: string; targetDeviceId?: string }
 interface LinkBinding { id: string; nodes: string[] }
-interface IndexManifest { version: 1; resultId: string; reportId: string; sourceSha256: string; positionSha256: string; rowCount: number; sha256: string; links: LinkBinding[]; bindingsSha256: string }
+/** 版本 2 记录共享端口所属的链路集合；版本 1 中按链路编码的旧编号仍可安全读取。 */
+interface IndexManifest { version: 1 | 2; resultId: string; reportId: string; sourceSha256: string; positionSha256: string; rowCount: number; sha256: string; links: LinkBinding[]; bindingsSha256: string }
 interface BuildOptions { devices: unknown; canonicalEventsPath?: string }
 const DEVICE_TYPES = /^(COMM_TURNED_(ON|OFF)|WEAPON_TURNED_(ON|OFF)|WEAPON_MODE_(ACTIVATED|DEACTIVATED)|JAMMING_REQUEST_(INITIATED|UPDATED|CANCELED))$/
 const DETAIL_LIMIT = 500
 const indexPath = (directory: string, id: string) => join(directory, `${id}.report-index.ndjson`)
 const manifestPath = (directory: string, id: string) => join(directory, `${id}.report-index.json`)
 const value = (fields: Record<string, string>, ...names: string[]) => names.map(name => fields[name]).find((item): item is string => typeof item === 'string' && item.length > 0)
+const isArchivedDeviceId = (value: string) => /^comm_.+_(?:src|dst|relay_in|relay_out)$/u.test(value)
 
-function bindings(raw: unknown): { byDevice: Map<string, string>; links: LinkBinding[] } {
+/**
+ * manifest 中的设备编号视为不透明的端口名。新模板端口名和归档的 `comm_..._src/dst`
+ * 编号都只与所属平台一起匹配，绝不只按端口文本全局匹配。
+ */
+const deviceKey = (platformId: string, deviceId: string) => `${platformId}\0${deviceId}`
+
+function bindings(raw: unknown): { byDevice: Map<string, string[]>; links: LinkBinding[] } {
   if (!Array.isArray(raw)) return { byDevice: new Map(), links: [] }
-  const byDevice = new Map<string, string>(), links: LinkBinding[] = []
+  const byDevice = new Map<string, string[]>(), links: LinkBinding[] = []
+  const bind = (platformId: string, deviceId: string, linkId: string) => {
+    const key = deviceKey(platformId, deviceId), current = byDevice.get(key) ?? []
+    if (!current.includes(linkId)) byDevice.set(key, [...current, linkId])
+  }
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue
     const row = item as Record<string, unknown>, id = row.linkId, source = row.source as Record<string, unknown> | undefined, target = row.target as Record<string, unknown> | undefined, relay = row.relay as Record<string, unknown> | null | undefined
     if (typeof id !== 'string' || !source || !target || typeof source.platformId !== 'string' || typeof target.platformId !== 'string') continue
-    links.push({ id, nodes: [source.platformId, target.platformId, ...(relay && typeof relay.platformId === 'string' ? [relay.platformId] : [])] })
-    for (const endpoint of [source, target, relay ?? {}]) if (typeof endpoint.platformId === 'string') for (const key of ['deviceId', 'ingressDeviceId', 'egressDeviceId']) if (typeof endpoint[key] === 'string') byDevice.set(`${endpoint.platformId}\0${endpoint[key]}`, id)
+    const relayEndpoint = relay && typeof relay.platformId === 'string' ? relay
+      : typeof row.relayPlatformId === 'string' && typeof row.relayDeviceId === 'string'
+        ? { platformId: row.relayPlatformId, deviceId: row.relayDeviceId }
+        : undefined
+    links.push({ id, nodes: [source.platformId, target.platformId, ...(relayEndpoint ? [relayEndpoint.platformId as string] : [])] })
+    for (const endpoint of [source, target, relayEndpoint ?? {}]) if (typeof endpoint.platformId === 'string') for (const key of ['deviceId', 'ingressDeviceId', 'egressDeviceId']) if (typeof endpoint[key] === 'string') bind(endpoint.platformId, endpoint[key] as string, id)
   }
   return { byDevice, links: [...new Map(links.map(link => [link.id, link])).values()] }
 }
 
-function eventRow(event: AfsimEventLog['events'][number], byDevice: Map<string, string>): IndexedEvent {
+function eventRow(event: AfsimEventLog['events'][number], byDevice: Map<string, string[]>): IndexedEvent {
   const target = value(event.fields, 'target_platform', 'TargetPlatform', 'destination_platform'), subject = (value(event.fields, 'source_platform') ?? event.subject) || undefined
   const sourceDeviceId = value(event.fields, 'source_comm', 'source_device', 'comm', 'Comm', 'system'), targetDeviceId = value(event.fields, 'destination_comm', 'target_comm', 'target_device')
-  const linkId = value(event.fields, 'link_id', 'linkId', 'LinkId') ?? (subject && sourceDeviceId ? byDevice.get(`${subject}\0${sourceDeviceId}`) : undefined) ?? (target && targetDeviceId ? byDevice.get(`${target}\0${targetDeviceId}`) : undefined)
+  const explicitLinkId = value(event.fields, 'link_id', 'linkId', 'LinkId')
+  const sourceLinkIds = subject && sourceDeviceId ? byDevice.get(deviceKey(subject, sourceDeviceId)) ?? [] : []
+  const targetLinkIds = target && targetDeviceId ? byDevice.get(deviceKey(target, targetDeviceId)) ?? [] : []
+  // 两端都有的注册事件，取两端“平台 + 端口”所属链路的交集，可定位到唯一链路；
+  // 只有一端的设备事件，有意作用于共享该平台端口的全部链路。
+  const boundLinkIds = explicitLinkId ? [explicitLinkId]
+    : sourceLinkIds.length && targetLinkIds.length ? sourceLinkIds.filter(id => targetLinkIds.includes(id))
+      : [...new Set([...sourceLinkIds, ...targetLinkIds])].sort()
   const stage = value(event.fields, 'stage', 'Stage', 'task_stage')
-  const row: IndexedEvent = { time: event.time, type: event.type, id: event.id, ...(subject ? { subject } : {}), ...(target ? { target } : {}), ...(sourceDeviceId ? { device: sourceDeviceId, sourceDeviceId } : {}), ...(targetDeviceId ? { targetDeviceId } : {}), ...(linkId ? { linkId } : {}), ...(stage ? { stage } : {}) }
+  const row: IndexedEvent = { time: event.time, type: event.type, id: event.id, ...(subject ? { subject } : {}), ...(target ? { target } : {}), ...(sourceDeviceId ? { device: sourceDeviceId, sourceDeviceId } : {}), ...(targetDeviceId ? { targetDeviceId } : {}), ...(boundLinkIds.length === 1 ? { linkId: boundLinkIds[0] } : boundLinkIds.length > 1 ? { linkIds: boundLinkIds } : {}), ...(stage ? { stage } : {}) }
   if (event.type === 'LINK_ADDED_TO_MANAGER' && subject && target) row.scope = subject === target ? 'INTERNAL' : 'INTER_PLATFORM'
   return row
 }
 
-function canonicalRow(line: string, headers: string[], byDevice: Map<string, string>): IndexedEvent {
+function canonicalRow(line: string, headers: string[], byDevice: Map<string, string[]>): IndexedEvent {
   const cells = parseCsvLine(line); if (!cells || cells.length !== headers.length) throw new Error('连续事件索引行无效。')
   const data = Object.fromEntries(headers.map((key, index) => [key, cells[index] ?? ''])), time = Number(data.Time)
   if (!Number.isFinite(time) || time < 0 || !data.EventType) throw new Error('连续事件索引时刻无效。')
@@ -73,7 +96,7 @@ export async function publishReportFilterIndex(directory: string, record: Missio
     } else for (const event of log.events) await write(eventRow(event, byDevice))
     writer.end(); await writerFinished
     if (rows !== report.localEvidence.eventCount) throw new Error('筛选索引缺少完整事件记录。')
-    const manifest: IndexManifest = { version: 1, resultId: record.resultId, reportId: report.reportId, sourceSha256: log.source.sha256, positionSha256: replay.sha256, rowCount: rows, sha256: hash.digest('hex'), links, bindingsSha256: createHash('sha256').update(JSON.stringify(links)).digest('hex') }
+    const manifest: IndexManifest = { version: 2, resultId: record.resultId, reportId: report.reportId, sourceSha256: log.source.sha256, positionSha256: replay.sha256, rowCount: rows, sha256: hash.digest('hex'), links, bindingsSha256: createHash('sha256').update(JSON.stringify(links)).digest('hex') }
     await writeFile(pendingManifest, JSON.stringify(manifest), { encoding: 'utf8', flag: 'wx' }); await rename(pending, path); await rename(pendingManifest, manifestFile)
   } catch (error) { writer.destroy(); await writerFinished.catch(() => undefined); throw error }
 }
@@ -82,7 +105,7 @@ async function manifestFor(directory: string, snapshot: MissionResultSnapshot): 
   const report = snapshot.report; if (!isLocalReport(report)) throw new Error('FILTER_UNSUPPORTED')
   const path = manifestPath(directory, snapshot.record.resultId)
   let manifest: IndexManifest; try { const state = await lstat(path); if (!state.isFile() || state.isSymbolicLink() || state.size > 1024 * 1024) throw new Error('invalid'); manifest = JSON.parse(await readFile(path, 'utf8')) as IndexManifest } catch { throw new Error('FILTER_UNSUPPORTED') }
-  if (Object.keys(manifest).length !== 9 || !['version', 'resultId', 'reportId', 'sourceSha256', 'positionSha256', 'rowCount', 'sha256', 'links', 'bindingsSha256'].every(key => Object.hasOwn(manifest, key)) || manifest.version !== 1 || manifest.resultId !== snapshot.record.resultId || manifest.reportId !== report.reportId || manifest.sourceSha256 !== report.localEvidence.eventFile.sha256 || manifest.positionSha256 !== report.localEvidence.positionFile.sha256 || !Number.isSafeInteger(manifest.rowCount) || manifest.rowCount < 0 || !/^[a-f0-9]{64}$/.test(manifest.sha256) || !/^[a-f0-9]{64}$/.test(manifest.bindingsSha256) || !Array.isArray(manifest.links) || manifest.links.length > 10_000 || manifest.links.some(link => !link || typeof link.id !== 'string' || !link.id || !Array.isArray(link.nodes) || !link.nodes.length || link.nodes.length > 3 || link.nodes.some(node => typeof node !== 'string' || !node)) || createHash('sha256').update(JSON.stringify(manifest.links)).digest('hex') !== manifest.bindingsSha256) throw new Error('FILTER_UNSUPPORTED')
+  if (Object.keys(manifest).length !== 9 || !['version', 'resultId', 'reportId', 'sourceSha256', 'positionSha256', 'rowCount', 'sha256', 'links', 'bindingsSha256'].every(key => Object.hasOwn(manifest, key)) || ![1, 2].includes(manifest.version) || manifest.resultId !== snapshot.record.resultId || manifest.reportId !== report.reportId || manifest.sourceSha256 !== report.localEvidence.eventFile.sha256 || manifest.positionSha256 !== report.localEvidence.positionFile.sha256 || !Number.isSafeInteger(manifest.rowCount) || manifest.rowCount < 0 || !/^[a-f0-9]{64}$/.test(manifest.sha256) || !/^[a-f0-9]{64}$/.test(manifest.bindingsSha256) || !Array.isArray(manifest.links) || manifest.links.length > 10_000 || manifest.links.some(link => !link || typeof link.id !== 'string' || !link.id || !Array.isArray(link.nodes) || !link.nodes.length || link.nodes.length > 3 || link.nodes.some(node => typeof node !== 'string' || !node)) || createHash('sha256').update(JSON.stringify(manifest.links)).digest('hex') !== manifest.bindingsSha256) throw new Error('FILTER_UNSUPPORTED')
   return manifest
 }
 
@@ -109,8 +132,12 @@ export async function filterMissionReport(directory: string, snapshot: MissionRe
   try { source = await readStableUtf8Lines(indexPath(directory, snapshot.record.resultId), line => {
     hash.update(`${line}\n`); rows += 1; let row: IndexedEvent; try { row = JSON.parse(line) as IndexedEvent } catch { throw new Error('FILTER_UNSUPPORTED') }
     if (!Number.isFinite(row.time) || row.time < 0 || typeof row.id !== 'string' || !row.id || typeof row.type !== 'string' || !row.type) throw new Error('FILTER_UNSUPPORTED')
+    // 版本 1 的行可能已完全丢失所查询的链路：检查全部已绑定的通信行，而不只是仍带该链路编号的行；无关的干扰 / 传感器行和不筛选的汇总仍可读取。
+    const needsLinkMembership = filter.linkId !== undefined && (row.linkId !== undefined || !!row.linkIds?.length)
+    if (manifest.version === 1 && needsLinkMembership && /^(?:COMM_|MESSAGE_|LINK_|EXCHANGE_COMPLETED$)/u.test(row.type)
+      && [row.device, row.sourceDeviceId, row.targetDeviceId].some((device): device is string => typeof device === 'string' && !!device && !isArchivedDeviceId(device))) throw new Error('FILTER_UNSUPPORTED')
     const touches = !filter.nodeId || row.subject === filter.nodeId || row.target === filter.nodeId
-    if (!touches || (filter.linkId && row.linkId !== filter.linkId) || !inRange(row.time)) return
+    if (!touches || (filter.linkId && row.linkId !== filter.linkId && !row.linkIds?.includes(filter.linkId)) || !inRange(row.time)) return
     selected += 1; counts.set(row.type, (counts.get(row.type) ?? 0) + 1); totalTimeline += 1
     if (timeline.length < 500) timeline.push({ id: row.id, time: row.time, type: row.type, subject: row.subject ?? '未提供', ...(row.target ? { target: row.target } : {}), ...(row.device ? { device: row.device } : {}), ...(row.stage ? { stage: row.stage } : {}) })
     if (connections.length < DETAIL_LIMIT && row.type === 'LINK_ADDED_TO_MANAGER' && row.subject && row.target) { if (!allowedNodes.has(row.subject)) relatedNodeIds.add(row.subject); if (!allowedNodes.has(row.target)) relatedNodeIds.add(row.target); connections.push({ eventId: row.id, time: row.time, scope: row.scope ?? (row.subject === row.target ? 'INTERNAL' : 'INTER_PLATFORM'), sourcePlatformId: row.subject, sourceDeviceId: row.sourceDeviceId ?? row.device ?? '未提供', targetPlatformId: row.target, targetDeviceId: row.targetDeviceId ?? '未提供' }) }

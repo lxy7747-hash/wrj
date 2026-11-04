@@ -1,5 +1,6 @@
 import { createServer, type Server as HttpServer } from 'node:http'
 import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
+import { portParameterTargets } from '../src/features/scenarios/port-parameter-source.js'
 import type {
   AuditRequest,
   AuditRecord,
@@ -2451,8 +2452,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       } else {
         const scene = scenarios.get(reference.scenarioId)
         if (scene.ok && scene.data.locked) { finishAdmin(res, action, { ok: false, code: 'CONFIG_LOCKED', status: 409, message: '场景已锁定，不能解除引用。' }); return }
-        if (scene.ok && scene.data.config.links.some(link => link.id === reference.linkId
-          && link.parameterSource?.kind === 'EQUIPMENT' && link.parameterSource.sourceId === reference.equipmentId)) {
+        if (scene.ok && (scene.data.config.links.some(link => link.id === reference.linkId
+          && link.parameterSource?.kind === 'EQUIPMENT' && link.parameterSource.sourceId === reference.equipmentId)
+          || portParameterTargets(scene.data.config).some(target => target.id === reference.linkId
+            && target.parameters.parameterSource?.kind === 'EQUIPMENT' && target.parameters.parameterSource.sourceId === reference.equipmentId))) {
           finishAdmin(res, action, { ok: false, code: 'CONFLICT', status: 409, message: '链路仍使用该装备参数，请先在链路中取消引用并保存场景。', fieldPath: 'reference.linkId' }); return
         }
       }

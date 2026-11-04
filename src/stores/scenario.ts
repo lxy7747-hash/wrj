@@ -17,7 +17,7 @@ import type {
   ValidationIssue,
   ValidationResult,
 } from '../contracts/domain-models'
-import { inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../features/scenarios/scenario-validation'
+import { restoreRequiredMotionFields, dropRetiredScenarioFields, dropRetiredUiExtensionFields, inspectScenarioConfig, inspectScenarioUiExtensions, parseJsonText } from '../features/scenarios/scenario-validation'
 import { parseScenarioSnapshot } from '../features/scenarios/scenario-snapshot'
 import { createEmptyScenarioDraft, withScenarioBasicDefaults } from '../features/scenarios/scenario-basic'
 import { configuredScenarioOutput } from '../config/app.config.js'
@@ -73,18 +73,21 @@ export function readScenarioDraft(payload: unknown): ScenarioDraft | undefined {
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined
   const draft = data as Partial<ScenarioDraft>
   const keys = Object.keys(data)
-  const uiExtensions = draft.uiExtensions
+  const config = dropRetiredScenarioFields(structuredClone(draft.config))
+  const uiExtensions = dropRetiredUiExtensionFields(structuredClone(draft.uiExtensions))
   if (keys.length !== 5 || !keys.every((key) => ['config', 'uiExtensions', 'revision', 'officialLibraryChanged', 'locked'].includes(key))) return undefined
   if (!Number.isInteger(draft.revision) || (draft.revision ?? -1) < 0 || draft.officialLibraryChanged !== false || typeof draft.locked !== 'boolean') return undefined
   if (typeof uiExtensions !== 'object' || uiExtensions === null || !Array.isArray(uiExtensions.jammers) || !Array.isArray(uiExtensions.sensors)) return undefined
-  const inspection = inspectScenarioConfig(draft.config)
+  restoreRequiredMotionFields(config, uiExtensions)
+  const inspection = inspectScenarioConfig(config)
   if (!inspection.result.valid || inspection.jammers === undefined) return undefined
   return inspectScenarioUiExtensions(
     uiExtensions,
     inspection.jammers.map((jammer) => jammer.id),
     inspection.sensors?.map((sensor) => sensor.id) ?? [],
   ).result.valid
-    ? { ...draft, config: withScenarioBasicDefaults(draft.config!) } as ScenarioDraft
+    // 服务端已清理过；这里再清一次，兼容旧服务返回的固定平台航点等界面不再显示的字段。
+    ? { ...draft, config: withScenarioBasicDefaults(config!), uiExtensions } as ScenarioDraft
     : undefined
 }
 
@@ -96,7 +99,7 @@ function readScenarioImportResult(payload: unknown): ScenarioImportResult | unde
   if (Object.keys(data).length !== 3 || !Number.isInteger(result.imported) || !Number.isInteger(result.rejected)
     || !Array.isArray(result.drafts) || result.imported !== result.drafts.length || result.rejected !== 0) return undefined
   const drafts = result.drafts.map((draft) => readScenarioDraft({ ok: true, data: draft }))
-  return drafts.every((draft) => draft !== undefined) ? result as ScenarioImportResult : undefined
+  return drafts.every((draft) => draft !== undefined) ? { ...result, drafts } as ScenarioImportResult : undefined
 }
 
 /** 从成功信封读取脚本预览合同。 */
@@ -154,7 +157,10 @@ function readValidationResult(payload: unknown): ValidationResult | undefined {
  */
 function readScenarioTemplateValue(value: unknown): ScenarioTemplate | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-  const candidate = value as Partial<ScenarioTemplate>
+  const candidate = structuredClone(value) as Partial<ScenarioTemplate>
+  dropRetiredScenarioFields(candidate.config)
+  dropRetiredUiExtensionFields(candidate.uiExtensions)
+  restoreRequiredMotionFields(candidate.config, candidate.uiExtensions)
   const keys = Object.keys(value)
   if (!['templateId', 'name', 'version', 'official', 'config', 'referenceCount'].every(key => keys.includes(key))
     || !keys.every(key => ['templateId', 'name', 'version', 'official', 'config', 'referenceCount', 'uiExtensions'].includes(key))) return undefined
@@ -166,7 +172,7 @@ function readScenarioTemplateValue(value: unknown): ScenarioTemplate | undefined
     || !inspectScenarioConfig(candidate.config).result.valid) return undefined
   if (Object.hasOwn(candidate, 'uiExtensions') && !inspectScenarioUiExtensions(candidate.uiExtensions,
     candidate.config!.jammers.map(item => item.id), candidate.config!.sensors.map(item => item.id)).result.valid) return undefined
-  return candidate as ScenarioTemplate
+  return { ...candidate, config: dropRetiredScenarioFields(structuredClone(candidate.config!)), ...(candidate.uiExtensions === undefined ? {} : { uiExtensions: dropRetiredUiExtensionFields(structuredClone(candidate.uiExtensions)) }) } as ScenarioTemplate
 }
 
 /** 从成功信封读取单个模板。 */
@@ -357,7 +363,7 @@ export const useScenarioStore = defineStore('scenario', {
     prepareSceneCopy(config: ScenarioConfig, extensions: ScenarioDraft['uiExtensions'], name: string): boolean {
       if (!useAuthStore().authorize('SCENARIO_DRAFT_WRITE').allowed) return false
       this.resetToSafeEmpty()
-      this.draft = { config: withScenarioBasicDefaults(structuredClone(toRaw(config))), uiExtensions: structuredClone(toRaw(extensions)), revision: 0, locked: false, officialLibraryChanged: false }
+      this.draft = { config: withScenarioBasicDefaults(dropRetiredScenarioFields(structuredClone(toRaw(config)))), uiExtensions: dropRetiredUiExtensionFields(structuredClone(toRaw(extensions))), revision: 0, locked: false, officialLibraryChanged: false }
       this.draft.config.scenario.id = createScenarioId()
       this.currentScenarioId = this.draft.config.scenario.id
       this.draft.config.scenario.name = name

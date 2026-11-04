@@ -4,7 +4,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, unlinkSync } from 'no
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import type { BackupRecord, RestoreResult } from '../../src/contracts/domain-models.js'
 import type { AdminResult, BackupStorage } from '../admin/projection.js'
-import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime } from '../../src/features/scenarios/scenario-validation.js'
+import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime, normalizeStoredScenario } from '../../src/features/scenarios/scenario-validation.js'
 import { BackupValidationCache } from './backup-validation-cache.js'
 
 const RESTORED_TABLES = ['scenarios', 'scenario_templates', 'users'] as const
@@ -130,12 +130,14 @@ export class BackupSqliteStorage implements BackupStorage {
     }
     for (const table of ['scenarios', 'scenario_templates']) {
       for (const row of snapshot.prepare(`SELECT * FROM ${table}`).all()) {
-        const config: unknown = JSON.parse(String(row.config_json))
+        // 仅整理校验副本；备份文件及恢复复制的原始行保持不变。
+        const parsedExtensions: unknown = row.ui_extensions_json === null ? undefined : JSON.parse(String(row.ui_extensions_json))
+        const { config, uiExtensions } = normalizeStoredScenario(JSON.parse(String(row.config_json)) as unknown, parsedExtensions)
         const check = inspectScenarioConfig(config, 'read')
         if (!check.result.valid || !check.identity || !check.jammers || !check.sensors
           || (table === 'scenarios' && (check.identity.id !== row.id || check.identity.name !== row.name))) throw new Error('备份场景数据无效。')
-        if (row.ui_extensions_json !== null) {
-          const ui = inspectScenarioUiExtensions(JSON.parse(String(row.ui_extensions_json)), check.jammers.map(item => item.id), check.sensors.map(item => item.id))
+        if (uiExtensions !== undefined) {
+          const ui = inspectScenarioUiExtensions(uiExtensions, check.jammers.map(item => item.id), check.sensors.map(item => item.id))
           if (!ui.result.valid) throw new Error('备份扩展数据无效。')
         }
       }

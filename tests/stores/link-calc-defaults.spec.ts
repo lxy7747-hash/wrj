@@ -12,8 +12,8 @@ describe('《与前端字段确认说明》默认值', () => {
   })
 
   it('环境参数缺省按文档补齐，不覆盖已有字段', () => {
-    const environment: Environment = { seaState: 3, temperatureC: 20, humidityPercent: 50, rainRateMmPerHour: 10,
-      rainLossDbPerKm: 0, multipathEnabled: true, seaModel: 'fine' }
+    const environment: Environment = { seaState: 3, rainRateMmPerHour: 10,
+      multipathEnabled: true, seaModel: 'fine' }
     expect(readNaturalEnvironment(environment)).toMatchObject({ rainEnabled: true, rainAltitudeLimitM: 3000, atmosphereModel: 'itu',
       simplifiedAttenuationDbPerKm: 0, seaLowAltitudeThresholdM: 100, seaPathOverSeaThresholdKm: 30, seaModel: 'fine',
       seaPolarization: 'vertical', seaWaterTempC: 20, seaSurfaceRoughnessM: 0 })

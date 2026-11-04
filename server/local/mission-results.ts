@@ -5,7 +5,7 @@ import { EVENTS_CSV_HEADER, type ScenarioDraft } from '../../src/contracts/domai
 import { isMissionResultId, isMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../../src/features/results/mission-result.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
 import { readLocalReport } from './report-file.js'
-import { readAfsimLogFile, readStableUtf8Lines } from './afsim-log-reader.js'
+import { readAfsimLogFile, readStableUtf8Lines, resolveManifestConnections } from './afsim-log-reader.js'
 import { writeTimeSeries, type TimeSeriesContext } from './time-series.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { filterMissionReport, publishReportFilterIndex } from './report-filter.js'
@@ -87,17 +87,20 @@ export class LocalMissionResults implements MissionResults {
       const stat = await lstat(path)
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('结果文件不是普通文件。')
     }
-    const [replay, report] = await Promise.all([readLocalReplay(eventPath, positionPath, true), readLocalReport(eventPath, positionPath)])
+    const [replay, report, log] = await Promise.all([readLocalReplay(eventPath, positionPath, true), readLocalReport(eventPath, positionPath), readAfsimLogFile(eventPath)])
+    // 归档的通用射频编号保持原样；只有 manifest 端点对精确匹配时才补充显示类型。
+    const mappedConnections = resolveManifestConnections(log, manifest.devices)
+    const mappedReplay = { ...replay, initial: { ...replay.initial, connections: mappedConnections },
+      durationS: Math.max(replay.durationS, ...mappedConnections.map(connection => connection.time)) }
     const record: MissionResultRecord = {
       resultId: `RESULT-${randomUUID()}`, scenarioId: draft.config.scenario.id,
       scenarioName: draft.config.scenario.name, revision: draft.revision, startedAt, completedAt,
       ...(context === undefined ? {} : { runId: context.runId, taskId: context.taskId }),
     }
     // 只冻结 capture 时已保存草稿的可比输入；不得从输出 CSV 推断功率、频段或质量结果。
-    const snapshot = { record, replay, report, parameters: snapshotMissionResultParameters(draft) }
+    const snapshot = { record, replay: mappedReplay, report, parameters: snapshotMissionResultParameters(draft) }
     if (!isMissionResultSnapshot(snapshot)) throw new Error('结果未完整结束，或回放与报告的来源不一致。')
     if (!canPublish()) return
-    const log = await readAfsimLogFile(eventPath)
     if (log.source.sha256 !== snapshot.report.localEvidence?.eventFile.sha256) throw new Error('筛选索引前事件来源已变化。')
     if (context) {
       if ('messageDetailsComplete' in log && log.messageDetailsComplete === false) {
