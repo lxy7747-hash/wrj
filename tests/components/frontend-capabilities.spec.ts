@@ -288,13 +288,13 @@ describe('前端能力补齐的真实值与空态', () => {
       const adminMenus = ['账号管理', '场景模板维护', '操作审计日志', ...(enabled ? ['备份恢复'] : [])]
       expect(choices().map((row: VueWrapper) => row.text())).toEqual(adminMenus)
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', ...adminMenus])
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '感知、干扰与选路', ...adminMenus])
       base.vm.$emit('update:modelValue', 'OPERATOR')
       base.vm.$emit('change', 'OPERATOR')
       await flushPromises()
       expect(choices()).toHaveLength(0)
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放'])
+        .toEqual(['态势主界面', '场景配置', '评估报表', '历史回放', '感知、干扰与选路'])
     } finally { APP_CONFIG.systemManagement.showDatabaseBackup = original }
   })
   it('角色菜单中的评估报表跟随主导航显隐配置', async () => {
@@ -306,7 +306,7 @@ describe('前端能力补齐的真实值与空态', () => {
       await flushPromises()
       await button(wrapper, '新增角色').trigger('click')
       expect(wrapper.get('[aria-label="菜单权限"]').findAll('label').map(row => row.text()))
-        .toEqual(['态势主界面', '场景配置', '历史回放', ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : [])])
+        .toEqual(['态势主界面', '场景配置', '历史回放', '感知、干扰与选路', ...(APP_CONFIG.systemManagement.showDataExchange ? ['数据交换与接口'] : [])])
     } finally { APP_CONFIG.showReports = original }
   })
   it.each([
@@ -347,7 +347,8 @@ describe('前端能力补齐的真实值与空态', () => {
     const menus = wrapper.get('[aria-label="菜单权限"]')
     expect(menus.text()).not.toContain('基础数据管理')
     expect(menus.text()).not.toContain('数据交换与接口')
-    for (const hiddenLabel of ['批量仿真', '能力蓝图', '感知、干扰与选路', '需求追踪']) {
+    expect(menus.text()).toContain('感知、干扰与选路')
+    for (const hiddenLabel of ['批量仿真', '能力蓝图', '需求追踪']) {
       expect(menus.text()).not.toContain(hiddenLabel)
     }
     await wrapper.get('[data-testid="profile-name"]').setValue('修改名称')

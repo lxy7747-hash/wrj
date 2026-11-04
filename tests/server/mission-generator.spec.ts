@@ -1,8 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { createTemplateScenario } from '../fixtures/template-scenario'
+import { createRenamedTemplateScenario, createTemplateScenario } from '../fixtures/template-scenario'
 
-const { buildMissionPackage, MissionGenerationError } = await import('../../server/scripts/' + 'mission-generator.js')
+const { buildMissionPackage, MissionGenerationError, engineNames } = await import('../../server/scripts/' + 'mission-generator.js')
 
 describe('2026-11-01 模板脚本生成器', () => {
   it('总是生成模板固定的通信平台、共享端口与附带脚本', () => {
@@ -71,7 +71,7 @@ describe('2026-11-01 模板脚本生成器', () => {
     expect(() => buildMissionPackage(draft, draft.config.output)).toThrow('output.directory')
   })
 
-  it('拒绝会注入脚本的实体编号，并保留连字符避免与下划线编号碰撞', () => {
+  it('拒绝非法实体编号，原编号不同的实体生成独立的模板实例和返航路线', () => {
     const unsafe = createTemplateScenario()
     unsafe.config.platforms[0]!.id = 'unsafe\nend_platform'
     expect(() => buildMissionPackage(unsafe)).toThrow('platforms[0].id')
@@ -82,8 +82,8 @@ describe('2026-11-01 模板脚本生成器', () => {
     const twin = structuredClone(clone); twin.id = 'A_B'
     draft.config.platforms.push(clone, twin)
     const generated = buildMissionPackage(draft)
-    expect(generated.files['comm_platform_INS.txt']).toContain('route return_A-B')
-    expect(generated.files['comm_platform_INS.txt']).toContain('route return_A_B')
+    expect(generated.files['comm_platform_INS.txt']).toContain('route return_mission_uav_04')
+    expect(generated.files['comm_platform_INS.txt']).toContain('route return_mission_uav_05')
   })
 
   it('保留输入不变，并将运行时间、端口和天线参数同时写入设备定义与 link_calc', () => {
@@ -182,4 +182,95 @@ it('D1 运动及指向配置仅记录清单，所有 TXT 字节保持不变', ()
   for (const [name, content] of Object.entries(baseline.files)) {
     if (name.endsWith('.txt')) expect(generated.files[name], name).toBe(content)
   }
+})
+
+it('界面编号统一换为模板实例名，中继优先，端点/业务/干扰/清单一致且原草稿不变', () => {
+  const draft = createRenamedTemplateScenario()
+  const config = draft.config
+  const relay = config.platforms.find(item => item.type === 'FORWARD_RELAY_NODE')!
+  const rear = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')!
+  const uavs = config.platforms.filter(item => item.type === 'AIRBORNE_MISSION_CLUSTER')
+  const satellite = config.platforms.find(item => item.satelliteType === 'TIANTONG')!
+  const link = { ...config.links[1]!, id: 'sat-relay-test', type: 'SAT' as const,
+    sourcePlatformId: rear.id, targetPlatformId: uavs[0]!.id, relayPlatformId: satellite.id }
+  delete link.band
+  config.links.push(link)
+  for (const platform of [rear, uavs[0]!, satellite]) platform.linkIds.push(link.id)
+  const before = structuredClone(draft)
+  const generated = buildMissionPackage(draft)
+  const mapping = JSON.parse(generated.files['mapping.json']!)
+  expect(config.platforms.map(item => item.id)).toEqual([
+    'PLAT-001', 'PLAT-002', 'SUP-001', 'SUP-002', 'PLAT-003', 'mission_uav_01', 'PLAT-005', 'SUP-003', 'SUP-004',
+  ])
+  expect(relay.id).toBe('PLAT-005')
+  expect(mapping.platforms.map(({ platformId, name }: { platformId: string; name: string }) => ({ platformId, name }))).toEqual([
+    { platformId: 'PLAT-001', name: 'rear_comm_vehicle' },
+    { platformId: 'PLAT-002', name: 'command_vehicle' },
+    { platformId: 'SUP-001', name: 'tiantong_sat' },
+    { platformId: 'SUP-002', name: 'shentong_sat' },
+    { platformId: 'PLAT-003', name: 'mission_uav_02' },
+    { platformId: 'mission_uav_01', name: 'mission_uav_03' },
+    { platformId: 'PLAT-005', name: 'mission_uav_01' },
+    { platformId: 'SUP-003', name: 'jammer_station_01' },
+    { platformId: 'SUP-004', name: 'jammer_airborne_01' },
+  ])
+  for (const name of ['mission_uav_01', 'mission_uav_02', 'mission_uav_03', 'rear_comm_vehicle', 'command_vehicle', 'tiantong_sat', 'shentong_sat', 'jammer_station_01', 'jammer_airborne_01']) {
+    expect(generated.files['comm_platform_INS.txt']).toContain(`platform ${name} `)
+  }
+  expect(JSON.parse(generated.files['comm_platform_REAR.txt']!.match(/relay_uav_names (.+)\n/u)![1]!)).toEqual(['mission_uav_01'])
+  for (const [name, value] of Object.entries(generated.files)) if (name.endsWith('.txt')) expect(value, name).not.toMatch(/PLAT-|SUP-/)
+  expect(mapping.devices.find((item: { linkId: string }) => item.linkId === link.id)).toMatchObject({
+    source: { platformId: 'rear_comm_vehicle' }, target: { platformId: 'mission_uav_02' }, relayPlatformId: 'tiantong_sat',
+  })
+  expect(mapping.jammers.map((item: { platformId: string }) => item.platformId)).toEqual(['jammer_station_01', 'jammer_airborne_01'])
+  expect(JSON.stringify([mapping.businesses, mapping.motion])).not.toMatch(/PLAT-|SUP-/)
+  expect(JSON.parse(generated.files['input.json']!)).toEqual(before)
+  expect(draft).toEqual(before)
+  expect(buildMissionPackage(draft).files).toEqual(generated.files)
+})
+
+it('两架中继连续占用 01/02，作业无人机从 03 起；同类按配置顺序编号', () => {
+  const draft = createRenamedTemplateScenario()
+  const relay = draft.config.platforms.find(item => item.type === 'FORWARD_RELAY_NODE')!
+  const extra = { ...structuredClone(relay), id: 'PLAT-006', name: '第二架中继' }
+  draft.config.platforms.push(extra)
+  const generated = buildMissionPackage(draft)
+  expect(JSON.parse(generated.files['comm_platform_REAR.txt']!.match(/relay_uav_names (.+)\n/u)![1]!)).toEqual(['mission_uav_01', 'mission_uav_02'])
+  expect(generated.manifest.platforms.filter((item: { generatedType: string }) => item.generatedType === 'MISSION_UAV_PLATFORM')).toEqual([
+    { platformId: 'PLAT-003', name: 'mission_uav_03', generatedType: 'MISSION_UAV_PLATFORM' },
+    { platformId: 'mission_uav_01', name: 'mission_uav_04', generatedType: 'MISSION_UAV_PLATFORM' },
+    { platformId: 'PLAT-005', name: 'mission_uav_01', generatedType: 'MISSION_UAV_PLATFORM' },
+    { platformId: 'PLAT-006', name: 'mission_uav_02', generatedType: 'MISSION_UAV_PLATFORM' },
+  ])
+  for (const name of ['mission_uav_01', 'mission_uav_02', 'mission_uav_03', 'mission_uav_04']) {
+    expect(generated.files['comm_platform_INS.txt']).toContain(`platform ${name} `)
+  }
+})
+
+it('没有中继时作业无人机从 01 起，各类干扰节点分别连续编号且每次从头生成', () => {
+  const draft = createRenamedTemplateScenario()
+  draft.config.platforms = draft.config.platforms.filter(item => item.type !== 'FORWARD_RELAY_NODE')
+  const uavs = draft.config.platforms.filter(item => item.type === 'AIRBORNE_MISSION_CLUSTER')
+  const generated = buildMissionPackage(draft)
+  expect(generated.manifest.platforms.find((item: { platformId: string }) => item.platformId === uavs[0]!.id)?.name).toBe('mission_uav_01')
+  expect(generated.manifest.platforms.find((item: { platformId: string }) => item.platformId === uavs[1]!.id)?.name).toBe('mission_uav_02')
+  expect(JSON.parse(generated.files['comm_platform_REAR.txt']!.match(/relay_uav_names (.+)\n/u)![1]!)).toEqual([])
+  const platforms = draft.config.platforms.filter(item => ['GROUND_JAMMER_DETECTION_STATION', 'AIRBORNE_JAMMER_PLATFORM'].includes(item.type))
+  platforms.push(...platforms.map(item => ({ ...structuredClone(item), id: `${item.id}-2` })))
+  const before = structuredClone(platforms)
+  expect([...engineNames(platforms).values()]).toEqual(['jammer_station_01', 'jammer_airborne_01', 'jammer_station_02', 'jammer_airborne_02'])
+  expect(engineNames(platforms)).toEqual(engineNames(platforms))
+  expect(platforms).toEqual(before)
+})
+
+it.each(['TIANTONG', 'SHENTONG'] as const)('拒绝重复的 %s 卫星，保留一颗天通加一颗神通', async satelliteType => {
+  const { inspectScenarioConfig } = await import('../../src/features/scenarios/scenario-validation')
+  const draft = createTemplateScenario()
+  expect(inspectScenarioConfig(draft.config, 'write').result.valid).toBe(true)
+  const satellite = draft.config.platforms.find(item => item.satelliteType === satelliteType)!
+  draft.config.platforms.push({ ...structuredClone(satellite), id: 'SUP-DUPLICATE' })
+  expect(inspectScenarioConfig(draft.config, 'write').result.errors).toContainEqual(expect.objectContaining({
+    code: 'SATELLITE_TYPE_DUPLICATED', message: '天通卫星和神通卫星各只能配置一颗。', fieldPath: 'platforms',
+  }))
+  expect(() => buildMissionPackage(draft)).toThrow('天通卫星和神通卫星各只能配置一颗。')
 })

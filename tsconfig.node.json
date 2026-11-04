@@ -19,6 +19,7 @@
     "vitest.config.ts",
     "playwright.config.ts",
     "scripts/**/*.ts",
+    "tests/fixtures/template-scenario.ts",
     "server/**/*.ts",
     "src/contracts/domain-models.ts",
     "src/config/app.config.ts",

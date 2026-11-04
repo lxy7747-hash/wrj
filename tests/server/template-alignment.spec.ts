@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { createTemplateScenario } from '../fixtures/template-scenario'
+import { createRenamedTemplateScenario, createTemplateScenario } from '../fixtures/template-scenario'
 
 const { readFile, readdir } = await import('node:' + 'fs/promises')
 const { dirname, join } = await import('node:' + 'path')
@@ -299,8 +299,21 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
     }
   })
 
-  it('严格对照每个模板文件，所有差异均落在 §8.2 的九项白名单', async () => {
-    const generated = buildMissionPackage(createTemplateScenario())
+  it('改名、乱序和编号冲突后，六个通信平台文件的哈希与原场景生成结果一致', () => {
+    const original = buildMissionPackage(createTemplateScenario())
+    const renamed = buildMissionPackage(createRenamedTemplateScenario())
+    // 原始 TXT 含已批准的语法差异；这里比较生成字节，原始模板哈希与逐文件语义检查仍保留。
+    for (const name of TEMPLATE_FILES.filter(name => name.startsWith('comm_platform_'))) {
+      expect(createHash('sha256').update(renamed.files[name]!).digest('hex'), name)
+        .toBe(createHash('sha256').update(original.files[name]!).digest('hex'))
+    }
+  })
+
+  it.each([
+    ['原始编号', createTemplateScenario],
+    ['改名、乱序及编号冲突', createRenamedTemplateScenario],
+  ] as const)('%s：严格对照每个模板文件，所有差异均落在 §8.2 的九项白名单', async (_label, createScenario) => {
+    const generated = buildMissionPackage(createScenario())
     const files = generated.files as unknown
     const template = Object.fromEntries(await Promise.all(TEMPLATE_FILES.map(async name => [name, await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')]))) as ScriptFiles
 

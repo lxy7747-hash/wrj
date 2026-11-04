@@ -45,7 +45,6 @@ async function reset(): Promise<void> {
     </el-alert>
     <el-collapse aria-label="交互诊断">
       <el-collapse-item title="状态示例与错误目录" name="diagnostics">
-        <p>以下仅演示六种界面反馈，不改变任何业务状态；固定证据能力不提供执行态操作。</p>
         <el-radio-group v-model="exampleState" aria-label="界面状态示例">
           <el-radio-button v-for="(label, state) in CAPABILITY_LABELS" :key="state" :value="state">{{ label }}</el-radio-button>
         </el-radio-group>

@@ -112,10 +112,11 @@ export class MissionPositionReader {
       nameCounts.set(platform.name, (nameCounts.get(platform.name) ?? 0) + 1)
     }
     const aliases = new Map(mapping.platforms
-      .filter(platform => !platformIds.has(platform.name) && nameCounts.get(platform.name) === 1)
+      .filter(platform => nameCounts.get(platform.name) === 1)
       .map(platform => [platform.name, platform.platformId]))
     return this.snapshot(source, { ...positions, nodes: positions.nodes.flatMap(position => {
-      const platformId = platformIds.has(position.platformId) ? position.platformId : aliases.get(position.platformId)
+      // CSV NAME 是引擎实例名；即使与另一场景原编号重名，也优先按名称映射。
+      const platformId = aliases.get(position.platformId) ?? (platformIds.has(position.platformId) ? position.platformId : undefined)
       return platformId ? [{ ...position, platformId }] : []
     }) })
   }

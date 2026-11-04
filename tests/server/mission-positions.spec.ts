@@ -2,9 +2,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
 import { isMissionPositionSnapshot } from '../../src/features/situation/mission-positions.js'
+import { createRenamedTemplateScenario } from '../fixtures/template-scenario'
 
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { MissionPositionReader } = await import('../../server/local/' + 'mission-position-reader.js')
+const { buildMissionPackage } = await import('../../server/scripts/' + 'mission-generator.js')
 const { default: request } = await import('super' + 'test')
 const { appendFile, mkdtemp, mkdir, rm, symlink, writeFile } = await import('node:' + 'fs/promises')
 const { once } = await import('node:' + 'events')
@@ -68,6 +70,12 @@ describe('本次 mission 位置接口', () => {
     await api.get('/api/v1/simulations/RUN-MISSING/positions').set(headers).expect(404)
   })
 
+  it('无实例名匹配时兼容原编号位置记录', async () => {
+    const { api, runId } = await startLocalMission('TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n0,CMD-01,121,25,100,0,0\n')
+    const response = await api.get(`/api/v1/simulations/${runId}/positions`).set(headers).expect(200)
+    expect(response.body.data.positions.nodes).toMatchObject([{ platformId: 'CMD-01' }])
+  })
+
   it('在本次位置文件尚未创建时返回等待快照', async () => {
     const { api, runId } = await startLocalMission(false)
     const response = await api.get(`/api/v1/simulations/${runId}/positions`).set(headers).expect(200)
@@ -79,12 +87,19 @@ describe('本次 mission 位置接口', () => {
     await api.get(`/api/v1/simulations/${runId}/positions`).set(headers).expect(503)
   })
 
-  it('平台显示名称与另一平台编号冲突时，优先保留引擎输出的真实平台编号', async () => {
-    const { api, runId } = await startLocalMission('TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n0,CMD-01,121,25,100,0,0\n', [
-      { platformId: 'CMD-01', name: '指挥节点' }, { platformId: 'AIR-01', name: 'CMD-01' },
-    ])
+  it('引擎实例名与另一平台原编号冲突时，优先按 name 回映射', async () => {
+    const generated = buildMissionPackage(createRenamedTemplateScenario())
+    const mapping = JSON.parse(generated.files['mapping.json']!)
+    const { api, runId } = await startLocalMission(
+      'TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n0,mission_uav_01,121,25,100,0,0\n1,mission_uav_03,122,26,200,10,90\n',
+      mapping.platforms,
+    )
     const response = await api.get(`/api/v1/simulations/${runId}/positions`).set(headers).expect(200)
-    expect(response.body.data.positions.nodes).toMatchObject([{ platformId: 'CMD-01' }])
+    expect(response.body.data.positions.nodes).toHaveLength(2)
+    expect(response.body.data.positions.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ platformId: 'PLAT-005', longitude: 121 }),
+      expect.objectContaining({ platformId: 'mission_uav_01', longitude: 122 }),
+    ]))
   })
 
   it('多个客户端共享本次追加游标，半行暂存后继续推进且不丢旧位置', async () => {

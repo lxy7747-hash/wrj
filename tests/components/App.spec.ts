@@ -83,6 +83,33 @@ describe('App shell', () => {
     vi.unstubAllGlobals()
   })
 
+  it.each(['ADMIN', 'OPERATOR'] as const)('%s 可从主导航进入感知、干扰与选路，且遵守自定义菜单授权', async role => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const auth = useAuthStore(pinia)
+    auth.$patch({ principal: { userId: `USR-${role}`, username: role, role, permissions: ['BUSINESS_READ'] }, role, permissions: ['BUSINESS_READ'] })
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/situation')
+    await router.isReady()
+    const wrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus], stubs: { RouterView: true } } })
+    try {
+      const link = 'nav a[href="/interactions"]'
+      expect(wrapper.get(link).text()).toBe('感知、干扰与选路')
+      const paths = wrapper.findAll('nav a').map(item => item.attributes('href'))
+      expect(paths.indexOf('/interactions')).toBe(paths.indexOf('/replays') + 1)
+      expect(wrapper.find('nav a[href="/blueprint"]').exists()).toBe(false)
+      expect(wrapper.find('nav a[href="/traceability"]').exists()).toBe(false)
+      auth.$patch({ principal: { menuPaths: ['/situation'] } })
+      await flushPromises()
+      expect(wrapper.find(link).exists()).toBe(false)
+      auth.$patch({ principal: { menuPaths: ['/situation', '/interactions'] } })
+      await flushPromises()
+      await router.push(wrapper.get(link).attributes('href')!)
+      await flushPromises()
+      expect(router.currentRoute.value.path).toBe('/interactions')
+    } finally { wrapper.unmount() }
+  })
+
   it.each([
     ['ADMIN', false], ['ADMIN', true], ['OPERATOR', false], ['OPERATOR', true],
   ] as const)('报表入口按配置显隐，保留路由（%s，显示=%s）', async (role, visible) => {
@@ -258,6 +285,7 @@ describe('App shell', () => {
       '态势主界面',
       '场景配置',
       '历史回放',
+      '感知、干扰与选路',
     ])
     expect(operatorWrapper.find('a[href="/admin"]').exists()).toBe(false)
     expect(operatorWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)
@@ -309,7 +337,7 @@ describe('App shell', () => {
     APP_CONFIG.systemManagement.showMasterData = true
     const adminWrapper = mount(App, { global: { plugins: [pinia, router, ElementPlus] } })
     expect(adminWrapper.findAll('nav a').map((link) => link.text())).toEqual([
-      '态势主界面', '场景配置', '历史回放', '系统管理',
+      '态势主界面', '场景配置', '历史回放', '感知、干扰与选路', '系统管理',
     ])
     expect(adminWrapper.get('a[href="/admin"]').text()).toBe('系统管理')
     expect(adminWrapper.find('a[href="/admin/data-exchange"]').exists()).toBe(false)

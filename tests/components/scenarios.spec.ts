@@ -1986,7 +1986,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await flushPromises()
-    expect(document.body.textContent).toContain('神通卫星当前场景只能配置 1 个')
+    expect(document.body.textContent).toContain('天通卫星和神通卫星各只能配置一颗。')
     wrapper.unmount()
   })
 

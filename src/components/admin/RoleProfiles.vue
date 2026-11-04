@@ -21,7 +21,6 @@ const menus = computed(() => {
   const visibility: Record<string, boolean> = {
     '/reports': APP_CONFIG.showReports,
     '/blueprint': false,
-    '/interactions': false,
     '/traceability': false,
     '/admin?section=equipment-library': APP_CONFIG.systemManagement.showMasterData,
     '/admin?section=master-data': APP_CONFIG.systemManagement.showMasterData,

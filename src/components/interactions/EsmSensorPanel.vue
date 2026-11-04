@@ -80,7 +80,7 @@ const errorMessage = computed(() => {
 /**
  * 重新读取 ESM 场景配置和固定帧侦测事件。
  * @returns 两项数据均加载成功时返回 `true`。
- * @sideEffects 请求本机 Mock 接口，替换场景草稿与遥测快照，并在成功后连接实时通道。
+ * @sideEffects 请求本机服务接口，替换场景草稿与遥测快照，并在成功后连接实时通道。
  */
 async function reload(): Promise<boolean> {
   const [scenarioLoaded, frameLoaded] = await Promise.all([

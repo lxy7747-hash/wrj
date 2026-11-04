@@ -171,7 +171,7 @@
 
 | 当前配置字段／界面含义 | 候选脚本对应位置 | CSV 输出对应 | 当前生成器处理 | 对接判断 |
 |---|---|---|---|---|
-| `platforms[].id`：节点编号 | `platform` 实例名称及脚本中的平台引用 | `NAME/platform/source_platform/destination_platform` | 输出平台编号 | 可以作为统一英文关联键；所有设备、消息和脚本引用须同步生成，不能遗留示例节点名 |
+| `platforms[].id`：节点编号 | `platform` 实例名称及脚本中的平台引用 | `NAME/platform/source_platform/destination_platform` | 输出模板实例名，保留原编号映射 | 通过 `mapping.json.platforms` 映射到模板约定实例名（见 §24.2）；设备、消息和脚本引用同步换名，原场景编号不改 |
 | `platforms[].name`：中文展示名称 | 可另存展示元数据，不替代实例名称 | CSV 未提供中文名称 | 未输出 | 继续由项目保存中文映射，不要求 CSV 同名 |
 | `platforms[].type/category`：实体类型、部署域 | `platform_type` 与运动模型；部署域不是实例的同名字段 | 平台事件 `type`；位置文件无类型 | 原样输出前端枚举与 `domain` | 需显式模型映射，不直接把前端枚举当 AFSIM 模型名；见第 10 节 |
 | `platforms[].satelliteType`：天通／神通 | `TIAN_TONG_SAT/SHEN_TONG_SAT` | 平台事件 `type` | 未输出平台子类型 | 字段已有、模型选择未接通；仅保留 `COMMUNICATION_SATELLITE` 会丢失子类型语义 |
@@ -664,8 +664,12 @@
 
 ### 24.2 字段与单位
 
+2026-11-04 实例命名：生成时建立原 `platform.id` → 引擎实例名的映射，只修改生成副本，不迁移已保存场景。无人机与前出中继共用 `mission_uav_01` 起的连续序号；中继优先，同类按 `config.platforms` 顺序。两架中继占 01、02，作业无人机从 03 起；无中继时从 01 起。地面干扰站与机载干扰机分别从 `jammer_station_01`、`jammer_airborne_01` 编号，每次生成重新从 01 开始、至少两位补零。后方通信车、指挥车、天通、神通固定为 `rear_comm_vehicle`、`command_vehicle`、`tiantong_sat`、`shentong_sat`，同一卫星子类型最多一颗。
+
+`mapping.json.platforms` 保存 `{ platformId: 原编号, name: 引擎实例名, generatedType }`；设备端点、业务、干扰、运动及 link_calc 引用均使用引擎实例名，`input.json` 保留原配置。实时位置优先按 `name` 映射回原编号；报告/回放按引擎日志及链路编号关联，不将 manifest 端点转回场景编号。
+
 - `scenario.startTime` → `start_date/start_time` 和卫星 `epoch_date_time`；`duration` → `end_time`；`realtime` 缺省为 true；`environment.simClockSpeed` → `clock_rate`。
-- `platform.id` 是节点、事件与消息的关联标识；名称仅用于展示。实例使用固定平台类型；普通航点、`loiterWaypoints`、`returnPlan.timeS/waypoints` 分别写入初始路线、循环路线和 `FollowRoute` 返航指令。位置结果继续来自 `position.csv` 的 `TIME,NAME,LON,LAT,ALT,SPEED,HEADING`。
+- `platform.id` 保留为场景内关联标识；引擎事件与消息使用模板实例名，通过 `mapping.json.platforms` 对应，中文名称仅用于展示。实例使用固定平台类型；普通航点、`loiterWaypoints`、`returnPlan.timeS/waypoints` 分别写入初始路线、循环路线和 `FollowRoute` 返航指令。位置结果继续来自 `position.csv` 的 `TIME,NAME,LON,LAT,ALT,SPEED,HEADING`。
 - `deviceParameters.ports[平台类型][端口]` 是实际通信参数来源。`txFrequency/rxFrequency` 的 MHz 除以 1000 写 GHz；带宽仍为 MHz，功率为 W，噪声系数为 dB。领域速率为 Mbps，按模板换算为 `bit/s`、`kbits/sec` 或 `mbits/sec`。光纤固定 1000 Mbps。
 - `deviceParameters.antennaGains` 控制模板 11 个天线图的增益；波束宽度和极化按模板/已确认例外固定，不使用旧链路上的增益修正覆盖。
 - 同一平台类型的端口参数同时作用于该类型全部实例。端口上的 `parameterSource` 保存已选装备/通用数据的版本及字段，不自动升级；保存沿用服务端校验、原子登记和引用保护。

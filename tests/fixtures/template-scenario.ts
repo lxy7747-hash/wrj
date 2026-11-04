@@ -262,3 +262,33 @@ export function createTemplateScenario(): ScenarioDraft {
     locked: false,
   }
 }
+
+/** 保留拓扑和参数，只改平台编号并将中继排到作业无人机之后，包含编号与实例名冲突。 */
+export function createRenamedTemplateScenario(): ScenarioDraft {
+  const draft = structuredClone(createTemplateScenario())
+  const ids = new Map([
+    ['rear_comm_vehicle', 'PLAT-001'],
+    ['command_vehicle', 'PLAT-002'],
+    ['tiantong_sat', 'SUP-001'],
+    ['shentong_sat', 'SUP-002'],
+    ['mission_uav_02', 'PLAT-003'],
+    ['mission_uav_03', 'mission_uav_01'],
+    ['mission_uav_01', 'PLAT-005'],
+    ['jammer_station_01', 'SUP-003'],
+    ['jammer_airborne_01', 'SUP-004'],
+  ])
+  draft.config.platforms = [...ids].map(([originalId, id]) => ({
+    ...draft.config.platforms.find(platform => platform.id === originalId)!, id,
+  }))
+  for (const link of draft.config.links) {
+    link.sourcePlatformId = ids.get(link.sourcePlatformId)!
+    link.targetPlatformId = ids.get(link.targetPlatformId)!
+    if (link.relayPlatformId != null) link.relayPlatformId = ids.get(link.relayPlatformId)!
+  }
+  for (const demand of draft.config.informationDemand) {
+    demand.sourcePlatformId = ids.get(demand.sourcePlatformId)!
+    demand.destinationPlatformIds = demand.destinationPlatformIds.map(id => ids.get(id)!)
+  }
+  for (const jammer of draft.config.jammers) jammer.platformId = ids.get(jammer.platformId)!
+  return draft
+}

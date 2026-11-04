@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
@@ -8,6 +8,7 @@ import CompositeLossExample from '../../src/components/interactions/CompositeLos
 import EsmSensorPanel from '../../src/components/interactions/EsmSensorPanel.vue'
 import RfJammerPanel from '../../src/components/interactions/RfJammerPanel.vue'
 import SnrBerExample from '../../src/components/interactions/SnrBerExample.vue'
+import InteractionsPage from '../../src/pages/interactions/interactions.vue'
 import type { DetectionEvent, Principal, ScenarioDraft, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -33,6 +34,31 @@ const operator: Principal = {
 function successResponse(data: unknown): Response {
   return { ok: true, json: vi.fn().mockResolvedValue({ ok: true, data }) } as unknown as Response
 }
+
+describe('感知、干扰与选路页面', () => {
+  it('保留控制、参数同步及诊断入口，页面不显示 Mock 或仅演示文案', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+    useScenarioStore().$patch({ draft: structuredClone(scenarioDraft), panelState: 'SUCCESS' })
+    useTelemetryStore().$patch({ frame: structuredClone(frame), events: structuredClone(events), capabilityState: 'SUCCESS' })
+    const wrapper = mount(InteractionsPage, { global: { plugins: [pinia, ElementPlus], stubs: { RouterLink: true } } })
+    try {
+      await flushPromises()
+      expect(wrapper.get('[data-testid="rf-jammer-panel"]').text()).toContain('RF 干扰机控制')
+      expect(wrapper.text()).toContain('干扰参数同步')
+      expect(wrapper.text()).toContain('状态示例与错误目录')
+      expect(wrapper.find('[aria-label="界面状态示例"]').exists()).toBe(true)
+      expect(wrapper.find('[data-testid="error-catalog"]').exists()).toBe(true)
+      expect(wrapper.text()).toContain('频率边界')
+      expect(wrapper.text()).toContain('功率上限')
+      expect(wrapper.text()).toContain('时长上限')
+      expect(wrapper.text()).not.toContain('Mock')
+      expect(wrapper.text()).not.toContain('仅演示')
+      expect(wrapper.find('.rf-panel__boundary').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
+})
 
 describe('P4-1 ESM 传感器与侦测', () => {
   beforeEach(() => {

@@ -64,7 +64,7 @@ function applyDefaults(jammerId: string): void {
 /**
  * 提交当前版本化干扰参数集。
  * @returns 四端版本一致且在指定帧生效时返回 `true`。
- * @sideEffects 调用本机 Mock，并更新同步状态和实时干扰设备状态。
+ * @sideEffects 调用本机服务接口，并更新同步状态和实时干扰设备状态。
  */
 async function execute(): Promise<boolean> {
   const jammer = selectedJammer.value

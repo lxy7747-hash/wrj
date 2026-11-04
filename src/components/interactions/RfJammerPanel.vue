@@ -87,7 +87,7 @@ function applyDefaults(jammerId: string): void {
 /**
  * 提交当前 RF 干扰控制表单。
  * @returns 服务端接受并返回生效帧时返回 `true`。
- * @sideEffects 调用本机 Mock 接口并更新面板执行状态。
+ * @sideEffects 调用本机服务接口并更新面板执行状态。
  */
 async function execute(): Promise<boolean> {
   if (selectedJammer.value === null) return false
@@ -189,9 +189,9 @@ onMounted(() => {
       <el-descriptions v-if="selectedJammer" :column="5" border size="small">
         <el-descriptions-item label="所属平台">{{ hostPlatform?.name ?? selectedJammer.platformId }}</el-descriptions-item>
         <el-descriptions-item label="设备状态">{{ selectedExtension?.enabled ? '可用' : '不可用' }}</el-descriptions-item>
-        <el-descriptions-item label="Mock 频率边界">{{ frequencyRange.min }}–{{ frequencyRange.max }} MHz</el-descriptions-item>
-        <el-descriptions-item label="Mock 功率上限">{{ selectedJammer.defaultPower }} W</el-descriptions-item>
-        <el-descriptions-item label="Mock 时长上限">{{ scenarioStore.draft?.config.scenario.duration }} s</el-descriptions-item>
+        <el-descriptions-item label="频率边界">{{ frequencyRange.min }}–{{ frequencyRange.max }} MHz</el-descriptions-item>
+        <el-descriptions-item label="功率上限">{{ selectedJammer.defaultPower }} W</el-descriptions-item>
+        <el-descriptions-item label="时长上限">{{ scenarioStore.draft?.config.scenario.duration }} s</el-descriptions-item>
       </el-descriptions>
 
       <el-result
@@ -208,7 +208,6 @@ onMounted(() => {
         </template>
       </el-result>
 
-      <p class="rf-panel__boundary">Mock 服务只校验场景能力并返回确定性生效帧，不连接或控制真实 RF 设备。</p>
     </div>
   </el-card>
 </template>
@@ -260,15 +259,6 @@ onMounted(() => {
 .rf-panel__result {
   color: var(--console-teal);
   font-weight: 700;
-}
-
-.rf-panel__boundary {
-  margin: 0;
-  padding-top: var(--space-3);
-  border-top: 1px solid var(--console-border);
-  color: var(--console-text-muted);
-  font-size: var(--console-font-size-min);
-  line-height: 1.6;
 }
 
 @media (max-width: 900px) {

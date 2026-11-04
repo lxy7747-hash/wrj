@@ -15,6 +15,26 @@ export class MissionGenerationError extends Error {
   constructor(readonly fieldPath: string, reason: string) { super(`${fieldPath}：${reason}`); this.name = 'MissionGenerationError' }
 }
 
+/** 每次生成独立编号；中继先占无人机序号，同类保持配置顺序。 */
+export function engineNames(platforms: readonly Platform[]): Map<string, string> {
+  const names = new Map<string, string>()
+  let uav = 0, ground = 0, airborne = 0
+  const numbered = (prefix: string, index: number) => `${prefix}_${String(index).padStart(2, '0')}`
+  for (const platform of platforms) if (platform.type === 'FORWARD_RELAY_NODE') names.set(platform.id, numbered('mission_uav', ++uav))
+  for (const platform of platforms) {
+    switch (platform.type) {
+      case 'FORWARD_RELAY_NODE': break
+      case 'AIRBORNE_MISSION_CLUSTER': names.set(platform.id, numbered('mission_uav', ++uav)); break
+      case 'GROUND_JAMMER_DETECTION_STATION': names.set(platform.id, numbered('jammer_station', ++ground)); break
+      case 'AIRBORNE_JAMMER_PLATFORM': names.set(platform.id, numbered('jammer_airborne', ++airborne)); break
+      case 'REAR_COMMAND_NODE': names.set(platform.id, 'rear_comm_vehicle'); break
+      case 'GROUND_CLUSTER_COMMAND_NODE': names.set(platform.id, 'command_vehicle'); break
+      case 'COMMUNICATION_SATELLITE': names.set(platform.id, platform.satelliteType === 'TIANTONG' ? 'tiantong_sat' : 'shentong_sat'); break
+    }
+  }
+  return names
+}
+
 export const SCENARIO_PREVIEW_FILE = 'scenario.txt'
 const ENTRY_FILE = 'comm_SimSetup.txt'
 const DEFINITION_FILE = 'comm_PerDefinition.txt'
@@ -217,7 +237,7 @@ function traffic(
   })
   return [...grouped].map(([platform, value]) => ({ [platform]: value }))
 }
-function jammerValues(draft: ScenarioDraft): Jammer[] { const enabled = draft.config.jammingEnabled ?? false; return draft.config.jammers.map(value => { const extension = draft.uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = draft.config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260 } }) }
+function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDraft['uiExtensions']): Jammer[] { const enabled = config.jammingEnabled ?? false; return config.jammers.map(value => { const extension = uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260 } }) }
 type Hop = { platform: string; inPort: string; outPort: string }
 type TrafficRecord = { traffice_type: string; data_volume_bits: number; trans_freq: number }
 type Traffic = Array<Record<string, { forward: TrafficRecord[]; return: TrafficRecord[] }>>
@@ -471,15 +491,33 @@ function observers(path: string): string {
 }
 
 export function buildMissionPackage(draft: ScenarioDraft, output = configuredScenarioOutput(draft.config.scenario.timeStep), runtime?: LocalRuntimeOptions) {
-  const config = { ...draft.config, output }
-  config.platforms.forEach((platform, index) => {
+  const inputConfig = { ...draft.config, output }
+  inputConfig.platforms.forEach((platform, index) => {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(platform.id)) {
       throw new MissionGenerationError(`platforms[${index}].id`, '引擎平台编号须以英文字母开头，仅包含字母、数字、下划线或连字符。')
     }
   })
-  const report = inspectScenarioConfig(config, 'write')
+  const report = inspectScenarioConfig(inputConfig, 'write')
   const issue = report.result.errors[0]
   if (issue) throw new MissionGenerationError(issue.fieldPath || 'config', issue.message)
+  const names = engineNames(inputConfig.platforms)
+  // 仅换名生成副本，保存场景与 input.json 继续使用原编号。
+  const config = structuredClone(inputConfig)
+  for (const platform of config.platforms) platform.id = names.get(platform.id)!
+  for (const link of config.links) {
+    link.sourcePlatformId = names.get(link.sourcePlatformId)!
+    link.targetPlatformId = names.get(link.targetPlatformId)!
+    if (link.relayPlatformId != null) link.relayPlatformId = names.get(link.relayPlatformId)!
+  }
+  for (const demand of config.informationDemand) {
+    demand.sourcePlatformId = names.get(demand.sourcePlatformId)!
+    demand.destinationPlatformIds = demand.destinationPlatformIds.map(id => names.get(id)!)
+  }
+  for (const item of [...config.jammers, ...config.sensors]) item.platformId = names.get(item.platformId)!
+  for (const rule of config.linkSettings?.switchRules ?? []) {
+    rule.sourcePlatformId = names.get(rule.sourcePlatformId)!
+    rule.targetPlatformId = names.get(rule.targetPlatformId)!
+  }
   const laserOnlyPaths = laserOnlyBusinessPaths(config)
   const laserOnlyWarnings = laserOnlyPaths.map(item => {
     const demand = config.informationDemand[item.demandIndex]!
@@ -502,10 +540,10 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     targetIndexes.add(targetIndex)
     laserOnlyTargets.set(demandIndex, targetIndexes)
   })
-  const start = startTime(config.scenario.startTime); const directory = outputDirectory(config.output.directory); const mapped = devices(config); const jammers = jammerValues({ ...draft, config }); const routes = routeInputs(config, mapped.items, laserOnlyTargets); const host = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id; const calc = runtime?.linkCalc === 'STUB' ? (host ? localLinkStub(host, routes, jammers) : '') : calculator(config, routes, jammers); const relays = config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id); const types = typeTexts(config, relays, jammers, `${start.date} ${start.time}`, calc)
+  const start = startTime(config.scenario.startTime); const directory = outputDirectory(config.output.directory); const mapped = devices(config); const jammers = jammerValues(config, draft.uiExtensions); const routes = routeInputs(config, mapped.items, laserOnlyTargets); const host = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id; const calc = runtime?.linkCalc === 'STUB' ? (host ? localLinkStub(host, routes, jammers) : '') : calculator(config, routes, jammers); const relays = config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id); const types = typeTexts(config, relays, jammers, `${start.date} ${start.time}`, calc)
   const setup = [...TYPE_FILES.map(name => `include_once ${name}`), `include_once ${INSTANCE_FILE}`, 'include_once observers.txt', '', `start_date ${start.date}`, `start_time ${start.time}`, `end_time ${n(config.scenario.duration)} sec`, config.scenario.realtime === false ? 'non-realtime' : 'realtime', `clock_rate ${n(config.scenario.environment.simClockSpeed ?? 2)}`, 'multi_thread', '', 'simulation_name "MultiMethod_UAV_Comm_Scenario"', '', 'event_pipe', `   file ${directory}/scenario_events.aer`, 'end_event_pipe', '', 'csv_event_output', `  file ${directory}/scenario_events.csv`, ...EVENTS.map(name => `  enable ${name}`), 'end_csv_event_output', ''].join('\n')
   const scriptFiles = [SCENARIO_PREVIEW_FILE, ENTRY_FILE, DEFINITION_FILE, ...TYPE_FILES, INSTANCE_FILE, 'observers.txt', AD_HOC_COMM_FILE]
-  const manifest = { scope: 'TEMPLATE_ALIGNED_PLATFORM_PORTS', engineValidated: false, scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE, scriptFiles, platforms: config.platforms.map(item => ({ platformId: item.id, generatedType: platformType(item) })), devices: mapped.items, businesses: config.informationDemand.filter(item => item.enabled !== false), jammers, sensors: [], motion: config.platforms.filter(platform => platform.waypoints.length > 0).map(platform => ({
+  const manifest = { scope: 'TEMPLATE_ALIGNED_PLATFORM_PORTS', engineValidated: false, scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE, scriptFiles, platforms: inputConfig.platforms.map(item => ({ platformId: item.id, name: names.get(item.id)!, generatedType: platformType(item) })), devices: mapped.items, businesses: config.informationDemand.filter(item => item.enabled !== false), jammers, sensors: [], motion: config.platforms.filter(platform => platform.waypoints.length > 0).map(platform => ({
     platformId: platform.id,
     waypoints: platform.waypoints.map(waypoint => ({
       longitude: waypoint.longitude, latitude: waypoint.latitude, altitude: waypoint.altitude, speed: waypoint.speed,

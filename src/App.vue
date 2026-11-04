@@ -78,6 +78,7 @@ async function logout(): Promise<void> {
           <router-link v-if="menuVisible('/scenarios')" to="/scenarios">场景配置</router-link>
           <router-link v-if="APP_CONFIG.showReports && menuVisible('/reports')" to="/reports">评估报表</router-link>
           <router-link v-if="menuVisible('/replays')" to="/replays">历史回放</router-link>
+          <router-link v-if="menuVisible('/interactions')" to="/interactions">感知、干扰与选路</router-link>
           <router-link v-if="(auth.principal?.role === 'ADMIN' || APP_CONFIG.systemManagement.showDataExchange) && menuVisible(systemManagementPath)" :to="systemManagementPath">系统管理</router-link>
           <!-- <router-link
             to="/blueprint"

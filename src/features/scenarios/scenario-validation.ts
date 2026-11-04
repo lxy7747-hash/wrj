@@ -1374,8 +1374,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         && (platform as { satelliteType?: unknown }).satelliteType === satelliteType
       )).length
       if (count > 1) {
-        const label = satelliteType === 'TIANTONG' ? '天通卫星' : '神通卫星'
-        addError(errors, 'SATELLITE_TYPE_DUPLICATED', `${label}当前场景只能配置 1 个。`, 'platforms')
+        addError(errors, 'SATELLITE_TYPE_DUPLICATED', '天通卫星和神通卫星各只能配置一颗。', 'platforms')
       }
     }
     if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '场景实体 ID 不允许为空或重复。', 'platforms')
