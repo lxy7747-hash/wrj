@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test'
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'ADMIN' }
 
 test('P8 全局重置、目录定位与保留路由双视口验收', async ({ page, request }, testInfo) => {
+  // 9 次完整导航，开发模式按需编译懒加载代码，不能沿用单页用例的 60 秒。
+  test.setTimeout(180_000)
   /** 保存实际截图文件并挂入机器报告，便于逐页复核。 */
   async function screenshot(name: string): Promise<void> {
     const path = testInfo.outputPath(`${name}.png`)
@@ -19,7 +21,7 @@ test('P8 全局重置、目录定位与保留路由双视口验收', async ({ pa
   page.on('response', (response) => { if (response.status() >= 400) failures.push(`${response.status()} ${response.url()}`) })
   page.on('websocket', (socket) => sockets.push(socket.url()))
   await request.post('http://127.0.0.1:4173/api/v1/reset', { headers, data: { confirm: true } })
-  await page.goto('/login')
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
   await screenshot('login')
   await page.getByTestId('login-username').fill('admin')
   await page.getByTestId('login-password').fill('123456')
@@ -27,39 +29,41 @@ test('P8 全局重置、目录定位与保留路由双视口验收', async ({ pa
   await page.waitForURL('**/situation')
 
   for (const path of ['/situation', '/scenarios', '/reports', '/replays', '/admin', '/blueprint', '/admin/data-exchange', '/traceability', '/interactions']) {
-    await page.goto(path)
-    await expect(page.locator('.app-shell')).toBeVisible()
-    await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible()
-    // 等待实际页面数据而非固定休眠；已有分阶段 E2E 继续承担每页完整业务操作。
-    if (path === '/blueprint') {
-      await expect(page.getByTestId('capability-card')).toHaveCount(29)
-      await expect(page.getByTestId('interface-anchor')).toHaveCount(7)
-      await expect(page.getByTestId('decision-table').locator('.el-table__row')).toHaveCount(8)
-    } else if (path === '/traceability') {
-      await expect(page.getByTestId('traceability-table').locator('.el-table__row')).toHaveCount(36)
-    } else if (path === '/admin/data-exchange') {
-      await page.getByTestId('open-exchange-tools').click()
-      await expect(page.getByTestId('interface-contract-table').locator('.interface-item')).toHaveCount(7)
-      await page.getByRole('dialog', { name: '接口工具' }).getByRole('button', { name: '关闭此对话框' }).click()
-    } else if (path === '/situation') {
-      await expect(page.locator('.offline-map')).toBeVisible()
-    } else if (path === '/scenarios') {
-      await expect(page.getByTestId('scene-list')).toBeVisible()
-      await expect(page.getByTestId('scene-edit-SCN-001')).toBeVisible()
-      await expect(page.getByTestId('scenario-id')).toHaveCount(0)
-    } else if (path === '/reports') {
-      await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
-    } else if (path === '/replays') {
-      await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。', { exact: true })).toBeVisible()
-      await expect(page.getByTestId('replay-timeline')).toHaveCount(0)
-    } else if (path === '/admin') {
-      await expect(page.getByTestId('user-role-panel')).toBeVisible()
-    }
-    const navigation = page.getByRole('navigation', { name: '主导航' })
-    const box = await navigation.boundingBox()
-    expect(box!.x).toBeGreaterThanOrEqual(0)
-    expect(box!.x + box!.width).toBeLessThanOrEqual(testInfo.project.use.viewport!.width)
-    await screenshot(path.slice(1).replaceAll('/', '-'))
+    await test.step(`打开 ${path}`, async () => {
+      await page.goto(path, { waitUntil: 'domcontentloaded' })
+      await expect(page.locator('.app-shell')).toBeVisible()
+      await expect(page.getByRole('navigation', { name: '主导航' })).toBeVisible()
+      // 等待实际页面数据而非固定休眠；已有分阶段 E2E 继续承担每页完整业务操作。
+      if (path === '/blueprint') {
+        await expect(page.getByTestId('capability-card')).toHaveCount(29)
+        await expect(page.getByTestId('interface-anchor')).toHaveCount(7)
+        await expect(page.getByTestId('decision-table').locator('.el-table__row')).toHaveCount(8)
+      } else if (path === '/traceability') {
+        await expect(page.getByTestId('traceability-table').locator('.el-table__row')).toHaveCount(36)
+      } else if (path === '/admin/data-exchange') {
+        await page.getByTestId('open-exchange-tools').click()
+        await expect(page.getByTestId('interface-contract-table').locator('.interface-item')).toHaveCount(7)
+        await page.getByRole('dialog', { name: '接口工具' }).getByRole('button', { name: '关闭此对话框' }).click()
+      } else if (path === '/situation') {
+        await expect(page.locator('.offline-map')).toBeVisible()
+      } else if (path === '/scenarios') {
+        await expect(page.getByTestId('scene-list')).toBeVisible()
+        await expect(page.getByTestId('scene-edit-SCN-001')).toBeVisible()
+        await expect(page.getByTestId('scenario-id')).toHaveCount(0)
+      } else if (path === '/reports') {
+        await expect(page.getByTestId('report-tabs')).toHaveAttribute('data-report-id', 'RPT-001')
+      } else if (path === '/replays') {
+        await expect(page.getByText('暂无本地回放数据，请配置数据文件后重新加载。', { exact: true })).toBeVisible()
+        await expect(page.getByTestId('replay-timeline')).toHaveCount(0)
+      } else if (path === '/admin') {
+        await expect(page.getByTestId('user-role-panel')).toBeVisible()
+      }
+      const navigation = page.getByRole('navigation', { name: '主导航' })
+      const box = await navigation.boundingBox()
+      expect(box!.x).toBeGreaterThanOrEqual(0)
+      expect(box!.x + box!.width).toBeLessThanOrEqual(testInfo.project.use.viewport!.width)
+      await screenshot(path.slice(1).replaceAll('/', '-'))
+    })
   }
 
   await page.getByTestId('reset-all').click()
@@ -82,7 +86,7 @@ test('P8 全局重置、目录定位与保留路由双视口验收', async ({ pa
   await page.keyboard.press('Space')
   await expect(page.getByText('状态示例：失败', { exact: true })).toBeVisible()
 
-  await page.goto('/traceability')
+  await page.goto('/traceability', { waitUntil: 'domcontentloaded' })
   await expect(page.getByTestId('traceability-table').locator('.el-table__row')).toHaveCount(36)
   await page.getByRole('textbox', { name: '筛选需求或接口' }).fill('参数校验')
   await expect(page.getByTestId('traceability-table').locator('.el-table__row')).toHaveCount(1)
@@ -98,12 +102,12 @@ test('P8 全局重置、目录定位与保留路由双视口验收', async ({ pa
 })
 
 test('P8 重置失败清空业务面板并允许从头重试', async ({ page }) => {
-  await page.goto('/login')
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
   await page.getByTestId('login-username').fill('admin')
   await page.getByTestId('login-password').fill('123456')
   await page.getByTestId('login-submit').click()
   await page.waitForURL('**/situation')
-  await page.goto('/interactions')
+  await page.goto('/interactions', { waitUntil: 'domcontentloaded' })
   // 使用成功 HTTP 中的损坏业务载荷验证 fail-closed，不产生预期外控制台资源错误。
   await page.route('**/api/v1/reset', (route) => route.fulfill({ json: { ok: true, data: { nextSequence: 2 } } }))
   await page.getByTestId('reset-all').click()

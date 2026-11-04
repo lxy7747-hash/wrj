@@ -1,5 +1,7 @@
-import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { expect, test, type APIRequestContext, type Page, type Response } from '@playwright/test'
 import { APP_CONFIG } from '../../src/config/app.config'
+import { INFORMATION_NODE_LIMIT, INFORMATION_NODE_TYPE_LIMITS, isBusinessInformationNodeType } from '../../src/features/scenarios/scenario-validation'
+import { RAIN_RATE_MAX } from '../../src/features/scenarios/link-calc-defaults'
 import type { ApiSuccess, ConfirmationContext, DetectionEvent, ScenarioConfig, ScenarioDraft, ScenarioTemplate, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
@@ -80,22 +82,48 @@ function auditConsole(page: Page): ConsoleAudit {
   return audit
 }
 
-// 保存已持久化草稿后，取消自动脚本生成；不调用纯 Mock 未启用的本机 TXT 写入。
+// 428 取消确认；200 核对纯 Mock 明确拒绝 TXT 写入，不伪造落盘成功。
 async function saveAndCancelPreview(page: Page): Promise<void> {
-  const required = page.waitForResponse(response => response.request().method() === 'POST'
-    && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview`)
-  await page.getByTestId('save-scenario').click()
-  expect((await required).status()).toBe(428)
-  const dialog = page.getByRole('dialog', { name: '脚本预览警告', exact: true })
-  await expect(dialog).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
-  await dialog.getByRole('button', { name: '取消', exact: true }).click()
-  await expect(dialog).toBeHidden()
-  await expect(page.getByTestId('save-scenario')).toBeEnabled()
+  const writes: Response[] = []
+  const onResponse = (response: Response) => {
+    if (response.request().method() === 'POST' && response.url().startsWith(`${MOCK_ORIGIN}/api/v1/scripts/`) && response.url().endsWith('/local-file')) writes.push(response)
+  }
+  page.on('response', onResponse)
+  try {
+    const required = page.waitForResponse(response => response.request().method() === 'POST'
+      && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview`)
+    await page.getByTestId('save-scenario').click()
+    const preview = await required
+    expect([200, 428]).toContain(preview.status())
+    if (preview.status() === 428) {
+      const dialog = page.getByRole('dialog', { name: '脚本预览警告', exact: true })
+      await expect(dialog).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await expect(dialog).toBeHidden()
+    } else {
+      const script = (await preview.json()).data
+      await expect.poll(() => writes.length).toBe(1)
+      expect(writes[0]!.url()).toBe(`${MOCK_ORIGIN}/api/v1/scripts/${encodeURIComponent(script.scriptId)}/local-file`)
+      expect(writes[0]!.status()).toBe(503)
+      expect(await writes[0]!.json()).toMatchObject({ ok: false, error: { code: 'START_FAILED', message: '当前为纯 Mock 服务，未启用本机 TXT 写入。' } })
+      await expect(page.getByRole('dialog', { name: '脚本预览警告', exact: true })).toBeHidden()
+      await expect(page.locator('.el-message--error').last()).toContainText('场景配置已保存，但 TXT 写入未完成。')
+    }
+    await expect(page.getByTestId('save-scenario')).toBeEnabled()
+  } finally { page.off('response', onResponse) }
 }
 
-function expectPreviewConfirmationErrors(audit: ConsoleAudit, count: number): void {
-  expect(audit.errors).toEqual(Array(count).fill('Failed to load resource: the server responded with a status of 428 (Precondition Required)'))
-  expect(audit.errorUrls).toEqual(Array(count).fill(`${MOCK_ORIGIN}/api/v1/scripts/preview`))
+function expectMockSaveErrors(audit: ConsoleAudit, count: number): void {
+  expect(audit.errors).toHaveLength(count)
+  expect(audit.errorUrls).toHaveLength(count)
+  audit.errors.forEach((error, index) => {
+    if (audit.errorUrls[index] === `${MOCK_ORIGIN}/api/v1/scripts/preview`) {
+      expect(error).toBe('Failed to load resource: the server responded with a status of 428 (Precondition Required)')
+    } else {
+      expect(audit.errorUrls[index]).toMatch(/^http:\/\/127\.0\.0\.1:4173\/api\/v1\/scripts\/[^/]+\/local-file$/)
+      expect(error).toBe('Failed to load resource: the server responded with a status of 503 (Service Unavailable)')
+    }
+  })
 }
 
 /**
@@ -246,7 +274,7 @@ test('场景列表：新建取消、复制保存、按编号编辑重载、模�
   await page.locator('.el-message-box').getByRole('button', { name: '删除', exact: true }).click()
   await expect(page.getByTestId('scene-table').locator('.el-table__row')).toHaveCount(2)
   await expect(page.getByTestId(`scene-edit-${copied.config.scenario.id}`)).toHaveCount(0)
-  expectPreviewConfirmationErrors(audit, 2)
+  expectMockSaveErrors(audit, 2)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -339,7 +367,7 @@ test('P7 ADMIN maintains master data and rejects dot path identifiers', async ({
   for (const dataId of ['.', '..']) {
     await createDialog.getByTestId('master-id').fill(dataId)
     await createDialog.getByTestId('master-save').click()
-    await expect(createDialog.getByRole('alert')).toContainText('请填写有效编号')
+    await expect(createDialog.getByRole('alert')).toContainText('编号不能为 . 或 ..。')
   }
   await createDialog.getByTestId('master-id').fill('DEVICE-P7-E2E')
   await createDialog.getByTestId('master-name').fill('浏览器测试公共参数')
@@ -619,7 +647,8 @@ test('P3-3 OPERATOR reads the F-00042 same-frame link calculation contract', asy
   await expect(contract).toContainText('F-00042')
   await expect(contract).toContainText('L-MW-01')
   await expect(contract).toContainText('高空前出中继节点')
-  await expect(contract).toContainText('地面无人集群指挥车')
+  await expect(contract).toContainText('后方指挥节点')
+  await expect(contract).toContainText('CMD-01')
   await expect(contract).toContainText('4500 MHz')
   await expect(contract).toContainText('3.2e-7')
 
@@ -716,11 +745,11 @@ test('P4-2 OPERATOR executes RF jammer control and sees the effective frame', as
   await panel.getByRole('button', { name: '执行命令' }).click()
   const command = await commandResponse
   expect(command.status()).toBe(200)
-  expect(command.request().postDataJSON()).toMatchObject({ duration: 120 })
+  expect(command.request().postDataJSON()).toMatchObject({ direction: 0, duration: 1 })
 
   await expect(panel.getByTestId('rf-state')).toContainText('执行成功')
   await expect(panel).toContainText('任务手动启扰，生效帧 F-00042。')
-  await expect(panel).toContainText('72 W / 2200 MHz / 120 s')
+  await expect(panel).toContainText('72 W / 2200 MHz / 1 s')
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
@@ -752,7 +781,7 @@ test('P4-3～P4-7 OPERATOR completes closed-loop, synchronization, routing and s
   await synchronization.getByRole('button', { name: '同步参数' }).click()
   const synchronized = await syncResponse
   expect(synchronized.status()).toBe(200)
-  expect(synchronized.request().postDataJSON()).toMatchObject({ parameters: { duration: 120 } })
+  expect(synchronized.request().postDataJSON()).toMatchObject({ parameters: { direction: 0, duration: 1 } })
   await expect(synchronization.getByTestId('jammer-sync-state')).toContainText('同步完成')
   await expect(synchronization).toContainText('v5')
   await expect(synchronization).toContainText('F-00042')
@@ -920,15 +949,19 @@ test.describe('P2-1 scenario business loop', () => {
     await expect(name).toHaveValue('跨海通联时区验证场景')
     await expect(startTime).toHaveValue('2026-08-07 09:30')
 
-    expectPreviewConfirmationErrors(audit, 1)
+    expectMockSaveErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
 })
 
 test.describe('P2-2 platform and waypoint acceptance', () => {
-  test('批量新增至类型上限并显式配置卫星，保存重载保持数量和部署域', async ({ page }) => {
+  test('批量新增至类型上限并显式配置卫星，保存重载保持数量和部署域', async ({ page, request }) => {
     const audit = auditConsole(page)
+    const baseline = await loadScenarioDraft(request)
+    const initialAirborne = baseline.config.platforms.filter(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER').length
+    const quantity = Math.min(INFORMATION_NODE_LIMIT - baseline.config.platforms.filter(platform => isBusinessInformationNodeType(platform.type)).length,
+      INFORMATION_NODE_TYPE_LIMITS.AIRBORNE_MISSION_CLUSTER - initialAirborne)
     await loginAs(page, 'operator')
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
     await page.getByTestId('scene-edit-SCN-001').click()
@@ -941,14 +974,14 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('platform-type').click()
     await page.getByRole('option', { name: '空中无人作业集群', exact: true }).click()
     await expect(page.getByTestId('platform-category')).toHaveValue('空中')
-    await expect(page.getByTestId('platform-quantity').locator('input')).toHaveAttribute('max', '44')
+    await expect(page.getByTestId('platform-quantity').locator('input')).toHaveAttribute('max', String(quantity))
     await page.getByTestId('platform-name').fill('E2E 批量集群')
-    await page.getByTestId('platform-quantity').locator('input').fill('44')
+    await page.getByTestId('platform-quantity').locator('input').fill(String(quantity))
     await page.getByTestId('platform-longitude').locator('input').fill('119.5')
     await page.getByTestId('platform-latitude').locator('input').fill('25')
     await page.getByTestId('apply-platform').click()
     const table = page.getByTestId('platform-table')
-    await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
+    await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(quantity)
 
     await page.getByTestId('add-platform').click()
     await page.getByTestId('platform-type').click()
@@ -959,7 +992,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByRole('option', { name: '通信卫星', exact: true }).click()
     await expect(page.getByTestId('platform-category')).toHaveValue('天基')
     await page.getByTestId('apply-platform').click()
-    await expect(page.getByTestId('platform-dialog')).toContainText('请选择天通卫星或神通卫星。')
+    await expect(page.getByTestId('platform-dialog')).toContainText('通信卫星必须选择天通卫星或神通卫星。')
     await page.getByTestId('platform-satellite-type').click()
     await page.getByRole('option', { name: '神通卫星', exact: true }).click()
     await page.getByTestId('platform-name').fill('E2E 神通配置')
@@ -970,7 +1003,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     expect(saved.status()).toBe(200)
     const snapshot = ((await saved.json()) as ApiSuccess<ScenarioDraft>).data
     const airborne = snapshot.config.platforms.filter(({ type }) => type === 'AIRBORNE_MISSION_CLUSTER')
-    expect(airborne).toHaveLength(47)
+    expect(airborne).toHaveLength(initialAirborne + quantity)
     expect(airborne.every(({ category }) => category === 'air')).toBe(true)
     expect(snapshot.config.platforms.filter(({ type }) => type === 'REAR_COMMAND_NODE')).toHaveLength(1)
     expect(snapshot.config.platforms.find(({ name }) => name === 'E2E 神通配置')).toMatchObject({ type: 'COMMUNICATION_SATELLITE', satelliteType: 'SHENTONG', category: 'space' })
@@ -979,9 +1012,9 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('scene-edit-SCN-001').click()
     expect(((await (await reloadedResponse).json()) as ApiSuccess<ScenarioDraft>).data).toEqual(snapshot)
     await page.getByRole('tab', { name: '节点配置' }).click()
-    await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(44)
+    await expect(table.getByRole('row').filter({ hasText: 'E2E 批量集群' })).toHaveCount(quantity)
     await expect(table.getByRole('row').filter({ hasText: 'E2E 神通配置' })).toContainText('神通卫星')
-    expectPreviewConfirmationErrors(audit, 1)
+    expectMockSaveErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
@@ -995,6 +1028,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
     await page.getByTestId('scene-edit-SCN-001').click()
     expect((await loaded).status()).toBe(200)
+    // 使用真实的降雨阈值警告走一次性确认，不依赖已移除的激光提示。
+    await page.getByTestId('scenario-rain-rate').locator('input').fill(String(RAIN_RATE_MAX + 1))
     await page.getByRole('tab', { name: '节点配置' }).click()
 
     await page.getByTestId('add-platform').click()
@@ -1008,6 +1043,8 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('waypoint-altitude-0').locator('input').fill('1500')
     await page.getByTestId('waypoint-speed-0').locator('input').fill('60')
     await page.getByTestId('waypoint-arrival-0').locator('input').fill('300')
+    await page.getByTestId('waypoint-heading-0').locator('input').fill('90')
+    await page.getByTestId('waypoint-acceleration-0').locator('input').fill('1.5')
     await page.getByTestId('apply-platform').click()
 
     const addedRow = page.getByTestId('platform-table').getByRole('row').filter({ hasText: 'E2E 新增业务节点' })
@@ -1018,7 +1055,9 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await page.getByTestId('waypoint-latitude-0').locator('input').fill('24.75')
     await page.getByTestId('waypoint-altitude-0').locator('input').fill('1800')
     await page.getByTestId('waypoint-speed-0').locator('input').fill('75')
-    await page.getByTestId('waypoint-arrival-0').locator('input').fill('450')
+    await page.getByTestId('waypoint-arrival-0').locator('input').fill('500')
+    await page.getByTestId('waypoint-heading-0').locator('input').fill('135')
+    await page.getByTestId('waypoint-acceleration-0').locator('input').fill('2.5')
     await page.getByTestId('apply-platform').click()
 
     const savedResponse = page.waitForResponse((response) => response.request().method() === 'PUT'
@@ -1032,7 +1071,7 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
       id: 'PLAT-001',
       name: 'E2E 已编辑业务节点',
       initialPosition: { longitude: 120.25, latitude: 24.35, altitude: 1200 },
-      waypoints: [{ longitude: 120.75, latitude: 24.75, altitude: 1800, speed: 75, arrivalTime: 450 }],
+      waypoints: [{ longitude: 120.75, latitude: 24.75, altitude: 1800, speed: 75, arrivalTime: 500, heading: 135, acceleration: 2.5 }],
     })
 
     const reloadedResponse = page.waitForResponse((response) => response.request().method() === 'GET'
@@ -1053,19 +1092,25 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
     await reloadedRow.getByRole('button', { name: '编辑' }).click()
     await expect(page.getByTestId('platform-longitude').locator('input')).toHaveValue('120.25')
     await expect(page.getByTestId('waypoint-longitude-0').locator('input')).toHaveValue('120.75')
-    await expect(page.getByTestId('waypoint-arrival-0').locator('input')).toHaveValue('450')
+    await expect(page.getByTestId('waypoint-speed-0').locator('input')).toHaveValue('75')
+    await expect(page.getByTestId('waypoint-arrival-0').locator('input')).toHaveValue('500')
+    await expect(page.getByTestId('waypoint-heading-0').locator('input')).toHaveValue('135')
+    await expect(page.getByTestId('waypoint-acceleration-0').locator('input')).toHaveValue('2.5')
 
-    expectPreviewConfirmationErrors(audit, 1)
+    expectMockSaveErrors(audit, 1)
     expect(audit.http404s).toEqual([])
     expect([...audit.nonLoopbackHosts]).toEqual([])
   })
 
-  test('real mock accepts exactly 50 business nodes and atomically rejects node 51', async ({ request }) => {
+  test(`real mock accepts exactly ${INFORMATION_NODE_LIMIT} information nodes and atomically rejects node ${INFORMATION_NODE_LIMIT + 1}`, async ({ request }) => {
     const baseline = await loadScenarioDraft(request)
-    const fiftyConfig = structuredClone(baseline.config)
-    const source = structuredClone(fiftyConfig.platforms[3]!)
-    for (let index = 0; index < 44; index += 1) {
-      fiftyConfig.platforms.push({
+    const limitConfig = structuredClone(baseline.config)
+    const source = structuredClone(limitConfig.platforms.find(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')!)
+    const remaining = INFORMATION_NODE_LIMIT - limitConfig.platforms.filter(platform => isBusinessInformationNodeType(platform.type)).length
+    const airborneCount = limitConfig.platforms.filter(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER').length
+    expect(airborneCount + remaining).toBeLessThanOrEqual(INFORMATION_NODE_TYPE_LIMITS.AIRBORNE_MISSION_CLUSTER)
+    for (let index = 0; index < remaining; index += 1) {
+      limitConfig.platforms.push({
         ...structuredClone(source),
         id: `E2E-LIMIT-${String(index + 1).padStart(3, '0')}`,
         name: `E2E 容量节点 ${index + 1}`,
@@ -1077,28 +1122,28 @@ test.describe('P2-2 platform and waypoint acceptance', () => {
 
     const acceptedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: { config: fiftyConfig, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision },
+      data: { config: limitConfig, uiExtensions: baseline.uiExtensions, expectedRevision: baseline.revision },
     })
     expect(acceptedResponse.status()).toBe(200)
     const acceptedDraft = ((await acceptedResponse.json()) as ApiSuccess<ScenarioDraft>).data
     expect(acceptedDraft.revision).toBe(baseline.revision + 1)
     expect(acceptedDraft.config.platforms.filter((platform) => (
-      !['COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION'].includes(platform.type)
-    ))).toHaveLength(50)
+      isBusinessInformationNodeType(platform.type)
+    ))).toHaveLength(INFORMATION_NODE_LIMIT)
     expect(await loadScenarioDraft(request)).toEqual(acceptedDraft)
 
-    const fiftyOneConfig: ScenarioConfig = structuredClone(acceptedDraft.config)
-    fiftyOneConfig.platforms.push({
+    const overLimitConfig: ScenarioConfig = structuredClone(acceptedDraft.config)
+    overLimitConfig.platforms.push({
       ...structuredClone(source),
-      id: 'E2E-LIMIT-045',
-      name: 'E2E 第 51 个容量节点',
+      id: 'E2E-OVER-LIMIT',
+      name: `E2E 第 ${INFORMATION_NODE_LIMIT + 1} 个容量节点`,
       linkIds: [],
       sensorIds: [],
       jammerIds: [],
     })
     const rejectedResponse = await request.put(`${MOCK_ORIGIN}${SCENARIO_PATH}`, {
       headers: { Origin: UI_ORIGIN, 'X-Demo-Role': 'OPERATOR' },
-      data: { config: fiftyOneConfig, uiExtensions: acceptedDraft.uiExtensions, expectedRevision: acceptedDraft.revision },
+      data: { config: overLimitConfig, uiExtensions: acceptedDraft.uiExtensions, expectedRevision: acceptedDraft.revision },
     })
     expect(rejectedResponse.status()).toBe(422)
     expect(await rejectedResponse.json()).toMatchObject({
@@ -1138,13 +1183,13 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await frequency.fill('0')
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.getByText('链路频率必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('link-frequency') }).getByText('链路频率必须大于 0 MHz。', { exact: true })).toBeVisible()
   await expect(addedRow).toHaveCount(0)
   await frequency.fill('4500')
   await bandwidth.fill('0')
   await page.getByTestId('apply-link').click()
   await expect(page.getByTestId('link-dialog')).toBeVisible()
-  await expect(page.getByText('链路带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('link-bandwidth') }).getByText('链路带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
   await expect(addedRow).toHaveCount(0)
   await bandwidth.fill('20')
   await page.getByTestId('apply-link').click()
@@ -1218,7 +1263,7 @@ test('P2-3 OPERATOR edits a link across validation, associations, save, and relo
   await platformTable.getByRole('row').filter({ hasText: '空中无人作业节点 U02' }).getByRole('button', { name: '详情' }).click()
   await expect(page.getByTestId('platform-link-ids')).toContainText(/L-CFG-001/)
 
-  expectPreviewConfirmationErrors(audit, 1)
+  expectMockSaveErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1251,37 +1296,38 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   const bandwidth = page.getByTestId('jammer-bandwidth').locator('input')
   await frequency.fill('0')
   await page.getByTestId('apply-jammer').click()
-  await expect(page.getByText('干扰频率必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('jammer-frequency') }).getByText('干扰频率必须大于 0 MHz。', { exact: true })).toBeVisible()
   await frequency.fill('0.0001')
   await bandwidth.fill('0')
   await page.getByTestId('apply-jammer').click()
-  await expect(page.getByText('干扰带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
+  await expect(page.locator('.el-form-item').filter({ has: page.getByTestId('jammer-bandwidth') }).getByText('干扰带宽必须大于 0 MHz。', { exact: true })).toBeVisible()
   await bandwidth.fill('0.0002')
   await page.getByTestId('jammer-type').click()
   await page.getByRole('option', { name: '瞄准式', exact: true }).click()
   await page.getByTestId('jammer-platform').click()
   await expect(page.getByRole('option', { name: '后方指挥节点（CMD-01）', exact: true })).toHaveCount(0)
-  await page.getByRole('option', { name: '地面固定式干扰侦测站（STN-01）', exact: true }).click()
-  // 写入校验要求功率大于 0 W，输入框不接受 0。
+  await page.getByRole('option', { name: '机载干扰平台（AJ-001）', exact: true }).click()
+  // 一个干扰节点只放一台设备；输入为 dBm，保存合同仍为 W。
   await page.getByTestId('jammer-power').locator('input').fill('5')
+  await page.getByTestId('jammer-direction').locator('input').fill('90')
   await page.getByTestId('jammer-range').locator('input').fill('1')
   await page.getByTestId('jammer-jamming-range').locator('input').fill('1')
-  await page.getByTestId('jammer-direction').locator('input').fill('270')
-  await page.getByTestId('jammer-duration').locator('input').fill('90')
   await page.getByTestId('apply-jammer').click()
 
   const addedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(addedRow).toContainText('瞄准式')
-  await expect(addedRow).toContainText('270')
+  await expect(page.getByTestId('jammer-dialog')).toBeHidden()
+  await expect(page.getByTestId('jammer-duration')).toHaveCount(0)
+  await expect(page.getByTestId('jammer-auto-detect')).toHaveCount(0)
   await page.getByTestId('toggle-jammer-JAM-CFG-001').click()
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).not.toHaveClass(/is-checked/)
   await expect(page.getByTestId('toggle-jammer-JAM-WB-01-TX')).toHaveClass(/is-checked/)
   await page.getByTestId('toggle-jammer-JAM-CFG-001').click()
   await addedRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('jammer-direction').locator('input')).toHaveValue('90')
+  await page.getByTestId('jammer-direction').locator('input').fill('135')
   await page.getByTestId('jammer-platform').click()
   await page.getByRole('option', { name: '机载干扰平台（AJ-001）', exact: true }).click()
-  await page.getByTestId('jammer-direction').locator('input').fill('360')
-  await page.getByTestId('jammer-duration').locator('input').fill('120')
   await page.getByTestId('apply-jammer').click()
 
   await page.getByTestId('delete-jammer-0').click()
@@ -1310,10 +1356,9 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
     id: 'JAM-CFG-001',
     platformId: 'AJ-001',
     type: 'SPOT',
-    defaultPower: 5,
+    defaultPower: 10 ** ((5 - 30) / 10),
     frequency: 0.0001,
     bandwidth: 0.0002,
-    autoDetect: false,
     // 距离按 km 输入、合同存米；释放范围取新建默认值 35 海里。
     detectionRange: 1000,
     jammingRange: 1000,
@@ -1323,8 +1368,7 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   expect(savedDraft.config.jammers.some((jammer) => jammer.id === 'JAM-WB-01-TX')).toBe(false)
   expect(savedDraft.uiExtensions.jammers.find((extension) => extension.jammerId === 'JAM-CFG-001')).toEqual({
     jammerId: 'JAM-CFG-001',
-    direction: 360,
-    duration: 120,
+    direction: 135,
     enabled: true,
   })
   expect(new Set(savedDraft.uiExtensions.jammers.map((extension) => extension.jammerId))).toEqual(
@@ -1343,10 +1387,13 @@ test('P2-4 OPERATOR persists jammer parameters, extensions, associations, and in
   await page.getByRole('tab', { name: '干扰设备' }).click()
   const reloadedRow = page.getByTestId('jammer-table').getByRole('row').filter({ hasText: 'JAM-CFG-001' })
   await expect(reloadedRow).toContainText('AJ-001')
-  await expect(reloadedRow).toContainText('360')
+  await expect(page.getByTestId('jammer-table').getByRole('columnheader', { name: '方向（°）', exact: true })).toBeVisible()
+  await expect(page.getByTestId('jammer-table').getByRole('columnheader', { name: '持续时间（s）', exact: true })).toHaveCount(0)
   await expect(page.getByTestId('toggle-jammer-JAM-CFG-001')).toHaveClass(/is-checked/)
+  await reloadedRow.getByRole('button', { name: '编辑' }).click()
+  await expect(page.getByTestId('jammer-direction').locator('input')).toHaveValue('135')
 
-  expectPreviewConfirmationErrors(audit, 1)
+  expectMockSaveErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1363,20 +1410,23 @@ test('P2-5 OPERATOR validates warnings and locates an invalid time step', async 
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await loaded).status()).toBe(200)
 
+  await page.getByTestId('scenario-rain-rate').locator('input').fill(String(RAIN_RATE_MAX + 1))
   const validate = page.getByTestId('save-scenario')
   const warningResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
   const confirmationRequired = page.waitForResponse(response => response.request().method() === 'POST'
     && response.url() === `${MOCK_ORIGIN}/api/v1/scripts/preview` && response.status() === 428)
   await validate.click()
-  expect((await warningResponse).status()).toBe(200)
+  const warnings = await warningResponse
+  expect(warnings.status()).toBe(200)
+  expect((await warnings.json()).data.warnings).toContainEqual(expect.objectContaining({ code: 'RAIN_RATE_CAPPED', severity: 'WARNING' }))
   expect((await confirmationRequired).status()).toBe(428)
   const messageBox = page.locator('.el-message-box')
   await expect(messageBox).toContainText('场景存在校验警告，生成脚本前需要一次性确认。')
   await messageBox.getByRole('button', { name: '取消', exact: true }).click()
   await expect(messageBox).toBeHidden()
   const validationPanel = page.getByTestId('validation-panel')
-  await expect(validationPanel).toContainText('当前雨衰值未匹配设备默认值，生成脚本前需要确认。')
+  await expect(page.getByRole('alert').filter({ hasText: `降雨强度超过 ${RAIN_RATE_MAX} mm/h，链路计算按 ${RAIN_RATE_MAX} 封顶。` })).toBeVisible()
 
   await page.getByRole('tab', { name: '场景基础', exact: true }).click()
   const timeStep = page.getByTestId('scenario-time-step').locator('input')
@@ -1607,7 +1657,7 @@ test('P2-7 OPERATOR persists and reloads full data parameters without scenario o
     await expect(page.getByTestId(id)).toHaveCount(0)
   }
 
-  expectPreviewConfirmationErrors(audit, 1)
+  expectMockSaveErrors(audit, 1)
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
 })
@@ -1642,13 +1692,15 @@ test('OPERATOR checks fields on save without a separate script preview or prefli
   await page.reload()
   await page.getByTestId('scene-edit-SCN-001').click()
   expect((await restored).status()).toBe(200)
-  await expect(page.getByRole('tab')).toHaveCount(5)
+  await expect(page.getByRole('tab')).toHaveCount(6)
+  await expect(page.getByRole('tab', { name: '通信设备参数', exact: true })).toBeVisible()
   await expect(page.locator('.scenario-workflow-hint')).toHaveCount(0)
   await expect(page.locator('.scenario-workflow-bar')).toContainText('已就绪')
   await expect(page.getByTestId('next-script')).toHaveCount(0)
   await expect(page.getByTestId('workflow-script')).toHaveCount(0)
   await expect(page.getByTestId('workflow-validation')).toHaveCount(0)
   await expect(page.getByTestId('save-scenario')).toBeEnabled()
+  await page.getByTestId('scenario-rain-rate').locator('input').fill(String(RAIN_RATE_MAX + 1))
   const validationFinished = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === `${SCENARIO_PATH}/validate`)
   const automaticConfirmationRequired = page.waitForResponse(response => response.request().method() === 'POST'

@@ -22,7 +22,13 @@ test('SQLite 完整备份、计划保存、损坏拒绝和恢复后通用数据�
     })
     await page.routeWebSocket('**/ws/v1', () => {})
     page.on('pageerror', error => errors.push(error.message))
-    page.on('console', message => { if (message.type() === 'error') errors.push(message.text()) })
+    page.on('console', message => {
+      if (message.type() !== 'error') return
+      // 此备份用例未配置 Mission 文件，仅排除这两个读取端点的已知 409。
+      const missingMissionData = /^http:\/\/127\.0\.0\.1:4173\/api\/v1\/simulations\/[^/]+\/(?:quality|positions)$/.test(message.location().url)
+      if (missingMissionData && message.text() === 'Failed to load resource: the server responded with a status of 409 (Conflict)') return
+      errors.push(message.text())
+    })
     const login = async () => {
       await page.goto('/login')
       await page.getByTestId('login-username').fill('admin')

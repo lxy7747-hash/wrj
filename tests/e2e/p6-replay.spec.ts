@@ -86,7 +86,15 @@ test('P6 本地回放离页清理，重复进入重新加载后播放与暂停�
     if (path.startsWith('/api/v1/replays')) replayRequests.push(path)
   })
   await page.route('**/api/v1/replays/local-file', (route) => route.fulfill({ json: { ok: true, data: FILE_REPLAY } }))
-  await page.getByRole('link', { name: '历史回放', exact: true }).click()
+  const openReplay = async () => {
+    const loaded = page.waitForResponse(response => response.request().method() === 'GET'
+      && new URL(response.url()).pathname === '/api/v1/replays/local-file')
+    await page.getByRole('link', { name: '历史回放', exact: true }).click()
+    await page.waitForURL('**/replays')
+    expect((await loaded).status()).toBe(200)
+    await expect(page.getByTestId('replay-event-detail')).toBeVisible()
+  }
+  await openReplay()
   const play = page.getByTestId('replay-play')
   const cursor = page.locator('.replay-controls__slider span').first()
   for (let visit = 0; visit < 2; visit += 1) {
@@ -96,10 +104,11 @@ test('P6 本地回放离页清理，重复进入重新加载后播放与暂停�
     await expect(play).toHaveText('暂停')
     await expect(cursor).not.toHaveText('00:00:00', { timeout: 4_000 })
     await page.getByRole('link', { name: '场景配置', exact: true }).click()
+    await page.waitForURL('**/scenarios')
     const requestsAfterLeaving = replayRequests.length
-    await page.waitForTimeout(1_100)
+    await expect(page.getByTestId('scene-table')).toBeVisible()
     expect(replayRequests).toHaveLength(requestsAfterLeaving)
-    await page.getByRole('link', { name: '历史回放', exact: true }).click()
+    await openReplay()
   }
   await expect(play).toHaveText('播放')
   await play.click()
