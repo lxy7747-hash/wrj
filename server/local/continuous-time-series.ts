@@ -1,3 +1,4 @@
+import { toScenarioCsvRow, toScenarioEvent } from './engine-name-mapping.js'
 import { createHash, randomUUID } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
 import { lstat, mkdir, mkdtemp, open, rename, rm, writeFile, type FileHandle } from 'node:fs/promises'
@@ -162,13 +163,13 @@ export class ContinuousTimeSeriesWriter {
   private notifyFailure!: (error: Error) => void
   readonly failed: Promise<Error>
 
-  private constructor(private readonly directory: string, private readonly context: TimeSeriesContext, outputDirectory: string, root: string) {
+  private constructor(private readonly directory: string, private readonly context: TimeSeriesContext, outputDirectory: string, root: string, private readonly names?: Map<string, string>) {
     this.failed = new Promise(resolve => { this.notifyFailure = resolve })
     this.root = root
     this.outputRoot = resolve(outputDirectory)
   }
 
-  static async create(directory: string, context: TimeSeriesContext, outputDirectory: string): Promise<ContinuousTimeSeriesWriter> {
+  static async create(directory: string, context: TimeSeriesContext, outputDirectory: string, names?: Map<string, string>): Promise<ContinuousTimeSeriesWriter> {
     const base = resolve(directory)
     const parent = resolve(base, 'time-series', context.taskId)
     if (!isInside(base, parent) || !/^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(context.taskId)
@@ -177,7 +178,7 @@ export class ContinuousTimeSeriesWriter {
     // runId 是服务记录标识而非全局唯一文件名；重启/恢复后复用时必须不覆盖历史归档。
     // Windows的mkdtemp不自动扩展长路径；任务摘要和UUID组合后会超过传统260字符边界。
     const root = await mkdtemp(toNamespacedPath(join(parent, `${context.runId}-`)))
-    const writer = new ContinuousTimeSeriesWriter(directory, context, outputDirectory, root)
+    const writer = new ContinuousTimeSeriesWriter(directory, context, outputDirectory, root, names)
     try {
       for (const contract of TIME_SERIES_CONTRACTS) await writer.addSource(contract)
       // 所有来源初始化完成后才轮询，避免慢速open时先轮询空Map并缓存一个已完成的Promise。
@@ -309,11 +310,11 @@ export class ContinuousTimeSeriesWriter {
     if (!inspected.valid || inspected.rowCount !== 1) throw new Error(`${source.contract.name}：${inspected.issues[0]?.message ?? '增量记录不符合合同。'}`)
     const taskIndex = source.contract.fields.indexOf('task_id')
     if (parseCsvLine(line)?.[taskIndex] !== this.context.taskId) throw new Error(`${source.contract.name} 含其他任务的数据。`)
-    await this.queueWrite(source, line)
+    await this.queueWrite(source, toScenarioCsvRow(this.names, source.contract.fields, line))
   }
 
   private async writeEvent(source: SourceFile, event: AfsimLogEvent): Promise<void> {
-    const row = eventCsvRow(event, this.context.taskId)
+    const row = eventCsvRow(toScenarioEvent(this.names, event), this.context.taskId)
     const checked = inspectCsvText(source.contract, `${source.contract.fields.join(',')}\n${row}`)
     if (!checked.valid) throw new Error(`events.csv：${checked.issues[0]?.message ?? '事件记录不符合规范合同。'}`)
     await this.queueWrite(source, row)

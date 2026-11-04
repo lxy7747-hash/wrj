@@ -44,6 +44,27 @@ describe('任务规范时序 CSV 实际文件留存', () => {
     expect(await readFile(join(second, 'events.csv'), 'utf8')).toContain('TASK-SECOND,1.1,')
   })
 
+  it('质量 CSV 副本使用场景端点，数值、来源摘要和原始文件不变', async () => {
+    const root = await directory()
+    const originals = new Map<string, string>()
+    for (const contract of TIME_SERIES_CONTRACTS.filter(item => item.name !== 'events.csv')) {
+      const lines = createCsvExample(contract).replaceAll('TASK-001', context.taskId).trimEnd().split(/\r?\n/)
+      const cells = parseCsvLine(lines[1]!)!
+      cells[contract.fields.indexOf('SourcePlatform')] = 'rear_comm_vehicle'
+      cells[contract.fields.indexOf('DestPlatform')] = 'mission_uav_01'
+      const text = `${lines[0]}\r\n${cells.join(',')}\r\n`
+      originals.set(contract.name, text)
+      await writeFile(join(root, contract.name), text)
+    }
+    const output = await writeTimeSeries(root, context, log, sourceSha, new Map([['rear_comm_vehicle', 'CMD-01'], ['mission_uav_01', 'AIR-01']]))
+    const manifest = JSON.parse(await readFile(join(output, 'manifest.json'), 'utf8'))
+    for (const [fileName, text] of originals) {
+      expect(await readFile(join(root, fileName), 'utf8')).toBe(text)
+      expect(await readFile(join(output, fileName), 'utf8')).toBe(text.replaceAll('rear_comm_vehicle', 'CMD-01').replaceAll('mission_uav_01', 'AIR-01'))
+      expect(manifest.files.find((file: { fileName: string }) => file.fileName === fileName).sourceSha256).toBe(createHash('sha256').update(text).digest('hex'))
+    }
+  })
+
   it('已有规范测量文件按原值留存，全部任务标识、字段和摘要闭合', async () => {
     const root = await directory()
     for (const contract of TIME_SERIES_CONTRACTS.filter(item => item.name !== 'events.csv')) {

@@ -26,6 +26,35 @@ async function fixture() {
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 
 describe('连续时序 CSV 留存', () => {
+  it('连续归档将平台列映射为场景编号，保留原始文件摘要与设备编号', async () => {
+    const { root, output } = await fixture()
+    const events = REPORT_EVENT_CSV.replace(/\bA\b/g, 'rear_comm_vehicle').replace(/\bB\b/g, 'mission_uav_01') + '\n'
+    const names = new Map([['rear_comm_vehicle', 'CMD-01'], ['mission_uav_01', 'AIR-01']])
+    const writer = await ContinuousTimeSeriesWriter.create(root, context, output, names)
+    try {
+      await writeFile(join(output, 'scenario_events.csv'), events)
+      const contract = TIME_SERIES_CONTRACTS.find(item => item.name === 'link_state.csv')!
+      const example = createCsvExample(contract).replaceAll('TASK-001', context.taskId)
+      const { parseCsvLine } = await import('../../src/features/data-exchange/csv-contract')
+      const lines = example.trimEnd().split(/\r?\n/)
+      const cells = parseCsvLine(lines[1]!)!
+      cells[contract.fields.indexOf('SourcePlatform')] = 'rear_comm_vehicle'
+      cells[contract.fields.indexOf('DestPlatform')] = 'mission_uav_01'
+      const quality = lines[0] + '\n' + cells.join(',') + '\n'
+      await writeFile(join(output, 'link_state.csv'), quality)
+      const archive = await writer.close('COMPLETED')
+      const canonical = await readFile(join(archive, 'events.csv'), 'utf8')
+      expect(canonical).toContain(',CMD-01,')
+      expect(canonical).toContain(',AIR-01,')
+      expect(canonical).not.toMatch(/rear_comm_vehicle|mission_uav_01/)
+      expect(await readFile(join(archive, 'link_state.csv'), 'utf8')).toContain(',CMD-01,AIR-01,')
+      const manifest = JSON.parse(await readFile(join(archive, 'manifest.json'), 'utf8'))
+      expect(manifest.files.find((file: { fileName: string }) => file.fileName === 'events.csv').sourceSha256).toBe(createHash('sha256').update(events).digest('hex'))
+      expect(await readFile(join(output, 'scenario_events.csv'), 'utf8')).toBe(events)
+      expect(await readFile(join(output, 'link_state.csv'), 'utf8')).toBe(quality)
+    } finally { await writer.close('INCOMPLETE').catch(() => undefined) }
+  })
+
   it('慢写入进入延迟溢出分档仍保持条数，分档不截断实测最大值', async () => {
     const { root, output } = await fixture()
     const { performance } = await import('node:' + 'perf_hooks')

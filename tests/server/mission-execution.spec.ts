@@ -536,18 +536,18 @@ describe('本机 mission 执行器', () => {
         const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
         const rows = (event: string, id: string) => records.filter((cells: string[]) => cells[1] === event && cells[2] === id)
         const port = type === 'COMMUNICATION_SATELLITE' ? 'sat_link_a' : 'microwave_link'
-        expect(rows('MESSAGE_TRANSMITTED', source!.id).every((cells: string[]) => cells[4] === port && cells[7] === 'kForwardTarget')).toBe(true)
-        expect(rows('MESSAGE_TRANSMITTED', source!.id).length).toBeGreaterThan(0)
+        expect(rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle').every((cells: string[]) => cells[4] === port && cells[7] === 'kForwardTarget')).toBe(true)
+        expect(rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle').length).toBeGreaterThan(0)
         if (type === 'FORWARD_RELAY_NODE') {
           // 中继任务机 on_message 读取 kReturnReconVideo_* 键转发，补丁把中间跳写在该键下。
-          const chain = [rows('MESSAGE_TRANSMITTED', source!.id), rows('MESSAGE_RECEIVED', relay.id), rows('MESSAGE_TRANSMITTED', relay.id), rows('MESSAGE_RECEIVED', target!.id)]
+          const chain = [rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle'), rows('MESSAGE_RECEIVED', 'mission_uav_01'), rows('MESSAGE_TRANSMITTED', 'mission_uav_01'), rows('MESSAGE_RECEIVED', 'mission_uav_02')]
           chain.forEach(items => expect(items.length, JSON.stringify(chain)).toBeGreaterThan(0))
           const times = chain.map(items => Number(items[0]![0]))
           expect(times).toEqual([...times].sort((a, b) => a - b))
         } else {
           // 模板卫星实例固定在 0n 120e GEO，后方车 4° 动中通天线不带指向（注释“假定伺服对准”，引擎不会自动对准），
           // 卫星也没有转发逻辑；本机只能核对后方车按主路由发出。
-          expect(rows('MESSAGE_TRANSMITTED', relay.id)).toHaveLength(0)
+          expect(rows('MESSAGE_TRANSMITTED', 'tiantong_sat')).toHaveLength(0)
         }
       } finally { await rm(root, { recursive: true, force: true }) }
     },
@@ -574,8 +574,8 @@ describe('本机 mission 执行器', () => {
       expect(outcome.errorMessage).toBeUndefined()
       const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output/scenario_events.csv'), 'utf8'))
       // 3 秒仿真内后方车发送一轮：每个目标一条。
-      for (const id of ['AIR-01', 'AIR-02']) expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_RECEIVED' && cells[2] === id)).toHaveLength(1)
-      expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED' && cells[2] === source.id)).toHaveLength(2)
+      for (const id of ['mission_uav_01', 'mission_uav_02']) expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_RECEIVED' && cells[2] === id)).toHaveLength(1)
+      expect(records.filter((cells: string[]) => cells[1] === 'MESSAGE_TRANSMITTED' && cells[2] === 'rear_comm_vehicle')).toHaveLength(2)
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
@@ -608,13 +608,13 @@ describe('本机 mission 执行器', () => {
       // 模板 script_proc 固定 5 秒发送一次，trans_freq 只写入 link_calc JSON。
       expect(Number(transmitted[1]![0]) - Number(transmitted[0]![0])).toBeCloseTo(5, 5)
       transmitted.forEach((cells: string[]) => {
-        expect(cells[2]).toBe(link.sourcePlatformId)
+        expect(cells[2]).toBe(direction === 'FORWARD' ? 'rear_comm_vehicle' : 'mission_uav_01')
         expect(cells[4]).toBe('microwave_link')
         expect(cells[7]).toBe(messageType)
         expect(cells[8]).toBe('2048')
       })
       received.forEach((cells: string[]) => {
-        expect(cells[2]).toBe(link.targetPlatformId)
+        expect(cells[2]).toBe(direction === 'FORWARD' ? 'mission_uav_01' : 'rear_comm_vehicle')
         expect(cells[4]).toBe('microwave_link')
       })
     } finally { await rm(root, { recursive: true, force: true }) }
@@ -654,12 +654,12 @@ describe('本机 mission 执行器', () => {
       const starting = records.find((cells: string[]) => cells[1] === 'SIMULATION_STARTING')!
       expect(starting.slice(2, 8).map(Number)).toEqual([2026, 3, 5, 6, 7, 8])
       // 补丁每 3 秒检查一次：任务机在触发半径内，地面站开机并切到宽带干扰模式。
-      const on = records.filter((cells: string[]) => cells[1] === 'WEAPON_TURNED_ON' && cells[2] === 'STN-01')
+      const on = records.filter((cells: string[]) => cells[1] === 'WEAPON_TURNED_ON' && cells[2] === 'jammer_station_01')
       expect(on).toHaveLength(1)
-      expect(records.some((cells: string[]) => cells[1] === 'WEAPON_MODE_ACTIVATED' && cells[2] === 'STN-01' && cells[4] === 'broadband_jamming')).toBe(true)
+      expect(records.some((cells: string[]) => cells[1] === 'WEAPON_MODE_ACTIVATED' && cells[2] === 'jammer_station_01' && cells[4] === 'broadband_jamming')).toBe(true)
       const positions = (await readFile(join(directory, 'output', 'position.csv'), 'utf8'))
         .split(/\r?\n/).filter(Boolean).slice(1).map((line: string) => line.split(','))
-      const uavPositions = positions.filter((cells: string[]) => cells[1] === 'AIR-01')
+      const uavPositions = positions.filter((cells: string[]) => cells[1] === 'mission_uav_01')
       expect(uavPositions.length).toBeGreaterThan(1)
       expect(uavPositions[0]![2]).toBe('120.1')
       expect(uavPositions[uavPositions.length - 1]![2]).not.toBe('120.1')
@@ -699,10 +699,10 @@ describe('本机 mission 执行器', () => {
       expect(platforms).toContain('      semi_major_axis 42164 km')
       const csv = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
       const records = csv.split(/\r?\n/).filter((line: string) => !line.startsWith('!')).map((line: string) => line.split(','))
-      expect(records.some((cells: string[]) => cells[1] === 'COMM_TURNED_ON' && cells[2] === 'SAT-01')).toBe(true)
+      expect(records.some((cells: string[]) => cells[1] === 'COMM_TURNED_ON' && cells[2] === 'tiantong_sat')).toBe(true)
       const positions = (await readFile(join(directory, 'output', 'position.csv'), 'utf8'))
         .split(/\r?\n/).filter(Boolean).slice(1).map((line: string) => line.split(','))
-      const satellitePositions = positions.filter((cells: string[]) => cells[1] === 'SAT-01')
+      const satellitePositions = positions.filter((cells: string[]) => cells[1] === 'tiantong_sat')
       expect(satellitePositions.length).toBeGreaterThan(0)
       // 天通是 GEO：实际轨道高度约 35786 km，与候选模型的 42164 km 半长轴一致，倾角 0 使纬度接近 0。
       const altitude = Number(satellitePositions[0]![4])
@@ -772,11 +772,11 @@ describe('本机 mission 执行器', () => {
         ? savedPlatforms
         : withoutLinkCalc(savedPlatforms))
       expect(await readFile(join(directory, 'mission-console.log'), 'utf8')).toContain('Simulation complete')
-      expect(await readFile(join(directory, 'output', 'position.csv'), 'utf8')).toContain('3,AIR-01,')
+      expect(await readFile(join(directory, 'output', 'position.csv'), 'utf8')).toContain('3,mission_uav_01,')
       const events = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
       expect(events).toContain('COMM_TURNED_ON')
       // 模板后方车 script_proc 每 5 秒发送一次，3 秒仿真内首发约在 t≈3 s。
-      expect(events.split(/\r?\n/).filter((line: string) => /^\d.*?,MESSAGE_RECEIVED,AIR-01,/.test(line))).toHaveLength(1)
+      expect(events.split(/\r?\n/).filter((line: string) => /^\d.*?,MESSAGE_RECEIVED,mission_uav_01,/.test(line))).toHaveLength(1)
     } finally { await server.close(); await rm(root, { recursive: true, force: true }) }
   })
 

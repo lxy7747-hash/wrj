@@ -1,3 +1,4 @@
+import { engineNameMap, toScenarioDevices } from './engine-name-mapping.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, readdir, lstat, realpath, rename, unlink } from 'node:fs/promises'
 import { join, resolve, relative, isAbsolute } from 'node:path'
@@ -77,6 +78,9 @@ export class LocalMissionResults implements MissionResults {
     const manifest = JSON.parse(await readFile(join(entryDirectory, 'mapping.json'), 'utf8'))
     if (manifest.scenarioId !== draft.config.scenario.id || manifest.revision !== draft.revision
       || typeof manifest.output?.resolvedDirectory !== 'string') throw new Error('生成包与执行场景版本不一致。')
+    const names = engineNameMap(manifest)
+    const displayNames = names ? new Map(draft.config.platforms.map(platform => [platform.id, platform.name])) : undefined
+    const devices = toScenarioDevices(names, manifest.devices)
     const root = await realpath(entryDirectory)
     const output = await realpath(resolve(root, manifest.output.resolvedDirectory))
     const within = relative(root, output)
@@ -87,9 +91,9 @@ export class LocalMissionResults implements MissionResults {
       const stat = await lstat(path)
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('结果文件不是普通文件。')
     }
-    const [replay, report, log] = await Promise.all([readLocalReplay(eventPath, positionPath, true), readLocalReport(eventPath, positionPath), readAfsimLogFile(eventPath)])
+    const [replay, report, log] = await Promise.all([readLocalReplay(eventPath, positionPath, true, names, displayNames), readLocalReport(eventPath, positionPath, names, displayNames), readAfsimLogFile(eventPath, names)])
     // 归档的通用射频编号保持原样；只有 manifest 端点对精确匹配时才补充显示类型。
-    const mappedConnections = resolveManifestConnections(log, manifest.devices)
+    const mappedConnections = resolveManifestConnections(log, devices)
     const mappedReplay = { ...replay, initial: { ...replay.initial, connections: mappedConnections },
       durationS: Math.max(replay.durationS, ...mappedConnections.map(connection => connection.time)) }
     const record: MissionResultRecord = {
@@ -107,14 +111,14 @@ export class LocalMissionResults implements MissionResults {
         if (!continuousArchiveDirectory) throw new Error('大型事件来源缺少经核验的连续时序归档，拒绝发布不完整 CSV 快照。')
         await validateContinuousEventArchive(continuousArchiveDirectory, context, log.source, log.summary.eventCount)
       } else {
-        await writeTimeSeries(output, context, log, log.source.sha256)
+        await writeTimeSeries(output, context, log, log.source.sha256, names)
       }
     }
     if (!canPublish()) return
     // Index is published before the result snapshot. A read can therefore never mistake a partial index for a filterable result.
     await mkdir(this.directory, { recursive: true })
     await publishReportFilterIndex(this.directory, record, snapshot.report, snapshot.replay, log, {
-      devices: manifest.devices,
+      devices,
       ...(('messageDetailsComplete' in log && log.messageDetailsComplete === false && continuousArchiveDirectory)
         ? { canonicalEventsPath: join(continuousArchiveDirectory, 'events.csv') } : {}),
     })

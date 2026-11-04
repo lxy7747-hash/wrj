@@ -1,3 +1,4 @@
+import { engineNameMap, toScenarioId } from './engine-name-mapping.js'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import type { ScenarioDraft } from '../../src/contracts/domain-models.js'
@@ -35,6 +36,7 @@ function readMapping(value: unknown, scenarioId: string, revision: number): Mapp
     || !Array.isArray(mapping.platforms)
     || !mapping.platforms.every(platform => platform && typeof platform.platformId === 'string' && platform.platformId.length > 0
       && typeof platform.name === 'string' && platform.name.length > 0)) throw new Error('本次仿真映射文件与场景版本不一致。')
+  engineNameMap(value)
   const output = mapping.output.resolvedDirectory
   if (output.length === 0 || isAbsolute(output) || output.split(/[\\/]/).some(part => part === '' || part === '.' || part === '..')) {
     throw new Error('本次仿真输出目录无效。')
@@ -107,17 +109,11 @@ export class MissionPositionReader {
     if (!this.isCurrent(source)) return null
     if (positions.recordCount === 0) return this.snapshot(source, null)
     const platformIds = new Set(mapping.platforms.map(platform => platform.platformId))
-    const nameCounts = new Map<string, number>()
-    for (const platform of mapping.platforms) {
-      nameCounts.set(platform.name, (nameCounts.get(platform.name) ?? 0) + 1)
-    }
-    const aliases = new Map(mapping.platforms
-      .filter(platform => nameCounts.get(platform.name) === 1)
-      .map(platform => [platform.name, platform.platformId]))
+    const names = engineNameMap(mapping)
     return this.snapshot(source, { ...positions, nodes: positions.nodes.flatMap(position => {
       // CSV NAME 是引擎实例名；即使与另一场景原编号重名，也优先按名称映射。
-      const platformId = aliases.get(position.platformId) ?? (platformIds.has(position.platformId) ? position.platformId : undefined)
-      return platformId ? [{ ...position, platformId }] : []
+      const platformId = toScenarioId(names, position.platformId)
+      return platformIds.has(platformId) ? [{ ...position, platformId }] : []
     }) })
   }
 

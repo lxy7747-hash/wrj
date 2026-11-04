@@ -1,3 +1,4 @@
+import { toScenarioId } from './engine-name-mapping.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { POSITION_HEADER, parsePositionLine, positionOrderIssue, type PositionUpdate } from '../../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../../src/features/replays/local-replay.js'
@@ -12,9 +13,9 @@ const MAX_REPLAY_POSITION_RECORDS = 1_000_000
  * @param initialPath 初始化日志的本机路径。
  * @param positionPath 持续追加位置 CSV 的本机路径；未配置时拒绝回退 Mock。
  */
-export async function readLocalReplay(initialPath: string, positionPath: string | undefined, completed = false): Promise<LocalReplaySnapshot> {
+export async function readLocalReplay(initialPath: string, positionPath: string | undefined, completed = false, names?: Map<string, string>, displayNames?: Map<string, string>): Promise<LocalReplaySnapshot> {
   if (!positionPath) throw new Error('尚未配置位置文件。')
-  const initial = await readInitialNodes(initialPath)
+  const initial = await readInitialNodes(initialPath, names, displayNames)
   const nodes = new Map(initial.nodes.map((node) => [node.platformId, node]))
   const tracks = new Map<string, PositionUpdate[]>()
   let issueCount = 0
@@ -36,6 +37,7 @@ export async function readLocalReplay(initialPath: string, positionPath: string 
     }
     if (!line.trim()) return
     const update = Buffer.byteLength(line, 'utf8') <= 8192 ? parsePositionLine(line) : null
+    if (update) update.platformId = toScenarioId(names, update.platformId)
     const node = update ? nodes.get(update.platformId) : undefined
     const positions = update ? tracks.get(update.platformId) ?? [] : []
     const previous = positions.at(-1)

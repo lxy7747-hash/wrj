@@ -1,3 +1,4 @@
+import { engineNameMap } from './engine-name-mapping.js'
 import { execFile, spawn } from 'node:child_process'
 import { createReadStream } from 'node:fs'
 import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
@@ -168,7 +169,8 @@ export class LocalMissionRunner implements MissionExecution {
     let continuous: ContinuousTimeSeriesWriter | undefined
     try {
       // 运行中增量留存使用独立 task/run 目录；缺少质量源时不补造数据，close 仍会留下可追溯 manifest。
-      continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, await resolveMissionOutputDirectory(entryPath))
+      const names = engineNameMap(JSON.parse(await readFile(join(cwd, 'mapping.json'), 'utf8')))
+      continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, await resolveMissionOutputDirectory(entryPath), names)
     } catch (error) {
       await log.close()
       await this.guard.clearAfterClose()

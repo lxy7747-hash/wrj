@@ -1,3 +1,4 @@
+import { toScenarioCsvRow } from './engine-name-mapping.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
@@ -59,7 +60,7 @@ function validateDataset(contract: ContractDescriptor, text: string, taskId: str
 
 /** 在任务独占输出目录原子发布规范 CSV；缺少质量数据时只留明确的待引擎项，不造空表。 */
 export async function writeTimeSeries(
-  outputDirectory: string, context: TimeSeriesContext, log: AfsimEventLog, sourceSha256: string,
+  outputDirectory: string, context: TimeSeriesContext, log: AfsimEventLog, sourceSha256: string, names?: Map<string, string>,
 ): Promise<string> {
   if (!/^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(context.taskId)
     || !/^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(context.runId)
@@ -84,6 +85,7 @@ export async function writeTimeSeries(
       const snapshot = await readLocalFileSnapshot(path)
       datasetSourceSha256 = snapshot.source.sha256
       text = new TextDecoder('utf-8', { fatal: true }).decode(snapshot.bytes)
+      if (names) text = text.split(/(\r?\n)/).map((line, index) => index === 0 || index % 2 ? line : toScenarioCsvRow(names, contract.fields, line)).join('')
     }
     datasets.push({ contract, text, rowCount: validateDataset(contract, text, context.taskId), sourceSha256: datasetSourceSha256 })
   }

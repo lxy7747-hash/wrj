@@ -1,3 +1,4 @@
+import { toScenarioLog } from './engine-name-mapping.js'
 import { createHash } from 'node:crypto'
 import type { BigIntStats } from 'node:fs'
 import { open, stat } from 'node:fs/promises'
@@ -147,9 +148,9 @@ export async function readLocalFileSnapshot(inputPath: string) {
 }
 
 /** 只读解析 AFSIM 事件日志；inputPath 为本机配置或命令行明确指定的路径。 */
-export async function readAfsimLogFile(inputPath: string) {
+export async function readAfsimLogFile(inputPath: string, names?: Map<string, string>) {
   const info = await stat(resolve(inputPath), { bigint: true })
-  if (info.size > BigInt(FULL_SNAPSHOT_LIMIT_BYTES)) return readLargeAfsimLogFile(inputPath)
+  if (info.size > BigInt(FULL_SNAPSHOT_LIMIT_BYTES)) return toScenarioLog(names, await readLargeAfsimLogFile(inputPath))
   const { source, bytes } = await readLocalFileSnapshot(inputPath)
   let text: string
   try {
@@ -159,7 +160,7 @@ export async function readAfsimLogFile(inputPath: string) {
   }
   return {
     source,
-    ...parseAfsimEventLog(text),
+    ...toScenarioLog(names, parseAfsimEventLog(text)),
   }
 }
 
@@ -317,7 +318,8 @@ async function readLargeAfsimLogFile(inputPath: string) {
  * 提取每个平台的首个位置供地图初始化，不暴露本机路径，不补造遥测帧。
  * @param inputPath 本机配置的事件日志路径。
  */
-export async function readInitialNodes(inputPath: string): Promise<InitialNodeSnapshot> {
+export async function readInitialNodes(inputPath: string, names?: Map<string, string>, displayNames?: Map<string, string>): Promise<InitialNodeSnapshot> {
+  if (names) return loadInitialNodes(inputPath, names, displayNames)
   const path = resolve(inputPath)
   const version = await fileVersion(path)
   if (initialCache?.path !== path || initialCache.version !== version) {
@@ -334,13 +336,13 @@ export async function readInitialNodes(inputPath: string): Promise<InitialNodeSn
   return structuredClone(snapshot)
 }
 
-async function loadInitialNodes(inputPath: string): Promise<InitialNodeSnapshot> {
-  const parsed = await readAfsimLogFile(inputPath)
+async function loadInitialNodes(inputPath: string, names?: Map<string, string>, displayNames?: Map<string, string>): Promise<InitialNodeSnapshot> {
+  const parsed = await readAfsimLogFile(inputPath, names)
   if (!parsed.valid) throw new Error('日志解析失败，请先检查来源行号。')
   const nodes = parsed.nodes.map((node) => {
     const state = node.initialState
     if (!state) throw new Error('日志中有节点缺少初始位置。')
-    return { platformId: node.name, name: PLATFORM_DISPLAY_NAMES.get(node.name) ?? node.name, type: node.type,
+    return { platformId: node.name, name: displayNames?.get(node.name) ?? PLATFORM_DISPLAY_NAMES.get(node.name) ?? node.name, type: node.type,
       ...(node.side ? { side: node.side } : {}),
       longitude: state.longitude, latitude: state.latitude,
       altitude: state.altitudeMeters, speed: state.speedMetersPerSecond,

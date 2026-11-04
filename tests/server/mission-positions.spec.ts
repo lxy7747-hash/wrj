@@ -22,6 +22,7 @@ async function startLocalMission(
   output: string | false,
   platforms = [{ platformId: 'CMD-01', name: '指挥节点' }, { platformId: 'AIR-01', name: '无人机' }],
   resolvedDirectory = 'output',
+  platformNaming: string | null = 'TEMPLATE_INSTANCE',
 ) {
   const root = await mkdtemp(join(tmpdir(), 'wrj-mission-positions-'))
   const entryPath = join(root, 'mission-1', 'comm_SimSetup.txt')
@@ -34,7 +35,7 @@ async function startLocalMission(
       await writeFile(join(dirname(entryPath), 'mapping.json'), JSON.stringify({
         scenarioId: draft.config.scenario.id, revision: draft.revision,
         output: { resolvedDirectory },
-        platforms,
+        platforms, ...(platformNaming === null ? {} : { platformNaming }),
       }))
       if (output !== false) {
         await mkdir(join(dirname(entryPath), resolvedDirectory))
@@ -70,8 +71,8 @@ describe('本次 mission 位置接口', () => {
     await api.get('/api/v1/simulations/RUN-MISSING/positions').set(headers).expect(404)
   })
 
-  it('无实例名匹配时兼容原编号位置记录', async () => {
-    const { api, runId } = await startLocalMission('TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n0,CMD-01,121,25,100,0,0\n')
+  it('旧包无命名标记时保留原编号位置记录', async () => {
+    const { api, runId } = await startLocalMission('TIME,NAME,LON,LAT,ALT,SPEED,HEADING\n0,CMD-01,121,25,100,0,0\n', [{ platformId: 'CMD-01', name: 'AIR-01' }, { platformId: 'AIR-01', name: 'CMD-01' }], 'output', null)
     const response = await api.get(`/api/v1/simulations/${runId}/positions`).set(headers).expect(200)
     expect(response.body.data.positions.nodes).toMatchObject([{ platformId: 'CMD-01' }])
   })

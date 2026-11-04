@@ -2,8 +2,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { POSITION_CSV } from '../fixtures/local-replay'
-import type { ScenarioDraft, AccessControlConfig, Report } from '../../src/contracts/domain-models'
-import type { MissionResultParameterComparison, MissionResultRecord } from '../../src/features/results/mission-result'
+import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilterResult } from '../../src/contracts/domain-models'
+import type { MissionResultParameterComparison, MissionResultRecord, MissionResultSnapshot } from '../../src/features/results/mission-result'
 const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -38,6 +38,49 @@ async function setup() {
 }
 
 describe('真实仿真结果闭环', () => {
+  it.each([true, false])('入库统一回映射、中文名称与筛选闭合，源 CSV 不变；新包=%s', async marked => {
+    const { entry, output, draft, results } = await setup()
+    const csvIds = marked ? ['rear_comm_vehicle', 'mission_uav_01'] : ['CMD-01', 'AIR-01']
+    const replaceIds = (text: string) => text.replace(/\bA\b/g, csvIds[0]!).replace(/\bB\b/g, csvIds[1]!)
+    const events = replaceIds(REPORT_EVENT_CSV).replace(/satcom_[12]/g, 'WSF_RADIO_TRANSCEIVER') + '\n'
+    const positions = replaceIds(POSITION_CSV)
+    await writeFile(join(output, 'scenario_events.csv'), events)
+    await writeFile(join(output, 'position.csv'), positions)
+    const manifest = { scenarioId: draft.config.scenario.id, revision: draft.revision, output: { resolvedDirectory: 'nested' },
+      ...(marked ? { platformNaming: 'TEMPLATE_INSTANCE' } : {}),
+      platforms: [{ platformId: 'CMD-01', name: 'rear_comm_vehicle' }, { platformId: 'AIR-01', name: 'mission_uav_01' }],
+      devices: [{ linkId: 'L-FILE', linkType: 'SAT', source: { platformId: csvIds[0], deviceId: 'tx' }, target: { platformId: csvIds[1], deviceId: 'rx' }, relay: null }] }
+    const mappingText = JSON.stringify(manifest)
+    await writeFile(join(entry, 'mapping.json'), mappingText)
+    await results.capture(entry, draft, start, end, () => true, { taskId: 'TASK-MAPPING', runId: 'RUN-MAPPING' })
+    const result: MissionResultSnapshot = (await results.get((await results.list())[0]!.resultId))!
+    const sortedIds = ['AIR-01', 'CMD-01']
+    expect(result.replay.initial.nodes.map(node => node.platformId).sort()).toEqual(sortedIds)
+    expect(result.replay.tracks.map(track => track.platformId).sort()).toEqual(sortedIds)
+    expect(result.replay.tracks.flatMap(track => track.positions.map(position => position.platformId)).sort()).toEqual(['AIR-01', 'CMD-01', 'CMD-01'])
+    expect(result.replay.initial.connections).toEqual([expect.objectContaining({ resolvedType: 'SAT', source: expect.objectContaining({ platformName: 'CMD-01' }), target: expect.objectContaining({ platformName: 'AIR-01' }) })])
+    expect(result.replay.initial.deviceEvents?.every(event => sortedIds.includes(event.platformId))).toBe(true)
+    expect(result.report.localEvidence!.nodes.map(node => node.platformId).sort()).toEqual(sortedIds)
+    if (marked) for (const node of result.report.localEvidence!.nodes) expect(node.name).toBe(draft.config.platforms.find(platform => platform.id === node.platformId)!.name)
+    expect(result.report.localEvidence!.connections[0]).toMatchObject({ sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01' })
+    const filtered: LocalReportFilterResult = await results.filter(result.record.resultId, result.report.reportId, { nodeId: 'AIR-01', linkId: 'L-FILE' })
+    expect(filtered.report.localEvidence!.nodes.map(node => node.platformId)).toEqual(['AIR-01'])
+    expect(filtered.timeline.length).toBeGreaterThan(0)
+    expect(filtered.timeline.every(event => ['AIR-01', 'CMD-01'].includes(event.subject))).toBe(true)
+    const eventHash = createHash('sha256').update(events).digest('hex'), positionHash = createHash('sha256').update(positions).digest('hex')
+    expect(result.replay.initial.sha256).toBe(eventHash)
+    expect(result.report.localEvidence!.eventFile.sha256).toBe(eventHash)
+    expect(result.replay.sha256).toBe(positionHash)
+    expect(await readFile(join(output, 'scenario_events.csv'), 'utf8')).toBe(events)
+    expect(await readFile(join(output, 'position.csv'), 'utf8')).toBe(positions)
+    expect(await readFile(join(entry, 'mapping.json'), 'utf8')).toBe(mappingText)
+    const archive = (await readdir(output)).find((name: string) => name.startsWith('time-series-'))!
+    const canonical = await readFile(join(output, archive, 'events.csv'), 'utf8')
+    expect(canonical).toContain(',CMD-01,')
+    expect(canonical).toContain(',AIR-01,')
+    expect(canonical).not.toMatch(/rear_comm_vehicle|mission_uav_01/)
+  })
+
   it('完成任务自动留存带 task_id 的事件 CSV，并明确标记缺少的引擎质量文件', async () => {
     const { entry, output, draft, results } = await setup()
     await results.capture(entry, draft, start, end, () => true, { taskId: 'TASK-CAPTURE', runId: 'RUN-CAPTURE' })
@@ -239,6 +282,9 @@ describe('真实仿真结果闭环', () => {
     expect(records).toHaveLength(1)
     expect(records[0]).toMatchObject({ revision: saved.revision, startedAt: started.startedAt })
     const snapshot = (await api.get(`/api/v1/mission-results/${records[0].resultId}`).set(headers).expect(200)).body.data
+    expect(parsed.nodes.map((node: { name: string }) => node.name).sort()).toEqual(['mission_uav_01', 'rear_comm_vehicle'])
+    expect(snapshot.replay.initial.nodes.map((node: { platformId: string }) => node.platformId).sort()).toEqual(['AIR-01', 'CMD-01'])
+    expect(snapshot.report.localEvidence.nodes.map((node: { platformId: string }) => node.platformId).sort()).toEqual(['AIR-01', 'CMD-01'])
     expect(snapshot.replay.tracks.length).toBeGreaterThan(0)
     expect(snapshot.report.localEvidence.simulationComplete).toBe(true)
     expect(snapshot.report.localEvidence.positionFile.sha256).toBe(snapshot.replay.sha256)

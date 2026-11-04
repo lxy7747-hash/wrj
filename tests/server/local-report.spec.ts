@@ -86,12 +86,15 @@ describe('本地报告读取和真实文件导出', () => {
     await appendFile(events, completion + '\n')
     await writeFile(positions, POSITION_CSV)
     expect((await stat(events)).size).toBeGreaterThan(32 * 1024 * 1024)
-    const report = await readLocalReport(events, positions)
+    const names = new Map([['A', 'CMD-01'], ['B', 'AIR-01']])
+    const report = await readLocalReport(events, positions, names)
     expect(report?.localEvidence).toMatchObject({
       eventCount: rows + 8, messageDetailsComplete: false, messageDetailEventCount: rows,
     })
     expect(report?.localEvidence?.eventCounts).toContainEqual({ type: 'MESSAGE_RECEIVED', count: rows })
-    const parsed = await readAfsimLogFile(events)
+    expect(report?.localEvidence?.nodes.map((node: { platformId: string }) => node.platformId).sort()).toEqual(['AIR-01', 'CMD-01'])
+    expect(report?.localEvidence?.connections[0]).toMatchObject({ sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01' })
+    const parsed = await readAfsimLogFile(events, names)
     expect(parsed.events.find((event: { type: string; sourceLine: number }) => event.type === 'SIMULATION_COMPLETE')?.sourceLine).toBe(rows + 15)
     const exported = await exportLocalReport(join(dir, 'exports'), report!, 'CSV', 'operator')
     expect(await readFile(exported.filePath, 'utf8')).toContain(String(rows))

@@ -7,6 +7,7 @@ const { dirname, join } = await import('node:' + 'path')
 const { fileURLToPath } = await import('node:' + 'url')
 const { createHash } = await import('node:' + 'crypto')
 const { buildMissionPackage } = await import('../../server/scripts/' + 'mission-generator.js')
+const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const TEMPLATE_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'afsim-template-20261101')
 const TEMPLATE_FILES = [
   'ad_hoc_comm.txt',
@@ -411,4 +412,15 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
     expect(() => expectScriptLines(['power 21 W'], ['power 20 W'], '固定设备功率发生变化。')).toThrow()
     expect(() => expectScriptLines(['frequency 4.1 GHz'], ['frequency 4 GHz'], '固定端口频率发生变化。')).toThrow()
   })
+})
+
+it('SCN-001 的 TXT 只含模板实例名，mapping 显式声明命名模式', () => {
+  const draft = new ScenarioProjection().get('SCN-001').data
+  const generated = buildMissionPackage(draft)
+  const ins = generated.files['comm_platform_INS.txt']!
+  expect(ins).toContain('rear_comm_vehicle')
+  expect(ins).toContain('mission_uav_01')
+  expect(ins).not.toMatch(/CMD-01|AIR-01|UAV-01/)
+  expect(generated.manifest.platformNaming).toBe('TEMPLATE_INSTANCE')
+  expect(generated.manifest.platforms).toContainEqual(expect.objectContaining({ platformId: 'CMD-01', name: 'rear_comm_vehicle' }))
 })
