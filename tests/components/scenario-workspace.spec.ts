@@ -42,6 +42,9 @@ async function setup() {
   useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['SCENARIO_DRAFT_WRITE'] }, role: 'OPERATOR', permissions: ['SCENARIO_DRAFT_WRITE'] })
   const scenes = new ScenarioProjection()
   const templates = new TemplateProjection()
+  const template = templates.list()[0]!
+  Object.assign(template.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+  expect(templates.update(template.templateId, { name: template.name, config: template.config }).ok).toBe(true)
   const fetchSpy = vi.fn(async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname
     let result

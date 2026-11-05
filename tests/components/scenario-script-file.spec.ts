@@ -24,6 +24,7 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
   setActivePinia(pinia)
   useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] })
   let persisted = new ScenarioProjection().get('SCN-001').data
+  Object.assign(persisted.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const generator = new ScriptProjection()
   let script: ScriptContract
   const fetchSpy = vi.fn(async (url: unknown, init?: RequestInit): Promise<Response> => {

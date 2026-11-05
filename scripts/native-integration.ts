@@ -53,7 +53,7 @@ export function nativeWorkload(id: string, duration: number, phase = 'prepare'):
     informationType: '态势信息' as const, frequencyHz: 0.2, volumeMb: 0.000001, enabled: true }))
   const jammer = c.jammers[0]!
   c.jammers = [station, airborneJammer].map((p, i) => ({ ...structuredClone(jammer), id: 'LOAD-JAM-' + i, platformId: p.id,
-    triggerTimeS: 5, frequency: 4500, bandwidth: 20, defaultPower: 1 }))
+    triggerTimeS: 5, frequency: 4500, bandwidth: 200, defaultPower: 1 }))
   c.jammers.forEach(j => c.platforms.find(p => p.id === j.platformId)!.jammerIds.push(j.id))
   c.sensors = []
   c.scenario.id = id as typeof c.scenario.id; c.scenario.name = '50节点真实联调 ' + phase

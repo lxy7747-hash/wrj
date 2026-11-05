@@ -6,6 +6,7 @@ import { readScenarioDraft } from '../../src/stores/scenario'
 
 function legacy() {
   const config = structuredClone(fixtureSource.scenario)
+  Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const platform = config.platforms[3]!
   platform.initialPosition = { longitude: 120, latitude: 24, altitude: 0 }
   const point = { longitude: 120.01, latitude: 24, altitude: 0, speed: 100 }

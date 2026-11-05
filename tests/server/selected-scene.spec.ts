@@ -17,6 +17,7 @@ it('已保存非默认场景创建单实例 Mock：时长/步长/锁一致，不
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`
     const api = request(origin)
     const draft = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
+    Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     draft.config.scenario.id = 'SCN-B'
     draft.config.scenario.name = '已选场景 B'
     draft.config.scenario.duration = 8000

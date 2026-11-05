@@ -54,11 +54,12 @@ const META: PageMeta = {
 function draft(revision = 4): ScenarioDraft {
   // 多设备交互用例自行创建合规的第二台设备，不恢复已删除的默认旧归属。
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  // 每个干扰节点只允许一台干扰设备（D6）：第二台设备挂到独立的地面干扰站。
+  // V1.2 写入夹具采用合法档位；D6 同类参数共用，瞄准式挂到另一类机载平台。
+  Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const station = config.platforms.find(platform => platform.id === 'STN-01')!
-  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '地面干扰侦测站 2', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
+  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '机载干扰平台 2', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
     initialPosition: { ...station.initialPosition, longitude: station.initialPosition.longitude + 0.05 } })
-  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT' })
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT', bandwidth: 5 })
   return {
     config,
     uiExtensions: {
@@ -763,7 +764,7 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.uiExtensions.jammers.map(item => item.enabled)).toEqual(switches)
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     const dialog = wrapper.findComponent({ name: 'JammerEditorDialog' })
-    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 1, frequency: 2400, bandwidth: 50, triggerTimeS: 300, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
+    expect(dialog.props('jammer')).toMatchObject({ type: 'BARRAGE', defaultPower: 1, frequency: 2400, bandwidth: 200, triggerTimeS: 300, detectionRange: 55560, jammingRange: 55560, releaseRange: 64820 })
     expect(dialog.props('jammerTypeOptions')).toContainEqual({ value: 'SWEEP', label: '扫频' })
     dialog.vm.$emit('update:modelValue', false)
     await nextTick()
@@ -2301,6 +2302,9 @@ describe('P2-1 场景管理页面', () => {
     const inputNumber = (testId: string) => wrapper.findAllComponents({ name: 'ElInputNumber' })
       .find((component) => component.attributes('data-testid') === testId)!
     expect(inputNumber('jammer-frequency').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
+    select('jammer-type').vm.$emit('update:modelValue', 'SWEEP')
+    select('jammer-type').vm.$emit('change', 'SWEEP')
+    await flushPromises()
     expect(inputNumber('jammer-bandwidth').props()).toMatchObject({ min: Number.MIN_VALUE, step: LINK_MHZ_MINIMUM_STEP })
     expect(document.querySelector('[data-testid="jammer-auto-detect"]')).toBeNull()
     expect(document.querySelector('[data-testid="jammer-direction"]')).not.toBeNull()
@@ -2313,12 +2317,11 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.jammers).toHaveLength(originalCount)
     expect(document.body.textContent).toContain('干扰频率必须大于 0 MHz。')
 
-    select('jammer-type').vm.$emit('update:modelValue', 'SPOT')
     select('jammer-platform').vm.$emit('update:modelValue', 'AJ-002')
     inputNumber('jammer-power').vm.$emit('update:modelValue', 30)
-    inputNumber('jammer-range').vm.$emit('update:modelValue', 24)
-    inputNumber('jammer-frequency').vm.$emit('input', 3200)
-    inputNumber('jammer-frequency').vm.$emit('update:modelValue', 3200)
+    inputNumber('jammer-range').vm.$emit('update:modelValue', 44.448)
+    inputNumber('jammer-frequency').vm.$emit('input', 2200)
+    inputNumber('jammer-frequency').vm.$emit('update:modelValue', 2200)
     inputNumber('jammer-bandwidth').vm.$emit('input', 0)
     inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', LINK_MHZ_MINIMUM_STEP)
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
@@ -2329,8 +2332,8 @@ describe('P2-1 场景管理页面', () => {
       .find((component) => component.attributes('data-testid') === 'jammer-enabled')!
       .vm.$emit('update:modelValue', false)
     inputNumber('jammer-frequency').vm.$emit('input', undefined)
-    inputNumber('jammer-bandwidth').vm.$emit('input', 15)
-    inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', 15)
+    inputNumber('jammer-bandwidth').vm.$emit('input', 5)
+    inputNumber('jammer-bandwidth').vm.$emit('update:modelValue', 5)
     inputNumber('jammer-bandwidth').vm.$emit('input', undefined)
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
@@ -2341,12 +2344,12 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
       id: 'JAM-CFG-001',
       platformId: 'AJ-002',
-      type: 'SPOT',
+      type: 'SWEEP',
       defaultPower: 1,
-      frequency: 3200,
-      bandwidth: 15,
+      frequency: 2200,
+      bandwidth: 5,
       // 探测范围按 km 输入；干扰与释放范围取文档默认的 30、35 海里。
-      detectionRange: 24000,
+      detectionRange: 44448,
       jammingRange: 55560,
       releaseRange: 64820,
       triggerTimeS: 300,

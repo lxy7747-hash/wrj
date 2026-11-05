@@ -19,6 +19,7 @@ it('保存场景 → Node 生成 → 写入真实 UTF-8 TXT；拒绝路径注入
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
     const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
     const draft = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
+    Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     draft.config.scenario.name = '落盘测试场景'
     for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
     // 激光链路不写入新模板脚本，会产生需要确认的警告；本用例直接生成脚本，去掉激光链路。
@@ -108,6 +109,7 @@ it.each([false, true])('未启用本机写入或磁盘失败不返回伪造路�
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
     const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
     const draft = (await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
+    Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
     // 激光链路不写入新模板脚本，会产生需要确认的警告；本用例直接生成脚本，去掉激光链路。
     draft.config.links = draft.config.links.filter((link: { type: string }) => link.type !== 'LASER')

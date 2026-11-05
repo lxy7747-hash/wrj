@@ -8,6 +8,7 @@ import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.
 import ScriptPreview from '../../src/components/scenarios/ScriptPreview.vue'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const dialogStub = { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' }
 const typeOptions = [
@@ -184,7 +185,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: true, showIds: true, error: '', pending: false, locked: false,
-        platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }, { value: 'SPOT', label: '瞄准式' }], minimumStep: 0.001 },
+        platforms: config.platforms, links: config.links, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }, { value: 'SPOT', label: '瞄准式' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
     expect(wrapper.get('[data-testid="jammer-id"]').attributes('disabled')).toBeDefined()
@@ -217,7 +218,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: false, error: '频率非法', pending: false, locked: true,
-        platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
+        platforms: config.platforms, links: config.links, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
     expect(wrapper.text()).toContain('频率非法')
@@ -240,7 +241,7 @@ describe('场景参数弹框的真实编辑路径', () => {
     const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: true, error: '', pending: false, locked: false,
-        platforms: config.platforms, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001, validate: () => [] },
+        platforms: config.platforms, links: config.links, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001, validate: () => [] },
       global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
     })
     expect(wrapper.get('[data-testid="jammer-legacy-power"]').text()).toContain('200 W')
@@ -320,5 +321,73 @@ describe('场景参数弹框的真实编辑路径', () => {
     expect(dirty.find('[data-testid="generate-script"]').exists()).toBe(false)
     expect(dirty.get('[data-testid="preflight-script"]').attributes('disabled')).toBeDefined()
     dirty.unmount()
+  })
+})
+
+
+describe('干扰带宽档位和链路对准', () => {
+  function openJammer(bandwidth = 200, type: Jammer['type'] = 'BARRAGE') {
+    const config = createTemplateScenario().config
+    const jammer = { ...config.jammers[0]!, bandwidth, type }
+    config.links.push({ ...config.links[0]!, id: 'disabled-link', enabled: false },
+      { ...config.links[0]!, id: 'laser-link', type: 'LASER' })
+    const wrapper = mount(JammerEditorDialog, {
+      props: { modelValue: true, jammer, uiExtension: { jammerId: jammer.id, direction: 0, enabled: true },
+        editing: true, error: '', pending: false, locked: false, platforms: config.platforms, links: config.links,
+        jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }, { value: 'SPOT', label: '瞄准式' }, { value: 'SWEEP', label: '扫频' }], minimumStep: 0.001 },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+    })
+    return { wrapper, jammer, config }
+  }
+
+  it('按方式切换带宽，瞄准只读 5 MHz，扫频保留原值并允许自由输入', async () => {
+    const { wrapper, jammer } = openJammer()
+    expect(select(wrapper, 'jammer-bandwidth').findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))).toEqual([100, 200, 400])
+    expect(select(wrapper, 'jammer-bandwidth').props('allowCreate')).toBe(false)
+    const changeType = async (type: Jammer['type']) => {
+      select(wrapper, 'jammer-type').vm.$emit('update:modelValue', type)
+      select(wrapper, 'jammer-type').vm.$emit('change', type)
+      await flushPromises()
+    }
+    await changeType('SPOT')
+    expect(select(wrapper, 'jammer-bandwidth').props()).toMatchObject({ modelValue: 5, disabled: true })
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ type: 'SPOT', bandwidth: 5 })
+    await changeType('SWEEP')
+    expect(inputNumber(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(5)
+    inputNumber(wrapper, 'jammer-bandwidth').vm.$emit('update:modelValue', 50)
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({ type: 'SWEEP', bandwidth: 50 })
+    await changeType('BARRAGE')
+    expect(select(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(200)
+    expect(jammer).toMatchObject({ type: 'BARRAGE', bandwidth: 200 })
+    wrapper.unmount()
+  })
+
+  it.each([['BARRAGE', 50], ['SPOT', 20]] as const)('打开旧 %s 设备保留 %s MHz，显示非档位选项', async (type, bandwidth) => {
+    const { wrapper, jammer } = openJammer(bandwidth, type)
+    const options = select(wrapper, 'jammer-bandwidth').findAllComponents({ name: 'ElOption' })
+    expect(options.find(option => option.props('value') === bandwidth)?.props('label')).toBe(`${bandwidth} MHz（不在档位内）`)
+    expect(select(wrapper, 'jammer-bandwidth').props('modelValue')).toBe(bandwidth)
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ type, bandwidth })
+    expect(jammer.bandwidth).toBe(bandwidth)
+    wrapper.unmount()
+  })
+
+  it('对准链路仅列启用的非激光链路，选择后填频率，不新增保存字段', async () => {
+    const { wrapper, config, jammer } = openJammer(5, 'SPOT')
+    const alignment = select(wrapper, 'jammer-aligned-link')
+    expect(alignment.findAllComponents({ name: 'ElOption' }).map(option => option.props('value')))
+      .toEqual(config.links.filter(link => link.enabled !== false && link.type !== 'LASER').map(link => link.id))
+    const target = config.links[0]!
+    alignment.vm.$emit('update:modelValue', target.id)
+    alignment.vm.$emit('change', target.id)
+    await flushPromises()
+    expect(inputNumber(wrapper, 'jammer-frequency').props('modelValue')).toBe(target.frequency)
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(wrapper.emitted('apply')![0]![0]).toEqual({ ...jammer, frequency: target.frequency })
+    expect(jammer.frequency).toBe(2400)
+    wrapper.unmount()
   })
 })

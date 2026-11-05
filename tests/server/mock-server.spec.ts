@@ -12,6 +12,7 @@ describe('集群航点写入范围', () => {
       const path = '/api/v1/scenarios/SCN-001'
       const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
       const config = structuredClone(original.config)
+      Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
       const index = config.platforms.findIndex(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')
       config.platforms[index]!.waypoints = [{ longitude, latitude, altitude: 0, speed: 1, arrivalTime: 0 }]
       const response = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(valid ? 200 : 422)
@@ -35,6 +36,7 @@ describe('单链路业务配置', () => {
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(original.config.informationDemand[0]!.linkId).toBeUndefined()
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const link = config.links.find(item => item.id === 'L-LASER-04')!
     Object.assign(config.informationDemand[0]!, { linkId: link.id, direction: link.direction, volumeMb: 3 })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
@@ -52,6 +54,7 @@ describe('单链路业务配置', () => {
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const demand = config.informationDemand[0]!
     Object.assign(demand, { linkId: 'L-LASER-04', direction: 'FORWARD' })
     if (mutation === 'empty') demand.linkId = ''
@@ -76,6 +79,7 @@ describe('机载干扰支撑实体', () => {
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(original.config.jammers.some(jammer => jammer.id === 'JAM-SPOT-01-TX')).toBe(false)
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     config.jammers[0]!.platformId = 'CMD-01'
     config.platforms.forEach(platform => { platform.jammerIds = platform.id === 'CMD-01' ? [config.jammers[0]!.id] : [] })
     const rejected = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(422)
@@ -93,6 +97,7 @@ describe('机载干扰支撑实体', () => {
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const jammer = config.jammers[0]!
     const previousOwner = config.platforms.find(p => p.id === jammer.platformId)!
     previousOwner.jammerIds = previousOwner.jammerIds.filter(id => id !== jammer.id)
@@ -121,6 +126,7 @@ describe('链路补项保存与快照', () => {
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     config.linkSettings = readLinkSettings(config)
     const [disabledLink, enabledLink] = config.links.filter(link => link.type === 'MICROWAVE')
     disabledLink!.enabled = false
@@ -167,6 +173,7 @@ describe('业务方向与独立启停保存', () => {
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     Object.assign(config.informationDemand[0]!, { direction: 'FORWARD', enabled: false, volumeMb: 0.000256, frequencyHz: 1, minDataRateMbps: 0.0256 })
     config.informationDemand.push({ ...config.informationDemand[0]!, id: 'INFO-VIDEO', direction: 'REVERSE', enabled: true, informationType: '侦察信息', volumeMb: 2, frequencyHz: 30, minDataRateMbps: 2 })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
@@ -188,14 +195,35 @@ describe('业务方向与独立启停保存', () => {
 })
 
 describe('敌方干扰配置保存', () => {
+  it.each([
+    ['defaultPower', { defaultPower: 10 ** ((35 - 30) / 10) }],
+    ['bandwidth', { bandwidth: 50 }],
+    ['bandwidth', { type: 'SPOT', bandwidth: 20 }],
+  ])('PUT、导入和模板创建共同拒绝非法干扰 %s，原场景不被覆盖', async (field, invalid) => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const path = '/api/v1/scenarios/SCN-001'
+    const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+    const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 }, invalid)
+    const put = await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(422)
+    expect(put.body).toMatchObject({ error: { fieldPath: `jammers[0].${field}` } })
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [config] }).expect(422)
+    expect(imported.body).toMatchObject({ error: { fieldPath: `items[0].jammers[0].${field}` } })
+    const template = await request(baseUrl).post('/api/v1/templates').set(headers).send({ name: '非法干扰参数', config }).expect(422)
+    expect(template.body).toMatchObject({ error: { fieldPath: `jammers[0].${field}` } })
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toEqual(original)
+  })
+
   it('扫频、总开关、触发时间和米制距离可保存回读及导入撤销，超界写入不覆盖', async () => {
     const { baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     config.jammingEnabled = true
-    Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, jammingRange: 24 * 1852, defaultPower: 200, bandwidth: 20 })
+    Object.assign(config.jammers[0]!, { type: 'SWEEP', triggerTimeS: 300, detectionRange: 24 * 1852, jammingRange: 24 * 1852, defaultPower: 1, bandwidth: 20 })
     const saved = ((await request(baseUrl).put(path).set(headers).send({ config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     expect(saved.config).toEqual(config)
     expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data.config).toEqual(config)
@@ -257,6 +285,7 @@ describe('卫星子类型写入边界', () => {
     const read = async () => (await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>
     const original = (await read()).data
     const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const index = config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
     delete config.platforms[index]!.satelliteType
     if (satelliteType !== undefined) config.platforms[index]!.satelliteType = satelliteType as never
@@ -303,6 +332,7 @@ describe('P8 元数据与确定性重置', () => {
     const initialMessages = await initial
     const draft = (first.scene as ApiSuccess<ScenarioDraft>).data
     const config = structuredClone(draft.config); config.scenario.name = 'P8 临时修改'
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(headers).send({ config, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)
     const broadcast = nextJsonMessage(client)
     await request(baseUrl).post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
@@ -913,6 +943,7 @@ describe('P0 deterministic mock server', () => {
     })
 
     const changed = structuredClone(original.config)
+    Object.assign(changed.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     changed.scenario.name = '台海通联验证场景'
     changed.scenario.environment.seaState = 4
     changed.scenario.environment.simClockSpeed = 3
@@ -972,6 +1003,7 @@ describe('P0 deterministic mock server', () => {
     expect(linkSavedDraft.config.links[0]?.frequency).toBe(4600)
 
     const jammerMutation = structuredClone(linkSavedDraft.config)
+    jammerMutation.jammers[0]!.type = 'SWEEP'
     jammerMutation.jammers[0]!.defaultPower = 1
     jammerMutation.jammers[0]!.detectionRange = 1852
     jammerMutation.jammers[0]!.frequency = 0.0001
@@ -1135,6 +1167,7 @@ describe('P0 deterministic mock server', () => {
       .set('X-Demo-Role', 'OPERATOR')
     const original = ((await load().expect(200)).body as { data: ScenarioDraft }).data
     const importedConfig = structuredClone(original.config)
+    Object.assign(importedConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     importedConfig.scenario.name = '导入快照场景'
 
     const importedResponse = await request(baseUrl)
@@ -1156,6 +1189,7 @@ describe('P0 deterministic mock server', () => {
     expect(undoneDraft.config.scenario.id).toBe('SCN-001')
 
     const changed = structuredClone(undoneDraft.config)
+    Object.assign(changed.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     changed.scenario.name = '待重置场景'
     const saved = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
@@ -1173,6 +1207,7 @@ describe('P0 deterministic mock server', () => {
     expect((reset.body as { data: ScenarioDraft }).data.config.scenario.name).toBe(original.config.scenario.name)
 
     const invalidConfig = structuredClone(original.config)
+    Object.assign(invalidConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     invalidConfig.output.directory = ''
     await request(baseUrl)
       .post('/api/v1/scenarios/import')
@@ -1188,6 +1223,7 @@ describe('P0 deterministic mock server', () => {
     const roleHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const original = ((await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(roleHeaders).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     original.config.scenario.environment.rainRateMmPerHour = 101
+    Object.assign(original.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const saved = ((await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(roleHeaders)
       .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
 
@@ -1258,6 +1294,7 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [] }).expect(422)
     await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [{ ...original.config, output: null }] }).expect(422)
     const secondConfig = structuredClone(original.config)
+    Object.assign(secondConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     secondConfig.scenario.id = 'SCN-SECOND'
     await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [original.config, secondConfig] }).expect(422)
     await request(baseUrl).post('/api/v1/scripts/preview').set(headers).send({}).expect(422)
@@ -1283,6 +1320,7 @@ describe('P0 deterministic mock server', () => {
     const original = (loaded.body as { data: ScenarioDraft }).data
 
     const warningConfig = structuredClone(original.config)
+    Object.assign(warningConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     warningConfig.scenario.environment.rainRateMmPerHour = 101
     const warningResponse = await request(baseUrl)
       .post('/api/v1/scenarios/SCN-001/validate')
@@ -1298,6 +1336,7 @@ describe('P0 deterministic mock server', () => {
     })
 
     const invalid = structuredClone(original.config)
+    Object.assign(invalid.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     invalid.links[0]!.txPower = -1
     const invalidResponse = await request(baseUrl)
       .post('/api/v1/scenarios/SCN-001/validate')
@@ -1319,6 +1358,7 @@ describe('P0 deterministic mock server', () => {
     expect(malformed.body).toMatchObject({ ok: false, error: { code: 'VALIDATION_FAILED', fieldPath: 'request' } })
 
     const mismatchedConfig = structuredClone(original.config)
+    Object.assign(mismatchedConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     mismatchedConfig.scenario.id = 'SCN-OTHER'
     const mismatched = await request(baseUrl)
       .post('/api/v1/scenarios/SCN-001/validate')
@@ -1352,7 +1392,9 @@ describe('P0 deterministic mock server', () => {
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
-    const body = { config: original.config, uiExtensions: original.uiExtensions }
+    const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+    const body = { config, uiExtensions: original.uiExtensions }
     const missing = await request(baseUrl).put(path).set(headers).send(body).expect(422)
     expect(missing.body).toMatchObject({ error: { fieldPath: 'expectedRevision' } })
     const stale = await request(baseUrl).put(path).set(headers).send({ ...body, expectedRevision: original.revision - 1 }).expect(409)
@@ -1371,6 +1413,7 @@ describe('P0 deterministic mock server', () => {
     const path = '/api/v1/scenarios/SCN-001'
     const original = ((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     original.config.scenario.environment.rainRateMmPerHour = 101
+    Object.assign(original.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const saved = ((await request(baseUrl).put(path).set(headers)
       .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
     const confirmation = (await request(baseUrl).post('/api/v1/confirmations').set(headers)
@@ -1390,6 +1433,7 @@ describe('P0 deterministic mock server', () => {
     const operator = (chain: RequestChain) => chain.set('Origin', ORIGIN).set('X-Demo-Role', 'OPERATOR')
     const admin = (chain: RequestChain) => chain.set('Origin', ORIGIN).set('X-Demo-Role', 'ADMIN')
     const originalDraft = ((await operator(request(baseUrl).get('/api/v1/scenarios/SCN-001')).expect(200)).body as { data: ScenarioDraft }).data
+    Object.assign(originalDraft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
 
     await request(baseUrl).get('/api/v1/templates').set('Origin', ORIGIN).expect(403)
     await request(baseUrl).get('/api/v1/templates/TPL-SCN-001').set('Origin', ORIGIN).expect(403)
@@ -1526,6 +1570,7 @@ describe('P0 deterministic mock server', () => {
       .set('X-Demo-Role', 'OPERATOR')
     const original = (await load().expect(200)).body as { data: ScenarioDraft }
     const inconsistent = structuredClone(original.data.config)
+    Object.assign(inconsistent.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     // 微波端口为“无人机 ↔ 后方指挥节点”：改源端为 AIR-02，仍连到后方节点。
     inconsistent.links[0]!.sourcePlatformId = 'AIR-02'
     inconsistent.platforms.push({ ...structuredClone(inconsistent.platforms.find(p => p.id === 'STN-01')!), id: 'AJ-001',
@@ -1589,6 +1634,7 @@ describe('P0 deterministic mock server', () => {
     })
 
     const mismatchedIdConfig = structuredClone(original.config)
+    Object.assign(mismatchedIdConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     mismatchedIdConfig.scenario.id = 'SCN-OTHER'
     const mismatchedId = await request(baseUrl)
       .put('/api/v1/scenarios/SCN-001')
@@ -1602,6 +1648,8 @@ describe('P0 deterministic mock server', () => {
     })
     expect(((await load().expect(200)).body as { data: ScenarioDraft }).data).toEqual(original)
 
+    const validConfig = structuredClone(original.config)
+    Object.assign(validConfig.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const changedExtensions = structuredClone(original.uiExtensions)
     changedExtensions.jammers.reverse()
     changedExtensions.jammers[0]!.elevation = 30
@@ -1612,7 +1660,7 @@ describe('P0 deterministic mock server', () => {
       .put('/api/v1/scenarios/SCN-001')
       .set('Origin', ORIGIN)
       .set('X-Demo-Role', 'OPERATOR')
-      .send({ config: original.config, uiExtensions: changedExtensions, expectedRevision: original.revision })
+      .send({ config: validConfig, uiExtensions: changedExtensions, expectedRevision: original.revision })
       .expect(200)
     const saved = (savedResponse.body as { data: ScenarioDraft }).data
     expect(saved.revision).toBe(original.revision + 1)

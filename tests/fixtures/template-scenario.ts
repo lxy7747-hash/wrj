@@ -220,9 +220,9 @@ export function createTemplateScenario(): ScenarioDraft {
       platforms: [rear, command, tiantong, shentong, relay, uav2, uav3, groundJammer, airborneJammer],
       links,
       jammers: [
-        { id: 'ground_jammer', platformId: groundJammer.id, type: 'BARRAGE', defaultPower: 200, frequency: 2400, bandwidth: 50,
+        { id: 'ground_jammer', platformId: groundJammer.id, type: 'BARRAGE', defaultPower: 1, frequency: 2400, bandwidth: 200,
           detectionMinimumRange: 1000, detectionRange: 55_560, jammingRange: 0, releaseRange: 35 * NM, triggerTimeS: 0 },
-        { id: 'airborne_jammer', platformId: airborneJammer.id, type: 'BARRAGE', defaultPower: 100, frequency: 2400, bandwidth: 20,
+        { id: 'airborne_jammer', platformId: airborneJammer.id, type: 'BARRAGE', defaultPower: 0.1, frequency: 2400, bandwidth: 100,
           detectionMinimumRange: 1000, detectionRange: 55_560, jammingRange: 10 * NM, releaseRange: 15 * NM, triggerTimeS: 0 },
       ],
       sensors: [],

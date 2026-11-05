@@ -26,6 +26,7 @@ async function loadPage() {
     permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'],
   }, role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] })
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+  Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const current: ScenarioDraft = { config, revision: 4, locked: false, officialLibraryChanged: false,
     uiExtensions: {
       jammers: config.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true })),

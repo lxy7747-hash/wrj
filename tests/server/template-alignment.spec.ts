@@ -123,6 +123,11 @@ function expectedLinkCalc(template: Json, simplifiedAttenuationDbPerKm: number):
   const jammer = asObject(root.jammer_param)
   const jammers = jammer.jammers as Json[]
   asObject(jammers[1]!).platform_name = 'jammer_airborne_01'
+  // 11：模板原件保留旧功率/带宽，生成夹具按 V1.2 GNZB-15 / XNZB-10 档位取值。
+  expect(asObject(jammers[0]!)).toMatchObject({ power_w: 200, bandwidth_hz: 50_000_000 })
+  expect(asObject(jammers[1]!)).toMatchObject({ power_w: 100, bandwidth_hz: 20_000_000 })
+  Object.assign(asObject(jammers[0]!), { power_w: 1, bandwidth_hz: 200_000_000 })
+  Object.assign(asObject(jammers[1]!), { power_w: 0.1, bandwidth_hz: 100_000_000 })
   return expected
 }
 
@@ -313,7 +318,7 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
   it.each([
     ['原始编号', createTemplateScenario],
     ['改名、乱序及编号冲突', createRenamedTemplateScenario],
-  ] as const)('%s：严格对照每个模板文件，所有差异均落在 §8.2 的九项白名单', async (_label, createScenario) => {
+  ] as const)('%s：严格对照每个模板文件，所有差异均落在 §8.2 的十一项白名单', async (_label, createScenario) => {
     const generated = buildMissionPackage(createScenario())
     const files = generated.files as unknown
     const template = Object.fromEntries(await Promise.all(TEMPLATE_FILES.map(async name => [name, await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')]))) as ScriptFiles
@@ -382,6 +387,31 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
         expected = removeTemplateOnlyStory(expected)
         ;({ expected, actual } = canonicaliseRouteRelations(expected, actual))
       }
+      if (name === 'comm_platform_JAMMER.txt') {
+        // 11：只替换两类干扰器的四行，侦测雷达及其他固定参数仍逐行比较。
+        for (const [type, oldPower, oldBandwidth, power, bandwidth] of [
+          ['GROUND_JAMMER_STATION', 200, 50, 1, 200],
+          ['AIRBORNE_JAMMER_PLATFORM', 100, 20, 0.1, 100],
+        ] as const) {
+          const start = expected.indexOf(`platform_type ${type} WSF_PLATFORM`)
+          const end = expected.indexOf('end_platform_type', start)
+          expect(start).toBeGreaterThanOrEqual(0)
+          expect(end).toBeGreaterThan(start)
+          const block = expected.slice(start, end)
+          expect(block.filter(line => line === `power ${oldPower} W`)).toHaveLength(1)
+          expect(block.filter(line => line === `bandwidth ${oldBandwidth} MHz`)).toHaveLength(1)
+          expected = expected.map((line, index) => {
+            if (index <= start || index >= end) return line
+            if (line === `power ${oldPower} W`) return `power ${power} W`
+            if (line === `bandwidth ${oldBandwidth} MHz`) return `bandwidth ${bandwidth} MHz`
+            return line
+          })
+          const actualStart = actual.indexOf(`platform_type ${type} WSF_PLATFORM`)
+          const actualBlock = actual.slice(actualStart, actual.indexOf('end_platform_type', actualStart))
+          expect(actualBlock).toContain(`power ${power} W`)
+          expect(actualBlock).toContain(`bandwidth ${bandwidth} MHz`)
+        }
+      }
       if (name === 'comm_platform_REAR.txt') {
         // 10: 用户裁定后方车微波极化与无人机一致改为 vertical（模板为 horizontal，交叉极化收不到）。
         const polarizations = (lines: readonly string[]) => {
@@ -416,6 +446,7 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
 
 it('SCN-001 的 TXT 只含模板实例名，mapping 显式声明命名模式', () => {
   const draft = new ScenarioProjection().get('SCN-001').data
+  Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const generated = buildMissionPackage(draft)
   const ins = generated.files['comm_platform_INS.txt']!
   expect(ins).toContain('rear_comm_vehicle')

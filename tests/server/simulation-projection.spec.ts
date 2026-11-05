@@ -151,6 +151,7 @@ describe('P3-1 仿真服务端投影', () => {
     const { scenarios, simulations } = projections()
     const draft = scenarios.get('SCN-001')
     if (!draft.ok) throw new Error('测试场景不存在')
+    Object.assign(draft.data.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     draft.data.config.scenario.timeStep = draft.data.config.scenario.duration
     draft.data.config.output.writeInterval = draft.data.config.scenario.duration
     expect(scenarios.save('SCN-001', {

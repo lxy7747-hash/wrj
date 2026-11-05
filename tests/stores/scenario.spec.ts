@@ -222,11 +222,12 @@ const ADMIN: Principal = {
 /** 创建与服务端基线一致、可独立修改的场景草稿。 */
 function scenarioDraft(revision = 4): ScenarioDraft {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
-  // 每个干扰节点只允许一台干扰设备（D6）：第二台设备挂到独立的地面干扰站。
+  // V1.2 写入夹具采用合法档位；D6 同类参数共用，瞄准式挂到另一类机载平台。
+  Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const station = config.platforms.find(platform => platform.id === 'STN-01')!
-  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '地面干扰侦测站 2', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
+  config.platforms.push({ ...structuredClone(station), id: 'STN-02', name: '机载干扰平台 2', type: 'AIRBORNE_JAMMER_PLATFORM', category: 'air', sensorIds: [], jammerIds: ['JAM-SPOT-01-TX'],
     initialPosition: { ...station.initialPosition, longitude: station.initialPosition.longitude + 0.05 } })
-  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT' })
+  config.jammers.push({ ...config.jammers[0]!, id: 'JAM-SPOT-01-TX', platformId: 'STN-02', type: 'SPOT', bandwidth: 5 })
   return {
     config,
     uiExtensions: {

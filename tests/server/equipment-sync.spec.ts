@@ -31,6 +31,9 @@ async function setup(persistent = true) {
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
   const source: ScenarioDraft = new ScenarioProjection().get('SCN-001').data
+  Object.assign(source.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+  if (!persistent) await api.put('/api/v1/scenarios/SCN-001').set(headers)
+    .send({ config: source.config, uiExtensions: source.uiExtensions, expectedRevision: source.revision }).expect(200)
   for (const id of persistent ? ['SCN-001', 'SCN-SECOND'] as const : ['SCN-SECOND'] as const) {
     const draft = structuredClone(source)
     draft.config.scenario.id = id

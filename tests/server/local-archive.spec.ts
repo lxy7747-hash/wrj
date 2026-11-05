@@ -71,6 +71,7 @@ describe('真实归档独立持久化', () => {
       const projection = new TemplateProjection(templates)
       const source = new ScenarioProjection().get('SCN-001')
       if (!source.ok) throw new Error('缺少测试场景')
+      Object.assign(source.data.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
       const created = projection.create({ name: '可删除模板', config: source.data.config })
       if (!created.ok) throw new Error('测试模板创建失败')
       expect(projection.delete(created.data.templateId)).toMatchObject({ ok: true })

@@ -120,6 +120,10 @@ describe('兼容角色配置与服务端权限', () => {
     const writer = { ...headers, Cookie: (await login('scene-writer')).cookie }
     await api.get('/api/v1/scenarios').set(writer).expect(200)
     await api.get('/api/v1/scenarios/SCN-001').set(writer).expect(200)
+    const templateAdmin = { ...headers, Cookie: (await login('admin')).cookie }
+    const template = (await api.get('/api/v1/templates/TPL-SCN-001').set(templateAdmin).expect(200)).body.data
+    Object.assign(template.config.jammers[0], { defaultPower: 1, bandwidth: 200 })
+    await api.put('/api/v1/templates/TPL-SCN-001').set(templateAdmin).send({ name: template.name, config: template.config }).expect(200)
     await api.post('/api/v1/templates/TPL-SCN-001/copy').set(writer).send({ name: '场景副本' }).expect(201)
     await api.delete('/api/v1/templates/TPL-SCN-001').set(writer).expect(403)
     const ordinary = { ...headers, Cookie: (await login('report-reader')).cookie }
@@ -142,6 +146,10 @@ describe('兼容角色配置与服务端权限', () => {
     expect(currentScene.config.scenario.id).toBe(run.scenarioId)
     await api.get('/api/v1/scenarios').set(reader).expect(403)
     await api.get('/api/v1/scenarios/parameter-catalog').set(reader).expect(403)
+    const templateAdmin = admin
+    const template = (await api.get('/api/v1/templates/TPL-SCN-001').set(templateAdmin).expect(200)).body.data
+    Object.assign(template.config.jammers[0], { defaultPower: 1, bandwidth: 200 })
+    await api.put('/api/v1/templates/TPL-SCN-001').set(templateAdmin).send({ name: template.name, config: template.config }).expect(200)
     const copied = await api.post('/api/v1/templates/TPL-SCN-001/copy').set(admin).send({ name: '未关联运行的场景', scenarioId: 'SCN-UNBOUND' }).expect(201)
     const otherId = copied.body.data.config.scenario.id
     expect(otherId).not.toBe(run.scenarioId)

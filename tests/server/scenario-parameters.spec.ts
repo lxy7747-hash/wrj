@@ -39,7 +39,7 @@ async function setup() {
   return { api, scenes, equipments, masters, scenePath, masterPath, equipmentPath }
 }
 
-function draft(): any { const value = new ScenarioProjection().get('SCN-001'); if (!value.ok) throw new Error('missing fixture'); return value.data }
+function draft(): any { const value = new ScenarioProjection().get('SCN-001'); if (!value.ok) throw new Error('missing fixture'); Object.assign(value.data.config.jammers[0], { defaultPower: 1, bandwidth: 200 }); return value.data }
 function update(value: any, expectedRevision = 0) { return { config: value.config, uiExtensions: value.uiExtensions, expectedRevision } }
 
 async function confirmedDelete(api: ReturnType<typeof request>, path: string, objectId: string) {
@@ -207,6 +207,7 @@ describe('场景参数来源', () => {
     await api.post('/api/v1/admin/equipment').set(admin).send(equipment).expect(201)
     await api.post('/api/v1/admin/master-data').set(admin).send({ operation: 'CREATE', data: master }).expect(201)
     const value = (await api.get('/api/v1/scenarios/SCN-001').set(operator).expect(200)).body.data
+    Object.assign(value.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const prepared = prepareLinkEquipment(value.config.links[0], equipment, value.config.platforms)
     Object.assign(value.config.links[0], prepared.link, { parameterSource: { kind: 'EQUIPMENT', sourceId: equipment.equipmentId, sourceVersion: 1, fields: prepared.fields } })
     value.config.links[1].noiseFigureDb = 6

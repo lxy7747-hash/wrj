@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
-import type { Jammer, JammerUiExtension, Platform, ValidationIssue } from '../../contracts/domain-models'
+import type { Jammer, JammerUiExtension, Link, Platform, ValidationIssue } from '../../contracts/domain-models'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
-import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange } from '../../features/scenarios/jammer-settings'
+import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange, JAMMER_POWER_DBM, isControlledPowerDbm, wattsToDbm, dbmToWatts, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ, JAMMER_DEFAULTS } from '../../features/scenarios/jammer-settings'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
@@ -19,6 +19,7 @@ const props = defineProps<{
   pending: boolean
   locked: boolean
   platforms: readonly Platform[]
+  links: readonly Link[]
   jammerTypeOptions: readonly JammerTypeOption[]
   minimumStep: number
   validate?: (jammer: Jammer, extension: JammerUiExtension) => ValidationIssue[]
@@ -66,16 +67,12 @@ const detectionMinimumRangeKm = computed<number | undefined>({
 })
 const powerDbmInput = ref<number | undefined>(undefined)
 const powerDbmTouched = ref(false)
-function isControlledPowerDbm(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= -10 && value <= 30
-    && Math.abs((value + 10) / 5 - Math.round((value + 10) / 5)) < 1e-9
-}
 /** V1.2 的射频干扰输入使用 dBm，保存和脚本仍以 W 为合同单位。历史大功率 W 值不截断。 */
 function resetPowerDbmInput(): void {
   powerDbmTouched.value = false
   const watts = editor.value?.defaultPower
   if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) { powerDbmInput.value = undefined; return }
-  const dbm = 10 * Math.log10(watts * 1000)
+  const dbm = wattsToDbm(watts)
   powerDbmInput.value = isControlledPowerDbm(dbm) ? Number(dbm.toFixed(6)) : undefined
 }
 const powerDbmError = computed(() => {
@@ -87,10 +84,31 @@ function setPowerDbm(value: number | undefined): void {
   powerDbmTouched.value = true
   powerDbmInput.value = value
   if (!editor.value) return
-  editor.value.defaultPower = isControlledPowerDbm(value) ? 10 ** ((value - 30) / 10) : Number.NaN
+  editor.value.defaultPower = isControlledPowerDbm(value) ? dbmToWatts(value) : Number.NaN
 }
 const legacyPower = computed(() => editor.value?.defaultPower !== undefined && !powerDbmTouched.value && powerDbmInput.value === undefined
   ? `${editor.value.defaultPower} W（历史值，超出 -10～30 dBm 新建范围）` : '')
+
+const bandwidthOptions = computed<readonly number[]>(() => editor.value?.type === 'SPOT' ? [SPOT_BANDWIDTH_MHZ] : BARRAGE_BANDWIDTH_OPTIONS_MHZ)
+const alignmentLinks = computed(() => props.links.filter(link => link.enabled !== false && link.type !== 'LASER'))
+const alignedLinkId = ref<string>()
+/** 仅主动切换方式时填默认带宽，打开历史设备不改写。 */
+function changeJammerType(type: Jammer['type']): void {
+  if (!editor.value) return
+  if (type === 'BARRAGE') editor.value.bandwidth = JAMMER_DEFAULTS.bandwidth
+  if (type === 'SPOT') editor.value.bandwidth = SPOT_BANDWIDTH_MHZ
+  emit('bandwidth-input', editor.value.bandwidth)
+}
+function alignFrequency(linkId: string | undefined): void {
+  const link = alignmentLinks.value.find(link => link.id === linkId)
+  if (editor.value && link) {
+    editor.value.frequency = link.frequency
+    emit('frequency-input', link.frequency)
+  }
+}
+watch(() => editor.value?.frequency, frequency => {
+  if (alignmentLinks.value.find(link => link.id === alignedLinkId.value)?.frequency !== frequency) alignedLinkId.value = undefined
+})
 
 /** 确认干扰设备及界面扩展的临时副本；处理中、锁定时禁止提交。 */
 function apply(): void {
@@ -106,6 +124,7 @@ watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.jammer === null ? null : structuredClone(toRaw(props.jammer))
   uiEditor.value = props.uiExtension === null ? null : structuredClone(toRaw(props.uiExtension))
+  alignedLinkId.value = undefined
   resetPowerDbmInput()
 }, { immediate: true })
 </script>
@@ -129,7 +148,7 @@ watch(() => props.modelValue, (visible) => {
         <div class="link-editor-grid">
           <el-form-item required v-show="showIds" label="干扰设备 ID" :error="fieldError('id')"><el-input v-model="editor.id" :disabled="editing" data-testid="jammer-id" /></el-form-item>
           <el-form-item required label="干扰方式" :error="fieldError('type')">
-            <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type">
+            <el-select v-model="editor.type" style="width: 100%" data-testid="jammer-type" @change="changeJammerType">
               <el-option v-for="option in jammerTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
           </el-form-item>
@@ -149,12 +168,23 @@ watch(() => props.modelValue, (visible) => {
         <h4 id="jammer-parameter-title" class="link-editor-section__title">干扰参数</h4>
         <div class="link-editor-grid">
           <el-form-item required label="单干扰源发射功率（dBm）" :error="powerDbmError || fieldError('defaultPower')">
-            <el-input-number :model-value="powerDbmInput" :min="validate ? undefined : -10" :max="validate ? undefined : 30" :step="5" controls-position="right" data-testid="jammer-power" @update:modelValue="setPowerDbm" />
+            <el-input-number :model-value="powerDbmInput" :min="validate ? undefined : JAMMER_POWER_DBM.min" :max="validate ? undefined : JAMMER_POWER_DBM.max" :step="JAMMER_POWER_DBM.step" controls-position="right" data-testid="jammer-power" @update:modelValue="setPowerDbm" />
             <small v-if="legacyPower" class="field-hint" data-testid="jammer-legacy-power">{{ legacyPower }}</small>
             <small v-else class="field-hint">-10～30 dBm，步长 5 dB；保存时换算为 W。</small>
           </el-form-item>
           <el-form-item required label="干扰中心频率（MHz）" :error="fieldError('frequency')"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
-          <el-form-item required label="干扰带宽（MHz）" :error="fieldError('bandwidth')"><el-input-number v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" /></el-form-item>
+          <el-form-item v-if="editor.type === 'SPOT'" label="对准链路">
+            <el-select v-model="alignedLinkId" clearable placeholder="请选择要对准的链路" data-testid="jammer-aligned-link" @change="alignFrequency">
+              <el-option v-for="link in alignmentLinks" :key="link.id" :label="`${scenarioPlatformLabel(platforms, link.sourcePlatformId, showIds)} → ${scenarioPlatformLabel(platforms, link.targetPlatformId, showIds)} · ${link.frequency} MHz`" :value="link.id" />
+            </el-select>
+          </el-form-item>
+          <el-form-item required label="干扰带宽（MHz）" :error="fieldError('bandwidth')">
+            <el-select v-if="editor.type !== 'SWEEP'" v-model="editor.bandwidth" :disabled="editor.type === 'SPOT'" data-testid="jammer-bandwidth" @change="emit('bandwidth-input', $event)">
+              <el-option v-if="!bandwidthOptions.includes(editor.bandwidth)" :label="`${editor.bandwidth} MHz（不在档位内）`" :value="editor.bandwidth" />
+              <el-option v-for="bandwidth in bandwidthOptions" :key="bandwidth" :label="`${bandwidth} MHz`" :value="bandwidth" />
+            </el-select>
+            <el-input-number v-else v-model="editor.bandwidth" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-bandwidth" @input="emit('bandwidth-input', $event)" />
+          </el-form-item>
           <el-form-item label="干扰触发时间（仿真秒）" :error="fieldError('triggerTimeS')">
             <el-input-number :model-value="editor.triggerTimeS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-trigger-time" @update:model-value="setTriggerTime" />
           </el-form-item>

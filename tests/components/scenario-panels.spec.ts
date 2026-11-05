@@ -58,7 +58,7 @@ describe('场景拆分面板', () => {
     const jammer = { ...config.jammers[0]!, platformId: 'CMD-01' }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension: { jammerId: jammer.id, direction: 0, enabled: true },
-        editing: true, error: '', pending: false, locked: false, platforms: config.platforms,
+        editing: true, error: '', pending: false, locked: false, platforms: config.platforms, links: config.links,
         jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带压制' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<div><slot /><slot name="footer" /></div>' } } },
     })

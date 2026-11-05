@@ -17,7 +17,7 @@ import type {
 } from '../../contracts/domain-models'
 
 import { metersBetween } from './position-distance'
-import { isJammerPlatformType, JAMMER_RANGE_METERS } from './jammer-settings'
+import { isJammerPlatformType, JAMMER_RANGE_METERS, isControlledPowerDbm, wattsToDbm, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ } from './jammer-settings'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
 import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
@@ -867,7 +867,7 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
   }
 }
 
-function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], warnings: ValidationIssue[], mode: 'read' | 'write', duration: number, jammerPlatformIds: ReadonlySet<string>): void {
+function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<string>, errors: ValidationIssue[], warnings: ValidationIssue[], mode: 'read' | 'write', duration: number, jammerPlatformIds: ReadonlySet<string>, enabledLinkFrequencies: ReadonlySet<number>): void {
   const path = `jammers[${index}]`
   if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'jammingRange')) {
     addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '缺少必填的干扰范围 jammingRange，不支持该旧格式，请使用新版场景数据。', `${path}.jammingRange`)
@@ -884,8 +884,19 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (mode === 'write' ? !isPositiveFiniteNumber(value.defaultPower) : !isFiniteNumber(value.defaultPower, 0)) {
     addError(errors, 'JAMMER_POWER_INVALID', mode === 'write' ? '默认功率必须大于 0 W。' : '默认功率不能小于 0 W。', `${path}.defaultPower`)
   }
+  if (mode === 'write' && isPositiveFiniteNumber(value.defaultPower) && !isControlledPowerDbm(wattsToDbm(value.defaultPower))) {
+    addError(errors, 'JAMMER_POWER_OUT_OF_RANGE', '干扰功率须为 -10～30 dBm，且按 5 dB 档位设置。', `${path}.defaultPower`)
+  }
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'JAMMER_FREQUENCY_INVALID', '干扰频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'JAMMER_BANDWIDTH_INVALID', '干扰带宽必须大于 0 MHz。', `${path}.bandwidth`)
+  else if (mode === 'write' && value.type === 'BARRAGE' && !(BARRAGE_BANDWIDTH_OPTIONS_MHZ as readonly number[]).includes(value.bandwidth)) {
+    addError(errors, 'JAMMER_BANDWIDTH_OUT_OF_RANGE', '宽带压制干扰带宽须为 100、200 或 400 MHz。', `${path}.bandwidth`)
+  } else if (mode === 'write' && value.type === 'SPOT' && value.bandwidth !== SPOT_BANDWIDTH_MHZ) {
+    addError(errors, 'JAMMER_BANDWIDTH_OUT_OF_RANGE', '瞄准式干扰带宽须为 5 MHz。', `${path}.bandwidth`)
+  }
+  if (value.type === 'SPOT' && isPositiveFiniteNumber(value.frequency) && !enabledLinkFrequencies.has(value.frequency)) {
+    warnings.push({ severity: 'WARNING', code: 'JAMMER_SPOT_FREQUENCY_UNMATCHED', message: '瞄准式干扰中心频率未对准任何链路工作频率。', fieldPath: `${path}.frequency` })
+  }
   if (!isFiniteNumber(value.detectionRange, 0)) addError(errors, 'JAMMER_RANGE_INVALID', '探测范围不能小于 0 m。', `${path}.detectionRange`)
   else if (mode === 'write' && !isFiniteNumber(value.detectionRange, JAMMER_RANGE_METERS.min, JAMMER_RANGE_METERS.max)) addError(errors, 'JAMMER_RANGE_INVALID', '干扰探测范围必须在 1～100 km 之间。', `${path}.detectionRange`)
   if (!isFiniteNumber(value.jammingRange, 0)) addError(errors, 'JAMMER_JAMMING_RANGE_INVALID', '干扰范围不能小于 0 m。', `${path}.jammingRange`)
@@ -1513,7 +1524,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     if (jammerIds.size !== value.jammers.length) addError(errors, 'JAMMER_ID_DUPLICATED', '干扰设备 ID 不允许为空或重复。', 'jammers')
     const jammerPlatformIds = collectIds(Array.isArray(value.platforms)
       ? value.platforms.filter(platform => isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS) && isJammerPlatformType(platform.type)) : [])
-    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, warnings, mode, scenario.duration as number, jammerPlatformIds))
+    const enabledLinkFrequencies = new Set<number>(Array.isArray(value.links) ? value.links.flatMap(link =>
+      isClosedObject(link, LINK_KEYS, OPTIONAL_LINK_KEYS) && link.enabled !== false && link.type !== 'LASER' && isPositiveFiniteNumber(link.frequency) ? [link.frequency] : []) : [])
+    value.jammers.forEach((jammer, index) => inspectJammer(jammer, index, platformIds, errors, warnings, mode, scenario.duration as number, jammerPlatformIds, enabledLinkFrequencies))
     if (mode === 'write' && Array.isArray(value.platforms)) inspectTemplateJammerConsistency(value.jammers, value.platforms, errors)
   }
 

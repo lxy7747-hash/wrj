@@ -4,6 +4,8 @@ import type { ScenarioConfig } from '../../src/contracts/domain-models'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import { LINK_CALC_DEFAULTS } from '../../src/features/scenarios/link-calc-defaults'
 import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
+import { dbmToWatts, isControlledPowerDbm, wattsToDbm } from '../../src/features/scenarios/jammer-settings'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 function configuration(): ScenarioConfig {
   const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
@@ -80,6 +82,7 @@ describe('新增场景参数的写入边界', () => {
 
   it('写入时三类航点速度至少为 1 m/s，读取旧场景保留正数兼容', () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const platformIndex = config.platforms.findIndex(platform => platform.id === 'AIR-01')
     const platform = config.platforms[platformIndex]!
     const { longitude, latitude, altitude, speed } = platform.waypoints[0]!
@@ -105,6 +108,7 @@ describe('新增场景参数的写入边界', () => {
 
   it('前出中继初始位置和普通航点写入时按无人机范围限位，读取旧位置保持兼容', () => {
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const platformIndex = config.platforms.findIndex(platform => platform.type === 'FORWARD_RELAY_NODE')
     const platform = config.platforms[platformIndex]!
     Object.assign(platform.initialPosition, { longitude: 117, latitude: 26, altitude: 3200 })
@@ -198,5 +202,71 @@ describe('新增场景参数的写入边界', () => {
       ])
       expect(config.links).toEqual(originalLinks)
     }
+  })
+})
+
+
+describe('V1.2 干扰功率、带宽及瞄准频率', () => {
+  it.each([-15, 35, 12])('%s dBm 写入被拒绝，定位功率字段且不修改原值', dbm => {
+    const config = createTemplateScenario().config
+    config.jammers[0]!.defaultPower = dbmToWatts(dbm)
+    const before = structuredClone(config)
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([
+      expect.objectContaining({ code: 'JAMMER_POWER_OUT_OF_RANGE', fieldPath: 'jammers[0].defaultPower',
+        message: '干扰功率须为 -10～30 dBm，且按 5 dB 档位设置。' }),
+    ])
+    expect(config).toEqual(before)
+  })
+
+  it.each([-10, -5, 0, 5, 10, 15, 20, 25, 30])('%s dBm 档位换算成 W 后可写入', dbm => {
+    const config = createTemplateScenario().config
+    config.jammers[0]!.defaultPower = dbmToWatts(dbm)
+    expect(wattsToDbm(config.jammers[0]!.defaultPower)).toBeCloseTo(dbm, 6)
+    expect(inspectScenarioConfig(config, 'write').result.errors).toEqual([])
+  })
+
+  it('档位容差为 1e-6 dB，拒绝非有限或非数值输入', () => {
+    for (const value of [-10 - 5e-7, 5 + 5e-7, 30 + 5e-7]) expect(isControlledPowerDbm(value)).toBe(true)
+    for (const value of [-10 - 2e-6, 5 + 2e-6, 30 + 2e-6, NaN, Infinity, '5', null]) expect(isControlledPowerDbm(value)).toBe(false)
+  })
+
+  it('旧场景可读取 100 W 和非档位带宽，写入才拒绝', () => {
+    const config = createTemplateScenario().config
+    Object.assign(config.jammers[0]!, { defaultPower: 100, bandwidth: 50 })
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+    expect(inspectScenarioConfig(config, 'write').result.errors.map(issue => issue.code)).toEqual([
+      'JAMMER_POWER_OUT_OF_RANGE', 'JAMMER_BANDWIDTH_OUT_OF_RANGE',
+    ])
+  })
+
+  it.each([
+    ['BARRAGE', 50, false], ['BARRAGE', 100, true], ['BARRAGE', 200, true], ['BARRAGE', 400, true],
+    ['SPOT', 20, false], ['SPOT', 5, true], ['SWEEP', 50, true],
+  ] as const)('%s 带宽 %s MHz 的写入边界', (type, bandwidth, valid) => {
+    const config = createTemplateScenario().config
+    Object.assign(config.jammers[0]!, { type, bandwidth })
+    const result = inspectScenarioConfig(config, 'write').result
+    expect(result.valid).toBe(valid)
+    expect(result.errors).toEqual(valid ? [] : [expect.objectContaining({ code: 'JAMMER_BANDWIDTH_OUT_OF_RANGE', fieldPath: 'jammers[0].bandwidth',
+      message: type === 'BARRAGE' ? '宽带压制干扰带宽须为 100、200 或 400 MHz。' : '瞄准式干扰带宽须为 5 MHz。' })])
+    expect(inspectScenarioConfig(config, 'read').result.errors).toEqual([])
+  })
+
+  it('瞄准频率未匹配只警告，匹配启用的非激光链路后消失', () => {
+    const config = createTemplateScenario().config
+    Object.assign(config.jammers[0]!, { type: 'SPOT', bandwidth: 5, frequency: 1234 })
+    const unmatched = inspectScenarioConfig(config, 'write').result
+    expect(unmatched.valid).toBe(true)
+    expect(unmatched.warnings).toContainEqual(expect.objectContaining({ code: 'JAMMER_SPOT_FREQUENCY_UNMATCHED', fieldPath: 'jammers[0].frequency',
+      message: '瞄准式干扰中心频率未对准任何链路工作频率。' }))
+    config.jammers[0]!.frequency = config.links[0]!.frequency
+    expect(inspectScenarioConfig(config, 'write').result.warnings.some(issue => issue.code === 'JAMMER_SPOT_FREQUENCY_UNMATCHED')).toBe(false)
+  })
+
+  it.each(['disabled', 'laser'] as const)('%s 链路不作为瞄准频率依据', reason => {
+    const config = createTemplateScenario().config
+    Object.assign(config.jammers[0]!, { type: 'SPOT', bandwidth: 5, frequency: 1234 })
+    Object.assign(config.links[0]!, { frequency: 1234, ...(reason === 'disabled' ? { enabled: false } : { type: 'LASER' }) })
+    expect(inspectScenarioConfig(config, 'write').result.warnings).toContainEqual(expect.objectContaining({ code: 'JAMMER_SPOT_FREQUENCY_UNMATCHED' }))
   })
 })

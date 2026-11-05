@@ -141,6 +141,7 @@ describe('fixture projection', () => {
     const scenario = new ScenarioProjection()
     const original = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
     const config = structuredClone(original.data.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const index = config.platforms.findIndex(({ type }) => type === 'COMMUNICATION_SATELLITE')
     delete config.platforms[index]!.satelliteType
     if (satelliteType !== undefined) config.platforms[index]!.satelliteType = satelliteType as never
@@ -189,6 +190,7 @@ describe('fixture projection', () => {
     const scenario = new ScenarioProjection()
     const current = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
     const update = structuredClone(current.data)
+    Object.assign(update.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     update.config.sensors[0] = Object.fromEntries(
       Object.entries(update.config.sensors[0]!).reverse(),
     ) as typeof update.config.sensors[number]
@@ -236,11 +238,13 @@ describe('fixture projection', () => {
     const current = scenario.get('SCN-001') as { ok: true; data: ScenarioDraft }
 
     const mismatched = structuredClone(current.data)
+    Object.assign(mismatched.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     mismatched.config.scenario.id = 'SCN-OTHER'
     expect(scenario.save('SCN-001', { config: mismatched.config, uiExtensions: mismatched.uiExtensions, expectedRevision: current.data.revision }))
       .toMatchObject({ ok: false, fieldPath: 'scenario.id' })
 
     const changed = structuredClone(current.data)
+    Object.assign(changed.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     changed.config.sensors[0]!.detectionRange += 1
     changed.config.output.directory = './changed'
     changed.config.output.writeInterval = 1

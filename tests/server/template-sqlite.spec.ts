@@ -48,6 +48,7 @@ async function start(file: string) {
 
 function source(): ScenarioDraft {
   const draft = new ScenarioProjection().get('SCN-001').data as ScenarioDraft
+  Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   draft.uiExtensions.jammers[0]!.elevation = 30
   draft.uiExtensions.sensors[0]!.probability = 0.37
   return draft

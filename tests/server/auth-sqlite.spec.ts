@@ -94,6 +94,7 @@ describe('SQLite authentication', () => {
     const secondCookie = await login('second-admin')
     const asUser = (cookie: string) => ({ ...headers, Cookie: cookie })
     const draft = (await api.get('/api/v1/scenarios/SCN-001').set(asUser(firstCookie)).expect(200)).body.data
+    Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
     // 激光链路不写入新模板脚本，会产生需要确认的警告；本用例直接生成脚本，去掉激光链路。
     draft.config.links = draft.config.links.filter((link: { type: string }) => link.type !== 'LASER')

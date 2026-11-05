@@ -53,6 +53,7 @@ it('外部删除后读取为 404，不恢复旧撤销历史；外部重建后按
 
 function templateStorage() {
   const original = new TemplateProjection().list()[0]
+  Object.assign(original.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   original.referenceCount = 0
   return { original, storage: { load: vi.fn(() => [structuredClone(original)]), save: vi.fn(() => true), delete: vi.fn(() => true) } }
 }

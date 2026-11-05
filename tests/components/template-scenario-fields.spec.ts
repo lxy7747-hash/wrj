@@ -43,7 +43,7 @@ describe('新模板场景字段', () => {
     const uiExtension: JammerUiExtension = { jammerId: jammer.id, direction: 0, enabled: true }
     const wrapper = mount(JammerEditorDialog, {
       props: { modelValue: true, jammer, uiExtension, editing: true, error: '', pending: false, locked: false,
-        platforms: config.platforms as Platform[], jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带阻塞' }], minimumStep: 0.001 },
+        platforms: config.platforms as Platform[], links: config.links, jammerTypeOptions: [{ value: 'BARRAGE', label: '宽带阻塞' }], minimumStep: 0.001 },
       global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
     })
     await flushPromises()

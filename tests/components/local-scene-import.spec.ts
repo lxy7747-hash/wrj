@@ -34,6 +34,7 @@ function source(): ImportInput {
 function config(): ScenarioConfig {
   const result = new ScenarioProjection().get('SCN-001')
   if (!result.ok) throw new Error('missing fixture')
+  Object.assign(result.data.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   return result.data.config
 }
 function completeLink(input: ImportInput): void {
@@ -54,6 +55,7 @@ describe('本地场景导入候选', () => {
     if (!loaded.ok) throw new Error('missing fixture')
     const before = structuredClone(loaded.data)
     const candidate = structuredClone(before)
+    Object.assign(candidate.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     Object.assign(candidate.config.platforms.find(p => p.type === 'AIRBORNE_MISSION_CLUSTER')!.initialPosition, { longitude, latitude })
     const result = projection.save('SCN-001', { config: candidate.config, uiExtensions: candidate.uiExtensions, expectedRevision: before.revision })
     expect(result.ok).toBe(accepted)
@@ -88,6 +90,7 @@ describe('本地场景导入候选', () => {
     const projection = new ScenarioProjection()
     const draft = projection.get('SCN-001')
     if (!draft.ok) throw new Error('missing fixture')
+    Object.assign(draft.data.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     const input = source()
     completeLink(input)
     input.links[0]!.reverseEndpoints = true
@@ -196,6 +199,7 @@ describe('本地场景导入正式 Store / 组件流程', () => {
       if (url.endsWith('/positions')) return envelope(source().positions)
       const result = options?.method === 'PUT' ? projection.save('SCN-001', JSON.parse(options.body as string)) : projection.get('SCN-001')
       if (!result.ok) throw new Error(result.message)
+      Object.assign(result.data.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
       return envelope(result.data)
     })
     vi.stubGlobal('fetch', fetchMock)

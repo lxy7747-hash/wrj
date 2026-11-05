@@ -635,8 +635,8 @@ describe('本机 mission 执行器', () => {
       Object.assign(station, { id: 'STN-01', name: '地面干扰站', type: 'GROUND_JAMMER_DETECTION_STATION', category: 'ground',
         initialPosition: { longitude: 120.15, latitude: 23.5, altitude: 15 }, waypoints: [], linkIds: [], jammerIds: ['JAM-WB-01-TX'] })
       draft.config.platforms.push(station)
-      draft.config.jammers = [{ id: 'JAM-WB-01-TX', platformId: 'STN-01', type: 'BARRAGE', defaultPower: 72,
-        frequency: 2200, bandwidth: 40, detectionRange: 44448, jammingRange: 44448 }]
+      draft.config.jammers = [{ id: 'JAM-WB-01-TX', platformId: 'STN-01', type: 'BARRAGE', defaultPower: 1,
+        frequency: 2200, bandwidth: 200, detectionRange: 44448, jammingRange: 44448 }]
       draft.config.jammingEnabled = true
       draft.uiExtensions.jammers = [{ jammerId: 'JAM-WB-01-TX', direction: 0, enabled: true }]
       draft.config.scenario.environment.simClockSpeed = 4

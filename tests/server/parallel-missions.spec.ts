@@ -34,6 +34,7 @@ async function apiFor(start: (...args: any[]) => Promise<any>, capacity = 2) {
   if (!server.httpServer.listening) await once(server.httpServer, 'listening')
   const api = request(server.httpServer)
   const draft = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
+  Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   draft.config.scenario.id = 'SCN-PARALLEL'
   for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
   await api.post('/api/v1/scenarios').set(headers).send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: 0 }).expect(201)
@@ -119,6 +120,9 @@ describe('本地多任务运行池保护', () => {
     if (!server.httpServer.listening) await once(server.httpServer, 'listening')
     const api = request(server.httpServer)
     const source = (await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data
+    Object.assign(source.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+    await api.put('/api/v1/scenarios/SCN-001').set(headers)
+      .send({ config: source.config, uiExtensions: source.uiExtensions, expectedRevision: source.revision }).expect(200)
     source.config.scenario.id = 'SCN-LIVE'
     for (const platform of source.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
     await api.post('/api/v1/scenarios').set(headers).send({ config: source.config, uiExtensions: source.uiExtensions, expectedRevision: 0 }).expect(201)

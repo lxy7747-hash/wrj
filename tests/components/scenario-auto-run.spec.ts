@@ -40,6 +40,7 @@ async function setup() {
     sensors: fixture.scenario.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
   }, revision: 4, locked: false, officialLibraryChanged: false }
   saved.config.scenario.id = 'SCN-AUTO'
+  Object.assign(saved.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
   const run: SimulationRun = {
     runId: 'RUN-007', taskId: 'TASK-001', scenarioId: 'SCN-AUTO', uiStatus: 'IDLE', configLocked: true,
     canonical: { status: 'IDLE', currentTime: 0, totalDuration: saved.config.scenario.duration, processId: null, progress: 0 },

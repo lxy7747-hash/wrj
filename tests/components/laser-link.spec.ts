@@ -104,6 +104,7 @@ describe('激光链路编辑器', () => {
       laser: { txApertureDiameterM: 0.1, rxApertureDiameterM: 0.1, pulseWidthS: 1e-8, modulation: 'OOK' },
     })
     const config = structuredClone(fixtureSource.scenario) as ScenarioConfig
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     config.links[0] = emitted
     expect(inspectScenarioConfig(config, 'write').result.valid).toBe(true)
     wrapper.unmount()

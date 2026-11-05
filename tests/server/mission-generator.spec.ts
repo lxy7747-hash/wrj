@@ -22,6 +22,18 @@ describe('2026-11-01 模板脚本生成器', () => {
     expect(generated.manifest.devices.every((device: { source: { deviceId: string }; target: { deviceId: string } }) => !device.source.deviceId.startsWith('comm_') && !device.target.deviceId.startsWith('comm_'))).toBe(true)
   })
 
+  it('瞄准式按配置写入 5 MHz，固定 spot_bandwidth_mhz 仍为 20', () => {
+    const draft = createTemplateScenario()
+    Object.assign(draft.config.jammers[0]!, { type: 'SPOT', bandwidth: 5, frequency: draft.config.links[0]!.frequency })
+    const generated = buildMissionPackage(draft)
+    const parameters = JSON.parse(generated.files['comm_platform_REAR.txt'].match(/jammer_param (.+)\n/u)![1]!)
+    expect(parameters.jammers[0]).toMatchObject({ power_w: 1, bandwidth_hz: 5_000_000,
+      spot_bandwidth_mhz: 20, sweep_duty_cycle: 0.1, antenna_gain_dbi: 0, tx_loss_db: 0 })
+    const ground = generated.files['comm_platform_JAMMER.txt'].split('end_platform_type')[0]!
+    expect(ground).toContain('bandwidth 5 MHz')
+    expect(ground).toContain('power 1 W')
+  })
+
   it('端点不符合模板端口映射时阻断生成，不因旧链路兼容而改写端口', () => {
     const draft = createTemplateScenario()
     draft.config.links[0]!.sourcePlatformId = 'tiantong_sat'

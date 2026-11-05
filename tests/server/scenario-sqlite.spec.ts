@@ -31,6 +31,7 @@ it('撤销历史最多保留最近 50 次修改，超限后仍按顺序撤销', 
   let current = initial.data
   for (let index = 1; index <= 55; index += 1) {
     const config = structuredClone(current.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
     config.scenario.name = `历史修改 ${index}`
     const saved = projection.save('SCN-001', { config, uiExtensions: current.uiExtensions, expectedRevision: current.revision })
     if (!saved.ok) throw new Error(saved.message)
@@ -70,7 +71,9 @@ async function start(path: string) {
 }
 
 function draft(): ScenarioDraft {
-  return new ScenarioProjection().get('SCN-001').data
+  const value = new ScenarioProjection().get('SCN-001').data
+  Object.assign(value.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+  return value
 }
 
 function update(value: ScenarioDraft, expectedRevision = 0) {
@@ -273,7 +276,9 @@ describe('SQLite 场景开发持久化', () => {
   it('运行锁只作用于对应场景，禁止删除或写入；模板按新编号创建不覆盖来源', async () => {
     const projection = new ScenarioProjection()
     const original = projection.get('SCN-001').data
-    expect(projection.copyTemplate(original.config, '模板副本', original.uiExtensions, 'SCN-COPY').ok).toBe(true)
+    const config = structuredClone(original.config)
+    Object.assign(config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+    expect(projection.copyTemplate(config, '模板副本', original.uiExtensions, 'SCN-COPY').ok).toBe(true)
     projection.setLocked('SCN-COPY', true)
     expect(projection.delete('SCN-COPY', { expectedRevision: 1 })).toMatchObject({ ok: false, status: 409, code: 'CONFIG_LOCKED' })
     const copy = projection.get('SCN-COPY').data

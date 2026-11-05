@@ -2017,6 +2017,7 @@ watch(activeTab, (tab) => {
       :pending="pending"
       :locked="draft?.locked ?? false"
       :platforms="draft?.config.platforms ?? []"
+      :links="draft?.config.links ?? []"
       :jammer-type-options="jammerTypeOptions"
       :minimum-step="LINK_MHZ_MINIMUM_STEP"
       @apply="applyJammerEditor"
