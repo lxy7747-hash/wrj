@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.9.4",
+    "version": "1.10.0",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; supported simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -6173,7 +6173,7 @@
           "websocket"
         ],
         "summary": "WebSocket upgrade on loopback only",
-        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A zero-cursor subscription starts from the current snapshot; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history.",
+        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event. jammer.event payloads: JammerStatusData, SensorStatusData, JammingDecisionEvent, DetectionEvent (EventRecord). New fields are optional; the original single jammerExecution remains required. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A zero-cursor subscription starts from the current snapshot; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history.",
         "x-rbac": "AUTHENTICATED",
         "responses": {
           "101": {
@@ -10810,6 +10810,16 @@
             "type": "number",
             "minimum": 0,
             "description": "自动探测的最小有效距离，必须小于 detectionRange；缺省 1000 m。"
+          },
+          "detectionDelayS": {
+            "type": "number",
+            "minimum": 0,
+            "description": "干扰延迟，单位 s；未填写时省略，不接受 null。"
+          },
+          "jammingDurationS": {
+            "type": "number",
+            "description": "干扰持续时长，单位 s；未填写时省略，不接受 null。",
+            "exclusiveMinimum": 0
           }
         }
       },
@@ -11877,7 +11887,8 @@
             "const": "UNCODED"
           },
           "qualityModelVersion": {
-            "const": "SNBER-1.2"
+            "type": "string",
+            "minLength": 1
           },
           "ber": {
             "type": "number",
@@ -11913,6 +11924,12 @@
             "minimum": 0,
             "maximum": 100,
             "description": "链路可用率（%）；引擎提供时展示。"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationIssue"
+            }
           }
         }
       },
@@ -12077,6 +12094,17 @@
           },
           "errorMessage": {
             "type": "string"
+          },
+          "mode": {
+            "enum": [
+              "INTERACTIVE_SINGLE",
+              "PARAMETER_SCAN",
+              "HISTORICAL_REPLAY"
+            ]
+          },
+          "speedMultiplier": {
+            "type": "number",
+            "exclusiveMinimum": 0
           }
         }
       },
@@ -12120,7 +12148,8 @@
             "minLength": 1
           },
           "thresholdVersion": {
-            "const": "LLZT-1.0"
+            "type": "string",
+            "minLength": 1
           },
           "consecutiveFrames": {
             "type": "integer",
@@ -12130,6 +12159,22 @@
             "type": "number",
             "minimum": 0,
             "maximum": 5000
+          },
+          "jsrThresholdDb": {
+            "type": "number"
+          },
+          "warningBerThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "emergencyBerThreshold": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "jitterSuppressed": {
+            "type": "boolean"
           }
         }
       },
@@ -12174,7 +12219,17 @@
             "type": "number"
           },
           "modelVersion": {
-            "const": "COMPOSITE-LOSS-1.0"
+            "type": "string",
+            "minLength": 1
+          },
+          "seaMultipathLossDb": {
+            "type": "number"
+          },
+          "atmosphericLossDb": {
+            "type": "number"
+          },
+          "cloudRainLossDb": {
+            "type": "number"
           }
         }
       },
@@ -12247,13 +12302,16 @@
         ],
         "properties": {
           "configVersion": {
-            "const": "SCN-001-v4"
+            "type": "string",
+            "minLength": 1
           },
           "engineVersion": {
-            "const": "AFSIM-2.9.0-FIXTURE"
+            "type": "string",
+            "minLength": 1
           },
           "uiVersion": {
-            "const": "FRAME-1.0"
+            "type": "string",
+            "minLength": 1
           },
           "effectiveFrameId": {
             "type": "string",
@@ -12301,6 +12359,14 @@
             "items": {
               "$ref": "#/components/schemas/RouteDecision"
             }
+          },
+          "jammerExecutions": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/components/schemas/JammerExecutionEvidence"
+            },
+            "description": "多台干扰执行证据；存在时第一项必须与必填 jammerExecution 深相等，由运行时校验。"
           }
         }
       },
@@ -12475,6 +12541,17 @@
           "cooldownRemainingS": {
             "type": "number",
             "minimum": 0
+          },
+          "frequencyMinMHz": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "frequencyMaxMHz": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "detected": {
+            "type": "boolean"
           }
         },
         "x-fixture-path": "$.events",
@@ -12516,10 +12593,38 @@
                 "cooldownRemainingS",
                 "decision",
                 "reason"
-              ]
+              ],
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "frequencyMinMHz"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "frequencyMaxMHz"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "detected"
+                    ]
+                  }
+                ]
+              }
             }
           }
-        ]
+        ],
+        "dependentRequired": {
+          "frequencyMinMHz": [
+            "frequencyMaxMHz"
+          ],
+          "frequencyMaxMHz": [
+            "frequencyMinMHz"
+          ]
+        },
+        "description": "DETECTION frequencyMinMHz and frequencyMaxMHz must both be present or absent; when present frequencyMinMHz <= frequencyMaxMHz. An absent detected means detected; false cannot trigger a closed loop."
       },
       "SimulationRun": {
         "type": "object",
@@ -16824,7 +16929,10 @@
             "minLength": 1
           },
           "action": {
-            "const": "START"
+            "enum": [
+              "START",
+              "STOP"
+            ]
           },
           "linkStatus": {
             "enum": [
@@ -16840,6 +16948,58 @@
           "reason": {
             "type": "string",
             "minLength": 1
+          }
+        }
+      },
+      "SensorStatusData": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "time",
+          "sensorId",
+          "platformId",
+          "active"
+        ],
+        "properties": {
+          "type": {
+            "const": "SENSOR_STATUS"
+          },
+          "time": {
+            "type": "number",
+            "minimum": 0
+          },
+          "sensorId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "platformId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "active": {
+            "type": "boolean"
+          },
+          "scanCoveragePercent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          }
+        }
+      },
+      "JammingDecisionEvent": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "decision"
+        ],
+        "properties": {
+          "type": {
+            "const": "JAMMING_DECISION"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/JammingDecision"
           }
         }
       },

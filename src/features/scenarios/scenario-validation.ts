@@ -79,7 +79,7 @@ const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId
 const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
 const RETIRED_JAMMER_KEYS = ['autoDetect'] as const
-const OPTIONAL_JAMMER_KEYS = ['triggerTimeS', 'releaseRange', 'detectionMinimumRange', ...RETIRED_JAMMER_KEYS] as const
+const OPTIONAL_JAMMER_KEYS = ['triggerTimeS', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
 const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
@@ -912,6 +912,12 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
     if (!isFiniteNumber(value.detectionMinimumRange, 0)) addError(errors, 'JAMMER_DETECTION_MINIMUM_RANGE_INVALID', '最小探测距离必须为非负有限数值。', `${path}.detectionMinimumRange`)
     else if (isFiniteNumber(value.detectionRange, 0) && value.detectionMinimumRange >= value.detectionRange) addError(errors, 'JAMMER_DETECTION_MINIMUM_RANGE_INVALID', '最小探测距离必须小于探测范围。', `${path}.detectionMinimumRange`)
   }
+  for (const [field, label] of [['detectionDelayS', '干扰延迟'], ['jammingDurationS', '干扰持续时长']] as const) {
+    if (Object.hasOwn(value, field) && (!isFiniteNumber(value[field], 0, isPositiveFiniteNumber(duration) ? duration : Infinity)
+      || (field === 'jammingDurationS' && value[field] === 0))) {
+      addError(errors, 'JAMMER_TIMING_INVALID', `${label}须${field === 'jammingDurationS' ? '大于' : '大于等于'} 0 且不超过仿真总时长；未填写时请省略该字段。`, `${path}.${field}`)
+    }
+  }
   // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
   if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
 }
@@ -985,7 +991,7 @@ function inspectSpectrumConflicts(links: readonly unknown[], jammers: readonly u
       fieldPath: `links[${link.index}].frequency` })
   }
   jammers.forEach((jammer, index) => {
-    if (!isClosedObject(jammer, JAMMER_KEYS, ['triggerTimeS', 'releaseRange'])) return
+    if (!isClosedObject(jammer, JAMMER_KEYS, OPTIONAL_JAMMER_KEYS)) return
     const band = occupiedBand(jammer)
     if (!band || active.length === 0 || active.some(link => bandsOverlap(link.band, band))) return
     warnings.push({ severity: 'WARNING', code: 'JAMMER_BAND_UNMATCHED',

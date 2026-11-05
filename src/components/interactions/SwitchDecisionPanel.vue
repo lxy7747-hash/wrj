@@ -25,7 +25,7 @@ const stateType = computed(() => ({
 
 /** 将切换原因码转换为中文显示。 */
 function reasonLabel(reason: string): string {
-  return ({ BER_THRESHOLD_AND_HYSTERESIS: 'BER 阈值与滞回条件满足', COOLDOWN_ACTIVE: '切换冷却期未结束' } as Record<string, string>)[reason] ?? reason
+  return ({ BER_THRESHOLD_AND_HYSTERESIS: 'BER 阈值与滞回条件满足', COOLDOWN_ACTIVE: '切换冷却期未结束', INTERFERENCE: '受干扰触发切换', LINK_DOWN: '原链路中断触发切换' } as Record<string, string>)[reason] ?? reason
 }
 
 /** 以可读科学计数法展示误码率。 */

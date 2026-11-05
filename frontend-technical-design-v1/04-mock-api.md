@@ -71,6 +71,10 @@
 
 ## WebSocket `/ws/v1`
 
+2026-11-05 兼容扩展（OpenAPI 1.10.0）：`jammer.event` 依次识别 `JammerStatusData`、`SensorStatusData`、`JammingDecisionEvent`、`DetectionEvent`。传感器状态按 sensorId 替换，决策按 decisionId 去重；两者在换帧、换运行、REST 重载或重置时清理。任务、frameId、simulationTime 仍须一致。START/STOP 决策均可推送，REST 闭环上下文仍只允许 START，未发现的侦测事件不得触发闭环。
+
+运行状态可选 mode/speedMultiplier；侦测可选频段及 detected；损耗、阈值、抖动抑制和帧内错误均是可选扩展。版本接受非空字符串。未携带新增字段的旧载荷、原字面量版本以及必填单台 jammerExecution 保持兼容；jammerExecutions 存在时非空且首项与单台证据深相等。频段两值必须成对且 min ≤ max，由运行时补充跨字段校验。
+
 ### 本机备份／恢复补充（2026-09-11，用户授权）
 
 `server/local.ts` 注入真实 SQLite 备份存储；`server/index.ts` 仍保持纯 Mock。GET `/api/v1/admin/backups` 读取独立持久化目录，POST `/api/v1/admin/backup` 创建一致性 `.db` 文件，POST `/api/v1/admin/restore` 先创建预备份，再校验并以事务恢复场景、模板及账号，保留当前审计历史。权限和一次性确认不变；三个接口新增 503 存储失败响应。

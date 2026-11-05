@@ -274,6 +274,8 @@ export interface Jammer {
   detectionMinimumRange?: Meters;
   /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
   triggerTimeS?: Seconds;
+  /** 可选干扰时序配置，单位 s；未填写时不发送，需服务端同步支持。 */
+  detectionDelayS?: Seconds; jammingDurationS?: Seconds;
 }
 export interface Sensor {
   id: Identifier; platformId: Identifier; frequencyRange: FrequencyRange; detectionRange: Meters;
@@ -333,7 +335,7 @@ export interface PlatformStatus {
 }
 export interface SimulationState {
   status: CanonicalSimulationStatus; currentTime: Seconds; totalDuration: Seconds;
-  processId: number | null; progress: Percent0To100; errorMessage?: string;
+  processId: number | null; progress: Percent0To100; errorMessage?: string; mode?: SimulationMode; speedMultiplier?: number;
 }
 
 export type CapabilityState = 'LOADING' | 'VALIDATING' | 'EXECUTING' | 'SUCCESS' | 'EMPTY' | 'ERROR';
@@ -346,7 +348,8 @@ export type ReplayState = 'EMPTY' | 'LOADING' | 'PAUSED' | 'PLAYING' | 'SEEKING'
 export type ConfigurationLockState = 'UNLOCKED' | 'LOCKING' | 'LOCKED' | 'UNLOCKING' | 'ERROR';
 export interface UiLinkProjection {
   linkId: Identifier; frameId: FrameId; status: UiLinkStatus; canonicalStatus: CanonicalLinkStatus;
-  reason: string; thresholdVersion: 'LLZT-1.0'; consecutiveFrames: number; ageMs: Milliseconds;
+  reason: string; thresholdVersion: string; consecutiveFrames: number; ageMs: Milliseconds;
+  jsrThresholdDb?: Decibels; warningBerThreshold?: Ratio01; emergencyBerThreshold?: Ratio01; jitterSuppressed?: boolean;
 }
 export interface LinkStatusAggregateExtension {
   totalLinks: number; upLinks: number; degradedUiLinks: number; downLinks: number;
@@ -408,7 +411,12 @@ export interface ClosedLoopContext {
 export interface JammingDecision {
   decisionId: Identifier; runId: RunId; frameId: FrameId; detectionEventId: Identifier;
   targetPlatformId: Identifier; jammerId: Identifier; affectedLinkId: Identifier;
-  action: 'START'; linkStatus: UiLinkStatus; effectiveFrameId: FrameId; reason: string;
+  action: 'START' | 'STOP'; linkStatus: UiLinkStatus; effectiveFrameId: FrameId; reason: string;
+}
+export interface JammingDecisionEvent { type: 'JAMMING_DECISION'; decision: JammingDecision; }
+export interface SensorStatusData {
+  type: 'SENSOR_STATUS'; time: Seconds; sensorId: Identifier; platformId: Identifier;
+  active: boolean; scanCoveragePercent?: Percent0To100;
 }
 export interface JammingParameterSet {
   version: number; effectiveFrameId: FrameId; parameters: JammingCommand;
@@ -424,7 +432,8 @@ export interface CompositeLossEvidence {
   linkId: Identifier; freeSpaceLossDb: Decibels; systemLossDb: Decibels;
   obstructionLossDb: Decibels; interferenceLossDb: Decibels; totalPathLossDb: Decibels;
   noisePowerDbm: DecibelMilliwatts; effectiveNoiseAndInterferenceDbm: DecibelMilliwatts;
-  modelVersion: 'COMPOSITE-LOSS-1.0';
+  modelVersion: string;
+  seaMultipathLossDb?: Decibels; atmosphericLossDb?: Decibels; cloudRainLossDb?: Decibels;
 }
 export interface RouteCandidateEvidence {
   linkId: Identifier; direction: LinkDirection; eligible: boolean; jamImpactDb: Decibels;
@@ -437,7 +446,7 @@ export interface RouteDecision {
   minimumStableFrames: number; hysteresisThreshold: number | null; reason: string;
 }
 export interface SynchronizationEvidence {
-  configVersion: 'SCN-001-v4'; engineVersion: 'AFSIM-2.9.0-FIXTURE'; uiVersion: 'FRAME-1.0';
+  configVersion: string; engineVersion: string; uiVersion: string;
   effectiveFrameId: FrameId; effectiveSimulationTime: Seconds;
 }
 export interface JammerExecutionEvidence {
@@ -447,10 +456,12 @@ export interface JammerExecutionEvidence {
 export interface FrameEvidence {
   losses: CompositeLossEvidence[]; routeCandidates: RouteCandidateEvidence[]; routeDecisions: RouteDecision[];
   jammerExecution: JammerExecutionEvidence; synchronization: SynchronizationEvidence;
+  /** 多台执行证据；存在时非空，首项须与必填的 jammerExecution 一致。 */
+  jammerExecutions?: JammerExecutionEvidence[];
 }
 /** Mock 传输扩展：补充链路身份与质量计算证据，不修改 SRS LinkQualityData。 */
 export interface TelemetryLinkRecord extends LinkQualityData {
-  linkId: Identifier; coding: 'UNCODED'; qualityModelVersion: 'SNBER-1.2';
+  linkId: Identifier; coding: 'UNCODED'; qualityModelVersion: string; issues?: ValidationIssue[];
 }
 export interface TelemetryFrame {
   frameId: FrameId; taskId: TaskId; runId: RunId; simulationTime: Seconds; sequence: SequenceNumber;
@@ -458,7 +469,7 @@ export interface TelemetryFrame {
   uiLinks: UiLinkProjection[];
   eventIds: Identifier[]; evidence: FrameEvidence;
 }
-export interface DetectionEvent { eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'DETECTION'; sensorId: Identifier; targetPlatformId: Identifier; detectionProbability: Ratio01; dedupeKey: string; }
+export interface DetectionEvent { eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'DETECTION'; sensorId: Identifier; targetPlatformId: Identifier; detectionProbability: Ratio01; dedupeKey: string; frequencyMinMHz?: Megahertz; frequencyMaxMHz?: Megahertz; detected?: boolean; }
 export interface SwitchEvent {
   eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'LINK_SWITCH';
   direction: LinkDirection; oldLinkId: Identifier; newLinkId: Identifier; oldBer: Ratio01; newBer: Ratio01;

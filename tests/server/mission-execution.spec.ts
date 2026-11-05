@@ -620,6 +620,49 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：干扰延迟、持续时长及释放前不再触发', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-jammer-timing-'))
+    try {
+      // 模板未启用关机日志；仅为本用例开启观察项，不改变生成器输出或执行逻辑。
+      const scriptFiles = await import('../../server/local/' + 'script-file.js')
+      const writePackage = scriptFiles.writeMissionPackage
+      vi.spyOn(scriptFiles, 'writeMissionPackage').mockImplementation(async (...args: Parameters<typeof writePackage>) => {
+        const entry = await writePackage(...args)
+        const setup = await readFile(entry, 'utf8')
+        await writeFile(entry, setup.replace('  enable WEAPON_TURNED_ON', '  enable WEAPON_TURNED_OFF\n  enable WEAPON_TURNED_ON'), 'utf8')
+        return entry
+      })
+      const draft = draftForMission()
+      draft.config.scenario.duration = 30
+      draft.config.scenario.realtime = false
+      draft.config.platforms[1]!.initialPosition = { longitude: 120.1, latitude: 23.5, altitude: 8000 }
+      draft.config.platforms[1]!.waypoints = []
+      const station = structuredClone(draft.config.platforms[0]!)
+      Object.assign(station, { id: 'STN-01', name: '地面干扰站', type: 'GROUND_JAMMER_DETECTION_STATION', category: 'ground',
+        initialPosition: { longitude: 120.15, latitude: 23.5, altitude: 15 }, waypoints: [], linkIds: [], jammerIds: ['JAM-TIMED'] })
+      draft.config.platforms.push(station)
+      draft.config.jammers = [{ id: 'JAM-TIMED', platformId: 'STN-01', type: 'BARRAGE', defaultPower: 1,
+        frequency: 2200, bandwidth: 200, detectionRange: 44448, jammingRange: 44448, releaseRange: 50000,
+        detectionDelayS: 6, jammingDurationS: 9 }]
+      draft.config.jammingEnabled = true
+      draft.uiExtensions.jammers = [{ jammerId: 'JAM-TIMED', direction: 0, enabled: true }]
+      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => false).start(draft)
+      const outcome = await process.completed
+      expect(outcome).toMatchObject({ code: 0 })
+      expect(outcome.errorMessage).toBeUndefined()
+      const records = eventRecords(await readFile(join(dirname(process.entryPath), 'output', 'scenario_events.csv'), 'utf8'))
+      const on = records.filter((cells: string[]) => cells[1] === 'WEAPON_TURNED_ON' && cells[2] === 'jammer_station_01')
+      expect(on).toHaveLength(1)
+      const onAt = Number(on[0]![0])
+      expect(onAt).toBeGreaterThanOrEqual(6)
+      expect(onAt).toBeLessThanOrEqual(9)
+      const off = records.filter((cells: string[]) => cells[1] === 'WEAPON_TURNED_OFF' && cells[2] === 'jammer_station_01' && Number(cells[0]) > onAt)
+      expect(off).toHaveLength(1)
+      expect(Number(off[0]![0]) - onAt).toBeGreaterThanOrEqual(9)
+      expect(Number(off[0]![0]) - onAt).toBeLessThanOrEqual(12)
+    } finally { await rm(root, { recursive: true, force: true }) }
+  }, 30_000)
+
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：航点路线、按距离触发干扰与时钟写入', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-route-jammer-'))
     try {

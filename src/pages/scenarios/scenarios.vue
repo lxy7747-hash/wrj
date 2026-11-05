@@ -1117,7 +1117,7 @@ function validationTargetId(fieldPath: string): string | undefined {
   if (fieldPath === 'jammingEnabled') return 'jamming-enabled'
   const jammerField = /^(?:jammers|uiExtensions\.jammers)\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (jammerField) return ({ id: 'jammer-id', platformId: 'jammer-platform', type: 'jammer-type', defaultPower: 'jammer-power',
-    direction: 'jammer-direction', elevation: 'jammer-elevation', enabled: 'jammer-enabled', frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', releaseRange: 'jammer-release-range', triggerTimeS: 'jammer-trigger-time' } as Record<string, string>)[jammerField]
+    direction: 'jammer-direction', elevation: 'jammer-elevation', enabled: 'jammer-enabled', frequency: 'jammer-frequency', bandwidth: 'jammer-bandwidth', detectionRange: 'jammer-range', jammingRange: 'jammer-jamming-range', releaseRange: 'jammer-release-range', triggerTimeS: 'jammer-trigger-time', detectionDelayS: 'jammer-detection-delay', jammingDurationS: 'jammer-jamming-duration' } as Record<string, string>)[jammerField]
   const demandField = /^informationDemand\[\d+\]\.(\w+)/.exec(fieldPath)?.[1]
   if (demandField && linkDialogVisible.value) {
     const sharedTarget = ({ direction: 'link-direction', sourcePlatformId: 'link-source', destinationPlatformIds: 'link-target', linkId: 'link-id' } as Record<string, string>)[demandField]
@@ -1811,6 +1811,8 @@ watch(activeTab, (tab) => {
               <el-table-column label="释放范围（km）"><template #default="{ row }">{{ Number((readJammerReleaseRange(row) / METERS_PER_KILOMETER).toFixed(3)) }}</template></el-table-column>
               <el-table-column label="方向（°）"><template #default="{ row }">{{ jammerExtension(row.id)?.direction }}</template></el-table-column>
               <el-table-column label="触发时间（秒）"><template #default="{ row }">{{ row.triggerTimeS ?? '未设置' }}</template></el-table-column>
+              <el-table-column label="干扰延迟（秒）"><template #default="{ row }">{{ row.detectionDelayS ?? '未设置' }}</template></el-table-column>
+              <el-table-column label="持续时长（秒）"><template #default="{ row }">{{ row.jammingDurationS ?? '未设置' }}</template></el-table-column>
               <el-table-column label="启用">
                 <template #default="{ row }">
                   <el-switch :model-value="jammerExtension(row.id)?.enabled" :disabled="pending || draft.locked" :data-testid="`toggle-jammer-${row.id}`" @update:model-value="setJammerEnabled(row.id, $event)" />

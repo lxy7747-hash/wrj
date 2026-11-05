@@ -146,6 +146,9 @@ onMounted(() => {
       <el-descriptions :column="3" border size="small">
         <el-descriptions-item label="链路编号">{{ loss.linkId }}</el-descriptions-item>
         <el-descriptions-item label="固定帧">{{ telemetryStore.frame.frameId }} @ {{ telemetryStore.frame.simulationTime }} s</el-descriptions-item>
+        <el-descriptions-item label="海面多径">{{ loss.seaMultipathLossDb === undefined ? '暂无数据' : `${loss.seaMultipathLossDb} dB` }}</el-descriptions-item>
+        <el-descriptions-item label="大气衰减">{{ loss.atmosphericLossDb === undefined ? '暂无数据' : `${loss.atmosphericLossDb} dB` }}</el-descriptions-item>
+        <el-descriptions-item label="云雨损耗">{{ loss.cloudRainLossDb === undefined ? '暂无数据' : `${loss.cloudRainLossDb} dB` }}</el-descriptions-item>
         <el-descriptions-item label="模型版本">{{ loss.modelVersion }}</el-descriptions-item>
         <el-descriptions-item label="噪声功率">{{ loss.noisePowerDbm }} dBm</el-descriptions-item>
         <el-descriptions-item label="等效噪声与干扰">{{ loss.effectiveNoiseAndInterferenceDbm }} dBm</el-descriptions-item>

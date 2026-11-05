@@ -1,53 +1,61 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import * as vueCompiler from 'vue/compiler-sfc'
 import AutoImport from 'unplugin-auto-import/vite'
 import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { createVersaTilesPlugin } from './scripts/vite-versatiles-plugin.ts'
+import { createRemoteProxy } from './scripts/vite-remote-proxy.ts'
 
 const loopbackHost = '127.0.0.1'
 const uiPort = 5173
 
-export default defineConfig(({ mode }) => ({
-  plugins: [
-    // 显式传入编译器：plugin-vue 默认在 buildStart（listen 时）才解析，此前 watcher 若收到文件变更，
-    // handleHotUpdate 会读取空 compiler 并把错误缓存给首个页面，形成登录页错误遮罩。
-    vue({ compiler: vueCompiler }),
-    AutoImport({ resolvers: [ElementPlusResolver()], dts: false }),
-    Components({ resolvers: [ElementPlusResolver()], dts: false }),
-    createVersaTilesPlugin(),
-    {
-      name: 'wrj-lan-marker',
-      transformIndexHtml: () => mode === 'lan'
-        ? [{ tag: 'meta', attrs: { name: 'wrj-deployment', content: 'lan' }, injectTo: 'head' as const }]
-        : [],
-    },
-  ],
-  optimizeDeps: {
-    // 自动组件插件在懒路由转换时才注入样式，预构建可避免首次导航触发依赖重优化和整页重载。
-    include: [
-      'element-plus/es',
-      // 与当前模板及消息 API 使用的组件保持一致；新增组件时同步样式入口。
-      ...[
-        'alert', 'base', 'button', 'card', 'checkbox', 'collapse', 'collapse-item', 'container',
-        'date-picker', 'descriptions', 'descriptions-item', 'dialog', 'drawer', 'empty',
-        'form', 'form-item', 'input', 'input-number', 'loading', 'main', 'menu',
-        'menu-item', 'menu-item-group', 'message', 'message-box', 'option', 'option-group',
-        'popconfirm', 'progress', 'radio-button', 'radio-group', 'result', 'select',
-        'select-v2', 'skeleton', 'slider', 'step', 'steps', 'switch', 'tab-pane', 'table',
-        'table-column', 'tabs', 'tag', 'tooltip',
-      ].map((component) => `element-plus/es/components/${component}/style/css`),
+export default defineConfig(({ mode, command, isPreview }) => {
+  const target = loadEnv(mode, process.cwd(), 'VITE_').VITE_API_TARGET
+  if (mode === 'remote' && !target) throw new Error('请在 .env.remote.local 中配置 VITE_API_TARGET，再运行 npm run dev:remote。')
+  const proxy = target ? createRemoteProxy(target) : undefined
+  return {
+    plugins: [
+      // 显式传入编译器：plugin-vue 默认在 buildStart（listen 时）才解析，此前 watcher 若收到文件变更，
+      // handleHotUpdate 会读取空 compiler 并把错误缓存给首个页面，形成登录页错误遮罩。
+      vue({ compiler: vueCompiler }),
+      AutoImport({ resolvers: [ElementPlusResolver()], dts: false }),
+      Components({ resolvers: [ElementPlusResolver()], dts: false }),
+      !target && createVersaTilesPlugin(),
+      {
+        name: 'wrj-lan-marker',
+        transformIndexHtml: () => mode === 'lan'
+          ? [{ tag: 'meta', attrs: { name: 'wrj-deployment', content: 'lan' }, injectTo: 'head' as const }]
+          : [],
+      },
     ],
-  },
-  server: {
-    host: loopbackHost,
-    port: uiPort,
-    strictPort: true,
-  },
-  preview: {
-    host: loopbackHost,
-    port: uiPort,
-    strictPort: true,
-  },
-}))
+    optimizeDeps: {
+      // 自动组件插件在懒路由转换时才注入样式，预构建可避免首次导航触发依赖重优化和整页重载。
+      include: [
+        'element-plus/es',
+        // 与当前模板及消息 API 使用的组件保持一致；新增组件时同步样式入口。
+        ...[
+          'alert', 'base', 'button', 'card', 'checkbox', 'collapse', 'collapse-item', 'container',
+          'date-picker', 'descriptions', 'descriptions-item', 'dialog', 'drawer', 'empty',
+          'form', 'form-item', 'input', 'input-number', 'loading', 'main', 'menu',
+          'menu-item', 'menu-item-group', 'message', 'message-box', 'option', 'option-group',
+          'popconfirm', 'progress', 'radio-button', 'radio-group', 'result', 'select',
+          'select-v2', 'skeleton', 'slider', 'step', 'steps', 'switch', 'tab-pane', 'table',
+          'table-column', 'tabs', 'tag', 'tooltip',
+        ].map((component) => `element-plus/es/components/${component}/style/css`),
+      ],
+    },
+    server: {
+      proxy: command === 'serve' && !isPreview ? proxy : undefined,
+      host: loopbackHost,
+      port: uiPort,
+      strictPort: true,
+    },
+    preview: {
+      proxy: {},
+      host: loopbackHost,
+      port: uiPort,
+      strictPort: true,
+    },
+  }
+})

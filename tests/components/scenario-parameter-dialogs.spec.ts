@@ -1,11 +1,14 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
+import { toRaw } from 'vue'
 import { describe, expect, it } from 'vitest'
 import type { Jammer, JammerUiExtension, Link, ScenarioConfig, ScenarioLinkSettings, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import JammerEditorDialog from '../../src/components/scenarios/JammerEditorDialog.vue'
 import LinkEditorDialog from '../../src/components/scenarios/LinkEditorDialog.vue'
 import LinkSettingsPanel from '../../src/components/scenarios/LinkSettingsPanel.vue'
 import ScriptPreview from '../../src/components/scenarios/ScriptPreview.vue'
+import { createScenarioSnapshot } from '../../src/features/scenarios/scenario-snapshot'
+import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import { createTemplateScenario } from '../fixtures/template-scenario'
@@ -339,6 +342,35 @@ describe('干扰带宽档位和链路对准', () => {
     })
     return { wrapper, jammer, config }
   }
+
+  it('可选干扰时序未填写或清空时省略键，已填值按原值序列化', async () => {
+    const { wrapper, jammer } = openJammer()
+    expect(wrapper.findAll('.field-hint').filter(hint => hint.text() === '需要服务端同步更新后才能保存')).toHaveLength(2)
+    const serialized = () => {
+      const draft = createTemplateScenario()
+      draft.config.jammers[0] = structuredClone(toRaw(wrapper.emitted('apply')!.at(-1)![0] as Jammer))
+      expect(inspectScenarioConfig(draft.config, 'write').result.errors).toEqual([])
+      return JSON.stringify(createScenarioSnapshot(draft))
+    }
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(serialized()).not.toMatch(/detectionDelayS|jammingDurationS/)
+    inputNumber(wrapper, 'jammer-detection-delay').vm.$emit('update:modelValue', 0)
+    inputNumber(wrapper, 'jammer-jamming-duration').vm.$emit('update:modelValue', 30)
+    await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+    expect(JSON.parse(serialized()).config.jammers[0]).toMatchObject({ detectionDelayS: 0, jammingDurationS: 30 })
+    for (const empty of [undefined, null, Number.NaN]) {
+      inputNumber(wrapper, 'jammer-detection-delay').vm.$emit('update:modelValue', empty)
+      inputNumber(wrapper, 'jammer-jamming-duration').vm.$emit('update:modelValue', empty)
+      await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+      const applied = wrapper.emitted('apply')!.at(-1)![0]
+      expect(applied).not.toHaveProperty('detectionDelayS')
+      expect(applied).not.toHaveProperty('jammingDurationS')
+      expect(serialized()).not.toMatch(/detectionDelayS|jammingDurationS/)
+    }
+    expect(jammer).not.toHaveProperty('detectionDelayS')
+    expect(jammer).not.toHaveProperty('jammingDurationS')
+    wrapper.unmount()
+  })
 
   it('按方式切换带宽，瞄准只读 5 MHz，扫频保留原值并允许自由输入', async () => {
     const { wrapper, jammer } = openJammer()

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
+import { frameJammerExecutions } from '../../features/situation/frame-evidence'
 import ReportChart from './ReportChart.vue'
 import { reportTime } from '../../features/reports/local-report'
 import type {
@@ -38,13 +39,16 @@ watch(() => props.report.reportId, clearFilters)
 const ordinarySwitchEvents = computed(() => props.events.filter((event): event is SwitchEvent => event.type === 'LINK_SWITCH' && inRange(event.time)
     && (!node.value || (props.report.timeSeries ?? []).some(link => [event.newLinkId, event.oldLinkId].includes(link.linkId) && [link.sourcePlatformId, link.targetPlatformId].includes(node.value)))
     && (!linkId.value || event.newLinkId === linkId.value || event.oldLinkId === linkId.value)))
-const jammer = computed(() => {
-  const evidence = ordinaryFrame.value?.evidence.jammerExecution
-  if (!evidence || rangeError.value || (node.value && evidence.targetPlatformId !== node.value)
-    || (linkId.value && !(props.report.timeSeries ?? []).some(link => link.linkId === linkId.value && [link.sourcePlatformId, link.targetPlatformId].includes(evidence.targetPlatformId)))) return null
-  const start = Math.max(evidence.startTime, from.value ?? evidence.startTime)
-  const end = Math.min(evidence.startTime + evidence.duration, to.value ?? Infinity)
-  return end < start ? null : { ...evidence, startTime: start, duration: end - start }
+const jammers = computed(() => {
+  const frame = ordinaryFrame.value
+  if (!frame || rangeError.value) return []
+  return frameJammerExecutions(frame).flatMap(evidence => {
+    if ((node.value && evidence.targetPlatformId !== node.value)
+      || (linkId.value && !(props.report.timeSeries ?? []).some(link => link.linkId === linkId.value && [link.sourcePlatformId, link.targetPlatformId].includes(evidence.targetPlatformId)))) return []
+    const start = Math.max(evidence.startTime, from.value ?? evidence.startTime)
+    const end = Math.min(evidence.startTime + evidence.duration, to.value ?? Infinity)
+    return end < start ? [] : [{ ...evidence, startTime: start, duration: end - start }]
+  })
 })
 
 /** 计算一组数值的平均值，并在空集合时返回 0。 */
@@ -147,14 +151,16 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       </el-tab-pane>
 
       <el-tab-pane label="干扰影响" name="interference">
-        <el-descriptions v-if="jammer" :column="3" border>
-          <el-descriptions-item label="干扰设备">{{ jammer.jammerId }}</el-descriptions-item>
-          <el-descriptions-item label="目标节点">{{ jammer.targetPlatformId }}</el-descriptions-item>
-          <el-descriptions-item label="功率">{{ jammer.power }} W</el-descriptions-item>
-          <el-descriptions-item label="频率">{{ jammer.frequency }} MHz</el-descriptions-item>
-          <el-descriptions-item label="带宽">{{ jammer.bandwidth }} MHz</el-descriptions-item>
-          <el-descriptions-item label="持续时间">{{ jammer.duration }} s</el-descriptions-item>
-        </el-descriptions>
+        <template v-if="jammers.length">
+          <el-descriptions v-for="(jammer, index) in jammers" :key="index" :column="3" border data-testid="report-jammer-evidence">
+            <el-descriptions-item label="干扰设备">{{ jammer.jammerId }}</el-descriptions-item>
+            <el-descriptions-item label="目标节点">{{ jammer.targetPlatformId }}</el-descriptions-item>
+            <el-descriptions-item label="功率">{{ jammer.power }} W</el-descriptions-item>
+            <el-descriptions-item label="频率">{{ jammer.frequency }} MHz</el-descriptions-item>
+            <el-descriptions-item label="带宽">{{ jammer.bandwidth }} MHz</el-descriptions-item>
+            <el-descriptions-item label="持续时间">{{ jammer.duration }} s</el-descriptions-item>
+          </el-descriptions>
+        </template>
         <el-empty v-else description="暂无数据" :image-size="72" />
       </el-tab-pane>
 

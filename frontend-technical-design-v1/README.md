@@ -2,9 +2,39 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、10 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-03 D1 运动与干扰方位配置恢复”；下方其余记录均为历史，旧哈希保持原样。
+当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-05 WebSocket 可选字段与本地干扰时序”；下方其余记录均为历史，旧哈希保持原样。
 
-## D1 运动与干扰方位配置恢复（2026-11-03，当前冻结记录）
+## WebSocket 可选字段与本地干扰时序（2026-11-05，当前冻结记录）
+
+OpenAPI **1.10.0**，操作数量不变。质量模型、链路阈值、损耗模型及同步版本改为非空字符串；旧字面量仍有效。`SimulationState` 可选携带 `mode`、正数 `speedMultiplier`，START 初始化，SET_SPEED 更新，STOP、reset、运行结束清除。`FrameEvidence.jammerExecution` 继续必填，`jammerExecutions` 的兼容读取规则不变，确定性夹具不迁移。
+
+损耗可选海面多径／大气／云雨分量；链路投影可选干信比与 BER 阈值、抖动抑制；链路详情可选结构化 `issues`。`DetectionEvent` 可选成对正频段（min ≤ max）及 `detected`；缺省按已发现，false 不得用于闭环。`jammer.event` 接受 JammerStatusData、SensorStatusData、JammingDecisionEvent、DetectionEvent，所有推送继续校验任务、帧与时刻。决策结构接受 START／STOP，REST 闭环仍只接受 START；决策按编号去重，传感器按编号替换。新增字段缺省时显示“暂无数据”。INTERFERENCE／LINK_DOWN 切换按选路、冷却、稳定性及原链路证据校验，不用 BER 改善代替原因。
+
+`detectionDelayS` 为 0～仿真总时长，`jammingDurationS` 大于 0 且不超过仿真总时长，均可省略。它们只控制本地 link_calc 缺失时的 stub：目标连续处于触发半径内开始计时，离开取消等待；时长到期后须离开释放半径才重新就绪；3 秒检查周期有约 ±3 秒误差。对接方 TXT 及 calculator() 保持不变。远端旧服务未更新前仅可省略新配置字段，不能用配置保存或单测证明远端引擎时序生效。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts` | `A9516FBC6B12870FC9675508CE85790854A664F5DE6675AFF27B71ED20164BE7` |
+| `contracts/mock-api.openapi.yaml` | `1A46DE5393280673FEC0610390E71BFF963887EFF0A444F81604DA6F2FE4BB9D` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `8592DD63B971BA2AE94F0BA14964109E0BFEAC0C003C55EEADB63E7AA47D38B4` |
+| `contracts/deterministic-fixtures.json（未修改）` | `6A1B90E0B6932DE7518775B0F2107767906755C56D47F329F7092DB05245F616` |
+
+## 干扰遥测兼容扩展（2026-11-05，历史冻结记录）
+
+按用户确认的阶段 3 第 7 条修订，OpenAPI 更新为 **1.9.5**（84 操作 / 40 写操作不变）：`FrameEvidence.jammerExecution` 保留必填单对象，新增可选 `jammerExecutions`。复数数组存在时必须非空，每项符合 `JammerExecutionEvidence`，首项与单对象深相等（跨字段一致性由遥测运行时校验）。服务端有多台执行证据时同时发送两字段；统一通过 `frameJammerExecutions` 读取，旧载荷无需改名或迁移。确定性夹具及版本字面量保持不变；`runtime.state` 不含 mode/speed、侦测事件不含频段/detected 继续接受。
+
+阶段 4 的 `Jammer.detectionDelayS` / `jammingDurationS` 为可选非负有限秒数；未填写或清空时删除键，不发送 null / NaN，不注入默认值。两个输入框均提示“需要服务端同步更新后才能保存”。该合同扩展允许服务端读写配置，本轮未新增 mission 时序 stub 或将这两个字段写入脚本，不据此宣称真实引擎时序生效；旧服务端仍可能拒绝填写后的新键，联调前需同步更新。回退前应保留含新字段的配置，不能用旧程序覆盖保存；本轮不改用户数据库。
+
+阶段 6 的最后一项实测须在具有 `Release/Release/mission.exe` 的机器上以 `npm run dev` 执行真实 mission 干扰延迟／持续时长 stub，核对实际引擎日志与启停时刻。远程联调入口 `http://192.168.1.49:8080` 的服务端更新前无法验证，单元测试与投影层响应不替代该项实测。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts` | `DB6D9F2D70C9048D95D161B41FDE1AFD71BA3BE94FCEB007AD9F7F298EB541DD` |
+| `contracts/mock-api.openapi.yaml` | `8C9909579B5CF3D11DD17B1E1F78DCDE4A22E1D4C7FDF4AC57D206F1F806E92B` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `954B8A2183DB35D71FBE29C8A6C4A2BA5B25BE4CD752BB15FCED483B19B0ECF3` |
+| `contracts/deterministic-fixtures.json（未修改）` | `6A1B90E0B6932DE7518775B0F2107767906755C56D47F329F7092DB05245F616` |
+
+## D1 运动与干扰方位配置恢复（2026-11-03，历史冻结记录）
 
 依据 V1.2 测试大纲 GNZB-08 / GNZB-15，OpenAPI 更新为 **1.9.4**（84 操作 / 40 写操作不变）：普通航点恢复必填 `arrivalTime`、可选 `heading` / `acceleration`，干扰界面扩展恢复必填 `direction`。平台初始航向、干扰持续时间、自动检测、温湿度、雨衰等不恢复；盘旋/返航点仍使用原 `TemplateRoutePoint`。
 

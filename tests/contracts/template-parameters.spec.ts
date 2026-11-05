@@ -34,6 +34,45 @@ function config(): ScenarioConfig {
 }
 
 describe('新模板通信参数', () => {
+  it('干扰时序为兼容可选字段，合同与读写校验均拒绝 null、负数及非数值', () => {
+    const validate = templateSchema('ScenarioConfigWrite')
+    const config = createTemplateScenario().config
+    expect(validate(config)).toBe(true)
+    for (const field of ['detectionDelayS', 'jammingDurationS'] as const) {
+      for (const value of (field === 'detectionDelayS' ? [0, 1.5, 30, config.scenario.duration] : [1.5, 30, config.scenario.duration])) {
+        const candidate = structuredClone(config)
+        candidate.jammers[0]![field] = value
+        expect(validate(candidate), JSON.stringify(validate.errors)).toBe(true)
+        expect(inspectScenarioConfig(candidate, 'write').result.valid).toBe(true)
+        expect(inspectScenarioConfig(candidate, 'read').result.valid).toBe(true)
+      }
+      for (const value of [null, -1, '3', [], NaN, Infinity, ...(field === 'jammingDurationS' ? [0] : [])]) {
+        const candidate = structuredClone(config)
+        Object.assign(candidate.jammers[0]!, { [field]: value })
+        // JSON 无法表达 NaN / Infinity，运行时入口也必须拒绝。
+        if (typeof value !== 'number' || Number.isFinite(value)) expect(validate(candidate)).toBe(false)
+        for (const mode of ['read', 'write'] as const) {
+          expect(inspectScenarioConfig(candidate, mode).result.errors).toContainEqual(expect.objectContaining({ code: 'JAMMER_TIMING_INVALID', fieldPath: `jammers[0].${field}` }))
+        }
+      }
+      const tooLong = structuredClone(config)
+      tooLong.jammers[0]![field] = config.scenario.duration + 1
+      expect(inspectScenarioConfig(tooLong, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'JAMMER_TIMING_INVALID', fieldPath: `jammers[0].${field}` }))
+    }
+  })
+
+  it('执行证据合同保留单对象必填并允许非空复数数组', () => {
+    const validate = templateSchema('FrameEvidence')
+    const evidence = structuredClone(fixtureSource.frame.evidence)
+    expect(validate(evidence)).toBe(true)
+    expect(validate({ ...evidence, jammerExecutions: [evidence.jammerExecution] })).toBe(true)
+    const { jammerExecution, ...missingRequired } = evidence
+    expect(validate({ ...missingRequired, jammerExecutions: [jammerExecution] })).toBe(false)
+    for (const jammerExecutions of [[], null, [null], [{ ...jammerExecution, extra: true }]]) {
+      expect(validate({ ...evidence, jammerExecutions })).toBe(false)
+    }
+  })
+
   it('模板对照场景是完整的正向写入样例，并由冻结 ScenarioConfigWrite schema 接受', () => {
     const draft = createTemplateScenario()
     expect(inspectScenarioConfig(draft.config, 'write').result).toMatchObject({ valid: true, errors: [] })

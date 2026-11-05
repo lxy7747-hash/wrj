@@ -2,6 +2,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ClosedLoopContext, DetectionEvent, JammingParameterSet, Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import { frameJammerExecutions } from '../../src/features/situation/frame-evidence'
 import { validateCandidateSnapshot } from '../../src/features/situation/situation-model'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
@@ -63,6 +64,268 @@ describe('P3-2 遥测 Store', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+
+  function envelope(topic: RealtimeEnvelope<unknown>['topic'], payload: unknown, sequence = 1) {
+    return { type: 'event', schemaVersion: '1.0', topic, taskId: frame.taskId, sequence,
+      frameId: frame.frameId, simulationTime: frame.simulationTime, payload }
+  }
+
+  function acceptFrame(candidate = frame) {
+    const store = useTelemetryStore()
+    expect(store.acceptEnvelope(envelope('simulation.frame', candidate))).toBe(true)
+    return store
+  }
+
+  const decision = {
+    decisionId: 'DEC-DET-042', runId: frame.runId, frameId: frame.frameId, detectionEventId: 'DET-042',
+    targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03', jammerId: 'JAM-WB-01-TX',
+    action: 'START', linkStatus: 'DEGRADED', effectiveFrameId: frame.frameId, reason: 'AUTO_DETECTION_DET-042',
+  } as const
+
+  it.each([
+    ['link', 'qualityModelVersion'], ['ui', 'thresholdVersion'], ['loss', 'modelVersion'],
+    ['sync', 'configVersion'], ['sync', 'engineVersion'], ['sync', 'uiVersion'],
+  ])('版本 %s.%s 接受新版本，拒绝空值及非字符串', (kind, key) => {
+    const candidate = structuredClone(frame)
+    const target = kind === 'link' ? candidate.links[0]! : kind === 'ui' ? candidate.uiLinks[0]!
+      : kind === 'loss' ? candidate.evidence.losses[0]! : candidate.evidence.synchronization
+    Reflect.set(target, key, 'REMOTE-2.0')
+    expect(isTelemetryFrame(candidate)).toBe(true)
+    for (const value of ['', null, [], 2]) {
+      Reflect.set(target, key, value)
+      expect(isTelemetryFrame(candidate)).toBe(false)
+    }
+  })
+
+  it.each([
+    ['loss', 'seaMultipathLossDb', 0, [NaN, Infinity, '1', null]],
+    ['loss', 'atmosphericLossDb', 2, [NaN, Infinity, [], null]],
+    ['loss', 'cloudRainLossDb', 3, [NaN, Infinity, true, null]],
+    ['ui', 'jsrThresholdDb', -5, [NaN, Infinity, '1', null]],
+    ['ui', 'warningBerThreshold', 0, [-0.1, 1.1, NaN, '1', null]],
+    ['ui', 'emergencyBerThreshold', 1, [-1, 1.1, Infinity, [], null]],
+    ['ui', 'jitterSuppressed', false, [0, 'true', null, []]],
+    ['link', 'issues', [{ severity: 'ERROR', code: 'REMOTE_INVALID', fieldPath: 'frequency', message: '频率无效' }],
+      [null, {}, [null], [{ severity: 'FATAL', code: 'X', fieldPath: 'frequency', message: '无效' }],
+        [{ severity: 'ERROR', code: 'X', fieldPath: 'frequency', message: '无效', extra: true }]]],
+  ])('可选字段 %s.%s 的有值、缺省及非法值', (kind, key, valid, invalid) => {
+    const candidate = structuredClone(frame)
+    const target = kind === 'loss' ? candidate.evidence.losses[0]! : kind === 'ui' ? candidate.uiLinks[0]! : candidate.links[0]!
+    expect(isTelemetryFrame(candidate)).toBe(true)
+    Reflect.set(target, key as string, valid)
+    expect(isTelemetryFrame(candidate)).toBe(true)
+    for (const value of invalid as unknown[]) {
+      Reflect.set(target, key as string, value)
+      expect(isTelemetryFrame(candidate)).toBe(false)
+    }
+    Reflect.deleteProperty(target, key as string)
+    expect(isTelemetryFrame(candidate)).toBe(true)
+  })
+
+  it('runtime.state 支持可选模式与倍速，非法值不推进序号', async () => {
+    const store = acceptFrame()
+    const canonical = { ...fixtureSource.run.canonical, mode: 'INTERACTIVE_SINGLE', speedMultiplier: 16 }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([{ ...fixtureSource.run, canonical }])))
+    expect(store.acceptEnvelope(envelope('runtime.state', canonical))).toBe(true)
+    await vi.waitFor(() => expect(useSimulationStore().run?.canonical).toEqual(canonical))
+    for (const payload of [
+      { ...canonical, mode: 'INVALID' }, { ...canonical, mode: ['INTERACTIVE_SINGLE'] },
+      ...[0, -1, NaN, Infinity, '2', null].map(speedMultiplier => ({ ...canonical, speedMultiplier })),
+      { ...canonical, extra: true },
+    ]) {
+      expect(store.acceptEnvelope(envelope('runtime.state', payload, 2))).toBe(false)
+      expect(store.topicSequences['runtime.state']).toBe(1)
+    }
+  })
+
+  it('侦测频段成对且递增，detected 为布尔；未发现事件不能触发闭环', async () => {
+    const store = acceptFrame()
+    const detection = { ...fixtureSource.events[0], eventId: 'DET-NEW', dedupeKey: 'DET-NEW',
+      frequencyMinMHz: 100, frequencyMaxMHz: 200, detected: false }
+    const invalid = [
+      { ...detection, frequencyMinMHz: undefined }, { ...detection, frequencyMaxMHz: undefined },
+      ...[0, -1, NaN, Infinity, '100', null].map(frequencyMinMHz => ({ ...detection, frequencyMinMHz })),
+      ...[0, 99, NaN, Infinity, '200', null].map(frequencyMaxMHz => ({ ...detection, frequencyMaxMHz })),
+      ...['false', 0, null].map(detected => ({ ...detection, detected })),
+    ]
+    for (const payload of invalid) {
+      expect(store.acceptEnvelope(envelope('jammer.event', payload))).toBe(false)
+      expect(store.topicSequences['jammer.event']).toBe(0)
+    }
+    const noMax = { ...detection } as Record<string, unknown>; delete noMax.frequencyMaxMHz
+    const noMin = { ...detection } as Record<string, unknown>; delete noMin.frequencyMinMHz
+    expect(store.acceptEnvelope(envelope('jammer.event', noMax))).toBe(false)
+    expect(store.acceptEnvelope(envelope('jammer.event', noMin))).toBe(false)
+    expect(store.acceptEnvelope(envelope('jammer.event', detection))).toBe(true)
+    const fetch = vi.fn(); vi.stubGlobal('fetch', fetch)
+    expect(await store.runClosedLoop(frame.runId, { frameId: frame.frameId, detectionEventId: 'DET-NEW',
+      targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' })).toBe(false)
+    expect(store.closedLoopResultCode).toBe('TARGET_NOT_DETECTED')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('jammer.event 四类分流：状态覆盖、自动 START/STOP、侦测追加；REST 与推送决策幂等', async () => {
+    const store = acceptFrame()
+    let sequence = 0
+    const send = (payload: unknown) => store.acceptEnvelope(envelope('jammer.event', payload, ++sequence))
+    expect(send({ ...frame.platforms.flatMap(platform => platform.jammers)[0]!, power: 99 })).toBe(true)
+    const status = { type: 'SENSOR_STATUS', time: 42, sensorId: 'ESM-01', platformId: 'STN-01', active: true }
+    expect(send(status)).toBe(true)
+    expect(store.sensorStatuses).toEqual([status])
+    expect(send({ ...status, active: false, scanCoveragePercent: 0 })).toBe(true)
+    expect(store.sensorStatuses).toEqual([{ ...status, active: false, scanCoveragePercent: 0 }])
+    expect(send({ type: 'JAMMING_DECISION', decision })).toBe(true)
+    expect(send({ type: 'JAMMING_DECISION', decision })).toBe(true)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(decision)))
+    expect(await store.runClosedLoop(frame.runId, { frameId: frame.frameId, detectionEventId: 'DET-042',
+      targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' })).toBe(true)
+    expect(store.jammingDecisions).toEqual([decision])
+    const stop = { ...decision, decisionId: 'DEC-STOP', action: 'STOP' }
+    expect(send({ type: 'JAMMING_DECISION', decision: stop })).toBe(true)
+    expect(store.jammingDecisions).toEqual([decision, stop])
+    expect(send({ ...fixtureSource.events[0], eventId: 'DET-NEW', dedupeKey: 'DET-NEW' })).toBe(true)
+    expect(store.events).toHaveLength(1)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(stop)))
+    expect(await store.runClosedLoop(frame.runId, { frameId: frame.frameId, detectionEventId: 'DET-042',
+      targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' })).toBe(false)
+    expect(store.closedLoopResultCode).toBe('INVALID_RESPONSE')
+  })
+
+  it('新增推送严格校验身份、字段、边界；拒绝不改变列表与序号', () => {
+    const store = acceptFrame()
+    const status = { type: 'SENSOR_STATUS', time: 42, sensorId: 'ESM-01', platformId: 'STN-01', active: true }
+    for (const payload of [
+      ...[-1, 101, NaN, Infinity, '50', null].map(scanCoveragePercent => ({ ...status, scanCoveragePercent })),
+      { ...status, time: 41 }, { ...status, platformId: 'UNKNOWN' }, { ...status, sensorId: '' },
+      { ...status, active: 1 }, { ...status, extra: true },
+      { type: 'JAMMING_DECISION', decision: null }, { type: 'JAMMING_DECISION', decision, extra: true },
+      ...[{ action: 'INVALID' }, { runId: 'RUN-OTHER' }, { frameId: 'F-OTHER' }, { effectiveFrameId: 'F-OTHER' },
+        { targetPlatformId: 'UNKNOWN' }, { jammerId: 'UNKNOWN' }, { affectedLinkId: 'UNKNOWN' },
+        { decisionId: '' }, { linkStatus: 'UNKNOWN' }, { extra: true }]
+        .map(change => ({ type: 'JAMMING_DECISION', decision: { ...decision, ...change } })),
+    ]) {
+      expect(store.acceptEnvelope(envelope('jammer.event', payload))).toBe(false)
+      expect(store.topicSequences['jammer.event']).toBe(0)
+      expect(store.sensorStatuses).toEqual([])
+      expect(store.jammingDecisions).toEqual([])
+    }
+    for (const payload of [status, { type: 'JAMMING_DECISION', decision }]) {
+      expect(store.acceptEnvelope({ ...envelope('jammer.event', payload), taskId: 'TASK-OTHER' })).toBe(false)
+      expect(store.acceptEnvelope({ ...envelope('jammer.event', payload), frameId: 'F-OTHER' })).toBe(false)
+      expect(store.acceptEnvelope({ ...envelope('jammer.event', payload), simulationTime: 43 })).toBe(false)
+    }
+  })
+
+  it.each(['reset', 'reload', 'gap', 'frame', 'run'] as const)('新增状态不跨 %s 边界残留', async boundary => {
+    const store = acceptFrame()
+    expect(store.acceptEnvelope(envelope('jammer.event', { type: 'SENSOR_STATUS', time: 42, sensorId: 'ESM-01', platformId: 'STN-01', active: true }))).toBe(true)
+    expect(store.acceptEnvelope(envelope('jammer.event', { type: 'JAMMING_DECISION', decision }, 2))).toBe(true)
+    if (boundary === 'reset') store.disconnectAndReset()
+    else if (boundary === 'reload' || boundary === 'gap') {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(successResponse(frame)).mockResolvedValueOnce(successResponse(fixtureSource.events)))
+      if (boundary === 'gap') await store.recoverFromGap()
+      else expect(await store.loadFrame()).toBe(true)
+    } else {
+      const next = structuredClone(frame)
+      if (boundary === 'run') {
+        next.runId = 'RUN-OTHER'; next.evidence.routeDecisions.forEach(item => { item.runId = next.runId })
+      } else {
+        next.frameId = 'F-NEXT'; next.uiLinks.forEach(item => { item.frameId = next.frameId })
+        next.evidence.synchronization.effectiveFrameId = next.frameId
+        next.evidence.routeDecisions.forEach(item => { item.frameId = next.frameId })
+      }
+      expect(store.acceptEnvelope({ ...envelope('simulation.frame', next, 2), frameId: next.frameId })).toBe(true)
+    }
+    expect(store.sensorStatuses).toEqual([])
+    expect(store.jammingDecisions).toEqual([])
+  })
+
+  it.each(['BER_THRESHOLD_AND_HYSTERESIS', 'COOLDOWN_ACTIVE', 'INTERFERENCE', 'LINK_DOWN'])('切换原因 %s 的接受与拒绝', reason => {
+    const store = acceptFrame()
+    const base = fixtureSource.events.find(event => event.type === 'LINK_SWITCH' && event.reason === reason)
+      ?? fixtureSource.events.find(event => event.type === 'LINK_SWITCH')!
+    const event = { ...base, reason, eventId: 'SW-NEW', dedupeKey: 'SW-NEW' }
+    expect(store.acceptEnvelope(envelope('switch.event', event))).toBe(true)
+    const invalid = reason === 'COOLDOWN_ACTIVE' ? { ...event, cooldownRemainingS: 0 }
+      : reason === 'BER_THRESHOLD_AND_HYSTERESIS' ? { ...event, hysteresisSatisfied: false }
+        : { ...event, stabilityFrames: 0 }
+    expect(store.acceptEnvelope(envelope('switch.event', invalid, 2))).toBe(false)
+    expect(store.topicSequences['switch.event']).toBe(1)
+  })
+
+  it('干扰与中断切换不要求 BER 改善，但仍绑定选路、稳定性和原链路中断证据', () => {
+    const store = acceptFrame()
+    // 通过真实 link.metric 更新指标；原帧的选路证据不能另选链路。
+    const summaries = structuredClone(frame.linkSummaries)
+    const old = summaries.find(item => item.linkKey === frame.linkSummaries.find(item => item.currentBer === 0.00024)!.linkKey)!
+    old.currentBer = 1e-9
+    expect(store.acceptEnvelope(envelope('link.metric', summaries))).toBe(true)
+    const base = fixtureSource.events.find(event => event.type === 'LINK_SWITCH' && event.reason === 'BER_THRESHOLD_AND_HYSTERESIS')!
+    const event = { ...base, eventId: 'SW-INTERFERENCE', dedupeKey: 'SW-INTERFERENCE', reason: 'INTERFERENCE', oldBer: 1e-9, hysteresisSatisfied: false }
+    expect(store.acceptEnvelope(envelope('switch.event', event))).toBe(true)
+    expect(store.acceptEnvelope(envelope('switch.event', { ...event, newLinkId: 'L-SAT-02' }, 2))).toBe(false)
+    expect(store.acceptEnvelope(envelope('switch.event', { ...event, reason: 'LINK_DOWN', eventId: 'SW-DOWN', dedupeKey: 'SW-DOWN' }, 2))).toBe(true)
+    old.status = 'UP'
+    expect(store.acceptEnvelope(envelope('link.metric', summaries, 2))).toBe(true)
+    expect(store.acceptEnvelope(envelope('switch.event', { ...event, reason: 'LINK_DOWN' }, 3))).toBe(false)
+  })
+
+  it('旧服务端载荷：原帧、字面量版本和单台执行证据均保持兼容', () => {
+    const store = useTelemetryStore()
+    const legacy = fixtureSource.frame
+    expect(Object.keys(legacy.evidence)).toHaveLength(5)
+    expect(legacy.evidence).not.toHaveProperty('jammerExecutions')
+    expect(legacy.evidence.synchronization.configVersion).toBe('SCN-001-v4')
+    expect(isTelemetryFrame(legacy)).toBe(true)
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'simulation.frame',
+      taskId: legacy.taskId, sequence: 1, frameId: legacy.frameId, simulationTime: legacy.simulationTime, payload: legacy })).toBe(true)
+    expect(store.frame).toEqual(legacy)
+    expect(frameJammerExecutions(store.frame!)).toEqual([legacy.evidence.jammerExecution])
+  })
+
+  it('旧 runtime.state 不含 mode/speed，旧 DetectionEvent 不含频段和 detected 仍可接收', async () => {
+    const store = useTelemetryStore()
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'simulation.frame',
+      taskId: frame.taskId, sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: fixtureSource.frame })).toBe(true)
+    const runtime = fixtureSource.run.canonical
+    expect(runtime).not.toHaveProperty('mode')
+    expect(runtime).not.toHaveProperty('speed')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse([fixtureSource.run])))
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'runtime.state', taskId: frame.taskId,
+      sequence: 1, simulationTime: frame.simulationTime, payload: runtime })).toBe(true)
+    await vi.waitFor(() => expect(useSimulationStore().run?.runId).toBe(frame.runId))
+    const detection = fixtureSource.events.find(event => event.type === 'DETECTION')!
+    expect(Object.keys(detection).sort()).toEqual(['dedupeKey', 'detectionProbability', 'eventId', 'frameId', 'sensorId', 'sourceRegistryTime', 'targetPlatformId', 'time', 'type'])
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: frame.taskId,
+      sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: detection })).toBe(true)
+    expect(store.topicSequences).toMatchObject({ 'runtime.state': 1, 'jammer.event': 1 })
+  })
+
+  it('多台执行证据按字段深相等校验首项，拒绝空数组、非法成员及不一致字段', () => {
+    const first = frame.evidence.jammerExecution
+    const reordered = Object.fromEntries(Object.entries(first).reverse())
+    const second = { ...first, jammerId: 'JAM-SPOT-01-TX', power: 15 }
+    const candidate = { ...frame, evidence: { ...frame.evidence, jammerExecutions: [reordered, second] } }
+    expect(isTelemetryFrame(candidate)).toBe(true)
+    const store = useTelemetryStore()
+    const envelope = { type: 'event', schemaVersion: '1.0', topic: 'simulation.frame', taskId: frame.taskId,
+      sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: candidate }
+    expect(store.acceptEnvelope(envelope)).toBe(true)
+    expect(frameJammerExecutions(store.frame!)).toEqual([first, second])
+    const rejected = [[], null, undefined, [first, null], [first, { ...second, power: -1 }],
+      ...Object.entries(first).map(([key, value]) => [{ ...first, [key]: typeof value === 'number' ? value + 1 : `${value}-other` }])]
+    for (const jammerExecutions of rejected) {
+      const payload = { ...frame, evidence: { ...frame.evidence, jammerExecutions } }
+      expect(isTelemetryFrame(payload)).toBe(false)
+      expect(store.acceptEnvelope({ ...envelope, sequence: 2, payload })).toBe(false)
+      expect(store.topicSequences['simulation.frame']).toBe(1)
+      expect(store.frame).toEqual(candidate)
+    }
+    const { jammerExecution: _required, ...withoutSingular } = candidate.evidence
+    expect(isTelemetryFrame({ ...frame, evidence: withoutSingular })).toBe(false)
+    expect(isTelemetryFrame({ ...frame, evidence: { ...candidate.evidence, extra: true } })).toBe(false)
   })
 
   it('在没有固定遥测帧的真实运行中接收质量文件更新引用，不把它当作链路摘要', () => {
@@ -289,7 +552,7 @@ describe('P3-2 遥测 Store', () => {
     for (const [field, value, code] of [
       ['modulation', '16QAM', 'UNSUPPORTED_MODULATION'],
       ['coding', 'LDPC', 'UNSUPPORTED_CODING'],
-      ['qualityModelVersion', 'SNBER-2.0', 'QUALITY_MODEL_VERSION_MISMATCH'],
+      ['qualityModelVersion', '', 'QUALITY_MODEL_VERSION_MISMATCH'],
     ] as const) {
       const candidate = structuredClone(frame)
       const index = candidate.links.findIndex((link) => link.linkId === 'L-MW-01')
@@ -420,7 +683,7 @@ describe('P3-2 遥测 Store', () => {
 
   it.each([
     ['空阈值版本', 'thresholdVersion', ''],
-    ['未知阈值版本', 'thresholdVersion', 'LLZT-2.0'],
+    ['非字符串阈值版本', 'thresholdVersion', ['LLZT-2.0']],
     ['空判定原因', 'reason', ''],
     ['负稳定帧数', 'consecutiveFrames', -1],
     ['小数稳定帧数', 'consecutiveFrames', 1.5],
@@ -1167,7 +1430,7 @@ describe('P3-2 遥测 Store', () => {
       ...frame,
       evidence: {
         ...frame.evidence,
-        losses: [{ ...frame.evidence.losses[0], modelVersion: 'WRONG' }],
+        losses: [{ ...frame.evidence.losses[0], modelVersion: '' }],
       },
     })).toBe(false)
     expect(isTelemetryFrame({
@@ -1196,7 +1459,7 @@ describe('P3-2 遥测 Store', () => {
     expect(isTelemetryFrame({ ...frame, evidence: { ...frame.evidence, synchronization: undefined } })).toBe(false)
     expect(isTelemetryFrame({
       ...frame,
-      evidence: { ...frame.evidence, synchronization: { ...frame.evidence.synchronization, uiVersion: 'WRONG' } },
+      evidence: { ...frame.evidence, synchronization: { ...frame.evidence.synchronization, uiVersion: '' } },
     })).toBe(false)
     expect(isTelemetryFrame({
       ...frame,

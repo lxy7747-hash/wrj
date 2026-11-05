@@ -21,6 +21,7 @@ const detections = computed(() => telemetryStore.events.filter(
   (event): event is DetectionEvent => event.type === 'DETECTION' && event.sensorId === SENSOR_ID,
 ))
 const detection = computed(() => detections.value.at(-1) ?? null)
+const sensorStatus = computed(() => telemetryStore.sensorStatuses.find(status => status.sensorId === SENSOR_ID && status.platformId === sensor.value?.platformId) ?? null)
 const targetPlatform = computed(() => (
   telemetryStore.frame?.platforms.find((item) => item.platformId === detection.value?.targetPlatformId) ?? null
 ))
@@ -56,7 +57,7 @@ const displayState = computed<FixedEvidenceState>(() => {
 
 const stateLabel = computed(() => ({
   LOADING: '加载中', VALIDATING: '校验中',
-  SUCCESS: '已检出', EMPTY: '未检出', ERROR: '数据错误',
+  SUCCESS: detection.value?.detected === false ? '未发现' : '已发现', EMPTY: '未检出', ERROR: '数据错误',
 })[displayState.value])
 
 const stateType = computed(() => ({
@@ -142,6 +143,8 @@ onBeforeUnmount(() => {
         <el-descriptions-item label="所属平台">{{ hostPlatform?.name ?? sensor.platformId }}</el-descriptions-item>
         <el-descriptions-item label="覆盖方向">{{ sensorExtension.direction === 'OMNI' ? '全向' : `${sensorExtension.direction}°` }}</el-descriptions-item>
         <el-descriptions-item label="事件编号">{{ detection.eventId }}</el-descriptions-item>
+        <el-descriptions-item label="侦测结果">{{ detection.detected === false ? '未发现' : '已发现' }}</el-descriptions-item>
+        <el-descriptions-item label="侦测频段">{{ detection.frequencyMinMHz === undefined ? '暂无数据' : `${detection.frequencyMinMHz}–${detection.frequencyMaxMHz} MHz` }}</el-descriptions-item>
         <el-descriptions-item label="侦测目标">{{ targetPlatform.name }}（{{ targetPlatform.platformId }}）</el-descriptions-item>
         <el-descriptions-item label="侦测概率">{{ Math.round(detection.detectionProbability * 100) }}%</el-descriptions-item>
         <el-descriptions-item label="仿真时刻">{{ detection.time }} s</el-descriptions-item>
@@ -153,6 +156,10 @@ onBeforeUnmount(() => {
         数据来自场景配置和仿真侦测事件；浏览器只校验配置、目标、概率、时戳与同帧关系，不复现传感器探测算法。
       </p>
     </div>
+    <el-descriptions v-if="sensor && telemetryStore.frame && (displayState === 'SUCCESS' || displayState === 'EMPTY')" :column="2" border size="small" data-testid="sensor-runtime-status">
+      <el-descriptions-item label="工作状态">{{ sensorStatus === null ? '暂无数据' : sensorStatus.active ? '开启' : '关闭' }}</el-descriptions-item>
+      <el-descriptions-item label="扫描覆盖">{{ sensorStatus?.scanCoveragePercent === undefined ? '暂无数据' : `${sensorStatus.scanCoveragePercent}%` }}</el-descriptions-item>
+    </el-descriptions>
   </el-card>
 </template>
 

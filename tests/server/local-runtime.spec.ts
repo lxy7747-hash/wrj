@@ -56,10 +56,13 @@ describe('本地运行包兼容（P4）', () => {
     expect(rear).toContain('target.SetAuxData("kReturnReconVideo_out_port_name", "c_band_downlink");')
     expect(rear).toContain('target.SetAuxData("kReturnReconVideo_data_size", "8192");')
     // 干扰：地面站触发半径 0（不触发）、机载 10/15 nm，模式取干扰类型。
-    expect(rear).toMatch(new RegExp(`LocalStubJammer\\("jammer_station_01", "prophet_jammer", "broadband_jamming", 0, ${35 * 1852}, engaged\\d\\);`, 'u'))
-    expect(rear).toMatch(/LocalStubJammer\("jammer_airborne_01", "alq99_jammer", "\w+_jamming", 18520, 27780, engaged\d\);/u)
-    expect(rear).toContain('if (!aEngaged && aTrigger > 0 && nearest <= aTrigger)')
-    expect(rear).toContain('weapon.SelectMode("default");\n        weapon.TurnOff();')
+    expect(rear).toContain('WsfPlatform jammer0 = WsfSimulation.FindPlatform("jammer_station_01");')
+    expect(rear).toContain('WsfWeapon weapon0 = jammer0.Weapon("prophet_jammer");')
+    expect(rear).toContain('if (0 > 0 && nearest0 <= 0)')
+    expect(rear).toContain(`else if (nearest0 > ${35 * 1852})`)
+    expect(rear).toContain('if (18520 > 0 && nearest1 <= 18520)')
+    expect(rear).toContain('else if (nearest1 > 27780)')
+    expect(rear).toContain('weapon0.SelectMode("default"); weapon0.TurnOff();')
     expect(JSON.parse(files['mapping.json']!).localRuntime).toMatchObject({ linkCalc: 'MISSING_PROCESSOR_STUBBED' })
   })
 

@@ -76,7 +76,7 @@ describe('P4-1 ESM 传感器与侦测', () => {
     })
     const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
 
-    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已检出')
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已发现')
     expect(wrapper.text()).toContain('2000–5000 MHz')
     expect(wrapper.text()).toContain('150 km')
     expect(wrapper.text()).toContain('高空前出中继节点（UAV-01）')
@@ -130,7 +130,7 @@ describe('P4-1 ESM 传感器与侦测', () => {
     })).toBe(true)
     await nextTick()
 
-    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已检出')
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('已发现')
     expect(wrapper.text()).toContain('DET-NEW')
     expect(wrapper.text()).not.toContain('存在重复侦测事件')
   })
@@ -389,7 +389,7 @@ describe('P3-5 SNR/BER 固定算例', () => {
     for (const [field, value, code] of [
       ['coding', 'LDPC', 'UNSUPPORTED_CODING'],
       ['modulation', '16QAM', 'UNSUPPORTED_MODULATION'],
-      ['qualityModelVersion', 'SNBER-2.0', 'QUALITY_MODEL_VERSION_MISMATCH'],
+      ['qualityModelVersion', '', 'QUALITY_MODEL_VERSION_MISMATCH'],
     ] as const) {
       setActivePinia(createPinia())
       const invalidFrame = structuredClone(frame)

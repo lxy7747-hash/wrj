@@ -13,6 +13,7 @@ import type {
   QualityDatasetUpdate,
   RealtimeEnvelope,
   SimulationState,
+  SensorStatusData,
   SwitchEvent,
   SyncResult,
   TelemetryFrame,
@@ -22,6 +23,7 @@ import type {
 } from '../contracts/domain-models'
 import { resolveLinkId, validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
 import { ERROR_GUIDANCE } from '../features/diagnostics'
+import { frameJammerExecutions } from '../features/situation/frame-evidence'
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { useSimulationStore } from './simulation'
 
@@ -143,7 +145,8 @@ const OPTIONAL_LINK_METRICS = ['jsrDb', 'latencyMs', 'availabilityPercent'] as c
 function isTelemetryLink(value: unknown): boolean {
   if (!isRecord(value)) return false
   const optional = OPTIONAL_LINK_METRICS.filter(key => Object.hasOwn(value, key))
-  return Object.keys(value).length === 22 + optional.length
+  return Object.keys(value).length === 22 + optional.length + Number(Object.hasOwn(value, 'issues'))
+    && (!Object.hasOwn(value, 'issues') || (Array.isArray(value.issues) && value.issues.every(isValidationIssue)))
     && optional.every(key => typeof value[key] === 'number' && Number.isFinite(value[key]))
     && (!Object.hasOwn(value, 'latencyMs') || Number(value.latencyMs) >= 0)
     && (!Object.hasOwn(value, 'availabilityPercent') || (Number(value.availabilityPercent) >= 0 && Number(value.availabilityPercent) <= 100))
@@ -163,18 +166,29 @@ function isTelemetryLink(value: unknown): boolean {
     && Number(value.dataRate) >= 0
     && (value.modulation === 'BPSK' || value.modulation === 'QPSK')
     && value.coding === 'UNCODED'
-    && value.qualityModelVersion === 'SNBER-1.2'
+    && hasNonEmptyStrings(value, ['qualityModelVersion'])
     && (value.linkStatus === 'UP' || value.linkStatus === 'DOWN')
+}
+
+function isValidationIssue(value: unknown): boolean {
+  return isRecord(value) && Object.keys(value).length === 4
+    && (value.severity === 'ERROR' || value.severity === 'WARNING')
+    && hasStrings(value, ['code', 'message', 'fieldPath'])
 }
 
 /** 校验界面链路状态投影成员。 */
 function isUiLink(value: unknown): value is TelemetryFrame['uiLinks'][number] {
   if (!isRecord(value)) return false
-  return Object.keys(value).length === 8
+  const optional = ['jsrThresholdDb', 'warningBerThreshold', 'emergencyBerThreshold', 'jitterSuppressed'].filter(key => Object.hasOwn(value, key))
+  return Object.keys(value).length === 8 + optional.length
+    && optional.every(key => key === 'jitterSuppressed'
+      ? typeof value[key] === 'boolean'
+      : typeof value[key] === 'number' && Number.isFinite(value[key])
+        && (key === 'jsrThresholdDb' || (Number(value[key]) >= 0 && Number(value[key]) <= 1)))
     && hasNonEmptyStrings(value, ['linkId'])
     && typeof value.frameId === 'string' && value.frameId.startsWith('F-')
     && typeof value.reason === 'string' && value.reason.length > 0
-    && value.thresholdVersion === 'LLZT-1.0'
+    && hasNonEmptyStrings(value, ['thresholdVersion'])
     && (value.status === 'UP' || value.status === 'DEGRADED' || value.status === 'DOWN')
     && (value.canonicalStatus === 'UP' || value.canonicalStatus === 'DOWN')
     && Number.isInteger(value.consecutiveFrames) && Number(value.consecutiveFrames) >= 0
@@ -252,21 +266,21 @@ function hasValidRouteDecisions(frame: TelemetryFrame): boolean {
 
 /** 校验传播损耗页面会读取的完整分量证据。 */
 function isCompositeLossEvidence(value: unknown): boolean {
-  if (!isRecord(value) || Object.keys(value).length !== 9) return false
+  if (!isRecord(value)) return false
+  const optional = ['seaMultipathLossDb', 'atmosphericLossDb', 'cloudRainLossDb'].filter(key => Object.hasOwn(value, key))
+  if (Object.keys(value).length !== 9 + optional.length || !hasFiniteNumbers(value, optional)) return false
   return typeof value.linkId === 'string' && value.linkId.length > 0
     && hasFiniteNumbers(value, [
       'freeSpaceLossDb', 'systemLossDb', 'obstructionLossDb', 'interferenceLossDb',
       'totalPathLossDb', 'noisePowerDbm', 'effectiveNoiseAndInterferenceDbm',
     ])
-    && value.modelVersion === 'COMPOSITE-LOSS-1.0'
+    && hasNonEmptyStrings(value, ['modelVersion'])
 }
 
 /** 校验固定帧采用的完整同步证据。 */
 function isSynchronizationEvidence(value: unknown): boolean {
   if (!isRecord(value) || Object.keys(value).length !== 5) return false
-  return value.configVersion === 'SCN-001-v4'
-    && value.engineVersion === 'AFSIM-2.9.0-FIXTURE'
-    && value.uiVersion === 'FRAME-1.0'
+  return hasNonEmptyStrings(value, ['configVersion', 'engineVersion', 'uiVersion'])
     && typeof value.effectiveFrameId === 'string' && value.effectiveFrameId.startsWith('F-')
     && typeof value.effectiveSimulationTime === 'number'
     && Number.isFinite(value.effectiveSimulationTime)
@@ -389,7 +403,8 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
     && Array.isArray(value.eventIds)
     && value.eventIds.every((eventId) => typeof eventId === 'string' && eventId.length > 0)
     && new Set(value.eventIds).size === value.eventIds.length
-    && isRecord(value.evidence) && Object.keys(value.evidence).length === 5
+    && isRecord(value.evidence)
+    && Object.keys(value.evidence).length === 5 + Number(Object.hasOwn(value.evidence, 'jammerExecutions'))
     && Array.isArray(value.evidence.losses) && value.evidence.losses.every(isCompositeLossEvidence)
     && Array.isArray(value.evidence.routeCandidates) && value.evidence.routeCandidates.every(isRouteCandidate)
     && Array.isArray(value.evidence.routeDecisions)
@@ -404,6 +419,12 @@ export function isTelemetryFrame(value: unknown): value is TelemetryFrame {
       && new Set(value.evidence.routeDecisions.map((decision) => decision.direction)).size === 2))
     && isSynchronizationEvidence(value.evidence.synchronization)
     && isJammerExecutionEvidence(value.evidence.jammerExecution)
+    && (!Object.hasOwn(value.evidence, 'jammerExecutions')
+      || (Array.isArray(value.evidence.jammerExecutions) && value.evidence.jammerExecutions.length > 0
+        && value.evidence.jammerExecutions.every(isJammerExecutionEvidence)
+        // 执行证据为闭合的标量对象，按字段比较，不依赖 JSON 属性顺序。
+        && Object.entries(value.evidence.jammerExecution as Record<string, unknown>).every(([key, item]) =>
+          (value.evidence as TelemetryFrame['evidence']).jammerExecutions![0]![key as keyof TelemetryFrame['evidence']['jammerExecution']] === item)))
   if (!structurallyValid) return false
 
   const frame = value as unknown as TelemetryFrame
@@ -424,7 +445,12 @@ export function isSituationEvent(value: unknown): value is SituationEvent {
       && Number.isFinite(value.sourceRegistryTime) && value.sourceRegistryTime >= 0))
   if (!common) return false
   if (value.type === 'DETECTION') {
-    return Object.keys(value).length === (hasRegistryTime ? 9 : 8)
+    const optional = ['frequencyMinMHz', 'frequencyMaxMHz', 'detected'].filter(key => Object.hasOwn(value, key))
+    return Object.keys(value).length === (hasRegistryTime ? 9 : 8) + optional.length
+      && Object.hasOwn(value, 'frequencyMinMHz') === Object.hasOwn(value, 'frequencyMaxMHz')
+      && (!Object.hasOwn(value, 'frequencyMinMHz') || (hasFiniteNumbers(value, ['frequencyMinMHz', 'frequencyMaxMHz'])
+        && Number(value.frequencyMinMHz) > 0 && Number(value.frequencyMaxMHz) >= Number(value.frequencyMinMHz)))
+      && (!Object.hasOwn(value, 'detected') || typeof value.detected === 'boolean')
       && typeof value.sensorId === 'string' && value.sensorId.length > 0
       && typeof value.targetPlatformId === 'string' && value.targetPlatformId.length > 0
       && typeof value.detectionProbability === 'number'
@@ -458,23 +484,23 @@ function isSwitchEventConsistent(event: SwitchEvent, frame: TelemetryFrame): boo
     || event.oldBer !== oldSummary.currentBer
     || event.newBer !== newSummary.currentBer) return false
 
-  if (event.decision === 'ACCEPTED') {
-    return event.oldLinkId === routeDecision.previousLinkId
-      && event.newLinkId === routeDecision.selectedLinkId
-      && event.cooldownRemainingS === 0
-      && event.stabilityFrames >= event.minimumStableFrames
-      && event.hysteresisSatisfied
-      && event.newBer < event.oldBer
-      && event.reason === 'BER_THRESHOLD_AND_HYSTERESIS'
-  }
-  return event.reason === 'COOLDOWN_ACTIVE' && event.cooldownRemainingS > 0
+  if (event.reason === 'COOLDOWN_ACTIVE') return event.decision === 'REJECTED' && event.cooldownRemainingS > 0
+  if (event.decision !== 'ACCEPTED'
+    || event.oldLinkId !== routeDecision.previousLinkId || event.newLinkId !== routeDecision.selectedLinkId
+    || event.cooldownRemainingS !== 0 || event.stabilityFrames < event.minimumStableFrames
+    || event.stabilityFrames < routeDecision.minimumStableFrames) return false
+  if (event.reason === 'INTERFERENCE') return true
+  if (event.reason === 'LINK_DOWN') return oldSummary.status === 'DOWN'
+  return event.reason === 'BER_THRESHOLD_AND_HYSTERESIS' && event.hysteresisSatisfied && event.newBer < event.oldBer
 }
 
 /** 校验实时规范仿真状态。 */
 function isSimulationState(value: unknown): value is SimulationState {
   if (!isRecord(value)) return false
   const hasErrorMessage = Object.prototype.hasOwnProperty.call(value, 'errorMessage')
-  return Object.keys(value).length === (hasErrorMessage ? 6 : 5)
+  return Object.keys(value).length === 5 + ['errorMessage', 'mode', 'speedMultiplier'].filter(key => Object.hasOwn(value, key)).length
+    && (!Object.hasOwn(value, 'mode') || ['INTERACTIVE_SINGLE', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'].some(mode => mode === value.mode))
+    && (!Object.hasOwn(value, 'speedMultiplier') || (typeof value.speedMultiplier === 'number' && Number.isFinite(value.speedMultiplier) && value.speedMultiplier > 0))
     && ['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'].includes(String(value.status))
     && typeof value.currentTime === 'number' && Number.isFinite(value.currentTime) && value.currentTime >= 0
     && typeof value.totalDuration === 'number' && Number.isFinite(value.totalDuration) && value.totalDuration >= 0
@@ -588,29 +614,32 @@ function isClosedLoopContext(value: unknown): value is ClosedLoopContext {
     && hasNonEmptyStrings(value, ['frameId', 'detectionEventId', 'targetPlatformId', 'affectedLinkId'])
 }
 
-/** 校验服务端返回的闭环干扰决策。 */
-function isJammingDecision(
-  value: unknown,
-  runId: string,
-  context: ClosedLoopContext,
-  frame: TelemetryFrame,
-): value is JammingDecision {
-  return isRecord(value)
-    && Object.keys(value).length === 11
-    && hasNonEmptyStrings(value, [
-      'decisionId', 'runId', 'frameId', 'detectionEventId', 'targetPlatformId',
-      'jammerId', 'affectedLinkId', 'effectiveFrameId', 'reason',
-    ])
-    && value.action === 'START'
+/** 自动启扰与关扰共用的闭合结构。REST 闭环另行限制 START 和请求上下文。 */
+function isJammingDecision(value: unknown): value is JammingDecision {
+  return isRecord(value) && Object.keys(value).length === 11
+    && hasNonEmptyStrings(value, ['decisionId', 'runId', 'frameId', 'detectionEventId', 'targetPlatformId',
+      'jammerId', 'affectedLinkId', 'effectiveFrameId', 'reason'])
+    && String(value.runId).startsWith('RUN-') && String(value.frameId).startsWith('F-') && String(value.effectiveFrameId).startsWith('F-')
+    && (value.action === 'START' || value.action === 'STOP')
     && (value.linkStatus === 'UP' || value.linkStatus === 'DEGRADED' || value.linkStatus === 'DOWN')
-    && value.runId === runId
-    && value.frameId === context.frameId
-    && value.detectionEventId === context.detectionEventId
-    && value.targetPlatformId === context.targetPlatformId
-    && value.affectedLinkId === context.affectedLinkId
-    && value.effectiveFrameId === frame.frameId
-    && value.jammerId === frame.evidence.jammerExecution.jammerId
-    && value.linkStatus === frame.uiLinks.find((link) => link.linkId === context.affectedLinkId)?.status
+}
+
+function isClosedLoopDecision(value: unknown, runId: string, context: ClosedLoopContext, frame: TelemetryFrame): value is JammingDecision {
+  return isJammingDecision(value) && value.action === 'START'
+    && value.runId === runId && value.frameId === context.frameId
+    && value.detectionEventId === context.detectionEventId && value.targetPlatformId === context.targetPlatformId
+    && value.affectedLinkId === context.affectedLinkId && value.effectiveFrameId === frame.frameId
+    && frameJammerExecutions(frame).some(execution => execution.jammerId === value.jammerId
+      && execution.targetPlatformId === context.targetPlatformId)
+    && value.linkStatus === frame.uiLinks.find(link => link.linkId === context.affectedLinkId)?.status
+}
+
+function isSensorStatus(value: unknown): value is SensorStatusData {
+  return isRecord(value) && Object.keys(value).length === 5 + Number(Object.hasOwn(value, 'scanCoveragePercent'))
+    && value.type === 'SENSOR_STATUS' && hasNonEmptyStrings(value, ['sensorId', 'platformId'])
+    && hasFiniteNumbers(value, ['time']) && Number(value.time) >= 0 && typeof value.active === 'boolean'
+    && (!Object.hasOwn(value, 'scanCoveragePercent') || (typeof value.scanCoveragePercent === 'number'
+      && Number.isFinite(value.scanCoveragePercent) && value.scanCoveragePercent >= 0 && value.scanCoveragePercent <= 100))
 }
 
 /** 校验带版本和生效帧的干扰参数集。 */
@@ -732,11 +761,11 @@ function findTelemetryFieldError(value: unknown): TelemetryFieldError | null {
     if (link.coding !== 'UNCODED') {
       return new TelemetryFieldError('UNSUPPORTED_CODING', `links[${index}].coding`, '不支持的编码方式。')
     }
-    if (link.qualityModelVersion !== 'SNBER-1.2') {
+    if (!hasNonEmptyStrings(link, ['qualityModelVersion'])) {
       return new TelemetryFieldError(
         'QUALITY_MODEL_VERSION_MISMATCH',
         `links[${index}].qualityModelVersion`,
-        '质量模型版本与调制编码映射不一致。',
+        '质量模型版本不能为空。',
       )
     }
   }
@@ -766,8 +795,8 @@ async function readSuccess<T>(
   return payload.data
 }
 
-/** 将 HTTP Mock 地址转换为同源 WebSocket 地址。 */
-function resolveRealtimeUrl(role: 'ADMIN' | 'OPERATOR'): string {
+/** 将当前 HTTP 服务入口转换为对应的 WebSocket 地址。 */
+export function resolveRealtimeUrl(role: 'ADMIN' | 'OPERATOR'): string {
   const origin = new URL(resolveMockOrigin())
   origin.protocol = origin.protocol === 'https:' ? 'wss:' : 'ws:'
   origin.pathname = '/ws/v1'
@@ -779,6 +808,8 @@ export const useTelemetryStore = defineStore('telemetry', {
   state: () => ({
     frame: null as TelemetryFrame | null,
     events: [] as SituationEvent[],
+    sensorStatuses: [] as SensorStatusData[],
+    jammingDecisions: [] as JammingDecision[],
     /** Bounded WS reference; the situation page fetches and validates the full dataset. */
     qualityUpdate: null as QualityDatasetUpdate | null,
     // A runtime-only task may have no telemetry frame; retain the task chosen
@@ -878,6 +909,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      * @sideEffects 更新闭环六态、决策证据和重复事件拒绝原因。
      */
     async runClosedLoop(runId: string, context: ClosedLoopContext): Promise<boolean> {
+      const epoch = this.requestEpoch
       const auth = useAuthStore()
       const frame = this.frame
       this.closedLoopDecision = null
@@ -895,6 +927,13 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.closedLoopResultMessage = '闭环上下文格式不正确。'
         return false
       }
+      if (this.events.some(event => event.type === 'DETECTION' && event.eventId === context.detectionEventId && event.detected === false)) {
+        this.closedLoopState = 'ERROR'
+        this.closedLoopResultCode = 'TARGET_NOT_DETECTED'
+        this.closedLoopResultFieldPath = 'detectionEventId'
+        this.closedLoopResultMessage = '未发现目标的侦测事件不能触发闭环。'
+        return false
+      }
       this.closedLoopState = 'EXECUTING'
       try {
         const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(runId)}/events`, {
@@ -906,16 +945,20 @@ export const useTelemetryStore = defineStore('telemetry', {
           response,
           (value): value is JammingDecision => frame !== null
             && this.frame?.frameId === frame.frameId
-            && isJammingDecision(value, runId, context, frame),
+            && this.frame?.runId === frame.runId
+            && isClosedLoopDecision(value, runId, context, frame),
           'CLOSED_LOOP_FAILED',
           '闭环控制请求失败。',
         )
+        if (epoch !== this.requestEpoch || this.frame?.frameId !== frame?.frameId || this.frame?.runId !== frame?.runId) return false
+        this.rememberJammingDecision(decision)
         this.closedLoopDecision = structuredClone(decision)
         this.closedLoopState = 'SUCCESS'
         this.closedLoopResultCode = 'SUCCESS'
         this.closedLoopResultMessage = `闭环已在 ${decision.effectiveFrameId} 完成一次状态迁移。`
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         const failure = error instanceof CapabilityRequestError ? error : null
         this.closedLoopState = 'ERROR'
         this.closedLoopResultCode = failure?.code ?? 'NETWORK_ERROR'
@@ -1029,6 +1072,8 @@ export const useTelemetryStore = defineStore('telemetry', {
     async loadFrame(runId?: string, frameId = 'F-00042'): Promise<boolean> {
       const epoch = this.requestEpoch
       const currentRunId = runId ?? useSimulationStore().run?.runId ?? 'RUN-001'
+      this.sensorStatuses = []
+      this.jammingDecisions = []
       this.capabilityState = 'LOADING'
       this.resultFieldPath = null
       try {
@@ -1115,6 +1160,10 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (envelope.topic === 'simulation.frame') {
         const payload = envelope.payload as TelemetryFrame
         if (envelope.frameId !== payload.frameId || envelope.simulationTime !== payload.simulationTime) return false
+        if (this.frame?.frameId !== payload.frameId || this.frame?.runId !== payload.runId || this.frame?.simulationTime !== payload.simulationTime) {
+          this.sensorStatuses = []
+          this.jammingDecisions = []
+        }
         this.frame = structuredClone(payload)
         this.events = this.events.filter((event) => event.frameId === payload.frameId)
       } else if (envelope.topic === 'link.metric') {
@@ -1160,6 +1209,21 @@ export const useTelemetryStore = defineStore('telemetry', {
             ? { ...platform, jammers: platform.jammers.map((jammer, nestedIndex) => nestedIndex === jammerIndex ? { ...payload } : jammer) }
             : platform)
           this.frame = { ...this.frame, platforms }
+        } else if (isRecord(payload) && payload.type === 'SENSOR_STATUS') {
+          if (!isSensorStatus(payload) || payload.time !== this.frame.simulationTime
+            || !this.frame.platforms.some(platform => platform.platformId === payload.platformId)) return false
+          this.sensorStatuses = [...this.sensorStatuses.filter(status => status.sensorId !== payload.sensorId), structuredClone(payload)]
+        } else if (isRecord(payload) && payload.type === 'JAMMING_DECISION') {
+          const decision = payload.decision
+          if (Object.keys(payload).length !== 2 || !isJammingDecision(decision)
+            || decision.runId !== this.frame.runId || decision.frameId !== this.frame.frameId
+            || decision.effectiveFrameId !== this.frame.frameId
+            || !this.frame.platforms.some(platform => platform.platformId === decision.targetPlatformId)
+            || !frameJammerExecutions(this.frame).some(item => item.jammerId === decision.jammerId)
+            || !this.frame.linkSummaries.some(summary => resolveLinkId(summary, this.frame!) === decision.affectedLinkId)
+            || (decision.action === 'START' && this.events.some(event => event.type === 'DETECTION'
+              && event.eventId === decision.detectionEventId && event.detected === false))) return false
+          this.rememberJammingDecision(decision)
         } else {
           if (!isSituationEvent(payload)
             || payload.type !== 'DETECTION'
@@ -1344,6 +1408,10 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.resetToSafeEmpty()
     },
 
+    rememberJammingDecision(decision: JammingDecision): void {
+      if (!this.jammingDecisions.some(item => item.decisionId === decision.decisionId)) this.jammingDecisions.push(structuredClone(decision))
+    },
+
     /**
      * 将遥测 Store 恢复为无过期数据的安全空态。
      * @returns 无返回值。
@@ -1354,6 +1422,8 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.realtimeTaskId = null
       this.frame = null
       this.events = []
+      this.sensorStatuses = []
+      this.jammingDecisions = []
       this.qualityUpdate = null
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
       this.connectionState = 'DISCONNECTED'

@@ -48,7 +48,7 @@ describe('P5 数据交换页面', () => {
     }))
   })
 
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.unstubAllEnvs() })
 
   it('正式加载监控显示 SQLite 实况和实际文件记录，轮询失败清除旧记录，离页停止轮询', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
@@ -209,6 +209,17 @@ describe('P5 数据交换页面', () => {
     await processCard.get('button').trigger('click')
     expect(processCard.text()).toContain('已退出')
     expect(processCard.text()).toContain('真实进程未启动')
+    wrapper.unmount()
+  })
+
+  it.each([undefined, 'http://192.168.1.49:8080'])('消息通道展示当前服务的实际连接地址（%s）', target => {
+    vi.stubEnv('VITE_API_TARGET', target)
+    const wrapper = mount(WebSocketContractCard, { global: { plugins: [ElementPlus] } })
+    const address = new URL('/ws/v1?role=OPERATOR', target ? window.location.origin : 'http://127.0.0.1:4173')
+    address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:'
+    expect(wrapper.text()).toContain(address.href)
+    expect(wrapper.text()).toContain('连接当前服务入口')
+    expect(wrapper.text()).not.toContain('只连接 127.0.0.1')
     wrapper.unmount()
   })
 

@@ -33,6 +33,27 @@ describe('P3 报表内容', () => {
     vi.unstubAllGlobals()
   })
 
+  it('干扰影响展示全部执行证据，并按目标节点筛选第二台', async () => {
+    const frame = structuredClone(fixtureSource.frame)
+    const first = frame.evidence.jammerExecution
+    const second = { ...first, jammerId: 'JAM-SECOND', targetPlatformId: 'CMD-01', power: 17 }
+    const wrapper = mount(ReportTabs, {
+      props: { report: fixtureSource.report as Report, frame: { ...frame, evidence: { ...frame.evidence, jammerExecutions: [first, second] } }, events: fixtureSource.events },
+      global: { plugins: [ElementPlus] },
+    })
+    await wrapper.get('#tab-interference').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="report-jammer-evidence"]')).toHaveLength(2)
+    expect(wrapper.get('#pane-interference').text()).toContain('JAM-SECOND')
+    const nodeFilter = wrapper.findAllComponents(ElSelect)[0]!
+    nodeFilter.vm.$emit('update:modelValue', 'CMD-01')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="report-jammer-evidence"]')).toHaveLength(1)
+    expect(wrapper.get('#pane-interference').text()).toContain('JAM-SECOND')
+    expect(wrapper.get('#pane-interference').text()).not.toContain(first.jammerId)
+    wrapper.unmount()
+  })
+
   it('单次报告展示范围、单位和内容', async () => {
     const wrapper = mount(ReportTabs, {
       attachTo: document.body,

@@ -1339,6 +1339,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_CLOSED_LOOP', runId)
+    const frame = simulations.getFrame(runId, result.data.effectiveFrameId)
+    if (frame.ok) realtime.publishJammingDecision(result.data, frame.data.frameId, frame.data.simulationTime)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { frameJammerExecutions } from '../../features/situation/frame-evidence'
 import type { CapabilityState, DetectionEvent } from '../../contracts/domain-models'
 import { useAuthStore } from '../../stores/auth'
 import { useTelemetryStore } from '../../stores/telemetry'
@@ -7,9 +8,12 @@ import { useTelemetryStore } from '../../stores/telemetry'
 const authStore = useAuthStore()
 const telemetryStore = useTelemetryStore()
 const detection = computed(() => telemetryStore.events.find(
-  (event): event is DetectionEvent => event.type === 'DETECTION',
+  (event): event is DetectionEvent => event.type === 'DETECTION' && event.detected !== false,
 ) ?? null)
-const execution = computed(() => telemetryStore.frame?.evidence.jammerExecution ?? null)
+const execution = computed(() => {
+  const frame = telemetryStore.frame
+  return frame ? frameJammerExecutions(frame).find(item => item.targetPlatformId === detection.value?.targetPlatformId) ?? null : null
+})
 const affectedLink = computed(() => {
   const frame = telemetryStore.frame
   const previousLinkId = frame?.evidence.routeDecisions.find((item) => item.direction === 'FORWARD')?.previousLinkId

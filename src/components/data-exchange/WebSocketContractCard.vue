@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { CapabilityState, WsTopic } from '../../contracts/domain-models'
-import { useTelemetryStore } from '../../stores/telemetry'
+import { resolveRealtimeUrl, useTelemetryStore } from '../../stores/telemetry'
+import { useAuthStore } from '../../stores/auth'
 import DataExchangeStateTag from './DataExchangeStateTag.vue'
 
 const telemetry = useTelemetryStore()
+const auth = useAuthStore()
+const address = computed(() => resolveRealtimeUrl(auth.role))
 const topics: Array<{ id: WsTopic; label: string }> = [
   { id: 'simulation.frame', label: '仿真帧' },
   { id: 'runtime.state', label: '运行状态' },
@@ -31,7 +34,7 @@ function topicSequence(topic: WsTopic): number {
   return telemetry.topicSequences[topic]
 }
 
-/** 加载 REST 快照并建立本机回环订阅。 */
+/** 加载 REST 快照并订阅当前服务入口。 */
 async function connect(): Promise<void> {
   if (telemetry.frame === null && !await telemetry.loadFrame()) return
   telemetry.connect()
@@ -51,7 +54,7 @@ async function resynchronize(): Promise<void> {
         <DataExchangeStateTag :state="state" data-testid="websocket-state" />
       </div>
     </template>
-    <p class="exchange-card__description">只连接 127.0.0.1；按 topic、schemaVersion、taskId、sequence、simulationTime/frameId 和 payload 处理消息。</p>
+    <p class="exchange-card__description">连接当前服务入口；按 topic、schemaVersion、taskId、sequence、simulationTime/frameId 和 payload 处理消息。</p>
     <div class="exchange-card__actions">
       <el-button type="primary" :disabled="telemetry.connectionState === 'SUBSCRIBED'" @click="connect">连接通道</el-button>
       <el-button :disabled="telemetry.frame === null" @click="resynchronize">重新同步</el-button>
@@ -61,7 +64,7 @@ async function resynchronize(): Promise<void> {
       <el-descriptions-item label="连接状态">{{ connectionLabel }}</el-descriptions-item>
       <el-descriptions-item label="当前帧">{{ telemetry.frame?.frameId ?? '未加载' }}</el-descriptions-item>
       <el-descriptions-item label="任务">{{ telemetry.frame?.taskId ?? 'TASK-001' }}</el-descriptions-item>
-      <el-descriptions-item label="地址">ws://127.0.0.1:4173/ws/v1</el-descriptions-item>
+      <el-descriptions-item label="地址">{{ address }}</el-descriptions-item>
     </el-descriptions>
     <el-table :data="topics" size="small" data-testid="websocket-topics">
       <el-table-column prop="label" label="主题" min-width="110" />

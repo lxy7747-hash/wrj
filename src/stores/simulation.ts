@@ -15,7 +15,7 @@ import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { readScenarioDraft, useScenarioStore } from './scenario'
 
 const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt'])
-const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage'])
+const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage', 'mode', 'speedMultiplier'])
 const UI_STATUSES = new Set<UiSimulationStatus>(['IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'])
 const CANONICAL_STATUSES = new Set(['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'])
 const REQUEST_TIMEOUT_MS = 5_000
@@ -85,6 +85,9 @@ export function isSimulationRun(value: unknown): value is SimulationRun {
     && (canonical.processId === null || (Number.isInteger(canonical.processId) && canonical.processId > 0))
     && typeof canonical.progress === 'number' && canonical.progress >= 0 && canonical.progress <= 100
     && (canonical.errorMessage === undefined || typeof canonical.errorMessage === 'string')
+    && (!Object.hasOwn(canonical, 'mode') || ['INTERACTIVE_SINGLE', 'PARAMETER_SCAN', 'HISTORICAL_REPLAY'].some(mode => mode === canonical.mode))
+    && (!Object.hasOwn(canonical, 'speedMultiplier') || (typeof canonical.speedMultiplier === 'number'
+      && Number.isFinite(canonical.speedMultiplier) && canonical.speedMultiplier > 0))
     && (run.startedAt === undefined || typeof run.startedAt === 'string')
     && (run.completedAt === undefined || typeof run.completedAt === 'string')
 }
@@ -223,6 +226,8 @@ export const useSimulationStore = defineStore('simulation', {
      */
     applyRun(run: SimulationRun): void {
       this.run = structuredClone(run)
+      if (run.canonical.mode !== undefined) this.mode = run.canonical.mode
+      if (run.canonical.speedMultiplier !== undefined) this.speedMultiplier = run.canonical.speedMultiplier
       this.configurationLockState = run.configLocked ? 'LOCKED' : 'UNLOCKED'
       useScenarioStore().projectRuntimeLock(run.scenarioId, run.configLocked)
     },

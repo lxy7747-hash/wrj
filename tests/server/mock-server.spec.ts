@@ -2388,11 +2388,19 @@ describe('P0 deterministic mock server', () => {
   })
 
   it('执行 P4 闭环幂等和干扰参数版本同步', async () => {
-    const { server, baseUrl } = await startServer()
+    const { server, baseUrl, wsUrl } = await startServer()
+    const client = await openWebSocket(wsUrl, { role: 'OPERATOR' })
+    const initial = nextJsonMessages(client, 2)
+    client.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['jammer.event'], lastSequence: 0 }))
+    await initial
+    const pushed = nextJsonMessage(client)
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }
     const closedLoop = await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send(context).expect(200)
     expect(closedLoop.body).toMatchObject({ data: { jammerId: 'JAM-WB-01-TX', linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042' } })
+    expect(await pushed).toMatchObject({ topic: 'jammer.event', taskId: 'TASK-001', frameId: 'F-00042', simulationTime: 42,
+      payload: { type: 'JAMMING_DECISION', decision: (closedLoop.body as { data: unknown }).data } })
+    client.close()
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send(context).expect(409)
     await request(baseUrl).post('/api/v1/simulations/RUN-MISSING/events').set(headers).send(context).expect(404)
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send({}).expect(422)

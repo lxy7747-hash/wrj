@@ -183,8 +183,8 @@ function isLoopbackHost(hostname: string): boolean {
  * @remarks Resolution performs no network access and does not mutate authentication state.
  */
 export function resolveMockOrigin(candidate = import.meta.env.VITE_MOCK_ORIGIN): string {
-  // 内网发布包跟随页面入口，迁移服务器地址不需要重新构建；开发入口保留原有边界。
-  if (import.meta.env.MODE === 'lan') return window.location.origin
+  // 内网发布与远程开发均走页面同源入口；普通开发保留本机地址校验。
+  if (import.meta.env.MODE === 'lan' || import.meta.env.VITE_API_TARGET) return window.location.origin
   const origin = candidate?.trim() || DEFAULT_MOCK_ORIGIN
   let url: URL
 

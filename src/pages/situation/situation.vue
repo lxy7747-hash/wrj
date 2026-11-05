@@ -900,7 +900,7 @@ function jammerTypeLabel(jammerId: string, platformId: string): string {
  */
 function eventDescription(event: DetectionEvent | SwitchEvent): string {
   if (event.type === 'DETECTION') {
-    return `${event.sensorId} 发现 ${event.targetPlatformId}，发现概率 ${(event.detectionProbability * 100).toFixed(0)}%`
+    return `${event.sensorId} ${event.detected === false ? '未发现' : '已发现'} ${event.targetPlatformId}，发现概率 ${(event.detectionProbability * 100).toFixed(0)}%`
   }
   return `${event.oldLinkId} 切换至 ${event.newLinkId}，决策已接受`
 }
@@ -1253,7 +1253,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           </div>
           <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
           <p v-if="detectionEvent" class="detection-state">
-            {{ detectionEvent.sensorId }} 已发现 {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
+            {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
           </p>
         </section>
 

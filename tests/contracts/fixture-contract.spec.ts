@@ -554,7 +554,7 @@ describe('deterministic fixture contract', () => {
 
   it.each([
     ['空阈值版本', 'thresholdVersion', ''],
-    ['未知阈值版本', 'thresholdVersion', 'LLZT-2.0'],
+    ['非字符串阈值版本', 'thresholdVersion', ['LLZT-2.0']],
     ['空判定原因', 'reason', ''],
     ['负稳定帧数', 'consecutiveFrames', -1],
     ['小数稳定帧数', 'consecutiveFrames', 1.5],

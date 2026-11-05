@@ -4,6 +4,8 @@ import type {
   RealtimeEnvelope,
   FrameId,
   JammerStatusData,
+  JammingDecision,
+  JammingDecisionEvent,
   QualityDataset,
   QualityDatasetUpdate,
   ResetResult,
@@ -38,6 +40,7 @@ export interface RealtimeController {
   activeClientCount(): number
   publishRuntimeState(run: SimulationRun): void
   publishJammerStatus(status: JammerStatusData, frameId: FrameId): void
+  publishJammingDecision(decision: JammingDecision, frameId: FrameId, simulationTime: number): void
   /**
    * Publishes only a bounded reference to an imported quality dataset.  Clients
    * fetch the checked dataset from REST, so an arbitrary CSV history never
@@ -459,6 +462,20 @@ export function attachRealtimeServer(
         status,
         status.time,
         frameId,
+      )
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === taskId && subscription.topics.has('jammer.event') && !replaying.get(client)?.has('jammer.event')) send(client, message)
+      }
+    },
+    publishJammingDecision: (decision, frameId, simulationTime): void => {
+      revalidateSessions()
+      const taskId = projection.snapshot().task.taskId
+      const run = currentRun(taskId)
+      if (!ownsFixedEvidence(run) || run?.runId !== decision.runId) return
+      const envelope: RealtimeEnvelope<JammingDecisionEvent> = createEnvelope(
+        taskId, 'jammer.event', { type: 'JAMMING_DECISION', decision }, simulationTime, frameId,
       )
       const message = retain(envelope)
       if (message === undefined) return

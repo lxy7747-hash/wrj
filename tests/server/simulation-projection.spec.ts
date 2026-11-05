@@ -1,5 +1,5 @@
-import { beforeAll, describe, expect, it } from 'vitest'
-import type { DetectionEvent, JammingDecision, JammerState, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, SyncResult, TelemetryFrame } from '../../src/contracts/domain-models'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import type { DeterministicFixtureSet, DetectionEvent, JammingDecision, JammerState, ScenarioDraft, SimulationCommand, SimulationRun, SwitchEvent, SyncResult, TelemetryFrame } from '../../src/contracts/domain-models'
 
 type ProjectionResult<T> = { ok: true; data: T } | { ok: false; code: string; status: number; fieldPath?: string }
 
@@ -19,16 +19,21 @@ interface SimulationProjectionInstance {
   controlJammer(taskId: string, jammerId: string, value: unknown): ProjectionResult<JammerState>
   runClosedLoop(runId: string, value: unknown): ProjectionResult<JammingDecision>
   syncJammerParameters(taskId: string, jammerId: string, value: unknown): ProjectionResult<SyncResult>
+  startMission(pid: number, startedAt: string): SimulationRun
+  finishMission(outcome: { code: number; completedAt: string }): SimulationRun
   reset(): void
 }
 
 type ScenarioProjectionConstructor = new () => ScenarioProjectionInstance
 type SimulationProjectionConstructor = new (scenarios: ScenarioProjectionInstance) => SimulationProjectionInstance
 
+let fixtureModule: { loadFixtureProjection(): DeterministicFixtureSet }
 let ScenarioProjection: ScenarioProjectionConstructor
 let SimulationProjection: SimulationProjectionConstructor
 
 beforeAll(async () => {
+  const fixturePath = '../../server/fixtures/' + 'source.js'
+  fixtureModule = await import(fixturePath) as typeof fixtureModule
   const scenarioPath = '../../server/scenarios/' + 'projection.js'
   const simulationPath = '../../server/simulations/' + 'projection.js'
   const scenarioModule = await import(scenarioPath) as { ScenarioProjection: ScenarioProjectionConstructor }
@@ -44,6 +49,60 @@ function projections(): { scenarios: ScenarioProjectionInstance; simulations: Si
 }
 
 describe('P3-1 仿真服务端投影', () => {
+
+  it('START 和 SET_SPEED 投影模式倍速，STOP、reset 和 mission 结束清除', () => {
+    const { simulations } = projections()
+    const created = simulations.create({ taskId: 'TASK-001', scenarioId: 'SCN-001' })
+    if (!created.ok) throw new Error('create failed')
+    const runId = created.data.runId
+    expect(simulations.command(runId, { command: 'START', mode: 'INTERACTIVE_SINGLE' }))
+      .toMatchObject({ ok: true, data: { canonical: { mode: 'INTERACTIVE_SINGLE', speedMultiplier: 1 } } })
+    expect(simulations.command(runId, { command: 'SET_SPEED', speedMultiplier: 32 }))
+      .toMatchObject({ ok: true, data: { canonical: { mode: 'INTERACTIVE_SINGLE', speedMultiplier: 32 } } })
+    const stopped = simulations.command(runId, { command: 'STOP' }, true)
+    expect(stopped.ok).toBe(true)
+    if (!stopped.ok) return
+    expect(stopped.data.canonical).not.toHaveProperty('mode')
+    expect(stopped.data.canonical).not.toHaveProperty('speedMultiplier')
+    expect(simulations.startMission(123, '2026-11-05T00:00:00Z').canonical).toMatchObject({ mode: 'INTERACTIVE_SINGLE', speedMultiplier: 1 })
+    const finished = simulations.finishMission({ code: 0, completedAt: '2026-11-05T00:01:00Z' })
+    expect(finished.canonical).not.toHaveProperty('mode')
+    expect(finished.canonical).not.toHaveProperty('speedMultiplier')
+    simulations.startMission(123, '2026-11-05T00:00:00Z')
+    simulations.reset()
+    expect(simulations.list()[0]!.canonical).not.toHaveProperty('mode')
+    expect(simulations.list()[0]!.canonical).not.toHaveProperty('speedMultiplier')
+  })
+
+  it('未发现的侦测事件不能执行闭环', () => {
+    const fixture = fixtureModule.loadFixtureProjection()
+    const detection = fixture.events.find(event => event.type === 'DETECTION')!
+    if (detection.type !== 'DETECTION') throw new Error('missing detection')
+    detection.detected = false
+    const stub = vi.spyOn(fixtureModule, 'loadFixtureProjection').mockImplementation(() => structuredClone(fixture))
+    try {
+      expect(projections().simulations.runClosedLoop('RUN-001', { frameId: 'F-00042', detectionEventId: 'DET-042',
+        targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }))
+        .toMatchObject({ ok: false, status: 422, fieldPath: 'detectionEventId' })
+    } finally { stub.mockRestore() }
+  })
+
+  it('多台证据响应同时保留完整数组和第一台单对象，闭环按目标选择第二台', () => {
+    const fixture = fixtureModule.loadFixtureProjection()
+    const second = { ...fixture.frame.evidence.jammerExecution, jammerId: 'JAM-SPOT-01-TX' }
+    const first = { ...fixture.frame.evidence.jammerExecution, targetPlatformId: 'CMD-01' }
+    fixture.frame.evidence.jammerExecutions = [first, second]
+    const stub = vi.spyOn(fixtureModule, 'loadFixtureProjection').mockImplementation(() => structuredClone(fixture))
+    try {
+      const { simulations } = projections()
+      const result = simulations.getFrame('RUN-001', 'F-00042')
+      expect(result).toMatchObject({ ok: true, data: { evidence: { jammerExecution: first, jammerExecutions: [first, second] } } })
+      expect(simulations.runClosedLoop('RUN-001', { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }))
+        .toMatchObject({ ok: true, data: { jammerId: second.jammerId, targetPlatformId: 'UAV-01' } })
+    } finally { stub.mockRestore() }
+    expect(fixtureModule.loadFixtureProjection().frame.evidence).not.toHaveProperty('jammerExecutions')
+  })
+
   it('读取冻结运行并拒绝未知编号', () => {
     const { simulations } = projections()
     expect(simulations.list()).toHaveLength(1)

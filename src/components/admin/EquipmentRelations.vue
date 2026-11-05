@@ -5,7 +5,7 @@ import type { EquipmentDetails, EquipmentParameter, EquipmentReference, Scenario
 import { isEquipmentDetails } from '../../features/admin/equipment-contract'
 import { formatDataRate } from '../../features/scenarios/link-calc-defaults'
 import { apiFetch } from '../../features/shared/api-fetch'
-import { useAuthStore } from '../../stores/auth'
+import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 
 const props = defineProps<{ equipment: EquipmentParameter }>()
 const auth = useAuthStore()
@@ -16,7 +16,7 @@ const sceneId = ref('')
 const linkId = ref('')
 let epoch = 0
 let controller: AbortController | undefined
-const origin = import.meta.env.VITE_MOCK_ORIGIN ?? 'http://127.0.0.1:4173'
+const origin = resolveMockOrigin()
 async function request(reference?: EquipmentReference, remove = false): Promise<void> {
   controller?.abort()
   controller = new AbortController()

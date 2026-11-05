@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { frameJammerExecutions } from '../../features/situation/frame-evidence'
 import type { CapabilityState, JammingCommand } from '../../contracts/domain-models'
 import { useAuthStore } from '../../stores/auth'
 import { useScenarioStore } from '../../stores/scenario'
@@ -72,12 +73,13 @@ function applyDefaults(jammerId: string): void {
   const jammer = jammers.value.find((item) => item.id === jammerId)
   const extension = scenarioStore.draft?.uiExtensions.jammers.find((item) => item.jammerId === jammerId)
   if (jammer === undefined || extension === undefined) return
-  const evidence = telemetryStore.frame?.evidence.jammerExecution
+  const frame = telemetryStore.frame
+  const evidence = frame && frameJammerExecutions(frame).find(item => item.jammerId === jammerId)
   Object.assign(form, {
     enabled: true,
-    frequency: evidence?.jammerId === jammerId ? evidence.frequency : jammer.frequency,
-    bandwidth: evidence?.jammerId === jammerId ? evidence.bandwidth : jammer.bandwidth,
-    power: evidence?.jammerId === jammerId ? evidence.power : jammer.defaultPower,
+    frequency: evidence?.frequency ?? jammer.frequency,
+    bandwidth: evidence?.bandwidth ?? jammer.bandwidth,
+    power: evidence?.power ?? jammer.defaultPower,
     // 持续时间沿用命令默认值；方向来自场景配置。
     direction: extension.direction,
     duration: 1,

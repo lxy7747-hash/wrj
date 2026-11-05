@@ -13,7 +13,7 @@ const DECISION_REASONS: Record<string, string> = {
   CURRENT_ROUTE_RETAINED: '保持当前优选链路', NO_ELIGIBLE_CANDIDATE: '没有符合条件的候选链路',
   STABLE_CANDIDATE_SELECTED: '连续稳定候选通过', CURRENT_ROUTE_UNAVAILABLE: '原优选链路已不可用',
   QUALITY_IMPROVEMENT_THRESHOLD_MET: '达到质量改善门限', QUALITY_IMPROVEMENT_NOT_MET: '未达到质量改善门限',
-  COOLDOWN_ACTIVE: '仍处于切换冷却窗口',
+  COOLDOWN_ACTIVE: '仍处于切换冷却窗口', INTERFERENCE: '受干扰触发切换', LINK_DOWN: '原链路中断触发切换',
   MEASUREMENT_MISSING: '本帧未提供该链路的测量', UP_PENDING: '等待恢复状态连续稳定',
   DEGRADED_PENDING: '等待劣化状态连续稳定', DOWN_PENDING: '等待中断状态连续稳定',
 }

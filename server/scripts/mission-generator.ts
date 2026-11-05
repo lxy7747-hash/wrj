@@ -47,7 +47,7 @@ const ANTENNAS: Record<TemplateAntennaName, readonly [number, number]> = {
   SAT_GROUND_MOBILE_ANTENNA: [4, 4], SAT_SPACE_BEAM_ANTENNA: [45, 45], SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: [110, 100], LASER_COMM_ANTENNA: [5, 5],
 }
 type Device = { linkId: string; linkType: Link['type']; direction: Link['direction']; source: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; target: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; relayPlatformId: string | null; relayDeviceId: string | null }
-type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number }
+type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number; detectionDelayS?: number; jammingDurationS?: number }
 
 /** 保留场景中配置的数值，不以展示精度截断脚本或 link_calc JSON。 */
 const n = (value: number) => String(value)
@@ -237,7 +237,7 @@ function traffic(
   })
   return [...grouped].map(([platform, value]) => ({ [platform]: value }))
 }
-function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDraft['uiExtensions']): Jammer[] { const enabled = config.jammingEnabled ?? false; return config.jammers.map(value => { const extension = uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260 } }) }
+function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDraft['uiExtensions']): Jammer[] { const enabled = config.jammingEnabled ?? false; return config.jammers.map(value => { const extension = uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260, ...(value.detectionDelayS !== undefined ? { detectionDelayS: value.detectionDelayS } : {}), ...(value.jammingDurationS !== undefined ? { jammingDurationS: value.jammingDurationS } : {}) } }) }
 type Hop = { platform: string; inPort: string; outPort: string }
 type TrafficRecord = { traffice_type: string; data_volume_bits: number; trans_freq: number }
 type Traffic = Array<Record<string, { forward: TrafficRecord[]; return: TrafficRecord[] }>>
@@ -342,51 +342,67 @@ export function localLinkStub(host: string, routes: RouteInputs, jammers: readon
   const enabled = jammers.map((item, index) => ({ item, index })).filter(({ item }) => item.configuredEnabled)
   return [
     '  processor local_link_stub WSF_SCRIPT_PROCESSOR',
-    '    script_variables', ...enabled.map(({ index }) => `      bool engaged${index} = false;`), '    end_script_variables',
-    '    script bool LocalStubJammer(string aPlatform, string aWeapon, string aMode, double aTrigger, double aRelease, bool aEngaged)',
-    '      WsfPlatform jammer = WsfSimulation.FindPlatform(aPlatform);',
-    '      if (!jammer.IsValid()) { return aEngaged; }',
-    '      WsfWeapon weapon = jammer.Weapon(aWeapon);',
-    '      if (!weapon.IsValid()) { return aEngaged; }',
-    '      double nearest = -1;',
-    '      for (int i = 0; i < WsfSimulation.PlatformCount(); i = i + 1)',
-    '      {',
-    '        WsfPlatform other = WsfSimulation.PlatformEntry(i);',
-    '        if (other.Side() == "blue")',
-    '        {',
-    '          double range = jammer.SlantRangeTo(other);',
-    '          if (nearest < 0 || range < nearest) { nearest = range; }',
-    '        }',
-    '      }',
-    '      if (nearest < 0) { return aEngaged; }',
-    '      // 触发半径为 0 表示不按距离开启。',
-    '      if (!aEngaged && aTrigger > 0 && nearest <= aTrigger)',
-    '      {',
-    '        if (!weapon.IsTurnedOn()) { weapon.TurnOn(); }',
-    '        weapon.SelectMode(aMode);',
-    '        return true;',
-    '      }',
-    '      if (nearest > aRelease && weapon.IsTurnedOn())',
-    '      {',
-    '        weapon.SelectMode("default");',
-    '        weapon.TurnOff();',
-    '        return false;',
-    '      }',
-    '      return aEngaged;',
-    '    end_script',
+    '    script_variables',
+    ...enabled.flatMap(({ index }) => [
+      `      bool engaged${index} = false;`, `      double detectAt${index} = -1;`,
+      `      double onAt${index} = -1;`, `      bool spent${index} = false;`,
+    ]),
+    '    end_script_variables',
     '    on_initialize2',
     `      if (PLATFORM.Name() == "${host}")`,
     '      {',
     '        WsfPlatform target;',
     ...aux,
     ...disabled,
+    ...enabled.filter(({ item }) => item.detectionDelayS !== undefined || item.jammingDurationS !== undefined).flatMap(({ item }) => [
+      `        target = WsfSimulation.FindPlatform("${item.platformId}");`,
+      `        if (target.IsValid() && target.Weapon("${item.weaponId}").IsValid()) { target.Weapon("${item.weaponId}").TurnOff(); }`,
+    ]),
     '      }',
     '    end_on_initialize2',
     ...(enabled.length ? [
       '    execute at_interval_of 3 sec',
       `      if (PLATFORM.Name() == "${host}")`,
       '      {',
-      ...enabled.map(({ item, index }) => `        engaged${index} = LocalStubJammer("${item.platformId}", "${item.weaponId}", "${JAMMER_SCRIPT_MODE(item.type)}", ${n(item.jammingRangeM)}, ${n(item.releaseRangeM)}, engaged${index});`),
+      ...enabled.flatMap(({ item, index: i }) => [
+        `        WsfPlatform jammer${i} = WsfSimulation.FindPlatform("${item.platformId}");`,
+        `        if (jammer${i}.IsValid())`, '        {',
+        `          WsfWeapon weapon${i} = jammer${i}.Weapon("${item.weaponId}");`,
+        `          if (weapon${i}.IsValid())`, '          {',
+        `            double nearest${i} = -1;`,
+        '            for (int j = 0; j < WsfSimulation.PlatformCount(); j = j + 1)', '            {',
+        '              WsfPlatform other = WsfSimulation.PlatformEntry(j);',
+        '              if (other.Side() == "blue")', '              {',
+        `                double range = jammer${i}.SlantRangeTo(other);`,
+        `                if (nearest${i} < 0 || range < nearest${i}) { nearest${i} = range; }`,
+        '              }', '            }',
+        `            if (nearest${i} >= 0)`, '            {',
+        `              if (!engaged${i})`, '              {',
+        `                if (nearest${i} > ${n(item.releaseRangeM)})`, '                {',
+        `                  spent${i} = false;`,
+        `                  if (weapon${i}.IsTurnedOn()) { weapon${i}.SelectMode("default"); weapon${i}.TurnOff(); }`,
+        '                }', '              }',
+        ...(item.jammingDurationS !== undefined ? [
+          `              else if (TIME_NOW - onAt${i} >= ${n(item.jammingDurationS)})`, '              {',
+          `                weapon${i}.SelectMode("default"); weapon${i}.TurnOff();`,
+          `                engaged${i} = false; spent${i} = true; detectAt${i} = -1;`,
+          '              }',
+        ] : []),
+        `              else if (nearest${i} > ${n(item.releaseRangeM)})`, '              {',
+        `                weapon${i}.SelectMode("default"); weapon${i}.TurnOff();`,
+        `                engaged${i} = false; detectAt${i} = -1;`,
+        '              }',
+        `              if (!engaged${i} && !spent${i})`, '              {',
+        `                if (${n(item.jammingRangeM)} > 0 && nearest${i} <= ${n(item.jammingRangeM)})`, '                {',
+        `                  if (detectAt${i} < 0) { detectAt${i} = TIME_NOW; }`,
+        `                  if (TIME_NOW - detectAt${i} >= ${n(item.detectionDelayS ?? 0)})`, '                  {',
+        `                    if (!weapon${i}.IsTurnedOn()) { weapon${i}.TurnOn(); }`,
+        `                    weapon${i}.SelectMode("${JAMMER_SCRIPT_MODE(item.type)}");`,
+        `                    engaged${i} = true; onAt${i} = TIME_NOW;`,
+        '                  }', '                }',
+        `                else { detectAt${i} = -1; }`,
+        '              }', '            }', '          }', '        }',
+      ]),
       '      }',
       '    end_execute',
     ] : []),
@@ -559,7 +575,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const files: Record<string, string> = { [SCENARIO_PREVIEW_FILE]: [`// ${SCENARIO_PREVIEW_FILE}：可追溯入口。`, `// 场景：${config.scenario.name.replace(/[\r\n]+/gu, ' ')}（${config.scenario.id}，修订 ${draft.revision}）`, `// 引用顺序：${ENTRY_FILE} → ${[...TYPE_FILES, INSTANCE_FILE, 'observers.txt'].join(' → ')}`, `include_once ${ENTRY_FILE}`, ''].join('\n'), [ENTRY_FILE]: setup, [DEFINITION_FILE]: definitions(config), ...types, [INSTANCE_FILE]: instances(config), 'observers.txt': observers(`${directory}/position.csv`), [AD_HOC_COMM_FILE]: AD_HOC_COMM_TEXT, 'mapping.json': JSON.stringify(manifest, null, 2) + '\n', 'input.json': JSON.stringify(draft, null, 2) + '\n', 'README.txt': ['新模板对齐脚本包。', '界面保留但不写入脚本：激光链路、侦测/ESM、QoS、切换规则、调制/BER/编码/增益修正、航点扩展和未映射环境字段。', ...mapped.warnings].join('\n') + '\n' }
   if (runtime) {
     const media = splitSharedMedium(files)
-    const localRuntime = { linkCalc: runtime.linkCalc === 'STUB' ? 'MISSING_PROCESSOR_STUBBED' : 'PRESERVED', splitMedia: media, note: '本地运行包：每端口独立介质；缺少 link_calc 时以 local_link_stub 写入主路由 AuxData 并按触发/释放半径启停干扰。对接方 TXT 不含这些改动。' }
+    const localRuntime = { linkCalc: runtime.linkCalc === 'STUB' ? 'MISSING_PROCESSOR_STUBBED' : 'PRESERVED', splitMedia: media, note: '本地运行包：每端口独立介质；缺少 link_calc 时以 local_link_stub 写入主路由 AuxData 并按触发/释放半径启停干扰。本地 stub 按进入触发半径计算延迟，离开触发半径取消等待；持续时长到期后须离开释放半径才重新就绪。判断周期 3 秒，存在约 ±3 秒误差。对接方 TXT 不含这些改动。' }
     files['mapping.json'] = JSON.stringify({ ...manifest, localRuntime }, null, 2) + '\n'
     files['README.txt'] += `本地运行兼容：${localRuntime.note}\n`
   }

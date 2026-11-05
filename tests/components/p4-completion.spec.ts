@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import RfJammerPanel from '../../src/components/interactions/RfJammerPanel.vue'
 import ClosedLoopStepper from '../../src/components/interactions/ClosedLoopStepper.vue'
 import JammerSyncPanel from '../../src/components/interactions/JammerSyncPanel.vue'
 import RouteRankingPanel from '../../src/components/interactions/RouteRankingPanel.vue'
@@ -12,6 +13,7 @@ import type { DetectionEvent, Principal, ScenarioDraft, SwitchEvent, TelemetryFr
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useTelemetryStore } from '../../src/stores/telemetry'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
@@ -50,6 +52,48 @@ describe('P4 剩余交互能力', () => {
   })
 
   afterEach(() => vi.unstubAllGlobals())
+
+  it('RF 控制和参数同步按当前设备读取第二台执行证据', async () => {
+    const draft = createTemplateScenario()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(draft)))
+    expect(await useScenarioStore().loadScenario(draft.config.scenario.id)).toBe(true)
+    const secondId = draft.config.jammers[1]!.id
+    const frame = structuredClone(fixtureSource.frame) as unknown as TelemetryFrame
+    frame.evidence.jammerExecution.jammerId = draft.config.jammers[0]!.id
+    frame.evidence.jammerExecutions = [frame.evidence.jammerExecution,
+      { ...frame.evidence.jammerExecution, jammerId: secondId, frequency: 2250, bandwidth: 9, power: 17 }]
+    expect(useTelemetryStore().acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'simulation.frame',
+      taskId: frame.taskId, sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: frame })).toBe(true)
+    for (const component of [RfJammerPanel, JammerSyncPanel]) {
+      const wrapper = mount(component, { global: { plugins: [ElementPlus] } })
+      wrapper.findComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', secondId)
+      await nextTick()
+      const values = wrapper.findAllComponents({ name: 'ElInputNumber' }).map(input => input.props('modelValue'))
+      expect(values).toEqual(expect.arrayContaining([2250, 9, 17]))
+      wrapper.unmount()
+    }
+  })
+
+  it('闭环按侦测目标匹配执行数组，决策可使用第二台干扰机', async () => {
+    const frame = structuredClone(fixtureSource.frame) as unknown as TelemetryFrame
+    const second = { ...frame.evidence.jammerExecution, jammerId: 'JAM-SPOT-01-TX', power: 17 }
+    frame.evidence.jammerExecution.targetPlatformId = 'CMD-01'
+    frame.evidence.jammerExecutions = [frame.evidence.jammerExecution, second]
+    const store = useTelemetryStore()
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'simulation.frame',
+      taskId: frame.taskId, sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: frame })).toBe(true)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      decisionId: 'DEC-DET-042', runId: 'RUN-001', frameId: 'F-00042', detectionEventId: 'DET-042',
+      targetPlatformId: 'UAV-01', jammerId: second.jammerId, affectedLinkId: 'L-DL-03', action: 'START',
+      linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042', reason: second.reason,
+    })))
+    const wrapper = mount(ClosedLoopStepper, { global: { plugins: [ElementPlus] } })
+    expect(wrapper.text()).toContain('JAM-SPOT-01-TX · 17 W')
+    await wrapper.get('button').trigger('click')
+    await vi.waitFor(() => expect(store.closedLoopState).toBe('SUCCESS'))
+    expect(store.closedLoopDecision?.jammerId).toBe(second.jammerId)
+    wrapper.unmount()
+  })
 
   it('在遥测帧加载前显示参数同步空态', () => {
     useTelemetryStore().resetToSafeEmpty()

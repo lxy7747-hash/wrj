@@ -56,6 +56,8 @@ const stale = computed(() => props.link !== null && props.link.ageMs > 0)
  */
 function reasonLabel(reason: string): string {
   return {
+    INTERFERENCE: '受干扰触发切换',
+    LINK_DOWN: '原链路中断触发切换',
     BER_BELOW_THRESHOLD: '误码率低于阈值',
     BER_THRESHOLD_AND_HYSTERESIS: '误码率超过阈值并满足稳定帧条件',
   }[reason] ?? reason
@@ -152,6 +154,13 @@ function reasonLabel(reason: string): string {
         <div><dt>界面状态</dt><dd :class="`status--${link.status.toLowerCase()}`">{{ uiStatusLabel }}</dd></div>
         <div><dt>规范状态</dt><dd :class="`status--${link.canonicalStatus.toLowerCase()}`">{{ canonicalStatusLabel }}</dd></div>
         <div><dt>阈值版本</dt><dd>{{ link.thresholdVersion ?? '暂无数据' }}</dd></div>
+        <div><dt>干信比阈值</dt><dd>{{ optionalMetric(link.jsrThresholdDb, 2, ' dB') }}</dd></div>
+        <div><dt>告警 BER 阈值</dt><dd>{{ link.warningBerThreshold === undefined ? '暂无数据' : formatBer(link.warningBerThreshold) }}</dd></div>
+        <div><dt>紧急 BER 阈值</dt><dd>{{ link.emergencyBerThreshold === undefined ? '暂无数据' : formatBer(link.emergencyBerThreshold) }}</dd></div>
+        <div><dt>抖动抑制</dt><dd>{{ link.jitterSuppressed === undefined ? '暂无数据' : link.jitterSuppressed ? '已抑制' : '未抑制' }}</dd></div>
+        <div><dt>海面多径</dt><dd>{{ optionalMetric(link.loss?.seaMultipathLossDb, 2, ' dB') }}</dd></div>
+        <div><dt>大气衰减</dt><dd>{{ optionalMetric(link.loss?.atmosphericLossDb, 2, ' dB') }}</dd></div>
+        <div><dt>云雨损耗</dt><dd>{{ optionalMetric(link.loss?.cloudRainLossDb, 2, ' dB') }}</dd></div>
         <div><dt>稳定帧数</dt><dd>{{ link.consecutiveFrames ?? '暂无数据' }}</dd></div>
         <div class="link-quality-dialog__wide"><dt>判定依据</dt><dd>{{ reasonLabel(link.reason) }}</dd></div>
         <template v-if="link.detailed">
@@ -166,7 +175,9 @@ function reasonLabel(reason: string): string {
         </template>
         <template v-else><div v-for="label in ['传输距离', '频率', '带宽', '接收功率', '路径损耗', '调制方式']" :key="label"><dt>{{ label }}</dt><dd>暂无数据</dd></div></template>
       </dl>
-
+      <ul v-if="link.detailed?.issues?.length" aria-label="链路参数错误" data-testid="link-parameter-issues">
+        <li v-for="(issue, index) in link.detailed.issues" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</li>
+      </ul>
     </div>
   </el-dialog>
 </template>

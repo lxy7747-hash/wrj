@@ -14,6 +14,7 @@ import type {
   SyncResult,
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
+import { frameJammerExecutions } from '../../src/features/situation/frame-evidence.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
 import type { MissionOutcome } from './mission-execution.js'
 
@@ -154,6 +155,8 @@ export function ownsFixedEvidence(run: SimulationRun | undefined): boolean {
 /** 固定演示帧只替换运行身份；测量与业务证据仍来自同一冻结夹具。 */
 export function fixedFrameForRun(runId: SimulationRun['runId']): TelemetryFrame {
   const frame = structuredClone(loadFixtureProjection().frame)
+  // 多台证据保留完整数组，同时向旧客户端提供第一台的单对象。
+  frame.evidence.jammerExecution = frameJammerExecutions(frame)[0]!
   frame.runId = runId
   frame.evidence.routeDecisions.forEach(decision => { decision.runId = runId })
   return frame
@@ -170,6 +173,8 @@ export class SimulationProjection {
   startMission(pid: number, startedAt: string): SimulationRun {
     this.run.uiStatus = 'RUNNING'
     this.run.canonical.status = 'RUNNING'
+    this.run.canonical.mode = 'INTERACTIVE_SINGLE'
+    this.run.canonical.speedMultiplier = 1
     this.run.canonical.processId = pid
     this.run.startedAt = startedAt
     delete this.run.completedAt
@@ -182,6 +187,8 @@ export class SimulationProjection {
     this.run.uiStatus = failed ? 'ERROR' : 'COMPLETED'
     this.run.canonical.status = failed ? 'ERROR' : 'COMPLETED'
     this.run.canonical.processId = null
+    delete this.run.canonical.mode
+    delete this.run.canonical.speedMultiplier
     this.run.completedAt = outcome.completedAt
     if (failed) this.run.canonical.errorMessage = outcome.errorMessage ?? 'mission 执行失败。'
     else {
@@ -319,9 +326,13 @@ export class SimulationProjection {
     if (command.command === 'START') {
       this.run.uiStatus = 'RUNNING'
       this.run.canonical.status = 'RUNNING'
+      this.run.canonical.mode = command.mode
+      this.run.canonical.speedMultiplier = 1
       this.run.canonical.processId = FIXTURE_PROCESS_ID
       this.run.startedAt = STARTED_AT
       delete this.run.completedAt
+    } else if (command.command === 'SET_SPEED') {
+      this.run.canonical.speedMultiplier = command.speedMultiplier
     } else if (command.command === 'PAUSE') {
       this.run.uiStatus = 'PAUSED'
       this.run.canonical.status = 'PAUSED'
@@ -358,6 +369,10 @@ export class SimulationProjection {
       delete this.run.completedAt
     }
 
+    if (this.run.uiStatus === 'STOPPED' || this.run.uiStatus === 'COMPLETED') {
+      delete this.run.canonical.mode
+      delete this.run.canonical.speedMultiplier
+    }
     return { ok: true, data: structuredClone(this.run) }
   }
 
@@ -435,13 +450,16 @@ export class SimulationProjection {
     if (context.frameId !== fixture.frame.frameId || detection?.frameId !== context.frameId || detection.type !== 'DETECTION') {
       return { ok: false, code: 'FRAME_MISMATCH', status: 409, fieldPath: 'frameId', message: '侦测事件与闭环上下文不属于同一帧。' }
     }
+    if (detection.detected === false) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'detectionEventId', message: '未发现目标的侦测事件不能触发闭环。' }
+    }
     if (detection.targetPlatformId !== context.targetPlatformId) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'targetPlatformId', message: '闭环目标与侦测目标不一致。' }
     }
-    const execution = fixture.frame.evidence.jammerExecution
+    const execution = frameJammerExecutions(fixture.frame).find(item => item.targetPlatformId === context.targetPlatformId)
     const affectedLink = fixture.frame.uiLinks.find((link) => link.linkId === context.affectedLinkId)
     const closedLoopLinkIds = new Set(fixture.frame.evidence.routeDecisions.map((decision) => decision.previousLinkId))
-    if (execution.targetPlatformId !== context.targetPlatformId
+    if (execution === undefined
       || affectedLink === undefined
       || !closedLoopLinkIds.has(affectedLink.linkId)
       || (affectedLink.status !== 'DEGRADED' && affectedLink.status !== 'DOWN')) {
@@ -533,6 +551,8 @@ export class SimulationProjection {
   /** 恢复冻结的完成态运行；场景投影由全局 reset 独立恢复。 */
   reset(): void {
     this.run = structuredClone(loadFixtureProjection().run)
+    delete this.run.canonical.mode
+    delete this.run.canonical.speedMultiplier
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
   }

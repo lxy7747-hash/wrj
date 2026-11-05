@@ -5,6 +5,54 @@ import { createRenamedTemplateScenario, createTemplateScenario } from '../fixtur
 const { buildMissionPackage, MissionGenerationError, engineNames } = await import('../../server/scripts/' + 'mission-generator.js')
 
 describe('2026-11-01 模板脚本生成器', () => {
+
+  it('时序仅进入本地 stub；对接方全部原生 TXT 与未设置时逐字节一致', () => {
+    const draft = createTemplateScenario()
+    const before = buildMissionPackage(draft).files
+    draft.config.jammers[0]!.detectionDelayS = 6
+    draft.config.jammers[0]!.jammingDurationS = 9
+    draft.config.jammers[1]!.detectionDelayS = 0
+    draft.config.jammers[1]!.jammingDurationS = 3
+    const after = buildMissionPackage(draft).files
+    for (const [name, content] of Object.entries(before)) {
+      if (name.endsWith('.txt')) expect(after[name], name).toBe(content)
+    }
+    const local = buildMissionPackage(draft, undefined, { linkCalc: 'STUB' }).files
+    const rear = local['comm_platform_REAR.txt']!
+    for (const i of [0, 1]) {
+      expect(rear).toContain(`bool engaged${i} = false;`)
+      expect(rear).toContain(`double detectAt${i} = -1;`)
+      expect(rear).toContain(`double onAt${i} = -1;`)
+      expect(rear).toContain(`bool spent${i} = false;`)
+      expect(rear).toContain(`if (!engaged${i} && !spent${i})`)
+      expect(rear).toContain(`engaged${i} = false; spent${i} = true; detectAt${i} = -1;`)
+      expect(rear).toContain(`else { detectAt${i} = -1; }`)
+    }
+    expect(rear).toContain('if (TIME_NOW - detectAt0 >= 6)')
+    expect(rear).toContain('else if (TIME_NOW - onAt0 >= 9)')
+    expect(rear).toContain('if (TIME_NOW - detectAt1 >= 0)')
+    expect(rear).toContain('else if (TIME_NOW - onAt1 >= 3)')
+    expect(rear).toContain('if (nearest0 >= 0)')
+    expect(rear).toContain('execute at_interval_of 3 sec')
+    expect(JSON.parse(local['mapping.json']!).localRuntime.note).toContain('±3 秒')
+  })
+
+  it('未设置时序：到达触发半径立即开启，离开释放半径关闭，不添加持续时长限制', () => {
+    const draft = createTemplateScenario()
+    const generated = buildMissionPackage(draft, undefined, { linkCalc: 'STUB' })
+    const rear = generated.files['comm_platform_REAR.txt']!
+    expect(rear).toContain(`if (${draft.config.jammers[0]!.jammingRange} > 0 && nearest0 <= ${draft.config.jammers[0]!.jammingRange})`)
+    expect(rear).toContain('if (TIME_NOW - detectAt0 >= 0)')
+    expect(rear).toContain('if (!weapon0.IsTurnedOn()) { weapon0.TurnOn(); }')
+    expect(rear).toContain('weapon0.SelectMode("broadband_jamming");')
+    expect(rear).toContain('weapon0.SelectMode("default"); weapon0.TurnOff();')
+    expect(rear).not.toContain('else if (TIME_NOW - onAt')
+    for (const jammer of generated.manifest.jammers) {
+      expect(jammer).not.toHaveProperty('detectionDelayS')
+      expect(jammer).not.toHaveProperty('jammingDurationS')
+    }
+  })
+
   it('总是生成模板固定的通信平台、共享端口与附带脚本', () => {
     const draft = createTemplateScenario()
     const generated = buildMissionPackage(draft)

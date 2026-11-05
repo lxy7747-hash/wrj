@@ -1,5 +1,6 @@
 import type {
   DetectionEvent,
+  CompositeLossEvidence,
   LinkStatusSummary,
   PlatformStatus,
   ScenarioConfig,
@@ -34,7 +35,12 @@ export interface SituationLinkView {
   reason: string
   thresholdVersion: string | null
   consecutiveFrames: number | null
+  jsrThresholdDb?: number
+  warningBerThreshold?: number
+  emergencyBerThreshold?: number
+  jitterSuppressed?: boolean
   ageMs: number
+  loss?: CompositeLossEvidence
   detailed: TelemetryLinkRecord | null
 }
 
@@ -214,6 +220,10 @@ function getProjection(linkId: string, summary: LinkStatusSummary, frame: Teleme
   reason: string
   thresholdVersion: string | null
   consecutiveFrames: number | null
+  jsrThresholdDb?: number
+  warningBerThreshold?: number
+  emergencyBerThreshold?: number
+  jitterSuppressed?: boolean
   ageMs: number
 } {
   const projection = frame.uiLinks.find((item) => item.linkId === linkId && item.frameId === frame.frameId)
@@ -257,6 +267,11 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
       reason: projection.reason,
       thresholdVersion: projection.thresholdVersion,
       consecutiveFrames: projection.consecutiveFrames,
+      jsrThresholdDb: projection.jsrThresholdDb,
+      warningBerThreshold: projection.warningBerThreshold,
+      emergencyBerThreshold: projection.emergencyBerThreshold,
+      jitterSuppressed: projection.jitterSuppressed,
+      loss: frame.evidence.losses.find(loss => loss.linkId === linkId),
       ageMs: projection.ageMs,
       detailed,
     }

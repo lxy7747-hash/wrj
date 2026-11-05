@@ -3418,6 +3418,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "description": "自动探测的最小有效距离，必须小于 detectionRange；缺省 1000 m。"
+      },
+      "detectionDelayS": {
+        "type": "number",
+        "minimum": 0,
+        "description": "干扰延迟，单位 s；未填写时省略，不接受 null。"
+      },
+      "jammingDurationS": {
+        "type": "number",
+        "description": "干扰持续时长，单位 s；未填写时省略，不接受 null。",
+        "exclusiveMinimum": 0
       }
     }
   },
@@ -4485,7 +4495,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "const": "UNCODED"
       },
       "qualityModelVersion": {
-        "const": "SNBER-1.2"
+        "type": "string",
+        "minLength": 1
       },
       "ber": {
         "type": "number",
@@ -4521,6 +4532,12 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minimum": 0,
         "maximum": 100,
         "description": "链路可用率（%）；引擎提供时展示。"
+      },
+      "issues": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/ValidationIssue"
+        }
       }
     }
   },
@@ -4685,6 +4702,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "errorMessage": {
         "type": "string"
+      },
+      "mode": {
+        "enum": [
+          "INTERACTIVE_SINGLE",
+          "PARAMETER_SCAN",
+          "HISTORICAL_REPLAY"
+        ]
+      },
+      "speedMultiplier": {
+        "type": "number",
+        "exclusiveMinimum": 0
       }
     }
   },
@@ -4728,7 +4756,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minLength": 1
       },
       "thresholdVersion": {
-        "const": "LLZT-1.0"
+        "type": "string",
+        "minLength": 1
       },
       "consecutiveFrames": {
         "type": "integer",
@@ -4738,6 +4767,22 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "maximum": 5000
+      },
+      "jsrThresholdDb": {
+        "type": "number"
+      },
+      "warningBerThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "emergencyBerThreshold": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1
+      },
+      "jitterSuppressed": {
+        "type": "boolean"
       }
     }
   },
@@ -4782,7 +4827,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number"
       },
       "modelVersion": {
-        "const": "COMPOSITE-LOSS-1.0"
+        "type": "string",
+        "minLength": 1
+      },
+      "seaMultipathLossDb": {
+        "type": "number"
+      },
+      "atmosphericLossDb": {
+        "type": "number"
+      },
+      "cloudRainLossDb": {
+        "type": "number"
       }
     }
   },
@@ -4855,13 +4910,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
     ],
     "properties": {
       "configVersion": {
-        "const": "SCN-001-v4"
+        "type": "string",
+        "minLength": 1
       },
       "engineVersion": {
-        "const": "AFSIM-2.9.0-FIXTURE"
+        "type": "string",
+        "minLength": 1
       },
       "uiVersion": {
-        "const": "FRAME-1.0"
+        "type": "string",
+        "minLength": 1
       },
       "effectiveFrameId": {
         "type": "string",
@@ -4909,6 +4967,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "items": {
           "$ref": "#/components/schemas/RouteDecision"
         }
+      },
+      "jammerExecutions": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/JammerExecutionEvidence"
+        },
+        "description": "多台干扰执行证据；存在时第一项必须与必填 jammerExecution 深相等，由运行时校验。"
       }
     }
   },
@@ -5083,6 +5149,17 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "cooldownRemainingS": {
         "type": "number",
         "minimum": 0
+      },
+      "frequencyMinMHz": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "frequencyMaxMHz": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "detected": {
+        "type": "boolean"
       }
     },
     "x-fixture-path": "$.events",
@@ -5124,10 +5201,38 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             "cooldownRemainingS",
             "decision",
             "reason"
-          ]
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "frequencyMinMHz"
+                ]
+              },
+              {
+                "required": [
+                  "frequencyMaxMHz"
+                ]
+              },
+              {
+                "required": [
+                  "detected"
+                ]
+              }
+            ]
+          }
         }
       }
-    ]
+    ],
+    "dependentRequired": {
+      "frequencyMinMHz": [
+        "frequencyMaxMHz"
+      ],
+      "frequencyMaxMHz": [
+        "frequencyMinMHz"
+      ]
+    },
+    "description": "DETECTION frequencyMinMHz and frequencyMaxMHz must both be present or absent; when present frequencyMinMHz <= frequencyMaxMHz. An absent detected means detected; false cannot trigger a closed loop."
   },
   "SimulationRun": {
     "type": "object",
@@ -9432,7 +9537,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minLength": 1
       },
       "action": {
-        "const": "START"
+        "enum": [
+          "START",
+          "STOP"
+        ]
       },
       "linkStatus": {
         "enum": [
@@ -9448,6 +9556,58 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "reason": {
         "type": "string",
         "minLength": 1
+      }
+    }
+  },
+  "SensorStatusData": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "type",
+      "time",
+      "sensorId",
+      "platformId",
+      "active"
+    ],
+    "properties": {
+      "type": {
+        "const": "SENSOR_STATUS"
+      },
+      "time": {
+        "type": "number",
+        "minimum": 0
+      },
+      "sensorId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "platformId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "active": {
+        "type": "boolean"
+      },
+      "scanCoveragePercent": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 100
+      }
+    }
+  },
+  "JammingDecisionEvent": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "type",
+      "decision"
+    ],
+    "properties": {
+      "type": {
+        "const": "JAMMING_DECISION"
+      },
+      "decision": {
+        "$ref": "#/components/schemas/JammingDecision"
       }
     }
   },
