@@ -196,8 +196,7 @@ describe('前端能力补齐的真实值与空态', () => {
     await wrapper.setProps({ selectedLinkId: 'MISSING' })
     expect(selects[1]!.props('modelValue')).toBe('')
   })
-  it.each([undefined, 'http://192.168.1.49:8080'])('引用登记调用当前服务接口；拒绝另一装备的响应并清除历史（%s）', async target => {
-    vi.stubEnv('VITE_API_TARGET', target)
+  it('引用登记调用当前服务接口；拒绝另一装备的响应并清除历史', async () => {
     const reference = { equipmentId: EQUIPMENT.equipmentId, equipmentVersion: 1, scenarioId: 'SCN-001', linkId: 'L-MW-01' }
     const details = [response({ history: [EQUIPMENT], references: [] }), response({ history: [EQUIPMENT], references: [reference] }),
       response({ history: [{ ...EQUIPMENT, equipmentId: 'OTHER' }], references: [] })]
@@ -213,7 +212,7 @@ describe('前端能力补齐的真实值与空态', () => {
     await button(wrapper, '登记当前版本引用').trigger('click'); await flushPromises()
     const put = fetch.mock.calls.find(call => (call as unknown as [string, RequestInit])[1]?.method === 'PUT') as unknown as [string, RequestInit]
     expect(JSON.parse(String(put[1].body))).toEqual({ reference, remove: false })
-    const expectedOrigin = target ? window.location.origin : 'http://127.0.0.1:4173'
+    const expectedOrigin = 'http://127.0.0.1:4173'
     expect(fetch.mock.calls.every(([url]) => url.startsWith(`${expectedOrigin}/api/`))).toBe(true)
     expect(wrapper.text()).toContain('当前版本')
     await button(wrapper, '重新加载引用与版本').trigger('click'); await flushPromises()

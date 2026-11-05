@@ -10,7 +10,7 @@ OpenAPI **1.10.0**，操作数量不变。质量模型、链路阈值、损耗�
 
 损耗可选海面多径／大气／云雨分量；链路投影可选干信比与 BER 阈值、抖动抑制；链路详情可选结构化 `issues`。`DetectionEvent` 可选成对正频段（min ≤ max）及 `detected`；缺省按已发现，false 不得用于闭环。`jammer.event` 接受 JammerStatusData、SensorStatusData、JammingDecisionEvent、DetectionEvent，所有推送继续校验任务、帧与时刻。决策结构接受 START／STOP，REST 闭环仍只接受 START；决策按编号去重，传感器按编号替换。新增字段缺省时显示“暂无数据”。INTERFERENCE／LINK_DOWN 切换按选路、冷却、稳定性及原链路证据校验，不用 BER 改善代替原因。
 
-`detectionDelayS` 为 0～仿真总时长，`jammingDurationS` 大于 0 且不超过仿真总时长，均可省略。它们只控制本地 link_calc 缺失时的 stub：目标连续处于触发半径内开始计时，离开取消等待；时长到期后须离开释放半径才重新就绪；3 秒检查周期有约 ±3 秒误差。对接方 TXT 及 calculator() 保持不变。远端旧服务未更新前仅可省略新配置字段，不能用配置保存或单测证明远端引擎时序生效。
+`detectionDelayS` 为 0～仿真总时长，`jammingDurationS` 大于 0 且不超过仿真总时长，均可省略。它们只控制本地 link_calc 缺失时的 stub：目标连续处于触发半径内开始计时，离开取消等待；时长到期后须离开释放半径才重新就绪；3 秒检查周期有约 ±3 秒误差。对接方 TXT 及 calculator() 保持不变。
 
 | 文件 | 当前 SHA-256 |
 |---|---|
@@ -19,13 +19,15 @@ OpenAPI **1.10.0**，操作数量不变。质量模型、链路阈值、损耗�
 | `../scripts/contracts/openapi-schema.snapshot.ts` | `8592DD63B971BA2AE94F0BA14964109E0BFEAC0C003C55EEADB63E7AA47D38B4` |
 | `contracts/deterministic-fixtures.json（未修改）` | `6A1B90E0B6932DE7518775B0F2107767906755C56D47F329F7092DB05245F616` |
 
+2026-11-05 变更记录：移除远程开发模式 dev:remote，契约与 OpenAPI 1.10.0 不变。
+
 ## 干扰遥测兼容扩展（2026-11-05，历史冻结记录）
 
 按用户确认的阶段 3 第 7 条修订，OpenAPI 更新为 **1.9.5**（84 操作 / 40 写操作不变）：`FrameEvidence.jammerExecution` 保留必填单对象，新增可选 `jammerExecutions`。复数数组存在时必须非空，每项符合 `JammerExecutionEvidence`，首项与单对象深相等（跨字段一致性由遥测运行时校验）。服务端有多台执行证据时同时发送两字段；统一通过 `frameJammerExecutions` 读取，旧载荷无需改名或迁移。确定性夹具及版本字面量保持不变；`runtime.state` 不含 mode/speed、侦测事件不含频段/detected 继续接受。
 
-阶段 4 的 `Jammer.detectionDelayS` / `jammingDurationS` 为可选非负有限秒数；未填写或清空时删除键，不发送 null / NaN，不注入默认值。两个输入框均提示“需要服务端同步更新后才能保存”。该合同扩展允许服务端读写配置，本轮未新增 mission 时序 stub 或将这两个字段写入脚本，不据此宣称真实引擎时序生效；旧服务端仍可能拒绝填写后的新键，联调前需同步更新。回退前应保留含新字段的配置，不能用旧程序覆盖保存；本轮不改用户数据库。
+阶段 4 的 `Jammer.detectionDelayS` / `jammingDurationS` 为可选非负有限秒数；未填写或清空时删除键，不发送 null / NaN，不注入默认值。该合同扩展允许服务端读写配置，本轮未新增 mission 时序 stub 或将这两个字段写入脚本，不据此宣称真实引擎时序生效。回退前应保留含新字段的配置，不能用旧程序覆盖保存；本轮不改用户数据库。
 
-阶段 6 的最后一项实测须在具有 `Release/Release/mission.exe` 的机器上以 `npm run dev` 执行真实 mission 干扰延迟／持续时长 stub，核对实际引擎日志与启停时刻。远程联调入口 `http://192.168.1.49:8080` 的服务端更新前无法验证，单元测试与投影层响应不替代该项实测。
+阶段 6 的最后一项实测须在具有 `Release/Release/mission.exe` 的机器上以 `npm run dev` 执行真实 mission 干扰延迟／持续时长 stub，核对实际引擎日志与启停时刻。2026-11-05 已用本机 `Release/Release/mission.exe` 以 `MISSION_SMOKE_EXECUTABLE` 跑通真实引擎用例“干扰延迟、持续时长及释放前不再触发”。
 
 | 文件 | 当前 SHA-256 |
 |---|---|

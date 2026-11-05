@@ -345,7 +345,6 @@ describe('干扰带宽档位和链路对准', () => {
 
   it('可选干扰时序未填写或清空时省略键，已填值按原值序列化', async () => {
     const { wrapper, jammer } = openJammer()
-    expect(wrapper.findAll('.field-hint').filter(hint => hint.text() === '需要服务端同步更新后才能保存')).toHaveLength(2)
     const serialized = () => {
       const draft = createTemplateScenario()
       draft.config.jammers[0] = structuredClone(toRaw(wrapper.emitted('apply')!.at(-1)![0] as Jammer))

@@ -200,11 +200,9 @@ watch(() => props.modelValue, (visible) => {
           </el-form-item>
           <el-form-item label="干扰延迟（秒）" :error="fieldError('detectionDelayS')">
             <el-input-number :model-value="editor.detectionDelayS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-detection-delay" @update:model-value="setOptionalSeconds('detectionDelayS', $event)" />
-            <small class="field-hint">需要服务端同步更新后才能保存</small>
           </el-form-item>
           <el-form-item label="干扰持续时长（秒）" :error="fieldError('jammingDurationS')">
             <el-input-number :model-value="editor.jammingDurationS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-jamming-duration" @update:model-value="setOptionalSeconds('jammingDurationS', $event)" />
-            <small class="field-hint">需要服务端同步更新后才能保存</small>
           </el-form-item>
           <el-form-item required label="方向（°）" :error="fieldError('direction')"><el-input-number v-model="uiEditor.direction" :min="validate ? undefined : 0" :max="validate ? undefined : 360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
           <el-form-item label="俯仰角（°）" :error="fieldError('elevation')"><el-input-number v-model="uiEditor.elevation" :min="validate ? undefined : -10" :max="validate ? undefined : 60" controls-position="right" data-testid="jammer-elevation" /></el-form-item>

@@ -212,12 +212,9 @@ describe('P5 数据交换页面', () => {
     wrapper.unmount()
   })
 
-  it.each([undefined, 'http://192.168.1.49:8080'])('消息通道展示当前服务的实际连接地址（%s）', target => {
-    vi.stubEnv('VITE_API_TARGET', target)
+  it('消息通道展示当前服务的实际连接地址', () => {
     const wrapper = mount(WebSocketContractCard, { global: { plugins: [ElementPlus] } })
-    const address = new URL('/ws/v1?role=OPERATOR', target ? window.location.origin : 'http://127.0.0.1:4173')
-    address.protocol = address.protocol === 'https:' ? 'wss:' : 'ws:'
-    expect(wrapper.text()).toContain(address.href)
+    expect(wrapper.text()).toContain('ws://127.0.0.1:4173/ws/v1?role=OPERATOR')
     expect(wrapper.text()).toContain('连接当前服务入口')
     expect(wrapper.text()).not.toContain('只连接 127.0.0.1')
     wrapper.unmount()

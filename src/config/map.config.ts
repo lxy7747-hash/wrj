@@ -14,7 +14,7 @@ export const MAP_CONFIG = {
     vector: {
       /** 资源 TileJSON 中的西南、东北边界，每点为 [纬度, 经度]；范围外不请求不存在的瓦片。 */
       bounds: [[7.197594, 71.61502], [54.011569, 135.677601]],
-      tileUrl: `${import.meta.env.MODE === 'lan' || import.meta.env.VITE_API_TARGET ? '' : 'http://127.0.0.1:4174'}/tiles/china-taiwan-260823/{z}/{x}/{y}`,
+      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/china-taiwan-260823/{z}/{x}/{y}`,
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       /** 此矢量资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
@@ -23,7 +23,7 @@ export const MAP_CONFIG = {
     satellite: {
       /** 卫星包 TileJSON 覆盖范围；坐标顺序为 [纬度, 经度]，与矢量范围独立。 */
       bounds: [[-66.530768, -0.043945], [66.530768, 157.543945]],
-      tileUrl: `${import.meta.env.MODE === 'lan' || import.meta.env.VITE_API_TARGET ? '' : 'http://127.0.0.1:4174'}/tiles/taiwan-strait-satellite/{z}/{x}/{y}`,
+      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/taiwan-strait-satellite/{z}/{x}/{y}`,
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: 'VersaTiles - Satellite + Orthophotos',
       /** 此卫星资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
