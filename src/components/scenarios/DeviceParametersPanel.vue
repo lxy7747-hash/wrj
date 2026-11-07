@@ -41,6 +41,7 @@ const PORT_LABELS: Record<string, string> = {
   fiber_link: '光纤',
 }
 const ANTENNA_USAGE: Record<TemplateAntennaName, string> = {
+  OMNI_ANTENNA: '全向天线（OMNI_ANTENNA）',
   MICRO_UAV_OMNI_ANTENNA: '任务无人机机载微波宽波束',
   MICRO_REAR_PLATFORM_DIR_ANTENNA: '后方通信车微波定向',
   OMNI_ANTENNA_HIGHGAIN: '干扰设备高增益全向',
@@ -53,13 +54,15 @@ const ANTENNA_USAGE: Record<TemplateAntennaName, string> = {
   SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: '任务无人机机载卫通宽波束',
   LASER_COMM_ANTENNA: '激光通信',
 }
-const NUMBER_COLUMNS: readonly { key: Exclude<PortKey, 'transferRate'>; label: string; min: number }[] = [
+const NUMBER_COLUMNS: readonly { key: Exclude<PortKey, 'transferRate'>; label: string; min?: number }[] = [
   { key: 'txFrequency', label: '发射频率（MHz）', min: 0 },
   { key: 'txBandwidth', label: '发射带宽（MHz）', min: 0 },
   { key: 'txPower', label: '发射功率（W）', min: 0 },
   { key: 'rxFrequency', label: '接收频率（MHz）', min: 0 },
   { key: 'rxBandwidth', label: '接收带宽（MHz）', min: 0 },
   { key: 'noiseFigureDb', label: '噪声系数（dB）', min: 0 },
+  { key: 'eirpDbw', label: 'EIRP（dBW）' },
+  { key: 'gtDbk', label: 'G/T（dB/K）' },
 ]
 
 const activeType = ref<TemplatePlatformType>('MISSION_UAV_PLATFORM')

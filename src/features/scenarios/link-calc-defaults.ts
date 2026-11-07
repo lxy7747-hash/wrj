@@ -44,13 +44,14 @@ export const CHANNEL_ENCODING_OPTIONS: readonly { value: ChannelEncodingScheme; 
   { value: 8, label: 'Turbo 码 1/3（8.0 dB）' },
 ]
 export const JAMMING_RANGE_KM = { min: 0, max: 100 } as const
-export const LINK_CALC_DEFAULTS: LinkCalcSettings = {
+export const LINK_CALC_DEFAULTS: Required<LinkCalcSettings> = {
+  updateIntervalS: 5,
   emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7,
   jammingRangeKm: 30, channelEncodingScheme: 0,
 }
 
 /** 读取 link_calc 全局设置；缺省字段按文档默认值补齐，返回副本。 */
-export function readLinkCalcSettings(value: Partial<LinkCalcSettings> | undefined): LinkCalcSettings {
+export function readLinkCalcSettings(value: Partial<LinkCalcSettings> | undefined): Required<LinkCalcSettings> {
   return { ...LINK_CALC_DEFAULTS, ...value }
 }
 

@@ -241,3 +241,72 @@ describe('新模板通信参数', () => {
     expect(paths).toContainEqual({ fieldPath: 'informationDemand[0].destinationPlatformIds[0]', demandIndex: 0, targetIndex: 0 })
   })
 })
+
+
+it('11-06 可选参数兼容旧场景，读取仅补副本且显式值优先', async () => {
+  const { readJammerParameters, JAMMER_CALC_DEFAULTS } = await import('../../src/features/scenarios/jammer-settings')
+  const { readLinkCalcSettings } = await import('../../src/features/scenarios/link-calc-defaults')
+  const { readLinkSettings } = await import('../../src/features/scenarios/link-settings')
+  const old = createTemplateScenario().config, before = structuredClone(old)
+  expect(templateSchema('ScenarioConfigWrite')(old)).toBe(true)
+  for (const mode of ['read', 'write'] as const) expect(inspectScenarioConfig(old, mode).result.valid).toBe(true)
+  expect(readLinkSettings(old).messageIntervalS).toBe(5)
+  expect(readLinkCalcSettings(old.linkSettings?.linkCalc).updateIntervalS).toBe(5)
+  expect(readJammerParameters(old.jammers[0]!)).toMatchObject(JAMMER_CALC_DEFAULTS)
+  const parameters = readDeviceParameters(old)
+  expect(parameters.ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 20, rxBandwidth: 20, eirpDbw: 30, gtDbk: -3 })
+  expect(parameters.ports.MISSION_UAV_PLATFORM!.sat_link).toMatchObject({ eirpDbw: 5, gtDbk: -14 })
+  expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.l_band_uplink).toMatchObject({ eirpDbw: 26, gtDbk: -6 })
+  expect(parameters.ports.COMMAND_VEHICLE_PLATFORM!.fiber_link).not.toHaveProperty('eirpDbw')
+  expect(parameters.antennaGains).toMatchObject({ OMNI_ANTENNA: 30, L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: 25, L_BAND_DIRECTIONAL_UAV_ANTENNA: 25 })
+  old.deviceParameters = { ports: { MISSION_UAV_PLATFORM: { microwave_link: { ...parameters.ports.MISSION_UAV_PLATFORM!.microwave_link!, txBandwidth: 50, eirpDbw: -2, gtDbk: 0 } } } }
+  expect(readDeviceParameters(old).ports.MISSION_UAV_PLATFORM!.microwave_link).toMatchObject({ txBandwidth: 50, eirpDbw: -2, gtDbk: 0 })
+  Object.assign(old.jammers[0]!, { radarPower: 200, gtDbk: 0 })
+  expect(readJammerParameters(old.jammers[0]!)).toMatchObject({ radarPower: 200, gtDbk: 0 })
+  delete old.deviceParameters
+  delete old.jammers[0]!.radarPower; delete old.jammers[0]!.gtDbk
+  expect(old).toEqual(before)
+})
+
+it('11-06 新键保持闭合校验：有限数、正周期、正雷达功率/带宽及占空比边界', () => {
+  const validate = templateSchema('ScenarioConfigWrite')
+  const candidate = createTemplateScenario().config
+  candidate.deviceParameters = { ports: { MISSION_UAV_PLATFORM: { microwave_link: readDeviceParameters(candidate).ports.MISSION_UAV_PLATFORM!.microwave_link! } } }
+  candidate.linkSettings!.linkCalc = { emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7, jammingRangeKm: 30, channelEncodingScheme: 0 }
+  const targets: [object, string, boolean, number?][] = [
+    [candidate.deviceParameters.ports!.MISSION_UAV_PLATFORM!.microwave_link!, 'eirpDbw', false],
+    [candidate.deviceParameters.ports!.MISSION_UAV_PLATFORM!.microwave_link!, 'gtDbk', false],
+    [candidate.linkSettings!, 'messageIntervalS', true], [candidate.linkSettings!.linkCalc!, 'updateIntervalS', true],
+    ...['radarFrequency', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb'].map(key => [candidate.jammers[0]!, key, false] as [object, string, boolean]),
+    [candidate.jammers[0]!, 'radarBandwidth', true], [candidate.jammers[0]!, 'radarPower', true], [candidate.jammers[0]!, 'sweepDutyCycle', true, 1],
+  ]
+  for (const [target, key, positive, max] of targets) {
+    const value = target as Record<string, unknown>, saved = value[key]
+    for (const invalid of [null, '1', [], {}, NaN, Infinity, ...(positive ? [0, -1] : []), ...(max ? [1.1] : [])]) {
+      value[key] = invalid
+      if (typeof invalid !== 'number' || Number.isFinite(invalid)) expect(validate(candidate), key).toBe(false)
+      for (const mode of ['read', 'write'] as const) expect(inspectScenarioConfig(candidate, mode).result.errors.some(issue => issue.fieldPath?.endsWith(`.${key}`)), key).toBe(true)
+    }
+    value[key] = positive ? 0.5 : -3
+    expect(validate(candidate), JSON.stringify(validate.errors)).toBe(true)
+    expect(inspectScenarioConfig(candidate, 'write').result.valid).toBe(true)
+    if (saved === undefined) delete value[key]; else value[key] = saved
+  }
+  candidate.deviceParameters.ports!.MISSION_UAV_PLATFORM!.microwave_link!.parameterSource = { kind: 'EQUIPMENT', sourceId: 'EQ-1', sourceVersion: 1, fields: ['eirpDbw'] as never }
+  expect(validate(candidate)).toBe(false)
+  expect(inspectScenarioConfig(candidate, 'write').result.valid).toBe(false)
+})
+
+it('11-06 扩展不放宽 V1.2 干扰写入档位，同类雷达差异不会静默采用首台', () => {
+  const draft = createTemplateScenario()
+  for (const patch of [{ defaultPower: 2 }, { bandwidth: 50 }]) {
+    const config = structuredClone(draft.config)
+    Object.assign(config.jammers[0]!, patch)
+    expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'defaultPower' in patch ? 'JAMMER_POWER_OUT_OF_RANGE' : 'JAMMER_BANDWIDTH_OUT_OF_RANGE' }))
+  }
+  const platform = structuredClone(draft.config.platforms.find(p => p.id === draft.config.jammers[0]!.platformId)!)
+  platform.id = 'second-ground'; platform.jammerIds = ['JAM-SECOND']
+  draft.config.platforms.push(platform)
+  draft.config.jammers.push({ ...draft.config.jammers[0]!, id: 'JAM-SECOND', platformId: platform.id, radarPower: 101 })
+  expect(inspectScenarioConfig(draft.config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'JAMMER_PLATFORM_PARAMETER_CONFLICT', fieldPath: 'jammers[2].radarPower' }))
+})

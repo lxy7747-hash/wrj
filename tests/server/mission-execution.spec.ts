@@ -34,11 +34,17 @@ const TYPE_FILES = ['comm_PerDefinition.txt', 'comm_platform_COMMAND_VEHICLE.txt
 async function readTypeFiles(directory: string): Promise<string> {
   return (await Promise.all(TYPE_FILES.map(name => readFile(join(directory, name), 'utf8')))).join(String.fromCharCode(10))
 }
-/** 去掉本地运行包的兼容改动（独立介质、local_link_stub），还原为保存给对接方的 TXT 写法。 */
+/** 去掉本地运行包的兼容改动及保留定义，还原为保存给对接方的 TXT 写法。 */
 async function readDeliveredTypeFiles(directory: string): Promise<string> {
   return (await Promise.all(TYPE_FILES.map(async name => {
     let text = (await readFile(join(directory, name), 'utf8')).replace(/UAV_MESH_MEDIUM__\S+/gu, 'UAV_MESH_MEDIUM')
-    if (name === 'comm_PerDefinition.txt') text = text.slice(0, text.indexOf('// 本地运行包：'))
+    if (name === 'comm_PerDefinition.txt') {
+      text = text.slice(0, text.indexOf('// 本地运行包：'))
+      for (const antenna of ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) {
+        text = text.replace(new RegExp(`antenna_pattern ${antenna}[\\s\\S]*?end_antenna_pattern\\n\\n`, 'u'), '')
+      }
+    }
+    if (name === 'comm_platform_JAMMER.txt') text = text.replace(/\n {2}weapon prophet_jammer[\s\S]*?\n {2}end_weapon\n/u, '\n')
     return text.replace(/\n {2}processor local_link_stub WSF_SCRIPT_PROCESSOR[\s\S]*?\n {2}end_processor/u, '')
   }))).join(String.fromCharCode(10))
 }
@@ -539,14 +545,13 @@ describe('本机 mission 执行器', () => {
         expect(rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle').every((cells: string[]) => cells[4] === port && cells[7] === 'kForwardTarget')).toBe(true)
         expect(rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle').length).toBeGreaterThan(0)
         if (type === 'FORWARD_RELAY_NODE') {
-          // 中继任务机 on_message 读取 kReturnReconVideo_* 键转发，补丁把中间跳写在该键下。
+          // 中继读取真实业务类型和目的地的 AuxData，消息保持原始业务类型。
           const chain = [rows('MESSAGE_TRANSMITTED', 'rear_comm_vehicle'), rows('MESSAGE_RECEIVED', 'mission_uav_01'), rows('MESSAGE_TRANSMITTED', 'mission_uav_01'), rows('MESSAGE_RECEIVED', 'mission_uav_02')]
           chain.forEach(items => expect(items.length, JSON.stringify(chain)).toBeGreaterThan(0))
           const times = chain.map(items => Number(items[0]![0]))
           expect(times).toEqual([...times].sort((a, b) => a - b))
         } else {
-          // 模板卫星实例固定在 0n 120e GEO，后方车 4° 动中通天线不带指向（注释“假定伺服对准”，引擎不会自动对准），
-          // 卫星也没有转发逻辑；本机只能核对后方车按主路由发出。
+          // 天通仍按模板保留空 processor；这里只核对后方车按主路由发出。
           expect(rows('MESSAGE_TRANSMITTED', 'tiantong_sat')).toHaveLength(0)
         }
       } finally { await rm(root, { recursive: true, force: true }) }
@@ -810,7 +815,7 @@ describe('本机 mission 执行器', () => {
       const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
       expect(receipt).toMatchObject({ code: 0, scenarioId: 'SCN-001', revision: saved.revision, pid: started.canonical.processId })
       expect(receipt.linkCalcCompatibility).toMatch(/^(PRESERVED|MISSING_PROCESSOR_STUBBED)$/)
-      // 本地包与保存的 TXT 只差本地兼容改动：独立介质，以及缺少 link_calc 时的 local_link_stub。
+      // 本地包另外保留删除项定义、独立介质，以及缺少 link_calc 时的 local_link_stub。
       expect(await readDeliveredTypeFiles(directory)).toBe(receipt.linkCalcCompatibility === 'PRESERVED'
         ? savedPlatforms
         : withoutLinkCalc(savedPlatforms))
@@ -1110,3 +1115,76 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 })
+
+
+it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：11-06 中继和神通按目的地转发，地面干扰进入后开启、离开后关闭', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wrj-template-1106-routes-'))
+  try {
+    // 仅开启额外观察事件，核实关闭时刻；不改变生成器的模板事件清单。
+    const scriptFiles = await import('../../server/local/' + 'script-file.js')
+    const writePackage = scriptFiles.writeMissionPackage
+    vi.spyOn(scriptFiles, 'writeMissionPackage').mockImplementation(async (...args: Parameters<typeof writePackage>) => {
+      const entry = await writePackage(...args)
+      const setup = await readFile(entry, 'utf8')
+      await writeFile(entry, setup.replace('  enable WEAPON_TURNED_ON', '  enable WEAPON_TURNED_OFF\n  enable WEAPON_TURNED_ON'), 'utf8')
+      return entry
+    })
+    const draft = createTemplateScenario(), config = draft.config
+    config.scenario.duration = 80; config.scenario.realtime = false
+    for (const platform of config.platforms) delete platform.returnPlan
+    config.linkSettings!.enabledSatellites = { TIANTONG: false, SHENTONG: true }
+    const find = (id: string) => config.platforms.find(p => p.id === id)!
+    find('mission_uav_01').initialPosition = { longitude: 120.9, latitude: 25.0, altitude: 8000 }
+    find('mission_uav_01').waypoints = []; delete find('mission_uav_01').loiterWaypoints
+    const moving = find('mission_uav_02')
+    moving.initialPosition = { longitude: 121.54, latitude: 25.15, altitude: 3200 }
+    moving.waypoints = [{ longitude: 121.8, latitude: 25.15, altitude: 3200, speed: 500, arrivalTime: 0 }]
+    delete moving.loiterWaypoints; delete moving.returnPlan
+    config.links.find(link => link.id === 'c_forward_uav2')!.relayPlatformId = 'mission_uav_01'
+    const returnLink = config.links.find(link => link.id === 'c_return_uav2')!
+    Object.assign(returnLink, { type: 'SAT', targetPlatformId: 'rear_comm_vehicle', relayPlatformId: 'shentong_sat', frequency: 14200 })
+    delete returnLink.band
+    config.linkSettings!.hotLinks!.reverse[0] = ['c_return_uav2']
+    for (const platform of config.platforms) platform.linkIds = config.links.filter(link => [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(platform.id)).map(link => link.id)
+    Object.assign(config.jammers[0]!, { jammingRange: 5000, releaseRange: 6000 })
+    for (const jammer of config.jammers) delete jammer.triggerTimeS
+    draft.uiExtensions.jammers[1]!.enabled = false
+    const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => false).start(draft)
+    const outcome = await process.completed, directory = dirname(process.entryPath)
+    const log = await readFile(join(directory, 'mission-console.log'), 'utf8')
+    expect(outcome, log.slice(-6000)).toMatchObject({ code: 0 })
+    expect(log).not.toContain('FATAL')
+    const records = eventRecords(await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8'))
+    for (const platform of ['mission_uav_01', 'shentong_sat']) {
+      expect(records.some(row => row[1] === 'MESSAGE_RECEIVED' && row[2] === platform), `${platform} 接收`).toBe(true)
+      expect(records.some(row => row[1] === 'MESSAGE_TRANSMITTED' && row[2] === platform), `${platform} 转发`).toBe(true)
+    }
+    expect(log).toContain('mission_uav_01 kForwardSituation Forward Message')
+    expect(records.some(row => row[1] === 'MESSAGE_RECEIVED' && row[2] === 'rear_comm_vehicle')).toBe(true)
+    const on = records.find(row => row[1] === 'WEAPON_TURNED_ON' && row[2] === 'jammer_station_01')
+    expect(on).toBeDefined()
+    expect(records.some(row => row[1] === 'WEAPON_TURNED_OFF' && row[2] === 'jammer_station_01' && Number(row[0]) > Number(on![0]))).toBe(true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+}, 120_000)
+
+it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：11-06 无返向业务的空数组合法，不产生返向消息', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'wrj-template-1106-empty-'))
+  try {
+    const draft = createTemplateScenario()
+    draft.config.scenario.duration = 30; draft.config.scenario.realtime = false
+    for (const platform of draft.config.platforms) delete platform.returnPlan
+    draft.config.informationDemand = draft.config.informationDemand.filter(item => item.direction !== 'REVERSE')
+    draft.config.jammingEnabled = false
+    const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => false).start(draft)
+    const outcome = await process.completed, directory = dirname(process.entryPath)
+    const log = await readFile(join(directory, 'mission-console.log'), 'utf8')
+    expect(outcome, log.slice(-4000)).toMatchObject({ code: 0 })
+    expect(log).not.toContain('FATAL')
+    const uav = await readFile(join(directory, 'comm_platform_MISSION_UAV.txt'), 'utf8')
+    expect(uav).toContain('rt_video_dsts  = {  };')
+    expect(uav).toContain('int    rt_video_size = 0;')
+    const csv = await readFile(join(directory, 'output', 'scenario_events.csv'), 'utf8')
+    expect(csv).not.toMatch(/,kReturnRecon(Video|Status),/u)
+    expect(csv).toContain('MESSAGE_TRANSMITTED')
+  } finally { await rm(root, { recursive: true, force: true }) }
+}, 60_000)

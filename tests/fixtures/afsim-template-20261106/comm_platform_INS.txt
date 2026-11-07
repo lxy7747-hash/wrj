@@ -1,0 +1,50 @@
+platform PLAT-002 REAR_COMM_PLATFORM
+  side blue
+  position 21n 117e
+  altitude 0 m
+end_platform
+
+platform PLAT-004 COMMAND_VEHICLE_PLATFORM
+  side blue
+  icon 737
+  position 21n 117e
+  altitude 0 m
+  heading 90 deg
+end_platform
+
+platform SUP-001 TIAN_TONG_SAT
+  side blue
+  icon satellite
+  creation_time 0 sec
+  position 0n 120e altitude 35786 km heading 90 degrees
+end_platform
+
+platform PLAT-003 MISSION_UAV_PLATFORM
+  side blue
+  icon F-18
+  heading 90 deg
+  route
+    position 25.3n 120.8e altitude 8000 m
+  end_route
+end_platform
+
+platform PLAT-001 MISSION_UAV_PLATFORM
+  side blue
+  icon F-18
+  heading 90 deg
+  route
+    position 21n 117e altitude 0 m
+  end_route
+end_platform
+
+platform SUP-002 GROUND_JAMMER_STATION
+  side red
+  icon triangle
+  creation_time 0 sec
+  route
+    position 21n 117e
+  end_route
+  script_variables
+    double detection_range_nm = 30;
+  end_script_variables
+end_platform

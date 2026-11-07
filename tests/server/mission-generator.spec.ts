@@ -70,14 +70,14 @@ describe('2026-11-01 模板脚本生成器', () => {
     expect(generated.manifest.devices.every((device: { source: { deviceId: string }; target: { deviceId: string } }) => !device.source.deviceId.startsWith('comm_') && !device.target.deviceId.startsWith('comm_'))).toBe(true)
   })
 
-  it('瞄准式按配置写入 5 MHz，固定 spot_bandwidth_mhz 仍为 20', () => {
+  it('瞄准式按配置写入 5 MHz，spot_bandwidth_mhz 同步为 5', () => {
     const draft = createTemplateScenario()
     Object.assign(draft.config.jammers[0]!, { type: 'SPOT', bandwidth: 5, frequency: draft.config.links[0]!.frequency })
     const generated = buildMissionPackage(draft)
     const parameters = JSON.parse(generated.files['comm_platform_REAR.txt'].match(/jammer_param (.+)\n/u)![1]!)
-    expect(parameters.jammers[0]).toMatchObject({ power_w: 1, bandwidth_hz: 5_000_000,
-      spot_bandwidth_mhz: 20, sweep_duty_cycle: 0.1, antenna_gain_dbi: 0, tx_loss_db: 0 })
-    const ground = generated.files['comm_platform_JAMMER.txt'].split('end_platform_type')[0]!
+    expect(parameters.jammers[0]).toMatchObject({ power_w: 1000, weapon_power_w: 1, weapon_bandwidth_mhz: 5,
+      spot_bandwidth_mhz: 5, sweep_duty_cycle: 0.1, weapon_antenna_gain_dbi: 0, tx_loss_db: 0 })
+    const ground = buildMissionPackage(draft, undefined, { linkCalc: 'PRESERVE' }).files['comm_platform_JAMMER.txt']!.split('end_platform_type')[0]!
     expect(ground).toContain('bandwidth 5 MHz')
     expect(ground).toContain('power 1 W')
   })
@@ -333,4 +333,81 @@ it.each(['TIANTONG', 'SHENTONG'] as const)('拒绝重复的 %s 卫星，保留�
     code: 'SATELLITE_TYPE_DUPLICATED', message: '天通卫星和神通卫星各只能配置一颗。', fieldPath: 'platforms',
   }))
   expect(() => buildMissionPackage(draft)).toThrow('天通卫星和神通卫星各只能配置一颗。')
+})
+
+
+it('11-06 删除项仅作用于交付 TXT，原场景与本地引擎定义不丢失', () => {
+  const draft = createTemplateScenario(), before = structuredClone(draft)
+  const partner = buildMissionPackage(draft), local = buildMissionPackage(draft, undefined, { linkCalc: 'STUB' })
+  for (const antenna of ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) {
+    expect(partner.files['comm_PerDefinition.txt']).not.toContain(`antenna_pattern ${antenna}`)
+    expect(local.files['comm_PerDefinition.txt']).toContain(`antenna_pattern ${antenna}`)
+  }
+  expect(partner.files['comm_platform_JAMMER.txt']).not.toContain('weapon prophet_jammer')
+  expect(local.files['comm_platform_JAMMER.txt']).toContain('weapon prophet_jammer WSF_RF_JAMMER')
+  expect(partner.files['comm_platform_REAR.txt']).toContain('antenna_pattern MICRO_REAR_PLATFORM_DIR_ANTENNA')
+  expect(partner.files['comm_platform_JAMMER.txt']).toContain('antenna_pattern OMNI_ANTENNA_HIGHGAIN')
+  expect(partner.files['comm_PerDefinition.txt']).toContain('antenna_pattern OMNI_ANTENNA\n')
+  expect(partner.files['comm_platform_REAR.txt']).not.toContain('local_link_stub')
+  for (const [name, content] of Object.entries(partner.files)) if (name.endsWith('.txt')) expect(content).not.toMatch(/-{3,}(添加|修改|删除|写死)/u)
+  expect(draft).toEqual(before)
+})
+
+it('11-06 新参数进入各自单位和有序 JSON，业务与计算周期独立生效', () => {
+  const draft = createTemplateScenario()
+  Object.assign(draft.config.jammers[0]!, { radarFrequency: 3100, radarBandwidth: 2, radarPower: 175, noiseFigureDb: 4, gtDbk: -9, eirpDbw: 38, antennaGainDbi: 2, txLossDb: 0.5, sweepDutyCycle: 0.25 })
+  draft.config.linkSettings!.messageIntervalS = 2.5
+  draft.config.linkSettings!.linkCalc = { emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7, jammingRangeKm: 30, channelEncodingScheme: 0, updateIntervalS: 7 }
+  const generated = buildMissionPackage(draft)
+  const rear = generated.files['comm_platform_REAR.txt']!, uav = generated.files['comm_platform_MISSION_UAV.txt']!
+  expect(rear).toContain('execute at_interval_of 2.5 sec')
+  expect(uav).toContain('execute at_interval_of 2.5 sec')
+  expect(rear).toContain('update_interval 7 sec')
+  const param = JSON.parse(rear.match(/jammer_param (.+)\n/u)![1]!).jammers[0]
+  expect(param).toMatchObject({ frequency_ghz: 3.1, bandwidth_mhz: 2, power_w: 175, noise_figure: 4, G_T_dBK: -9, weapon_frequency_ghz: 2.4, weapon_bandwidth_mhz: 200, weapon_power_w: 1, weapon_eirp_dBW: 38, weapon_antenna_gain_dbi: 2, tx_loss_db: 0.5, sweep_duty_cycle: 0.25, spot_bandwidth_mhz: 20, detect_radius_nm: 30 })
+  expect(Object.keys(param)).toEqual(['platform_name', 'weapon_name', 'jammer_type', 'G_T_dBK', 'enabled', 'mode', 'frequency_ghz', 'bandwidth_mhz', 'power_w', 'noise_figure', 'weapon_frequency_ghz', 'weapon_bandwidth_mhz', 'weapon_power_w', 'weapon_eirp_dBW', 'weapon_antenna_gain_dbi', 'tx_loss_db', 'detect_radius_nm', 'trigger_radius_nm', 'release_radius_nm', 'spot_bandwidth_mhz', 'sweep_duty_cycle'])
+  expect(generated.files['comm_platform_JAMMER.txt']).toContain('frequency 3.1 GHz')
+  expect(generated.files['comm_platform_JAMMER.txt']).toContain('power 175 W')
+  const ports = JSON.parse(rear.match(/port_params (.+)\n/u)![1]!)
+  for (const platform of ports) for (const port of platform.comm_params) {
+    if (port.comm_name === 'fiber_link') continue
+    expect(Object.keys(port.transmitter).slice(0, 5)).toEqual(['frequency_ghz', 'bandwidth_mhz', 'power_w', 'eirp_dBW', 'peak_gain_dB'])
+    expect(Object.keys(port.receiver).slice(0, 4)).toEqual(['frequency_ghz', 'bandwidth_mhz', 'peak_gain_dB', 'G_T_dBK'])
+    expect(Object.keys(port.receiver).at(-1)).toBe('noise_figure_dB')
+  }
+  expect(ports[0].comm_params.find((port: { comm_name: string }) => port.comm_name === 'microwave_link').transmitter.peak_gain_dB).toBe(30)
+  expect(ports[1].comm_params[0].transmitter.peak_gain_dB).toBe(30)
+})
+
+it('11-06 接收阈值与地形屏蔽语句覆盖指定端口，顺序和 C 下行倾角不变', () => {
+  const files = buildMissionPackage(createTemplateScenario()).files
+  let receivers = 0, terrain = 0
+  for (const file of ['comm_platform_MISSION_UAV.txt', 'comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt']) {
+    for (const match of files[file]!.matchAll(/  comm (\S+) WSF_RADIO_TRANSCEIVER[\s\S]*?  end_comm/gu)) {
+      const block = match[0], masking = file.includes('MISSION_UAV') || (file.includes('REAR') && match[1] === 'microwave_link')
+      const rx = block.split('    receiver')[1]!
+      expect(rx).toMatch(masking ? /noise_figure [^\n]+\n      check_terrain_masking off\n      detection_threshold -1000 dB/u : /noise_figure [^\n]+\n      detection_threshold -1000 dB/u)
+      if (masking) { expect(block).toContain('end_attenuation_model\n      check_terrain_masking off\n    end_transmitter'); terrain++ }
+      else expect(block).not.toContain('check_terrain_masking')
+      if (file.includes('MISSION_UAV') && match[1] === 'c_band_downlink') expect(block).toContain('antenna_tilt -3 deg\n      attenuation_model none')
+      receivers++
+    }
+  }
+  expect(receivers).toBe(15); expect(terrain).toBe(7)
+})
+
+it('业务默认数组由热链生成；共享返向差异明示，空返向数组与零数据量可生成', () => {
+  const draft = createTemplateScenario(), generated = buildMissionPackage(draft)
+  const uav = generated.files['comm_platform_MISSION_UAV.txt']!
+  expect(uav).toContain('int    rt_video_size = 8192;')
+  expect(uav).toContain('int    rt_status_size = 512;')
+  expect(generated.manifest.warnings).toContainEqual(expect.stringContaining('同类任务无人机的首跳或数据量不同'))
+  expect(generated.files['comm_platform_REAR.txt']).toContain('Array<string> fw_sit_dst  = { "mission_uav_02", "mission_uav_03" };')
+  expect(generated.files['comm_platform_COMMAND_VEHICLE.txt']).toContain('Array<string> rt_video_nexts = { "rear_comm_vehicle" };')
+  draft.config.informationDemand = draft.config.informationDemand.filter(item => item.direction !== 'REVERSE')
+  const empty = buildMissionPackage(draft).files['comm_platform_MISSION_UAV.txt']!
+  expect(empty).toContain('rt_video_dsts  = {  };')
+  expect(empty).toContain('rt_status_dsts  = {  };')
+  expect(empty).toContain('int    rt_video_size = 0;')
+  expect(empty).toContain('int    rt_status_size = 0;')
 })

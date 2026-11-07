@@ -16,6 +16,8 @@ describe('本地运行包兼容（P4）', () => {
     const { files } = buildMissionPackage(createTemplateScenario())
     expect(new Set(addedMedia(files))).toEqual(new Set(['UAV_MESH_MEDIUM']))
     expect(files['comm_PerDefinition.txt']).not.toContain('UAV_MESH_MEDIUM__')
+    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\nend_network')
+    expect(files['comm_PerDefinition.txt']).not.toContain('network_address')
     expect(files['comm_platform_REAR.txt']).toContain('add processor link_calc WSF_LINK_CALC_PROCESSOR')
     expect(Object.values(files).join('\n')).not.toContain('local_link_stub')
     expect(JSON.parse(files['mapping.json']!)).not.toHaveProperty('localRuntime')
@@ -38,6 +40,18 @@ describe('本地运行包兼容（P4）', () => {
     expect(JSON.parse(files['mapping.json']!).localRuntime).toMatchObject({ linkCalc: 'PRESERVED', splitMedia: media })
   })
 
+  it.each(['PRESERVE', 'STUB'] as const)('本地 %s 包扩大 COM_MESH_NET 地址容量，保留光纤网络与全部通信端口', linkCalc => {
+    const draft = createTemplateScenario()
+    const { files } = buildMissionPackage(draft, undefined, { linkCalc })
+    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 10.0.0.0/23\nend_network')
+    expect(files['comm_PerDefinition.txt']).toContain('network FIBER_NET WSF_COMM_NETWORK_P2P\nend_network')
+    const shared = buildMissionPackage(draft).files
+    for (const file of RADIO_FILES) {
+      const ports = (text: string) => [...text.matchAll(/^ {2}comm (\S+) (\S+)$/gmu)].map(match => match[0])
+      expect(ports(files[file]!)).toEqual(ports(shared[file]!))
+    }
+  })
+
   it('缺少 link_calc 时原位注入补丁：按主路由写 4 个 AuxData 键，干扰按半径启停', () => {
     const { files } = buildMissionPackage(createTemplateScenario(), undefined, { linkCalc: 'STUB' })
     const rear = files['comm_platform_REAR.txt']!
@@ -47,14 +61,17 @@ describe('本地运行包兼容（P4）', () => {
     expect(rear).toContain('      if (PLATFORM.Name() == "rear_comm_vehicle")')
     // 前向：后方车 → 光纤 → 指挥车；两架任务机的两类前向业务都从后方车发出。
     expect(rear).toContain('target = WsfSimulation.FindPlatform("rear_comm_vehicle");')
-    expect(rear).toMatch(/target\.SetAuxData\("kForwardSituation_next_platform_name", "command_vehicle\|command_vehicle"\);/u)
-    expect(rear).toMatch(/target\.SetAuxData\("kForwardSituation_out_port_name", "fiber_link\|fiber_link"\);/u)
-    expect(rear).toMatch(/target\.SetAuxData\("kForwardSituation_next_in_port_name", "fiber_link\|fiber_link"\);/u)
-    expect(rear).toContain('target.SetAuxData("kForwardSituation_data_size", "256|256");')
-    // 回传：任务机 c_band_downlink → 指挥车，中间节点去重后只保留一跳。
+    for (const dst of ['mission_uav_02', 'mission_uav_03']) {
+      expect(rear).toContain(`target.SetAuxData("kForwardSituation_${dst}_next_platform_name", "command_vehicle");`)
+      expect(rear).toContain(`target.SetAuxData("kForwardSituation_${dst}_out_port_name", "fiber_link");`)
+      expect(rear).toContain(`target.SetAuxData("kForwardSituation_${dst}_next_in_port_name", "fiber_link");`)
+      expect(rear).toContain(`target.SetAuxData("kForwardSituation_${dst}_dst_platform_name", "${dst}");`)
+    }
+    // 回传使用真实业务类型和目的地，数据量由 script_variables 提供。
     expect(rear).toContain('target = WsfSimulation.FindPlatform("mission_uav_02");')
-    expect(rear).toContain('target.SetAuxData("kReturnReconVideo_out_port_name", "c_band_downlink");')
-    expect(rear).toContain('target.SetAuxData("kReturnReconVideo_data_size", "8192");')
+    expect(rear).toContain('target.SetAuxData("kReturnReconVideo_rear_comm_vehicle_out_port_name", "c_band_downlink");')
+    expect(rear).toContain('target.SetAuxData("kReturnReconStatus_rear_comm_vehicle_dst_platform_name", "rear_comm_vehicle");')
+    expect(rear).not.toContain('_data_size')
     // 干扰：地面站触发半径 0（不触发）、机载 10/15 nm，模式取干扰类型。
     expect(rear).toContain('WsfPlatform jammer0 = WsfSimulation.FindPlatform("jammer_station_01");')
     expect(rear).toContain('WsfWeapon weapon0 = jammer0.Weapon("prophet_jammer");')
@@ -89,4 +106,26 @@ describe('本地运行包兼容（P4）', () => {
       expect(delivered).toContain('WSF_LINK_CALC_PROCESSOR')
     } finally { await rm(root, { recursive: true, force: true }) }
   })
+})
+
+
+it('卫星同时写新旧 AuxData 键，目的地顺序一致，中继保留真实业务类型', async () => {
+  const { localAuxRoutes, localLinkStub } = await import('../../server/scripts/' + 'mission-generator.js')
+  for (const satellite of ['tiantong_sat', 'shentong_sat']) {
+    const hops = (dst: string) => [{ platform: 'rear_comm_vehicle', inPort: '', outPort: 'sat_link_a' },
+      { platform: satellite, inPort: 'sat_link', outPort: 'sat_link' },
+      { platform: 'mission_uav_01', inPort: 'sat_link', outPort: 'microwave_link' },
+      { platform: dst, inPort: 'microwave_link', outPort: '' }]
+    const routes = { forward: { link1: hops('mission_uav_02'), link2: hops('mission_uav_03') }, reverse: {},
+      traffic: ['mission_uav_02', 'mission_uav_03'].map(dst => ({ [dst]: { forward: [{ traffice_type: 'kForwardTarget', data_volume_bits: 512, trans_freq: 1 }], return: [] } })) }
+    const aux = localAuxRoutes(routes)
+    expect([...aux.get('mission_uav_01')!.keys()]).toEqual(['kForwardTarget_mission_uav_02', 'kForwardTarget_mission_uav_03'])
+    const old = aux.get(satellite)!.get('kForwardTarget')!
+    expect(old.next).toEqual(['mission_uav_01', 'mission_uav_01'])
+    expect(old.dst).toEqual(['mission_uav_02', 'mission_uav_03'])
+    for (const dst of old.dst) expect(aux.get(satellite)!.get(`kForwardTarget_${dst}`)!.dst).toEqual([dst])
+    const stub = localLinkStub('rear_comm_vehicle', routes, [])
+    expect(stub).toContain('target.SetAuxData("kForwardTarget_dst_platform_name", "mission_uav_02|mission_uav_03");')
+    expect(stub).toContain('target.SetAuxData("kForwardTarget_mission_uav_02_dst_platform_name", "mission_uav_02");')
+  }
 })

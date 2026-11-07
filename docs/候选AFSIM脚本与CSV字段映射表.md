@@ -774,3 +774,70 @@
 延迟取 0～仿真总时长；持续时长须大于 0 且不超过仿真总时长。以最近 blue 平台斜距为依据，没有 blue 平台时跳过检查。目标连续处于触发半径内才累计延迟，离开触发半径取消等待；启扰后按实际开启时刻累计持续时长。到期关扰后标记已用完，须目标离开释放半径才重新就绪；正常离开释放半径也会关扰。检查周期为 3 秒，存在约 ±3 秒误差。
 
 `mapping.json.localRuntime.note` 记录该判据。本机带真实 mission 的实测与远端旧服务端联调分开：远端未更新前不能验证新字段效果；生成代码或单元测试通过不替代引擎编译、启停时刻证据。
+
+
+## 25. 2026-11-06 模板增量对齐（当前生成口径）
+
+### 25.1 模板与交付边界
+
+依据 `场景配置参数对接/comm_PerDefinition/comm_PerDefinition/` 的 10 个 TXT。原件不改；`tests/fixtures/afsim-template-20261106/` 去掉行尾人工标注、行尾空白及用户指定的删除块，作为新对照夹具。2026-11-01 夹具继续供比对工具、文件结构及原九节点航线回归使用。
+
+保存／预览／导出的对接方 TXT（`buildMissionPackage` 不传 runtime）不再定义 `MICRO_UAV_OMNI_ANTENNA`、`MICRO_REAR_PLATFORM_DIR_ANTENNA`、`OMNI_ANTENNA_HIGHGAIN`，也不输出地面站 `weapon prophet_jammer` 块。界面、合同、存储仍保留这些配置；本地运行包保留上述定义，不用删除配置来实现交付差异。TXT 不含人工标注或 `local_link_stub`。
+
+### 25.2 配置、默认值与脚本字段
+
+- 天线新增 `OMNI_ANTENNA`，默认增益 30 dB，用于无人机微波和指挥车 C 上行。L 波段两类天线默认增益改为 25 dB；波束宽度按新模板。原三项天线配置继续可编辑。
+- 端口新增可选 `eirpDbw`、`gtDbk`（允许有限负值，不纳入基础数据自动填参字段）。卫通默认 5 / -14，微波 30 / -3，C/L 数传 26 / -6，光纤不设置。无人机微波收发带宽默认 20 MHz。频率、带宽、功率、噪声系数和速率以 `comm` 块为准，不照抄 `port_params` 示例。
+- `port_params.transmitter` 依次为频率、带宽、功率、EIRP、天线增益、信息速率；receiver 依次为频率、带宽、天线增益、G/T、信息速率、噪声系数。单位沿用 MHz→GHz、Mbps→各模板端口速率单位的既有换算。
+- 所有无线／卫星 receiver 在噪声系数之后输出 `detection_threshold -1000 dB`。无人机六个端口及后方车微波的 TX 衰减块之后、RX 噪声之后再输出 `check_terrain_masking off`，其余端口不增加。
+- `linkSettings.messageIntervalS` 控制无人机／后方车业务周期，`linkSettings.linkCalc.updateIntervalS` 控制 link_calc 更新周期；均可选、有限且大于 0，缺省 5 秒。
+- 干扰新增可选参数：`radarFrequency` 2400 MHz、`radarBandwidth` 1 MHz、`radarPower` 1000 W、`noiseFigureDb` 3 dB、`gtDbk` -12 dB/K、`eirpDbw` 40 dBW、`antennaGainDbi` 0 dBi、`txLossDb` 0 dB、`sweepDutyCycle` 0.1。雷达带宽／功率须大于 0，占空比在 (0,1]，其余为有限数。同类干扰平台共享的雷达参数仍须一致。
+- 雷达频率／带宽／功率写入 sensor 和 jammer_param 的 `frequency_ghz`／`bandwidth_mhz`／`power_w`；实际干扰参数写入 `weapon_frequency_ghz`／`weapon_bandwidth_mhz`／`weapon_power_w`，不混用两套功率。旧 `frequency_hz`／`bandwidth_hz`／`antenna_gain_dbi` 键删除。`spot_bandwidth_mhz` 在 SPOT 下取 5，其余方式取 20。
+- V1.2 干扰功率 -10～30 dBm 的 5 dB 档位、BARRAGE 100/200/400 MHz、SPOT 5 MHz 校验不变。读取旧配置时只在返回副本／生成阶段补默认值，保留已存值，不迁移数据库。
+
+### 25.3 目的地路由与本地运行
+
+后方车的前向默认数组从对应目的地首条热链生成；指挥车从经过自身的热链取下一跳并按 next/out/in/dst 去重。无人机返向默认数组和数据量取第一架存在该类返向业务的非中继无人机；不同任务机首跳或数据量不一致时在 mapping.json 留警告。无对应业务时数组为空、数据量为 0。数据量单位为 bit，与 traffic_type 一致；消息携带 origin_sender 和 destination。所有实例名沿用 engineNames 映射。
+
+模板固定处理结构及 writeln 保持一致。中继按真实业务类型和目的地转发；天通保留空 processor，神通使用模板的新转发结构。本地 stub 按 `<type>_<dst>` 写 next/out/in/dst 四键；卫星另外写 `<type>` 旧键，多值用 `|` 拼接并与目的地下标一致。原干扰半径、延迟和持续时长状态机不改。本地 stub 仍不等同于对接方 LinkCalc 插件的质量或自动选路结果。
+
+### 25.4 需告知对接方的三个已知问题
+
+1. 按要求删除天线定义后，后方车微波仍引用 `MICRO_REAR_PLATFORM_DIR_ANTENNA`，机载干扰仍引用 `OMNI_ANTENNA_HIGHGAIN`。独立执行这种 TXT 会因未定义天线报 `Bad value for: antenna_pattern` 并 FATAL。对接方须提供对应定义或统一模板引用；本地运行包保留定义以便运行。
+2. 神通 on_message 读取不带目的地的旧键及 `_dst_platform_name`，其他平台读取 `<type>_<dst>` 键。对接方 LinkCalc 须提供对应数据；本地 stub 同时提供两套键。天通空 processor 不承担消息转发。
+3. 模板 port_params 示例与 comm 块不一致（2.3 GHz、Ka 30/20 GHz、天通噪声系数 2 dB 等）。本轮按用户指定以 comm 块为准；不将示例数值覆盖场景或设备配置。
+
+### 25.5 对照范围
+
+`compareAfsimTemplates` 原始报告为 `output/template-20261106-comparison.txt`／`.json`，生成的 10 个原生 TXT 在 `output/template-20261106-delivery/`。新模板 INS 是六节点输入，回归夹具是九节点完整航线，因此实例、坐标、航线、起始时间、时长和业务内容不同；固定处理语句逐行校验。
+
+除上述场景差异，原始报告还保留两项已明确裁定的参数差异：干扰功率／带宽按 V1.2、port_params 按 comm 块生成。雷达默认功率已修正为与模板一致的 1000 W。不能把这些差异误报为完全无差异，也不以放宽断言隐藏它们。
+
+
+### 25.6 本轮验证（2026-11-06）
+
+- `npm run typecheck`、`npm run validate:contracts`、`npm run build` 通过。合同审计为 84 操作、40 个 POST/PUT/PATCH 写操作。
+- `npm run test` 最终完整通过：unit 1470、contracts 285、server 729，共 2484 通过；常规 server 另跳过 18 项环境选择用例。记录：`output/template-20261106-tests-final.log`。
+- 设置 `MISSION_SMOKE_EXECUTABLE=H:/Project/newWrj/Release/Release/mission.exe` 后运行 `tests/server/mission-execution.spec.ts`：56/56 通过，无跳过（包含该文件的控制边界测试及真实引擎测试）。新增真实引擎场景 2/2：中继与神通按目的地转发、地面站按触发／释放半径启停；无返向业务时空数组合法且不产生返向消息。关机观察仅在测试中增加事件日志项，未改变生成器事件清单。记录：`output/template-20261106-engine-final.json`。
+- 新模板对照测试 6/6；比对工具报告未新增或删除文件，固定脚本保持一致，剩余差异按 §25.5 逐项说明。
+- 本轮未运行浏览器 E2E 或覆盖率；未重启服务。原模板与用户数据库未修改。
+
+### 25.7 初版九平台快照与雷达默认值修正（2026-11-06，历史验证）
+
+本节保留初版验证记录；当前导出快照按 §25.8 的 50 信息节点方案生成。
+
+- 雷达默认功率及 OpenAPI/schema snapshot 同步为模板的 1000 W，已有自定义值不覆盖；原模板和测试夹具不改。新增 `scripts/export-template-20261106-scenarios.ts`，输出 `output/scenarios-20261106/SCN-TEMPLATE-20261106-01.json`、`-02.json`、`-03.json`，分别覆盖默认配置、瞄准式干扰及 1 秒链路计算。全批写入校验与脚本断言通过后才生成 JSON，不写数据库。
+- 场景 02 严格按“首条已启用非激光链路”选择，当前夹具匹配 `fiber_forward`（FIBER，0.001 MHz）。频率一致性校验通过不代表验证了射频干扰效果。
+- 导出自检 3/3 通过；聚焦测试 49/49 通过（含末条场景写入校验／脚本生成失败时全批不落盘）。`npm run typecheck`、`npm run validate:contracts`、`git diff --check` 通过。
+- `npm run test` 首次为 unit 1470、contracts 285 通过，server 731 通过、1 失败、18 跳过；失败为 `deploy-background.spec.ts` 启动器等待就绪时退出。未改该模块，单文件复验 7/7 通过，完整重跑最终 unit 1470、contracts 285、server 732 通过，共 2487 通过、18 跳过。记录：`output/template-20261106-snapshots-tests.log`、`output/template-20261106-snapshots-deploy-recheck.log`、`output/template-20261106-snapshots-tests-recheck.log`。
+- 本次未运行构建、浏览器 E2E 或真实引擎，不导入场景、不重启服务。导出自检记录：`output/template-20261106-snapshots-export.log`。
+
+### 25.8 三条 50 信息节点快照（2026-11-06）
+
+- `scripts/export-template-20261106-scenarios.ts` 在原九平台基础上追加 `PLAT-006`～`PLAT-050`，保留原平台、链路、业务及完整航线。信息节点为后方 1、指挥车 1、中继 1、作业无人机 47，另保留 4 个卫星／干扰支撑实体，总平台数 54。当前夹具实际为 6 条链路；追加 90 条后为 96 条（2 条光纤、94 条 C 链路），前返向热链各 47 条、业务 188 项。
+- 同编号的 `SCN-TEMPLATE-20261106-01/02/03` JSON 更新到 `output/scenarios-20261106/`，仍为 90 分钟实时配置。01 默认配置；02 地面 SPOT 5 MHz 对准 C 上行 4500 MHz，不再误选光纤；03 链路计算周期 1 秒，其余两条为 5 秒。雷达显式为 1000 W，完整设备参数由共享读取函数生成。
+- 全批写入校验、规模、模板命名（中继 01，作业机 02～48）、47 个前向目的地及热链、删留定义、干扰参数和周期均断言通过后才写 JSON；任一失败不落盘。导出自检 3/3，记录：`output/template-20261106-50nodes-export-final.log`。
+- 首次真实引擎初始化因 `COM_MESH_NET` 默认地址容量不足而退出 1。用户确认后，仅本地运行包增加 `network_address 10.0.0.0/23`，容纳 297 个无线端口；原模板、对接方 TXT、节点数及链路参数保持不变。PRESERVE/STUB 两条本地路径均有回归断言，光纤网络不变。
+- 通过 `LocalMissionRunner` 调用本机 `H:/Project/newWrj/Release/Release/mission.exe`：内存副本运行 1 分钟、非实时，移除窗口外原定 37 分钟执行的 47 项返航计划。退出码 0、无 FATAL，47 架作业无人机均有接收记录，共 1128 条；导出 JSON 字节未变，临时目录已删除。首次失败及成功日志分别为 `output/template-20261106-50nodes-smoke.log`、`output/template-20261106-50nodes-smoke-recheck.log`。此冒烟不等同于完整 90 分钟运行或对接方 LinkCalc 质量／选路能力验证。
+- 容量修复后 `npm run typecheck`、聚焦测试 17/17、`git diff --check` 通过。`npm run test` 为 unit 1470、contracts 285 通过，server 733 通过、1 失败、18 跳过；失败是既有 `deploy-background.spec.ts` 清理临时目录时的 Windows EBUSY。未修改该模块，单文件复验 7/7 通过，再运行完整 server 为 734 通过、18 跳过。日志：`output/template-20261106-50nodes-tests-final.log`、`output/template-20261106-50nodes-deploy-recheck.log`、`output/template-20261106-50nodes-server-recheck.log`。不把分段复验记录成同一次全量命令零失败。
+- 本次未运行构建、浏览器 E2E 或 90 分钟完整仿真；未写用户数据库、未导入场景、未重启服务。失败的启动器用例遗留临时目录 `C:/Users/m1860/AppData/Local/Temp/wrj background 中文 space gf1LTg`，自动审批拒绝后续清理（仅返回 blocked by policy），故保留；该目录与已删除的 mission 冒烟目录不同。

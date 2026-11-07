@@ -24,14 +24,14 @@ const select = (wrapper: PanelWrapper, testId: string) => wrapper.findAllCompone
 const lastValue = (wrapper: PanelWrapper) => wrapper.emitted('update:modelValue')!.at(-1)![0] as DeviceParameters
 
 describe('通信设备参数面板', () => {
-  it('缺省时按模板默认值展示五类平台端口与 11 个天线增益，光纤只读', async () => {
+  it('缺省时按模板默认值展示五类平台端口与 12 个天线增益，光纤只读', async () => {
     const wrapper = await mountPanel()
     expect(wrapper.findAll('[role="tab"]').map(tab => tab.text())).toEqual(['任务无人机（含中继）', '集群指挥车', '后方通信车', '天通卫星', '神通卫星'])
     expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-sat_link-txFrequency').props('modelValue')).toBe(14200)
     // C/L 波段速率按模板 bit/s 档位显示。
     expect(select(wrapper, 'port-MISSION_UAV_PLATFORM-c_band_uplink-transferRate').props('modelValue')).toBe(2)
     expect(wrapper.text()).toContain('2000000 bit/s（2 Mbps）')
-    expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).filter(item => item.attributes('data-testid')?.startsWith('antenna-gain-'))).toHaveLength(11)
+    expect(wrapper.findAllComponents({ name: 'ElInputNumber' }).filter(item => item.attributes('data-testid')?.startsWith('antenna-gain-'))).toHaveLength(12)
     expect(numberInput(wrapper, 'antenna-gain-C_BAND_DIRECTIONAL_UAV_ANTENNA').props('modelValue')).toBe(25)
     expect(wrapper.text()).toContain('激光通信')
     expect(wrapper.text()).not.toContain('激光链路不写入脚本')
@@ -121,4 +121,18 @@ describe('通信设备参数面板', () => {
     expect(wrapper.get('[data-testid="port-source-error-MISSION_UAV_PLATFORM-sat_link"]').text()).toContain('装备类型与通信端口不符')
     expect(wrapper.emitted('update:modelValue')).toBeUndefined()
   })
+})
+
+
+it('EIRP 与 G/T 可编辑有符号值，新增全向天线且保留三项旧天线', async () => {
+  const wrapper = await mountPanel()
+  for (const [field, value] of [['eirpDbw', -5], ['gtDbk', -10]] as const) {
+    const input = numberInput(wrapper, `port-MISSION_UAV_PLATFORM-microwave_link-${field}`)
+    expect(input.props('min')).toBeLessThan(-10)
+    input.vm.$emit('update:modelValue', value)
+    expect(lastValue(wrapper).ports!.MISSION_UAV_PLATFORM!.microwave_link![field]).toBe(value)
+    await wrapper.setProps({ modelValue: lastValue(wrapper) })
+  }
+  for (const name of ['OMNI_ANTENNA', 'MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) expect(numberInput(wrapper, `antenna-gain-${name}`)).toBeDefined()
+  wrapper.unmount()
 })

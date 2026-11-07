@@ -1,3 +1,5 @@
+import type { Jammer } from '../../contracts/domain-models'
+
 /** 国际海里与合同米制字段的换算；jammer_param 的触发/释放半径按海里写出。 */
 export const METERS_PER_NAUTICAL_MILE = 1852
 export const METERS_PER_KILOMETER = 1000
@@ -24,6 +26,15 @@ export const JAMMER_DEFAULTS = {
   // 探测范围文档未给出，取与干扰范围相同的 30 海里，避免新建即出现“干扰范围大于探测范围”提示。
   detectionRange: 30 * METERS_PER_NAUTICAL_MILE,
   jammingRange: 30 * METERS_PER_NAUTICAL_MILE, releaseRange: 35 * METERS_PER_NAUTICAL_MILE,
+}
+
+/** 2026-11-06 模板新增字段；不改写旧场景中的已存值。 */
+export const JAMMER_CALC_DEFAULTS = {
+  radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000,
+  noiseFigureDb: 3, gtDbk: -12, eirpDbw: 40, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1,
+} as const
+export function readJammerParameters(jammer: Jammer): Jammer & Record<keyof typeof JAMMER_CALC_DEFAULTS, number> {
+  return { ...JAMMER_CALC_DEFAULTS, ...jammer }
 }
 
 /** 读取释放范围；旧记录缺省时按干扰范围加 5 海里。 */

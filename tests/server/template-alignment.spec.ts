@@ -8,7 +8,7 @@ const { fileURLToPath } = await import('node:' + 'url')
 const { createHash } = await import('node:' + 'crypto')
 const { buildMissionPackage } = await import('../../server/scripts/' + 'mission-generator.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
-const TEMPLATE_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'afsim-template-20261101')
+const TEMPLATE_DIRECTORY = join(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'afsim-template-20261106')
 const TEMPLATE_FILES = [
   'ad_hoc_comm.txt',
   'comm_PerDefinition.txt',
@@ -23,23 +23,24 @@ const TEMPLATE_FILES = [
 ] as const
 const LINK_CALC_JSON_DIRECTIVES = ['traffic_type', 'relay_uav_names', 'hot_link_ret', 'hot_link_fw', 'port_params', 'natural_environment', 'jammer_param'] as const
 
-const TEMPLATE_SHA256: Record<(typeof TEMPLATE_FILES)[number], string> = {
-  'ad_hoc_comm.txt': '1F4024F2BEF861F00A60130C99B5A063C338B702955060F47DC6583AAA2F9DAB',
-  'comm_PerDefinition.txt': 'BEEECA60F4C1E3F5B516EA49BF934C1F12BA6E277F58C1DB255C07B97EB4BBAD',
-  'comm_platform_COMMAND_VEHICLE.txt': '365831CE382B6F234A87E7A10B8E82E07109FAB2D63B3E2201BCC19E117AA550',
-  'comm_platform_INS.txt': '8B6E272CE6FB36DC131DD5A2AEE5A0EA5911D6DE4E3DF95594D804BFBCAC2C7C',
-  'comm_platform_JAMMER.txt': 'A12AE67BB82F86FACC9009165EA8ABEB37FF6549A41B6ACF4D86A6A30CA76283',
-  'comm_platform_MISSION_UAV.txt': 'EC6F2340718A1D142F0F7ED7A271EC123510CFEB6F026913ECD83D005A33C115',
-  'comm_platform_REAR.txt': '65EC9A4B352F3E98B4AF738C83000148FB64E92E6D9A657E683F26866C664C6B',
-  'comm_platform_SAT.txt': 'CB28FD83C87E8860C101B38569CC5DE22326E222ACF122B802AF2B2C38B83DE8',
-  'comm_SimSetup.txt': 'FD92847A93418D0741B3BDF2DB49E4D3E1B9D44CDD614F7AD6E20FC31E4379F2',
-  'observers.txt': '67C9235DE215BA0169888DCC649AAFF2683A48B8BD5776302CBD90794EC3F85D',
+type TemplateFile = (typeof TEMPLATE_FILES)[number]
+const TEMPLATE_SHA256: Readonly<Record<TemplateFile, string>> = {
+  'ad_hoc_comm.txt': '9E92EA411FB996CD3544C85709F3E2A30787E1921CF6D554FC342B26D0726468',
+  'comm_PerDefinition.txt': '8BB0CDD68825B221A72A6908EC0402AF4F83F09B3A54ACC4E1D03E77E3675571',
+  'comm_platform_COMMAND_VEHICLE.txt': '75C6FACF09D449F43C06E71E29F8242149ADDDF8C807755A670933A9A7A99B56',
+  'comm_platform_INS.txt': '3858B2AB6FF9C521F3E1ED31BDBCF5016638C00DEC99C45DDA7D2FFF0E3A3CA1',
+  'comm_platform_JAMMER.txt': 'AA2FC8B6B360A5F189438EB8F8A1626D983C63B46E6AA6DA40A24AEF3D7D55CA',
+  'comm_platform_MISSION_UAV.txt': '2C37C228423590312AF57314B4FB458C8B58773DC4954F67B00B4D8CD87BF54D',
+  'comm_platform_REAR.txt': 'F6423F9D0BEA75D8F6ED6D6B777D5D5A006EAE46F3C798B82BE33BCE396569FA',
+  'comm_platform_SAT.txt': '68C63FC291CDA791ABF9E8756B7BAD587A59400302B96838201948E5460A2A9A',
+  'comm_SimSetup.txt': '807AA335886E55FFCC5A75D3F190E34BE3D12199B08F6CD181052CBD59E07C87',
+  'observers.txt': '35BE0581BAB47B1C690055C9C5DA1FFC9385E5E09BB7A7703B46EAE41CDFCA0B',
 }
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 type ScriptFiles = Record<string, string>
 
-/** 模板文件按字节原样复制；比对时只按 §8.2 规范化语法。 */
+/** 新夹具移除人工标注、行尾空白及指定删除项；比对时规范化语法。 */
 function normalizedLines(value: string): string[] {
   return value.replace(/\r\n?/g, '\n').split('\n')
     .map(line => line.replace(/\/\/.*$/u, '').replace(/#.*$/u, '').trim().replace(/\s+/gu, ' '))
@@ -100,34 +101,46 @@ function asObject(value: Json): { [key: string]: Json } {
 }
 
 /** 只套用文档记录的模板自身不一致之处，不迁就任意生成结果。 */
-function expectedLinkCalc(template: Json, simplifiedAttenuationDbPerKm: number): Json {
-  const expected = structuredClone(template)
-  const root = asObject(expected)
-  const ports = root.port_params as Json[]
-  for (const platform of ports) {
-    const platformEntry = asObject(platform)
-    const type = platformEntry.platform_type
-    for (const comm of platformEntry.comm_params as Json[]) {
-      const commEntry = asObject(comm)
-      const transmitter = asObject(commEntry.transmitter)
-      const receiver = asObject(commEntry.receiver)
-      if (type === 'REAR_COMM_PLATFORM' && (commEntry.comm_name === 'sat_link_a' || commEntry.comm_name === 'sat_link_b')) transmitter.power_w = 20
-      if ((type === 'MISSION_UAV_PLATFORM' || type === 'COMMAND_VEHICLE_PLATFORM') && (commEntry.comm_name === 'c_band_uplink' || commEntry.comm_name === 'c_band_downlink')) {
-        transmitter.peak_gain_dB = 25
-        receiver.peak_gain_dB = 25
+function expectedLinkCalc(templateJson: { [key: string]: Json }, templates: ScriptFiles): { [key: string]: Json } {
+  const expected = JSON.parse(JSON.stringify(templateJson)) as { [key: string]: Json }
+  const definitions = normalizedLines(templates['comm_PerDefinition.txt'])
+  const gain = (name: string): number => {
+    if (name === 'MICRO_REAR_PLATFORM_DIR_ANTENNA') return 18 // 交付定义删除，但引用与既有增益保留。
+    const start = definitions.indexOf(`antenna_pattern ${name}`)
+    expect(start).toBeGreaterThanOrEqual(0)
+    return Number(definitions.slice(start, definitions.indexOf('end_antenna_pattern', start)).find(line => line.startsWith('peak_gain '))!.split(' ')[1])
+  }
+  const typeFiles: Record<string, TemplateFile> = { MISSION_UAV_PLATFORM: 'comm_platform_MISSION_UAV.txt', COMMAND_VEHICLE_PLATFORM: 'comm_platform_COMMAND_VEHICLE.txt', REAR_COMM_PLATFORM: 'comm_platform_REAR.txt', TIAN_TONG_SAT: 'comm_platform_SAT.txt', SHEN_TONG_SAT: 'comm_platform_SAT.txt' }
+  // 不采用 port_params 的旧示例数值，独立从夹具 comm 块读取；EIRP/G/T 取新示例。
+  for (const platformValue of expected.port_params as Json[]) {
+    const platform = asObject(platformValue), lines = normalizedLines(templates[typeFiles[String(platform.platform_type)]!])
+    const typeStart = lines.indexOf(`platform_type ${platform.platform_type} WSF_PLATFORM`)
+    const body = lines.slice(typeStart, lines.indexOf('end_platform_type', typeStart))
+    for (const commValue of platform.comm_params as Json[]) {
+      const comm = asObject(commValue)
+      if (comm.comm_name === 'fiber_link') continue
+      const start = body.indexOf(`comm ${comm.comm_name} WSF_RADIO_TRANSCEIVER`)
+      expect(start).toBeGreaterThanOrEqual(0)
+      const block = body.slice(start, body.indexOf('end_comm', start))
+      const rate = block.find(line => line.startsWith('transfer_rate '))!.replace('constant ', '').split(' ')
+      for (const side of ['transmitter', 'receiver'] as const) {
+        const part = block.slice(block.indexOf(side), block.indexOf(`end_${side}`))
+        const number = (key: string) => Number(part.find(line => line.startsWith(`${key} `))!.split(' ')[1])
+        const old = asObject(comm[side]), peak = gain(part.find(line => line.startsWith('antenna_pattern '))!.split(' ')[1]!)
+        comm[side] = side === 'transmitter'
+          ? { frequency_ghz: number('frequency'), bandwidth_mhz: number('bandwidth'), power_w: number('power'), eirp_dBW: old.eirp_dBW!, peak_gain_dB: peak, [`information_rate_${rate[2]}`]: Number(rate[1]) }
+          : { frequency_ghz: number('frequency'), bandwidth_mhz: number('bandwidth'), peak_gain_dB: peak, G_T_dBK: old.G_T_dBK!, [`information_rate_${rate[2]}`]: Number(rate[1]), noise_figure_dB: number('noise_figure') }
       }
     }
   }
-  const natural = asObject(root.natural_environment)
-  asObject(natural.atmosphere).simplified_attenuation_db_per_km = simplifiedAttenuationDbPerKm
-  const jammer = asObject(root.jammer_param)
-  const jammers = jammer.jammers as Json[]
-  asObject(jammers[1]!).platform_name = 'jammer_airborne_01'
-  // 11：模板原件保留旧功率/带宽，生成夹具按 V1.2 GNZB-15 / XNZB-10 档位取值。
-  expect(asObject(jammers[0]!)).toMatchObject({ power_w: 200, bandwidth_hz: 50_000_000 })
-  expect(asObject(jammers[1]!)).toMatchObject({ power_w: 100, bandwidth_hz: 20_000_000 })
-  Object.assign(asObject(jammers[0]!), { power_w: 1, bandwidth_hz: 200_000_000 })
-  Object.assign(asObject(jammers[1]!), { power_w: 0.1, bandwidth_hz: 100_000_000 })
+  const jammers = asObject(expected.jammer_param).jammers as Json[]
+  expect(jammers).toHaveLength(1)
+  expect(Object.keys(asObject(jammers[0]!))).toEqual(['platform_name', 'weapon_name', 'jammer_type', 'G_T_dBK', 'enabled', 'mode', 'frequency_ghz', 'bandwidth_mhz', 'power_w', 'noise_figure', 'weapon_frequency_ghz', 'weapon_bandwidth_mhz', 'weapon_power_w', 'weapon_eirp_dBW', 'weapon_antenna_gain_dbi', 'tx_loss_db', 'detect_radius_nm', 'trigger_radius_nm', 'release_radius_nm', 'spot_bandwidth_mhz', 'sweep_duty_cycle'])
+  // 雷达默认 1000 W，与新模板一致；武器使用 V1.2 合法值，半径、启停与配置一致。机载项沿用相同键序。
+  const ground = asObject(jammers[0]!)
+  expect(ground.power_w).toBe(1000)
+  Object.assign(ground, { weapon_bandwidth_mhz: 200, weapon_power_w: 1, detect_radius_nm: 30, trigger_radius_nm: 0, release_radius_nm: 35 })
+  jammers.push({ ...ground, platform_name: 'jammer_airborne_01', weapon_name: 'alq99_jammer', jammer_type: 'airborne', weapon_bandwidth_mhz: 100, weapon_power_w: 0.1, detect_radius_nm: 30, trigger_radius_nm: 10, release_radius_nm: 15 })
   return expected
 }
 
@@ -295,13 +308,13 @@ function expectScriptLines(actual: string[], expected: string[], message: string
   }
 }
 
-describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
-  it('保留 10 个原始 TXT 字节副本，且不纳入 mission.log', async () => {
+describe('2026-11-06 AFSIM 模板逐文件对齐', () => {
+  it('冻结去除人工标注及指定删除项后的 10 个 TXT，且不纳入 mission.log', async () => {
     const copied = await readdir(TEMPLATE_DIRECTORY)
     expect(copied.sort()).toEqual([...TEMPLATE_FILES].sort())
     for (const name of TEMPLATE_FILES) {
       const fixture = await readFile(join(TEMPLATE_DIRECTORY, name))
-      expect(createHash('sha256').update(fixture).digest('hex').toUpperCase(), `${name} 不再是原字节副本。`).toBe(TEMPLATE_SHA256[name])
+      expect(createHash('sha256').update(fixture).digest('hex').toUpperCase(), `${name} 不再是审核后的交付夹具。`).toBe(TEMPLATE_SHA256[name])
     }
   })
 
@@ -318,7 +331,7 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
   it.each([
     ['原始编号', createTemplateScenario],
     ['改名、乱序及编号冲突', createRenamedTemplateScenario],
-  ] as const)('%s：严格对照每个模板文件，所有差异均落在 §8.2 的十一项白名单', async (_label, createScenario) => {
+  ] as const)('%s：严格对照每个模板文件，只允许既有白名单及 11-06 明确的配置差异', async (_label, createScenario) => {
     const generated = buildMissionPackage(createScenario())
     const files = generated.files as unknown
     const template = Object.fromEntries(await Promise.all(TEMPLATE_FILES.map(async name => [name, await readFile(join(TEMPLATE_DIRECTORY, name), 'utf8')]))) as ScriptFiles
@@ -345,7 +358,7 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
     const rearGeneratedLines = normalizedLines(readGeneratedFile(files, 'comm_platform_REAR.txt'))
     const templateJson = Object.fromEntries(LINK_CALC_JSON_DIRECTIVES.map(directive => [directive, findDirective(rearTemplateLines, directive).value])) as { [key: string]: Json }
     const generatedJson = Object.fromEntries(LINK_CALC_JSON_DIRECTIVES.map(directive => [directive, findDirective(rearGeneratedLines, directive).value])) as { [key: string]: Json }
-    const expectedJson = expectedLinkCalc(templateJson, 0.02)
+    const expectedJson = expectedLinkCalc(templateJson, template)
     const actualJson = generatedJson as Json
 
     // 5：以设备定义和天线增益表为准，覆盖模板中不一致的旧值。
@@ -361,8 +374,8 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
       for (const comm of entry.comm_params as Json[]) {
         const port = asObject(comm)
         if (port.comm_name === 'c_band_uplink' || port.comm_name === 'c_band_downlink') {
-          expect(asObject(port.transmitter).peak_gain_dB).toBe(25)
-          expect(asObject(port.receiver).peak_gain_dB).toBe(25)
+          expect(asObject(port.transmitter).peak_gain_dB).toBe(entry.platform_type === 'COMMAND_VEHICLE_PLATFORM' && port.comm_name === 'c_band_uplink' ? 30 : 25)
+          expect(asObject(port.receiver).peak_gain_dB).toBe(entry.platform_type === 'COMMAND_VEHICLE_PLATFORM' && port.comm_name === 'c_band_uplink' ? 30 : 25)
         }
       }
     }
@@ -379,6 +392,9 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
       let expected = normalizedLines(template[name])
       let actual = normalizedLines(readGeneratedFile(files, name))
       if (name === 'comm_platform_INS.txt') {
+        // 11-06 INS 是另一份六节点场景。当前九节点夹具的坐标/航线继续对照其原始输入样例，平台类型固定段均对照 11-06。
+        expect(expected.filter(line => line.startsWith('platform '))).toHaveLength(6)
+        expected = normalizedLines(await readFile(join(TEMPLATE_DIRECTORY, '..', 'afsim-template-20261101', name), 'utf8'))
         // 7 与 9：只允许文档记录的示例剧情块和引用名称不同。
         expect(expected.some(line => line.includes('uav_role') || line.includes('writeln('))).toBe(true)
         expect(expected.filter(line => line === 'route relay_loiter' || line === 'route return_relay')).toHaveLength(2)
@@ -387,51 +403,43 @@ describe('2026-11-01 AFSIM 模板逐文件对齐', () => {
         expected = removeTemplateOnlyStory(expected)
         ;({ expected, actual } = canonicaliseRouteRelations(expected, actual))
       }
+      if (name === 'comm_platform_MISSION_UAV.txt') {
+        // 模板示例为 32/16 bit，实际数据量与 traffic_type 的第一条业务一致。
+        expect(expected).toContain('int rt_video_size = 32;')
+        expect(expected).toContain('int rt_status_size = 16;')
+        expected = expected.map(line => line.replace('int rt_video_size = 32;', 'int rt_video_size = 8192;').replace('int rt_status_size = 16;', 'int rt_status_size = 512;'))
+      }
       if (name === 'comm_platform_JAMMER.txt') {
-        // 11：只替换两类干扰器的四行，侦测雷达及其他固定参数仍逐行比较。
-        for (const [type, oldPower, oldBandwidth, power, bandwidth] of [
-          ['GROUND_JAMMER_STATION', 200, 50, 1, 200],
-          ['AIRBORNE_JAMMER_PLATFORM', 100, 20, 0.1, 100],
-        ] as const) {
-          const start = expected.indexOf(`platform_type ${type} WSF_PLATFORM`)
-          const end = expected.indexOf('end_platform_type', start)
-          expect(start).toBeGreaterThanOrEqual(0)
-          expect(end).toBeGreaterThan(start)
-          const block = expected.slice(start, end)
-          expect(block.filter(line => line === `power ${oldPower} W`)).toHaveLength(1)
-          expect(block.filter(line => line === `bandwidth ${oldBandwidth} MHz`)).toHaveLength(1)
-          expected = expected.map((line, index) => {
-            if (index <= start || index >= end) return line
-            if (line === `power ${oldPower} W`) return `power ${power} W`
-            if (line === `bandwidth ${oldBandwidth} MHz`) return `bandwidth ${bandwidth} MHz`
-            return line
-          })
-          const actualStart = actual.indexOf(`platform_type ${type} WSF_PLATFORM`)
-          const actualBlock = actual.slice(actualStart, actual.indexOf('end_platform_type', actualStart))
-          expect(actualBlock).toContain(`power ${power} W`)
-          expect(actualBlock).toContain(`bandwidth ${bandwidth} MHz`)
-        }
+        expect(expected.filter(line => line === 'power 1000 W')).toHaveLength(2)
+        const start = expected.indexOf('weapon alq99_jammer WSF_RF_JAMMER'), end = expected.indexOf('end_weapon', start)
+        expect(expected.slice(start, end)).toEqual(expect.arrayContaining(['power 100 W', 'bandwidth 20 MHz']))
+        expected = expected.map((line, index) => index > start && index < end
+          ? line.replace('power 100 W', 'power 0.1 W').replace('bandwidth 20 MHz', 'bandwidth 100 MHz') : line)
+        expect(actual.filter(line => line.startsWith('weapon '))).toEqual(['weapon alq99_jammer WSF_RF_JAMMER'])
       }
       if (name === 'comm_platform_REAR.txt') {
-        // 10: 用户裁定后方车微波极化与无人机一致改为 vertical（模板为 horizontal，交叉极化收不到）。
+        // 新模板已采用既有 vertical 修正，不再对期望结果做极化替换。
         const polarizations = (lines: readonly string[]) => {
           const start = lines.indexOf('comm microwave_link WSF_RADIO_TRANSCEIVER')
           return lines.slice(start, lines.indexOf('end_comm', start)).filter(line => line.startsWith('polarization '))
         }
-        expect(polarizations(expected)).toEqual(['polarization horizontal', 'polarization horizontal'])
+        expect(polarizations(expected)).toEqual(['polarization vertical', 'polarization vertical'])
         expect(polarizations(actual)).toEqual(['polarization vertical', 'polarization vertical'])
-        expected = expected.map((line, index) => {
-          const start = expected.indexOf('comm microwave_link WSF_RADIO_TRANSCEIVER')
-          return index > start && index < expected.indexOf('end_comm', start) && line === 'polarization horizontal' ? 'polarization vertical' : line
-        })
         for (const directive of LINK_CALC_JSON_DIRECTIVES) {
           expected = removeDirectiveLine(expected, directive)
           actual = removeDirectiveLine(actual, directive)
         }
       }
+      if (name === 'comm_platform_SAT.txt') {
+        expect(expected.filter(line => line.startsWith('epoch_date_time '))).toEqual(['epoch_date_time oct 23 2026 02:07:00', 'epoch_date_time oct 23 2026 02:07:00'])
+        expected = expected.map(line => line.replace('epoch_date_time oct 23 2026 02:07:00', 'epoch_date_time sep 15 2025 00:00:00'))
+      }
       if (name === 'comm_SimSetup.txt') {
+        expect(expected).toEqual(expect.arrayContaining(['start_date oct 23 2026', 'start_time 02:07:00', 'end_time 1200 sec']))
         expected = dedupeCsvEventEnables(expected).map(line => line
-          .replace(/^end_time 90 min$/u, 'end_time 5400 sec')
+          .replace(/^end_time 1200 sec$/u, 'end_time 5400 sec')
+          .replace(/^start_date oct 23 2026$/u, 'start_date sep 15 2025')
+          .replace(/^start_time 02:07:00$/u, 'start_time 00:00:00')
           .replace(/output\\/gu, 'output/'))
       }
       expectScriptLines(actual.map(canonicalLine), expected.map(canonicalLine), `${name} 存在不属于 §8.2 白名单的脚本差异。`)

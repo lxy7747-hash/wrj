@@ -11,6 +11,7 @@ import { createScenarioSnapshot } from '../../src/features/scenarios/scenario-sn
 import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import { readJammerParameters } from '../../src/features/scenarios/jammer-settings'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const dialogStub = { props: ['modelValue'], template: '<section v-if="modelValue"><slot /><slot name="footer" /></section>' }
@@ -417,8 +418,28 @@ describe('干扰带宽档位和链路对准', () => {
     await flushPromises()
     expect(inputNumber(wrapper, 'jammer-frequency').props('modelValue')).toBe(target.frequency)
     await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
-    expect(wrapper.emitted('apply')![0]![0]).toEqual({ ...jammer, frequency: target.frequency })
+    expect(wrapper.emitted('apply')![0]![0]).toEqual({ ...readJammerParameters(jammer), frequency: target.frequency })
     expect(jammer.frequency).toBe(2400)
     wrapper.unmount()
   })
+})
+
+
+it('侦测与链路计算默认补副本，保存输入值并保持原设备不变', async () => {
+  const draft = createTemplateScenario(), original = structuredClone(draft.config.jammers[0]!)
+  const wrapper = mount(JammerEditorDialog, {
+    props: { modelValue: true, jammer: original, uiExtension: draft.uiExtensions.jammers[0], editing: true, error: '', pending: false, locked: false,
+      platforms: draft.config.platforms, links: draft.config.links, jammerTypeOptions: [], minimumStep: 1 },
+    global: { plugins: [ElementPlus], stubs: { ElDialog: dialogStub } },
+  })
+  const inputs = wrapper.findAllComponents({ name: 'ElInputNumber' })
+  for (const [key, value] of Object.entries({ radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000, noiseFigureDb: 3, gtDbk: -12, eirpDbw: 40, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1 })) {
+    expect(inputs.find(input => input.attributes('data-testid') === `jammer-${key}`)!.props('modelValue')).toBe(value)
+  }
+  inputs.find(input => input.attributes('data-testid') === 'jammer-radarPower')!.vm.$emit('update:modelValue', 175)
+  inputs.find(input => input.attributes('data-testid') === 'jammer-gtDbk')!.vm.$emit('update:modelValue', -9)
+  await wrapper.get('[data-testid="apply-jammer"]').trigger('click')
+  expect(wrapper.emitted('apply')![0]![0]).toMatchObject({ ...original, radarPower: 175, gtDbk: -9 })
+  expect(original).toEqual(draft.config.jammers[0])
+  wrapper.unmount()
 })

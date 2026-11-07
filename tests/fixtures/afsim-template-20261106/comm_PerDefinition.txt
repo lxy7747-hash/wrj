@@ -1,0 +1,112 @@
+
+
+
+antenna_pattern OMNI_ANTENNA
+    uniform_pattern
+        peak_gain 30 dB
+        azimuth_beamwidth 360 deg
+        elevation_beamwidth 180 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern C_BAND_DIRECTIONAL_VEHICLE_ANTENNA
+  uniform_pattern
+    peak_gain 25 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 88 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+  uniform_pattern
+    peak_gain 25 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 88 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern L_BAND_DIRECTIONAL_VEHICLE_ANTENNA
+  uniform_pattern
+    peak_gain 25 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 88 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+  uniform_pattern
+    peak_gain 25 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 88 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+  uniform_pattern
+    peak_gain 25 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 180 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern SAT_SPACE_BEAM_ANTENNA
+  uniform_pattern
+    peak_gain 30 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 180 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern SAT_UAV_CLUSTER_WIDEBAND_ANTENNA
+  uniform_pattern
+    peak_gain 30 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 180 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern LASER_COMM_ANTENNA
+  uniform_pattern
+    peak_gain 40 dB
+    azimuth_beamwidth 360 deg
+    elevation_beamwidth 180 deg
+  end_uniform_pattern
+end_antenna_pattern
+
+radar_signature DRONE_SIG
+  constant 1.0 m^2
+end_radar_signature
+
+radar_signature COMMAND_VEHICLE_SIG
+  constant 5.0 m^2
+end_radar_signature
+
+radar_signature SAT_SIG
+  constant 3.0 m^2
+end_radar_signature
+
+network COM_MESH_NET WSF_COMM_NETWORK_MESH
+end_network
+
+network FIBER_NET WSF_COMM_NETWORK_P2P
+end_network
+
+medium UAV_MESH_MEDIUM WSF_COMM_MEDIUM_UNGUIDED
+  channels 4
+  default_mode_name "default"
+  mode "default"
+    propagation_speed constant 299792458 m/sec
+    transfer_rate constant 4000000 bit/s
+    packet_loss_time constant 0 sec
+  end_mode
+end_medium
+
+medium FIBER_MEDIUM WSF_COMM_MEDIUM_GUIDED
+  channels 4
+  default_mode_name "default"
+  mode "default"
+    propagation_speed constant 200000000 m/sec
+    transfer_rate constant 1000000 bit/s
+    packet_loss_time constant 0 sec
+  end_mode
+end_medium

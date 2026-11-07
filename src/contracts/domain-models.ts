@@ -92,6 +92,7 @@ export type TemplatePlatformType =
   | 'TIAN_TONG_SAT'
   | 'SHEN_TONG_SAT';
 export type TemplateAntennaName =
+  | 'OMNI_ANTENNA'
   | 'MICRO_UAV_OMNI_ANTENNA'
   | 'MICRO_REAR_PLATFORM_DIR_ANTENNA'
   | 'OMNI_ANTENNA_HIGHGAIN'
@@ -108,6 +109,7 @@ export interface PortParameters {
   txFrequency: Megahertz; txBandwidth: Megahertz; txPower: Watts;
   rxFrequency: Megahertz; rxBandwidth: Megahertz; noiseFigureDb: Decibels;
   transferRate: MegabitsPerSecond;
+  eirpDbw?: Decibels; gtDbk?: Decibels;
   parameterSource?: LinkParameterSource;
 }
 export interface DeviceParameters {
@@ -219,6 +221,8 @@ export interface LinkSwitchRule {
 }
 /** 场景级卫星启用与链路切换策略；单条链路开关保存在 Link.enabled。 */
 export interface ScenarioLinkSettings {
+  /** 业务发送周期（s）；旧场景缺省为 5。 */
+  messageIntervalS?: Seconds;
   /** @deprecated 仅兼容历史配置的默认状态；新配置不再生成或编辑全局类型开关。 */
   enabledTypes?: Record<Exclude<LinkType, 'FIBER'>, boolean> & { FIBER?: boolean };
   enabledSatellites: Record<SatelliteType, boolean>;
@@ -258,12 +262,18 @@ export interface HotLinkSettings {
 /** 信道编码增益（dB）：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。 */
 export type ChannelEncodingScheme = -1 | 0 | 5 | 6.5 | 3.5 | 8;
 export interface LinkCalcSettings {
+  /** link_calc 更新周期（s）；旧场景缺省为 5。 */
+  updateIntervalS?: Seconds;
   emergencyThreshold: Ratio01; warningThreshold: Ratio01; valueThresholdBer: Ratio01;
   /** 干扰圈半径，单位 km（0～100）。 */
   jammingRangeKm: number;
   channelEncodingScheme: ChannelEncodingScheme;
 }
 export interface Jammer {
+  /** 2026-11-06 模板侦测与链路计算参数；缺省时由读取副本补齐。 */
+  radarFrequency?: Megahertz; radarBandwidth?: Megahertz; radarPower?: Watts;
+  noiseFigureDb?: Decibels; gtDbk?: Decibels; eirpDbw?: Decibels;
+  antennaGainDbi?: DecibelsIsotropic; txLossDb?: Decibels; sweepDutyCycle?: Ratio01;
   id: Identifier; platformId: Identifier; type: 'BARRAGE' | 'SPOT' | 'SWEEP'; defaultPower: Watts;
   frequency: Megahertz; bandwidth: Megahertz; detectionRange: Meters;
   /** 干扰有效作用距离（触发半径），合同单位 m；界面按 km 编辑。候选 weapon 无 maximum_range，生成器用距离门控。 */

@@ -1,0 +1,376 @@
+include_once comm_PerDefinition.txt
+
+platform_type MISSION_UAV_PLATFORM WSF_PLATFORM
+  radar_signature DRONE_SIG
+  mover WSF_AIR_MOVER
+    update_interval 1 sec
+  end_mover
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 16 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 14.2 GHz
+      bandwidth 20 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern SAT_UAV_CLUSTER_WIDEBAND_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 11.8 GHz
+      bandwidth 20 MHz
+      polarization vertical
+      antenna_pattern SAT_UAV_CLUSTER_WIDEBAND_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm microwave_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 80 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 8.2 GHz
+      bandwidth 20 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern OMNI_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 8.2 GHz
+      bandwidth 20 MHz
+      polarization vertical
+      antenna_pattern OMNI_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm c_band_uplink WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 2000000 bit/s
+      end_mode
+    end_medium
+    transmitter
+      frequency 4.5 GHz
+      bandwidth 10 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 4.5 GHz
+      bandwidth 10 MHz
+      polarization vertical
+      antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm c_band_downlink WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 8000000 bit/s
+      end_mode
+    end_medium
+    transmitter
+      frequency 4 GHz
+      bandwidth 20 MHz
+      power 30 W
+      polarization vertical
+      antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+      antenna_tilt -3 deg
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 4 GHz
+      bandwidth 20 MHz
+      polarization vertical
+      antenna_pattern C_BAND_DIRECTIONAL_UAV_ANTENNA
+      antenna_tilt -3 deg
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm l_band_uplink WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 12800 bit/s
+      end_mode
+    end_medium
+    transmitter
+      frequency 1.5 GHz
+      bandwidth 5 MHz
+      power 10 W
+      polarization vertical
+      antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 1.5 GHz
+      bandwidth 5 MHz
+      polarization vertical
+      antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm l_band_downlink WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate constant 4000000 bit/s
+      end_mode
+    end_medium
+    transmitter
+      frequency 1.3 GHz
+      bandwidth 10 MHz
+      power 15 W
+      polarization vertical
+      antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 1.3 GHz
+      bandwidth 10 MHz
+      polarization vertical
+      antenna_pattern L_BAND_DIRECTIONAL_UAV_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  processor script_proc WSF_SCRIPT_PROCESSOR
+    report_to commander via microwave_link
+    update_interval 1 sec
+    script_variables
+      Array<string> relayNames = { "mission_uav_01" }; //中继机列表，根据实际配置生成
+        bool isRelay = false;
+        // 返向侦察视频
+        Array<string> rt_video_nexts = { "command_vehicle" };//反向侦查业务的下一跳
+        Array<string> rt_video_outs  = { "c_band_downlink" };//发送端口名称
+        Array<string> rt_video_ins   = { "c_band_downlink" };//接收端口名称
+        Array<string> rt_video_dsts  = { "rear_comm_vehicle" };//目的地列表，对于反向这里写死为后方平台
+        int    rt_video_size = 32;
+
+        // 返向状态
+        Array<string> rt_status_nexts = { "command_vehicle" };
+        Array<string> rt_status_outs  = { "c_band_downlink" };
+        Array<string> rt_status_ins   = { "c_band_downlink" };
+        Array<string> rt_status_dsts  = { "rear_comm_vehicle" };
+        int    rt_status_size = 16;
+    end_script_variables
+
+    on_initialize
+      foreach (string name in relayNames)
+        {
+          if (name == PLATFORM.Name())
+          {
+            isRelay = true;
+          }
+        }
+    end_on_initialize
+
+    execute at_interval_of 5 sec
+      if (!isRelay)
+      {
+        foreach (int i : string dst in rt_video_dsts)
+        {
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_next_in_port_name").Split("|");
+            foreach (int j : string nxt in nexts)
+            {
+              WsfMessage msg = WsfMessage();
+              msg.SetType("kReturnReconVideo");
+              msg.SetSizeInBits(rt_video_size);
+              msg.SetAuxData("origin_sender", PLATFORM.Name());
+              msg.SetAuxData("destination", dst);
+              PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+              writeln(PLATFORM.Name() + " kReturnReconVideo SendMessage Out Port:[" + outs[j] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+            }
+          }
+          else
+          {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kReturnReconVideo");
+            msg.SetSizeInBits(rt_video_size);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", rt_video_dsts[i]);
+            PLATFORM.Comm(rt_video_outs[i]).SendMessage(msg, rt_video_nexts[i], rt_video_ins[i]);
+            writeln(PLATFORM.Name() + " kReturnReconVideo SendMessage Out Port:[" + rt_video_outs[i] + "] Destination:[" + rt_video_dsts[i] + "] Next Plat:[" + rt_video_nexts[i] + "] Next Port:[" + rt_video_ins[i] + "]");
+          }
+        }
+        foreach (int i : string dst in rt_status_dsts)
+        {
+          string nxts2 = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_next_platform_name");
+          if (nxts2 != "")
+          {
+            Array<string> nexts = nxts2.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_next_in_port_name").Split("|");
+            foreach (int j : string nxt in nexts)
+            {
+              WsfMessage msg = WsfMessage();
+              msg.SetType("kReturnReconStatus");
+              msg.SetSizeInBits(rt_status_size);
+              msg.SetAuxData("origin_sender", PLATFORM.Name());
+              msg.SetAuxData("destination", dst);
+              PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+              writeln(PLATFORM.Name() + " kReturnReconStatus SendMessage Out Port:[" + outs[j] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+            }
+          }
+          else
+          {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kReturnReconStatus");
+            msg.SetSizeInBits(rt_status_size);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", rt_status_dsts[i]);
+            PLATFORM.Comm(rt_status_outs[i]).SendMessage(msg, rt_status_nexts[i], rt_status_ins[i]);
+            writeln(PLATFORM.Name() + " kReturnReconStatus SendMessage Out Port:[" + rt_status_outs[i] + "] Destination:[" + rt_status_dsts[i] + "] Next Plat:[" + rt_status_nexts[i] + "] Next Port:[" + rt_status_ins[i] + "]");
+          }
+        }
+      }
+    end_execute
+
+    on_message
+      type kReturnReconVideo
+        script
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name").Split("|");
+            foreach (int i : string nxt in nexts)
+            {
+              PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              writeln(PLATFORM.Name() + " kReturnReconVideo Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+            }
+          }
+        end_script
+
+      type kReturnReconStatus
+        script
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name").Split("|");
+            foreach (int i : string nxt in nexts)
+            {
+              PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              writeln(PLATFORM.Name() + " kReturnReconStatus Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+            }
+          }
+        end_script
+
+      type kForwardTarget
+        script
+          if(isRelay)
+          {
+            string dest = MESSAGE.AuxDataString("destination");
+            string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
+            if (nxts != "")
+            {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name").Split("|");
+              foreach (int i : string nxt in nexts)
+              {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                writeln(PLATFORM.Name() + " kForwardTarget Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+              }
+            }
+          }
+          else
+          {
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          }
+        end_script
+
+      type kForwardSituation
+        script
+          if(isRelay)
+          {
+            string dest = MESSAGE.AuxDataString("destination");
+            string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
+            if (nxts != "")
+            {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name").Split("|");
+              foreach (int i : string nxt in nexts)
+              {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                writeln(PLATFORM.Name() + " kForwardSituation Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+              }
+            }
+          }
+          else
+          {
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          }
+        end_script
+
+        default
+          script
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          end_script
+    end_on_message
+  end_processor
+end_platform_type

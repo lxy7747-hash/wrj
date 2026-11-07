@@ -1,0 +1,89 @@
+include_once comm_PerDefinition.txt
+
+platform_type GROUND_JAMMER_STATION WSF_PLATFORM
+  radar_signature COMMAND_VEHICLE_SIG
+  mover WSF_SURFACE_MOVER
+    update_interval 1 sec
+  end_mover
+  sensor detection_radar WSF_RADAR_SENSOR
+    mode default
+      frame_time 5 sec
+      beam 1
+        azimuth_field_of_view -180 deg 180 deg
+        elevation_field_of_view -10 deg 10 deg
+        minimum_range 1 km
+        maximum_range 55560 m
+        transmitter
+          frequency 2.4 GHz
+          power 1000 W
+        end_transmitter
+        receiver
+          noise_figure 3 dB
+          bandwidth 1 MHz
+        end_receiver
+      end_beam
+      reports_location
+      reports_velocity
+      reports_bearing
+    end_mode
+    on
+  end_sensor
+
+
+
+  processor auto_jammer_proc WSF_SCRIPT_PROCESSOR
+  end_processor
+  processor script_proc WSF_SCRIPT_PROCESSOR
+  end_processor
+end_platform_type
+
+platform_type AIRBORNE_JAMMER_PLATFORM WSF_PLATFORM
+  radar_signature DRONE_SIG
+  mover WSF_AIR_MOVER
+    update_interval 1 sec
+  end_mover
+  sensor detection_radar WSF_RADAR_SENSOR
+    mode default
+      frame_time 5 sec
+      beam 1
+        azimuth_field_of_view -180 deg 180 deg
+        elevation_field_of_view -10 deg 10 deg
+        minimum_range 1 km
+        maximum_range 55560 m
+        transmitter
+          frequency 2.4 GHz
+          power 1000 W
+        end_transmitter
+        receiver
+          noise_figure 3 dB
+          bandwidth 1 MHz
+        end_receiver
+      end_beam
+      reports_location
+      reports_velocity
+      reports_bearing
+    end_mode
+    on
+  end_sensor
+  weapon alq99_jammer WSF_RF_JAMMER
+    on
+    mode_template
+      transmitter
+        frequency 2.4 GHz
+        bandwidth 20 MHz
+        power 100 W
+        antenna_pattern OMNI_ANTENNA_HIGHGAIN
+      end_transmitter
+    end_mode_template
+    mode broadband_jamming
+    end_mode
+    mode spot_jamming
+    end_mode
+    mode sweep_jamming
+    end_mode
+    mode default
+    end_mode
+  end_weapon
+  processor script_proc WSF_SCRIPT_PROCESSOR
+  end_processor
+end_platform_type

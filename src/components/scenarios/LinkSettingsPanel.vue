@@ -323,6 +323,14 @@ function linkLabel(link: Link): string {
           <small>写入后方节点 link_calc，供对接方链路计算使用</small>
         </div>
         <div class="link-settings__rule-grid">
+          <el-form-item label="业务发送周期（秒）" :error="fieldMessage?.('messageIntervalS') ?? ''">
+            <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
+              @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
+          </el-form-item>
+          <el-form-item label="链路计算更新周期（秒）" :error="fieldMessage?.('linkCalc.updateIntervalS') ?? ''">
+            <el-input-number :model-value="linkCalc.updateIntervalS" :disabled="disabled" controls-position="right" data-testid="link-calc-updateIntervalS"
+              @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
+          </el-form-item>
           <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label" :error="fieldMessage?.(`linkCalc.${field.key}`) ?? ''">
             <el-input :model-value="String(linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
               @change="setThreshold(field.key, $event)" />

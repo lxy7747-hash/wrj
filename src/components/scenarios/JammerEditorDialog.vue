@@ -2,7 +2,7 @@
 import { computed, ref, toRaw, watch } from 'vue'
 import type { Jammer, JammerUiExtension, Link, Platform, ValidationIssue } from '../../contracts/domain-models'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
-import { isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange, JAMMER_POWER_DBM, isControlledPowerDbm, wattsToDbm, dbmToWatts, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ, JAMMER_DEFAULTS } from '../../features/scenarios/jammer-settings'
+import { readJammerParameters, isJammerPlatformType, METERS_PER_KILOMETER, readJammerReleaseRange, JAMMER_POWER_DBM, isControlledPowerDbm, wattsToDbm, dbmToWatts, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ, JAMMER_DEFAULTS } from '../../features/scenarios/jammer-settings'
 import { scenarioPlatformLabel } from '../../features/scenarios/scenario-basic'
 
 type JammerTypeOption = { value: Jammer['type'], label: string }
@@ -33,6 +33,15 @@ const emit = defineEmits<{
   opened: []
 }>()
 
+const calcFields = [
+  { key: 'radarFrequency', label: '侦测雷达频率（MHz）' },
+  { key: 'radarBandwidth', label: '侦测雷达带宽（MHz）' },
+  { key: 'radarPower', label: '侦测雷达功率（W）' },
+  { key: 'noiseFigureDb', label: '侦测接收噪声系数（dB）' },
+  { key: 'gtDbk', label: 'G/T（dB/K）' }, { key: 'eirpDbw', label: '干扰 EIRP（dBW）' },
+  { key: 'antennaGainDbi', label: '干扰天线增益（dBi）' }, { key: 'txLossDb', label: '发射损耗（dB）' },
+  { key: 'sweepDutyCycle', label: '扫频占空比（0～1）' },
+] as const
 const editor = ref<Jammer | null>(null)
 const uiEditor = ref<JammerUiExtension | null>(null)
 const validationTick = ref(0)
@@ -132,7 +141,7 @@ function setTriggerTime(value: number | undefined): void {
 
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
-  editor.value = props.jammer === null ? null : structuredClone(toRaw(props.jammer))
+  editor.value = props.jammer === null ? null : readJammerParameters(structuredClone(toRaw(props.jammer)))
   uiEditor.value = props.uiExtension === null ? null : structuredClone(toRaw(props.uiExtension))
   alignedLinkId.value = undefined
   resetPowerDbmInput()
@@ -209,6 +218,15 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="启用" :error="fieldError('enabled')"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
         </div>
         <small class="field-hint" data-testid="jammer-retained-hint">同类干扰节点的频率、带宽、功率与探测距离须一致，每个干扰节点只能配置一台干扰设备。</small>
+      </section>
+      <section class="link-editor-section" aria-labelledby="jammer-calc-title">
+        <h4 id="jammer-calc-title" class="link-editor-section__title">侦测与链路计算</h4>
+        <div class="link-editor-grid">
+          <el-form-item v-for="field in calcFields" :key="field.key" :label="field.label" :error="fieldError(field.key)">
+            <el-input-number :model-value="editor[field.key]" :step="0.1" controls-position="right" :data-testid="`jammer-${field.key}`"
+              @update:model-value="editor[field.key] = $event ?? Number.NaN" />
+          </el-form-item>
+        </div>
       </section>
       <section class="link-editor-section" aria-labelledby="jammer-detection-title">
         <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>

@@ -17,7 +17,7 @@ import type {
 } from '../../contracts/domain-models'
 
 import { metersBetween } from './position-distance'
-import { isJammerPlatformType, JAMMER_RANGE_METERS, isControlledPowerDbm, wattsToDbm, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ } from './jammer-settings'
+import { JAMMER_CALC_DEFAULTS, isJammerPlatformType, JAMMER_RANGE_METERS, isControlledPowerDbm, wattsToDbm, BARRAGE_BANDWIDTH_OPTIONS_MHZ, SPOT_BANDWIDTH_MHZ } from './jammer-settings'
 import { CHANNEL_ENCODING_OPTIONS, JAMMING_RANGE_KM, LASER_LINK_MODULATION, RAIN_RATE_MAX, RAIN_TIER_RATES, SEA_STATE_MAX } from './link-calc-defaults'
 import { HOT_LINK_END_PLATFORM_TYPES, hotLinkChainError } from './hot-links'
 import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-position-rules'
@@ -79,7 +79,7 @@ const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId
 const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
 const RETIRED_JAMMER_KEYS = ['autoDetect'] as const
-const OPTIONAL_JAMMER_KEYS = ['triggerTimeS', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
+const OPTIONAL_JAMMER_KEYS = ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle', 'triggerTimeS', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
 const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
@@ -582,7 +582,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
   links: unknown = [], jammers: unknown = [], demands: unknown = []): void {
-  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['enabledTypes', 'switchRules', 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
+  if (!isClosedObject(value, ['enabledSatellites', 'switchCooldownS', 'priority'], ['messageIntervalS', 'enabledTypes', 'switchRules', 'linkCalc', 'hotLinks', 'switchStableChecks', 'switchConsistencyCheck', 'minimumGxbDb', 'maximumBer', 'minimumGxbImprovementDb', 'minimumBerImprovementFactor', 'switchCooldownFrames', 'minimumSpatialIsolationDb', 'minimumReceivedPowerDbm', 'failureGxbDb', 'failureBer'])) {
     addError(errors, 'LINK_SETTINGS_INVALID', '链路启停与切换策略结构不正确。', 'linkSettings')
     return
   }
@@ -643,6 +643,7 @@ function inspectLinkSettings(value: unknown, platforms: unknown, errors: Validat
     || value.priority.some((type) => !(priorityTypes as readonly unknown[]).includes(type))) {
     addError(errors, 'LINK_PRIORITY_INVALID', '链路优先级必须包含五类链路且不能重复；读取兼容历史四类。', 'linkSettings.priority')
   }
+  if (Object.hasOwn(value, 'messageIntervalS') && !isPositiveFiniteNumber(value.messageIntervalS)) addError(errors, 'MESSAGE_INTERVAL_INVALID', '业务发送周期必须大于 0 秒。', 'linkSettings.messageIntervalS')
   if (Object.hasOwn(value, 'switchRules')) inspectSwitchRules(value.switchRules, platforms, links, jammers, demands, errors)
   if (Object.hasOwn(value, 'linkCalc')) inspectLinkCalc(value.linkCalc, errors)
   if (Object.hasOwn(value, 'hotLinks')) inspectHotLinks(value.hotLinks, links, errors)
@@ -673,7 +674,7 @@ function inspectHotLinks(value: unknown, links: unknown, errors: ValidationIssue
 
 /** 校验 link_calc 全局阈值、干扰圈半径与信道编码。 */
 function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
-  if (!isClosedObject(value, LINK_CALC_KEYS)) {
+  if (!isClosedObject(value, LINK_CALC_KEYS, ['updateIntervalS'])) {
     addError(errors, 'LINK_CALC_INVALID', '链路计算阈值结构不正确。', 'linkSettings.linkCalc')
     return
   }
@@ -683,6 +684,7 @@ function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
   if (!isFiniteNumber(value.jammingRangeKm, JAMMING_RANGE_KM.min, JAMMING_RANGE_KM.max)) {
     addError(errors, 'LINK_CALC_JAMMING_RANGE_INVALID', `干扰圈半径必须在 ${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max} km 之间。`, 'linkSettings.linkCalc.jammingRangeKm')
   }
+  if (Object.hasOwn(value, 'updateIntervalS') && !isPositiveFiniteNumber(value.updateIntervalS)) addError(errors, 'LINK_CALC_INTERVAL_INVALID', '链路计算更新周期必须大于 0 秒。', 'linkSettings.linkCalc.updateIntervalS')
   if (!CHANNEL_ENCODING_OPTIONS.some(option => option.value === value.channelEncodingScheme)) {
     addError(errors, 'LINK_CALC_ENCODING_INVALID', '信道编码请选择 -1、0、5.0、6.5、3.5 或 8.0。', 'linkSettings.linkCalc.channelEncodingScheme')
   }
@@ -837,7 +839,7 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
           addError(errors, 'DEVICE_PORT_UNKNOWN', '该平台类型不包含指定通信端口。', path)
           continue
         }
-        if (!isClosedObject(parameters, ['txFrequency', 'txBandwidth', 'txPower', 'rxFrequency', 'rxBandwidth', 'noiseFigureDb', 'transferRate'], ['parameterSource'])) {
+        if (!isClosedObject(parameters, ['txFrequency', 'txBandwidth', 'txPower', 'rxFrequency', 'rxBandwidth', 'noiseFigureDb', 'transferRate'], ['parameterSource', 'eirpDbw', 'gtDbk'])) {
           addError(errors, 'DEVICE_PORT_INVALID', '通信端口参数结构不正确。', path)
           continue
         }
@@ -845,6 +847,9 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
           if (!isPositiveFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${label}必须大于 0。`, `${path}.${key}`)
         }
         if (!isFiniteNumber(parameters.noiseFigureDb, 0)) addError(errors, 'DEVICE_PORT_VALUE_INVALID', '接收机噪声系数必须为非负有限数值。', `${path}.noiseFigureDb`)
+        for (const key of ['eirpDbw', 'gtDbk'] as const) {
+          if (Object.hasOwn(parameters, key) && !isFiniteNumber(parameters[key])) addError(errors, 'DEVICE_PORT_VALUE_INVALID', `${key}必须为有限数值。`, `${path}.${key}`)
+        }
         if (Object.hasOwn(parameters, 'parameterSource')) {
           if (!isLinkParameterSource(parameters.parameterSource)) addError(errors, 'DEVICE_PORT_SOURCE_INVALID', '通信端口参数来源结构不正确。', `${path}.parameterSource`)
           else if (parameters.parameterSource.fields.some(field => !(TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS as readonly string[]).includes(field))) {
@@ -876,6 +881,13 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   if (!isClosedObject(value, JAMMER_KEYS, OPTIONAL_JAMMER_KEYS)) {
     addError(errors, 'JAMMER_SHAPE_INVALID', '干扰设备结构不正确。', path)
     return
+  }
+  for (const key of ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle'] as const) {
+    if (!Object.hasOwn(value, key)) continue
+    const positive = key === 'radarBandwidth' || key === 'radarPower' || key === 'sweepDutyCycle'
+    if (!(positive ? isPositiveFiniteNumber(value[key]) : isFiniteNumber(value[key])) || (key === 'sweepDutyCycle' && (value[key] as number) > 1)) {
+      addError(errors, 'JAMMER_CALC_PARAMETER_INVALID', `${key}须为${positive ? '大于 0 的' : ''}有限数值${key === 'sweepDutyCycle' ? '，且不超过 1' : ''}。`, `${path}.${key}`)
+    }
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'JAMMER_ID_INVALID', '干扰设备 ID 为必填项。', `${path}.id`)
   if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前场景实体。', `${path}.platformId`)
@@ -930,9 +942,9 @@ function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown
     if (typeof platform === 'object' && platform !== null && typeof entry.id === 'string' && typeof entry.type === 'string') platformTypes.set(entry.id, entry.type)
   })
   const byPlatform = new Set<string>()
-  const baselineByType = new Map<string, { frequency: unknown; bandwidth: unknown; defaultPower: unknown; detectionRange: unknown; detectionMinimumRange: unknown }>()
+  const baselineByType = new Map<string, Record<string, unknown>>()
   jammers.forEach((jammer, index) => {
-    const entry = jammer as { platformId?: unknown; frequency?: unknown; bandwidth?: unknown; defaultPower?: unknown; detectionRange?: unknown; detectionMinimumRange?: unknown }
+    const entry = jammer as Record<string, unknown>
     if (typeof jammer !== 'object' || jammer === null || typeof entry.platformId !== 'string') return
     const path = `jammers[${index}]`
     if (byPlatform.has(entry.platformId)) addError(errors, 'JAMMER_PLATFORM_DUPLICATED', '每个干扰平台只允许配置一台干扰设备。', `${path}.platformId`)
@@ -946,13 +958,16 @@ function inspectTemplateJammerConsistency(jammers: unknown[], platforms: unknown
       detectionRange: entry.detectionRange,
       detectionMinimumRange: Object.hasOwn(jammer, 'detectionMinimumRange') ? entry.detectionMinimumRange : 1000,
     }
+    const radarFields = ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb'] as const
+    const shared: Record<string, unknown> = { ...current }
+    for (const key of radarFields) shared[key] = Object.hasOwn(jammer, key) ? entry[key] : JAMMER_CALC_DEFAULTS[key]
     const baseline = baselineByType.get(platformType)
     if (!baseline) {
-      baselineByType.set(platformType, current)
+      baselineByType.set(platformType, shared)
       return
     }
-    for (const [key, label] of [['frequency', '频率'], ['bandwidth', '带宽'], ['defaultPower', '功率'], ['detectionRange', '探测范围'], ['detectionMinimumRange', '最小探测距离']] as const) {
-      if (baseline[key] !== current[key]) addError(errors, 'JAMMER_PLATFORM_PARAMETER_CONFLICT', `同一干扰平台类型的${label}必须保持一致。`, `${path}.${key}`)
+    for (const [key, label] of [['frequency', '频率'], ['bandwidth', '带宽'], ['defaultPower', '功率'], ['detectionRange', '探测范围'], ['detectionMinimumRange', '最小探测距离'], ['radarFrequency', '侦测雷达频率'], ['radarBandwidth', '侦测雷达带宽'], ['radarPower', '侦测雷达功率'], ['noiseFigureDb', '侦测接收噪声系数']] as const) {
+      if (baseline[key] !== shared[key]) addError(errors, 'JAMMER_PLATFORM_PARAMETER_CONFLICT', `同一干扰平台类型的${label}必须保持一致。`, `${path}.${key}`)
     }
   })
 }

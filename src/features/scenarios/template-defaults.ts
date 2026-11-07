@@ -14,7 +14,7 @@ export const TEMPLATE_PLATFORM_TYPES = [
 ] as const satisfies readonly TemplatePlatformType[]
 
 export const TEMPLATE_ANTENNA_NAMES = [
-  'MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN',
+  'OMNI_ANTENNA', 'MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN',
   'C_BAND_DIRECTIONAL_VEHICLE_ANTENNA', 'C_BAND_DIRECTIONAL_UAV_ANTENNA',
   'L_BAND_DIRECTIONAL_VEHICLE_ANTENNA', 'L_BAND_DIRECTIONAL_UAV_ANTENNA',
   'SAT_GROUND_MOBILE_ANTENNA', 'SAT_SPACE_BEAM_ANTENNA', 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA', 'LASER_COMM_ANTENNA',
@@ -27,45 +27,46 @@ export const TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS = [
 
 type CompleteDeviceParameters = Required<Pick<DeviceParameters, 'ports' | 'antennaGains'>>
 type DefaultPorts = Record<TemplatePlatformType, Record<string, PortParameters>>
-const port = (txFrequency: number, txBandwidth: number, txPower: number, rxFrequency: number, rxBandwidth: number, transferRate: number): PortParameters => (
-  { txFrequency, txBandwidth, txPower, rxFrequency, rxBandwidth, transferRate, noiseFigureDb: 3 }
+const port = (txFrequency: number, txBandwidth: number, txPower: number, rxFrequency: number, rxBandwidth: number, transferRate: number, eirpDbw?: number, gtDbk?: number): PortParameters => (
+  { txFrequency, txBandwidth, txPower, rxFrequency, rxBandwidth, transferRate, noiseFigureDb: 3, ...(eirpDbw === undefined ? {} : { eirpDbw, gtDbk }) }
 )
 
 /** 新模板中的设备定义；速率单位在生成器按端口分别输出，领域值统一为 Mbps。 */
 const DEFAULT_PORTS: DefaultPorts = {
   MISSION_UAV_PLATFORM: {
-    sat_link: port(14200, 20, 20, 11800, 20, 16),
-    microwave_link: port(8200, 50, 20, 8200, 50, 80),
-    c_band_uplink: port(4500, 10, 20, 4500, 10, 2),
-    c_band_downlink: port(4000, 20, 30, 4000, 20, 8),
-    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128),
-    l_band_downlink: port(1300, 10, 15, 1300, 10, 4),
+    sat_link: port(14200, 20, 20, 11800, 20, 16, 5, -14),
+    microwave_link: port(8200, 20, 20, 8200, 20, 80, 30, -3),
+    c_band_uplink: port(4500, 10, 20, 4500, 10, 2, 26, -6),
+    c_band_downlink: port(4000, 20, 30, 4000, 20, 8, 26, -6),
+    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128, 26, -6),
+    l_band_downlink: port(1300, 10, 15, 1300, 10, 4, 26, -6),
   },
   COMMAND_VEHICLE_PLATFORM: {
-    c_band_uplink: port(4500, 10, 20, 4500, 10, 2),
-    c_band_downlink: port(4000, 20, 30, 4000, 20, 8),
-    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128),
-    l_band_downlink: port(1300, 10, 15, 1300, 10, 2),
+    c_band_uplink: port(4500, 10, 20, 4500, 10, 2, 26, -6),
+    c_band_downlink: port(4000, 20, 30, 4000, 20, 8, 26, -6),
+    l_band_uplink: port(1500, 5, 10, 1500, 5, 0.0128, 26, -6),
+    l_band_downlink: port(1300, 10, 15, 1300, 10, 2, 26, -6),
     fiber_link: port(0.001, 0.001, 0.001, 0.001, 0.001, 1000),
   },
   REAR_COMM_PLATFORM: {
-    sat_link_a: port(14200, 54, 20, 11800, 54, 16),
-    sat_link_b: port(14200, 54, 20, 11800, 54, 16),
-    microwave_link: port(8200, 50, 20, 8200, 50, 80),
+    sat_link_a: port(14200, 54, 20, 11800, 54, 16, 5, -14),
+    sat_link_b: port(14200, 54, 20, 11800, 54, 16, 5, -14),
+    microwave_link: port(8200, 50, 20, 8200, 50, 80, 30, -3),
     fiber_link: port(0.001, 0.001, 0.001, 0.001, 0.001, 1000),
   },
-  TIAN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 0.016) },
-  SHEN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 16) },
+  TIAN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 0.016, 5, -14) },
+  SHEN_TONG_SAT: { sat_link: port(11800, 54, 40, 14200, 54, 16, 5, -14) },
 }
 
 const DEFAULT_ANTENNA_GAINS: Record<TemplateAntennaName, number> = {
+  OMNI_ANTENNA: 30,
   MICRO_UAV_OMNI_ANTENNA: 3,
   MICRO_REAR_PLATFORM_DIR_ANTENNA: 18,
   OMNI_ANTENNA_HIGHGAIN: 8,
   C_BAND_DIRECTIONAL_VEHICLE_ANTENNA: 25,
   C_BAND_DIRECTIONAL_UAV_ANTENNA: 25,
-  L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: 14,
-  L_BAND_DIRECTIONAL_UAV_ANTENNA: 4,
+  L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: 25,
+  L_BAND_DIRECTIONAL_UAV_ANTENNA: 25,
   SAT_GROUND_MOBILE_ANTENNA: 25,
   SAT_SPACE_BEAM_ANTENNA: 30,
   SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: 30,

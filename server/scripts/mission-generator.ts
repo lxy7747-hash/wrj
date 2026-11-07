@@ -9,6 +9,7 @@ import { isConfiguredLinkEnabled, readLinkSettings } from '../../src/features/sc
 import { readLinkCalcSettings, readNaturalEnvironment } from '../../src/features/scenarios/link-calc-defaults.js'
 import { readHotLinks } from '../../src/features/scenarios/hot-links.js'
 import { readDeviceParameters, resolveTemplateLinkPorts, templatePlatformType, TEMPLATE_PLATFORM_TYPES } from '../../src/features/scenarios/template-defaults.js'
+import { JAMMER_CALC_DEFAULTS, readJammerParameters } from '../../src/features/scenarios/jammer-settings.js'
 import { AD_HOC_COMM_FILE, AD_HOC_COMM_TEXT } from './ad-hoc-comm.js'
 
 export class MissionGenerationError extends Error {
@@ -42,12 +43,13 @@ const INSTANCE_FILE = 'comm_platform_INS.txt'
 const TYPE_FILES = ['comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt', 'comm_platform_JAMMER.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt'] as const
 const EVENTS = ['PLATFORM_ADDED', 'PLATFORM_INITIALIZED', 'MESSAGE_TRANSMITTED', 'MESSAGE_RECEIVED', 'JAMMING_REQUEST_INITIATED', 'JAMMING_REQUEST_CANCELED', 'JAMMING_REQUEST_UPDATED', 'WEAPON_FIRED', 'SENSOR_DETECTION_CHANGED', 'WEAPON_TURNED_ON', 'WEAPON_MODE_ACTIVATED', 'WEAPON_MODE_DEACTIVATED', 'PLATFORM_DELETED', 'PLATFORM_BROKEN', 'PLATFORM_OMITTED', 'SIMULATION_STARTING', 'SIMULATION_COMPLETE', 'LINK_ADDED_TO_MANAGER', 'LINK_ENABLED_ON_MANAGER', 'LINK_DISABLED_ON_MANAGER', 'LINK_REMOVED_FROM_MANAGER', 'MESSAGE_HOP', 'COMM_TURNED_ON', 'COMM_FREQUENCY_CHANGED', 'LOCAL_TRACK_INITIATED', 'LOCAL_TRACK_UPDATED', 'LOCAL_TRACK_DROPPED', 'SENSOR_TRACK_INITIATED', 'SENSOR_TRACK_UPDATED', 'SENSOR_TRACK_DROPPED', 'EXCHANGE_COMPLETED', 'LINK_ENABLED_ON_LOCAL', 'LINK_DISABLED_ON_LOCAL', 'MOVER_TURNED_ON'] as const
 const ANTENNAS: Record<TemplateAntennaName, readonly [number, number]> = {
+  OMNI_ANTENNA: [360, 180],
   MICRO_UAV_OMNI_ANTENNA: [360, 65], MICRO_REAR_PLATFORM_DIR_ANTENNA: [12, 12], OMNI_ANTENNA_HIGHGAIN: [360, 180],
-  C_BAND_DIRECTIONAL_VEHICLE_ANTENNA: [15, 88], C_BAND_DIRECTIONAL_UAV_ANTENNA: [360, 88], L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: [20, 88], L_BAND_DIRECTIONAL_UAV_ANTENNA: [360, 70],
-  SAT_GROUND_MOBILE_ANTENNA: [4, 4], SAT_SPACE_BEAM_ANTENNA: [45, 45], SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: [110, 100], LASER_COMM_ANTENNA: [5, 5],
+  C_BAND_DIRECTIONAL_VEHICLE_ANTENNA: [360, 88], C_BAND_DIRECTIONAL_UAV_ANTENNA: [360, 88], L_BAND_DIRECTIONAL_VEHICLE_ANTENNA: [360, 88], L_BAND_DIRECTIONAL_UAV_ANTENNA: [360, 88],
+  SAT_GROUND_MOBILE_ANTENNA: [360, 180], SAT_SPACE_BEAM_ANTENNA: [360, 180], SAT_UAV_CLUSTER_WIDEBAND_ANTENNA: [360, 180], LASER_COMM_ANTENNA: [360, 180],
 }
 type Device = { linkId: string; linkType: Link['type']; direction: Link['direction']; source: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; target: { platformId: string; deviceId: string; platformType: TemplatePlatformType }; relayPlatformId: string | null; relayDeviceId: string | null }
-type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number; detectionDelayS?: number; jammingDurationS?: number }
+type Jammer = { jammerId: string; platformId: string; weaponId: 'prophet_jammer' | 'alq99_jammer'; type: string; configuredEnabled: boolean; frequencyMHz: number; bandwidthMHz: number; powerW: number; detectionRangeM: number; detectionMinimumRangeM: number; jammingRangeM: number; releaseRangeM: number; detectionDelayS?: number; jammingDurationS?: number } & Record<keyof typeof JAMMER_CALC_DEFAULTS, number>
 
 /** 保留场景中配置的数值，不以展示精度截断脚本或 link_calc JSON。 */
 const n = (value: number) => String(value)
@@ -72,8 +74,8 @@ function outputDirectory(value: string): string {
 }
 function rate(value: number, unit: 'bit/s' | 'kbits/sec' | 'mbits/sec'): string { return n(unit === 'bit/s' ? value * 1_000_000 : unit === 'kbits/sec' ? value * 1_000 : value) }
 function antenna(type: TemplatePlatformType, port: string): TemplateAntennaName {
-  if (type === 'MISSION_UAV_PLATFORM') return port === 'sat_link' ? 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA' : port === 'microwave_link' ? 'MICRO_UAV_OMNI_ANTENNA' : port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_UAV_ANTENNA' : 'L_BAND_DIRECTIONAL_UAV_ANTENNA'
-  if (type === 'COMMAND_VEHICLE_PLATFORM') return port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_VEHICLE_ANTENNA' : 'L_BAND_DIRECTIONAL_VEHICLE_ANTENNA'
+  if (type === 'MISSION_UAV_PLATFORM') return port === 'sat_link' ? 'SAT_UAV_CLUSTER_WIDEBAND_ANTENNA' : port === 'microwave_link' ? 'OMNI_ANTENNA' : port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_UAV_ANTENNA' : 'L_BAND_DIRECTIONAL_UAV_ANTENNA'
+  if (type === 'COMMAND_VEHICLE_PLATFORM') return port === 'c_band_uplink' ? 'OMNI_ANTENNA' : port.startsWith('c_') ? 'C_BAND_DIRECTIONAL_VEHICLE_ANTENNA' : 'L_BAND_DIRECTIONAL_VEHICLE_ANTENNA'
   return type === 'REAR_COMM_PLATFORM' && port === 'microwave_link' ? 'MICRO_REAR_PLATFORM_DIR_ANTENNA' : type === 'REAR_COMM_PLATFORM' ? 'SAT_GROUND_MOBILE_ANTENNA' : 'SAT_SPACE_BEAM_ANTENNA'
 }
 function unit(type: TemplatePlatformType, port: string): 'bit/s' | 'kbits/sec' | 'mbits/sec' {
@@ -87,71 +89,496 @@ function radio(type: TemplatePlatformType, port: string, config: ScenarioDraft['
   if (!value) throw new MissionGenerationError(`deviceParameters.ports.${type}.${port}`, '模板端口参数缺失。')
   const radioUnit = unit(type, port)
   const constant = type === 'MISSION_UAV_PLATFORM' || type === 'COMMAND_VEHICLE_PLATFORM' ? 'constant ' : ''
-  // 2026-11-01 用户裁定：模板后方车微波为 horizontal，与无人机全向天线 vertical 交叉极化，
-  // 本机引擎实测完全收不到；统一为 vertical（对照测试白名单第 10 项）。
+  // 11-06 模板已统一为 vertical，保留此前已验证的同极化通信。
   const polarization = 'vertical'
+  const terrain = type === 'MISSION_UAV_PLATFORM' || (type === 'REAR_COMM_PLATFORM' && port === 'microwave_link') ? ['      check_terrain_masking off'] : []
   const tilt = type === 'MISSION_UAV_PLATFORM' && port === 'c_band_downlink' ? ['      antenna_tilt -3 deg'] : []
-  return [`  comm ${port} WSF_RADIO_TRANSCEIVER`, '    on', '    network_name COM_MESH_NET', '    add medium UAV_MESH_MEDIUM', '      channels 4', '      mode "default"', `        transfer_rate ${constant}${rate(value.transferRate, radioUnit)} ${radioUnit}`, '      end_mode', '    end_medium', '    transmitter', `      frequency ${n(value.txFrequency / 1000)} GHz`, `      bandwidth ${n(value.txBandwidth)} MHz`, `      power ${n(value.txPower)} W`, `      polarization ${polarization}`, `      antenna_pattern ${antenna(type, port)}`, ...tilt, '      attenuation_model none', '      end_attenuation_model', '    end_transmitter', '    receiver', `      frequency ${n(value.rxFrequency / 1000)} GHz`, `      bandwidth ${n(value.rxBandwidth)} MHz`, `      polarization ${polarization}`, `      antenna_pattern ${antenna(type, port)}`, ...tilt, `      noise_figure ${n(value.noiseFigureDb)} dB`, '    end_receiver', '    internal_link script_proc', '  end_comm']
+  return [`  comm ${port} WSF_RADIO_TRANSCEIVER`, '    on', '    network_name COM_MESH_NET', '    add medium UAV_MESH_MEDIUM', '      channels 4', '      mode "default"', `        transfer_rate ${constant}${rate(value.transferRate, radioUnit)} ${radioUnit}`, '      end_mode', '    end_medium', '    transmitter', `      frequency ${n(value.txFrequency / 1000)} GHz`, `      bandwidth ${n(value.txBandwidth)} MHz`, `      power ${n(value.txPower)} W`, `      polarization ${polarization}`, `      antenna_pattern ${antenna(type, port)}`, ...tilt, '      attenuation_model none', '      end_attenuation_model', ...terrain, '    end_transmitter', '    receiver', `      frequency ${n(value.rxFrequency / 1000)} GHz`, `      bandwidth ${n(value.rxBandwidth)} MHz`, `      polarization ${polarization}`, `      antenna_pattern ${antenna(type, port)}`, ...tilt, `      noise_figure ${n(value.noiseFigureDb)} dB`, ...terrain, '      detection_threshold -1000 dB', '    end_receiver', '    internal_link script_proc', '  end_comm']
 }
 const fiber = () => ['  comm fiber_link WSF_COMM_TRANSCEIVER', '    on', '    network_name FIBER_NET', '    transfer_rate 1000 mbits/sec', '    channels 4', '    internal_link script_proc', '  end_comm']
-function definitions(config: ScenarioDraft['config']): string {
+function definitions(config: ScenarioDraft['config'], localRuntime: boolean): string {
   const parameters = readDeviceParameters(config)
   const lines = (Object.keys(ANTENNAS) as TemplateAntennaName[]).flatMap(name => {
+    if (!localRuntime && ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN'].includes(name)) return []
     const [azimuth, elevation] = ANTENNAS[name]
     return [`antenna_pattern ${name}`, '  uniform_pattern', `    peak_gain ${n(parameters.antennaGains[name] ?? 0)} dB`, `    azimuth_beamwidth ${azimuth} deg`, `    elevation_beamwidth ${elevation} deg`, '  end_uniform_pattern', 'end_antenna_pattern', '']
   })
-  return [...lines, 'radar_signature DRONE_SIG', '  constant 1.0 m^2', 'end_radar_signature', '', 'radar_signature COMMAND_VEHICLE_SIG', '  constant 5.0 m^2', 'end_radar_signature', '', 'radar_signature SAT_SIG', '  constant 3.0 m^2', 'end_radar_signature', '', 'network COM_MESH_NET WSF_COMM_NETWORK_MESH', 'end_network', '', 'network FIBER_NET WSF_COMM_NETWORK_P2P', 'end_network', '', 'medium UAV_MESH_MEDIUM WSF_COMM_MEDIUM_UNGUIDED', '  channels 4', '  default_mode_name "default"', '  mode "default"', '    propagation_speed constant 299792458 m/sec', '    transfer_rate constant 4000000 bit/s', '    packet_loss_time constant 0 sec', '  end_mode', 'end_medium', '', 'medium FIBER_MEDIUM WSF_COMM_MEDIUM_GUIDED', '  channels 4', '  default_mode_name "default"', '  mode "default"', '    propagation_speed constant 200000000 m/sec', '    transfer_rate constant 1000000 bit/s', '    packet_loss_time constant 0 sec', '  end_mode', 'end_medium', ''].join('\n')
+  // 本地 /23 网段容纳 50 信息节点的 297 个无线端口；对接方 TXT 保留模板网络块。
+  return [...lines, 'radar_signature DRONE_SIG', '  constant 1.0 m^2', 'end_radar_signature', '', 'radar_signature COMMAND_VEHICLE_SIG', '  constant 5.0 m^2', 'end_radar_signature', '', 'radar_signature SAT_SIG', '  constant 3.0 m^2', 'end_radar_signature', '', 'network COM_MESH_NET WSF_COMM_NETWORK_MESH', ...(localRuntime ? ['  network_address 10.0.0.0/23'] : []), 'end_network', '', 'network FIBER_NET WSF_COMM_NETWORK_P2P', 'end_network', '', 'medium UAV_MESH_MEDIUM WSF_COMM_MEDIUM_UNGUIDED', '  channels 4', '  default_mode_name "default"', '  mode "default"', '    propagation_speed constant 299792458 m/sec', '    transfer_rate constant 4000000 bit/s', '    packet_loss_time constant 0 sec', '  end_mode', 'end_medium', '', 'medium FIBER_MEDIUM WSF_COMM_MEDIUM_GUIDED', '  channels 4', '  default_mode_name "default"', '  mode "default"', '    propagation_speed constant 200000000 m/sec', '    transfer_rate constant 1000000 bit/s', '    packet_loss_time constant 0 sec', '  end_mode', 'end_medium', ''].join('\n')
 }
-function missionProcessor(relays: readonly string[]): string[] {
-  const items = relays.map(item => `"${item}"`).join(', ')
-  const emit = (type: 'kReturnReconVideo' | 'kReturnReconStatus', suffix = '') => [
-    `        string nxts${suffix} = PLATFORM.AuxDataString("${type}_next_platform_name");`,
-    `        if (nxts${suffix} != "")`, '        {', `          Array<string> nexts${suffix} = nxts${suffix}.Split("|");`,
-    `          Array<string> outs${suffix} = PLATFORM.AuxDataString("${type}_out_port_name").Split("|");`,
-    `          Array<string> ins${suffix} = PLATFORM.AuxDataString("${type}_next_in_port_name").Split("|");`,
-    `          Array<string> sizes${suffix} = PLATFORM.AuxDataString("${type}_data_size").Split("|");`,
-    `          foreach (int i : string nxt in nexts${suffix})`, '          {', '            WsfMessage msg = WsfMessage();',
-    `            msg.SetType("${type}");`, `            msg.SetSizeInBits((int)sizes${suffix}[i]);`,
-    '            msg.SetAuxData("origin_sender", PLATFORM.Name());', `            PLATFORM.Comm(outs${suffix}[i]).SendMessage(msg, nxt, ins${suffix}[i]);`, '          }', '        }',
-  ]
-  const receive = (type: string) => [
-    `      type ${type}`, '        script',
-    '          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_next_platform_name");',
-    '          if (nxts != "") {', '            Array<string> nexts = nxts.Split("|");',
-    '            Array<string> outs = PLATFORM.AuxDataString("kReturnReconVideo_out_port_name").Split("|");',
-    '            Array<string> ins = PLATFORM.AuxDataString("kReturnReconVideo_next_in_port_name").Split("|");',
-    '            foreach (int i : string nxt in nexts) {', '              PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);', '            }', '          }', '        end_script',
-  ]
-  return [
-    '  processor script_proc WSF_SCRIPT_PROCESSOR', '    report_to commander via microwave_link', '    update_interval 1 sec',
-    '    script_variables', `      Array<string> relayNames = { ${items} };`, '      bool isRelay = false;', '    end_script_variables',
-    '    on_initialize', '      foreach (string name in relayNames)', '        if (name == PLATFORM.Name())', '          isRelay = true;', '    end_on_initialize',
-    '    execute at_interval_of 5 sec', '      if (!isRelay)', '      {', ...emit('kReturnReconVideo'), ...emit('kReturnReconStatus', '2'), '      }', '    end_execute',
-    '    on_message', ...['kReturnReconVideo', 'kReturnReconStatus', 'kForwardTarget', 'kForwardSituation'].flatMap(receive),
-    '      default', '        script', '          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());', '        end_script',
-    '    end_on_message', '  end_processor',
-  ]
+const scriptArray = (values: readonly string[]) => `{ ${values.map(value => JSON.stringify(value)).join(', ')} }`
+type RouteDefaults = Record<string, string[]>
+function missionProcessor(values: { relayNames: string[]; rt_video_nexts: string[]; rt_video_outs: string[]; rt_video_ins: string[]; rt_video_dsts: string[]; rt_video_size: number; rt_status_nexts: string[]; rt_status_outs: string[]; rt_status_ins: string[]; rt_status_dsts: string[]; rt_status_size: number }, interval = 5): string[] {
+  return `  processor script_proc WSF_SCRIPT_PROCESSOR
+    report_to commander via microwave_link
+    update_interval 1 sec
+    script_variables
+      Array<string> relayNames = ${scriptArray(values.relayNames)};
+        bool isRelay = false;
+        Array<string> rt_video_nexts = ${scriptArray(values.rt_video_nexts)};
+        Array<string> rt_video_outs  = ${scriptArray(values.rt_video_outs)};
+        Array<string> rt_video_ins   = ${scriptArray(values.rt_video_ins)};
+        Array<string> rt_video_dsts  = ${scriptArray(values.rt_video_dsts)};
+        int    rt_video_size = ${n(values.rt_video_size)};
+        Array<string> rt_status_nexts = ${scriptArray(values.rt_status_nexts)};
+        Array<string> rt_status_outs  = ${scriptArray(values.rt_status_outs)};
+        Array<string> rt_status_ins   = ${scriptArray(values.rt_status_ins)};
+        Array<string> rt_status_dsts  = ${scriptArray(values.rt_status_dsts)};
+        int    rt_status_size = ${n(values.rt_status_size)};
+    end_script_variables
+    on_initialize
+      foreach (string name in relayNames)
+        {
+          if (name == PLATFORM.Name())
+          {
+            isRelay = true;
+          }
+        }
+    end_on_initialize
+    execute at_interval_of ${n(interval)} sec
+      if (!isRelay)
+      {
+        foreach (int i : string dst in rt_video_dsts)
+        {
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_" + dst + "_next_in_port_name").Split("|");
+            foreach (int j : string nxt in nexts)
+            {
+              WsfMessage msg = WsfMessage();
+              msg.SetType("kReturnReconVideo");
+              msg.SetSizeInBits(rt_video_size);
+              msg.SetAuxData("origin_sender", PLATFORM.Name());
+              msg.SetAuxData("destination", dst);
+              PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+              writeln(PLATFORM.Name() + " kReturnReconVideo SendMessage Out Port:[" + outs[j] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+            }
+          }
+          else
+          {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kReturnReconVideo");
+            msg.SetSizeInBits(rt_video_size);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", rt_video_dsts[i]);
+            PLATFORM.Comm(rt_video_outs[i]).SendMessage(msg, rt_video_nexts[i], rt_video_ins[i]);
+            writeln(PLATFORM.Name() + " kReturnReconVideo SendMessage Out Port:[" + rt_video_outs[i] + "] Destination:[" + rt_video_dsts[i] + "] Next Plat:[" + rt_video_nexts[i] + "] Next Port:[" + rt_video_ins[i] + "]");
+          }
+        }
+        foreach (int i : string dst in rt_status_dsts)
+        {
+          string nxts2 = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_next_platform_name");
+          if (nxts2 != "")
+          {
+            Array<string> nexts = nxts2.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_" + dst + "_next_in_port_name").Split("|");
+            foreach (int j : string nxt in nexts)
+            {
+              WsfMessage msg = WsfMessage();
+              msg.SetType("kReturnReconStatus");
+              msg.SetSizeInBits(rt_status_size);
+              msg.SetAuxData("origin_sender", PLATFORM.Name());
+              msg.SetAuxData("destination", dst);
+              PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+              writeln(PLATFORM.Name() + " kReturnReconStatus SendMessage Out Port:[" + outs[j] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+            }
+          }
+          else
+          {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kReturnReconStatus");
+            msg.SetSizeInBits(rt_status_size);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", rt_status_dsts[i]);
+            PLATFORM.Comm(rt_status_outs[i]).SendMessage(msg, rt_status_nexts[i], rt_status_ins[i]);
+            writeln(PLATFORM.Name() + " kReturnReconStatus SendMessage Out Port:[" + rt_status_outs[i] + "] Destination:[" + rt_status_dsts[i] + "] Next Plat:[" + rt_status_nexts[i] + "] Next Port:[" + rt_status_ins[i] + "]");
+          }
+        }
+      }
+    end_execute
+    on_message
+      type kReturnReconVideo
+        script
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name").Split("|");
+            foreach (int i : string nxt in nexts)
+            {
+              PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              writeln(PLATFORM.Name() + " kReturnReconVideo Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+            }
+          }
+        end_script
+      type kReturnReconStatus
+        script
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
+          if (nxts != "")
+          {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name").Split("|");
+            foreach (int i : string nxt in nexts)
+            {
+              PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              writeln(PLATFORM.Name() + " kReturnReconStatus Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+            }
+          }
+        end_script
+      type kForwardTarget
+        script
+          if(isRelay)
+          {
+            string dest = MESSAGE.AuxDataString("destination");
+            string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
+            if (nxts != "")
+            {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name").Split("|");
+              foreach (int i : string nxt in nexts)
+              {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                writeln(PLATFORM.Name() + " kForwardTarget Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+              }
+            }
+          }
+          else
+          {
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          }
+        end_script
+      type kForwardSituation
+        script
+          if(isRelay)
+          {
+            string dest = MESSAGE.AuxDataString("destination");
+            string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
+            if (nxts != "")
+            {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name").Split("|");
+              foreach (int i : string nxt in nexts)
+              {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                writeln(PLATFORM.Name() + " kForwardSituation Forward Message Out Port:[" + outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + ins[i] + "]");
+              }
+            }
+          }
+          else
+          {
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          }
+        end_script
+        default
+          script
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          end_script
+    end_on_message
+  end_processor`.split('\n')
 }
-function rearProcessor(): string[] {
-  const emit = (type: 'kForwardSituation' | 'kForwardTarget', suffix = '') => [
-    `      string nxts${suffix} = PLATFORM.AuxDataString("${type}_next_platform_name");`, `      if (nxts${suffix} != "") {`,
-    `        Array<string> nexts${suffix} = nxts${suffix}.Split("|");`, `        Array<string> outs${suffix} = PLATFORM.AuxDataString("${type}_out_port_name").Split("|");`,
-    `        Array<string> ins${suffix} = PLATFORM.AuxDataString("${type}_next_in_port_name").Split("|");`, `        Array<string> sizes${suffix} = PLATFORM.AuxDataString("${type}_data_size").Split("|");`,
-    `        foreach (int i : string nxt in nexts${suffix}) {`, '          WsfMessage msg = WsfMessage();', `          msg.SetType("${type}");`,
-    `          msg.SetSizeInBits((int)sizes${suffix}[i]);`, '          msg.SetAuxData("origin_sender", PLATFORM.Name());', `          PLATFORM.Comm(outs${suffix}[i]).SendMessage(msg, nxt, ins${suffix}[i]);`, '        }', '      }',
-  ]
-  return ['  processor script_proc WSF_SCRIPT_PROCESSOR', '    execute at_interval_of 5 sec', ...emit('kForwardSituation'), ...emit('kForwardTarget', '2'), '    end_execute', '    on_message', '    end_on_message', '  end_processor']
+function rearProcessor(values: RouteDefaults, interval = 5): string[] {
+  return `  processor script_proc WSF_SCRIPT_PROCESSOR
+    script_variables
+      Array<string> fw_sit_next = ${scriptArray(values.fw_sit_next)};
+      Array<string> fw_sit_out  = ${scriptArray(values.fw_sit_out)};
+      Array<string> fw_sit_in   = ${scriptArray(values.fw_sit_in)};
+      Array<string> fw_sit_dst  = ${scriptArray(values.fw_sit_dst)};
+      Array<string> fw_sit_size = ${scriptArray(values.fw_sit_size)};
+      Array<string> fw_tgt_next = ${scriptArray(values.fw_tgt_next)};
+      Array<string> fw_tgt_out  = ${scriptArray(values.fw_tgt_out)};
+      Array<string> fw_tgt_in   = ${scriptArray(values.fw_tgt_in)};
+      Array<string> fw_tgt_dst  = ${scriptArray(values.fw_tgt_dst)};
+      Array<string> fw_tgt_size = ${scriptArray(values.fw_tgt_size)};
+    end_script_variables
+    execute at_interval_of ${n(interval)} sec
+      foreach (int i : string dst in fw_sit_dst) {
+        string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_next_platform_name");
+        if (nxts != "")
+        {
+          Array<string> nexts = nxts.Split("|");
+          Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_out_port_name").Split("|");
+          Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_next_in_port_name").Split("|");
+          writeln(PLATFORM.Name() + " kForwardSituation_" + dst + "_next_platform_name New Path Chenged");
+          foreach (int j : string nxt in nexts) {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kForwardSituation");
+            msg.SetSizeInBits((int)fw_sit_size[i]);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", dst);
+            PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+            writeln(PLATFORM.Name() + " SendMessage Out Port:[" + outs[j] + "] kForwardSituation DataSize:[" + fw_sit_size[i] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+          }
+        }
+        else
+        {
+          WsfMessage msg = WsfMessage();
+          msg.SetType("kForwardSituation");
+          msg.SetSizeInBits((int)fw_sit_size[i]);
+          msg.SetAuxData("origin_sender", PLATFORM.Name());
+          msg.SetAuxData("destination", fw_sit_dst[i]);
+          PLATFORM.Comm(fw_sit_out[i]).SendMessage(msg, fw_sit_next[i], fw_sit_in[i]);
+          writeln(PLATFORM.Name() + " SendMessage Out Port:[" + fw_sit_out[i] + "] kForwardSituation DataSize:[" + fw_sit_size[i] + "] Destination:[" + fw_sit_dst[i] + "] Next Plat:[" + fw_sit_next[i] + "] Next Port:[" + fw_sit_in[i] + "]");
+        }
+      }
+      foreach (int i : string dst in fw_tgt_dst) {
+        string nxts2 = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_platform_name");
+        if (nxts2 != "") {
+          Array<string> nexts2 = nxts2.Split("|");
+          Array<string> outs2  = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_out_port_name").Split("|");
+          Array<string> ins2   = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_in_port_name").Split("|");
+          writeln(PLATFORM.Name() + " kForwardTarget_" + dst + "_next_platform_name New Path Chenged");
+          foreach (int j : string nxt in nexts2) {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kForwardTarget");
+            msg.SetSizeInBits((int)fw_tgt_size[i]);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", dst);
+            PLATFORM.Comm(outs2[j]).SendMessage(msg, nxt, ins2[j]);
+            writeln(PLATFORM.Name() + " SendMessage Out Port:[" + outs2[j] + "] kForwardTarget DataSize:[" + fw_tgt_size[i] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins2[j] + "]");
+          }
+        }
+        else {
+          WsfMessage msg = WsfMessage();
+          msg.SetType("kForwardTarget");
+          msg.SetSizeInBits((int)fw_tgt_size[i]);
+          msg.SetAuxData("origin_sender", PLATFORM.Name());
+          msg.SetAuxData("destination", fw_tgt_dst[i]);
+          PLATFORM.Comm(fw_tgt_out[i]).SendMessage(msg, fw_tgt_next[i], fw_tgt_in[i]);
+          writeln(PLATFORM.Name() + " SendMessage Out Port:[" + fw_tgt_out[i] + "] kForwardTarget DataSize:[" + fw_tgt_size[i] + "] Destination:[" + fw_tgt_dst[i] + "] Next Plat:[" + fw_tgt_next[i] + "] Next Port:[" + fw_tgt_in[i] + "]");
+        }
+      }
+    end_execute
+    on_message
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+    end_on_message
+  end_processor`.split('\n')
+}
+function commandProcessor(values: RouteDefaults, interval = 5): string[] {
+  return `  processor script_proc WSF_SCRIPT_PROCESSOR
+    report_to commander via fiber_link
+    script_variables
+      Array<string> fw_sit_nexts = ${scriptArray(values.fw_sit_nexts)};
+      Array<string> fw_sit_outs  = ${scriptArray(values.fw_sit_outs)};
+      Array<string> fw_sit_ins   = ${scriptArray(values.fw_sit_ins)};
+      Array<string> fw_sit_dsts  = ${scriptArray(values.fw_sit_dsts)};
+      Array<string> fw_tgt_nexts = ${scriptArray(values.fw_tgt_nexts)};
+      Array<string> fw_tgt_outs  = ${scriptArray(values.fw_tgt_outs)};
+      Array<string> fw_tgt_ins   = ${scriptArray(values.fw_tgt_ins)};
+      Array<string> fw_tgt_dsts  = ${scriptArray(values.fw_tgt_dsts)};
+      Array<string> rt_video_nexts = ${scriptArray(values.rt_video_nexts)};
+      Array<string> rt_video_outs  = ${scriptArray(values.rt_video_outs)};
+      Array<string> rt_video_ins   = ${scriptArray(values.rt_video_ins)};
+      Array<string> rt_video_dsts  = ${scriptArray(values.rt_video_dsts)};
+      Array<string> rt_status_nexts = ${scriptArray(values.rt_status_nexts)};
+      Array<string> rt_status_outs  = ${scriptArray(values.rt_status_outs)};
+      Array<string> rt_status_ins   = ${scriptArray(values.rt_status_ins)};
+      Array<string> rt_status_dsts  = ${scriptArray(values.rt_status_dsts)};
+    end_script_variables
+    on_message
+      type kForwardSituation
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            Array<string> fw_sit_nexts_Change = nxts.Split("|");
+            Array<string> fw_sit_outs_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name").Split("|");
+            Array<string> fw_sit_ins_Change   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name").Split("|");
+            Array<string> fw_sit_dsts_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_dst_platform_name").Split("|");
+            foreach (int i : string nxt in fw_sit_nexts_Change) {
+              if (fw_sit_dsts_Change[i] == dest) {
+                PLATFORM.Comm(fw_sit_outs_Change[i]).SendMessage(MESSAGE, nxt, fw_sit_ins_Change[i]);
+                writeln(PLATFORM.Name() + "kForwardSituation Forward Out Port:[" + fw_sit_outs_Change[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + fw_sit_ins_Change[i] + "]");
+              }
+            }
+          }else{
+            foreach (int i : string nxt in fw_sit_nexts) {
+              if (fw_sit_dsts[i] == dest) {
+                PLATFORM.Comm(fw_sit_outs[i]).SendMessage(MESSAGE, nxt, fw_sit_ins[i]);
+                writeln(PLATFORM.Name() + "kForwardSituation Forward Out Port:[" + fw_sit_outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + fw_sit_ins[i] + "]");
+              }
+            }
+          }
+        end_script
+      type kForwardTarget
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            Array<string> fw_tgt_nexts_Change = nxts.Split("|");
+            Array<string> fw_tgt_outs_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name").Split("|");
+            Array<string> fw_tgt_ins_Change   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name").Split("|");
+            Array<string> fw_tgt_dsts_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_dst_platform_name").Split("|");
+            foreach (int i : string nxt in fw_tgt_nexts_Change) {
+              if (fw_tgt_dsts_Change[i] == dest) {
+                PLATFORM.Comm(fw_tgt_outs_Change[i]).SendMessage(MESSAGE, nxt, fw_tgt_ins_Change[i]);
+                writeln(PLATFORM.Name() + "kForwardTarget Forward Out Port:[" + fw_tgt_outs_Change[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + fw_tgt_ins_Change[i] + "]");
+              }
+            }
+          }else{
+            foreach (int i : string nxt in fw_tgt_nexts) {
+              if (fw_tgt_dsts[i] == dest) {
+                PLATFORM.Comm(fw_tgt_outs[i]).SendMessage(MESSAGE, nxt, fw_tgt_ins[i]);
+                writeln(PLATFORM.Name() + "kForwardTarget Forward Out Port:[" + fw_tgt_outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + fw_tgt_ins[i] + "]");
+              }
+            }
+          }
+        end_script
+      type kReturnReconVideo
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            Array<string> rt_video_nexts_Change = nxts.Split("|");
+            Array<string> rt_video_outs_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name").Split("|");
+            Array<string> rt_video_ins_Change   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name").Split("|");
+            Array<string> rt_video_dsts_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_dst_platform_name").Split("|");
+            foreach (int i : string nxt in rt_video_nexts_Change) {
+              if (rt_video_dsts_Change[i] == dest) {
+                PLATFORM.Comm(rt_video_outs_Change[i]).SendMessage(MESSAGE, nxt, rt_video_ins_Change[i]);
+                writeln(PLATFORM.Name() + "kReturnReconVideo Forward Out Port:[" + rt_video_outs_Change[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + rt_video_ins_Change[i] + "]");
+              }
+            }
+          }else{
+            foreach (int i : string nxt in rt_video_nexts) {
+              if (rt_video_dsts[i] == dest) {
+                PLATFORM.Comm(rt_video_outs[i]).SendMessage(MESSAGE, nxt, rt_video_ins[i]);
+                writeln(PLATFORM.Name() + "kReturnReconVideo Forward Out Port:[" + rt_video_outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + rt_video_ins[i] + "]");
+              }
+            }
+          }
+        end_script
+      type kReturnReconStatus
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            Array<string> rt_status_nexts_Change = nxts.Split("|");
+            Array<string> rt_status_outs_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name").Split("|");
+            Array<string> rt_status_ins_Change   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name").Split("|");
+            Array<string> rt_status_dsts_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_dst_platform_name").Split("|");
+            foreach (int i : string nxt in rt_status_nexts_Change) {
+              if (rt_status_dsts_Change[i] == dest) {
+                PLATFORM.Comm(rt_status_outs_Change[i]).SendMessage(MESSAGE, nxt, rt_status_ins_Change[i]);
+                writeln(PLATFORM.Name() + "kReturnReconStatus Forward Out Port:[" + rt_status_outs_Change[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + rt_status_ins_Change[i] + "]");
+              }
+            }
+          }else{
+            foreach (int i : string nxt in rt_status_nexts) {
+              if (rt_status_dsts[i] == dest) {
+                PLATFORM.Comm(rt_status_outs[i]).SendMessage(MESSAGE, nxt, rt_status_ins[i]);
+                writeln(PLATFORM.Name() + "kReturnReconStatus Forward Out Port:[" + rt_status_outs[i] + "] Destination:[" + dest + "] Next Plat:[" + nxt + "] Next Port:[" + rt_status_ins[i] + "]");
+              }
+            }
+          }
+        end_script
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+    end_on_message
+  end_processor`.split('\n')
 }
 function satellite(kind: 'TIAN_TONG_SAT' | 'SHEN_TONG_SAT', config: ScenarioDraft['config'], start: string): string[] {
   const value = readDeviceParameters(config).ports[kind]?.sat_link
   if (!value) throw new MissionGenerationError(`deviceParameters.ports.${kind}.sat_link`, '模板端口参数缺失。')
   const radioUnit = unit(kind, 'sat_link')
-  return [`platform_type ${kind} WSF_PLATFORM`, '  radar_signature SAT_SIG', '  mover WSF_SPACE_MOVER', '    update_interval 1 sec', '    oblate_earth true', '    orbital_state', `      epoch_date_time ${start}`, '      semi_major_axis 42164 km', '      eccentricity 0.0', '      inclination 0 deg', '      raan 120 deg', '      argument_of_periapsis 0 deg', '      mean_anomaly 0 deg', '    end_orbital_state', '  end_mover', '  comm sat_link WSF_RADIO_TRANSCEIVER', '    on', '    network_name COM_MESH_NET', '    add medium UAV_MESH_MEDIUM', '      channels 4', '      mode "default"', `        transfer_rate ${rate(value.transferRate, radioUnit)} ${radioUnit}`, '      end_mode', '    end_medium', '    transmitter', `      frequency ${n(value.txFrequency / 1000)} GHz`, `      bandwidth ${n(value.txBandwidth)} MHz`, `      power ${n(value.txPower)} W`, '      polarization vertical', '      antenna_pattern SAT_SPACE_BEAM_ANTENNA', '      attenuation_model none', '      end_attenuation_model', '    end_transmitter', '    receiver', `      frequency ${n(value.rxFrequency / 1000)} GHz`, `      bandwidth ${n(value.rxBandwidth)} MHz`, '      polarization vertical', '      antenna_pattern SAT_SPACE_BEAM_ANTENNA', `      noise_figure ${n(value.noiseFigureDb)} dB`, '    end_receiver', '    internal_link script_proc', '  end_comm', '  processor script_proc WSF_SCRIPT_PROCESSOR', ...(kind === 'SHEN_TONG_SAT' ? ['    on_message', '    end_on_message'] : []), '  end_processor', 'end_platform_type']
+  return [`platform_type ${kind} WSF_PLATFORM`, '  radar_signature SAT_SIG', '  mover WSF_SPACE_MOVER', '    update_interval 1 sec', '    oblate_earth true', '    orbital_state', `      epoch_date_time ${start}`, '      semi_major_axis 42164 km', '      eccentricity 0.0', '      inclination 0 deg', '      raan 120 deg', '      argument_of_periapsis 0 deg', '      mean_anomaly 0 deg', '    end_orbital_state', '  end_mover', '  comm sat_link WSF_RADIO_TRANSCEIVER', '    on', '    network_name COM_MESH_NET', '    add medium UAV_MESH_MEDIUM', '      channels 4', '      mode "default"', `        transfer_rate ${rate(value.transferRate, radioUnit)} ${radioUnit}`, '      end_mode', '    end_medium', '    transmitter', `      frequency ${n(value.txFrequency / 1000)} GHz`, `      bandwidth ${n(value.txBandwidth)} MHz`, `      power ${n(value.txPower)} W`, '      polarization vertical', '      antenna_pattern SAT_SPACE_BEAM_ANTENNA', '      attenuation_model none', '      end_attenuation_model', '    end_transmitter', '    receiver', `      frequency ${n(value.rxFrequency / 1000)} GHz`, `      bandwidth ${n(value.rxBandwidth)} MHz`, '      polarization vertical', '      antenna_pattern SAT_SPACE_BEAM_ANTENNA', `      noise_figure ${n(value.noiseFigureDb)} dB`, '      detection_threshold -1000 dB', '    end_receiver', '    internal_link script_proc', '  end_comm', '  processor script_proc WSF_SCRIPT_PROCESSOR', ...(kind === 'SHEN_TONG_SAT' ? `    on_message
+      type kForwardSituation
+          script
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+            string nxts = PLATFORM.AuxDataString("kForwardSituation_next_platform_name");
+            if (nxts != "") {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_next_in_port_name").Split("|");
+              Array<string> dsts  = PLATFORM.AuxDataString("kForwardSituation_dst_platform_name").Split("|");
+              string dest = MESSAGE.AuxDataString("destination");
+              foreach (int i : string nxt in nexts) {
+                if (dsts[i] == dest) {
+                  PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                }
+              }
+            }
+          end_script
+      type kForwardTarget
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kForwardTarget_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kForwardTarget_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kForwardTarget_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kForwardTarget_dst_platform_name").Split("|");
+            string dest2 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest2) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+      type kReturnReconVideo
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kReturnReconVideo_dst_platform_name").Split("|");
+            string dest3 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest3) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+      type kReturnReconStatus
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kReturnReconStatus_dst_platform_name").Split("|");
+            string dest4 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest4) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+    end_on_message`.split('\n') : []), '  end_processor', 'end_platform_type']
 }
-function jammerType(airborne: boolean, jammer: Jammer | undefined): string[] {
+function jammerType(airborne: boolean, jammer: Jammer | undefined, localRuntime: boolean): string[] {
   const defaults = airborne ? { frequency: 2400, bandwidth: 20, power: 100 } : { frequency: 2400, bandwidth: 50, power: 200 }
   const weapon = airborne ? 'alq99_jammer' : 'prophet_jammer'
-  return [`platform_type ${airborne ? 'AIRBORNE_JAMMER_PLATFORM' : 'GROUND_JAMMER_STATION'} WSF_PLATFORM`, `  radar_signature ${airborne ? 'DRONE_SIG' : 'COMMAND_VEHICLE_SIG'}`, `  mover ${airborne ? 'WSF_AIR_MOVER' : 'WSF_SURFACE_MOVER'}`, '    update_interval 1 sec', '  end_mover', '  sensor detection_radar WSF_RADAR_SENSOR', '    mode default', '      frame_time 5 sec', '      beam 1', '        azimuth_field_of_view -180 deg 180 deg', '        elevation_field_of_view -10 deg 10 deg', `        minimum_range ${n((jammer?.detectionMinimumRangeM ?? 1000) / 1000)} km`, `        maximum_range ${n(jammer?.detectionRangeM ?? 55560)} m`, '        transmitter', '          frequency 2.4 GHz', '          power 1000 W', '        end_transmitter', '        receiver', '          noise_figure 3 dB', '          bandwidth 1 MHz', '        end_receiver', '      end_beam', '      reports_location', '      reports_velocity', '      reports_bearing', '    end_mode', '    on', '  end_sensor', `  weapon ${weapon} WSF_RF_JAMMER`, airborne ? '    on' : '    off', '    mode_template', '      transmitter', `        frequency ${n((jammer?.frequencyMHz ?? defaults.frequency) / 1000)} GHz`, `        bandwidth ${n(jammer?.bandwidthMHz ?? defaults.bandwidth)} MHz`, `        power ${n(jammer?.powerW ?? defaults.power)} W`, '        antenna_pattern OMNI_ANTENNA_HIGHGAIN', '      end_transmitter', '    end_mode_template', ...(!airborne ? ['    mode default', '    end_mode'] : []), '    mode broadband_jamming', '    end_mode', '    mode spot_jamming', '    end_mode', '    mode sweep_jamming', '    end_mode', ...(airborne ? ['    mode default', '    end_mode'] : []), '  end_weapon', ...(!airborne ? ['  processor auto_jammer_proc WSF_SCRIPT_PROCESSOR', '  end_processor'] : []), '  processor script_proc WSF_SCRIPT_PROCESSOR', '  end_processor', 'end_platform_type', '']
+  const radar = { ...JAMMER_CALC_DEFAULTS, ...jammer }
+  return [`platform_type ${airborne ? 'AIRBORNE_JAMMER_PLATFORM' : 'GROUND_JAMMER_STATION'} WSF_PLATFORM`, `  radar_signature ${airborne ? 'DRONE_SIG' : 'COMMAND_VEHICLE_SIG'}`, `  mover ${airborne ? 'WSF_AIR_MOVER' : 'WSF_SURFACE_MOVER'}`, '    update_interval 1 sec', '  end_mover', '  sensor detection_radar WSF_RADAR_SENSOR', '    mode default', '      frame_time 5 sec', '      beam 1', '        azimuth_field_of_view -180 deg 180 deg', '        elevation_field_of_view -10 deg 10 deg', `        minimum_range ${n((jammer?.detectionMinimumRangeM ?? 1000) / 1000)} km`, `        maximum_range ${n(jammer?.detectionRangeM ?? 55560)} m`, '        transmitter', `          frequency ${n(radar.radarFrequency / 1000)} GHz`, `          power ${n(radar.radarPower)} W`, '        end_transmitter', '        receiver', `          noise_figure ${n(radar.noiseFigureDb)} dB`, `          bandwidth ${n(radar.radarBandwidth)} MHz`, '        end_receiver', '      end_beam', '      reports_location', '      reports_velocity', '      reports_bearing', '    end_mode', '    on', '  end_sensor', ...(airborne || localRuntime ? [`  weapon ${weapon} WSF_RF_JAMMER`, airborne ? '    on' : '    off', '    mode_template', '      transmitter', `        frequency ${n((jammer?.frequencyMHz ?? defaults.frequency) / 1000)} GHz`, `        bandwidth ${n(jammer?.bandwidthMHz ?? defaults.bandwidth)} MHz`, `        power ${n(jammer?.powerW ?? defaults.power)} W`, '        antenna_pattern OMNI_ANTENNA_HIGHGAIN', '      end_transmitter', '    end_mode_template', ...(!airborne ? ['    mode default', '    end_mode'] : []), '    mode broadband_jamming', '    end_mode', '    mode spot_jamming', '    end_mode', '    mode sweep_jamming', '    end_mode', ...(airborne ? ['    mode default', '    end_mode'] : []), '  end_weapon'] : []), ...(!airborne ? ['  processor auto_jammer_proc WSF_SCRIPT_PROCESSOR', '  end_processor'] : []), '  processor script_proc WSF_SCRIPT_PROCESSOR', '  end_processor', 'end_platform_type', '']
 }
 function devices(config: ScenarioDraft['config']): { items: Device[]; warnings: string[] } {
   const settings = readLinkSettings(config); const items: Device[] = []; const warnings: string[] = []
@@ -176,8 +603,8 @@ function portParams(config: ScenarioDraft['config']): unknown[] {
     if (!value) return []
     if (name === 'fiber_link') return { comm_name: name, transmitter: { 'information_rate_bit/s': 1_000_000_000 }, receiver: { 'information_rate_bit/s': 1_000_000_000 } }
     const radioUnit = unit(type, name); const name2 = `information_rate_${radioUnit}`
-    const tx: Record<string, number> = { frequency_ghz: value.txFrequency / 1000, bandwidth_mhz: value.txBandwidth, power_w: value.txPower, peak_gain_dB: parameters.antennaGains[antenna(type, name)] ?? 0 }
-    const rx: Record<string, number> = { frequency_ghz: value.rxFrequency / 1000, bandwidth_mhz: value.rxBandwidth, peak_gain_dB: parameters.antennaGains[antenna(type, name)] ?? 0 }
+    const tx: Record<string, number> = { frequency_ghz: value.txFrequency / 1000, bandwidth_mhz: value.txBandwidth, power_w: value.txPower, eirp_dBW: value.eirpDbw!, peak_gain_dB: parameters.antennaGains[antenna(type, name)] ?? 0 }
+    const rx: Record<string, number> = { frequency_ghz: value.rxFrequency / 1000, bandwidth_mhz: value.rxBandwidth, peak_gain_dB: parameters.antennaGains[antenna(type, name)] ?? 0, G_T_dBK: value.gtDbk! }
     tx[name2] = Number(rate(value.transferRate, radioUnit)); rx[name2] = Number(rate(value.transferRate, radioUnit)); rx.noise_figure_dB = value.noiseFigureDb
     return { comm_name: name, transmitter: tx, receiver: rx }
   }) }))
@@ -237,7 +664,7 @@ function traffic(
   })
   return [...grouped].map(([platform, value]) => ({ [platform]: value }))
 }
-function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDraft['uiExtensions']): Jammer[] { const enabled = config.jammingEnabled ?? false; return config.jammers.map(value => { const extension = uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260, ...(value.detectionDelayS !== undefined ? { detectionDelayS: value.detectionDelayS } : {}), ...(value.jammingDurationS !== undefined ? { jammingDurationS: value.jammingDurationS } : {}) } }) }
+function jammerValues(config: ScenarioDraft['config'], uiExtensions: ScenarioDraft['uiExtensions']): Jammer[] { const enabled = config.jammingEnabled ?? false; return config.jammers.map(stored => { const value = readJammerParameters(stored); const extension = uiExtensions.jammers.find(item => item.jammerId === value.id); const airborne = config.platforms.find(item => item.id === value.platformId)?.type === 'AIRBORNE_JAMMER_PLATFORM'; return { radarFrequency: value.radarFrequency, radarBandwidth: value.radarBandwidth, radarPower: value.radarPower, noiseFigureDb: value.noiseFigureDb, gtDbk: value.gtDbk, eirpDbw: value.eirpDbw, antennaGainDbi: value.antennaGainDbi, txLossDb: value.txLossDb, sweepDutyCycle: value.sweepDutyCycle, jammerId: value.id, platformId: value.platformId, weaponId: airborne ? 'alq99_jammer' : 'prophet_jammer', type: value.type, configuredEnabled: enabled && (extension?.enabled ?? false), frequencyMHz: value.frequency, bandwidthMHz: value.bandwidth, powerW: value.defaultPower, detectionRangeM: value.detectionRange, detectionMinimumRangeM: value.detectionMinimumRange ?? 1000, jammingRangeM: value.jammingRange, releaseRangeM: value.releaseRange ?? value.jammingRange + 9260, ...(value.detectionDelayS !== undefined ? { detectionDelayS: value.detectionDelayS } : {}), ...(value.jammingDurationS !== undefined ? { jammingDurationS: value.jammingDurationS } : {}) } }) }
 type Hop = { platform: string; inPort: string; outPort: string }
 type TrafficRecord = { traffice_type: string; data_volume_bits: number; trans_freq: number }
 type Traffic = Array<Record<string, { forward: TrafficRecord[]; return: TrafficRecord[] }>>
@@ -259,14 +686,22 @@ function calculator(
 ): string {
   const settings = readLinkSettings(config); const calc = readLinkCalcSettings(settings.linkCalc); const environment = readNaturalEnvironment(config.scenario.environment)
   const natural = { rain: { enabled: environment.rainEnabled, rain_rate_mm_hr: environment.rainRateMmPerHour, rain_altitude_limit_m: environment.rainAltitudeLimitM, rain_attenuation_db: environment.rainAttenuationDb }, cloud: { enabled: environment.cloudEnabled, cloud_altitude_min_m: environment.cloudAltitudeMinM, cloud_altitude_max_m: environment.cloudAltitudeMaxM, cloud_water_density_g_m3: environment.cloudWaterDensityGM3 }, atmosphere: { enabled: true, model: environment.atmosphereModel, simplified_attenuation_db_per_km: environment.simplifiedAttenuationDbPerKm }, misc_loss_db: { polarization_mismatch_db: environment.polarizationMismatchDb, pointing_error_db: environment.pointingErrorDb }, sea_state: { enabled: config.scenario.environment.multipathEnabled, sea_state_level: environment.seaState, low_altitude_threshold_m: environment.seaLowAltitudeThresholdM, path_over_sea_threshold_km: environment.seaPathOverSeaThresholdKm, mode: environment.seaModel, sea_polygon: (environment.seaPolygon ?? []).map(point => ({ lat: point.latitude, lon: point.longitude })), polarization: environment.seaPolarization, sea_water_temp_c: environment.seaWaterTempC, sea_surface_roughness_m: environment.seaSurfaceRoughnessM } }
-  const jams = { jammers: jammers.map(item => ({ platform_name: item.platformId, weapon_name: item.weaponId, jammer_type: item.weaponId === 'alq99_jammer' ? 'airborne' : 'ground', enabled: item.configuredEnabled, mode: item.type === 'BARRAGE' ? 'broadband' : item.type === 'SPOT' ? 'spot' : 'sweep', frequency_hz: item.frequencyMHz * 1_000_000, bandwidth_hz: item.bandwidthMHz * 1_000_000, power_w: item.powerW, antenna_gain_dbi: 0, tx_loss_db: 0, trigger_radius_nm: item.jammingRangeM / 1852, release_radius_nm: item.releaseRangeM / 1852, spot_bandwidth_mhz: 20, sweep_duty_cycle: 0.1 })) }
-  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', '    update_interval 5 sec', `    emergency_threshold ${n(calc.emergencyThreshold)}`, `    warning_threshold ${n(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    jamming_range ${n(calc.jammingRangeKm)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(portParams(config))}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
+  const jams = { jammers: jammers.map(item => ({
+    platform_name: item.platformId, weapon_name: item.weaponId, jammer_type: item.weaponId === 'alq99_jammer' ? 'airborne' : 'ground',
+    G_T_dBK: item.gtDbk, enabled: item.configuredEnabled, mode: item.type === 'BARRAGE' ? 'broadband' : item.type === 'SPOT' ? 'spot' : 'sweep',
+    frequency_ghz: item.radarFrequency / 1000, bandwidth_mhz: item.radarBandwidth, power_w: item.radarPower, noise_figure: item.noiseFigureDb,
+    weapon_frequency_ghz: item.frequencyMHz / 1000, weapon_bandwidth_mhz: item.bandwidthMHz, weapon_power_w: item.powerW,
+    weapon_eirp_dBW: item.eirpDbw, weapon_antenna_gain_dbi: item.antennaGainDbi, tx_loss_db: item.txLossDb,
+    detect_radius_nm: item.detectionRangeM / 1852, trigger_radius_nm: item.jammingRangeM / 1852, release_radius_nm: item.releaseRangeM / 1852,
+    spot_bandwidth_mhz: item.type === 'SPOT' ? item.bandwidthMHz : 20, sweep_duty_cycle: item.sweepDutyCycle,
+  })) }
+  return ['  add processor link_calc WSF_LINK_CALC_PROCESSOR', `    update_interval ${n(calc.updateIntervalS)} sec`, `    emergency_threshold ${n(calc.emergencyThreshold)}`, `    warning_threshold ${n(calc.warningThreshold)}`, `    value_threshold_ber ${n(calc.valueThresholdBer)}`, `    jamming_range ${n(calc.jammingRangeKm)}`, `    channel_encoding_scheme ${n(calc.channelEncodingScheme)}`, `    traffic_type ${JSON.stringify(routes.traffic)}`, `    relay_uav_names ${JSON.stringify(config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id))}`, `    hot_link_ret ${JSON.stringify(routes.reverse)}`, `    hot_link_fw ${JSON.stringify(routes.forward)}`, `    port_params ${JSON.stringify(portParams(config))}`, `    natural_environment ${JSON.stringify(natural)}`, `    jammer_param ${JSON.stringify(jams)}`, '  end_processor'].join('\n')
 }
 /** 本地运行包选项；对接方 TXT、预览和 writeScriptText 都不传，保持模板原样。 */
 export type LocalRuntimeOptions = { linkCalc: 'PRESERVE' | 'STUB' }
 const SHARED_MEDIUM = 'UAV_MESH_MEDIUM'
 const JAMMER_SCRIPT_MODE = (type: string) => type === 'BARRAGE' ? 'broadband_jamming' : type === 'SPOT' ? 'spot_jamming' : 'sweep_jamming'
-type AuxEntry = { next: string[]; out: string[]; in: string[]; size: string[] }
+type AuxEntry = { next: string[]; out: string[]; in: string[]; dst: string[]; size: string[] }
 /**
  * E1 实测：模板各端口 `add medium UAV_MESH_MEDIUM` 后改写的 transfer_rate 作用于同一介质类型，
  * 后定义覆盖前定义（C 上行 2 Mbps 实际按 8 Mbps 传输）。本地包为每个平台类型的每个射频端口
@@ -294,32 +729,45 @@ function splitSharedMedium(files: Record<string, string>): string[] {
   ].join('\n')
   return names
 }
-/**
- * 按热链与 traffic_type 推导模板 script_proc 读取的 4 个 AuxData 键（多值以 | 分隔）。
- * 前向业务取以目标平台结尾的第一条前向热链，回传业务取以源平台开头的第一条回传热链（主路由）。
- * 源节点按业务类型逐条写入（保留数据量）。中间节点只有任务机类 on_message 会转发，且模板四个分支
- * 都读取 kReturnReconVideo_* 键，所以中间跳统一写到该键下，并按（下一跳、出端口、入端口）去重。
- * 限制：消息不携带最终目的地，中继会把收到的消息转发到它的全部下一跳；指挥车、卫星的
- * on_message 在模板中为空，不会继续转发。
- */
-export function localAuxRoutes(routes: RouteInputs): Map<string, Map<string, AuxEntry>> {
-  const result = new Map<string, Map<string, AuxEntry>>()
-  const add = (platform: string, type: string, next: string, out: string, inPort: string, size: number, origin: boolean) => {
-    const byType = result.get(platform) ?? new Map<string, AuxEntry>()
-    result.set(platform, byType)
-    const entry = byType.get(type) ?? { next: [], out: [], in: [], size: [] }
-    byType.set(type, entry)
-    if (!origin && entry.next.some((value, index) => value === next && entry.out[index] === out && entry.in[index] === inPort)) return
-    entry.next.push(next); entry.out.push(out); entry.in.push(inPort); entry.size.push(String(size))
-  }
-  const walk = (hops: readonly Hop[], record: TrafficRecord) => hops.slice(0, -1).forEach((hop, index) =>
-    add(hop.platform, index === 0 ? record.traffice_type : 'kReturnReconVideo', hops[index + 1]!.platform, hop.outPort, hops[index + 1]!.inPort, record.data_volume_bits, index === 0))
-  routes.traffic.forEach(item => Object.entries(item).forEach(([platform, value]) => {
+/** 每条业务选择首条对应热链；不构造配置中不存在的跳点。 */
+function businessPaths(routes: RouteInputs): { hops: Hop[]; record: TrafficRecord }[] {
+  return routes.traffic.flatMap(item => Object.entries(item).flatMap(([platform, value]) => {
     const forward = Object.values(routes.forward).find(hops => hops.at(-1)?.platform === platform)
     const reverse = Object.values(routes.reverse).find(hops => hops[0]?.platform === platform)
-    if (forward) value.forward.forEach(record => walk(forward, record))
-    if (reverse) value.return.forEach(record => walk(reverse, record))
+    return [...(forward ? value.forward.map(record => ({ hops: forward, record })) : []),
+      ...(reverse ? value.return.map(record => ({ hops: reverse, record })) : [])]
   }))
+}
+const emptyAux = (): AuxEntry => ({ next: [], out: [], in: [], dst: [], size: [] })
+function appendAux(entry: AuxEntry, hops: readonly Hop[], index: number, record: TrafficRecord): void {
+  const next = hops[index + 1]!, out = hops[index]!.outPort, dst = hops.at(-1)!.platform
+  if (entry.next.some((value, i) => value === next.platform && entry.out[i] === out && entry.in[i] === next.inPort && entry.dst[i] === dst)) return
+  entry.next.push(next.platform); entry.out.push(out); entry.in.push(next.inPort); entry.dst.push(dst); entry.size.push(String(record.data_volume_bits))
+}
+function processorDefaults(routes: RouteInputs, platform: string | undefined, type: string): AuxEntry {
+  const entry = emptyAux()
+  for (const { hops, record } of businessPaths(routes)) {
+    const index = hops.findIndex(hop => hop.platform === platform)
+    if (record.traffice_type === type && index >= 0 && index < hops.length - 1) appendAux(entry, hops, index, record)
+  }
+  return entry
+}
+/** AuxData 使用真实业务类型和目的地；卫星同时保留模板要求的旧键。 */
+export function localAuxRoutes(routes: RouteInputs): Map<string, Map<string, AuxEntry>> {
+  const result = new Map<string, Map<string, AuxEntry>>()
+  for (const { hops, record } of businessPaths(routes)) {
+    hops.slice(0, -1).forEach((hop, index) => {
+      const byType = result.get(hop.platform) ?? new Map<string, AuxEntry>()
+      result.set(hop.platform, byType)
+      const keys = [`${record.traffice_type}_${hops.at(-1)!.platform}`]
+      if (hop.platform === 'tiantong_sat' || hop.platform === 'shentong_sat') keys.push(record.traffice_type)
+      for (const key of keys) {
+        const entry = byType.get(key) ?? emptyAux()
+        byType.set(key, entry)
+        appendAux(entry, hops, index, record)
+      }
+    })
+  }
   return result
 }
 /** D4：引擎缺少 WSF_LINK_CALC_PROCESSOR 时替代 link_calc 的本地补丁，只进入本地运行包。 */
@@ -330,7 +778,7 @@ export function localLinkStub(host: string, routes: RouteInputs, jammers: readon
       `          target.SetAuxData("${type}_next_platform_name", "${value.next.join('|')}");`,
       `          target.SetAuxData("${type}_out_port_name", "${value.out.join('|')}");`,
       `          target.SetAuxData("${type}_next_in_port_name", "${value.in.join('|')}");`,
-      `          target.SetAuxData("${type}_data_size", "${value.size.join('|')}");`,
+      `          target.SetAuxData("${type}_dst_platform_name", "${value.dst.join('|')}");`,
     ]),
     '        }',
   ])
@@ -409,14 +857,34 @@ export function localLinkStub(host: string, routes: RouteInputs, jammers: readon
     '  end_processor',
   ].join('\n')
 }
-function typeTexts(config: ScenarioDraft['config'], relays: readonly string[], jammers: readonly Jammer[], start: string, calc: string): Record<string, string> {
+function typeTexts(config: ScenarioDraft['config'], relays: readonly string[], jammers: readonly Jammer[], start: string, calc: string, routes: RouteInputs, warnings: string[], localRuntime: boolean): Record<string, string> {
+  const interval = readLinkSettings(config).messageIntervalS ?? 5
+  const host = (type: Platform['type']) => config.platforms.find(item => item.type === type)?.id
+  const variables = (prefix: string, entry: AuxEntry, plural: boolean): RouteDefaults => ({
+    [`${prefix}_next${plural ? 's' : ''}`]: entry.next, [`${prefix}_out${plural ? 's' : ''}`]: entry.out,
+    [`${prefix}_in${plural ? 's' : ''}`]: entry.in, [`${prefix}_dst${plural ? 's' : ''}`]: entry.dst, [`${prefix}_size`]: entry.size,
+  })
+  const rear: RouteDefaults = {}, command: RouteDefaults = {}
+  for (const [prefix, type] of [['fw_sit', 'kForwardSituation'], ['fw_tgt', 'kForwardTarget'], ['rt_video', 'kReturnReconVideo'], ['rt_status', 'kReturnReconStatus']]) {
+    Object.assign(rear, variables(prefix!, processorDefaults(routes, host('REAR_COMMAND_NODE'), type!), false))
+    Object.assign(command, variables(prefix!, processorDefaults(routes, host('GROUND_CLUSTER_COMMAND_NODE'), type!), true))
+  }
+  const returnDefaults = (type: string): AuxEntry => {
+    const candidates = config.platforms.filter(item => item.type === 'AIRBORNE_MISSION_CLUSTER')
+      .map(item => processorDefaults(routes, item.id, type)).filter(entry => entry.next.length > 0)
+    const first = candidates[0] ?? emptyAux()
+    if (candidates.some(entry => JSON.stringify(entry) !== JSON.stringify(first))) warnings.push(`${type}：同类任务无人机的首跳或数据量不同，共享 script_proc 默认数组及数据量取第一条返向业务。`)
+    return first
+  }
+  const video = returnDefaults('kReturnReconVideo'), status = returnDefaults('kReturnReconStatus')
+
   const common = (name: string, signature: string, mover: string, ports: string[], processor: string[]) => ['include_once comm_PerDefinition.txt', '', `platform_type ${name} WSF_PLATFORM`, `  radar_signature ${signature}`, `  mover ${mover}`, '    update_interval 1 sec', '  end_mover', ...ports, ...processor, 'end_platform_type', ''].join('\n')
   return {
-    'comm_platform_MISSION_UAV.txt': common('MISSION_UAV_PLATFORM', 'DRONE_SIG', 'WSF_AIR_MOVER', ['sat_link', 'microwave_link', 'c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'].flatMap(port => radio('MISSION_UAV_PLATFORM', port, config)), missionProcessor(relays)),
-    'comm_platform_COMMAND_VEHICLE.txt': common('COMMAND_VEHICLE_PLATFORM', 'COMMAND_VEHICLE_SIG', 'WSF_SURFACE_MOVER', ['c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'].flatMap(port => radio('COMMAND_VEHICLE_PLATFORM', port, config)).concat(fiber()), ['  processor script_proc WSF_SCRIPT_PROCESSOR', '    report_to commander via fiber_link', '    script_variables', '    end_script_variables', '    on_message', '    end_on_message', '  end_processor']),
-    'comm_platform_REAR.txt': common('REAR_COMM_PLATFORM', 'COMMAND_VEHICLE_SIG', 'WSF_GROUND_MOVER', ['sat_link_a', 'sat_link_b', 'microwave_link'].flatMap(port => radio('REAR_COMM_PLATFORM', port, config)).concat(fiber()), rearProcessor().concat(calc ? calc.split('\n') : [])),
+    'comm_platform_MISSION_UAV.txt': common('MISSION_UAV_PLATFORM', 'DRONE_SIG', 'WSF_AIR_MOVER', ['sat_link', 'microwave_link', 'c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'].flatMap(port => radio('MISSION_UAV_PLATFORM', port, config)), missionProcessor({ relayNames: [...relays], rt_video_nexts: video.next, rt_video_outs: video.out, rt_video_ins: video.in, rt_video_dsts: video.dst, rt_video_size: Number(video.size[0] ?? 0), rt_status_nexts: status.next, rt_status_outs: status.out, rt_status_ins: status.in, rt_status_dsts: status.dst, rt_status_size: Number(status.size[0] ?? 0) }, interval)),
+    'comm_platform_COMMAND_VEHICLE.txt': common('COMMAND_VEHICLE_PLATFORM', 'COMMAND_VEHICLE_SIG', 'WSF_SURFACE_MOVER', ['c_band_uplink', 'c_band_downlink', 'l_band_uplink', 'l_band_downlink'].flatMap(port => radio('COMMAND_VEHICLE_PLATFORM', port, config)).concat(fiber()), commandProcessor(command)),
+    'comm_platform_REAR.txt': common('REAR_COMM_PLATFORM', 'COMMAND_VEHICLE_SIG', 'WSF_GROUND_MOVER', ['sat_link_a', 'sat_link_b', 'microwave_link'].flatMap(port => radio('REAR_COMM_PLATFORM', port, config)).concat(fiber()), rearProcessor(rear, interval).concat(calc ? calc.split('\n') : [])),
     'comm_platform_SAT.txt': ['include_once comm_PerDefinition.txt', '', ...satellite('TIAN_TONG_SAT', config, start), '', ...satellite('SHEN_TONG_SAT', config, start), ''].join('\n'),
-    'comm_platform_JAMMER.txt': ['include_once comm_PerDefinition.txt', '', ...jammerType(false, jammers.find(item => item.weaponId === 'prophet_jammer')), ...jammerType(true, jammers.find(item => item.weaponId === 'alq99_jammer'))].join('\n'),
+    'comm_platform_JAMMER.txt': ['include_once comm_PerDefinition.txt', '', ...jammerType(false, jammers.find(item => item.weaponId === 'prophet_jammer'), localRuntime), ...jammerType(true, jammers.find(item => item.weaponId === 'alq99_jammer'), localRuntime)].join('\n'),
   }
 }
 function point(value: { latitude: number; longitude: number; altitude: number; speed: number }, suffix = ''): string { return `    position ${position(value.latitude, value.longitude)} altitude ${n(value.altitude)} m speed ${n(value.speed)} m/s${suffix}` }
@@ -556,7 +1024,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     targetIndexes.add(targetIndex)
     laserOnlyTargets.set(demandIndex, targetIndexes)
   })
-  const start = startTime(config.scenario.startTime); const directory = outputDirectory(config.output.directory); const mapped = devices(config); const jammers = jammerValues(config, draft.uiExtensions); const routes = routeInputs(config, mapped.items, laserOnlyTargets); const host = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id; const calc = runtime?.linkCalc === 'STUB' ? (host ? localLinkStub(host, routes, jammers) : '') : calculator(config, routes, jammers); const relays = config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id); const types = typeTexts(config, relays, jammers, `${start.date} ${start.time}`, calc)
+  const start = startTime(config.scenario.startTime); const directory = outputDirectory(config.output.directory); const mapped = devices(config); const jammers = jammerValues(config, draft.uiExtensions); const routes = routeInputs(config, mapped.items, laserOnlyTargets); const host = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id; const calc = runtime?.linkCalc === 'STUB' ? (host ? localLinkStub(host, routes, jammers) : '') : calculator(config, routes, jammers); const relays = config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id); const types = typeTexts(config, relays, jammers, `${start.date} ${start.time}`, calc, routes, mapped.warnings, runtime !== undefined)
   const setup = [...TYPE_FILES.map(name => `include_once ${name}`), `include_once ${INSTANCE_FILE}`, 'include_once observers.txt', '', `start_date ${start.date}`, `start_time ${start.time}`, `end_time ${n(config.scenario.duration)} sec`, config.scenario.realtime === false ? 'non-realtime' : 'realtime', `clock_rate ${n(config.scenario.environment.simClockSpeed ?? 2)}`, 'multi_thread', '', 'simulation_name "MultiMethod_UAV_Comm_Scenario"', '', 'event_pipe', `   file ${directory}/scenario_events.aer`, 'end_event_pipe', '', 'csv_event_output', `  file ${directory}/scenario_events.csv`, ...EVENTS.map(name => `  enable ${name}`), 'end_csv_event_output', ''].join('\n')
   const scriptFiles = [SCENARIO_PREVIEW_FILE, ENTRY_FILE, DEFINITION_FILE, ...TYPE_FILES, INSTANCE_FILE, 'observers.txt', AD_HOC_COMM_FILE]
   const manifest = { scope: 'TEMPLATE_ALIGNED_PLATFORM_PORTS', engineValidated: false, scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE, scriptFiles, platformNaming: 'TEMPLATE_INSTANCE',
@@ -572,7 +1040,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
     jammerId: extension.jammerId, directionDeg: extension.direction, elevationDeg: extension.elevation ?? 0,
     directionEngineMapped: false, elevationEngineMapped: false,
   })), linkCalc: { emitted: true, hostPlatformId: config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id ?? null, excludedOpticalLinkIds: config.links.filter(item => item.type === 'LASER').map(item => item.id), note: 'port_params 按模板平台类型共享。' }, output: { configuredDirectory: config.output.directory, resolvedDirectory: directory, eventsCsvPath: `${directory}/scenario_events.csv`, positionCsvPath: `${directory}/position.csv`, eventsEnabled: true, linkQualityEnabled: false, linkSwitchEnabled: false }, scenarioStartTime: { value: config.scenario.startTime, scriptDate: start.date, scriptTime: start.time, convention: 'AS_STORED_UTC', engineEmitted: true }, retainedButNotEmitted: ['航点航向/加速度/到达时间', '干扰方位角/俯仰角', '激光通信端口', '侦测传感器/ESM', '业务 QoS', '链路切换规则/优先级/质量门限', '调制/BER/编码/增益修正', '海峡宽度', '时间步长', ...laserOnlyWarnings.map(item => `${item.fieldPath}：${item.message}`)], warnings: [...mapped.warnings, ...laserOnlyWarnings.map(item => `${item.fieldPath}：${item.message}`)] }
-  const files: Record<string, string> = { [SCENARIO_PREVIEW_FILE]: [`// ${SCENARIO_PREVIEW_FILE}：可追溯入口。`, `// 场景：${config.scenario.name.replace(/[\r\n]+/gu, ' ')}（${config.scenario.id}，修订 ${draft.revision}）`, `// 引用顺序：${ENTRY_FILE} → ${[...TYPE_FILES, INSTANCE_FILE, 'observers.txt'].join(' → ')}`, `include_once ${ENTRY_FILE}`, ''].join('\n'), [ENTRY_FILE]: setup, [DEFINITION_FILE]: definitions(config), ...types, [INSTANCE_FILE]: instances(config), 'observers.txt': observers(`${directory}/position.csv`), [AD_HOC_COMM_FILE]: AD_HOC_COMM_TEXT, 'mapping.json': JSON.stringify(manifest, null, 2) + '\n', 'input.json': JSON.stringify(draft, null, 2) + '\n', 'README.txt': ['新模板对齐脚本包。', '界面保留但不写入脚本：激光链路、侦测/ESM、QoS、切换规则、调制/BER/编码/增益修正、航点扩展和未映射环境字段。', ...mapped.warnings].join('\n') + '\n' }
+  const files: Record<string, string> = { [SCENARIO_PREVIEW_FILE]: [`// ${SCENARIO_PREVIEW_FILE}：可追溯入口。`, `// 场景：${config.scenario.name.replace(/[\r\n]+/gu, ' ')}（${config.scenario.id}，修订 ${draft.revision}）`, `// 引用顺序：${ENTRY_FILE} → ${[...TYPE_FILES, INSTANCE_FILE, 'observers.txt'].join(' → ')}`, `include_once ${ENTRY_FILE}`, ''].join('\n'), [ENTRY_FILE]: setup, [DEFINITION_FILE]: definitions(config, runtime !== undefined), ...types, [INSTANCE_FILE]: instances(config), 'observers.txt': observers(`${directory}/position.csv`), [AD_HOC_COMM_FILE]: AD_HOC_COMM_TEXT, 'mapping.json': JSON.stringify(manifest, null, 2) + '\n', 'input.json': JSON.stringify(draft, null, 2) + '\n', 'README.txt': ['新模板对齐脚本包。', '界面保留但不写入脚本：激光链路、侦测/ESM、QoS、切换规则、调制/BER/编码/增益修正、航点扩展和未映射环境字段。', ...mapped.warnings].join('\n') + '\n' }
   if (runtime) {
     const media = splitSharedMedium(files)
     const localRuntime = { linkCalc: runtime.linkCalc === 'STUB' ? 'MISSING_PROCESSOR_STUBBED' : 'PRESERVED', splitMedia: media, note: '本地运行包：每端口独立介质；缺少 link_calc 时以 local_link_stub 写入主路由 AuxData 并按触发/释放半径启停干扰。本地 stub 按进入触发半径计算延迟，离开触发半径取消等待；持续时长到期后须离开释放半径才重新就绪。判断周期 3 秒，存在约 ±3 秒误差。对接方 TXT 不含这些改动。' }

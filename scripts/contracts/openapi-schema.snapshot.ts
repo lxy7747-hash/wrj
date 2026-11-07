@@ -3428,6 +3428,46 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "description": "干扰持续时长，单位 s；未填写时省略，不接受 null。",
         "exclusiveMinimum": 0
+      },
+      "radarFrequency": {
+        "type": "number",
+        "default": 2400
+      },
+      "radarBandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "default": 1
+      },
+      "radarPower": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "default": 1000
+      },
+      "noiseFigureDb": {
+        "type": "number",
+        "default": 3
+      },
+      "gtDbk": {
+        "type": "number",
+        "default": -12
+      },
+      "eirpDbw": {
+        "type": "number",
+        "default": 40
+      },
+      "antennaGainDbi": {
+        "type": "number",
+        "default": 0
+      },
+      "txLossDb": {
+        "type": "number",
+        "default": 0
+      },
+      "sweepDutyCycle": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "maximum": 1,
+        "default": 0.1
       }
     }
   },
@@ -3972,6 +4012,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
             ],
             "default": 0,
             "description": "信道编码增益 dB：-1 关闭，0 无编码，5.0/6.5 卷积码，3.5 RS 码，8.0 Turbo 码。"
+          },
+          "updateIntervalS": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "default": 5
           }
         }
       },
@@ -4092,6 +4137,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "number",
         "minimum": 0,
         "maximum": 1
+      },
+      "messageIntervalS": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "default": 5
       }
     }
   },
@@ -4214,7 +4264,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "rxBandwidth": { "type": "number", "exclusiveMinimum": 0 },
       "noiseFigureDb": { "type": "number", "minimum": 0 },
       "transferRate": { "type": "number", "exclusiveMinimum": 0 },
-      "parameterSource": { "$ref": "#/components/schemas/PortParameterSource" }
+      "parameterSource": { "$ref": "#/components/schemas/PortParameterSource" },
+      "eirpDbw": {
+        "type": "number"
+      },
+      "gtDbk": {
+        "type": "number"
+      }
     }
   },
   "PortParameterSource": {
@@ -4265,7 +4321,10 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           "MICRO_UAV_OMNI_ANTENNA": { "type": "number" }, "MICRO_REAR_PLATFORM_DIR_ANTENNA": { "type": "number" }, "OMNI_ANTENNA_HIGHGAIN": { "type": "number" },
           "C_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "C_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
           "L_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "L_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
-          "SAT_GROUND_MOBILE_ANTENNA": { "type": "number" }, "SAT_SPACE_BEAM_ANTENNA": { "type": "number" }, "SAT_UAV_CLUSTER_WIDEBAND_ANTENNA": { "type": "number" }, "LASER_COMM_ANTENNA": { "type": "number" }
+          "SAT_GROUND_MOBILE_ANTENNA": { "type": "number" }, "SAT_SPACE_BEAM_ANTENNA": { "type": "number" }, "SAT_UAV_CLUSTER_WIDEBAND_ANTENNA": { "type": "number" }, "LASER_COMM_ANTENNA": { "type": "number" },
+          "OMNI_ANTENNA": {
+            "type": "number"
+          }
         }
       }
     }

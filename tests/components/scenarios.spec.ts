@@ -2342,6 +2342,8 @@ describe('P2-1 场景管理页面', () => {
     expect(messageSpy).toHaveBeenCalledExactlyOnceWith('干扰设备已新增，保存草稿后生效。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.jammers.at(-1)).toEqual({
+      radarFrequency: 2400, radarBandwidth: 1, radarPower: 1000, noiseFigureDb: 3,
+      gtDbk: -12, eirpDbw: 40, antennaGainDbi: 0, txLossDb: 0, sweepDutyCycle: 0.1,
       id: 'JAM-CFG-001',
       platformId: 'AJ-002',
       type: 'SWEEP',

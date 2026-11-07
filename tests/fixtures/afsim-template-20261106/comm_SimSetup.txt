@@ -1,0 +1,58 @@
+include_once comm_platform_COMMAND_VEHICLE.txt
+include_once comm_platform_MISSION_UAV.txt
+include_once comm_platform_JAMMER.txt
+include_once comm_platform_REAR.txt
+include_once comm_platform_SAT.txt
+include_once comm_platform_INS.txt
+include_once observers.txt
+
+start_date oct 23 2026
+start_time 02:07:00
+end_time 1200 sec
+realtime
+clock_rate 2
+multi_thread
+
+simulation_name "MultiMethod_UAV_Comm_Scenario"
+
+event_pipe
+   file output/scenario_events.aer
+end_event_pipe
+
+csv_event_output
+  file output/scenario_events.csv
+  enable PLATFORM_ADDED
+  enable PLATFORM_INITIALIZED
+  enable MESSAGE_TRANSMITTED
+  enable MESSAGE_RECEIVED
+  enable JAMMING_REQUEST_INITIATED
+  enable JAMMING_REQUEST_CANCELED
+  enable JAMMING_REQUEST_UPDATED
+  enable WEAPON_FIRED
+  enable SENSOR_DETECTION_CHANGED
+  enable WEAPON_TURNED_ON
+  enable WEAPON_MODE_ACTIVATED
+  enable WEAPON_MODE_DEACTIVATED
+  enable PLATFORM_DELETED
+  enable PLATFORM_BROKEN
+  enable PLATFORM_OMITTED
+  enable SIMULATION_STARTING
+  enable SIMULATION_COMPLETE
+  enable LINK_ADDED_TO_MANAGER
+  enable LINK_ENABLED_ON_MANAGER
+  enable LINK_DISABLED_ON_MANAGER
+  enable LINK_REMOVED_FROM_MANAGER
+  enable MESSAGE_HOP
+  enable COMM_TURNED_ON
+  enable COMM_FREQUENCY_CHANGED
+  enable LOCAL_TRACK_INITIATED
+  enable LOCAL_TRACK_UPDATED
+  enable LOCAL_TRACK_DROPPED
+  enable SENSOR_TRACK_INITIATED
+  enable SENSOR_TRACK_UPDATED
+  enable SENSOR_TRACK_DROPPED
+  enable EXCHANGE_COMPLETED
+  enable LINK_ENABLED_ON_LOCAL
+  enable LINK_DISABLED_ON_LOCAL
+  enable MOVER_TURNED_ON
+end_csv_event_output

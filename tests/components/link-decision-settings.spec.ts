@@ -78,3 +78,22 @@ describe('质量选路配置', () => {
     expect(Object.hasOwn(wrapper.emitted('update:modelValue')!.at(-1)![0] as object, 'minimumReceivedPowerDbm')).toBe(false)
   })
 })
+
+
+it('业务和计算周期默认五秒，可独立修改，锁定时不写回', async () => {
+  const wrapper = panel(legacy)
+  const input = (id: string) => wrapper.findAllComponents(ElInputNumber).find(item => item.attributes('data-testid') === id)!
+  expect(input('link-message-interval').props('modelValue')).toBe(5)
+  expect(input('link-calc-updateIntervalS').props('modelValue')).toBe(5)
+  input('link-message-interval').vm.$emit('update:modelValue', 2)
+  const next = wrapper.emitted('update:modelValue')!.at(-1)![0] as ScenarioLinkSettings
+  expect(next).toMatchObject({ ...legacy, messageIntervalS: 2 })
+  await wrapper.setProps({ modelValue: next } as never)
+  input('link-calc-updateIntervalS').vm.$emit('update:modelValue', 7)
+  expect(wrapper.emitted('update:modelValue')!.at(-1)![0]).toMatchObject({ messageIntervalS: 2, linkCalc: { updateIntervalS: 7 } })
+  await wrapper.setProps({ disabled: true } as never)
+  const count = wrapper.emitted('update:modelValue')!.length
+  input('link-message-interval').vm.$emit('update:modelValue', 3)
+  input('link-calc-updateIntervalS').vm.$emit('update:modelValue', 4)
+  expect(wrapper.emitted('update:modelValue')).toHaveLength(count)
+})

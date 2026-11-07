@@ -1,0 +1,212 @@
+include_once comm_PerDefinition.txt
+
+platform_type REAR_COMM_PLATFORM WSF_PLATFORM
+  radar_signature COMMAND_VEHICLE_SIG
+  mover WSF_GROUND_MOVER
+    update_interval 1 sec
+  end_mover
+  comm sat_link_a WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+      noise_figure 3 dB
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm sat_link_b WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_GROUND_MOBILE_ANTENNA
+      noise_figure 3 dB
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm microwave_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 80 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 8.2 GHz
+      bandwidth 50 MHz
+      power 20 W
+      polarization vertical
+      antenna_pattern MICRO_REAR_PLATFORM_DIR_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      check_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 8.2 GHz
+      bandwidth 50 MHz
+      polarization vertical
+      antenna_pattern MICRO_REAR_PLATFORM_DIR_ANTENNA
+      noise_figure 3 dB
+      check_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  comm fiber_link WSF_COMM_TRANSCEIVER
+    on
+    network_name FIBER_NET
+    transfer_rate 1000 mbits/sec
+    channels 4
+    internal_link script_proc
+  end_comm
+  processor script_proc WSF_SCRIPT_PROCESSOR
+
+    script_variables
+      Array<string> fw_sit_next = { "command_vehicle", "command_vehicle" };//前向链路下一跳
+      Array<string> fw_sit_out  = { "fiber_link", "fiber_link" };
+      Array<string> fw_sit_in   = { "fiber_link", "fiber_link" };
+      Array<string> fw_sit_dst  = { "mission_uav_02", "mission_uav_03" };//目的平台
+      Array<string> fw_sit_size = { "256", "256" };
+
+      Array<string> fw_tgt_next = { "command_vehicle", "command_vehicle" };
+      Array<string> fw_tgt_out  = { "fiber_link", "fiber_link" };
+      Array<string> fw_tgt_in   = { "fiber_link", "fiber_link" };
+      Array<string> fw_tgt_dst  = { "mission_uav_02", "mission_uav_03" };
+      Array<string> fw_tgt_size = { "512", "128" };
+    end_script_variables
+
+    execute at_interval_of 5 sec
+      foreach (int i : string dst in fw_sit_dst) {
+        string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_next_platform_name");
+        if (nxts != "")
+        {
+          Array<string> nexts = nxts.Split("|");
+          Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_out_port_name").Split("|");
+          Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_" + dst + "_next_in_port_name").Split("|");
+
+          writeln(PLATFORM.Name() + " kForwardSituation_" + dst + "_next_platform_name New Path Chenged");
+
+          foreach (int j : string nxt in nexts) {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kForwardSituation");
+            msg.SetSizeInBits((int)fw_sit_size[i]);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", dst);
+            PLATFORM.Comm(outs[j]).SendMessage(msg, nxt, ins[j]);
+
+            writeln(PLATFORM.Name() + " SendMessage Out Port:[" + outs[j] + "] kForwardSituation DataSize:[" + fw_sit_size[i] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins[j] + "]");
+          }
+        }
+        else
+        {
+          WsfMessage msg = WsfMessage();
+          msg.SetType("kForwardSituation");
+          msg.SetSizeInBits((int)fw_sit_size[i]);
+          msg.SetAuxData("origin_sender", PLATFORM.Name());
+          msg.SetAuxData("destination", fw_sit_dst[i]);
+          PLATFORM.Comm(fw_sit_out[i]).SendMessage(msg, fw_sit_next[i], fw_sit_in[i]);
+
+          writeln(PLATFORM.Name() + " SendMessage Out Port:[" + fw_sit_out[i] + "] kForwardSituation DataSize:[" + fw_sit_size[i] + "] Destination:[" + fw_sit_dst[i] + "] Next Plat:[" + fw_sit_next[i] + "] Next Port:[" + fw_sit_in[i] + "]");
+        }
+      }
+      foreach (int i : string dst in fw_tgt_dst) {
+        string nxts2 = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_platform_name");
+        if (nxts2 != "") {
+          Array<string> nexts2 = nxts2.Split("|");
+          Array<string> outs2  = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_out_port_name").Split("|");
+          Array<string> ins2   = PLATFORM.AuxDataString("kForwardTarget_" + dst + "_next_in_port_name").Split("|");
+
+          writeln(PLATFORM.Name() + " kForwardTarget_" + dst + "_next_platform_name New Path Chenged");
+
+          foreach (int j : string nxt in nexts2) {
+            WsfMessage msg = WsfMessage();
+            msg.SetType("kForwardTarget");
+            msg.SetSizeInBits((int)fw_tgt_size[i]);
+            msg.SetAuxData("origin_sender", PLATFORM.Name());
+            msg.SetAuxData("destination", dst);
+            PLATFORM.Comm(outs2[j]).SendMessage(msg, nxt, ins2[j]);
+
+            writeln(PLATFORM.Name() + " SendMessage Out Port:[" + outs2[j] + "] kForwardTarget DataSize:[" + fw_tgt_size[i] + "] Destination:[" + dst + "] Next Plat:[" + nxt + "] Next Port:[" + ins2[j] + "]");
+          }
+        }
+        else {
+          WsfMessage msg = WsfMessage();
+          msg.SetType("kForwardTarget");
+          msg.SetSizeInBits((int)fw_tgt_size[i]);
+          msg.SetAuxData("origin_sender", PLATFORM.Name());
+          msg.SetAuxData("destination", fw_tgt_dst[i]);
+          PLATFORM.Comm(fw_tgt_out[i]).SendMessage(msg, fw_tgt_next[i], fw_tgt_in[i]);
+
+          writeln(PLATFORM.Name() + " SendMessage Out Port:[" + fw_tgt_out[i] + "] kForwardTarget DataSize:[" + fw_tgt_size[i] + "] Destination:[" + fw_tgt_dst[i] + "] Next Plat:[" + fw_tgt_next[i] + "] Next Port:[" + fw_tgt_in[i] + "]");
+        }
+      }
+    end_execute
+
+    on_message
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+    end_on_message
+
+  end_processor
+
+  add processor link_calc WSF_LINK_CALC_PROCESSOR
+
+    update_interval 5 sec
+
+    emergency_threshold 1e-5
+    warning_threshold   1e-6
+    value_threshold_ber 1e-7
+    jamming_range  30
+    channel_encoding_scheme 0
+
+    traffic_type            [{"mission_uav_02":{"forward":[{"traffice_type":"kForwardSituation","data_volume_bits":256,"trans_freq":5},{"traffice_type":"kForwardTarget","data_volume_bits":512,"trans_freq":10}],"return":[{"traffice_type":"kReturnReconVideo","data_volume_bits":8192,"trans_freq":3},{"traffice_type":"kReturnReconStatus","data_volume_bits":512,"trans_freq":10}]}},{"mission_uav_03":{"forward":[{"traffice_type":"kForwardSituation","data_volume_bits":256,"trans_freq":5},{"traffice_type":"kForwardTarget","data_volume_bits":128,"trans_freq":10}],"return":[{"traffice_type":"kReturnReconVideo","data_volume_bits":4096,"trans_freq":5},{"traffice_type":"kReturnReconStatus","data_volume_bits":256,"trans_freq":10}]}}]
+    relay_uav_names         ["mission_uav_01"]
+    hot_link_ret            {"link1":[{"platform":"mission_uav_02","inPort":"","outPort":"c_band_downlink"},{"platform":"command_vehicle","inPort":"c_band_downlink","outPort":"fiber_link"},{"platform":"rear_comm_vehicle","inPort":"fiber_link","outPort":""}],"link2":[{"platform":"mission_uav_03","inPort":"","outPort":"c_band_downlink"},{"platform":"command_vehicle","inPort":"c_band_downlink","outPort":"fiber_link"},{"platform":"rear_comm_vehicle","inPort":"fiber_link","outPort":""}]}
+    hot_link_fw             {"link1":[{"platform":"rear_comm_vehicle","inPort":"","outPort":"fiber_link"},{"platform":"command_vehicle","inPort":"fiber_link","outPort":"c_band_uplink"},{"platform":"mission_uav_02","inPort":"c_band_uplink","outPort":""}],"link2":[{"platform":"rear_comm_vehicle","inPort":"","outPort":"fiber_link"},{"platform":"command_vehicle","inPort":"fiber_link","outPort":"c_band_uplink"},{"platform":"mission_uav_03","inPort":"c_band_uplink","outPort":""}]}
+    port_params             [{"platform_type":"MISSION_UAV_PLATFORM","comm_params":[{"comm_name":"sat_link","transmitter":{"frequency_ghz":30,"bandwidth_mhz":20,"power_w":50,"eirp_dBW":5,"peak_gain_dB":30,"information_rate_mbits/sec":2},"receiver":{"frequency_ghz":20,"bandwidth_mhz":20,"peak_gain_dB":30,"G_T_dBK":-14,"information_rate_mbits/sec":2,"noise_figure_dB":3}},{"comm_name":"microwave_link","transmitter":{"frequency_ghz":8.2,"bandwidth_mhz":50,"power_w":20,"peak_gain_dB":3,"eirp_dBW":30,"information_rate_mbits/sec":80},"receiver":{"frequency_ghz":8.2,"bandwidth_mhz":50,"peak_gain_dB":3,"G_T_dBK":-3,"information_rate_mbits/sec":80,"noise_figure_dB":3}},{"comm_name":"c_band_uplink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":10,"power_w":20,"eirp_dBW":26,"peak_gain_dB":5,"information_rate_bit/s":2000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":10,"peak_gain_dB":5,"G_T_dBK":-6,"information_rate_bit/s":2000000,"noise_figure_dB":3}},{"comm_name":"c_band_downlink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":20,"eirp_dBW":26,"power_w":30,"peak_gain_dB":5,"information_rate_bit/s":8000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":20,"peak_gain_dB":5,"G_T_dBK":-6,"information_rate_bit/s":8000000,"noise_figure_dB":3}},{"comm_name":"l_band_uplink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":5,"power_w":10,"eirp_dBW":26,"peak_gain_dB":4,"information_rate_bit/s":12800},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":5,"peak_gain_dB":4,"G_T_dBK":-6,"information_rate_bit/s":12800,"noise_figure_dB":3}},{"comm_name":"l_band_downlink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":10,"power_w":15,"eirp_dBW":26,"peak_gain_dB":4,"information_rate_bit/s":4000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":10,"peak_gain_dB":4,"G_T_dBK":-6,"information_rate_bit/s":4000000,"noise_figure_dB":3}}]},{"platform_type":"COMMAND_VEHICLE_PLATFORM","comm_params":[{"comm_name":"c_band_uplink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":10,"power_w":20,"eirp_dBW":26,"peak_gain_dB":5,"information_rate_bit/s":2000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":10,"peak_gain_dB":5,"G_T_dBK":-6,"information_rate_bit/s":2000000,"noise_figure_dB":3}},{"comm_name":"c_band_downlink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":20,"eirp_dBW":26,"power_w":30,"peak_gain_dB":5,"information_rate_bit/s":8000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":20,"peak_gain_dB":5,"G_T_dBK":-6,"information_rate_bit/s":8000000,"noise_figure_dB":3}},{"comm_name":"l_band_uplink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":5,"power_w":10,"eirp_dBW":26,"peak_gain_dB":4,"information_rate_bit/s":12800},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":5,"peak_gain_dB":4,"G_T_dBK":-6,"information_rate_bit/s":12800,"noise_figure_dB":3}},{"comm_name":"l_band_downlink","transmitter":{"frequency_ghz":2.3,"bandwidth_mhz":10,"power_w":15,"eirp_dBW":26,"peak_gain_dB":4,"information_rate_bit/s":4000000},"receiver":{"frequency_ghz":2.3,"bandwidth_mhz":10,"peak_gain_dB":4,"G_T_dBK":-6,"information_rate_bit/s":4000000,"noise_figure_dB":3}},{"comm_name":"fiber_link","transmitter":{"information_rate_bit/s":1000000000},"receiver":{"information_rate_bit/s":1000000000}}]},{"platform_type":"REAR_COMM_PLATFORM","comm_params":[{"comm_name":"sat_link_a","transmitter":{"frequency_ghz":30,"bandwidth_mhz":54,"power_w":100,"eirp_dBW":5,"peak_gain_dB":25,"information_rate_mbits/sec":2},"receiver":{"frequency_ghz":20,"bandwidth_mhz":54,"peak_gain_dB":25,"G_T_dBK":-14,"information_rate_mbits/sec":2,"noise_figure_dB":3}},{"comm_name":"sat_link_b","transmitter":{"frequency_ghz":30,"bandwidth_mhz":54,"power_w":100,"eirp_dBW":5,"peak_gain_dB":25,"information_rate_mbits/sec":2},"receiver":{"frequency_ghz":20,"bandwidth_mhz":54,"peak_gain_dB":25,"G_T_dBK":-14,"information_rate_mbits/sec":2,"noise_figure_dB":3}},{"comm_name":"microwave_link","transmitter":{"frequency_ghz":8.2,"bandwidth_mhz":50,"power_w":20,"eirp_dBW":30,"peak_gain_dB":18,"information_rate_mbits/sec":80},"receiver":{"frequency_ghz":8.2,"bandwidth_mhz":50,"peak_gain_dB":18,"G_T_dBK":-3,"information_rate_mbits/sec":80,"noise_figure_dB":3}},{"comm_name":"fiber_link","transmitter":{"information_rate_bit/s":1000000000},"receiver":{"information_rate_bit/s":1000000000}}]},{"platform_type":"TIAN_TONG_SAT","comm_params":[{"comm_name":"sat_link","transmitter":{"frequency_ghz":20,"bandwidth_mhz":54,"power_w":40,"eirp_dBW":5,"peak_gain_dB":30,"information_rate_kbits/sec":16},"receiver":{"frequency_ghz":30,"bandwidth_mhz":54,"peak_gain_dB":30,"G_T_dBK":-14,"information_rate_kbits/sec":16,"noise_figure_dB":2}}]},{"platform_type":"SHEN_TONG_SAT","comm_params":[{"comm_name":"sat_link","transmitter":{"frequency_ghz":20,"bandwidth_mhz":54,"power_w":40,"eirp_dBW":5,"peak_gain_dB":30,"information_rate_mbits/sec":2},"receiver":{"frequency_ghz":30,"bandwidth_mhz":54,"peak_gain_dB":30,"G_T_dBK":-14,"information_rate_mbits/sec":2,"noise_figure_dB":3}}]}]
+    natural_environment     {"rain":{"enabled":true,"rain_rate_mm_hr":10,"rain_altitude_limit_m":3000,"rain_attenuation_db":0.0},"cloud":{"enabled":true,"cloud_altitude_min_m":500,"cloud_altitude_max_m":2000,"cloud_water_density_g_m3":0.5},"atmosphere":{"enabled":true,"model":"itu","simplified_attenuation_db_per_km":0.02},"misc_loss_db":{"polarization_mismatch_db":0.0,"pointing_error_db":0.0},"sea_state":{"enabled":true,"sea_state_level":3,"low_altitude_threshold_m":100,"path_over_sea_threshold_km":30,"mode":"coarse","sea_polygon":[{"lat":24.20,"lon":117.60},{"lat":24.20,"lon":120.10},{"lat":25.60,"lon":121.30},{"lat":26.30,"lon":120.00}],"polarization":"vertical","sea_water_temp_c":20.0,"sea_surface_roughness_m":0.0}}
+    jammer_param            {"jammers":[{"platform_name":"jammer_station_01","weapon_name":"prophet_jammer","jammer_type":"ground","G_T_dBK":-12,"enabled":true,"mode":"broadband","frequency_ghz":2.4,"bandwidth_mhz":1,"power_w":1000.0,"noise_figure":3,"weapon_frequency_ghz":2.4,"weapon_bandwidth_mhz":1,"weapon_power_w":200.0,"weapon_eirp_dBW":40,"weapon_antenna_gain_dbi":0.0,"tx_loss_db":0.0,"detect_radius_nm":12.0,"trigger_radius_nm":10.0,"release_radius_nm":11.0,"spot_bandwidth_mhz":20.0,"sweep_duty_cycle":0.1}]}
+
+  end_processor
+end_platform_type

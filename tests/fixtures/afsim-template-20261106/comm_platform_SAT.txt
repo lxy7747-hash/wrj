@@ -1,0 +1,173 @@
+include_once comm_PerDefinition.txt
+
+platform_type TIAN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time oct 23 2026 02:07:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 kbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      power 40 W
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  processor script_proc WSF_SCRIPT_PROCESSOR
+  end_processor
+end_platform_type
+
+platform_type SHEN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time oct 23 2026 02:07:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 mbits/sec
+      end_mode
+    end_medium
+    transmitter
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      power 40 W
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+    end_transmitter
+    receiver
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  processor script_proc WSF_SCRIPT_PROCESSOR
+    on_message
+      type kForwardSituation
+          script
+            writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+            string nxts = PLATFORM.AuxDataString("kForwardSituation_next_platform_name");
+            if (nxts != "") {
+              Array<string> nexts = nxts.Split("|");
+              Array<string> outs  = PLATFORM.AuxDataString("kForwardSituation_out_port_name").Split("|");
+              Array<string> ins   = PLATFORM.AuxDataString("kForwardSituation_next_in_port_name").Split("|");
+              Array<string> dsts  = PLATFORM.AuxDataString("kForwardSituation_dst_platform_name").Split("|");
+              string dest = MESSAGE.AuxDataString("destination");
+              foreach (int i : string nxt in nexts) {
+                if (dsts[i] == dest) {
+                  PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+                }
+              }
+            }
+          end_script
+
+      type kForwardTarget
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kForwardTarget_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kForwardTarget_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kForwardTarget_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kForwardTarget_dst_platform_name").Split("|");
+            string dest2 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest2) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+
+      type kReturnReconVideo
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconVideo_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconVideo_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kReturnReconVideo_dst_platform_name").Split("|");
+            string dest3 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest3) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+
+      type kReturnReconStatus
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_next_platform_name");
+          if (nxts != "") {
+            Array<string> nexts = nxts.Split("|");
+            Array<string> outs  = PLATFORM.AuxDataString("kReturnReconStatus_out_port_name").Split("|");
+            Array<string> ins   = PLATFORM.AuxDataString("kReturnReconStatus_next_in_port_name").Split("|");
+            Array<string> dsts  = PLATFORM.AuxDataString("kReturnReconStatus_dst_platform_name").Split("|");
+            string dest4 = MESSAGE.AuxDataString("destination");
+            foreach (int i : string nxt in nexts) {
+              if (dsts[i] == dest4) {
+                PLATFORM.Comm(outs[i]).SendMessage(MESSAGE, nxt, ins[i]);
+              }
+            }
+          }
+        end_script
+
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+    end_on_message
+  end_processor
+end_platform_type

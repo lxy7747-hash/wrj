@@ -7,7 +7,7 @@ import {
 describe('《与前端字段确认说明》默认值', () => {
   it('link_calc 阈值与编码缺省为 1e-5 / 1e-6 / 1e-7、30 km、无编码，显式值优先', () => {
     expect(readLinkCalcSettings(undefined)).toEqual({ emergencyThreshold: 1e-5, warningThreshold: 1e-6, valueThresholdBer: 1e-7,
-      jammingRangeKm: 30, channelEncodingScheme: 0 })
+      jammingRangeKm: 30, channelEncodingScheme: 0, updateIntervalS: 5 })
     expect(readLinkCalcSettings({ channelEncodingScheme: -1 }).channelEncodingScheme).toBe(-1)
   })
 

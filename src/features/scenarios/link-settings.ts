@@ -51,7 +51,7 @@ export function readLinkSettings(config: Pick<ScenarioConfig, 'platforms' | 'lin
       SHENTONG: false,
     }
   }
-  return settings
+  return { messageIntervalS: 5, ...settings }
 }
 
 /**
