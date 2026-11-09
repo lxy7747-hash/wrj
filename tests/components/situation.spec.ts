@@ -751,9 +751,10 @@ describe('态势主界面', () => {
   })
 
   it('远端播放连接，暂停后点播放恢复，停止合并保存且无额外按钮', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
-    const running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', startedAt: '2026-11-09T01:00:00Z', engineControl: { connected: true, action: null, delivery: 'IDLE' } }
+    let running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', startedAt: '2026-11-09T01:00:00Z', engineControl: { connected: true, action: null, delivery: 'IDLE' } }
     running.canonical.processId = null
     const fetcher = vi.fn(async (url: string) => url.endsWith('/simulations') ? successResponse([running]) : successResponse(scene))
     vi.stubGlobal('fetch', fetcher)
@@ -764,20 +765,40 @@ describe('态势主界面', () => {
     expect(connect).toHaveBeenCalledOnce()
     const store = useSimulationStore()
     const pause = vi.spyOn(store, 'pause').mockImplementation(async () => {
-      store.applyRun({ ...running, engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+      running = { ...running, engineControl: { connected: true, action: 'pause', delivery: 'SENT' } }
+      store.applyRun(running)
       return true
     })
-    const resume = vi.spyOn(store, 'resume').mockResolvedValue(true)
-    const stop = vi.spyOn(store, 'stop').mockResolvedValue(true)
+    const resume = vi.spyOn(store, 'resume').mockImplementation(async () => {
+      running = { ...running, engineControl: { connected: true, action: 'resume', delivery: 'SENT' } }
+      store.applyRun(running)
+      return true
+    })
+    const stop = vi.spyOn(store, 'stop').mockImplementation(async () => {
+      running = { ...running, uiStatus: 'STOPPED', configLocked: false,
+        engineControl: { connected: false, action: 'stop', delivery: 'SENT' } }
+      store.applyRun(running)
+      return true
+    })
+    const polls = () => fetcher.mock.calls.filter(([url]) => url.endsWith('/simulations')).length
+    const initialPolls = polls()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(polls()).toBe(initialPolls + 1)
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
     expect(pause).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(polls()).toBe(initialPolls + 1)
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     expect(resume).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(polls()).toBe(initialPolls + 2)
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
     expect(stop).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(polls()).toBe(initialPolls + 2)
     expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
     expect(fetcher.mock.calls.some(([url]) => /positions|console|\/quality$/.test(url))).toBe(false)
     expect(connect).toHaveBeenCalledOnce()
@@ -828,7 +849,7 @@ describe('态势主界面', () => {
     await flushPromises()
   })
 
-  it.each(['完成', '离页', '登出'])('所选场景通过正式运行接口同步 mission，%s后停止轮询', async action => {
+  it.each(['完成', '离页', '登出', '暂停'])('所选场景通过正式运行接口同步 mission，%s后停止轮询', async action => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
     let current = simulationRun('RUNNING', true)
@@ -845,6 +866,10 @@ describe('态势主界面', () => {
       expect(useSimulationStore().uiStatus).toBe('COMPLETED')
       expect(useSimulationStore().configurationLockState).toBe('UNLOCKED')
       expect(fetcher).toHaveBeenCalledTimes(1)
+    } else if (action === '暂停') {
+      current = simulationRun('PAUSED', true)
+      useSimulationStore().applyRun(current)
+      await flushPromises()
     } else if (action === '登出') {
       useAuthStore().resetToSafeEmpty()
       useSimulationStore().resetToSafeEmpty()
@@ -856,6 +881,13 @@ describe('态势主界面', () => {
     fetcher.mockClear()
     await vi.advanceTimersByTimeAsync(3_000)
     expect(fetcher).not.toHaveBeenCalled()
+    if (action === '暂停') {
+      current = simulationRun('RUNNING', true)
+      useSimulationStore().applyRun(current)
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(fetcher).toHaveBeenCalledTimes(1)
+    }
   })
 
   it.each([true, false])('恢复态势数据后，场景快捷入口遵循菜单授权：%s', async allowed => {
@@ -1136,7 +1168,7 @@ describe('态势主界面', () => {
   })
 
   it('本机文件与 WebSocket 并行，直接停止防重入，保存失败可重试且成功后归零', async () => {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
     const snapshot = structuredClone(LOCAL_REPLAY)
     snapshot.initial.connections = FILE_CONNECTIONS
     snapshot.durationS = 60
@@ -1144,13 +1176,17 @@ describe('态势主界面', () => {
     snapshot.recordCount += 1
     const source = playbackFileSource(snapshot)
     const idle = { ...simulationRun('STOPPED', false), executionSource: 'REMOTE_WS' as const }
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [idle]
-      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)))
+    const fetcher = vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [useSimulationStore().run ?? idle]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot))
+    vi.stubGlobal('fetch', fetcher)
+    const polls = () => fetcher.mock.calls.filter(([url]) => url.endsWith('/simulations')).length
     const wrapper = await mountSituationPage(undefined, 'LOCAL')
     const store = useSimulationStore()
+    const connect = vi.spyOn(useTelemetryStore(), 'connect')
     const start = vi.spyOn(store, 'start').mockImplementation(async fileSource => {
       expect(fileSource).toEqual(source)
       store.applyRun({ ...simulationRun('RUNNING', true), fileSource, scenarioId: fileReceptionScenarioId(source),
+        runId: `RUN-${start.mock.calls.length}`,
         canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
         executionSource: 'REMOTE_WS', startedAt: '2026-11-09T01:00:00Z',
         engineControl: { connected: true, action: null, delivery: 'IDLE' } })
@@ -1180,11 +1216,14 @@ describe('态势主界面', () => {
     expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
     await vi.advanceTimersByTimeAsync(5000)
     expect(playback.replay?.currentTimeS).toBe(5)
+    const playingPolls = polls()
+    expect(playingPolls).toBeGreaterThan(1)
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
     expect(pause).toHaveBeenCalledOnce()
     expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId: 10, simulationTime: 10 })).toBe(true)
     await vi.advanceTimersByTimeAsync(5000)
+    expect(polls()).toBe(playingPolls)
     expect(playback.replay?.currentTimeS).toBe(5)
     expect(quality.engineFrame?.frameId).toBe(5)
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
@@ -1194,10 +1233,16 @@ describe('态势主界面', () => {
     expect(resume).toHaveBeenCalledOnce()
     expect(playback.replay?.currentTimeS).toBe(10)
     expect(quality.engineFrame?.frameId).toBe(10)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(polls()).toBe(playingPolls + 1)
     // 失联也能暂停本地画面和停止收尾，不将未发送命令报告为成功。
     store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: false, action: 'resume', delivery: 'SENT' } })
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     expect(pause).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(polls()).toBe(playingPolls + 1)
+    const previousEpoch = quality.epoch
+    expect(quality.acceptEngineFrame(previousEpoch, { ...frame, frameId: 15, simulationTime: 15 })).toBe(true)
     let finishStop!: (saved: boolean) => void
     stop.mockImplementationOnce(() => new Promise<boolean>(resolve => { finishStop = resolve }))
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
@@ -1225,6 +1270,64 @@ describe('态势主界面', () => {
     expect(quality.engineFrame).toBeNull()
     expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(polls()).toBe(playingPolls + 1)
+    expect(quality.engineEvents).toEqual([])
+    expect(quality.engineSwitches).toEqual([])
+    expect(quality.engineAlarms).toEqual([])
+
+    // 停止后允许拖动查看文件，但新一轮播放仍须从零开始。
+    wrapper.findComponent({ name: 'ElSlider' }).vm.$emit('change', 2)
+    await flushPromises()
+    expect(playback.replay?.currentTimeS).toBe(2)
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(start).toHaveBeenCalledTimes(2)
+    expect(connect).toHaveBeenCalledTimes(2)
+    expect(store.run?.runId).not.toBe(frame.runId)
+    expect(playback.replay?.currentTimeS).toBe(0)
+    expect(quality.engineFrame).toBeNull()
+    expect(quality.acceptEngineFrame(previousEpoch, frame)).toBe(false)
+    expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(false)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay?.currentTimeS).toBe(1)
+    const nextFrame = { ...frame, runId: store.run!.runId, events: [],
+      routing: { ...frame.routing, switches: [], alarms: [] } }
+    expect(quality.acceptEngineFrame(quality.epoch, nextFrame)).toBe(true)
+    expect(playback.replay?.currentTimeS).toBe(5)
+    expect(quality.engineEvents).toEqual([])
+    expect(quality.engineSwitches).toEqual([])
+    expect(quality.engineAlarms).toEqual([])
+  })
+
+  it.each(['暂停', '离页'] as const)('%s后在途轮询返回不重新启动定时器', async action => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    const fileSource = playbackFileSource(LOCAL_REPLAY)
+    const running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS',
+      canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
+      fileSource, scenarioId: fileReceptionScenarioId(fileSource),
+      engineControl: { connected: false, action: null, delivery: 'IDLE' } }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [running]
+      : url.endsWith('/initial-nodes') ? LOCAL_REPLAY.initial : LOCAL_REPLAY)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    let finishPoll!: (value: boolean) => void
+    const poll = vi.spyOn(useSimulationStore(), 'synchronizeRuntimeState')
+      .mockImplementationOnce(() => new Promise<boolean>(resolve => { finishPoll = resolve }))
+      .mockResolvedValue(true)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(poll).toHaveBeenCalledOnce()
+    if (action === '暂停') await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    else { wrapper.unmount(); mountedWrapper = null }
+    finishPoll(true)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(poll).toHaveBeenCalledOnce()
+    if (action === '暂停') {
+      await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(poll).toHaveBeenCalledTimes(2)
+    }
   })
 
   it('并行启动失败不遗留文件计时器，错误能在页面看见', async () => {

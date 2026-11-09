@@ -421,9 +421,14 @@ async function initializeSituation(): Promise<void> {
 
 onMounted(initializeSituation)
 
-// 所选场景不订阅冻结遥测，Mock 和本机模式都需轮询运行状态；不把原 CSV 当成本次运行结果。
-watch(() => [combinedPlayback.value ? simulationRun.value?.scenarioId : selectedScene.value?.config.scenario.id, simulationStore.run?.configLocked] as const, ([sceneId, locked], _, onCleanup) => {
-  if (!sceneId || !locked) return
+// 暂停时停止定时轮询，恢复播放后重新计时；控制请求及其失败后的单次状态核实仍保留。
+watch(() => [
+  combinedPlayback.value ? simulationRun.value?.scenarioId : selectedScene.value?.config.scenario.id,
+  simulationRun.value?.configLocked,
+  combinedPlayback.value ? combinedPaused.value
+    : simulationStatus.value === 'PAUSED' || simulationRun.value?.engineControl?.action === 'pause',
+] as const, ([sceneId, locked, paused], _, onCleanup) => {
+  if (!sceneId || !locked || paused) return
   let cancelled = false
   let timer: ReturnType<typeof setTimeout>
   const poll = async () => {
@@ -889,6 +894,8 @@ async function startSimulation(): Promise<void> {
         if (control && canSendEngineControl(control, 'resume')) await simulationStore.resume()
       } else {
         sharedRemoteTime.value = null
+        filePlayback.followLocalTime(0, false)
+        fileSeekRevision.value += 1
         if (!await simulationStore.start(playbackFileSource(filePlayback.localSnapshot!))) return
       }
       if (unmounted || epoch !== sourceEpoch) return

@@ -129,8 +129,8 @@ it('独立远端播放发送精确两字段；暂停可恢复，停止发送后�
   expect(stop).not.toHaveBeenCalled()
 })
 
-it('远端帧经场景映射推送页面并留存 JSONL/CSV；停止后可重新播放，不混入旧帧', async () => {
-  const { api, app, runId, peers, read, root, archive, confirmed, messages } = await setup()
+it.each([false, true])('远端帧经场景映射推送页面并留存 JSONL/CSV；停止后可重新播放，不混入旧帧（文件模式 %s）', async fileMode => {
+  const { api, app, runId, peers, read, root, archive, confirmed, messages, fileSource } = await setup(fileMode)
   const browser = new WebSocket(`ws://127.0.0.1:${app.httpServer.address().port}/ws/v1?role=OPERATOR`, { origin: headers.Origin })
   cleanups.push(() => browser.terminate())
   const received: any[] = []
@@ -155,11 +155,33 @@ it('远端帧经场景映射推送页面并留存 JSONL/CSV；停止后可重新
   expect(JSON.parse((await readFile(file!, 'utf8')).trim())).toEqual(frame)
   expect((await readdir(join(root, runId, 'csv'))).length).toBeGreaterThan(0)
   expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
-  const next = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+  const next = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001',
+    scenarioId: fileMode ? fileReceptionScenarioId(fileSource) : 'SCN-001', ...(fileMode ? { fileSource } : {}) }).expect(201)
   expect(next.body.data.runId).not.toBe(runId)
   expect(next.body.data).not.toHaveProperty('engineControl')
   await api.post(`/api/v1/simulations/${next.body.data.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   await vi.waitFor(() => expect(peers).toHaveLength(2))
+  await vi.waitFor(() => expect(peers[0]!.readyState).toBe(WebSocket.CLOSED))
+  const nextRunId: string = next.body.data.runId
+  expect((await api.get(`/api/v1/simulations/${nextRunId}`).set(headers).expect(200)).body.data)
+    .toMatchObject({ canonical: { currentTime: 0 }, engineControl: { action: null, delivery: 'IDLE' } })
+  peers[1]!.send(JSON.stringify({ ...sample, frame_id: 0, sim_time_s: 0 }))
+  await vi.waitFor(() => expect(received.some(message => message.payload?.runId === nextRunId && message.payload.frameId === 0)).toBe(true))
+  const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: nextRunId }).expect(201)
+  const confirmationId = context.body.data.confirmationId
+  await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+  await api.post(`/api/v1/simulations/${nextRunId}/commands`).set(headers).send({ command: 'STOP', confirmationId }).expect(200)
+  const nextSaved = await archive.load(nextRunId)
+  expect(nextSaved?.frameCount).toBe(1)
+  const nextFile = await archive.getFile(nextRunId, nextSaved!.sourceSha256)
+  const nextFrame = JSON.parse((await readFile(nextFile!, 'utf8')).trim())
+  expect(nextFrame).toMatchObject({ runId: nextRunId, frameId: 0, simulationTime: 0 })
+  expect(nextFile).not.toBe(file)
+  expect(await readFile(file!, 'utf8')).toBe(`${JSON.stringify(frame)}\n`)
+  expect((await archive.load(runId))?.frameCount).toBe(1)
+  await vi.waitFor(() => expect(messages).toEqual([
+    { msg_type: 'sim_control', action: 'stop' }, { msg_type: 'sim_control', action: 'stop' },
+  ]))
 })
 
 it('发送错误保留 UNKNOWN 和锁；不回退杀进程，不自动重发', async () => {
