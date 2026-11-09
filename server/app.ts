@@ -29,6 +29,8 @@ import type {
   TaskPhase,
   TaskId,
   SimulationRun,
+  EngineFrameSnapshot,
+  EngineConnectionDiagnostic,
   User,
   UserRoleCommand,
 } from '../src/contracts/domain-models.js'
@@ -74,8 +76,14 @@ import { isLocalArchiveId } from '../src/features/admin/local-archive.js'
 import { isMissionResultId, type MissionResultParameterComparison, type MissionResultRecord, type MissionResultSnapshot } from '../src/features/results/mission-result.js'
 import type { MissionResults } from './local/mission-results.js'
 import type { RunQualityStore } from './local/run-quality.js'
+import type { EngineSnapshotClient } from './local/engine-snapshot-client.js'
+import { engineControlAction } from '../src/features/situation/engine-control.js'
+import type { EngineFrameArchive, EngineFrameArchiveScope, EngineFrameArchiveSession } from './local/engine-frame-archive.js'
+import type { MissionLogStreamer } from './local/mission-log-stream.js'
+import type { MissionPositionStreamer } from './local/mission-position-stream.js'
 import { QualityImportError } from '../src/features/data-exchange/quality-records.js'
 import { attachQualityReport, baseQualityReportId, qualityReportSha256 } from '../src/features/reports/quality-report.js'
+import { attachEngineFrameArchive } from '../src/features/reports/engine-frame-report.js'
 
 export interface MockServerOptions {
   port?: number
@@ -111,6 +119,16 @@ export interface MockServerOptions {
   writeScriptText?: (script: ScriptContract, revision: number, draft: ScenarioDraft) => Promise<string>
   /** 仅本机入口执行生成包；纯 Mock 继续使用确定性控制投影。 */
   missionExecution?: MissionExecution
+  /** 本机入口注入轮询器，纯 Mock 不引入文件轮询计时器。 */
+  createMissionLogStreamer?: (...args: ConstructorParameters<typeof MissionLogStreamer>) => MissionLogStreamer
+  createMissionPositionStreamer?: (...args: ConstructorParameters<typeof MissionPositionStreamer>) => MissionPositionStreamer
+  /** 可选的外部 C++ 帧来源；只由本服务连接，浏览器不直连。 */
+  linkEngineWsUrl?: string
+  /** 已接收引擎帧的本地可靠归档；未配置时 Mock 不触碰磁盘。 */
+  engineFrameArchive?: EngineFrameArchive
+  /** 本地入口注入外部连接能力，纯 Mock 的模块闭包不引入外连和重连计时器。 */
+  createEngineSnapshotClient?: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void,
+    diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>>
   /** 本地入口注入磁盘日志；纯Mock继续只使用有界内存，不导入文件能力。 */
   realtimeJournal?: RealtimeJournalStore
   /** 本地用UUID避免重启复用运行身份；纯Mock保留原确定性编号。 */
@@ -671,8 +689,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     stopping: boolean
     controlling?: boolean
     completedWhileStopping?: MissionOutcome
+    engineArchive?: EngineFrameArchiveSession
+    engineArchiveScope?: EngineFrameArchiveScope
+    logStreamer?: MissionLogStreamer
+    positionStreamer?: MissionPositionStreamer
   }
   const missions = new Map<string, MissionSlot>()
+  const closeEngineArchive = async (runId: string, slot: MissionSlot): Promise<void> => {
+    await slot.engineArchive?.close()
+    if (options.engineFrameArchive && slot.engineArchiveScope) await options.engineFrameArchive.finalizeCsv(runId, slot.engineArchiveScope, {})
+  }
   const sameQualityScope = (left: QualityScope, right: QualityScope) => ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt']
     .every(key => left[key as keyof QualityScope] === right[key as keyof QualityScope])
   const qualityContext = (runId: string) => {
@@ -685,7 +711,29 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       revision: draft.revision, startedAt: result.data.startedAt }
     return { scope, draft }
   }
-  const reportWithQuality = async (report: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string): Promise<Report> => {
+  const reportWithQuality = async (base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string): Promise<Report> => {
+    let report = base
+    if (options.engineFrameArchive && record?.runId && record.taskId) {
+      const phase = filter?.stage === undefined ? undefined : phases?.find(item => item.id === filter.stage)
+      const evidence = report.localEvidence
+      const range = evidence === undefined ? undefined : { start: Math.max(evidence.startTimeS, filter?.from ?? evidence.startTimeS, phase?.startTimeS ?? evidence.startTimeS),
+        end: Math.min(evidence.endTimeS, filter?.to ?? evidence.endTimeS, phase?.endTimeS ?? evidence.endTimeS), ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter?.linkId ? { linkId: filter.linkId } : {}) }
+      const scope = { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId, revision: record.revision, startedAt: record.startedAt }
+      const archive = await options.engineFrameArchive.load(record.runId, scope, range)
+      // Archive projection already applied the exact time/node/link predicates while streaming the complete JSONL.
+      // Do not re-filter it against trimmed segment rows, which would lose a switch's source-segment mapping.
+      if (archive) {
+        // The archive manifest freezes bindings from begin().  Never recalculate these
+        // values from a potentially revised live scenario when reopening a result.
+        const [aggregate, engineCsv] = await Promise.all([
+          options.engineFrameArchive.aggregate(record.runId, scope, {}, range),
+          options.engineFrameArchive.finalizeCsv(record.runId, scope, {}),
+        ])
+        if (engineCsv && engineCsv.sourceSha256 !== archive.sourceSha256) throw new Error('引擎规范 CSV 与归档来源不一致。')
+        report = attachEngineFrameArchive(report, { ...archive, ...(aggregate ? { aggregate } : {}) })
+        if (engineCsv && report.localEvidence) report = { ...report, localEvidence: { ...report.localEvidence, engineCsv } }
+      }
+    }
     if (!options.runQualityStore || !record?.runId || !record.taskId) return report
     const sourceSha256 = requestedReportId === undefined ? undefined : qualityReportSha256(requestedReportId)
     const dataset = await options.runQualityStore.load(record.runId, sourceSha256)
@@ -725,6 +773,28 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.set('strict routing', true)
 
   let realtime: RealtimeController
+  let engineSnapshots: Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>> | undefined
+  const syncEngineControl = (runId: string): void => {
+    const state = engineSnapshots?.controlState?.(runId), run = simulations.get(runId)
+    if (state && run.ok && ['RUNNING', 'PAUSED'].includes(run.data.uiStatus)) {
+      realtime.publishRuntimeState(simulations.setEngineControl(runId, state))
+    }
+  }
+  const publishEngineDiagnostic = (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => {
+    realtime.publishEngineDiagnostic(run, diagnostic)
+    syncEngineControl(run.runId)
+  }
+  engineSnapshots = options.linkEngineWsUrl
+    ? options.createEngineSnapshotClient?.(options.linkEngineWsUrl, (runId, frame) => {
+      const slot = missions.get(runId)
+      if (options.engineFrameArchive) {
+        if (!slot?.engineArchive) return
+        slot.engineArchive.append(frame)
+        const failed = slot.engineArchive.failure()
+        if (failed) publishEngineDiagnostic({ runId, taskId: slot.taskId as TaskId }, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state: 'REJECTED', message: `引擎帧归档失败：${failed.message}` })
+      }
+      realtime.publishEngineFrame(runId, frame)
+    }, publishEngineDiagnostic) : undefined
 
   /**
    * Rejects non-loopback/CORS origins before adding response headers.
@@ -1373,7 +1443,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     const command = inspected.data
-    if (options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
+    const wsAction = engineSnapshots?.sendControl && slot.mission ? engineControlAction(command.command) : undefined
+    if (!wsAction && options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
       if (!slot.mission?.control) {
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '本机 mission 尚未接入暂停、继续、单步和倍速控制，未执行此命令。' }))
@@ -1411,12 +1482,43 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         slot.mission = process
         slot.completedWhileStopping = undefined
         const started = simulations.startMission(runId, process.pid, process.startedAt)
+        if (process.readPositions && options.createMissionPositionStreamer) {
+          slot.positionStreamer = options.createMissionPositionStreamer(
+            process.readPositions.bind(process),
+            update => realtime.publishMissionPositions(started, update),
+            { runId: started.runId, scenarioId: started.scenarioId, revision: draft.data.revision },
+          )
+        }
+        if (process.readConsoleLog && options.createMissionLogStreamer) {
+          const streamer = slot.logStreamer = options.createMissionLogStreamer(process.readConsoleLog.bind(process), update => realtime.publishMissionLog(started, update), started.runId)
+          try { await streamer.start() } catch { streamer.stop(); slot.logStreamer = undefined }
+        }
+        if (options.engineFrameArchive) {
+          const context = qualityContext(runId)
+          if (!context) throw new Error('运行质量作用域未建立，拒绝接收无法归属的引擎帧。')
+          slot.engineArchive = await options.engineFrameArchive.begin(context.scope, Object.fromEntries(context.draft.config.links.map(link => [link.id, {
+            type: link.type, sourcePlatformId: link.sourcePlatformId, targetPlatformId: link.targetPlatformId,
+            relayPlatformId: link.relayPlatformId ?? null,
+          }])))
+          slot.engineArchiveScope = context.scope
+        }
         void process.dataFailure?.then(message => {
           if (slot.mission !== process || closing) return
           realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
           auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CSV_WRITE', runId)
         })
-        void process.completed.then(outcome => {
+        void process.completed.then(async outcome => {
+          engineSnapshots?.stop(runId)
+          slot.logStreamer?.stop(); slot.logStreamer = undefined
+          slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+          try { await closeEngineArchive(runId, slot) } catch (error) {
+            const message = error instanceof Error ? error.message : '引擎帧归档落盘失败。'
+            if (slot.mission === process && !closing) {
+              realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
+              auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+            }
+            return
+          } finally { slot.engineArchive = undefined; slot.engineArchiveScope = undefined }
           if (slot.mission !== process || closing) return
           if (slot.stopping) { slot.completedWhileStopping = outcome; return }
           slot.mission = undefined
@@ -1427,8 +1529,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         })
         auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         realtime.publishRuntimeState(started)
-        res.status(200).json(success(started, pageMeta(requestId)))
+        slot.positionStreamer?.start()
+        if (!closing) engineSnapshots?.start(started, process.engineManifest)
+        syncEngineControl(runId)
+        const current = simulations.get(runId)
+        res.status(200).json(success(current.ok ? current.data : started, pageMeta(requestId)))
       } catch (error) {
+        slot.logStreamer?.stop(); slot.logStreamer = undefined
+        slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+        await slot.mission?.stop().catch(() => undefined); slot.mission = undefined
+        await closeEngineArchive(runId, slot).catch(() => undefined); slot.engineArchive = undefined; slot.engineArchiveScope = undefined
         const message = error instanceof Error ? error.message : 'mission 启动失败，请检查本机配置。'
         const safety = missionSafety(slot.taskId)
         realtime.publishRuntimeState(safety
@@ -1467,11 +1577,36 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       stopConfirmed = true
     }
 
+    if (wsAction && engineSnapshots?.sendControl) {
+      slot.controlling = true
+      try {
+        const sending = engineSnapshots.sendControl(runId, wsAction)
+        syncEngineControl(runId)
+        await sending
+        syncEngineControl(runId)
+        const current = simulations.get(runId)
+        if (sendSimulationFailure(res, current, requestId) || !current.ok) return
+        auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        // 202 仅表示发送完成；没有引擎回执时继续保留真实状态、连接、归档和场景锁。
+        res.status(current.data.engineControl ? 202 : 200).json(success(current.data, pageMeta(requestId)))
+      } catch (error) {
+        syncEngineControl(runId)
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(503).json(failure('START_FAILED', 503, { message: error instanceof Error ? error.message : '引擎控制发送结果待核实。' }))
+      } finally { slot.controlling = false }
+      return
+    }
+
     if (slot.mission && command.command === 'STOP') {
       slot.stopping = true
+      engineSnapshots?.stop(runId)
+      slot.logStreamer?.stop(); slot.logStreamer = undefined
+      slot.positionStreamer?.stop(); slot.positionStreamer = undefined
       try {
         await slot.mission.stop()
         slot.mission = undefined
+        await closeEngineArchive(runId, slot)
+        slot.engineArchive = undefined; slot.engineArchiveScope = undefined
       } catch (error) {
         const message = error instanceof Error ? error.message : 'mission 停止失败。'
         if (slot.completedWhileStopping && !missionSafety(slot.taskId)) {
@@ -1484,6 +1619,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         res.status(503).json(failure('START_FAILED', 503, { message }))
         return
       } finally {
+        if (slot.engineArchive?.failure()) auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         slot.stopping = false
         if (slot.mission && slot.completedWhileStopping && !missionSafety(slot.taskId)) {
           slot.mission = undefined
@@ -2012,6 +2148,47 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const report = await reportWithQuality(snapshot.report, snapshot.record, snapshot.parameters?.phases)
       res.json(success({ ...snapshot, report }, pageMeta('REQ-MISSION-RESULT-GET')))
     } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果损坏或不可读，未切换到其他文件。' })) }
+  })
+
+  /** 超大引擎归档不把截取明细伪装为完整报告；授权用户可按本次结果和来源摘要取得完整 JSONL。 */
+  app.get('/api/v1/mission-results/:resultId/engine-frames/:sourceSha256', async (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId)
+    if (role === undefined) return
+    if (!isMissionResultId(req.params.resultId) || !/^[a-f0-9]{64}$/u.test(req.params.sourceSha256) || Object.keys(req.query).length) {
+      res.status(400).json(failure('INVALID_REQUEST', 400)); return
+    }
+    try {
+      const snapshot = await options.missionResults?.get(req.params.resultId)
+      if (!snapshot?.record.runId || !options.engineFrameArchive) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      const path = await options.engineFrameArchive.getFile(snapshot.record.runId, req.params.sourceSha256)
+      if (!path) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_RESULT_READ', req.params.resultId)
+      res.download(path, `engine-frames-${req.params.sourceSha256}.jsonl`, error => {
+        if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '引擎帧归档下载失败。' }))
+      })
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '引擎帧归档读取失败。' })) }
+  })
+
+  /** Download only a CSV whose immutable source hash is attached to this authorized result. */
+  app.get('/api/v1/mission-results/:resultId/engine-csv/:fileName', async (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId)
+    if (role === undefined) return
+    if (!isMissionResultId(req.params.resultId) || !/^(?:link_quality|events|link_switch|link_state|link_loss)\.csv$/u.test(req.params.fileName) || Object.keys(req.query).length) {
+      res.status(400).json(failure('INVALID_REQUEST', 400)); return
+    }
+    try {
+      const snapshot = await options.missionResults?.get(req.params.resultId)
+      if (!snapshot?.record.runId || !options.engineFrameArchive) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      const report = await reportWithQuality(snapshot.report, snapshot.record, snapshot.parameters?.phases)
+      const sourceSha256 = report.localEvidence?.engineCsv?.sourceSha256
+      if (!sourceSha256) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      const path = await options.engineFrameArchive.getCsvFile(snapshot.record.runId, sourceSha256, req.params.fileName)
+      if (!path) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_RESULT_READ', req.params.resultId)
+      res.download(path, req.params.fileName, error => {
+        if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '引擎规范 CSV 下载失败。' }))
+      })
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '引擎规范 CSV 读取失败。' })) }
   })
 
   /** 返回当前历史回放目录。 */
@@ -3056,12 +3233,17 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
      */
     close: () => {
       closing = true
+      engineSnapshots?.stop()
       closePromise ??= (async () => {
         const errors: unknown[] = []
         const stopped = await Promise.allSettled([...missions.values()].map(async slot => {
           await slot.starting?.catch(() => undefined)
+          slot.logStreamer?.stop(); slot.logStreamer = undefined
+          slot.positionStreamer?.stop(); slot.positionStreamer = undefined
           await slot.mission?.stop()
           slot.mission = undefined
+          await closeEngineArchive(slot.engineArchiveScope?.runId ?? '', slot)
+          slot.engineArchive = undefined; slot.engineArchiveScope = undefined
         }))
         for (const result of stopped) if (result.status === 'rejected') errors.push(result.reason)
         if (!realtimeClosed) {

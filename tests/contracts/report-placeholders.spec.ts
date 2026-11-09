@@ -39,5 +39,7 @@ describe('报表评估指标占位', () => {
     expect(isLocalReport(report({ ...BASE, qualityKpis: { averageBer: 2 } }))).toBe(false)
     expect(isLocalReport(report({ ...BASE, qualityKpis: { unknown: 1 } as never }))).toBe(false)
     expect(isLocalReport(report({ ...BASE, switchEvents: [{ eventId: 'SW', time: 999, demandId: 'D', ruleId: null, fromDeviceId: 'a', toDeviceId: 'b', fromLinkId: null, toLinkId: null, stableChecks: null }] }))).toBe(false)
+    const badArchive = { sourceSha256: 'd'.repeat(64), frameCount: 1, firstSimulationTime: 1, lastSimulationTime: 1, missingFieldNames: [], segmentRows: [{ engineEpoch: 0, frameId: 1, simulationTime: 1, segment: { linkId: 'bad' } }], switchRows: [], eventRows: [] }
+    expect(isLocalReport(report({ ...BASE, engineFrameArchive: badArchive } as never))).toBe(false)
   })
 })

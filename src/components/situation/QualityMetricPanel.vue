@@ -60,7 +60,7 @@ watch(() => props.selectedLinkId, selected => {
         <template #default="{ row }">{{ metricText(row.runtimeQuality ? (column.key === 'jsrDb' ? row.runtimeQuality.measurement.quality.gxbDb : null) : row.detailed?.[column.key], column.digits) }}</template>
       </el-table-column>
       <el-table-column v-if="links.some(link => link.runtimeQuality?.assessment)" label="质量状态" min-width="110">
-        <template #default="{ row }"><span :title="row.runtimeQuality?.assessment ? runtimeDecisionReason(row.runtimeQuality.assessment.reason) : ''">{{ row.runtimeQuality?.assessment ? RUNTIME_STATUS_LABELS[row.runtimeQuality.assessment.status] : '暂无数据' }}</span></template>
+        <template #default="{ row }"><el-tag v-if="row.runtimeQuality?.assessment" :type="row.runtimeQuality.assessment.status === 'UP' ? 'success' : row.runtimeQuality.assessment.status === 'DEGRADED' ? 'warning' : row.runtimeQuality.assessment.status === 'DOWN' ? 'danger' : 'info'" :title="runtimeDecisionReason(row.runtimeQuality.assessment.reason)">{{ RUNTIME_STATUS_LABELS[row.runtimeQuality.assessment.status] }}</el-tag><span v-else>暂无数据</span></template>
       </el-table-column>
     </el-table>
     <p>时间窗口筛选年龄已知的测量；年龄未知时保留源时刻。未提供的指标显示“暂无数据”，不代表当前时刻已有测量。</p>

@@ -400,6 +400,14 @@ export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioI
 export interface SimulationRun {
   runId: RunId; taskId: TaskId; scenarioId: ScenarioId; uiStatus: UiSimulationStatus;
   canonical: SimulationState; configLocked: boolean; startedAt?: Iso8601Utc; completedAt?: Iso8601Utc;
+  /** 仅记录 sim_control 发送状态；SENT 不代表引擎已执行，不修改 canonical 或解除配置锁。 */
+  engineControl?: EngineControlState;
+}
+export type EngineControlAction = 'pause' | 'resume' | 'stop';
+export interface EngineControlState {
+  connected: boolean;
+  action: EngineControlAction | null;
+  delivery: 'IDLE' | 'SENDING' | 'SENT' | 'UNKNOWN';
 }
 export type SimulationMode = 'INTERACTIVE_SINGLE' | 'PARAMETER_SCAN' | 'HISTORICAL_REPLAY';
 /** START requires mode; SET_SPEED requires speedMultiplier > 0; STEP requires stepCount=1. */
@@ -508,7 +516,91 @@ export interface QualityDataset {
 export interface QualityImportRequest { scope: QualityScope; fileName: string; format: 'JSON' | 'CSV'; text: string; }
 /** WS 只发布更新引用，完整记录通过同一运行的质量接口读取。 */
 export interface QualityDatasetUpdate { kind: 'QUALITY_UPDATED'; scope: QualityScope; sourceSha256: string; sampleCount: number; }
-export type LinkMetricPayload = LinkStatusSummary[] | QualityDatasetUpdate;
+/** 引擎帧只展示引擎结论；不改变既有规范链路两态或文件质量合同。 */
+export interface EngineLinkSegment {
+  linkId: string; linkIds: string[];
+  sourceName: string | null; sourcePlatformId: string | null; sourcePort: string | null;
+  targetName: string | null; targetPlatformId: string | null; targetPort: string | null;
+  status: 'UP' | 'DEGRADED' | 'DOWN' | 'UNKNOWN'; engineStatus: string | null; error: string | null;
+  distanceM: number | null;
+  losses: { freeSpaceDb: number | null; seaMultipathDb: number | null; atmosphericDb: number | null; cloudRainDb: number | null; jammingDb: number | null; totalDb: number | null; rainDb?: number | null; cloudDb?: number | null };
+  /** delay 保留上游原值，单位未确认，不用于时长统计。 */
+  quality: { gxbDb: number | null; ber: number | null; rxPowerDbw: number | null; rxPowerDbm: number | null; delay?: number | null };
+  inputTrace: { eirpDbw: number | null; gtDbk: number | null; dataRateMbps: number | null; frequencyGHz: number | null;
+    jammers: { jammerName: string | null; platformId: string | null; distanceM: number | null; eirpDbw: number | null; lossDb: number | null }[] };
+}
+export interface EnginePathNode { platformName: string | null; platformId: string | null; inPort: string | null; outPort: string | null }
+export interface EngineRoute {
+  pathId: string; direction: 'FORWARD' | 'REVERSE'; sourceName: string | null; targetName: string | null;
+  sourcePlatformId: string | null; targetPlatformId: string | null; transTypes: string[]; nodes: EnginePathNode[];
+  /** 原始路径参数，单位待确认；可选以兼容已归档的旧帧。 */
+  parameters?: { delay: number | null; transFrequency: number | null; dataContent: number | null };
+}
+export interface EngineRouteSwitch extends EngineRoute {
+  oldPathId: string | null; oldNodes: EnginePathNode[]; reasons: { linkId: string | null; reasons: string[] }[];
+}
+export interface EngineRouteAlarm { pathId: string | null; linkId: string | null; message: string | null }
+export interface EngineFrameEvent { type: string | null; pathId: string | null; uavNames: string[]; jammerNames: string[]; uavIds: string[]; jammerIds: string[] }
+export interface EngineJammer {
+  name: string | null; platformId: string | null; detectStatus: string | null; deviceStatus: string | null;
+  powerW: number | null; frequencyHz: number | null; rangeM: number | null;
+  position?: { longitude: number | null; latitude: number | null; altitudeM: number | null };
+  engineMode?: string | null;
+  detections: { targetNames: string[]; targetIds: string[];
+    targets: { name: string | null; platformId: string | null; longitude: number | null; latitude: number | null; altitudeM: number | null }[];
+    platformType: string | null; frequencyHz: number | null; probability: number | null; rangeM: number | null }[];
+  actions: { action: string | null; targetName: string | null; targetPlatformId: string | null; mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null }[];
+}
+export interface EngineFrameSnapshot {
+  /** simulationTime 为内部秒数；上游 sim_time_s 实际为毫秒，仅在接收入口转换。 */
+  kind: 'ENGINE_FRAME'; runId: string; engineEpoch: number; frameId: number; simulationTime: number;
+  /** 上游计时原值，起点未约定，不用于推送延迟判定。 */
+  wallTimeMs?: number | null;
+  modelVersion: string | null; modulation: string | null;
+  links: EngineLinkSegment[]; jammers: EngineJammer[];
+  routing: { switches: EngineRouteSwitch[]; alarms: EngineRouteAlarm[] };
+  events: EngineFrameEvent[]; initRouting: EngineRoute[] | null;
+}
+export type LinkMetricPayload = LinkStatusSummary[] | QualityDatasetUpdate | EngineFrameSnapshot;
+/**
+ * Incremental mission-console output.  It deliberately carries no simulated
+ * timestamp or frame identifier: a process log is wall-clock output and the
+ * engine does not attach it to a simulation frame.
+ */
+export interface MissionLogUpdate {
+  kind: 'MISSION_LOG'; runId: RunId; text: string; replace: boolean; bytes: number; truncated: boolean;
+  /** UTF-8-safe fragments of one source-tail observation, in publish order. */
+  chunkIndex: number; chunkCount: number;
+  /** Source-file byte interval represented by this update; replace records reset the view. */
+  startByteOffset: number; endByteOffset: number;
+}
+/**
+ * Objective upstream connection observation.  `FRAME_ADVANCE_OBSERVED` means
+ * the received frame id delta differs from websocketNew's agreed step of 5
+ * (5 simulation seconds); it does not establish upstream retransmission support.
+ */
+export interface EngineConnectionDiagnostic {
+  kind: 'ENGINE_CONNECTION_DIAGNOSTIC'; runId: RunId;
+  state: 'CONNECTING' | 'CONNECTED' | 'DISCONNECTED' | 'REJECTED' | 'FRAME_ADVANCE_OBSERVED';
+  message: string; previousFrameId?: number; observedFrameId?: number;
+}
+export type MissionLogPayload = MissionLogUpdate | EngineConnectionDiagnostic;
+/** Latest accepted records from the mission-owned position file; its cursor is not an engine frame. */
+export interface MissionPositionUpdate {
+  kind: 'MISSION_POSITION'; runId: RunId; scenarioId: ScenarioId; revision: number;
+  sourceGeneration: number; sourceRecordCount: number; waitingForLine: boolean;
+  nodes: Array<{ platformId: string; time: number; longitude: number; latitude: number; altitude: number; speed: number; heading: number }>;
+}
+/** External engine interference facts from one received engine frame. */
+export interface EngineJammerFrameUpdate {
+  kind: 'ENGINE_JAMMER_FRAME'; runId: RunId; engineEpoch: number; sourceFrameId: number; simulationTime: number;
+  jammers: EngineJammer[]; events: EngineFrameEvent[];
+}
+/** External engine route switching facts from one received engine frame. */
+export interface EngineSwitchFrameUpdate {
+  kind: 'ENGINE_SWITCH_FRAME'; runId: RunId; engineEpoch: number; sourceFrameId: number; simulationTime: number;
+  switches: EngineRouteSwitch[];
+}
 export type ReportClassification = 'LEVEL_II' | 'LEVEL_III';
 export interface ReportKpis {
   connectivityRate: Percent0To100; switchCount: number; avgBer: Ratio01; avgSnrDb: Decibels;
@@ -548,7 +640,28 @@ export interface LocalReportEvidence {
   qualityConnectivityRates?: Array<{ linkId: string; value: number }>
   /** 明确绑定本次运行的规范质量文件及测量记录；旧报告可省略。 */
   quality?: QualityDataset
+  /** 真实引擎帧归档摘要；仅保留接收到的帧和其中已解析的事件/切换，不推定缺失帧。 */
+  engineFrameArchive?: EngineFrameArchiveSummary
+  /** 由已验证引擎帧独立生成的规范 CSV；旧报告可省略。 */
+  engineCsv?: EngineCsvEvidence
 }
+export interface EngineFrameArchiveSummary {
+  sourceSha256: string; frameCount: number; firstSimulationTime: number | null; lastSimulationTime: number | null;
+  missingFieldNames: string[]; segmentRows: EngineFrameArchiveSegmentRow[];
+  switchRows: EngineFrameArchiveSwitchRow[]; eventRows: EngineFrameArchiveEventRow[];
+  /** Detail rows are bounded for report/UI/export memory; raw verified JSONL remains downloadable. */
+  detailTruncated?: boolean; retainedDetailRows?: number;
+  aggregate?: { uniqueSingleSegmentCount: number; averageGxbDb?: number; averageBer?: number; switchCount: number; missing: string[] };
+}
+export interface EngineCsvEvidence {
+  sourceSha256: string
+  files: Array<{ fileName: string; rowCount: number; sha256: string; status: 'COMPLETE' | 'PARTIAL'; skippedCount: number; reason?: string }>
+  missing: Array<{ fileName: string; status: 'SOURCE_MISSING'; reason: string }>
+}
+/** 一行对应引擎输出的一段，不按逻辑链路合并。 */
+export interface EngineFrameArchiveSegmentRow { engineEpoch: number; frameId: number; simulationTime: number; segment: EngineLinkSegment }
+export interface EngineFrameArchiveSwitchRow { engineEpoch: number; frameId: number; simulationTime: number; value: EngineRouteSwitch }
+export interface EngineFrameArchiveEventRow { engineEpoch: number; frameId: number; simulationTime: number; value: EngineFrameEvent }
 export interface LocalSwitchEvent {
   eventId: string; time: number; demandId: string; ruleId: string | null; fromDeviceId: string; toDeviceId: string
   fromLinkId: string | null; toLinkId: string | null; stableChecks: number | null
@@ -677,7 +790,7 @@ export interface RouteMetadata { path: string; page: string; stores: string[]; g
 export interface ContractDescriptor { name: string; version: string; sourceRef: string; fields: string[]; }
 
 /** Canonical loopback topics from approved baseline §8.2. Commands use REST; node state rides simulation.frame. */
-export type WsTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event';
+export type WsTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event' | 'mission.log' | 'position.update';
 export type WsConnectionState = 'DISCONNECTED' | 'CONNECTING' | 'SUBSCRIBED' | 'RETRYING' | 'FAILED';
 export interface RealtimeEnvelope<T> { type: string; schemaVersion: '1.0'; topic: WsTopic; taskId: TaskId; sequence: SequenceNumber; simulationTime?: Seconds; frameId?: FrameId; payload: T; }
 export interface WsSubscribeRequest { type: 'subscribe'; schemaVersion: '1.0'; taskId: TaskId; topics: WsTopic[]; lastSequence?: SequenceNumber; lastSequences?: Partial<Record<WsTopic, SequenceNumber>>; }

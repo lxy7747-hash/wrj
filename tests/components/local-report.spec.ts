@@ -11,10 +11,25 @@ import { useReportStore, isReport } from '../../src/stores/report'
 import { useAuthStore } from '../../src/stores/auth'
 import { isLocalReport, isLocalReportExport, localReportTables } from '../../src/features/reports/local-report'
 import { LOCAL_REPORT, LOCAL_EXPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
+import type { EngineFrameArchiveSummary } from '../../src/contracts/domain-models'
+import { STEP_FIVE_REPORT } from '../fixtures/engine-frame/step-five-report'
 
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 describe('本地文件报告页面与信任边界', () => {
+  it('引擎曲线连通5→10→15，仅在缺少20的25之前断开', async () => {
+    const wrapper = mount(LocalReportTabs, { props: { evidence: STEP_FIVE_REPORT.localEvidence }, global: { plugins: [ElementPlus] } })
+    try {
+      await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
+      const charts = wrapper.findAllComponents(ReportChart).filter(chart => chart.get('h4').text().startsWith('引擎段'))
+      expect(charts).toHaveLength(2)
+      for (const chart of charts) {
+        expect(chart.findAll('polyline').map(line => line.attributes('points')!.trim().split(/\s+/).length)).toEqual([3, 1])
+        expect(chart.findAll('circle')).toHaveLength(4)
+      }
+    } finally { wrapper.unmount() }
+  })
+
   it('质量曲线、柱状图与雷达图独立，图表注明来源、已应用范围和生成时刻', async () => {
     const wrapper: VueWrapper = mount(LocalReportTabs, { props: { evidence: LOCAL_QUALITY_REPORT.localEvidence!, generatedTime: LOCAL_QUALITY_REPORT.generatedTime }, global: { plugins: [ElementPlus] } })
     const tabs = wrapper.findAll('.el-tabs__item').map(tab => tab.text())
@@ -94,6 +109,142 @@ describe('本地文件报告页面与信任边界', () => {
     await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '柱状图')!.trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('筛选范围事件记录数')
+    wrapper.unmount()
+  })
+  it('把已导入质量切换合并到时间线，并保留方向、原因和文件来源', async () => {
+    const report = structuredClone(LOCAL_QUALITY_REPORT)
+    report.localEvidence!.quality!.switchEvents = [{
+      eventId: 'SW-QUALITY-1', frameId: 4 as never, time: 4, type: 'LINK_SWITCH', direction: 'FORWARD',
+      oldLinkId: 'L-1', newLinkId: 'L-2', oldBer: 0.1, newBer: 0.01, stabilityFrames: 3,
+      minimumStableFrames: 2, hysteresisSatisfied: true, cooldownRemainingS: 0,
+      decision: 'ACCEPTED', reason: 'BER_IMPROVED', dedupeKey: 'source-switch-1',
+    }]
+    const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '事件时间线')!.trigger('click')
+    await flushPromises()
+    const text = wrapper.get('[data-testid="report-event-timeline"]').text()
+    expect(text).toContain('SW-QUALITY-1')
+    expect(text).toContain('FORWARD')
+    expect(text).toContain('BER_IMPROVED')
+    expect(text).toContain('quality.csv')
+    wrapper.unmount()
+  })
+  it('本地节点或通信关联筛选不猜测质量切换端点', async () => {
+    const report = structuredClone(LOCAL_QUALITY_REPORT)
+    report.localEvidence!.quality!.switchEvents = [{
+      eventId: 'SW-QUALITY-A', frameId: 4 as never, time: 4, type: 'LINK_SWITCH', direction: 'FORWARD',
+      oldLinkId: 'L-1', newLinkId: 'L-2', oldBer: 0.1, newBer: 0.01, stabilityFrames: 3,
+      minimumStableFrames: 2, hysteresisSatisfied: true, cooldownRemainingS: 0,
+      decision: 'ACCEPTED', reason: 'BER_IMPROVED', dedupeKey: 'source-switch-a',
+    }, {
+      eventId: 'SW-QUALITY-UNKNOWN', frameId: 5 as never, time: 5, type: 'LINK_SWITCH', direction: 'FORWARD',
+      oldLinkId: 'L-UNKNOWN', newLinkId: 'L-OTHER', oldBer: 0.1, newBer: 0.01, stabilityFrames: 3,
+      minimumStableFrames: 2, hysteresisSatisfied: true, cooldownRemainingS: 0,
+      decision: 'ACCEPTED', reason: 'BER_IMPROVED', dedupeKey: 'source-switch-unknown',
+    }]
+    const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '事件时间线')!.trigger('click')
+    await flushPromises()
+    wrapper.findAllComponents(ElSelect).find(select => select.attributes('data-testid') === 'report-filter-node')!.vm.$emit('update:modelValue', 'A')
+    await flushPromises()
+    const text = wrapper.get('[data-testid="report-event-timeline"]').text()
+    expect(text).toContain('SW-QUALITY-A')
+    expect(text).not.toContain('SW-QUALITY-UNKNOWN')
+    wrapper.unmount()
+  })
+  it('引擎归档明确标注截断，并把可验证的切换和事件源字段并入统一时间线', async () => {
+    const report = structuredClone(LOCAL_REPORT)
+    report.localEvidence!.engineFrameArchive = {
+      sourceSha256: 'a'.repeat(64), frameCount: 99, firstSimulationTime: 1, lastSimulationTime: 9, missingFieldNames: [], detailTruncated: true, retainedDetailRows: 2,
+      aggregate: { uniqueSingleSegmentCount: 2, averageGxbDb: 4.25, averageBer: 0.0025, switchCount: 3, missing: ['connectivityDurationS', 'interferenceDurationS'] },
+      segmentRows: [{ engineEpoch: 1, frameId: 7, simulationTime: 4, segment: {
+        linkId: 'SEG-A', linkIds: ['L-1'], sourceName: 'A', sourcePlatformId: 'A', sourcePort: 'OUT', targetName: 'B', targetPlatformId: 'B', targetPort: 'IN',
+        status: 'UP', engineStatus: 'AVAILABLE', error: null, distanceM: null,
+        losses: { freeSpaceDb: null, seaMultipathDb: null, atmosphericDb: null, cloudRainDb: null, jammingDb: null, totalDb: null },
+        quality: { gxbDb: null, ber: null, rxPowerDbw: null, rxPowerDbm: null }, inputTrace: { eirpDbw: null, gtDbk: null, dataRateMbps: null, frequencyGHz: null, jammers: [] },
+      }}],
+      switchRows: [{ engineEpoch: 1, frameId: 7, simulationTime: 4, value: {
+        pathId: 'PATH-NEW', direction: 'FORWARD', sourceName: 'A', targetName: 'C', sourcePlatformId: 'A', targetPlatformId: 'C', transTypes: ['任务'],
+        oldPathId: 'PATH-OLD', oldNodes: [{ platformName: 'A', platformId: 'A', inPort: '', outPort: 'OUT' }, { platformName: 'B', platformId: 'B', inPort: 'IN', outPort: '' }],
+        nodes: [{ platformName: 'A', platformId: 'A', inPort: '', outPort: 'OUT2' }, { platformName: 'C', platformId: 'C', inPort: 'IN2', outPort: '' }], reasons: [{ linkId: 'SEG-A', reasons: ['ber_switch'] }],
+      }}],
+      eventRows: [{ engineEpoch: 1, frameId: 7, simulationTime: 4, value: { type: 'JAM_ON', pathId: 'PATH-NEW', uavNames: ['A'], jammerNames: ['J'], uavIds: ['A'], jammerIds: ['J'] }}],
+    } as never
+    // 同帧同路径但不同方向/目标的原始行不得被 UI 时间线去重。
+    const archive = report.localEvidence!.engineFrameArchive as unknown as EngineFrameArchiveSummary
+    archive.switchRows.push({ engineEpoch: 1, frameId: 7, simulationTime: 4, value: {
+      ...structuredClone(archive.switchRows[0]!.value), direction: 'REVERSE', sourcePlatformId: 'C', targetPlatformId: 'A',
+    } })
+    archive.eventRows.push({ engineEpoch: 1, frameId: 7, simulationTime: 4, value: {
+      type: 'JAM_ON', pathId: 'PATH-NEW', uavNames: ['C'], jammerNames: ['K'], uavIds: ['C'], jammerIds: ['K'],
+    } })
+    const wrapper = mount(LocalReportTabs, { props: { evidence: report.localEvidence }, global: { plugins: [ElementPlus] } })
+    const cards = wrapper.get('[data-testid="engine-aggregate-cards"]')
+    expect(cards.text()).toContain('引擎完整流唯一单段有效样本')
+    expect(cards.text()).toContain('2 条')
+    expect(cards.text()).toContain('4.25 dB（唯一单段实测）')
+    expect(cards.text()).toContain('2.50e-3')
+    expect(cards.text()).toContain('3 条（引擎实际记录，不代表成功率）')
+    expect(wrapper.text()).toContain('引擎完整流平均GXB')
+    expect(wrapper.text()).toContain('引擎路由切换记录')
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
+    expect(wrapper.get('[data-testid="engine-archive-truncated"]').text()).toContain('完整归档流汇总仍有效')
+    expect(wrapper.text()).toContain('非全量统计')
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '事件时间线')!.trigger('click'); await flushPromises()
+    const timeline = wrapper.get('[data-testid="report-event-timeline"]')
+    expect(timeline.text()).toContain('引擎路径切换')
+    expect(timeline.text()).toContain('PATH-OLD')
+    expect(timeline.text()).toContain('ber_switch')
+    expect(timeline.text()).toContain('源轮次/帧/时刻：1/7/4')
+    expect(timeline.text()).toContain('引擎事件')
+    expect(timeline.findAll('li').filter(item => item.text().includes('引擎路径切换'))).toHaveLength(2)
+    expect(timeline.findAll('li').filter(item => item.text().includes('引擎事件'))).toHaveLength(2)
+    wrapper.unmount()
+  })
+  it('结果绑定的引擎归档从已有受权端点下载完整 JSONL', async () => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    const report = structuredClone(LOCAL_REPORT)
+    report.localEvidence!.engineFrameArchive = { sourceSha256: 'b'.repeat(64), frameCount: 2, firstSimulationTime: 1, lastSimulationTime: 2,
+      missingFieldNames: [], segmentRows: [], switchRows: [], eventRows: [], detailTruncated: true, retainedDetailRows: 0 } as never
+    const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-001', scenarioName: '运行结果', revision: 1, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:10Z' }
+    const store = useReportStore()
+    store.$patch({ selectedReport: report, reports: [report], resultSource: record, localFilterResult: { report, filter: {}, timeline: [], timelineTotal: 0, stages: [], links: [] }, capabilityState: 'SUCCESS' })
+    vi.spyOn(store, 'load').mockResolvedValue(true); vi.spyOn(store, 'applyLocalFilter').mockResolvedValue(true)
+    const createUrl = vi.fn(() => 'blob:engine-frames')
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: createUrl, revokeObjectURL: vi.fn() }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const attachment = { ok: true, headers: new Headers({ 'Content-Disposition': 'attachment; filename="engine.jsonl"' }), blob: async () => new Blob(['{}']) } as Response
+    const fetch = vi.fn().mockResolvedValue(attachment); vi.stubGlobal('fetch', fetch)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
+    await router.push('/reports'); await router.isReady()
+    const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
+    await flushPromises(); await wrapper.get('[data-testid="engine-frame-archive-download"]').trigger('click'); await flushPromises()
+    expect(fetch.mock.calls[0]![0]).toContain(`/api/v1/mission-results/${record.resultId}/engine-frames/${'b'.repeat(64)}`)
+    expect(click).toHaveBeenCalledOnce(); expect(createUrl).toHaveBeenCalledOnce()
+    wrapper.unmount()
+  })
+  it('结果绑定的已生成规范 CSV 可点击下载，部分覆盖状态不伪装为完整', async () => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    const report = structuredClone(LOCAL_REPORT)
+    report.localEvidence!.engineCsv = { sourceSha256: 'c'.repeat(64), files: [{ fileName: 'link_state.csv', rowCount: 12, sha256: 'd'.repeat(64), status: 'PARTIAL', skippedCount: 2, reason: '缺少唯一逻辑链路。' }], missing: [{ fileName: 'link_quality.csv', status: 'SOURCE_MISSING', reason: '缺少 SNR。' }] } as never
+    const record = { resultId: 'RESULT-11111111-1111-4111-8111-111111111111', scenarioId: 'SCN-001', scenarioName: '运行结果', revision: 1, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:00:10Z' }
+    const store = useReportStore()
+    store.$patch({ selectedReport: report, reports: [report], resultSource: record, localFilterResult: { report, filter: {}, timeline: [], timelineTotal: 0, stages: [], links: [] }, capabilityState: 'SUCCESS' })
+    vi.spyOn(store, 'load').mockResolvedValue(true); vi.spyOn(store, 'applyLocalFilter').mockResolvedValue(true)
+    const createUrl = vi.fn(() => 'blob:engine-csv')
+    vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: createUrl, revokeObjectURL: vi.fn() }))
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    const attachment = { ok: true, headers: new Headers({ 'Content-Disposition': 'attachment; filename="link_state.csv"' }), blob: async () => new Blob(['task_id']) } as Response
+    const fetch = vi.fn().mockResolvedValue(attachment); vi.stubGlobal('fetch', fetch)
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/reports', component: ReportsPage }] })
+    await router.push('/reports'); await router.isReady()
+    const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true } } })
+    await flushPromises()
+    await wrapper.findAll('.el-tabs__item').find(tab => tab.text() === '引擎链路段实测')!.trigger('click'); await flushPromises()
+    expect(wrapper.text()).toContain('PARTIAL · 12 行；跳过 2 行')
+    await wrapper.get('[data-testid="engine-csv-download"]').trigger('click'); await flushPromises()
+    expect(fetch.mock.calls[0]![0]).toContain(`/api/v1/mission-results/${record.resultId}/engine-csv/link_state.csv`)
+    expect(click).toHaveBeenCalledOnce(); expect(createUrl).toHaveBeenCalledOnce()
     wrapper.unmount()
   })
   it('有导出权限时不提供浏览器打印，但提供服务端真实 PDF 导出', async () => {

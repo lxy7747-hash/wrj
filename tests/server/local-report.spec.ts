@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LOCAL_REPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { INITIAL_LOG, POSITION_CSV } from '../fixtures/local-replay'
+import { STEP_FIVE_REPORT } from '../fixtures/engine-frame/step-five-report'
 const { appendFile, mkdtemp, readFile, writeFile, rm, readdir, stat } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -23,6 +24,15 @@ async function directory() { const dir = await mkdtemp(join(tmpdir(), 'wrj-repor
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
 
 describe('本地报告读取和真实文件导出', () => {
+  it('HTML引擎曲线与页面一致：5秒步长连续，缺帧处保留断点', async () => {
+    const dir = await directory()
+    const result = await exportLocalReport(dir, STEP_FIVE_REPORT, 'HTML', 'operator')
+    const html = await readFile(result.filePath, 'utf8')
+    const pointCounts = [...html.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).length)
+    expect(pointCounts).toEqual([3, 1, 3, 1])
+    expect(html).toContain('5～25 秒')
+  })
+
   it('新事件 CSV 形成真实关联、设备时间线及消息统计', async () => {
     const dir = await directory()
     const events = join(dir, 'scenario_events.csv'), positions = join(dir, 'position.csv')
@@ -120,6 +130,17 @@ describe('本地报告读取和真实文件导出', () => {
     const second = await exportLocalReport(dir, report, format, 'operator')
     expect(second.filePath).not.toBe(first.filePath)
     expect(await readFile(first.filePath, 'utf8')).toBe(content)
+  })
+  it('导出逐文件说明规范 CSV 的完整、部分和缺源状态，不把缺源写成零值', async () => {
+    const dir = await directory()
+    const report = structuredClone(LOCAL_REPORT)
+    report.localEvidence.engineCsv = { sourceSha256: 'a'.repeat(64), files: [{ fileName: 'link_state.csv', rowCount: 3, sha256: 'b'.repeat(64), status: 'PARTIAL', skippedCount: 2, reason: '存在多段。' }], missing: [{ fileName: 'link_quality.csv', status: 'SOURCE_MISSING', reason: '缺少 SNR。' }] } as never
+    const exported = await exportLocalReport(dir, report, 'HTML', 'operator')
+    const content = await readFile(exported.filePath, 'utf8')
+    expect(content).toContain('引擎规范 CSV 生成状态')
+    expect(content).toContain('PARTIAL')
+    expect(content).toContain('SOURCE_MISSING')
+    expect(content).toContain('缺少 SNR。')
   })
   for (const format of ['HTML', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 导出包含柱状图、雷达图数据表及真实单位、来源和生成时刻`, async () => {
     const dir = await directory()

@@ -2,6 +2,7 @@ import { access, mkdir, readFile, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { dirname, isAbsolute, join, relative } from 'node:path'
 import { validatePublicOrigin } from '../http/loopback.js'
+import { readLinkEngineWsUrl } from './engine-snapshot-client.js'
 
 export async function readLanConfig(env: NodeJS.ProcessEnv) {
   const required = (key: string): string => {
@@ -42,5 +43,5 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
   await access(dirname(database), constants.W_OK)
   await mkdir(outputRoot, { recursive: true })
   await access(outputRoot, constants.W_OK)
-  return { publicOrigin, port, tilePort, webRoot, outputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0' }
+  return { publicOrigin, port, tilePort, webRoot, outputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0', linkEngineWsUrl: readLinkEngineWsUrl(env.LINK_ENGINE_WS_URL) }
 }

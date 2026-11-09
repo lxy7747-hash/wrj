@@ -35,6 +35,8 @@ describe('2026-11-01 模板脚本生成器', () => {
     expect(rear).toContain('if (nearest0 >= 0)')
     expect(rear).toContain('execute at_interval_of 3 sec')
     expect(JSON.parse(local['mapping.json']!).localRuntime.note).toContain('±3 秒')
+    const localDependencies = JSON.parse(local['mapping.json']!).executionStatus.dependencyUnconfirmed as Array<{ fieldPath: string }>
+    expect(localDependencies.some(item => item.fieldPath === 'linkSettings.linkCalc' || item.fieldPath.startsWith('definitions.antennaPatterns.') || item.fieldPath.startsWith('jammers['))).toBe(false)
   })
 
   it('未设置时序：到达触发半径立即开启，离开释放半径关闭，不添加持续时长限制', () => {
@@ -68,6 +70,52 @@ describe('2026-11-01 模板脚本生成器', () => {
     expect(generated.files['comm_SimSetup.txt']).not.toContain('COMM_TURNED_OFF')
     expect(generated.files['comm_SimSetup.txt']).not.toContain('WEAPON_TURNED_OFF')
     expect(generated.manifest.devices.every((device: { source: { deviceId: string }; target: { deviceId: string } }) => !device.source.deviceId.startsWith('comm_') && !device.target.deviceId.startsWith('comm_'))).toBe(true)
+  })
+
+  it('逐项记录当前配置进入脚本、仅保留快照和具体待确认依赖，且不把停用链路写成已执行', () => {
+    const draft = createTemplateScenario()
+    const enabled = draft.config.links.find(link => link.type !== 'LASER')!
+    const disabled = draft.config.links.find(link => link.id !== enabled.id)!
+    disabled.enabled = false
+    const platform = draft.config.platforms.find(item => item.waypoints.length > 0)!
+    Object.assign(platform.waypoints[0]!, { arrivalTime: 12, heading: 30 })
+    const mapping = JSON.parse(buildMissionPackage(draft).files['mapping.json']!)
+    expect(mapping.executionStatus.emitted).toContainEqual(expect.objectContaining({ fieldPath: 'scenario.startTime' }))
+    expect(mapping.executionStatus.emitted).toContainEqual(expect.objectContaining({ fieldPath: `links[${draft.config.links.indexOf(enabled)}]` }))
+    expect(mapping.executionStatus.emitted).not.toContainEqual(expect.objectContaining({ fieldPath: `links[${draft.config.links.indexOf(disabled)}]` }))
+    expect(mapping.executionStatus.retainedSnapshot).toContainEqual(expect.objectContaining({ fieldPath: `platforms[${draft.config.platforms.indexOf(platform)}].waypoints[0].arrivalTime` }))
+    expect(mapping.executionStatus.dependencyUnconfirmed).toContainEqual(expect.objectContaining({ fieldPath: 'definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA' }))
+    expect(mapping.executionStatus.dependencyUnconfirmed).toContainEqual(expect.objectContaining({ fieldPath: 'linkSettings.linkCalc' }))
+  })
+
+  it('无航路、停用 ESM/激光/干扰项不误报，已支持的全局 LinkCalc 参数列为写入', () => {
+    const draft = createTemplateScenario()
+    const rear = draft.config.platforms.find(platform => platform.type === 'REAR_COMMAND_NODE')!
+    rear.waypoints = []
+    draft.config.jammingEnabled = false
+    draft.uiExtensions.jammers.forEach(extension => { extension.enabled = false })
+    draft.config.sensors = [{ id: 'esm-off', platformId: rear.id, frequencyRange: { min: 1, max: 2 }, detectionRange: 1 }]
+    draft.uiExtensions.sensors = [{ sensorId: 'esm-off', type: 'ESM', direction: 'OMNI', probability: 1, enabled: false }]
+    const mapping = JSON.parse(buildMissionPackage(draft).files['mapping.json']!)
+    const retained = mapping.executionStatus.retainedSnapshot as Array<{ fieldPath: string }>
+    const tiantong = draft.config.platforms.find(platform => platform.type === 'COMMUNICATION_SATELLITE' && platform.satelliteType === 'TIANTONG')!
+    expect(mapping.executionStatus.emitted).toContainEqual(expect.objectContaining({ fieldPath: 'linkSettings.linkCalc' }))
+    expect(mapping.executionStatus.emitted).not.toContainEqual(expect.objectContaining({ fieldPath: `platforms[${draft.config.platforms.indexOf(rear)}].waypoints` }))
+    expect(mapping.executionStatus.emitted).not.toContainEqual(expect.objectContaining({ fieldPath: `platforms[${draft.config.platforms.indexOf(tiantong)}].waypoints` }))
+    expect(retained).not.toContainEqual(expect.objectContaining({ fieldPath: `platforms[${draft.config.platforms.indexOf(tiantong)}].waypoints` }))
+    expect(retained.some(item => item.fieldPath.startsWith('sensors['))).toBe(false)
+    expect(retained.some(item => item.fieldPath.startsWith('uiExtensions.jammers['))).toBe(false)
+    expect(retained.some(item => item.fieldPath.startsWith('links['))).toBe(false)
+  })
+
+  it('允许巡逻航路的平台只标为已写入，不同时列为快照', () => {
+    const draft = createTemplateScenario()
+    const uav = draft.config.platforms.find(platform => platform.type === 'AIRBORNE_MISSION_CLUSTER')!
+    uav.loiterWaypoints = [{ longitude: 118.7, latitude: 25, altitude: 100, speed: 20 }, { longitude: 118.8, latitude: 25.1, altitude: 100, speed: 20 }]
+    const mapping = JSON.parse(buildMissionPackage(draft).files['mapping.json']!)
+    const fieldPath = `platforms[${draft.config.platforms.indexOf(uav)}].loiterWaypoints`
+    expect(mapping.executionStatus.emitted).toContainEqual(expect.objectContaining({ fieldPath }))
+    expect(mapping.executionStatus.retainedSnapshot).not.toContainEqual(expect.objectContaining({ fieldPath }))
   })
 
   it('瞄准式按配置写入 5 MHz，spot_bandwidth_mhz 同步为 5', () => {

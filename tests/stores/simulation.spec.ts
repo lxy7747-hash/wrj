@@ -120,6 +120,58 @@ describe('P3-1 仿真 Store', () => {
     useAuthStore().$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
   }
 
+  it('接受发送状态扩展但拒绝非法组合，不接受冒充执行确认的字段', () => {
+    const current = run('RUNNING')
+    for (const action of ['pause', 'resume', 'stop']) expect(isSimulationRun({ ...current, engineControl: { connected: true, action, delivery: 'SENT' } })).toBe(true)
+    for (const engineControl of [null, {}, { connected: 'true', action: null, delivery: 'IDLE' },
+      { connected: true, action: null, delivery: 'SENT' }, { connected: true, action: 'pause', delivery: 'IDLE' },
+      { connected: true, action: 'pause', delivery: 'ACKNOWLEDGED' }, { connected: true, action: 'pause', delivery: 'SENT', success: true }]) {
+      expect(isSimulationRun({ ...current, engineControl })).toBe(false)
+    }
+  })
+
+  it('WebSocket 202 只表示已发送：pause 后 start 发送 RESUME；stop 不解锁或显示已停止', async () => {
+    authorizeOperator()
+    const store = useSimulationStore()
+    store.applyRun({ ...run('RUNNING'), engineControl: { connected: true, action: null, delivery: 'IDLE' } })
+    const commands: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body))
+      if (body.action === 'SIMULATION_STOP') return successResponse(confirmation('AWAITING_CONFIRMATION'))
+      if (body.confirm === true) return successResponse(confirmation('CONFIRMED'))
+      commands.push(body.command)
+      const data: SimulationRun = { ...run('RUNNING'), engineControl: { connected: true, action: body.command.toLowerCase(), delivery: 'SENT' } }
+      return { ...successResponse(data), status: 202 }
+    }))
+    expect(await store.pause()).toBe(true)
+    expect(store.uiStatus).toBe('RUNNING')
+    expect(store.resultMessage).toContain('暂停命令已发送')
+    expect(await store.start()).toBe(true)
+    expect(commands).toEqual(['PAUSE', 'RESUME'])
+    expect(store.resultMessage).toContain('恢复命令已发送')
+    expect(await store.stop()).toBe(true)
+    expect(commands).toEqual(['PAUSE', 'RESUME', 'STOP'])
+    expect(store.configurationLockState).toBe('LOCKED')
+    expect(store.resultMessage).toContain('执行结果待确认')
+    expect(store.resultMessage).not.toMatch(/仿真已停止|配置已解锁/)
+  })
+
+  it('WebSocket 控制 HTTP 失败后读取服务器发送状态，不自动补发', async () => {
+    authorizeOperator()
+    const store = useSimulationStore()
+    store.applyRun({ ...run('RUNNING'), engineControl: { connected: true, action: null, delivery: 'IDLE' } })
+    const current: SimulationRun = { ...run('RUNNING'), engineControl: { connected: false, action: 'pause', delivery: 'UNKNOWN' } }
+    const fetcher = vi.fn(async (url: string) => {
+      if (url.endsWith('/commands')) throw new Error('连接断开，结果待确认')
+      return successResponse([current])
+    })
+    vi.stubGlobal('fetch', fetcher)
+    expect(await store.pause()).toBe(false)
+    expect(store.run?.engineControl).toEqual(current.engineControl)
+    expect(store.configurationLockState).toBe('LOCKED')
+    expect(fetcher.mock.calls.filter(([url]) => url.endsWith('/commands'))).toHaveLength(1)
+  })
+
   it('刷新只恢复同账号场景编号，无运行也能重新加载最新配置，失败重试不换场景', async () => {
     authorizeOperator()
     const draft = scenarioDraft()

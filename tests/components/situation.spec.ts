@@ -29,6 +29,8 @@ import { useSimulationStore } from '../../src/stores/simulation'
 import { useReplayStore } from '../../src/stores/replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
+import engineSample from '../fixtures/engine-frame/params_check.json'
+import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 
 type SituationMapControllerOptions = {
   frame: unknown
@@ -297,6 +299,48 @@ describe('态势主界面', () => {
     sessionStorage.clear()
   })
 
+  it('没有 simulation.frame 也能通过 link.metric 在现有页签展示引擎证据与缺测值', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-11-07T01:00:00Z' }
+    let finishLoad!: (response: Response) => void
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([run])
+      if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
+      if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
+      if (url.endsWith('/quality')) return new Promise<Response>(resolve => { finishLoad = resolve })
+      throw new Error(`Unexpected request ${url}`)
+    }))
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+    payload.links[0]!.quality.gxbDb = null
+    payload.links.push({ ...payload.links[0]!, linkId: 'segment-error', error: '计算输入缺失' })
+    const telemetry = useTelemetryStore()
+    expect(telemetry.frame).toBeNull()
+    expect(telemetry.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: run.taskId, sequence: 1,
+      frameId: `F-ENGINE-${payload.frameId}`, simulationTime: payload.simulationTime, payload })).toBe(true)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('探测概率 92%')
+    expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('经度 118.5°')
+    expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('宽带压制')
+    expect(wrapper.get('[data-testid="engine-events"]').text()).toContain('进入探测圈')
+    const tab = (label: string) => wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(t => t.text() === label)!
+    await tab('质量指标').trigger('click'); await flushPromises()
+    const panel = wrapper.get('[data-testid="engine-quality"]')
+    expect(panel.text()).toContain('自由空间损耗'); expect(panel.text()).toContain('145.2')
+    expect(panel.text()).toContain('正常'); expect(panel.text()).toContain('暂无数据')
+    expect(panel.text()).toContain('异常（状态未知）')
+    expect(panel.text()).toContain('异常'); expect(panel.get('[role="alert"]').text()).toBe('计算输入缺失')
+    expect(panel.text()).toContain('-112.3 dBW / -82.3 dBm')
+    expect(panel.text()).toContain('jammer_station_01')
+    await tab('选路判定').trigger('click'); await flushPromises()
+    const decisions = wrapper.get('[data-testid="engine-decisions"]')
+    for (const label of ['引擎推送', '初始热链', '切换记录', '旧路径', '新路径', '链路劣化切换', '告警']) expect(decisions.text()).toContain(label)
+    finishLoad(successResponse(null)); await flushPromises()
+    expect(useRuntimeQualityStore().source).toBe('ENGINE_FRAME')
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('引擎实时推送')
+  })
+
   it('本次运行质量驱动连续帧状态、面板与详情，错误或离页同步清空判定', async () => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
@@ -491,6 +535,41 @@ describe('态势主界面', () => {
     expect(fetcher.mock.calls.some(([url]) => /situation\/(initial-nodes|positions)/.test(url))).toBe(false)
   })
 
+  it('真实位置 WS 实际更新地图节点；引擎干扰和切换主题各自驱动可见状态且不混入同帧事件列表', async () => {
+    const { wrapper, scene } = await mountLiveMission(async scene => successResponse(livePositions(scene, null)))
+    const platform = scene.config.platforms[0]!
+    const telemetry = useTelemetryStore()
+    telemetry.missionPositionUpdate = {
+      kind: 'MISSION_POSITION', runId: 'RUN-001', scenarioId: scene.config.scenario.id, revision: scene.revision,
+      sourceGeneration: 9, sourceRecordCount: 12, waitingForLine: false,
+      nodes: [{ platformId: platform.id, time: 11, longitude: 122, latitude: 26, altitude: 50, speed: 6, heading: 45 }],
+    }
+    telemetry.engineJammerUpdates = [{ kind: 'ENGINE_JAMMER_FRAME', runId: 'RUN-001', engineEpoch: 0, sourceFrameId: 21, simulationTime: 8, jammers: [], events: [] }]
+    telemetry.engineSwitchUpdates = [{ kind: 'ENGINE_SWITCH_FRAME', runId: 'RUN-001', engineEpoch: 0, sourceFrameId: 21, simulationTime: 8, switches: [] }]
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ platformId: platform.id, longitude: 122, latitude: 26, time: 11 })
+    expect(wrapper.get('[data-testid="engine-jammer-topic-status"]').text()).toContain('帧 21')
+    expect(wrapper.get('[data-testid="engine-switch-topic-status"]').text()).toContain('帧 21')
+    expect(wrapper.findAll('.event-list li')).toHaveLength(0)
+  })
+
+  it('迟到的位置 HTTP 快照不会覆盖更新后的同源 WebSocket 记录', async () => {
+    let resolveResponse!: (response: Response) => void
+    const { scene } = await mountLiveMission(scene => new Promise<Response>(resolve => { resolveResponse = resolve }))
+    await flushPromises()
+    const platform = scene.config.platforms[0]!
+    const telemetry = useTelemetryStore()
+    telemetry.missionPositionUpdate = {
+      kind: 'MISSION_POSITION', runId: 'RUN-001', scenarioId: scene.config.scenario.id, revision: scene.revision,
+      sourceGeneration: 3, sourceRecordCount: 8, waitingForLine: false,
+      nodes: [{ platformId: platform.id, time: 12, longitude: 122, latitude: 26, altitude: 50, speed: 6, heading: 45 }],
+    }
+    await flushPromises()
+    resolveResponse(successResponse(livePositions(scene, 2)))
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject({ platformId: platform.id, longitude: 122, latitude: 26, time: 12 })
+  })
+
   it.each([100, 0])('节点详情仅在收到该节点本次位置后显示实际速度 %s m/s', async speed => {
     let received = false
     const { scene } = await mountLiveMission(async scene => {
@@ -668,6 +747,29 @@ describe('态势主界面', () => {
     await flushPromises()
     expect(document.querySelector('[data-testid="link-detail-configured"]')?.textContent).toContain('规范状态暂无数据')
     expect(fetcher.mock.calls.some(([url]) => /initial-nodes|positions|frames|events/.test(url))).toBe(false)
+  })
+
+  it('本机引擎控制状态传入工具栏，暂停后点击恢复发送 RESUME，停止确认不承诺立即解锁', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const running: SimulationRun = { ...simulationRun('RUNNING', true), engineControl: { connected: true, action: null, delivery: 'IDLE' } }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/simulations') ? successResponse([running]) : successResponse(scene)))
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    const store = useSimulationStore()
+    const pause = vi.spyOn(store, 'pause').mockImplementation(async () => {
+      store.applyRun({ ...running, engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+      return true
+    })
+    const resume = vi.spyOn(store, 'resume').mockResolvedValue(true)
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    await flushPromises()
+    expect(pause).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('恢复')
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    expect(resume).toHaveBeenCalledOnce()
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('发送后保持连接、归档和配置锁')
   })
 
   it('本机 SQLite 场景将真实 mission 模式传给工具栏', async () => {

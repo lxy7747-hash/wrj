@@ -19,6 +19,35 @@ describe('仿真工具栏', () => {
     wrapper = undefined
   })
 
+  it('真实引擎连接开放暂停；发送后允许手动恢复，始终标记待确认且不开放倍速', async () => {
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, realMission: true,
+      engineControl: { connected: true, action: null, delivery: 'IDLE' } }, global: { plugins: [ElementPlus] } })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    expect(wrapper.emitted('pause')).toHaveLength(1)
+    await wrapper.setProps({ engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('恢复')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    expect(wrapper.emitted('start')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="engine-control-status"]').text()).toContain('执行结果待确认')
+    expect(wrapper.text()).not.toContain('仿真已暂停')
+    await wrapper.setProps({ engineControl: { connected: true, action: 'stop', delivery: 'SENT' } })
+    for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('配置保持锁定')
+  })
+
+  it.each(['SENDING', 'UNKNOWN'] as const)('%s 或断线时禁用引擎控制，不通过重复点击重发', async delivery => {
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, realMission: true,
+      engineControl: { connected: true, action: 'pause', delivery } }, global: { plugins: [ElementPlus] } })
+    for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ engineControl: { connected: false, action: null, delivery: 'IDLE' } })
+    expect(wrapper.text()).toContain('WebSocket 未连接')
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+  })
+
   it.each([16, 32])('文件播放工具栏可选择 %s 倍并传出数值', async speed => {
     wrapper = mount(SimulationToolbar, {
       props: { ...baseProps, filePlayback: true }, global: { plugins: [ElementPlus] },

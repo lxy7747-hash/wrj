@@ -1,5 +1,7 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
+import { isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
+import { useRuntimeQualityStore } from './runtime-quality'
 import type {
   CapabilityState,
   ClosedLoopContext,
@@ -10,6 +12,11 @@ import type {
   JammerStatusData,
   JammerState,
   LinkStatusSummary,
+  EngineConnectionDiagnostic,
+  EngineJammerFrameUpdate,
+  EngineSwitchFrameUpdate,
+  MissionLogUpdate,
+  MissionPositionUpdate,
   QualityDatasetUpdate,
   RealtimeEnvelope,
   SimulationState,
@@ -29,7 +36,7 @@ import { useSimulationStore } from './simulation'
 
 type SituationEvent = DetectionEvent | SwitchEvent
 
-const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event']
+const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update']
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
 const PLATFORM_TYPES = new Set([
   'REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE',
@@ -75,6 +82,55 @@ function isQualityDatasetUpdate(value: unknown): value is QualityDatasetUpdate {
     && typeof scope.scenarioId === 'string' && scope.scenarioId.length > 0
     && typeof scope.revision === 'number' && Number.isSafeInteger(scope.revision) && scope.revision > 0
     && typeof scope.startedAt === 'string' && scope.startedAt.length > 0
+}
+
+function isMissionLogUpdate(value: unknown): value is MissionLogUpdate {
+  return isRecord(value) && Object.keys(value).length === 10
+    && value.kind === 'MISSION_LOG' && typeof value.runId === 'string' && value.runId.length > 0
+    && typeof value.text === 'string' && typeof value.replace === 'boolean'
+    && Number.isSafeInteger(value.bytes) && Number(value.bytes) >= 0 && typeof value.truncated === 'boolean'
+    && Number.isSafeInteger(value.chunkIndex) && Number.isSafeInteger(value.chunkCount)
+    && Number(value.chunkIndex) >= 0 && Number(value.chunkCount) > 0 && Number(value.chunkIndex) < Number(value.chunkCount)
+    && Number.isSafeInteger(value.startByteOffset) && Number.isSafeInteger(value.endByteOffset)
+    && Number(value.startByteOffset) >= 0 && Number(value.endByteOffset) >= Number(value.startByteOffset)
+    && Number(value.endByteOffset) === Number(value.bytes)
+}
+
+function isEngineConnectionDiagnostic(value: unknown): value is EngineConnectionDiagnostic {
+  if (!isRecord(value) || value.kind !== 'ENGINE_CONNECTION_DIAGNOSTIC'
+    || typeof value.runId !== 'string' || value.runId.length === 0
+    || !['CONNECTING', 'CONNECTED', 'DISCONNECTED', 'REJECTED', 'FRAME_ADVANCE_OBSERVED'].includes(String(value.state))
+    || typeof value.message !== 'string' || value.message.length === 0) return false
+  const allowed = new Set(['kind', 'runId', 'state', 'message', 'previousFrameId', 'observedFrameId'])
+  return Object.keys(value).every(key => allowed.has(key))
+    && ['previousFrameId', 'observedFrameId'].every(key => value[key] === undefined || (Number.isSafeInteger(value[key]) && Number(value[key]) >= 0))
+}
+
+function isMissionPositionUpdate(value: unknown): value is MissionPositionUpdate {
+  if (!isRecord(value) || Object.keys(value).length !== 8 || value.kind !== 'MISSION_POSITION'
+    || typeof value.runId !== 'string' || typeof value.scenarioId !== 'string'
+    || !Number.isSafeInteger(value.revision) || Number(value.revision) <= 0
+    || !Number.isSafeInteger(value.sourceGeneration) || Number(value.sourceGeneration) < 0
+    || !Number.isSafeInteger(value.sourceRecordCount) || Number(value.sourceRecordCount) < 0
+    || typeof value.waitingForLine !== 'boolean' || !Array.isArray(value.nodes)) return false
+  return value.nodes.every(node => isRecord(node) && Object.keys(node).length === 7 && typeof node.platformId === 'string' && node.platformId.length > 0
+    && ['time', 'longitude', 'latitude', 'altitude', 'speed', 'heading'].every(key => typeof node[key] === 'number' && Number.isFinite(node[key])))
+}
+
+function isEngineJammerFrameUpdate(value: unknown): value is EngineJammerFrameUpdate {
+  return isRecord(value) && Object.keys(value).length === 7 && value.kind === 'ENGINE_JAMMER_FRAME'
+    && typeof value.runId === 'string' && Number.isSafeInteger(value.engineEpoch) && Number(value.engineEpoch) >= 0
+    && Number.isSafeInteger(value.sourceFrameId) && Number(value.sourceFrameId) >= 0
+    && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && Number(value.simulationTime) >= 0
+    && Array.isArray(value.jammers) && Array.isArray(value.events)
+}
+
+function isEngineSwitchFrameUpdate(value: unknown): value is EngineSwitchFrameUpdate {
+  return isRecord(value) && Object.keys(value).length === 6 && value.kind === 'ENGINE_SWITCH_FRAME'
+    && typeof value.runId === 'string' && Number.isSafeInteger(value.engineEpoch) && Number(value.engineEpoch) >= 0
+    && Number.isSafeInteger(value.sourceFrameId) && Number(value.sourceFrameId) >= 0
+    && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && Number(value.simulationTime) >= 0
+    && Array.isArray(value.switches)
 }
 
 /** 校验对象的一组字段均为字符串。 */
@@ -812,6 +868,15 @@ export const useTelemetryStore = defineStore('telemetry', {
     jammingDecisions: [] as JammingDecision[],
     /** Bounded WS reference; the situation page fetches and validates the full dataset. */
     qualityUpdate: null as QualityDatasetUpdate | null,
+    /** HTTP initializes/recovers the console; this is the WS incremental update. */
+    missionLogUpdate: null as MissionLogUpdate | null,
+    /** Bounded append-only delivery queue so synchronous WS fragments cannot be coalesced by Vue watchers. */
+    missionLogUpdates: [] as MissionLogUpdate[],
+    /** Objective upstream connection observations, not simulation-time evidence. */
+    engineDiagnostics: [] as EngineConnectionDiagnostic[],
+    missionPositionUpdate: null as MissionPositionUpdate | null,
+    engineJammerUpdates: [] as EngineJammerFrameUpdate[],
+    engineSwitchUpdates: [] as EngineSwitchFrameUpdate[],
     // A runtime-only task may have no telemetry frame; retain the task chosen
     // for the socket so reconnects cannot silently fall back to TASK-001.
     realtimeTaskId: null as TaskId | null,
@@ -821,6 +886,8 @@ export const useTelemetryStore = defineStore('telemetry', {
       'link.metric': 0,
       'jammer.event': 0,
       'switch.event': 0,
+      'mission.log': 0,
+      'position.update': 0,
     } as Record<WsTopic, number>,
     connectionState: 'DISCONNECTED' as WsConnectionState,
     connectionBlocked: false,
@@ -1142,9 +1209,30 @@ export const useTelemetryStore = defineStore('telemetry', {
       } else if (envelope.topic === 'runtime.state') {
         const currentTaskId = useSimulationStore().run?.taskId ?? this.frame?.taskId
         if (currentTaskId === undefined || envelope.taskId !== currentTaskId) return false
+      } else if (envelope.topic === 'link.metric' && isEngineFrameSnapshot(envelope.payload)) {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || envelope.payload.runId !== run.runId
+          || envelope.frameId !== `F-ENGINE-${envelope.payload.frameId}` || envelope.simulationTime !== envelope.payload.simulationTime) return false
       } else if (envelope.topic === 'link.metric' && isQualityDatasetUpdate(envelope.payload)) {
         const taskId = useSimulationStore().run?.taskId ?? this.frame?.taskId
         if (taskId === undefined || envelope.taskId !== taskId || envelope.payload.scope.taskId !== taskId) return false
+      } else if (envelope.topic === 'mission.log') {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || envelope.simulationTime !== undefined || envelope.frameId !== undefined
+          || (!isMissionLogUpdate(envelope.payload) && !isEngineConnectionDiagnostic(envelope.payload))
+          || envelope.payload.runId !== run.runId) return false
+      } else if (envelope.topic === 'position.update') {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || envelope.simulationTime !== undefined || envelope.frameId !== undefined
+          || !isMissionPositionUpdate(envelope.payload) || envelope.payload.runId !== run.runId || envelope.payload.scenarioId !== run.scenarioId) return false
+      } else if (envelope.topic === 'jammer.event' && isEngineJammerFrameUpdate(envelope.payload)) {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || envelope.payload.runId !== run.runId
+          || envelope.frameId !== `F-ENGINE-${envelope.payload.sourceFrameId}` || envelope.simulationTime !== envelope.payload.simulationTime) return false
+      } else if (envelope.topic === 'switch.event' && isEngineSwitchFrameUpdate(envelope.payload)) {
+        const run = useSimulationStore().run
+        if (!run || envelope.taskId !== run.taskId || envelope.payload.runId !== run.runId
+          || envelope.frameId !== `F-ENGINE-${envelope.payload.sourceFrameId}` || envelope.simulationTime !== envelope.payload.simulationTime) return false
       } else if (this.frame === null || envelope.taskId !== this.frame.taskId) return false
 
       const previous = this.topicSequences[envelope.topic]
@@ -1167,6 +1255,12 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.frame = structuredClone(payload)
         this.events = this.events.filter((event) => event.frameId === payload.frameId)
       } else if (envelope.topic === 'link.metric') {
+        if (isEngineFrameSnapshot(envelope.payload)) {
+          const quality = useRuntimeQualityStore()
+          if (!quality.acceptEngineFrame(quality.epoch, envelope.payload)) return false
+          this.topicSequences[envelope.topic] = envelope.sequence
+          return true
+        }
         if (isQualityDatasetUpdate(envelope.payload)) {
           this.qualityUpdate = structuredClone(envelope.payload)
           this.topicSequences[envelope.topic] = envelope.sequence
@@ -1195,8 +1289,24 @@ export const useTelemetryStore = defineStore('telemetry', {
       } else if (envelope.topic === 'runtime.state') {
         if (!isSimulationState(envelope.payload)) return false
         void this.applyRuntimeState(envelope.sequence, previous)
+      } else if (envelope.topic === 'mission.log') {
+        if (isMissionLogUpdate(envelope.payload)) {
+          const update = structuredClone(envelope.payload)
+          this.missionLogUpdate = update
+          this.missionLogUpdates = [...this.missionLogUpdates, update].slice(-128)
+        }
+        else if (isEngineConnectionDiagnostic(envelope.payload)) this.engineDiagnostics = [...this.engineDiagnostics, structuredClone(envelope.payload)].slice(-20)
+        else return false
+      } else if (envelope.topic === 'position.update') {
+        if (!isMissionPositionUpdate(envelope.payload)) return false
+        this.missionPositionUpdate = structuredClone(envelope.payload)
       } else if (envelope.topic === 'jammer.event') {
         const payload = envelope.payload
+        if (isEngineJammerFrameUpdate(payload)) {
+          this.engineJammerUpdates = [...this.engineJammerUpdates, structuredClone(payload)].slice(-200)
+          this.topicSequences[envelope.topic] = envelope.sequence
+          return true
+        }
         if (this.frame === null || envelope.frameId !== this.frame.frameId
           || envelope.simulationTime !== this.frame.simulationTime) return false
         if (isJammerStatus(payload)) {
@@ -1246,6 +1356,11 @@ export const useTelemetryStore = defineStore('telemetry', {
         }
       } else if (envelope.topic === 'switch.event') {
         const payload = envelope.payload
+        if (isEngineSwitchFrameUpdate(payload)) {
+          this.engineSwitchUpdates = [...this.engineSwitchUpdates, structuredClone(payload)].slice(-200)
+          this.topicSequences[envelope.topic] = envelope.sequence
+          return true
+        }
         if (this.frame === null
           || !isSituationEvent(payload)
           || payload.type !== 'LINK_SWITCH'
@@ -1361,6 +1476,12 @@ export const useTelemetryStore = defineStore('telemetry', {
       runtime.socket?.close()
       runtime.socket = null
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
+      // 真实运行没有固定 REST 遥测帧；重新订阅已有 journal 即可恢复引擎整帧。
+      if (useAuthStore().runtimeMode === 'LOCAL' && this.frame === null && useSimulationStore().run?.startedAt) {
+        runtime.manuallyClosed = false
+        this.connect()
+        return
+      }
       if (await this.loadFrame()) {
         runtime.manuallyClosed = false
         this.connect()
@@ -1425,6 +1546,12 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.sensorStatuses = []
       this.jammingDecisions = []
       this.qualityUpdate = null
+      this.missionLogUpdate = null
+      this.missionLogUpdates = []
+      this.engineDiagnostics = []
+      this.missionPositionUpdate = null
+      this.engineJammerUpdates = []
+      this.engineSwitchUpdates = []
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
       this.connectionState = 'DISCONNECTED'
       this.capabilityState = 'EMPTY'

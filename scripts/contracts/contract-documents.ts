@@ -26,10 +26,11 @@ type OperationContract = {
 type OperationSchemaBinding = {
   readonly requestTargetRef: string | null
   readonly successStatus: string
+  readonly additionalSuccessStatuses?: readonly string[]
   readonly dataRef: string | null
   readonly binaryResponse?: true
 }
-type CanonicalTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event'
+type CanonicalTopic = 'simulation.frame' | 'runtime.state' | 'link.metric' | 'jammer.event' | 'switch.event' | 'mission.log' | 'position.update'
 
 const HTTP_METHODS: readonly HttpMethod[] = [
   'get',
@@ -230,7 +231,7 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   getapiV1SimulationsRunIdQuality: operationSchemaBinding(null, '200', '#/components/schemas/QualityDatasetOrNull'),
   postapiV1SimulationsRunIdQuality: operationSchemaBinding('#/components/schemas/QualityImportRequest', '200', '#/components/schemas/QualityDataset'),
   getapiV1SimulationsRunIdQualityFilesFileName: operationSchemaBinding(null, '200', null, true),
-  postapiV1SimulationsRunIdCommands: operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'),
+  postapiV1SimulationsRunIdCommands: { ...operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'), additionalSuccessStatuses: ['202'] },
   postapiV1TasksTaskIdJammersJammerIdCommands: operationSchemaBinding('#/components/schemas/JammingCommand', '200', '#/components/schemas/JammerState'),
   postapiV1TasksTaskIdJammersJammerIdParameters: operationSchemaBinding('#/components/schemas/JammingParameterSet', '200', '#/components/schemas/SyncResult'),
   getapiV1SimulationsRunIdFramesFrameId: operationSchemaBinding(null, '200', '#/components/schemas/TelemetryFrame'),
@@ -353,6 +354,13 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1AdminConfigExport: ['401', '403', '409', '422', '428'],
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], readonly string[]>)
 const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
+  ["#/components/schemas/EngineRoute/properties/direction/enum", ["FORWARD","REVERSE"]],
+  ["#/components/schemas/EngineRouteSwitch/properties/direction/enum", ["FORWARD","REVERSE"]],
+  ["#/components/schemas/EngineLinkSegment/properties/status/enum", ["UP","DEGRADED","DOWN","UNKNOWN"]],
+  ["#/components/schemas/EngineJammer/properties/actions/items/properties/mode/enum", ["BARRAGE","SPOT","SWEEP",null]],
+  ["#/components/schemas/EngineFrameSnapshot/properties/kind/const", "ENGINE_FRAME"],
+  ['#/components/schemas/LocalReportEvidence/properties/engineCsv/properties/files/items/properties/status/enum', ['COMPLETE', 'PARTIAL']],
+  ['#/components/schemas/LocalReportEvidence/properties/engineCsv/properties/missing/items/properties/status/const', 'SOURCE_MISSING'],
   ['#/components/schemas/QualitySample/properties/linkType/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
   ['#/components/schemas/QualitySample/properties/modulation/enum', ['BPSK','QPSK','OOK']],
   ['#/components/schemas/QualitySample/properties/linkStatus/enum', ['UP','DOWN']],
@@ -513,6 +521,10 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/EventRecord/allOf/0/if/properties/type/const', 'DETECTION'],
   ['#/components/schemas/EventRecord/allOf/1/if/properties/type/const', 'LINK_SWITCH'],
   ['#/components/schemas/SimulationRun/properties/uiStatus/enum', ['IDLE','RUNNING','PAUSED','STOPPED','COMPLETED','ERROR']],
+  ['#/components/schemas/SimulationRun/properties/engineControl/properties/action/enum', [null,'pause','resume','stop']],
+  ['#/components/schemas/SimulationRun/properties/engineControl/properties/delivery/enum', ['IDLE','SENDING','SENT','UNKNOWN']],
+  ['#/components/schemas/SimulationRun/properties/engineControl/allOf/0/if/properties/delivery/const', 'IDLE'],
+  ['#/components/schemas/SimulationRun/properties/engineControl/allOf/0/else/properties/action/enum', ['pause','resume','stop']],
   ['#/components/schemas/ValidationIssue/properties/severity/enum', ['ERROR','WARNING']],
   ['#/components/schemas/SensorUiExtension/properties/type/const', 'ESM'],
   ['#/components/schemas/SensorUiExtension/properties/direction/oneOf/0/const', 'OMNI'],
@@ -809,6 +821,8 @@ const CANONICAL_TOPICS: ReadonlySet<CanonicalTopic> = new Set([
   'link.metric',
   'jammer.event',
   'switch.event',
+  'mission.log',
+  'position.update',
 ])
 
 function operationReference(
@@ -895,7 +909,7 @@ const CAPABILITY_TRACEABILITY = Object.freeze({
   ]),
   'DSDWRJQTLJS-XQ-SJJHYJK-WSTC': capabilityTrace('/admin/data-exchange', [
     operationReference('get', '/ws/v1', 'getwsV1'),
-  ], ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event']),
+  ], ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update']),
   'DSDWRJQTLJS-XQ-SJJHYJK-JCGJ': capabilityTrace('/admin/data-exchange', [
     operationReference('post', '/api/v1/simulations/{runId}/commands', 'postapiV1SimulationsRunIdCommands'),
   ], ['runtime.state']),
@@ -1523,12 +1537,13 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
         && responseEntries.some(([status]) => status === '101')
       if (expectedBinding && expectedOperation) {
         const statusPath = `${operationPath}.responses`
-        if (!sameStrings(contractSuccessStatuses, [expectedBinding.successStatus])) {
+        const expectedSuccessStatuses = [expectedBinding.successStatus, ...expectedBinding.additionalSuccessStatuses ?? []]
+        if (!sameStrings(contractSuccessStatuses, expectedSuccessStatuses)) {
           addFinding(
             findings,
             'OPENAPI_SUCCESS_ENVELOPE',
             statusPath,
-            `Expected exact success status ${expectedBinding.successStatus}, found [${contractSuccessStatuses.join(', ')}]`,
+            `Expected exact success statuses [${expectedSuccessStatuses.join(', ')}], found [${contractSuccessStatuses.join(', ')}]`,
           )
         }
 
@@ -1635,7 +1650,10 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
         }
 
         const previousOwner = successSchemaOwners.get(responseReference)
-        if (previousOwner) {
+        if (expectedOperation && responseReference !== expectedSchemaReference(expectedOperation.operationId, 'Response')) {
+          addFinding(findings, 'OPENAPI_SUCCESS_ENVELOPE', responsePath, 'Every success status must use this operation\'s typed response envelope')
+        }
+        if (previousOwner && previousOwner !== owner) {
           addFinding(
             findings,
             'OPENAPI_SUCCESS_ENVELOPE',

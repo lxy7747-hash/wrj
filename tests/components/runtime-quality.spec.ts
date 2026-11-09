@@ -3,7 +3,7 @@ import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus, { ElSelect } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { Principal, ScenarioConfig, SimulationRun } from '../../src/contracts/domain-models'
+import type { EngineFrameSnapshot, Principal, ScenarioConfig, SimulationRun } from '../../src/contracts/domain-models'
 import QualityMetricPanel from '../../src/components/situation/QualityMetricPanel.vue'
 import LinkQualityDialog from '../../src/components/situation/LinkQualityDialog.vue'
 import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../src/stores/runtime-quality'
@@ -94,6 +94,34 @@ describe('统一运行质量投影与展示', () => {
     expect(detail('调制方式')).toBe('QPSK')
     for (const label of ['信噪比 SNR', '规范状态', '界面状态', '稳定帧数']) expect(detail(label)).toBe('暂无数据')
     expect(wrapper!.get('[data-testid="link-detail-runtime"]').attributes('data-frame-id')).toBe('10')
+  })
+
+  it('引擎分段详情展示同一来源帧号和仿真时刻，且错误优先于上游正常状态', async () => {
+    const engineFrame: EngineFrameSnapshot = {
+      kind: 'ENGINE_FRAME', runId: scope.runId, engineEpoch: 0, frameId: 18, simulationTime: 72.25, modelVersion: null, modulation: null,
+      links: [], jammers: [], routing: { switches: [], alarms: [] }, events: [], initRouting: null,
+    }
+    wrapper = mount(LinkQualityDialog, { props: {
+      modelValue: true, link: null, configuredLink: configured, engineFrame,
+      engineSegments: [{
+        linkId: 'segment-a', linkIds: [configured.id], sourceName: 'TX', sourcePlatformId: 'TX', sourcePort: 'TX-PORT', targetName: 'RX', targetPlatformId: 'RX', targetPort: 'RX-PORT',
+        status: 'DEGRADED', engineStatus: 'RISK', error: null, distanceM: 12500,
+        losses: { freeSpaceDb: null, seaMultipathDb: null, atmosphericDb: null, cloudRainDb: null, jammingDb: null, totalDb: 107 },
+        quality: { gxbDb: -7.5, ber: 1.2e-4, rxPowerDbw: -110, rxPowerDbm: -80 },
+        inputTrace: { eirpDbw: null, gtDbk: null, dataRateMbps: null, frequencyGHz: null, jammers: [] },
+      }],
+    }, global: { plugins: [pinia, ElementPlus], stubs: { ElDialog: dialogStub } } })
+    expect(wrapper.get('[data-testid="link-detail-engine-segments"]').text()).toContain('来源帧 18 · 源仿真时刻 1分12.25秒')
+    expect(detail('引擎状态')).toBe('劣化')
+    expect(detail('信噪比 SNR')).toBe('暂无数据（上游未提供）')
+    await wrapper.setProps({ engineSegments: [{
+      linkId: 'segment-error', linkIds: [configured.id], sourceName: 'TX', sourcePlatformId: 'TX', sourcePort: 'TX-PORT', targetName: 'RX', targetPlatformId: 'RX', targetPort: 'RX-PORT',
+      status: 'UP', engineStatus: 'AVAILABLE', error: '计算输入缺失', distanceM: null,
+      losses: { freeSpaceDb: null, seaMultipathDb: null, atmosphericDb: null, cloudRainDb: null, jammingDb: null, totalDb: null },
+      quality: { gxbDb: null, ber: null, rxPowerDbw: null, rxPowerDbm: null },
+      inputTrace: { eirpDbw: null, gtDbk: null, dataRateMbps: null, frequencyGHz: null, jammers: [] },
+    }] })
+    expect(detail('引擎状态')).toBe('异常（状态未知）')
   })
 
   it('下一帧缺失指标覆盖前值为暂无数据，不从上一帧或全局默认值补齐', async () => {

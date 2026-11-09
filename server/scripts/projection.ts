@@ -84,8 +84,12 @@ function inspectNativeStructure(preview: string, addError: (code: string, messag
 export function inspectScriptPreview(preview: string): ValidationResult {
   const lines = preview.split('\n')
   const errors: ValidationIssue[] = []
+  const warnings: ValidationIssue[] = []
   const addError = (code: string, message: string, line: number, column = 1): void => {
     errors.push({ severity: 'ERROR', code, message: `第 ${line} 行，第 ${column} 列：${message}`, fieldPath: `preview[${line}:${column}]` })
+  }
+  const addWarning = (code: string, message: string, line: number, column = 1): void => {
+    warnings.push({ severity: 'WARNING', code, message: `第 ${line} 行，第 ${column} 列：${message}`, fieldPath: `preview[${line}:${column}]` })
   }
   if (lines[0] !== `// ===== ${SCENARIO_PREVIEW_FILE} =====`) addError('SCRIPT_HEADER_INVALID', '脚本入口结构不正确。', 1)
   if (!lines.some(line => line === 'include_once comm_SimSetup.txt')) addError('SCRIPT_ENTRY_INVALID', '缺少 comm_SimSetup.txt 入口引用。', 1)
@@ -98,8 +102,21 @@ export function inspectScriptPreview(preview: string): ValidationResult {
   }
   const outputLine = lines.findIndex((line) => /^   file .+\.aer$/.test(line))
   if (outputLine < 0) addError('SCRIPT_OUTPUT_PATH_INVALID', '缺少有效输出路径合同。', Math.max(1, lines.length - 1))
+  const linkCalcLine = lines.findIndex(line => /\bWSF_LINK_CALC_PROCESSOR\b/.test(line))
+  if (linkCalcLine >= 0) addWarning('LINK_CALC_PROVIDER_UNCONFIRMED', '本包引用 WSF_LINK_CALC_PROCESSOR；需由外部 AFSIM/LinkCalc 提供定义，预检未将其判为失败。', linkCalcLine + 1)
+  const definedAntennas = new Set(lines.flatMap(line => /^antenna_pattern (\S+)$/u.exec(line)?.[1] ?? []))
+  const antennaReferences = new Map<string, number>()
+  lines.forEach((line, index) => {
+    const match = /^\s+antenna_pattern (\S+)$/u.exec(line)
+    if (match !== null && !definedAntennas.has(match[1]!)) antennaReferences.set(match[1]!, index)
+  })
+  for (const [name, index] of antennaReferences) addWarning('TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED', `本包引用天线 ${name} 但未定义；需由提供方模板/库确认，不等同于引擎必然失败。`, index + 1)
+  const groundTypeLine = lines.findIndex(line => line === 'platform_type GROUND_JAMMER_STATION WSF_PLATFORM')
+  if (groundTypeLine >= 0 && !lines.some(line => line === '  weapon prophet_jammer WSF_RF_JAMMER')) {
+    addWarning('GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED', '地面干扰平台未在本包定义 prophet_jammer；若启用该设备，需由提供方模板/插件确认武器定义。', groundTypeLine + 1)
+  }
   inspectNativeStructure(preview, addError)
-  return { valid: errors.length === 0, errors, warnings: [] }
+  return { valid: errors.length === 0, errors, warnings }
 }
 
 export class ScriptProjection {

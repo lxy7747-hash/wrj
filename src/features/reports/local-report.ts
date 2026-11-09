@@ -1,5 +1,6 @@
 import type { LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report } from '../../contracts/domain-models'
 import { isQualityDatasetProjection } from '../data-exchange/quality-records'
+import { isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
 import { isDetectionEvent } from './detection-events'
 
 /** 共享纯校验，Mock 服务无需导入本机文件索引适配器。 */
@@ -31,7 +32,7 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
     || !text(value.generatedTime) || !Number.isFinite(Date.parse(value.generatedTime))) return false
   const e = value.localEvidence as Partial<LocalReportEvidence>
   const evidenceKeys = ['eventFile', 'positionFile', 'startTimeS', 'endTimeS', 'simulationComplete', 'positionCount', 'positionIssueCount', 'waitingForPositionLine', 'eventCount', 'eventWarningCount', 'nodes', 'eventCounts', 'connections', 'deviceEvents']
-  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis', 'quality', 'qualityConnectivityRates']
+  const optionalEvidenceKeys = ['messageDetailsComplete', 'messageDetailEventCount', 'relatedNodeIds', 'detectionEvents', 'switchEvents', 'qualityKpis', 'quality', 'qualityConnectivityRates', 'engineFrameArchive', 'engineCsv']
   if (!e || typeof e !== 'object' || Array.isArray(e) || !evidenceKeys.every(key => Object.hasOwn(e, key))
     || !Object.keys(e).every(key => evidenceKeys.includes(key) || optionalEvidenceKeys.includes(key))
     || ![e.eventFile, e.positionFile].every(file => object(file, ['fileName', 'sha256']) && text(file.fileName) && hash(file.sha256))
@@ -98,7 +99,40 @@ export function isLocalReport(value: unknown): value is Report & { localEvidence
   if (e.quality !== undefined && (!isQualityDatasetProjection(e.quality) || (value.reportId.includes('-Q-') && !value.reportId.endsWith(`-Q-${e.quality.source.sha256}`)))) return false
   if (e.quality === undefined && value.reportId.includes('-Q-')) return false
   if (e.qualityConnectivityRates !== undefined && (!e.quality || !isQualityConnectivityRates(e.qualityConnectivityRates))) return false
+  if (e.engineFrameArchive !== undefined && !isEngineFrameArchive(e.engineFrameArchive)) return false
+  if (e.engineCsv !== undefined && !isEngineCsv(e.engineCsv)) return false
   return true
+}
+
+function isEngineFrameArchive(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const archive = value as Record<string, unknown>
+  const aggregate = archive.aggregate as Record<string, unknown> | undefined
+  const allowed = ['sourceSha256', 'frameCount', 'firstSimulationTime', 'lastSimulationTime', 'missingFieldNames', 'segmentRows', 'switchRows', 'eventRows', 'detailTruncated', 'retainedDetailRows', 'aggregate']
+  if (!Object.keys(archive).every(key => allowed.includes(key)) || !hash(archive.sourceSha256) || !count(archive.frameCount)
+    || ![archive.firstSimulationTime, archive.lastSimulationTime].every(value => value === null || time(value))
+    || !Array.isArray(archive.missingFieldNames) || archive.missingFieldNames.some(field => !text(field))
+    || !Array.isArray(archive.segmentRows) || !Array.isArray(archive.switchRows) || !Array.isArray(archive.eventRows)
+    || (archive.detailTruncated !== undefined && typeof archive.detailTruncated !== 'boolean')
+    || (archive.retainedDetailRows !== undefined && !count(archive.retainedDetailRows))
+    || (aggregate !== undefined && (!aggregate || typeof aggregate !== 'object' || Array.isArray(aggregate) || !Object.keys(aggregate).every(key => ['uniqueSingleSegmentCount', 'switchCount', 'missing', 'averageGxbDb', 'averageBer'].includes(key)) || !count(aggregate.uniqueSingleSegmentCount) || !count(aggregate.switchCount) || !Array.isArray(aggregate.missing) || aggregate.missing.some((item: unknown) => !text(item))
+      || (aggregate.averageGxbDb !== undefined && (typeof aggregate.averageGxbDb !== 'number' || !Number.isFinite(aggregate.averageGxbDb))) || (aggregate.averageBer !== undefined && (typeof aggregate.averageBer !== 'number' || !Number.isFinite(aggregate.averageBer) || aggregate.averageBer < 0 || aggregate.averageBer > 1))))
+    || (archive.detailTruncated === true && archive.retainedDetailRows === undefined)) return false
+  const row = (item: unknown, field: 'segment' | 'value', kind: 'segment' | 'switch' | 'event') => {
+    if (!object(item, ['engineEpoch', 'frameId', 'simulationTime', field]) || !count(item.engineEpoch) || !count(item.frameId) || !time(item.simulationTime)) return false
+    const candidate = { kind: 'ENGINE_FRAME', runId: 'RUN-REPORT-VALIDATION', engineEpoch: item.engineEpoch, frameId: item.frameId, simulationTime: item.simulationTime,
+      modelVersion: null, modulation: null, links: kind === 'segment' ? [item[field]] : [], jammers: [], initRouting: null,
+      routing: { switches: kind === 'switch' ? [item[field]] : [], alarms: [] }, events: kind === 'event' ? [item[field]] : [] }
+    return isEngineFrameSnapshot(candidate)
+  }
+  return archive.segmentRows.every(item => row(item, 'segment', 'segment')) && archive.switchRows.every(item => row(item, 'value', 'switch')) && archive.eventRows.every(item => row(item, 'value', 'event'))
+}
+function isEngineCsv(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const csv = value as Record<string, unknown>
+  return Object.keys(csv).length === 3 && hash(csv.sourceSha256) && Array.isArray(csv.files) && Array.isArray(csv.missing)
+    && csv.files.every(file => !!file && typeof file === 'object' && !Array.isArray(file) && Object.keys(file).every(key => ['fileName', 'rowCount', 'sha256', 'status', 'skippedCount', 'reason'].includes(key)) && typeof (file as Record<string, unknown>).fileName === 'string' && count((file as Record<string, unknown>).rowCount) && hash((file as Record<string, unknown>).sha256) && ['COMPLETE', 'PARTIAL'].includes(String((file as Record<string, unknown>).status)) && count((file as Record<string, unknown>).skippedCount) && ((file as Record<string, unknown>).reason === undefined || text((file as Record<string, unknown>).reason)))
+    && csv.missing.every(file => object(file, ['fileName', 'status', 'reason']) && typeof file.fileName === 'string' && file.status === 'SOURCE_MISSING' && text(file.reason))
 }
 
 function isQualityConnectivityRates(value: unknown): value is NonNullable<LocalReportEvidence['qualityConnectivityRates']> {
@@ -179,10 +213,12 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
       ['通信设备关闭记录', String(events.get('COMM_TURNED_OFF') ?? 0)], ['干扰请求发起记录', String(events.get('JAMMING_REQUEST_INITIATED') ?? 0)],
       // 大纲评估指标：有引擎质量/干扰输出时填写，缺省显示“暂无数据”。切换次数来自切换事件，未解析到时同样显示暂无数据。
       ['平均连通时长', kpi(e.qualityKpis?.averageConnectedDurationS, value => reportTime(value))],
-      ['切换次数', e.quality === undefined ? (e.switchEvents === undefined ? NO_DATA : String(e.switchEvents.length)) : (e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length > 0 ? String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length) : NO_DATA)],
+      ['切换次数', e.engineFrameArchive?.aggregate ? `${e.engineFrameArchive.aggregate.switchCount}（引擎实际记录）` : e.quality === undefined ? (e.switchEvents === undefined ? NO_DATA : String(e.switchEvents.length)) : (e.quality.source.switchEventsProvided === true || e.quality.switchEvents.length > 0 ? String(e.quality.switchEvents.filter(row => row.decision === 'ACCEPTED').length) : NO_DATA)],
+      ['平均GXB', kpi(e.engineFrameArchive?.aggregate?.averageGxbDb, value => `${value.toFixed(2)} dB（唯一单段实测）`)],
       ['平均干信比', kpi(e.qualityKpis?.averageJsrDb, value => `${value.toFixed(2)} dB`)],
-      ['平均误码率', kpi(e.qualityKpis?.averageBer, value => value.toExponential(2))],
+      ['平均误码率', kpi(e.qualityKpis?.averageBer ?? e.engineFrameArchive?.aggregate?.averageBer, value => value.toExponential(2))],
       ['干扰持续时长', kpi(e.qualityKpis?.jammingDurationS, value => reportTime(value))],
+      ...engineAggregateSummary(e),
     ] },
     { title: '节点与位置', columns: ['节点', '类型', '阵营原值', '位置记录数', '首条位置时刻', '末条位置时刻'], rows: e.nodes.map(node => [name(node.platformId), node.type, node.side, String(node.positionCount), node.positionCount ? reportTime(node.firstTimeS) : '无位置记录', node.positionCount ? reportTime(node.lastTimeS) : '无位置记录']) },
     { title: '通信关联登记', columns: ['事件编号', '登记时刻', '范围', '发送端', '发送设备', '接收端', '接收设备'], rows: e.connections.map(row => [row.eventId, reportTime(row.time), row.scope === 'INTERNAL' ? '平台内部' : '跨平台', name(row.sourcePlatformId), row.sourceDeviceId, name(row.targetPlatformId), row.targetDeviceId]) },
@@ -215,6 +251,18 @@ export function localReportTables(e: LocalReportEvidence): Array<{ title: string
 
 function kpi(value: number | undefined, format: (value: number) => string): string {
   return typeof value === 'number' && Number.isFinite(value) ? format(value) : NO_DATA
+}
+
+/** Complete-archive engine metrics have their own labels so they are never confused with quality-file KPIs. */
+export function engineAggregateSummary(evidence: LocalReportEvidence): string[][] {
+  const aggregate = evidence.engineFrameArchive?.aggregate
+  if (!aggregate) return []
+  return [
+    ['引擎完整流唯一单段有效样本', `${aggregate.uniqueSingleSegmentCount} 条`],
+    ['引擎完整流平均GXB', kpi(aggregate.averageGxbDb, value => `${value.toFixed(2)} dB（唯一单段实测）`)],
+    ['引擎完整流平均BER', kpi(aggregate.averageBer, value => value.toExponential(2))],
+    ['引擎路由切换记录', `${aggregate.switchCount} 条（引擎实际记录，不代表成功率）`],
+  ]
 }
 
 /** 图表与导出共用已应用的范围，不读取尚未提交的筛选输入。 */

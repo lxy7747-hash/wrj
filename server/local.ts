@@ -8,6 +8,10 @@ import { readMissionRunTimeout } from './local/mission-runner.js'
 import { DiskRealtimeJournal } from './local/realtime-journal.js'
 import { LocalMissionResults } from './local/mission-results.js'
 import { createRunQualityStore } from './local/run-quality.js'
+import { createEngineFrameArchive } from './local/engine-frame-archive.js'
+import { EngineSnapshotClient, readLinkEngineWsUrl } from './local/engine-snapshot-client.js'
+import { MissionLogStreamer } from './local/mission-log-stream.js'
+import { MissionPositionStreamer } from './local/mission-position-stream.js'
 import { createMockServer } from './app.js'
 import { readInitialNodes } from './local/afsim-log-reader.js'
 import { createPositionReader } from './local/afsim-position-reader.js'
@@ -70,6 +74,7 @@ let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
 const missionResults = new LocalMissionResults(lan ? join(lan.outputRoot, 'results') : fileURLToPath(new URL('../output/results/', import.meta.url)))
 const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'quality') : fileURLToPath(new URL('../output/quality/', import.meta.url)), () => new Date().toISOString())
+const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString())
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
 const missionExecution = lan?.webOnly
@@ -78,11 +83,16 @@ const missionExecution = lan?.webOnly
 const server = createMockServer({
   missionResults,
   runQualityStore,
+  engineFrameArchive,
   createRunId: () => `RUN-${randomUUID()}`,
   realtimeJournal: new DiskRealtimeJournal(lan ? join(lan.outputRoot, 'ws-journal') : fileURLToPath(new URL('../output/ws-journal/', import.meta.url)), 128),
   port,
   ...(lan ? { publicOrigin: lan.publicOrigin, host: lan.host, site: createLanSite(lan.webRoot, lan.tilePort) } : {}),
   missionExecution,
+  createMissionLogStreamer: (...args) => new MissionLogStreamer(...args),
+  createMissionPositionStreamer: (...args) => new MissionPositionStreamer(...args),
+  linkEngineWsUrl: lan?.linkEngineWsUrl ?? readLinkEngineWsUrl(process.env.LINK_ENGINE_WS_URL),
+  createEngineSnapshotClient: (url, publish, diagnose) => new EngineSnapshotClient(url, publish, undefined, diagnose),
   writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {
     const { eventPath } = runtimeConfig.load()

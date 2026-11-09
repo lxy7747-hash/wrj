@@ -10,6 +10,9 @@ import type { LocalReportFilter, ReportExportRequest } from '../../contracts/dom
 import { useReportStore } from '../../stores/report'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { formatDateTime } from '../../features/shared/date-time'
+import { apiFetch } from '../../features/shared/api-fetch'
+import { saveDownload } from '../../features/shared/download'
+import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 
 const reportStore = useReportStore()
 const telemetryStore = useTelemetryStore()
@@ -22,6 +25,10 @@ const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(c
 const filterNode = ref(''), filterLink = ref(''), filterStage = ref(''), filterFrom = ref<number | null>(null), filterTo = ref<number | null>(null)
 const filterRangeError = computed(() => filterFrom.value !== null && filterTo.value !== null && filterFrom.value > filterTo.value)
 const localEvidence = computed(() => localFilterResult.value?.report.localEvidence ?? selectedReport.value?.localEvidence)
+const engineArchive = computed(() => localEvidence.value?.engineFrameArchive)
+const engineCsv = computed(() => localEvidence.value?.engineCsv)
+const engineArchiveDownloading = ref(false)
+const engineCsvDownloading = ref<string | null>(null)
 const appliedFilterLabel = computed(() => {
   const filter = localFilterResult.value?.filter
   return filter && Object.keys(filter).length ? [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && `链路 ${filter.linkId}`,
@@ -89,6 +96,37 @@ async function applyLocalFilter(reset = false): Promise<void> {
   await reportStore.applyLocalFilter(filter)
 }
 
+/** 下载当前结果绑定的完整已验证 JSONL；摘要截断时不把内存明细冒充全量。 */
+async function downloadEngineFrames(): Promise<void> {
+  const source = resultSource.value
+  const sha256 = engineArchive.value?.sourceSha256
+  if (!source || !sha256 || engineArchiveDownloading.value) return
+  engineArchiveDownloading.value = true
+  try {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(source.resultId)}/engine-frames/${encodeURIComponent(sha256)}`, {
+      headers: { 'X-Demo-Role': useAuthStore().role },
+    })
+    if (!await saveDownload(response, `engine-frames-${sha256}.jsonl`, () => resultSource.value?.resultId === source.resultId
+      && engineArchive.value?.sourceSha256 === sha256)) return
+    ElMessage.success('已发起完整引擎帧 JSONL 下载。')
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '引擎帧归档下载失败。') } finally { engineArchiveDownloading.value = false }
+}
+
+/** Downloads only a report-attached canonical CSV; the server rechecks result permission and source SHA. */
+async function downloadEngineCsv(fileName: string): Promise<void> {
+  const source = resultSource.value
+  const sha256 = engineCsv.value?.sourceSha256
+  if (!source || !sha256 || engineCsvDownloading.value !== null) return
+  engineCsvDownloading.value = fileName
+  try {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(source.resultId)}/engine-csv/${encodeURIComponent(fileName)}`, {
+      headers: { 'X-Demo-Role': useAuthStore().role },
+    })
+    if (!await saveDownload(response, fileName, () => resultSource.value?.resultId === source.resultId && engineCsv.value?.sourceSha256 === sha256)) return
+    ElMessage.success(`已发起 ${fileName} 下载。`)
+  } catch (error) { ElMessage.error(error instanceof Error ? error.message : '引擎规范 CSV 下载失败。') } finally { engineCsvDownloading.value = null }
+}
+
 </script>
 
 <template>
@@ -137,6 +175,10 @@ async function applyLocalFilter(reset = false): Promise<void> {
       <template v-else-if="selectedReport?.localEvidence">
         <el-alert v-if="resultSource && (capabilityState === 'ERROR' || !localFilterResult)" type="warning" :closable="false" :title="resultMessage || '该历史结果没有完整筛选索引，请重新生成结果。'" />
         <p v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
+        <el-button v-if="resultSource && engineArchive" data-testid="engine-frame-archive-download" :loading="engineArchiveDownloading" :disabled="pending" @click="downloadEngineFrames">下载完整引擎帧 JSONL</el-button>
+        <template v-if="resultSource && engineCsv">
+          <el-button v-for="file in engineCsv.files" :key="file.fileName" data-testid="engine-csv-download" :loading="engineCsvDownloading === file.fileName" :disabled="pending || engineCsvDownloading !== null" @click="downloadEngineCsv(file.fileName)">下载 {{ file.fileName }}{{ file.status === 'PARTIAL' ? '（部分）' : '' }}</el-button>
+        </template>
         <el-form v-if="resultSource" inline class="local-report-filter" aria-label="报告统一筛选">
           <el-form-item label="节点"><el-select v-model="filterNode" clearable style="width: 160px" placeholder="全部节点"><el-option v-for="node in selectedReport.localEvidence.nodes" :key="node.platformId" :value="node.platformId" :label="node.name" /></el-select></el-form-item>
           <el-form-item label="链路"><el-select v-model="filterLink" clearable style="width: 180px" :disabled="!localFilterResult" placeholder="全部链路"><el-option v-for="link in localFilterResult?.links ?? []" :key="link" :value="link" :label="link" /></el-select></el-form-item>

@@ -36,6 +36,9 @@ export interface SituationMapFocusTarget {
   targetId: string
 }
 
+/** 已由引擎当前帧端口唯一映射的切换路径标记；不是链路质量或选路结果。 */
+export type ConfiguredLinkSwitchState = 'BEFORE' | 'AFTER' | 'BOTH'
+
 export interface SituationMapControllerOptions {
   container: HTMLElement
   frame: TelemetryFrame | null
@@ -48,6 +51,7 @@ export interface SituationMapControllerOptions {
   fileDeviceStates?: FileDeviceEvent[]
   configuredLinks?: Link[]
   configuredLinkStatuses?: ReadonlyMap<string, UiLinkStatus>
+  configuredLinkSwitches?: ReadonlyMap<string, ConfiguredLinkSwitchState>
   configuredJammers?: ConfiguredJammerRange[]
   onSelectConfiguredLink?: (link: Link) => void
   onSelectFileLink?: (link: FileCommunicationLink) => void
@@ -62,6 +66,7 @@ export interface SituationMapControllerOptions {
 export interface SituationMapController {
   setConfiguredLinks: (links: Link[] | undefined) => void
   setConfiguredLinkStatuses: (statuses: ReadonlyMap<string, UiLinkStatus> | undefined) => void
+  setConfiguredLinkSwitches: (switches: ReadonlyMap<string, ConfiguredLinkSwitchState> | undefined) => void
   setConfiguredJammers: (jammers: ConfiguredJammerRange[] | undefined) => void
   /**
    * 替换地图当前展示的链路集合。
@@ -463,6 +468,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
   let fileDeviceStates = options.fileDeviceStates ?? []
   let configuredLinks = options.configuredLinks
   let configuredLinkStatuses = options.configuredLinkStatuses
+  let configuredLinkSwitches = options.configuredLinkSwitches
   let configuredJammers = options.configuredJammers
   let currentNodes = currentFrame?.platforms ?? fileNodes
   let selectedNodeId = options.selectedNodeId
@@ -549,7 +555,7 @@ export function createSituationMapController(options: SituationMapControllerOpti
         focusedTarget = { kind: 'link', targetId: link.id }
         renderBusinessLayers()
         options.onSelectConfiguredLink?.(link)
-      }, configuredLinkStatuses)
+      }, configuredLinkStatuses, configuredLinkSwitches)
       renderInterference(layerGroups.interference, null, focusedTarget?.kind === 'interference' ? focusedTarget.targetId : '', currentNodes, configuredJammers)
     } else {
       // 业务链路只陈述已发生的投递，不因设备启停被隐藏；设备状态在详情中单独呈现。
@@ -640,6 +646,11 @@ export function createSituationMapController(options: SituationMapControllerOpti
     setConfiguredLinkStatuses(statuses): void {
       if (!map) return
       configuredLinkStatuses = statuses
+      if (!currentFrame) renderBusinessLayers()
+    },
+    setConfiguredLinkSwitches(switches): void {
+      if (!map) return
+      configuredLinkSwitches = switches
       if (!currentFrame) renderBusinessLayers()
     },
     setLinks(links): void {
@@ -1296,7 +1307,11 @@ function renderConnections(group: L.LayerGroup, drawings: ConnectionDrawing[], f
     if (entry.appearance !== appearance) {
       // setStyle 不会更新 SVG class，且未指定的 dashArray 不会自动清除。
       entry.line.setStyle({ dashArray: undefined, ...drawing.style })
-      entry.line.getElement()?.classList.toggle('situation-map-link--selected', drawing.style.className === 'situation-map-link--selected')
+      const lineElement = entry.line.getElement()
+      lineElement?.classList.toggle('situation-map-link--selected', drawing.style.className === 'situation-map-link--selected')
+      lineElement?.classList.toggle('situation-map-link--switch-before', drawing.style.className?.includes('situation-map-link--switch-before') ?? false)
+      lineElement?.classList.toggle('situation-map-link--switch-after', drawing.style.className?.includes('situation-map-link--switch-after') ?? false)
+      lineElement?.classList.toggle('situation-map-link--switch-both', drawing.style.className?.includes('situation-map-link--switch-both') ?? false)
       const tooltip = document.createElement('span')
       tooltip.textContent = drawing.name
       entry.line.bindTooltip(tooltip, { sticky: true })
@@ -1451,18 +1466,21 @@ function renderLinks(group: L.LayerGroup, frame: TelemetryFrame, links: Situatio
  * 配置启停不代表运行质量，缺少判定时停用仅降低透明度。
  */
 function renderConfiguredLinks(group: L.LayerGroup, nodes: SituationMapNode[], links: Link[], selectedId: string, onSelect: (link: Link) => void,
-  statuses?: ReadonlyMap<string, UiLinkStatus>): void {
+  statuses?: ReadonlyMap<string, UiLinkStatus>, switches?: ReadonlyMap<string, ConfiguredLinkSwitchState>): void {
   const platforms = new Map(nodes.map(node => [node.platformId, node]))
   renderConnections(group, links.flatMap(link => {
     const source = platforms.get(link.sourcePlatformId)
     const target = platforms.get(link.targetPlatformId)
     if (!source || !target) return []
     const status = statuses?.get(link.id)
+    const switching = switches?.get(link.id)
     const style = status && status !== 'UP' ? UNAVAILABLE_LINK_STYLE : LINK_TYPE_STYLES[link.type]
     return [{
       id: `configured:${link.id}`, points: sampleConnectionCurve(source, target, connectionCurveOffset(source, target, link.type, links), nodes),
-      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；${status ? `质量判定：${LINK_STATUS_LABELS[status]}` : '暂无运行数据'}`,
-      style: { ...style, weight: selectedId === link.id ? 5 : 3, opacity: link.enabled === false ? 0.35 : 0.85, className: 'situation-map-configured-link' },
+      name: `${link.id} · ${LINK_TYPE_LABELS[link.type]} · ${source.name} → ${target.name}；配置${link.enabled === false ? '停用' : '启用'}；${status ? `质量判定：${LINK_STATUS_LABELS[status]}` : '暂无运行数据'}${switching ? `；当前引擎帧切换${switching === 'BEFORE' ? '前' : switching === 'AFTER' ? '后' : '前后'}路径已唯一关联` : ''}`,
+      // 仅叠加高亮，不覆盖异常红色或四类体制线型。
+      style: { ...style, weight: selectedId === link.id ? 5 : switching ? 4 : 3, opacity: link.enabled === false ? 0.35 : 0.85,
+        className: `situation-map-configured-link${switching ? ` situation-map-link--switch-${switching.toLowerCase()}` : ''}` },
       hitClass: 'situation-map-configured-link-hit', select: () => onSelect(link),
     }]
   }))

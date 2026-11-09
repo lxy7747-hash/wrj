@@ -80,6 +80,8 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(wrapper.find('[data-testid="generate-script"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(path)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(`已生成脚本入口：${path}`)
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[已写入执行] scenario.startTime')
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[依赖待确认] definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA')
     expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('可追溯入口')
     expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/local-file'))).toHaveLength(1)
     expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)

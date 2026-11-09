@@ -4,6 +4,7 @@ import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { BusinessInformationNodeType, CapabilityState, DeviceParameters, GeoPoint, InformationDemand, Jammer, JammerUiExtension, Link, LinkType, Platform, ScenarioConfig, ScenarioLinkSettings, ScenarioTemplate, SensorUiExtension, ValidationIssue } from '../../contracts/domain-models'
 import { LINK_PARAMETER_DEFAULTS, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { formatScriptExecutionLog } from '../../features/scenarios/script-execution-status'
 import { applyLinkEdit, synchronizePlatformLinkIds } from '../../features/scenarios/link-edit'
 import { BUSINESS_DEFAULTS } from '../../features/scenarios/business-defaults'
 import { createPlatformGrid } from '../../features/scenarios/platform-layout'
@@ -71,6 +72,8 @@ const draftReviewed = ref(false)
 const savingScript = ref(false)
 const scriptOutputPath = ref('')
 const scriptGenerationLog = ref<string[]>([])
+/** 日志直接读取本次预览的 mapping.json，避免页面按配置重新推断“已写入”。 */
+function executionLog(): string[] { return script.value === null ? [] : formatScriptExecutionLog(script.value.preview) }
 const validationAttempted = ref(false)
 const touchedFields = ref(new Set<string>())
 watch(() => draft.value?.config.scenario.id, () => {
@@ -1316,7 +1319,7 @@ async function saveScenario(): Promise<void> {
         const path = await saveScriptText(script.value)
         if (!current()) return
         scriptOutputPath.value = path
-        scriptGenerationLog.value = [`已生成脚本入口：${path}`, `场景修订：${script.value.configVersion}`, '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
+        scriptGenerationLog.value = [`已生成脚本入口：${path}`, `场景修订：${script.value.configVersion}`, ...executionLog(), '预览未执行引擎校验；实际执行包可能按引擎能力适配，以运行记录为准。']
       } catch (error) {
         if (current()) ElMessage.error(`场景配置已保存，但 TXT 写入未完成。${error instanceof Error ? error.message : '请重试保存。'}`)
         return
@@ -1369,7 +1372,10 @@ async function generateScriptPreview(): Promise<boolean> {
     && draft.value === currentDraft && !dirty.value && !draft.value?.locked
   const generated = await scenarioStore.generateScriptPreview()
   if (!current()) return false
-  if (generated) return true
+  if (generated) {
+    scriptGenerationLog.value = ['预览映射状态（尚未写入本机执行包）：', ...executionLog()]
+    return true
+  }
   if (scenarioStore.scriptResultCode !== 'CONFIRMATION_REQUIRED') return false
   const scriptEpoch = scenarioStore.scriptEpoch
   try {
@@ -1377,7 +1383,9 @@ async function generateScriptPreview(): Promise<boolean> {
       confirmButtonText: '本次继续', cancelButtonText: '取消', type: 'warning',
     })
     if (!current() || scriptEpoch !== scenarioStore.scriptEpoch) return false
-    return await scenarioStore.generateScriptPreview(true) && current()
+    const confirmed = await scenarioStore.generateScriptPreview(true) && current()
+    if (confirmed) scriptGenerationLog.value = ['预览映射状态（尚未写入本机执行包）：', ...executionLog()]
+    return confirmed
   } catch {
     // 用户取消后不创建一次性确认上下文。
     return false

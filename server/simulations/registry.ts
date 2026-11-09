@@ -41,6 +41,9 @@ export class SimulationRegistry {
     return this.requiredOwner(runId).startMission(pid, startedAt)
   }
   finishMission(runId: string, outcome: MissionOutcome): SimulationRun { return this.requiredOwner(runId).finishMission(outcome) }
+  setEngineControl(runId: string, state: NonNullable<SimulationRun['engineControl']>): SimulationRun {
+    return this.requiredOwner(runId).setEngineControl(state)
+  }
   markMissionStopUncertain(runId: string, message: string): SimulationRun { return this.requiredOwner(runId).markMissionStopUncertain(message) }
   private requiredOwner(runId: string): SimulationProjection {
     const owner = this.owner(runId)

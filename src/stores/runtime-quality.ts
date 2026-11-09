@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
-import type { QualityDataset, QualitySample, SwitchEvent, ValidationIssue } from '../contracts/domain-models'
+import { computed, ref, watch } from 'vue'
+import type { EngineFrameSnapshot, QualityDataset, QualitySample, SwitchEvent, ValidationIssue } from '../contracts/domain-models'
+import { isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
 import { adaptRuntimeLinkQuality, type RuntimeLinkQualityData } from '../features/data-exchange/runtime-link-quality'
 import { RuntimeLinkDecisionTracker, type RuntimeLinkStatus, type RuntimeRouteCandidate, type RuntimeRouteDecision } from '../features/data-exchange/runtime-link-decisions'
 import { consecutiveQualitySamples, isQualityDataset } from '../features/data-exchange/quality-records'
@@ -39,6 +40,8 @@ export interface RuntimeQualitySnapshot {
 }
 
 type RuntimeQualityState = 'EMPTY' | 'SUCCESS' | 'ERROR'
+export type EngineLinkStatus = Pick<RuntimeLinkStatus, 'linkId' | 'frameId' | 'simulationTime' | 'status' | 'gxbDb' | 'ber' | 'receivedPowerDbm'>
+  & { source: 'ENGINE_FRAME'; stableFrames?: undefined }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -136,10 +139,15 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   const scope = ref<RuntimeQualityScope | null>(null)
   const bindings = ref<RuntimeQualityBinding[]>([])
   const snapshot = ref<RuntimeQualitySnapshot | null>(null)
+  const engineFrame = ref<EngineFrameSnapshot | null>(null)
+  const engineEvents = ref<{ frameId: number; simulationTime: number; event: EngineFrameSnapshot['events'][number] }[]>([])
+  const engineSwitches = ref<{ frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number] }[]>([])
+  const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number] }[]>([])
+  const source = computed(() => engineFrame.value ? 'ENGINE_FRAME' : snapshot.value?.source ?? null)
   /** Events recorded by the imported source; never populated from local route decisions. */
   const importedSwitchEvents = ref<SwitchEvent[]>([])
   const importedDataset = ref<(Pick<QualityDataset, 'source' | 'expectedStepS'> & { hasCompleteLosses: boolean; hasSwitchEvidence: boolean }) | null>(null)
-  const linkStatuses = ref<RuntimeLinkStatus[]>([])
+  const linkStatuses = ref<(RuntimeLinkStatus | EngineLinkStatus)[]>([])
   const routeCandidates = ref<RuntimeRouteCandidate[]>([])
   const routeDecisions = ref<RuntimeRouteDecision[]>([])
   /** 本地质量快照的选路记录，不是引擎切换执行回执。 */
@@ -153,6 +161,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   // 数据校验失败的较新源帧同样已被处理；不能让更早的成功帧回写 ERROR。
   let latestMeta: RuntimeQualityFrameMeta | null = null
   const decisionTracker = new RuntimeLinkDecisionTracker()
+  const clearEngine = () => { engineFrame.value = null; engineEvents.value = []; engineSwitches.value = []; engineAlarms.value = [] }
 
   const resetCurrentDecisions = () => {
     decisionTracker.reset()
@@ -168,6 +177,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   }
 
   const reset = () => {
+    clearEngine()
     epoch.value += 1
     scope.value = null
     bindings.value = []
@@ -217,6 +227,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return config
   }
   const fail = (issue: ValidationIssue | ValidationIssue[]): false => {
+    clearEngine()
     snapshot.value = null
     importedSwitchEvents.value = []
     importedDataset.value = null
@@ -241,6 +252,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     if (sameScope(scope.value, candidate) && sameStrings(allowedLinkIds, allowed) && active()) return epoch.value
     epoch.value += 1
     scope.value = { ...candidate }
+    clearEngine()
     bindings.value = []
     snapshot.value = null
     importedSwitchEvents.value = []
@@ -264,6 +276,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     if (sameBindings(bindings.value, next)) return true
     epoch.value += 1
     bindings.value = next
+    clearEngine()
     snapshot.value = null
     importedSwitchEvents.value = []
     importedDataset.value = null
@@ -288,6 +301,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
       const key = sourceIdentity({ sourceLinkId: link.linkId, sourcePlatformId: link.sourcePlatformId, destinationPlatformId: link.destinationPlatformId, sourcePortId: link.sourcePortId, destinationPortId: link.destinationPortId })
       if (!bound.has(key)) return fail({ severity: 'ERROR', code: 'RUNTIME_QUALITY_UNBOUND_LINK', fieldPath: `link_calc.links[${index}]`, message: '质量链路未与当前保存场景的通信设备显式绑定。' })
     }
+    clearEngine()
     snapshot.value = { frameId: meta.frameId, simulationTime: meta.simulationTime, data: result.data, source: 'NATIVE_LINK_CALC' }
     importedSwitchEvents.value = []
     importedDataset.value = null
@@ -350,6 +364,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     const byFrame = new Map<number, QualitySample[]>()
     for (const sample of dataset.samples) byFrame.set(sample.frameId, [...(byFrame.get(sample.frameId) ?? []), sample])
     const frames = [...byFrame.entries()].sort(([leftFrame, left], [rightFrame, right]) => leftFrame - rightFrame || left[0]!.time - right[0]!.time)
+    clearEngine()
     const config = decisionConfig()
     resetCurrentDecisions()
     decisionEvents.value = []
@@ -390,10 +405,33 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return true
   }
 
+  /** 引擎已完成判定，绝不送入本机 decisionTracker 再判一次。 */
+  function acceptEngineFrame(requestEpoch: number, candidate: unknown): boolean {
+    if (requestEpoch !== epoch.value || !active() || !isEngineFrameSnapshot(candidate) || candidate.runId !== scope.value?.runId) return false
+    if (engineFrame.value && (candidate.engineEpoch < engineFrame.value.engineEpoch
+      || (candidate.engineEpoch === engineFrame.value.engineEpoch && candidate.frameId <= engineFrame.value.frameId))) return false
+    const frame = structuredClone(candidate)
+    if (engineFrame.value && frame.engineEpoch > engineFrame.value.engineEpoch) clearEngine()
+    if (!engineFrame.value) resetCurrentDecisions()
+    engineFrame.value = frame
+    snapshot.value = null; importedDataset.value = null; importedSwitchEvents.value = []
+    routeCandidates.value = []; routeDecisions.value = []; decisionEvents.value = []
+    latestMeta = null
+    linkStatuses.value = frame.links.map(link => ({ source: 'ENGINE_FRAME', linkId: link.linkId, frameId: frame.frameId,
+      simulationTime: frame.simulationTime, status: link.status, gxbDb: link.quality.gxbDb, ber: link.quality.ber, receivedPowerDbm: link.quality.rxPowerDbm }))
+    const meta = { frameId: frame.frameId, simulationTime: frame.simulationTime }
+    engineEvents.value = [...engineEvents.value, ...frame.events.map(event => ({ ...meta, event }))].slice(-200)
+    engineSwitches.value = [...engineSwitches.value, ...frame.routing.switches.map(route => ({ ...meta, route }))].slice(-200)
+    engineAlarms.value = [...engineAlarms.value, ...frame.routing.alarms.map(alarm => ({ ...meta, alarm }))].slice(-200)
+    errors.value = []
+    state.value = frame.links.length || frame.jammers.length || frame.events.length || frame.initRouting?.length || engineSwitches.value.length || engineAlarms.value.length ? 'SUCCESS' : 'EMPTY'
+    return true
+  }
+
   // 会话、运行实例、场景修订或场景选择改变时立即使旧回调失效；当前时间刷新不影响已接收帧。
   watch(() => {
     return [auth.principal?.userId ?? '', auth.requestEpoch, auth.runtimeMode, simulation.run?.taskId ?? '', simulation.run?.runId ?? '', simulation.run?.scenarioId ?? '', simulation.run?.startedAt ?? '', simulation.selectedScene?.config.scenario.id ?? '', simulation.selectedScene?.revision ?? 0]
   }, () => { if (!active() && (scope.value !== null || bindings.value.length || snapshot.value !== null || errors.value.length)) reset() }, { flush: 'sync' })
 
-  return { scope, bindings, snapshot, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, resetToSafeEmpty: reset }
+  return { scope, bindings, snapshot, source, engineFrame, engineEvents, engineSwitches, engineAlarms, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, acceptEngineFrame, resetToSafeEmpty: reset }
 })

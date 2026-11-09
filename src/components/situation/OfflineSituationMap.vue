@@ -15,6 +15,7 @@ import {
 import {
   createSituationMapController,
   type MapLayer,
+  type ConfiguredLinkSwitchState,
   type SituationMapFocusTarget,
   type SituationMapController,
 } from './situation-map-controller'
@@ -35,6 +36,7 @@ const props = defineProps<{
   fileSeekRevision?: number
   configuredLinks?: Link[]
   configuredLinkStatuses?: ReadonlyMap<string, 'UP' | 'DEGRADED' | 'DOWN'>
+  configuredLinkSwitches?: ReadonlyMap<string, ConfiguredLinkSwitchState>
   configuredJammers?: ConfiguredJammerRange[]
   links: SituationLinkView[]
   selectedNodeId: string
@@ -330,6 +332,7 @@ onMounted(() => {
     fileDeviceStates: fileDeviceStates.value,
     configuredLinks: props.configuredLinks,
     configuredLinkStatuses: props.configuredLinkStatuses,
+    configuredLinkSwitches: props.configuredLinkSwitches,
     configuredJammers: props.configuredJammers,
     onSelectConfiguredLink: link => emit('select-configured-link', link),
     onSelectFileLink: openFileLink,
@@ -391,6 +394,11 @@ watch(() => props.configuredLinks, links => {
 
 watch(() => props.configuredLinkStatuses, statuses => {
   mapController.value?.setConfiguredLinkStatuses(statuses)
+})
+
+watch(() => props.configuredLinkSwitches, switches => {
+  // 兼容旧地图控制器测试替身；实际控制器实现该可选增强接口。
+  mapController.value?.setConfiguredLinkSwitches?.(switches)
 })
 
 watch(() => props.configuredJammers, jammers => {
@@ -1100,6 +1108,11 @@ onBeforeUnmount(() => {
 :deep(.situation-map-interference--selected) {
   filter: drop-shadow(0 0 4px #f5b942) drop-shadow(0 0 8px rgba(245, 185, 66, 0.9));
 }
+
+/* 切换前后仅叠加光晕，保留底层链路状态色：劣化/中断仍为红色。 */
+:deep(.situation-map-link--switch-before) { filter: drop-shadow(0 0 3px #f5b942) drop-shadow(0 0 7px rgba(245, 185, 66, 0.8)); }
+:deep(.situation-map-link--switch-after) { filter: drop-shadow(0 0 3px #4bd9f2) drop-shadow(0 0 7px rgba(75, 217, 242, 0.85)); }
+:deep(.situation-map-link--switch-both) { filter: drop-shadow(0 0 3px #b58cff) drop-shadow(0 0 7px rgba(181, 140, 255, 0.85)); }
 
 :deep(.situation-map-node__glyph) {
   text-shadow: 0 0 6px currentColor;

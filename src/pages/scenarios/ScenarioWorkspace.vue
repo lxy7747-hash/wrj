@@ -4,6 +4,7 @@ import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ScenarioDraft } from '../../contracts/domain-models'
 import { createScenarioSnapshot, scenarioSnapshotId } from '../../features/scenarios/scenario-snapshot'
+import { saveScriptText } from '../../features/scenarios/script-file'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
 import { useSimulationStore } from '../../stores/simulation'
@@ -105,6 +106,45 @@ function exportJson(scene: ScenarioDraft): void {
   ElMessage.success(`场景已导出为 ${link.download}。`)
 }
 
+/** 导入已经保存；脚本失败不回滚场景，失效流程不继续写文件或提示。 */
+async function generateImportedScript(): Promise<{ ok: true; path: string } | { ok: false; message: string } | null> {
+  const draft = store.draft
+  if (!draft) return { ok: false, message: '导入结果缺少场景草稿。' }
+  const epoch = store.requestEpoch
+  const userId = auth.principal?.userId
+  const configVersion = `${draft.config.scenario.id}-v${draft.revision}`
+  const current = () => active && epoch === store.requestEpoch && userId === auth.principal?.userId
+    && canWrite.value && store.draft === draft && !store.dirty && !draft.locked
+  let generated = await store.generateScriptPreview()
+  if (!current()) return null
+  if (!generated && store.scriptResultCode === 'CONFIRMATION_REQUIRED') {
+    const scriptEpoch = store.scriptEpoch
+    try {
+      await ElMessageBox.confirm(`${store.scriptResultMessage} 是否继续生成？`, '脚本预览警告', {
+        confirmButtonText: '本次继续', cancelButtonText: '取消', type: 'warning',
+      })
+    } catch {
+      return current() && scriptEpoch === store.scriptEpoch ? { ok: false, message: '已取消生成。' } : null
+    }
+    if (!current() || scriptEpoch !== store.scriptEpoch) return null
+    generated = await store.generateScriptPreview(true)
+    if (!current()) return null
+  }
+  const script = store.script
+  if (!generated || !script) return { ok: false, message: store.scriptResultMessage || '脚本预览生成失败。' }
+  if (script.scenarioId !== draft.config.scenario.id || script.configVersion !== configVersion) {
+    return { ok: false, message: '脚本版本与导入场景不一致。' }
+  }
+  const scriptEpoch = store.scriptEpoch
+  try {
+    const path = await saveScriptText(script)
+    return current() && scriptEpoch === store.scriptEpoch ? { ok: true, path } : null
+  } catch (error) {
+    return current() && scriptEpoch === store.scriptEpoch
+      ? { ok: false, message: error instanceof Error ? error.message : 'TXT 写入失败。' } : null
+  }
+}
+
 /** 读取本地 JSON 文件并按完整场景快照导入；校验失败保留原场景，错误定位到字段路径。 */
 async function importJson(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
@@ -133,7 +173,11 @@ async function importJson(event: Event): Promise<void> {
       store.resetToSafeEmpty()
       return
     }
-    ElMessage.success(`已导入场景“${store.draft?.config.scenario.name ?? ''}”。`)
+    const name = store.draft?.config.scenario.name ?? ''
+    const result = await generateImportedScript()
+    if (!active || !result) return
+    if (result.ok) ElMessage.success(`已导入场景“${name}”，TXT 已生成：${result.path}`)
+    else ElMessage.warning(`已导入场景“${name}”，但 TXT 未生成：${result.message} 可进入场景点击“保存”重试。`)
     store.resetToSafeEmpty()
   } finally {
     selecting.value = false

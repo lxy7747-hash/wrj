@@ -1,7 +1,9 @@
 <script setup lang="ts">
-import type { CapabilityState, UiSimulationStatus } from '../../contracts/domain-models'
+import { computed } from 'vue'
+import type { CapabilityState, EngineControlAction, EngineControlState, UiSimulationStatus } from '../../contracts/domain-models'
+import { canSendEngineControl, engineControlMessage } from '../../features/situation/engine-control'
 
-defineProps<{
+const props = defineProps<{
   status: UiSimulationStatus
   speed: number
   capabilityState: CapabilityState
@@ -11,11 +13,16 @@ defineProps<{
   readOnly?: boolean
   /** 文件播放只推进 CSV 游标，不启动仿真引擎。 */
   filePlayback?: boolean
-  /** 真实 mission 当前仅接通开始/停止，不支持暂停、继续、单步和倍速。 */
+  /** 未配置引擎 WebSocket 时真实 mission 保持本机开始/停止能力。 */
   realMission?: boolean
+  engineControl?: EngineControlState
   /** 未确认运行模式时不能假定具备 Mock 的控制能力。 */
   runtimeUnknown?: boolean
 }>()
+
+const wsControl = computed(() => props.realMission && !props.filePlayback ? props.engineControl : undefined)
+const canControl = (action: EngineControlAction) => Boolean(wsControl.value
+  && ['RUNNING', 'PAUSED'].includes(props.status) && canSendEngineControl(wsControl.value, action))
 
 defineEmits<{
   start: []
@@ -39,19 +46,19 @@ defineEmits<{
         size="small"
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
-        :disabled="readOnly || pending || status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED')"
-        :title="runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
+        :disabled="readOnly || pending || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED'))"
+        :title="wsControl ? '发送恢复命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
-        {{ status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
+        {{ wsControl?.action === 'pause' ? '恢复' : status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
       </el-button>
       <el-button
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="readOnly || pending || realMission || runtimeUnknown || status !== 'RUNNING'"
-        :title="runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
+        :disabled="readOnly || pending || runtimeUnknown || (wsControl ? !canControl('pause') : realMission || status !== 'RUNNING')"
+        :title="wsControl ? '发送暂停命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
@@ -59,7 +66,7 @@ defineEmits<{
         plain
         size="small"
         data-testid="simulation-stop"
-        :disabled="readOnly || pending || (status !== 'RUNNING' && status !== 'PAUSED')"
+        :disabled="readOnly || pending || (status !== 'RUNNING' && status !== 'PAUSED') || (wsControl && !canControl('stop'))"
         @click="$emit('stop')"
       ><span aria-hidden="true">■</span> 停止</el-button>
 
@@ -83,7 +90,11 @@ defineEmits<{
       <slot name="timeline" />
     </div>
 
-    <div v-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
+    <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
+      <small :title="engineControlMessage(wsControl)">{{ engineControlMessage(wsControl) }}</small>
+      <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
+    </div>
+    <div v-else-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
       <small>{{ feedback }}</small>
     </div>
     <div v-else-if="capabilityState === 'ERROR'" class="simulation-toolbar__runtime" role="alert">

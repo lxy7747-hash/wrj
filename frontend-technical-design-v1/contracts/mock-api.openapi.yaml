@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "WRJ deterministic loopback mock API",
-    "version": "1.11.0",
+    "version": "1.12.0",
     "description": "Loopback API. Normal local startup uses SQLite accounts and HttpOnly server sessions; the isolated deterministic test entry remains stateless Mock. Scenario/template persistence is independent; supported simulation capabilities retain their documented Mock boundaries."
   },
   "servers": [
@@ -3720,11 +3720,21 @@
             }
           },
           "503": {
-            "description": "Local mission start or stop failed",
+            "description": "Local mission execution or engine WebSocket delivery failed or is uncertain",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "sim_control written to engine WebSocket; execution unconfirmed. SimulationRun.engineControl records delivery only, canonical state and configuration lock remain unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PostapiV1SimulationsRunIdCommandsResponse"
                 }
               }
             }
@@ -6173,7 +6183,7 @@
           "websocket"
         ],
         "summary": "WebSocket upgrade on loopback only",
-        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event. jammer.event payloads: JammerStatusData, SensorStatusData, JammingDecisionEvent, DetectionEvent (EventRecord). New fields are optional; the original single jammerExecution remains required. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A zero-cursor subscription starts from the current snapshot; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history.",
+        "description": "Canonical topics: simulation.frame, runtime.state, link.metric, jammer.event, switch.event, mission.log, position.update. jammer.event and switch.event additionally carry received EngineJammerFrameUpdate and EngineSwitchFrameUpdate, preserving their engine frame id/time. position.update carries mission-owned position-file generations with an independent journal cursor and no engine frame/time envelope; it must not be treated as co-framed engine data. mission.log carries either incremental MissionLogUpdate or EngineConnectionDiagnostic, task/run scoped with its own cursor and no simulationTime/frameId: process output has no engine-issued frame time. HTTP console/position retrieval provides initial/recovery compensation; live additions are WebSocket records. websocketNew frame_id advances by 5 per 5 simulation seconds; this is independent of the per-topic WS sequence. FRAME_ADVANCE_OBSERVED records a delta differing from 5 without claiming upstream retransmission support. New fields are optional; the original single jammerExecution remains required. Simulation commands use REST; node state is carried by simulation.frame payload. Envelope requires type, schemaVersion=1.0, topic, taskId, sequence, optional simulationTime/frameId, payload. Reject unauthorized transport, invalid envelope, unknown task, or forbidden topic with close 1008. Sequence is strictly increasing per task/topic. Client reconnects after 250 ms, 500 ms, 1000 ms, 2000 ms, then FAILED; it supplies lastSequences keyed by subscribed topic for deterministic replay, with legacy lastSequence accepted for compatible clients. The local deployment persists an ordered journal per task/topic, so replay outside the 128-event hot cache uses bounded disk pages. Run/reset boundaries, missing records, corrupt journals or failed persistence produce SEQUENCE_GAP rather than silently skipping events. Different registered tasks have isolated subscriptions and cursors. A zero-cursor subscription starts from the current snapshot; REST resynchronization after SEQUENCE_GAP does not claim to recover missing history. link.metric additionally accepts EngineFrameSnapshot (kind=ENGINE_FRAME), with locally bound run/task, device-segment statuses and cached initial routes; it requires no simulation.frame. Existing summary and QUALITY_UPDATED payloads remain valid.",
         "x-rbac": "AUTHENTICATED",
         "responses": {
           "101": {
@@ -8824,6 +8834,71 @@
           },
           "quality": {
             "$ref": "#/components/schemas/QualityDataset"
+          },
+          "engineFrameArchive": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "Received engine-frame archive only. Segment rows are not merged into logical links; detailTruncated means report/UI projections are bounded and the verified raw JSONL must be downloaded for full detail.",
+            "required": ["sourceSha256", "frameCount", "firstSimulationTime", "lastSimulationTime", "missingFieldNames", "segmentRows", "switchRows", "eventRows"],
+            "properties": {
+              "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "frameCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+              "firstSimulationTime": { "type": ["number", "null"], "minimum": 0 },
+              "lastSimulationTime": { "type": ["number", "null"], "minimum": 0 },
+              "missingFieldNames": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+              "segmentRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+              "switchRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+              "eventRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
+              "detailTruncated": { "type": "boolean" },
+              "retainedDetailRows": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+              "aggregate": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["uniqueSingleSegmentCount", "switchCount", "missing"],
+                "properties": {
+                  "uniqueSingleSegmentCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                  "averageGxbDb": { "type": "number" },
+                  "averageBer": { "type": "number", "minimum": 0, "maximum": 1 },
+                  "switchCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                  "missing": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+                }
+              }
+            }
+          },
+          "engineCsv": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourceSha256", "files", "missing"],
+            "properties": {
+              "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+              "files": {
+                "type": "array",
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["fileName", "rowCount", "sha256", "status", "skippedCount"],
+                  "properties": {
+                    "fileName": { "type": "string", "minLength": 1 },
+                    "rowCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+                    "status": { "enum": ["COMPLETE", "PARTIAL"] },
+                    "skippedCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+                    "reason": { "type": "string", "minLength": 1 }
+                  }
+                }
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "object", "additionalProperties": false,
+                  "required": ["fileName", "status", "reason"],
+                  "properties": {
+                    "fileName": { "type": "string", "minLength": 1 },
+                    "status": { "const": "SOURCE_MISSING" },
+                    "reason": { "type": "string", "minLength": 1 }
+                  }
+                }
+              }
+            }
           },
           "qualityConnectivityRates": {
             "type": "array",
@@ -12732,6 +12807,66 @@
           "completedAt": {
             "type": "string",
             "format": "date-time"
+          },
+          "engineControl": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "connected",
+              "action",
+              "delivery"
+            ],
+            "description": "Local sim_control delivery only. SENT does not acknowledge engine execution or unlock configuration. No wire request ids or invented acknowledgements.",
+            "properties": {
+              "connected": {
+                "type": "boolean"
+              },
+              "action": {
+                "enum": [
+                  null,
+                  "pause",
+                  "resume",
+                  "stop"
+                ]
+              },
+              "delivery": {
+                "enum": [
+                  "IDLE",
+                  "SENDING",
+                  "SENT",
+                  "UNKNOWN"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "delivery": {
+                      "const": "IDLE"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "action": {
+                      "type": "null"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "action": {
+                      "enum": [
+                        "pause",
+                        "resume",
+                        "stop"
+                      ]
+                    }
+                  }
+                }
+              }
+            ]
           }
         },
         "x-fixture-path": "$.run"
@@ -18211,6 +18346,1035 @@
             "type": "string"
           }
         }
+      },
+      "EngineRoute": {
+        "type": "object",
+        "required": [
+          "pathId",
+          "direction",
+          "sourceName",
+          "targetName",
+          "sourcePlatformId",
+          "targetPlatformId",
+          "transTypes",
+          "nodes"
+        ],
+        "properties": {
+          "pathId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "direction": {
+            "enum": [
+              "FORWARD",
+              "REVERSE"
+            ]
+          },
+          "sourceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourcePlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetPlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "platformName",
+                "platformId",
+                "inPort",
+                "outPort"
+              ],
+              "properties": {
+                "platformName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "platformId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "inPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "outPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "parameters": {
+            "type": "object",
+            "required": [
+              "delay",
+              "transFrequency",
+              "dataContent"
+            ],
+            "properties": {
+              "delay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "transFrequency": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "dataContent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "description": "Raw upstream path parameters; units are unconfirmed. Do not derive durations or traffic statistics."
+          }
+        }
+      },
+      "EngineRouteSwitch": {
+        "type": "object",
+        "required": [
+          "pathId",
+          "direction",
+          "sourceName",
+          "targetName",
+          "sourcePlatformId",
+          "targetPlatformId",
+          "transTypes",
+          "nodes",
+          "oldPathId",
+          "oldNodes",
+          "reasons"
+        ],
+        "properties": {
+          "pathId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "direction": {
+            "enum": [
+              "FORWARD",
+              "REVERSE"
+            ]
+          },
+          "sourceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourcePlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetPlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "transTypes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "platformName",
+                "platformId",
+                "inPort",
+                "outPort"
+              ],
+              "properties": {
+                "platformName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "platformId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "inPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "outPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "oldPathId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "oldNodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "platformName",
+                "platformId",
+                "inPort",
+                "outPort"
+              ],
+              "properties": {
+                "platformName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "platformId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "inPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "outPort": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "linkId",
+                "reasons"
+              ],
+              "properties": {
+                "linkId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reasons": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "parameters": {
+            "type": "object",
+            "required": [
+              "delay",
+              "transFrequency",
+              "dataContent"
+            ],
+            "properties": {
+              "delay": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "transFrequency": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "dataContent": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            },
+            "description": "Raw upstream path parameters; units are unconfirmed. Do not derive durations or traffic statistics."
+          }
+        }
+      },
+      "EngineLinkSegment": {
+        "type": "object",
+        "required": [
+          "linkId",
+          "linkIds",
+          "sourceName",
+          "sourcePlatformId",
+          "sourcePort",
+          "targetName",
+          "targetPlatformId",
+          "targetPort",
+          "engineStatus",
+          "error",
+          "status",
+          "distanceM",
+          "losses",
+          "quality",
+          "inputTrace"
+        ],
+        "properties": {
+          "linkId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "linkIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sourceName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourcePlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sourcePort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetPlatformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "targetPort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engineStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "UP",
+              "DEGRADED",
+              "DOWN",
+              "UNKNOWN"
+            ]
+          },
+          "distanceM": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "losses": {
+            "type": "object",
+            "required": [
+              "freeSpaceDb",
+              "seaMultipathDb",
+              "atmosphericDb",
+              "cloudRainDb",
+              "jammingDb",
+              "totalDb"
+            ],
+            "properties": {
+              "freeSpaceDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "seaMultipathDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "atmosphericDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cloudRainDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "jammingDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "totalDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "rainDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "cloudDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "quality": {
+            "type": "object",
+            "required": [
+              "gxbDb",
+              "ber",
+              "rxPowerDbw",
+              "rxPowerDbm"
+            ],
+            "properties": {
+              "gxbDb": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "ber": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "rxPowerDbw": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "rxPowerDbm": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "delay": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "Raw upstream delay; unit unconfirmed."
+              }
+            }
+          },
+          "inputTrace": {
+            "type": "object",
+            "required": [
+              "eirpDbw",
+              "gtDbk",
+              "dataRateMbps",
+              "frequencyGHz",
+              "jammers"
+            ],
+            "properties": {
+              "eirpDbw": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "gtDbk": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "dataRateMbps": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "frequencyGHz": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "jammers": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "jammerName",
+                    "platformId",
+                    "distanceM",
+                    "eirpDbw",
+                    "lossDb"
+                  ],
+                  "properties": {
+                    "jammerName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "platformId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "distanceM": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "eirpDbw": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "lossDb": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "EngineJammer": {
+        "type": "object",
+        "required": [
+          "name",
+          "platformId",
+          "detectStatus",
+          "deviceStatus",
+          "powerW",
+          "frequencyHz",
+          "rangeM",
+          "detections",
+          "actions"
+        ],
+        "properties": {
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "platformId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detectStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deviceStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "powerW": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "frequencyHz": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "rangeM": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "detections": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "targetNames",
+                "targetIds",
+                "platformType",
+                "frequencyHz",
+                "probability",
+                "rangeM",
+                "targets"
+              ],
+              "properties": {
+                "targetNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "targetIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "platformType": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "frequencyHz": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "probability": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "rangeM": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "targets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "name",
+                      "platformId",
+                      "longitude",
+                      "latitude",
+                      "altitudeM"
+                    ],
+                    "properties": {
+                      "name": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "platformId": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "longitude": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "latitude": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "altitudeM": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "action",
+                "targetName",
+                "targetPlatformId",
+                "engineMode",
+                "mode"
+              ],
+              "properties": {
+                "action": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "targetName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "targetPlatformId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "engineMode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mode": {
+                  "enum": [
+                    "BARRAGE",
+                    "SPOT",
+                    "SWEEP",
+                    null
+                  ]
+                }
+              }
+            }
+          },
+          "position": {
+            "type": "object",
+            "required": [
+              "longitude",
+              "latitude",
+              "altitudeM"
+            ],
+            "properties": {
+              "longitude": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "latitude": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "altitudeM": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "engineMode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "EngineFrameSnapshot": {
+        "type": "object",
+        "required": [
+          "kind",
+          "runId",
+          "engineEpoch",
+          "frameId",
+          "simulationTime",
+          "modelVersion",
+          "modulation",
+          "links",
+          "jammers",
+          "routing",
+          "events",
+          "initRouting"
+        ],
+        "properties": {
+          "kind": {
+            "const": "ENGINE_FRAME"
+          },
+          "runId": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "engineEpoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "frameId": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "simulationTime": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Internal simulation time in seconds. Upstream websocketNew sim_time_s is milliseconds and is converted once at ingestion."
+          },
+          "modelVersion": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modulation": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EngineLinkSegment"
+            }
+          },
+          "jammers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EngineJammer"
+            }
+          },
+          "routing": {
+            "type": "object",
+            "required": [
+              "switches",
+              "alarms"
+            ],
+            "properties": {
+              "switches": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EngineRouteSwitch"
+                }
+              },
+              "alarms": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "pathId",
+                    "linkId",
+                    "message"
+                  ],
+                  "properties": {
+                    "pathId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "linkId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "message": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "type",
+                "pathId",
+                "uavNames",
+                "jammerNames",
+                "uavIds",
+                "jammerIds"
+              ],
+              "properties": {
+                "type": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "pathId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "uavNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "jammerNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "uavIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "jammerIds": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "initRouting": {
+            "anyOf": [
+              {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EngineRoute"
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "wallTimeMs": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "description": "Raw upstream clock value in ms; clock origin unconfirmed. Not a latency measurement."
+          }
+        }
+      },
+      "LinkMetricPayload": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LinkStatusSummary"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/QualityDatasetUpdate"
+          },
+          {
+            "$ref": "#/components/schemas/EngineFrameSnapshot"
+          }
+        ]
       }
     },
     "securitySchemes": {

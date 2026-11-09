@@ -25,6 +25,18 @@ function asObject(value: unknown): JsonObject {
   return value as JsonObject
 }
 
+it('引擎控制发送状态保持闭合，202 使用同一运行信封且不冒充执行回执', () => {
+  const { openApi } = loadContractDocuments()
+  const control = asObject(asObject(schemaAt(openApi, 'SimulationRun').properties).engineControl)
+  const validate = new Ajv2020({ strict: false }).compile(control)
+  expect(validate({ connected: true, action: null, delivery: 'IDLE' })).toBe(true)
+  for (const action of ['pause', 'resume', 'stop']) expect(validate({ connected: true, action, delivery: 'SENT' })).toBe(true)
+  for (const value of [{ connected: true, action: null, delivery: 'SENT' }, { connected: true, action: 'pause', delivery: 'ACKNOWLEDGED' },
+    { connected: true, action: 'pause', delivery: 'IDLE' }, { connected: true, action: 'pause', delivery: 'SENT', success: true }]) expect(validate(value)).toBe(false)
+  const responses = asObject(operationAt(openApi, '/api/v1/simulations/{runId}/commands', 'post').responses)
+  expect(asObject(responses['202']).content).toEqual(asObject(responses['200']).content)
+})
+
 it('freezes new-account passwords at 6–32 characters', () => {
   const { openApi } = loadContractDocuments()
   const password = asObject(asObject(schemaAt(openApi, 'UserRoleCommand').properties).password)
@@ -63,9 +75,9 @@ function schemaPropertyAt(openApi: unknown, name: string, property: string): Jso
 }
 
 describe('OpenAPI contract audit', () => {
-  it('declares the 1.11.0 optional template parameter extension', () => {
+  it('declares the 1.12.0 engine frame extension and preserves optional template parameters', () => {
     const { openApi } = loadContractDocuments()
-    expect(asObject(asObject(openApi).info).version).toBe('1.11.0')
+    expect(asObject(asObject(openApi).info).version).toBe('1.12.0')
   })
 
   it('exposes the read-only scenario parameter catalog to both scenario roles', () => {

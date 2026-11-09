@@ -108,6 +108,20 @@ describe('真实 mission 命令边界', () => {
     expect((await api.get('/api/v1/scenarios/SCN-001').set(headers)).body.data.locked).toBe(false)
   })
 
+  it('引擎归档初始化失败后停止已启动 mission，不遗留活动进程', async () => {
+    const { handle } = processHandle()
+    const archive = { begin: vi.fn(async () => { throw new Error('archive disk unavailable') }), load: async () => null, getFile: async () => null }
+    const server = createMockServer({ port: 0, missionExecution: { start: async () => handle }, engineFrameArchive: archive as any })
+    servers.push(server)
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+    const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+    const response = await api.post(`/api/v1/simulations/${created.body.data.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(503)
+    expect(response.body.error.message).toContain('archive disk unavailable')
+    expect(handle.stop).toHaveBeenCalledOnce()
+    expect((await api.get(`/api/v1/simulations/${created.body.data.runId}`).set(headers).expect(200)).body.data.uiStatus).toBe('ERROR')
+  })
+
   it('只在真实执行器确认运行中命令后更新暂停、继续、单步和倍速投影', async () => {
     const { handle } = processHandle()
     handle.control = vi.fn(async () => undefined)

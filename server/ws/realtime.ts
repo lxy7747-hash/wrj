@@ -2,12 +2,18 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http'
 import { WebSocket, WebSocketServer, type RawData } from 'ws'
 import type {
   RealtimeEnvelope,
+  EngineFrameSnapshot,
+  EngineConnectionDiagnostic,
+  EngineJammerFrameUpdate,
+  EngineSwitchFrameUpdate,
   FrameId,
   JammerStatusData,
   JammingDecision,
   JammingDecisionEvent,
   QualityDataset,
   QualityDatasetUpdate,
+  MissionLogUpdate,
+  MissionPositionUpdate,
   ResetResult,
   SimulationRun,
   SimulationState,
@@ -27,6 +33,8 @@ const CANONICAL_TOPICS = new Set<WsTopic>([
   'link.metric',
   'jammer.event',
   'switch.event',
+  'mission.log',
+  'position.update',
 ])
 const MAX_SUBSCRIPTION_BYTES = 16_384
 const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
@@ -47,6 +55,11 @@ export interface RealtimeController {
    * becomes a websocket payload or journal entry.
    */
   publishQualityDataset(dataset: QualityDataset): void
+  publishEngineFrame(runId: SimulationRun['runId'], snapshot: EngineFrameSnapshot): void
+  publishMissionPositions(run: Pick<SimulationRun, 'runId' | 'taskId'>, update: MissionPositionUpdate): void
+  /** Process output is not frame-timed; the envelope intentionally omits simulationTime/frameId. */
+  publishMissionLog(run: Pick<SimulationRun, 'runId' | 'taskId'>, update: MissionLogUpdate): void
+  publishEngineDiagnostic(run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic): void
   invalidateForReset(): void
   revalidateSessions(): void
   reset(): ResetResult
@@ -235,13 +248,14 @@ export function attachRealtimeServer(
     const run = currentRun(taskId)
     return run?.taskId === taskId || taskId === projection.snapshot().task.taskId
   }
-  const createEnvelope = <T>(taskId: TaskId, topic: WsTopic, payload: T, simulationTime: number, frameId?: FrameId): RealtimeEnvelope<T> => {
+  const createEnvelope = <T>(taskId: TaskId, topic: WsTopic, payload: T, simulationTime?: number, frameId?: FrameId): RealtimeEnvelope<T> => {
     // Keep the projection counter advancing for existing in-process observers;
     // durable ordering itself is owned by the journal so it survives restart.
     projection.nextSequence(taskId, topic)
     return {
       type: 'event', schemaVersion: '1.0', topic, taskId,
-      sequence: journal.next(taskId, topic), simulationTime,
+      sequence: journal.next(taskId, topic),
+      ...(simulationTime === undefined ? {} : { simulationTime }),
       ...(frameId === undefined ? {} : { frameId }), payload,
     }
   }
@@ -267,10 +281,23 @@ export function attachRealtimeServer(
   const replayTopic = (client: WebSocket, taskId: TaskId, topic: WsTopic, lastSequence: number, replayZeroCursorEvents: boolean): void => {
     revalidateSessions()
     if (!clients.has(client)) return
-    // 自选场景只有 Mock 控制状态，不能重放固定样例的链路与事件作为它的结果。
+    // 自选场景不能重放固定样例的链路与事件作为它的结果。
     // 没有运行时仍按无运行处理：依赖运行的主题各自缺失，静态链路摘要照常返回。
     const run = currentRun(taskId)
-    if (topic !== 'runtime.state' && run !== undefined && !ownsFixedEvidence(run)) return
+    const fixedEvidence = run === undefined || ownsFixedEvidence(run)
+    if (!['runtime.state', 'link.metric', 'mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic) && !fixedEvidence) return
+    const ownsRunScopedMessage = (message: string): boolean => {
+      if (fixedEvidence || !['link.metric', 'mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic)) return true
+      try {
+        const { payload } = JSON.parse(message)
+        const active = currentRun(taskId)
+        if (active === undefined) return false
+        if (['mission.log', 'position.update', 'jammer.event', 'switch.event'].includes(topic)) return payload?.runId === active.runId
+        return payload?.kind === 'ENGINE_FRAME' && payload.runId === active.runId
+          || payload?.kind === 'QUALITY_UPDATED' && payload.scope?.runId === active.runId
+            && payload.scope?.taskId === taskId && payload.scope?.scenarioId === active.scenarioId
+      } catch { return false }
+    }
     if (lastSequence > 0 || replayZeroCursorEvents) {
       let cursor = lastSequence
       let page: Array<{ sequence: number; message: string }> = []
@@ -292,13 +319,17 @@ export function attachRealtimeServer(
         }
         const event = page.shift()
         if (event === undefined) { finish(); return }
+        if (!ownsRunScopedMessage(event.message)) { finish(); reject(client, 'SEQUENCE_GAP', 'Retained realtime record does not belong to the current run.'); return }
         if (!send(client, event.message, () => { cursor = event.sequence; continueReplay() })) finish()
       }
       continueReplay()
       return
     }
     let message = currentEnvelopes.get(keyFor(taskId, topic))
+    if (message !== undefined && !ownsRunScopedMessage(message)) return
     if (message === undefined) {
+      // 真实运行可重放引擎帧/质量引用，但没有缓存时不能补固定样例摘要。
+      if (topic !== 'runtime.state' && !fixedEvidence) return
       const snapshot = projection.snapshot()
       let envelope: RealtimeEnvelope<unknown> | undefined
       if (topic === 'simulation.frame') {
@@ -481,6 +512,75 @@ export function attachRealtimeServer(
       if (message === undefined) return
       for (const [client, subscription] of clients) {
         if (subscription.taskId === taskId && subscription.topics.has('jammer.event') && !replaying.get(client)?.has('jammer.event')) send(client, message)
+      }
+    },
+    publishEngineFrame: (runId, payload): void => {
+      revalidateSessions()
+      const taskId = [...runIds].find(([, id]) => id === runId)?.[0]
+      const run = taskId === undefined ? undefined : currentRun(taskId)
+      if (!run || run.runId !== runId || payload.runId !== runId) return
+      const envelope = createEnvelope(run.taskId, 'link.metric', payload, payload.simulationTime, `F-ENGINE-${payload.frameId}`)
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === run.taskId && subscription.topics.has('link.metric') && !replaying.get(client)?.has('link.metric')) send(client, message)
+      }
+      const publishFrameTopic = <T>(topic: 'jammer.event' | 'switch.event', framePayload: T): void => {
+        const event = createEnvelope(run.taskId, topic, framePayload, payload.simulationTime, `F-ENGINE-${payload.frameId}`)
+        const serialized = retain(event)
+        if (serialized === undefined) return
+        for (const [client, subscription] of clients) {
+          if (subscription.taskId === run.taskId && subscription.topics.has(topic) && !replaying.get(client)?.has(topic)) send(client, serialized)
+        }
+      }
+      if (payload.jammers.length || payload.events.length) {
+        const jammerUpdate: EngineJammerFrameUpdate = {
+          kind: 'ENGINE_JAMMER_FRAME', runId: payload.runId, engineEpoch: payload.engineEpoch,
+          sourceFrameId: payload.frameId, simulationTime: payload.simulationTime,
+          jammers: structuredClone(payload.jammers), events: structuredClone(payload.events),
+        }
+        publishFrameTopic('jammer.event', jammerUpdate)
+      }
+      if (payload.routing.switches.length) {
+        const switchUpdate: EngineSwitchFrameUpdate = {
+          kind: 'ENGINE_SWITCH_FRAME', runId: payload.runId, engineEpoch: payload.engineEpoch,
+          sourceFrameId: payload.frameId, simulationTime: payload.simulationTime,
+          switches: structuredClone(payload.routing.switches),
+        }
+        publishFrameTopic('switch.event', switchUpdate)
+      }
+    },
+    publishMissionPositions: (run, payload): void => {
+      revalidateSessions()
+      const active = currentRun(run.taskId)
+      if (!active || active.taskId !== run.taskId || active.runId !== run.runId || payload.runId !== run.runId || payload.scenarioId !== active.scenarioId) return
+      const envelope = createEnvelope(run.taskId, 'position.update', payload)
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === run.taskId && subscription.topics.has('position.update') && !replaying.get(client)?.has('position.update')) send(client, message)
+      }
+    },
+    publishMissionLog: (run, payload): void => {
+      revalidateSessions()
+      const active = currentRun(run.taskId)
+      if (!active || active.taskId !== run.taskId || active.runId !== run.runId || payload.runId !== run.runId) return
+      const envelope = createEnvelope(run.taskId, 'mission.log', payload)
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === run.taskId && subscription.topics.has('mission.log') && !replaying.get(client)?.has('mission.log')) send(client, message)
+      }
+    },
+    publishEngineDiagnostic: (run, diagnostic): void => {
+      revalidateSessions()
+      const active = currentRun(run.taskId)
+      if (!active || active.taskId !== run.taskId || active.runId !== run.runId || diagnostic.runId !== run.runId) return
+      const envelope = createEnvelope(run.taskId, 'mission.log', diagnostic)
+      const message = retain(envelope)
+      if (message === undefined) return
+      for (const [client, subscription] of clients) {
+        if (subscription.taskId === run.taskId && subscription.topics.has('mission.log') && !replaying.get(client)?.has('mission.log')) send(client, message)
       }
     },
     publishQualityDataset: (dataset): void => {

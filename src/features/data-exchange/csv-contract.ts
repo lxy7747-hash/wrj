@@ -91,6 +91,23 @@ function isValidField(field: string, value: string): boolean {
   return value.trim().length > 0
 }
 
+/** Validates one data record so large canonical files can be checked incrementally. */
+export function inspectCsvRecord(contract: ContractDescriptor, line: string, row: number): CsvValidationIssue[] {
+  const cells = parseCsvLine(line)
+  if (cells === undefined || cells.length !== contract.fields.length) {
+    return [{ code: 'TYPE_INVALID', row, fieldPath: `rows[${row - 2}]`, message: `第 ${row} 行列数或引号格式不正确。` }]
+  }
+  const issues: CsvValidationIssue[] = []
+  cells.forEach((value, columnIndex) => {
+    const field = contract.fields[columnIndex] ?? `column${columnIndex + 1}`
+    if (value.trim() === '' && isOptionalField(contract.name, field, cells[contract.fields.indexOf('EventType')] ?? '')) return
+    if (!isValidField(field, value)) {
+      issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${row - 2}].${field}`, message: `第 ${row} 行字段 ${field} 的类型或取值不正确。` })
+    }
+  })
+  return issues
+}
+
 /**
  * 校验内存中的 canonical CSV 文本。
  * @param contract 从本机 Mock 加载的 CSV 字段合同。
@@ -121,21 +138,7 @@ export function inspectCsvText(contract: ContractDescriptor, text: string): CsvV
   }
   result.headerMatched = true
 
-  lines.forEach((line, rowIndex) => {
-    const row = rowIndex + 2
-    const cells = parseCsvLine(line)
-    if (cells === undefined || cells.length !== contract.fields.length) {
-      result.issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${rowIndex}]`, message: `第 ${row} 行列数或引号格式不正确。` })
-      return
-    }
-    cells.forEach((value, columnIndex) => {
-      const field = contract.fields[columnIndex] ?? `column${columnIndex + 1}`
-      if (value.trim() === '' && isOptionalField(contract.name, field, cells[contract.fields.indexOf('EventType')] ?? '')) return
-      if (!isValidField(field, value)) {
-        result.issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${rowIndex}].${field}`, message: `第 ${row} 行字段 ${field} 的类型或取值不正确。` })
-      }
-    })
-  })
+  lines.forEach((line, rowIndex) => result.issues.push(...inspectCsvRecord(contract, line, rowIndex + 2)))
   result.rowCount = lines.length
   result.valid = result.issues.length === 0
   return result

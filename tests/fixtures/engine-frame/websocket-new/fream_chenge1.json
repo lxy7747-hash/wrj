@@ -1,0 +1,334 @@
+{
+    "msg_type": "frame_snapshot",
+    "frame_id": 254,
+    "wall_time_ms": 107901.3073,
+    "sim_time_s": 160655.0,
+    "link_calc": {
+        "model_version": "1.0.0",
+        "modulation": "BPSK",
+        "links": [
+            {
+                "link_id": "d7aae08c5aa07517c7fb20f59ddf18a4",
+                "tx_platform": "rear_comm_vehicle",
+                "rx_platform": "command_vehicle",
+                "tx_port": "fiber_link",
+                "rx_port": "fiber_link",
+                "distance_km": 0.0,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 0.0,
+                    "sea_multipath_db": 0.0,
+                    "atmospheric_db": 0.0,
+                    "atten_rain_db": 0.0,
+                    "atten_cloud_db": 0.0,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 0.0
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 0.0,
+                    "delay": 0.0,
+                    "input_trace": {
+                        "eirp_dbw": 0.0,
+                        "g_over_t_dbk": 0.0,
+                        "data_rate_bps": 1000000000.0,
+                        "frequency_ghz": 0.0,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "e078fa2eae323eb93475793c3c1e5b34",
+                "tx_platform": "command_vehicle",
+                "rx_platform": "mission_uav_02",
+                "tx_port": "c_band_uplink",
+                "rx_port": "c_band_uplink",
+                "distance_km": 225.314189544744,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 146.7403275807436,
+                    "sea_multipath_db": 0.5,
+                    "atmospheric_db": 1.3935859667981667,
+                    "atten_rain_db": 0.030797088351184308,
+                    "atten_cloud_db": 0.10455591431252241,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 2.0289389694618736
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 0.0,
+                    "delay": 2.35104729848248,
+                    "input_trace": {
+                        "eirp_dbw": 26.0,
+                        "g_over_t_dbk": -6.0,
+                        "data_rate_bps": 2000000.0,
+                        "frequency_ghz": 2.3,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "487d051f0c0d10fab8a7e3fc4c185269",
+                "tx_platform": "mission_uav_02",
+                "rx_platform": "command_vehicle",
+                "tx_port": "c_band_downlink",
+                "rx_port": "c_band_downlink",
+                "distance_km": 225.314189544744,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 146.7403275807436,
+                    "sea_multipath_db": 0.5,
+                    "atmospheric_db": 1.3935859667981667,
+                    "atten_rain_db": 0.030797088351184308,
+                    "atten_cloud_db": 0.10455591431252241,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 2.0289389694618736
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 0.0,
+                    "delay": 1.15104729848248,
+                    "input_trace": {
+                        "eirp_dbw": 26.0,
+                        "g_over_t_dbk": -6.0,
+                        "data_rate_bps": 8000000.0,
+                        "frequency_ghz": 2.3,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "dbd92921c0c5deb265c613aec954d98f",
+                "tx_platform": "command_vehicle",
+                "rx_platform": "rear_comm_vehicle",
+                "tx_port": "fiber_link",
+                "rx_port": "fiber_link",
+                "distance_km": 0.0,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 0.0,
+                    "sea_multipath_db": 0.0,
+                    "atmospheric_db": 0.0,
+                    "atten_rain_db": 0.0,
+                    "atten_cloud_db": 0.0,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 0.0
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 0.0,
+                    "delay": 0.0,
+                    "input_trace": {
+                        "eirp_dbw": 0.0,
+                        "g_over_t_dbk": 0.0,
+                        "data_rate_bps": 1000000000.0,
+                        "frequency_ghz": 0.0,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "434a1c20974855d6dda7a6e22817b1c4",
+                "tx_platform": "rear_comm_vehicle",
+                "rx_platform": "mission_uav_01",
+                "tx_port": "microwave_link",
+                "rx_port": "microwave_link",
+                "distance_km": 231.66263613251516,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 158.02339692675514,
+                    "sea_multipath_db": 0.5,
+                    "atmospheric_db": 2.5300338464122967,
+                    "atten_rain_db": 2.0576419036751754,
+                    "atten_cloud_db": 0.7856445158034684,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 5.873320265890941
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 4.577185232617282e-87,
+                    "delay": 0.812208787108384,
+                    "input_trace": {
+                        "eirp_dbw": 30.0,
+                        "g_over_t_dbk": -3.0,
+                        "data_rate_bps": 80000000.0,
+                        "frequency_ghz": 8.2,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "48f902f188bbc08cc1309b664ba73778",
+                "tx_platform": "mission_uav_01",
+                "rx_platform": "mission_uav_03",
+                "tx_port": "microwave_link",
+                "rx_port": "microwave_link",
+                "distance_km": 6.693264972583537,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 127.23903741104343,
+                    "sea_multipath_db": 0.0,
+                    "atmospheric_db": 0.07312660205471563,
+                    "atten_rain_db": 0.0,
+                    "atten_cloud_db": 0.0,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 0.07312660205471563
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 0.0,
+                    "delay": 0.06231088324194513,
+                    "input_trace": {
+                        "eirp_dbw": 30.0,
+                        "g_over_t_dbk": -3.0,
+                        "data_rate_bps": 80000000.0,
+                        "frequency_ghz": 8.2,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            },
+            {
+                "link_id": "e7d032998efbf806c195f12c34c49262",
+                "tx_platform": "mission_uav_03",
+                "rx_platform": "rear_comm_vehicle",
+                "tx_port": "microwave_link",
+                "rx_port": "microwave_link",
+                "distance_km": 238.31235510017086,
+                "status": "AVAILABLE",
+                "losses": {
+                    "free_space_db": 158.2692082187943,
+                    "sea_multipath_db": 0.5,
+                    "atmospheric_db": 2.60246741447802,
+                    "atten_rain_db": 2.0918947626675286,
+                    "atten_cloud_db": 0.8393420784860915,
+                    "jamming_loss_db": 0.0,
+                    "total_composite_db": 6.0337042556316405
+                },
+                "quality": {
+                    "gxb_db": 0.0,
+                    "ber": 6.318648695528358e-81,
+                    "delay": 0.8343745170005695,
+                    "input_trace": {
+                        "eirp_dbw": 30.0,
+                        "g_over_t_dbk": -3.0,
+                        "data_rate_bps": 80000000.0,
+                        "frequency_ghz": 8.2,
+                        "jammers": []
+                    },
+                    "error_msg": ""
+                }
+            }
+        ]
+    },
+    "jammer_params": [],
+    "link_manager": {
+        "routing_result": {
+            "forward": [
+                {
+                    "path_id": "2b5b1e35e11c3cfac9a7310e22ebde65",
+                    "src_name": "rear_comm_vehicle",
+                    "dist_name": "mission_uav_03",
+                    "path_params": {
+                        "delay": 0.8745196703503291,
+                        "trans_freq": 10,
+                        "data_content": 64,
+                        "trans_type": [
+                            "kForwardSituation",
+                            "kForwardTarget"
+                        ]
+                    },
+                    "reason_chenge": [
+                        {
+                            "linkid": "190d2d722792c5ac57435961aa7d0b9f",
+                            "reason": [
+                                "bey_switch"
+                            ]
+                        },
+                        {
+                            "linkid": "",
+                            "reason": [
+                                "bey_switch"
+                            ]
+                        }
+                    ],
+                    "old_path_id": "f0ac80c692f990d50acb1a0dd71f8012",
+                    "new_path_nodes": [
+                        {
+                            "plat_name": "rear_comm_vehicle",
+                            "in_port": "",
+                            "out_port": "microwave_link"
+                        },
+                        {
+                            "plat_name": "mission_uav_01",
+                            "in_port": "microwave_link",
+                            "out_port": "microwave_link"
+                        },
+                        {
+                            "plat_name": "mission_uav_03",
+                            "in_port": "microwave_link",
+                            "out_port": ""
+                        }
+                    ]
+                }
+            ],
+            "return": [
+                {
+                    "path_id": "2d38b695299142c1bddb281a85edbcb1",
+                    "src_name": "mission_uav_03",
+                    "dist_name": "rear_comm_vehicle",
+                    "path_params": {
+                        "delay": 0.8343745170005695,
+                        "trans_freq": 10,
+                        "data_content": 845,
+                        "trans_type": [
+                            "kReturnReconVideo",
+                            "kReturnReconStatus"
+                        ]
+                    },
+                    "reason_chenge": [
+                        {
+                            "linkid": "800a98e3fc5dc1b47d70a87e72657365",
+                            "reason": [
+                                "bey_switch"
+                            ]
+                        },
+                        {
+                            "linkid": "",
+                            "reason": [
+                                "bey_switch"
+                            ]
+                        }
+                    ],
+                    "old_path_id": "da1b396f2bcda05b1e9c8faddd16d98e",
+                    "new_path_nodes": [
+                        {
+                            "plat_name": "mission_uav_03",
+                            "in_port": "",
+                            "out_port": "microwave_link"
+                        },
+                        {
+                            "plat_name": "rear_comm_vehicle",
+                            "in_port": "microwave_link",
+                            "out_port": ""
+                        }
+                    ]
+                }
+            ],
+            "alarm": []
+        }
+    },
+    "events": [
+        {
+            "events_type": "beyond_weitch",
+            "events_pathid": "2b5b1e35e11c3cfac9a7310e22ebde65",
+            "events_uav": [],
+            "events_jammer": ""
+        }
+    ]
+}

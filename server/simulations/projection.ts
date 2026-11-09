@@ -15,6 +15,7 @@ import type {
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import { frameJammerExecutions } from '../../src/features/situation/frame-evidence.js'
+import { canSendEngineControl, engineControlAction } from '../../src/features/situation/engine-control.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
 import type { MissionOutcome } from './mission-execution.js'
 
@@ -184,14 +185,16 @@ export class SimulationProjection {
 
   finishMission(outcome: MissionOutcome): SimulationRun {
     const failed = outcome.code !== 0 || Boolean(outcome.errorMessage)
-    this.run.uiStatus = failed ? 'ERROR' : 'COMPLETED'
-    this.run.canonical.status = failed ? 'ERROR' : 'COMPLETED'
+    const stopped = !failed && this.run.engineControl?.action === 'stop'
+    this.run.uiStatus = failed ? 'ERROR' : stopped ? 'STOPPED' : 'COMPLETED'
+    this.run.canonical.status = failed ? 'ERROR' : stopped ? 'IDLE' : 'COMPLETED'
+    delete this.run.engineControl
     this.run.canonical.processId = null
     delete this.run.canonical.mode
     delete this.run.canonical.speedMultiplier
     this.run.completedAt = outcome.completedAt
     if (failed) this.run.canonical.errorMessage = outcome.errorMessage ?? 'mission 执行失败。'
-    else {
+    else if (!stopped) {
       this.run.canonical.currentTime = this.run.canonical.totalDuration
       this.run.canonical.progress = 100
     }
@@ -204,6 +207,11 @@ export class SimulationProjection {
     this.run.uiStatus = 'ERROR'
     this.run.canonical.status = 'ERROR'
     this.run.canonical.errorMessage = message
+    return structuredClone(this.run)
+  }
+
+  setEngineControl(state: NonNullable<SimulationRun['engineControl']>): SimulationRun {
+    this.run.engineControl = structuredClone(state)
     return structuredClone(this.run)
   }
 
@@ -293,6 +301,13 @@ export class SimulationProjection {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, fieldPath: 'command', message: '仿真命令参数组合不正确。' }
     }
 
+    const action = engineControlAction(command.command)
+    if (this.run.engineControl && action) {
+      return ACTIVE_STATUSES.has(this.run.uiStatus) && canSendEngineControl(this.run.engineControl, action)
+        ? { ok: true, data: command }
+        : { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '引擎连接或控制发送状态不允许此操作；请核实待确认结果。' }
+    }
+
     const allowed = command.command === 'START'
       ? this.run.uiStatus === 'IDLE' && this.run.configLocked
       : command.command === 'PAUSE'
@@ -319,6 +334,9 @@ export class SimulationProjection {
     const inspected = this.inspectCommand(runId, value)
     if (!inspected.ok) return inspected
     const command = inspected.data
+    if (this.run.engineControl && engineControlAction(command.command)) {
+      return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: 'WebSocket 控制必须经过发送通道，不能直接修改运行状态。' }
+    }
     if (command.command === 'STOP' && !stopConfirmed) {
       return { ok: false, code: 'CONFIRMATION_REQUIRED', status: 428, message: '停止仿真前需要二次确认。' }
     }

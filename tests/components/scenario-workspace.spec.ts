@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { defineComponent, isProxy } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
@@ -9,9 +9,14 @@ import { useScenarioStore } from '../../src/stores/scenario'
 import { useAuthStore } from '../../src/stores/auth'
 import { useSimulationStore } from '../../src/stores/simulation'
 import type { ScenarioDraft } from '../../src/contracts/domain-models'
+import { createScenarioSnapshot } from '../../src/features/scenarios/scenario-snapshot'
+import { inspectScenarioConfig } from '../../src/features/scenarios/scenario-validation'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const { TemplateProjection } = await import('../../server/templates/' + 'projection.js')
+const { ScriptProjection } = await import('../../server/scripts/' + 'projection.js')
+const { ConfirmationProjection } = await import('../../server/confirmations/' + 'projection.js')
 const Editor = defineComponent({
   emits: ['saved', 'back'],
   template: '<div data-testid="editor"><button @click="$emit(\'saved\')">保存完成</button><button @click="$emit(\'back\')">返回</button></div>',
@@ -257,4 +262,162 @@ it('从响应式列表导出完整场景文件，不向 structuredClone 传入 P
     config: { scenario: { id: 'SCN-001' } },
     uiExtensions: { sensors: [{ sensorId: 'ESM-01', esm: scene.uiExtensions.sensors[0]!.esm }] },
   })
+})
+
+const scriptPath = 'H:/Project/newWrj/frontend/output/scripts/script-import/scenario.txt'
+
+async function setupImport(options: { warnings?: boolean; previewFailure?: boolean; writeFailure?: boolean; staleVersion?: boolean } = {}) {
+  const context = await setup()
+  const fallback = context.fetchSpy.getMockImplementation()!
+  const scripts = new ScriptProjection()
+  const confirmations = new ConfirmationProjection()
+  const draft = createTemplateScenario()
+  draft.config.scenario.id = 'SCN-IMPORT'
+  draft.config.scenario.name = '导入生成验证'
+  if (options.warnings) draft.config.scenario.environment.rainRateMmPerHour = 101
+  const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status })
+  const failure = (code: string, message: string, status: number) => response({ ok: false, error: { code, message } }, status)
+  context.fetchSpy.mockImplementation(async (url, init) => {
+    const path = new URL(url).pathname
+    const body = JSON.parse(String(init?.body ?? '{}'))
+    if (path === '/api/v1/scenarios/import') {
+      const result = context.scenes.importSnapshots(body)
+      return result.ok ? response(result) : failure(result.code, result.message, result.status)
+    }
+    if (path.endsWith('/validate')) {
+      return response({ ok: true, data: inspectScenarioConfig(body.config, 'write').result })
+    }
+    if (path === '/api/v1/confirmations') {
+      return response({ ok: true, data: confirmations.create(body.action, body.objectId, 'OPERATOR') })
+    }
+    if (path.startsWith('/api/v1/confirmations/')) {
+      expect(body).toEqual({ confirm: true })
+      return response(confirmations.confirm(path.split('/').at(-1)!, 'OPERATOR'))
+    }
+    if (path === '/api/v1/scripts/preview') {
+      if (options.previewFailure) return failure('VALIDATION_FAILED', '无法生成通信设备脚本。', 422)
+      if (options.warnings) {
+        if (!body.warningConfirmationId) return failure('CONFIRMATION_REQUIRED', '场景存在校验警告。', 428)
+        expect(confirmations.consume(body.warningConfirmationId, 'SCENARIO_WARNING_CONTINUE', body.scenarioId, 'OPERATOR').ok).toBe(true)
+      }
+      const saved = context.scenes.get(body.scenarioId)
+      if (!saved.ok) throw new Error(saved.message)
+      const script = scripts.preview(saved.data)
+      return response({ ok: true, data: options.staleVersion ? { ...script, configVersion: 'SCN-IMPORT-v0' } : script })
+    }
+    if (path.endsWith('/local-file')) {
+      if (options.writeFailure) return failure('START_FAILED', 'TXT 目录不可写。', 503)
+      const script = scripts.get(path.split('/').at(-2)!)!
+      expect(body).toEqual({ checksum: script.checksum })
+      expect(context.store.draft?.revision).toBe(1)
+      expect(context.store.dirty).toBe(false)
+      return response({ ok: true, data: { scriptId: script.scriptId, configVersion: script.configVersion, path: scriptPath } })
+    }
+    return fallback(url, init)
+  })
+  context.fetchSpy.mockClear()
+  return { ...context, draft, paths: () => context.fetchSpy.mock.calls.map(([url]) => new URL(url).pathname) }
+}
+
+async function importFile(wrapper: VueWrapper, draft: ScenarioDraft): Promise<void> {
+  const input = wrapper.get<HTMLInputElement>('[data-testid="scene-import-file"]')
+  const bytes = new TextEncoder().encode(JSON.stringify(createScenarioSnapshot(draft)))
+  const file = new File([bytes], 'scene.json', { type: 'application/json' })
+  Object.defineProperty(file, 'arrayBuffer', { value: async () => bytes.buffer })
+  Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
+  await input.trigger('change')
+  await flushPromises()
+}
+
+it('JSON 导入保存后依次预览并写 TXT，提示路径、刷新列表且不创建或启动仿真', async () => {
+  const { wrapper, store, draft, paths } = await setupImport()
+  const success = vi.spyOn(ElMessage, 'success')
+  const warning = vi.spyOn(ElMessage, 'warning')
+  await importFile(wrapper, draft)
+  expect(paths()).toEqual([
+    '/api/v1/scenarios/import', '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/scripts/preview',
+    expect.stringMatching(/^\/api\/v1\/scripts\/[^/]+\/local-file$/u), '/api/v1/scenarios',
+  ])
+  expect(success).toHaveBeenCalledExactlyOnceWith(`已导入场景“导入生成验证”，TXT 已生成：${scriptPath}`)
+  expect(warning).not.toHaveBeenCalled()
+  expect(wrapper.text()).toContain('导入生成验证')
+  expect(store.draft).toBeNull()
+  expect(wrapper.get('[data-testid="scene-import-json"]').attributes('disabled')).toBeUndefined()
+})
+
+it.each([
+  { options: { previewFailure: true }, message: '无法生成通信设备脚本。', writes: 0 },
+  { options: { writeFailure: true }, message: 'TXT 目录不可写。', writes: 1 },
+  { options: { staleVersion: true }, message: '脚本版本与导入场景不一致。', writes: 0 },
+])('TXT 未生成（$message）不回滚导入，警告说明重试入口并刷新列表', async ({ options, message, writes }) => {
+  const { wrapper, scenes, draft, paths } = await setupImport(options)
+  const warning = vi.spyOn(ElMessage, 'warning')
+  const success = vi.spyOn(ElMessage, 'success')
+  await importFile(wrapper, draft)
+  expect(warning).toHaveBeenCalledExactlyOnceWith(`已导入场景“导入生成验证”，但 TXT 未生成：${message} 可进入场景点击“保存”重试。`)
+  expect(success).not.toHaveBeenCalled()
+  expect(paths().filter(path => path.endsWith('/local-file'))).toHaveLength(writes)
+  expect(paths().at(-1)).toBe('/api/v1/scenarios')
+  expect(paths().some(path => path.startsWith('/api/v1/simulations'))).toBe(false)
+  expect(scenes.get('SCN-IMPORT')).toMatchObject({ ok: true, data: { revision: 1, config: draft.config } })
+  expect(wrapper.text()).toContain('导入生成验证')
+})
+
+it('预览警告取消后不创建确认、不写 TXT，保留已导入场景', async () => {
+  const { wrapper, scenes, draft, paths } = await setupImport({ warnings: true })
+  vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue('cancel')
+  const warning = vi.spyOn(ElMessage, 'warning')
+  await importFile(wrapper, draft)
+  expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringContaining('已取消生成。'))
+  expect(paths()).toEqual(['/api/v1/scenarios/import', '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/scripts/preview', '/api/v1/scenarios'])
+  expect(scenes.get('SCN-IMPORT').ok).toBe(true)
+  expect(wrapper.text()).toContain('导入生成验证')
+})
+
+it('预览警告确认后完成一次性确认，再携带 warningConfirmationId 生成并写 TXT', async () => {
+  const { wrapper, draft, fetchSpy, paths } = await setupImport({ warnings: true })
+  const confirm = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+  await importFile(wrapper, draft)
+  expect(confirm).toHaveBeenCalledExactlyOnceWith('场景存在校验警告。 是否继续生成？', '脚本预览警告', expect.objectContaining({ confirmButtonText: '本次继续', cancelButtonText: '取消' }))
+  expect(paths()).toEqual([
+    '/api/v1/scenarios/import', '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/scripts/preview',
+    '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/confirmations', '/api/v1/confirmations/CONF-P2-001',
+    '/api/v1/scripts/preview', expect.stringMatching(/\/local-file$/u), '/api/v1/scenarios',
+  ])
+  expect(JSON.parse(String(fetchSpy.mock.calls[6]![1]!.body))).toEqual({ scenarioId: 'SCN-IMPORT', warningConfirmationId: 'CONF-P2-001' })
+})
+
+it('JSON 导入 422 保持原有错误展示，不请求任何脚本接口', async () => {
+  const { wrapper, scenes, draft, paths } = await setupImport()
+  const success = vi.spyOn(ElMessage, 'success')
+  const warning = vi.spyOn(ElMessage, 'warning')
+  draft.config.output.directory = ''
+  await importFile(wrapper, draft)
+  expect(wrapper.get('[data-testid="scene-import-error"]').text()).toContain('场景 JSON 导入失败')
+  expect(paths()).toEqual(['/api/v1/scenarios/import', '/api/v1/scenarios'])
+  expect(scenes.get('SCN-IMPORT').ok).toBe(false)
+  expect(success).not.toHaveBeenCalled()
+  expect(warning).not.toHaveBeenCalled()
+})
+
+it.each(['离页', '重置', '登出'])('导入脚本等待确认期间%s，迟到确认不写 TXT', async operation => {
+  const { wrapper, router, store, draft, paths } = await setupImport({ warnings: true })
+  let confirm!: () => void
+  vi.spyOn(ElMessageBox, 'confirm').mockImplementation(() => new Promise(resolve => {
+    confirm = () => resolve('confirm' as Awaited<ReturnType<typeof ElMessageBox.confirm>>)
+  }))
+  const success = vi.spyOn(ElMessage, 'success')
+  const warning = vi.spyOn(ElMessage, 'warning')
+  await importFile(wrapper, draft)
+  expect(wrapper.get('[data-testid="scene-import-json"]').attributes('disabled')).toBeDefined()
+  if (operation === '离页') await router.push('/other')
+  else if (operation === '重置') store.resetToSafeEmpty()
+  else useAuthStore().resetToSafeEmpty()
+  await flushPromises()
+  confirm()
+  await flushPromises()
+  expect(paths().filter(path => path.includes('/scripts/'))).toEqual(['/api/v1/scripts/preview'])
+  expect(paths().some(path => path.includes('/confirmations'))).toBe(false)
+  expect(success).not.toHaveBeenCalled()
+  expect(warning).not.toHaveBeenCalled()
 })

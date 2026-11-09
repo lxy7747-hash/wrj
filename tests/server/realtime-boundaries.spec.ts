@@ -1,5 +1,7 @@
 // @vitest-environment node
 import { afterEach, expect, it, vi } from 'vitest'
+import engineSample from '../fixtures/engine-frame/params_check.json'
+import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 const { createServer } = await import('node:' + 'http')
 const { once } = await import('node:' + 'events')
 const { mkdtemp, rm } = await import('node:' + 'fs/promises')
@@ -12,6 +14,82 @@ const { DiskRealtimeJournal } = await import('../../server/local/' + 'realtime-j
 const { MemoryRealtimeJournal } = await import('../../server/ws/' + 'realtime-journal.js')
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks() })
+
+it('引擎帧核对当前运行和载荷身份，错误 runId 不推送也不占用主题序号', async () => {
+  const { connect, realtime, projection, setRun } = await setup()
+  const run = { ...projection.snapshot().run!, runId: 'RUN-ENGINE' as const, scenarioId: 'SCN-ENGINE' }
+  setRun(run); realtime.publishRuntimeState(run)
+  const { messages } = await connect(['link.metric'])
+  await vi.waitFor(() => expect(messages).toHaveLength(1))
+  const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+  realtime.publishEngineFrame('RUN-OTHER', frame)
+  realtime.publishEngineFrame(run.runId, { ...frame, runId: 'RUN-OTHER' })
+  setRun({ ...run, runId: 'RUN-OTHER' }); realtime.publishEngineFrame(run.runId, frame)
+  setRun(run); realtime.publishEngineFrame(run.runId, frame)
+  await vi.waitFor(() => expect(messages).toHaveLength(2))
+  expect(messages[1]).toMatchObject({ sequence: 1, payload: { kind: 'ENGINE_FRAME', runId: run.runId } })
+})
+
+it('mission.log 以任务/运行隔离的序号续传，不伪造仿真时刻或帧号', async () => {
+  const { connect, realtime, projection, setRun } = await setup()
+  const run = { ...projection.snapshot().run!, runId: 'RUN-LOG' as const, scenarioId: 'SCN-LOG' }
+  setRun(run); realtime.publishRuntimeState(run)
+  const first = await connect(['mission.log'])
+  await vi.waitFor(() => expect(first.messages).toHaveLength(1))
+  realtime.publishMissionLog({ taskId: run.taskId, runId: run.runId }, { kind: 'MISSION_LOG', runId: run.runId, text: '一', replace: false, bytes: 3, truncated: false, chunkIndex: 0, chunkCount: 1, startByteOffset: 0, endByteOffset: 3 })
+  await vi.waitFor(() => expect(first.messages).toHaveLength(2))
+  expect(first.messages[1]).toMatchObject({ topic: 'mission.log', sequence: 1, payload: { text: '一', runId: run.runId } })
+  expect(first.messages[1]).not.toHaveProperty('simulationTime')
+  expect(first.messages[1]).not.toHaveProperty('frameId')
+  const closed = once(first.client, 'close'); first.client.close(); await closed
+  realtime.publishMissionLog({ taskId: run.taskId, runId: run.runId }, { kind: 'MISSION_LOG', runId: run.runId, text: '二', replace: false, bytes: 6, truncated: false, chunkIndex: 0, chunkCount: 1, startByteOffset: 3, endByteOffset: 6 })
+  const resumed = await connect(['mission.log'], { 'mission.log': 1 })
+  await vi.waitFor(() => expect(resumed.messages).toHaveLength(2))
+  expect(resumed.messages[1]).toMatchObject({ topic: 'mission.log', sequence: 2, payload: { text: '二' } })
+  setRun({ ...run, runId: 'RUN-NEXT' })
+  realtime.publishMissionLog({ taskId: run.taskId, runId: run.runId }, { kind: 'MISSION_LOG', runId: run.runId, text: '旧运行', replace: false, bytes: 9, truncated: false, chunkIndex: 0, chunkCount: 1, startByteOffset: 6, endByteOffset: 9 })
+  expect(resumed.messages).toHaveLength(2)
+})
+
+it('mission 位置和收到的引擎干扰/切换走各自主题，任务切换后拒绝旧运行', async () => {
+  const { connect, realtime, projection, setRun } = await setup()
+  const run = { ...projection.snapshot().run!, runId: 'RUN-WS' as const, scenarioId: 'SCN-WS' }
+  setRun(run); realtime.publishRuntimeState(run)
+  const position = await connect(['position.update'])
+  await vi.waitFor(() => expect(position.messages).toHaveLength(1))
+  realtime.publishMissionPositions({ taskId: run.taskId, runId: run.runId }, {
+    kind: 'MISSION_POSITION', runId: run.runId, scenarioId: run.scenarioId, revision: 1,
+    sourceGeneration: 2, sourceRecordCount: 4, waitingForLine: false,
+    nodes: [{ platformId: 'P-1', time: 5, longitude: 120, latitude: 30, altitude: 1, speed: 2, heading: 3 }],
+  })
+  await vi.waitFor(() => expect(position.messages).toHaveLength(2))
+  expect(position.messages[1]).toMatchObject({ topic: 'position.update', payload: { sourceRecordCount: 4 } })
+  expect(position.messages[1]).not.toHaveProperty('frameId')
+  expect(position.messages[1]).not.toHaveProperty('simulationTime')
+  const closed = once(position.client, 'close'); position.client.close(); await closed
+  realtime.publishMissionPositions({ taskId: run.taskId, runId: run.runId }, {
+    kind: 'MISSION_POSITION', runId: run.runId, scenarioId: run.scenarioId, revision: 1,
+    sourceGeneration: 2, sourceRecordCount: 5, waitingForLine: false,
+    nodes: [{ platformId: 'P-1', time: 6, longitude: 120.1, latitude: 30, altitude: 1, speed: 2, heading: 3 }],
+  })
+  const resumed = await connect(['position.update'], { 'position.update': 1 })
+  await vi.waitFor(() => expect(resumed.messages).toHaveLength(2))
+  expect(resumed.messages[1]).toMatchObject({ topic: 'position.update', sequence: 2, payload: { sourceRecordCount: 5 } })
+  const engine = await connect(['jammer.event', 'switch.event'])
+  await vi.waitFor(() => expect(engine.messages).toHaveLength(1))
+  const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+  realtime.publishEngineFrame(run.runId, frame)
+  await vi.waitFor(() => expect(engine.messages).toHaveLength(3))
+  expect(engine.messages.slice(1)).toMatchObject([
+    { topic: 'jammer.event', frameId: `F-ENGINE-${frame.frameId}`, payload: { kind: 'ENGINE_JAMMER_FRAME', runId: run.runId } },
+    { topic: 'switch.event', frameId: `F-ENGINE-${frame.frameId}`, payload: { kind: 'ENGINE_SWITCH_FRAME', runId: run.runId } },
+  ])
+  setRun({ ...run, runId: 'RUN-NEXT' })
+  realtime.publishMissionPositions({ taskId: run.taskId, runId: run.runId }, {
+    kind: 'MISSION_POSITION', runId: run.runId, scenarioId: run.scenarioId, revision: 1, sourceGeneration: 3, sourceRecordCount: 5, waitingForLine: false, nodes: [],
+  })
+  expect(resumed.messages).toHaveLength(2)
+})
 
 async function setup(
   missing = false,

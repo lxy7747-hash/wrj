@@ -909,6 +909,8 @@ function route(platform: Platform, airborne = false): string[] {
   return lines
 }
 function platformType(platform: Platform): string { if (platform.type === 'REAR_COMMAND_NODE') return 'REAR_COMM_PLATFORM'; if (platform.type === 'GROUND_CLUSTER_COMMAND_NODE') return 'COMMAND_VEHICLE_PLATFORM'; if (platform.type === 'AIRBORNE_MISSION_CLUSTER' || platform.type === 'FORWARD_RELAY_NODE') return 'MISSION_UAV_PLATFORM'; if (platform.type === 'COMMUNICATION_SATELLITE') return platform.satelliteType === 'SHENTONG' ? 'SHEN_TONG_SAT' : 'TIAN_TONG_SAT'; return platform.type === 'AIRBORNE_JAMMER_PLATFORM' ? 'AIRBORNE_JAMMER_PLATFORM' : 'GROUND_JAMMER_STATION' }
+/** 写入校验只允许这三类平台携带巡逻航路，状态清单须使用同一判据。 */
+function writesLoiter(platform: Platform): boolean { return platform.type === 'AIRBORNE_MISSION_CLUSTER' || platform.type === 'FORWARD_RELAY_NODE' || platform.type === 'AIRBORNE_JAMMER_PLATFORM' }
 function instances(config: ScenarioDraft['config']): string {
   const select = (kind: Platform['type']) => config.platforms.filter(item => item.type === kind)
   const regular = (platform: Platform, kind: 'rear' | 'command' | 'uav' | 'ground' | 'air'): string[] => { const lines = [`platform ${platform.id} ${platformType(platform)}`, `  side ${kind === 'ground' || kind === 'air' ? 'red' : 'blue'}`]; if (kind === 'command') lines.push('  icon 737'); if (kind === 'uav') lines.push('  icon F-18', '  heading 90 deg'); if (kind === 'ground' || kind === 'air') lines.push('  icon triangle', '  creation_time 0 sec'); if (kind === 'rear' || kind === 'command') { lines.push(`  position ${position(platform.initialPosition.latitude, platform.initialPosition.longitude)}`, `  altitude ${n(platform.initialPosition.altitude)} m`); if (kind === 'command') lines.push('  heading 90 deg'); if (platform.waypoints.length) lines.push(...route(platform)) } else if (kind === 'uav' || kind === 'air') lines.push(...route(platform, kind === 'air')); else { lines.push('  route', `    position ${position(platform.initialPosition.latitude, platform.initialPosition.longitude)}`, ...platform.waypoints.map(item => point(item)), '  end_route'); const jammer = config.jammers.find(item => item.platformId === platform.id); if (jammer) lines.push('  script_variables', `    double detection_range_nm = ${n(jammer.detectionRange / 1852)};`, '  end_script_variables') } lines.push('end_platform', ''); return lines }
@@ -1027,6 +1029,72 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
   const start = startTime(config.scenario.startTime); const directory = outputDirectory(config.output.directory); const mapped = devices(config); const jammers = jammerValues(config, draft.uiExtensions); const routes = routeInputs(config, mapped.items, laserOnlyTargets); const host = config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id; const calc = runtime?.linkCalc === 'STUB' ? (host ? localLinkStub(host, routes, jammers) : '') : calculator(config, routes, jammers); const relays = config.platforms.filter(item => item.type === 'FORWARD_RELAY_NODE').map(item => item.id); const types = typeTexts(config, relays, jammers, `${start.date} ${start.time}`, calc, routes, mapped.warnings, runtime !== undefined)
   const setup = [...TYPE_FILES.map(name => `include_once ${name}`), `include_once ${INSTANCE_FILE}`, 'include_once observers.txt', '', `start_date ${start.date}`, `start_time ${start.time}`, `end_time ${n(config.scenario.duration)} sec`, config.scenario.realtime === false ? 'non-realtime' : 'realtime', `clock_rate ${n(config.scenario.environment.simClockSpeed ?? 2)}`, 'multi_thread', '', 'simulation_name "MultiMethod_UAV_Comm_Scenario"', '', 'event_pipe', `   file ${directory}/scenario_events.aer`, 'end_event_pipe', '', 'csv_event_output', `  file ${directory}/scenario_events.csv`, ...EVENTS.map(name => `  enable ${name}`), 'end_csv_event_output', ''].join('\n')
   const scriptFiles = [SCENARIO_PREVIEW_FILE, ENTRY_FILE, DEFINITION_FILE, ...TYPE_FILES, INSTANCE_FILE, 'observers.txt', AD_HOC_COMM_FILE]
+  // mapping.json 是配置快照以外唯一的逐项生成事实来源：只列当前配置实际进入包、保留但未写入或待外部确认的字段。
+  const mappedLinkIds = new Set(mapped.items.map(item => item.linkId))
+  const portPaths = new Set(mapped.items.flatMap(item => [
+    `deviceParameters.ports.${item.source.platformType}.${item.source.deviceId}`,
+    `deviceParameters.ports.${item.target.platformType}.${item.target.deviceId}`,
+    ...(item.relayPlatformId === null || item.relayDeviceId === null ? [] : [`deviceParameters.ports.MISSION_UAV_PLATFORM.${item.relayDeviceId}`]),
+  ]))
+  const original = inputConfig
+  const originalSettings = original.linkSettings
+  const settings = readLinkSettings(original)
+  const localStub = runtime?.linkCalc === 'STUB'
+  const activeLinks = original.links.map((link, index) => ({ link, index })).filter(({ link }) => isConfiguredLinkEnabled(link, settings, original.platforms))
+  const activeJammers = draft.uiExtensions.jammers.map((extension, index) => ({ extension, index, jammerIndex: original.jammers.findIndex(jammer => jammer.id === extension.jammerId) }))
+    .filter(({ extension, jammerIndex }) => original.jammingEnabled === true && extension.enabled && jammerIndex >= 0)
+  const emitted = [
+    { fieldPath: 'scenario.startTime', detail: '已写入 comm_SimSetup.txt 的 start_date/start_time。' },
+    { fieldPath: 'scenario.duration', detail: '已写入 comm_SimSetup.txt 的 end_time。' },
+    ...original.platforms.flatMap((platform, index) => {
+      if (platform.type === 'COMMUNICATION_SATELLITE') return []
+      const items = [{ fieldPath: `platforms[${index}].initialPosition`, detail: '已写入平台实例或 route 的初始经纬度和高度。' }]
+      if (platform.waypoints.length > 0) items.push({ fieldPath: `platforms[${index}].waypoints`, detail: '已写入 route 的经纬度、高度和速度。' })
+      if (writesLoiter(platform) && (platform.loiterWaypoints?.length ?? 0) > 0) items.push({ fieldPath: `platforms[${index}].loiterWaypoints`, detail: '已写入 route 的巡逻航路点。' })
+      if ((platform.type === 'AIRBORNE_MISSION_CLUSTER' || platform.type === 'FORWARD_RELAY_NODE') && platform.returnPlan !== undefined) items.push({ fieldPath: `platforms[${index}].returnPlan`, detail: '已写入返回 route 及触发时刻。' })
+      return items
+    }),
+    ...[...portPaths].map(fieldPath => ({ fieldPath, detail: '已写入模板端口的速率、收发频率/带宽/功率和接收噪声系数。' })),
+    ...original.links.flatMap((link, index) => mappedLinkIds.has(link.id) ? [{ fieldPath: `links[${index}]`, detail: '已写入 LinkManager 端口映射。' }] : []),
+    ...(originalSettings?.messageIntervalS === undefined ? [] : [{ fieldPath: 'linkSettings.messageIntervalS', detail: '已写入业务处理器发送周期。' }]),
+    ...(originalSettings?.priority === undefined ? [] : [{ fieldPath: 'linkSettings.priority', detail: '已用于推导写入的热链路由。' }]),
+    ...(originalSettings?.hotLinks === undefined ? [] : [{ fieldPath: 'linkSettings.hotLinks', detail: '已写入 LinkCalc 的前向/返向热链。' }]),
+    ...(originalSettings?.linkCalc === undefined ? [] : [{ fieldPath: 'linkSettings.linkCalc', detail: '已写入 LinkCalc 的更新周期、BER 门限、干扰范围和编码方案。' }]),
+    ...activeJammers.map(({ jammerIndex }) => ({ fieldPath: `jammers[${jammerIndex}]`, detail: '已写入 LinkCalc 的干扰机计算参数和启用状态。' })),
+  ]
+  const retainedSnapshot = [
+    ...original.platforms.flatMap((platform, index) => {
+      const items: Array<{ fieldPath: string; detail: string }> = []
+      if (platform.type === 'COMMUNICATION_SATELLITE' && activeLinks.some(({ link }) => [link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(platform.id))) items.push({ fieldPath: `platforms[${index}].initialPosition`, detail: '卫星实例使用模板固定轨道；当前配置位置只保留快照。' })
+      if (!writesLoiter(platform) && (platform.loiterWaypoints?.length ?? 0) > 0) items.push({ fieldPath: `platforms[${index}].loiterWaypoints`, detail: '该模板平台未写入巡逻航路点，仅保留快照。' })
+      if (!(platform.type === 'AIRBORNE_MISSION_CLUSTER' || platform.type === 'FORWARD_RELAY_NODE') && platform.returnPlan !== undefined) items.push({ fieldPath: `platforms[${index}].returnPlan`, detail: '该模板平台未写入返回航路，仅保留快照。' })
+      platform.waypoints.forEach((waypoint, waypointIndex) => {
+        if (waypoint.arrivalTime !== undefined) items.push({ fieldPath: `platforms[${index}].waypoints[${waypointIndex}].arrivalTime`, detail: '到达时间不参与模板 route 执行，仅保留快照。' })
+        if (waypoint.heading !== undefined) items.push({ fieldPath: `platforms[${index}].waypoints[${waypointIndex}].heading`, detail: '航向不参与模板 route 执行，仅保留快照。' })
+        if (waypoint.acceleration !== undefined) items.push({ fieldPath: `platforms[${index}].waypoints[${waypointIndex}].acceleration`, detail: '加速度不参与模板 route 执行，仅保留快照。' })
+      })
+      return items
+    }),
+    ...activeJammers.flatMap(({ extension, index }) => [
+      { fieldPath: `uiExtensions.jammers[${index}].direction`, detail: '干扰方位角未写入引擎指向控制，仅保留快照。' },
+      ...(extension.elevation === undefined ? [] : [{ fieldPath: `uiExtensions.jammers[${index}].elevation`, detail: '干扰俯仰角未写入引擎指向控制，仅保留快照。' }]),
+    ]),
+    ...activeLinks.flatMap(({ link, index }) => link.type === 'LASER' ? [{ fieldPath: `links[${index}]`, detail: '激光通信端口未写入模板，仅保留快照。' }] : []),
+    ...original.sensors.flatMap((sensor, index) => draft.uiExtensions.sensors.some(extension => extension.sensorId === sensor.id && extension.enabled) ? [{ fieldPath: `sensors[${index}]`, detail: '已启用 ESM 传感器未生成引擎模型，仅保留快照。' }] : []),
+    ...(originalSettings?.switchRules?.length ? [{ fieldPath: 'linkSettings.switchRules', detail: '链路切换规则未写入模板执行，仅保留快照。' }] : []),
+  ]
+  const dependencyUnconfirmed = [
+    ...(localStub || calc === '' ? [] : [{ fieldPath: 'linkSettings.linkCalc', detail: 'WSF_LINK_CALC_PROCESSOR 由外部 AFSIM/LinkCalc 提供；本包已写入参数，但提供方定义待确认。' }]),
+    ...(runtime === undefined ? [
+      { fieldPath: 'definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA', detail: '对外交付包引用该天线但本包未定义，需由提供方模板/库确认。' },
+      { fieldPath: 'definitions.antennaPatterns.OMNI_ANTENNA_HIGHGAIN', detail: '对外交付包引用该天线但本包未定义，需由提供方模板/库确认。' },
+    ] : []),
+    ...(runtime === undefined ? activeJammers.flatMap(({ jammerIndex }) => original.platforms.find(platform => platform.id === original.jammers[jammerIndex]!.platformId)?.type === 'GROUND_JAMMER_DETECTION_STATION'
+      ? [{ fieldPath: `jammers[${jammerIndex}]`, detail: '已启用地面干扰机对应 prophet_jammer 未在对外交付包定义；需提供方模板/插件确认。' }]
+      : []) : []),
+    ...mapped.warnings.map(message => ({ fieldPath: 'links', detail: `未写入端口映射：${message}` })),
+  ]
+  const executionStatus = { emitted, retainedSnapshot, dependencyUnconfirmed }
   const manifest = { scope: 'TEMPLATE_ALIGNED_PLATFORM_PORTS', engineValidated: false, scenarioId: config.scenario.id, revision: draft.revision, entry: ENTRY_FILE, scriptFiles, platformNaming: 'TEMPLATE_INSTANCE',
     platforms: inputConfig.platforms.map(item => ({ platformId: item.id, name: names.get(item.id)!, generatedType: platformType(item) })), devices: mapped.items, businesses: config.informationDemand.filter(item => item.enabled !== false), jammers, sensors: [], motion: config.platforms.filter(platform => platform.waypoints.length > 0).map(platform => ({
     platformId: platform.id,
@@ -1036,7 +1104,7 @@ export function buildMissionPackage(draft: ScenarioDraft, output = configuredSce
       // 模板 route 按位置与速度推进；这些配置仅供追溯，不强制引擎运动。
       arrivalTimeEnforced: false, headingEnforced: false,
     })),
-  })), jammerPointing: draft.uiExtensions.jammers.map(extension => ({
+  })), executionStatus, jammerPointing: draft.uiExtensions.jammers.map(extension => ({
     jammerId: extension.jammerId, directionDeg: extension.direction, elevationDeg: extension.elevation ?? 0,
     directionEngineMapped: false, elevationEngineMapped: false,
   })), linkCalc: { emitted: true, hostPlatformId: config.platforms.find(item => item.type === 'REAR_COMMAND_NODE')?.id ?? null, excludedOpticalLinkIds: config.links.filter(item => item.type === 'LASER').map(item => item.id), note: 'port_params 按模板平台类型共享。' }, output: { configuredDirectory: config.output.directory, resolvedDirectory: directory, eventsCsvPath: `${directory}/scenario_events.csv`, positionCsvPath: `${directory}/position.csv`, eventsEnabled: true, linkQualityEnabled: false, linkSwitchEnabled: false }, scenarioStartTime: { value: config.scenario.startTime, scriptDate: start.date, scriptTime: start.time, convention: 'AS_STORED_UTC', engineEmitted: true }, retainedButNotEmitted: ['航点航向/加速度/到达时间', '干扰方位角/俯仰角', '激光通信端口', '侦测传感器/ESM', '业务 QoS', '链路切换规则/优先级/质量门限', '调制/BER/编码/增益修正', '海峡宽度', '时间步长', ...laserOnlyWarnings.map(item => `${item.fieldPath}：${item.message}`)], warnings: [...mapped.warnings, ...laserOnlyWarnings.map(item => `${item.fieldPath}：${item.message}`)] }

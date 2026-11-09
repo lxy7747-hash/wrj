@@ -39,7 +39,7 @@ function scriptLocation(fieldPath: string): string {
 <!--    </div>-->
     <el-alert v-if="resultMessage && state !== 'EMPTY'" :title="resultMessage" :type="state === 'ERROR' ? 'error' : 'info'" :closable="false" show-icon />
     <p class="script-guidance" data-testid="script-next-step">
-      {{ preflightPassed ? '预检已通过；预览未执行引擎校验，实际执行包可能按引擎能力适配，以运行记录为准。' : script ? '下一步：点击“执行预检”。再次保存生成脚本后，需要重新预检。' : '请先点击上方“保存”，生成 TXT 后可执行预检。' }}
+      {{ preflightPassed ? '预检已通过：仅确认本包结构和可核对的本包引用；下方“生成日志”逐项列出写入、仅快照和外部依赖待确认项。预览未执行引擎校验。' : script ? '下一步：点击“执行预检”。再次保存生成脚本后，需要重新预检。' : '请先点击上方“保存”，生成 TXT 后可执行预检。' }}
     </p>
     <div class="platform-actions">
       <el-button :type="script !== null && !preflightPassed ? 'primary' : 'default'" :loading="pending" :disabled="script === null" data-testid="preflight-script" @click="emit('preflight')">执行预检</el-button>

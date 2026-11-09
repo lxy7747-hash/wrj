@@ -1261,7 +1261,13 @@ describe('P0 deterministic mock server', () => {
       .set(roleHeaders)
       .send({ checksum: script.checksum })
       .expect(200)
-    expect(preflight.body).toMatchObject({ ok: true, data: { valid: true, errors: [], warnings: [] } })
+    expect(preflight.body).toMatchObject({ ok: true, data: { valid: true, errors: [] } })
+    const warnings = (preflight.body as { data: { warnings: Array<{ code: string }> } }).data.warnings
+    expect(warnings.map(item => item.code)).toEqual(expect.arrayContaining([
+      'LINK_CALC_PROVIDER_UNCONFIRMED',
+      'TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED',
+      'GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED',
+    ]))
     await request(baseUrl)
       .post(`/api/v1/scripts/${script.scriptId}/preflight`)
       .set(roleHeaders)

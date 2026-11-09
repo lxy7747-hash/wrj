@@ -8,6 +8,9 @@ import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useSimulationStore } from '../../src/stores/simulation'
 import { isTelemetryFrame, useTelemetryStore } from '../../src/stores/telemetry'
+import { useRuntimeQualityStore } from '../../src/stores/runtime-quality'
+import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
+import engineSample from '../fixtures/engine-frame/params_check.json'
 
 const frame = fixtureSource.frame as unknown as TelemetryFrame
 const operator: Principal = {
@@ -64,6 +67,69 @@ describe('P3-2 遥测 Store', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+  })
+
+  it('真实运行无固定帧时接收引擎整帧，拒绝跨任务/运行且保留主题序号连续校验', async () => {
+    const simulation = useSimulationStore(), store = useTelemetryStore()
+    useAuthStore().runtimeMode = 'LOCAL'
+    simulation.run = { ...fixtureSource.run, runId: 'RUN-ENGINE', taskId: 'TASK-ENGINE', scenarioId: 'SCN-ENGINE', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
+    simulation.selectedScene = { revision: 1, config: { scenario: { id: 'SCN-ENGINE' }, links: [] } } as unknown as ScenarioDraft
+    const quality = useRuntimeQualityStore()
+    quality.activate({ taskId: simulation.run.taskId, runId: simulation.run.runId, scenarioId: simulation.run.scenarioId, revision: 1, startedAt: simulation.run.startedAt! }, [])
+    expect(quality.scope?.runId).toBe('RUN-ENGINE')
+    const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: 'RUN-ENGINE' }
+    const value = { type: 'event', schemaVersion: '1.0', topic: 'link.metric', sequence: 1, taskId: 'TASK-ENGINE',
+      frameId: `F-ENGINE-${payload.frameId}`, simulationTime: payload.simulationTime, payload }
+    expect(store.frame).toBeNull()
+    expect(store.acceptEnvelope({ ...value, taskId: 'TASK-OTHER' })).toBe(false)
+    expect(store.acceptEnvelope({ ...value, payload: { ...payload, runId: 'RUN-OTHER' } })).toBe(false)
+    expect(store.topicSequences['link.metric']).toBe(0)
+    expect(store.acceptEnvelope(value)).toBe(true)
+    const count = quality.engineEvents.length
+    expect(store.acceptEnvelope(value)).toBe(true)
+    expect(quality.engineEvents).toHaveLength(count)
+    expect(store.frame).toBeNull()
+    const recovering = vi.spyOn(store, 'recoverFromGap').mockResolvedValue()
+    expect(store.acceptEnvelope({ ...value, sequence: 3, frameId: 'F-ENGINE-4801', payload: { ...payload, frameId: 4801 } })).toBe(false)
+    expect(recovering).toHaveBeenCalledOnce(); expect(store.topicSequences['link.metric']).toBe(1)
+    recovering.mockRestore()
+    const loading = vi.spyOn(store, 'loadFrame'), connecting = vi.spyOn(store, 'connect').mockImplementation(() => {})
+    await store.recoverFromGap()
+    expect(loading).not.toHaveBeenCalled(); expect(connecting).toHaveBeenCalledOnce()
+    loading.mockRestore(); connecting.mockRestore()
+  })
+
+  it('任务日志和上游诊断只接收当前运行，且不把墙钟日志伪装成仿真帧', () => {
+    const simulation = useSimulationStore(), store = useTelemetryStore()
+    simulation.run = { ...fixtureSource.run, runId: 'RUN-LOG', taskId: 'TASK-LOG', scenarioId: 'SCN-LOG', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
+    const update = { kind: 'MISSION_LOG', runId: 'RUN-LOG', text: '第一行\n', replace: false, bytes: 9, truncated: false, chunkIndex: 0, chunkCount: 1, startByteOffset: 0, endByteOffset: 9 }
+    const envelope = { type: 'event', schemaVersion: '1.0', topic: 'mission.log', taskId: 'TASK-LOG', sequence: 1, payload: update }
+    expect(store.acceptEnvelope({ ...envelope, taskId: 'TASK-OTHER' })).toBe(false)
+    expect(store.acceptEnvelope({ ...envelope, payload: { ...update, runId: 'RUN-OTHER' } })).toBe(false)
+    expect(store.acceptEnvelope({ ...envelope, simulationTime: 0 })).toBe(false)
+    expect(store.acceptEnvelope(envelope)).toBe(true)
+    expect(store.missionLogUpdate).toEqual(update)
+    expect(store.topicSequences['mission.log']).toBe(1)
+    const diagnostic = { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: 'RUN-LOG', state: 'FRAME_ADVANCE_OBSERVED', previousFrameId: 7, observedFrameId: 13,
+      message: '上游帧号由 7 变为 13；与约定步长 5（5 秒）不一致，仅记录帧号间隔异常，不推定上游补发能力。' }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'mission.log', taskId: 'TASK-LOG', sequence: 2, payload: diagnostic })).toBe(true)
+    expect(store.engineDiagnostics).toEqual([diagnostic])
+  })
+
+  it('真实 mission 位置与引擎干扰/切换主题分别消费，不要求伪造同一仿真帧', () => {
+    const simulation = useSimulationStore(), store = useTelemetryStore()
+    simulation.run = { ...fixtureSource.run, runId: 'RUN-WS', taskId: 'TASK-WS', scenarioId: 'SCN-WS', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
+    const position = { kind: 'MISSION_POSITION', runId: 'RUN-WS', scenarioId: 'SCN-WS', revision: 1, sourceGeneration: 4, sourceRecordCount: 9, waitingForLine: false,
+      nodes: [{ platformId: 'P-1', time: 7, longitude: 120, latitude: 30, altitude: 100, speed: 5, heading: 90 }] }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'position.update', taskId: 'TASK-WS', sequence: 1, payload: position })).toBe(true)
+    expect(store.missionPositionUpdate).toEqual(position)
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'position.update', taskId: 'TASK-WS', sequence: 2, frameId: 'F-00001', payload: position })).toBe(false)
+    const jammer = { kind: 'ENGINE_JAMMER_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId: 12, simulationTime: 3, jammers: [], events: [] }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-WS', sequence: 1, frameId: 'F-ENGINE-12', simulationTime: 3, payload: jammer })).toBe(true)
+    expect(store.engineJammerUpdates).toEqual([jammer])
+    const switching = { kind: 'ENGINE_SWITCH_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId: 12, simulationTime: 3, switches: [] }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-WS', sequence: 1, frameId: 'F-ENGINE-12', simulationTime: 3, payload: switching })).toBe(true)
+    expect(store.engineSwitchUpdates).toEqual([switching])
   })
 
 
@@ -1216,11 +1282,11 @@ describe('P3-2 遥测 Store', () => {
 
     socket?.emit('open')
     expect(JSON.parse(socket?.sent[0] ?? '{}')).toMatchObject({
-      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'],
-      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0 },
+      type: 'subscribe', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update'],
+      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0, 'mission.log': 0, 'position.update': 0 },
     })
     socket?.emit('message', JSON.stringify({
-      type: 'subscribed', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event'], lastSequence: 0, nextSequence: 1,
+      type: 'subscribed', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update'], lastSequence: 0, nextSequence: 1,
     }))
     expect(store.connectionState).toBe('SUBSCRIBED')
     socket?.emit('message', '{bad json')
@@ -1248,13 +1314,15 @@ describe('P3-2 遥测 Store', () => {
       'link.metric': 5,
       'jammer.event': 4,
       'switch.event': 6,
+      'mission.log': 2,
+      'position.update': 0,
     }
 
     store.connect()
     const first = TestWebSocket.instances[0]
     first?.emit('open')
     expect(JSON.parse(first?.sent[0] ?? '{}')).toMatchObject({
-      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6 },
+      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6, 'mission.log': 2, 'position.update': 0 },
     })
 
     first?.emit('close')
@@ -1262,7 +1330,7 @@ describe('P3-2 遥测 Store', () => {
     const resumed = TestWebSocket.instances[1]
     resumed?.emit('open')
     expect(JSON.parse(resumed?.sent[0] ?? '{}')).toMatchObject({
-      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6 },
+      lastSequences: { 'simulation.frame': 7, 'runtime.state': 3, 'link.metric': 5, 'jammer.event': 4, 'switch.event': 6, 'mission.log': 2, 'position.update': 0 },
     })
     store.disconnectAndReset()
   })
@@ -1276,6 +1344,8 @@ describe('P3-2 遥测 Store', () => {
       'link.metric': 5,
       'jammer.event': 4,
       'switch.event': 6,
+      'mission.log': 2,
+      'position.update': 0,
     }
     vi.spyOn(store, 'loadFrame').mockResolvedValue(true)
 
@@ -1288,7 +1358,7 @@ describe('P3-2 遥测 Store', () => {
     const recovered = TestWebSocket.instances[1]
     recovered?.emit('open')
     expect(JSON.parse(recovered?.sent[0] ?? '{}')).toMatchObject({
-      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0 },
+      lastSequences: { 'simulation.frame': 0, 'runtime.state': 0, 'link.metric': 0, 'jammer.event': 0, 'switch.event': 0, 'mission.log': 0, 'position.update': 0 },
     })
     store.disconnectAndReset()
   })

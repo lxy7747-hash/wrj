@@ -167,9 +167,11 @@ export class LocalMissionRunner implements MissionExecution {
     try { await this.guard.claim(this.directory, record) }
     catch (error) { await log.close(); throw error }
     let continuous: ContinuousTimeSeriesWriter | undefined
+    let engineManifest: unknown
     try {
       // 运行中增量留存使用独立 task/run 目录；缺少质量源时不补造数据，close 仍会留下可追溯 manifest。
-      const names = engineNameMap(JSON.parse(await readFile(join(cwd, 'mapping.json'), 'utf8')))
+      engineManifest = JSON.parse(await readFile(join(cwd, 'mapping.json'), 'utf8'))
+      const names = engineNameMap(engineManifest)
       continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, await resolveMissionOutputDirectory(entryPath), names)
     } catch (error) {
       await log.close()
@@ -264,7 +266,7 @@ export class LocalMissionRunner implements MissionExecution {
       throw new Error('mission 启动未确认；请检查本机进程与未结清记录。')
     }
     const process: MissionProcess = {
-      pid: child.pid!, startedAt, entryPath, readPositions: () => this.positions.read(runId), completed,
+      pid: child.pid!, startedAt, entryPath, engineManifest, readPositions: () => this.positions.read(runId), completed,
       readConsoleLog: () => readConsoleLogTail(logPath),
       ...(this.runTimeoutMs > 0 ? { timeoutMs: this.runTimeoutMs } : {}),
       dataFailure: continuous.failed.then(error => `连续时序留存失败：${error.message}；已请求停止本任务。`),

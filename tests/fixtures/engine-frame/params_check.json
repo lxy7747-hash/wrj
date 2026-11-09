@@ -1,0 +1,386 @@
+{
+  "msg_type": "frame_snapshot",
+  "frame_id": 4800,
+  "sim_time_s": 3600.5,
+  "link_calc": {
+    "model_version": "1.0.0",
+    "modulation": "BPSK",
+    "links": [
+      {
+        "link_id": "link_id-1",
+        "tx_platform": "UAV1",
+        "rx_platform": "shentong_sat",
+        "tx_port": "sat_link_a",
+        "rx_port": "sat_link",
+        "distance_km": 120.5,
+        "status": "AVAILABLE",
+        "losses": {
+          "free_space_db": 145.2,
+          "sea_multipath_db": 2.1,
+          "atmospheric_db": 0.3,
+          "cloud_rain_db": 0,
+          "jamming_loss_db": 4.8,
+          "total_composite_db": 152.4
+        },
+        "quality": {
+          "gxb_db": 9.5,
+          "ber": 1.2e-7,
+          "rx_power_dbw": -112.3,
+          "input_trace": {
+            "eirp_dbw": 40,
+            "g_over_t_dbk": -5,
+            "data_rate_bps": 1600000,
+            "frequency": "4.5",
+            "jammers": [
+              {
+                "jammer_name": "jammer_station_01",
+                "dist_km": "18.3",
+                "eirp_dbw": 12.3,
+                "Loss_dB": 11.5
+              },
+              {
+                "jammer_name": "jammer_airbround_01",
+                "dist_km": "18.3",
+                "eirp_dbw": 12.3,
+                "Loss_dB": 11.5
+              }
+            ]
+          },
+          "error_msg": ""
+        }
+      }
+    ]
+  },
+  "jammer_params": [
+    {
+      "jammer_name": "jammer_station_01",
+      "jammer_sensor": {
+        "detect_status": "DETECTED",
+        "events": [
+          {
+            "target_names": [
+              "UAV3",
+              "UAV2"
+            ],
+            "target_pos": [
+              {
+                "name": "UAV3",
+                "pos": {
+                  "lat": 21.3,
+                  "lon": 118.5,
+                  "alt_m": 5000
+                }
+              },
+              {
+                "name": "UAV2",
+                "pos": {
+                  "lat": 21.5,
+                  "lon": 119.1,
+                  "alt_m": 5000
+                }
+              }
+            ],
+            "platform_type": "UAV",
+            "freq_band_hz": 2300000000,
+            "detect_prob": 0.92,
+            "detect_range_nm": 60
+          }
+        ]
+      },
+      "rf_jammer": {
+        "device_status": "ON",
+        "active_params": {
+          "power_w": 200,
+          "freq_band_hz": 2300000000,
+          "jammer_range_nm": 60
+        }
+      },
+      "closed_loop": [
+        {
+          "last_action": "JAM_ON",
+          "jam_target_id": "UAV3",
+          "jam_mode": "broadband"
+        },
+        {
+          "last_action": "JAM_ON",
+          "jam_target_id": "UAV2",
+          "jam_mode": "broadband"
+        }
+      ]
+    }
+  ],
+  "link_manager": {
+    "init_routing_result": {
+      "forward": [
+        {
+          "path_id": "path_id-2",
+          "src_name": "rear",
+          "dist_name": "uav2",
+          "trans_type": [
+            "kForwardTarget"
+          ],
+          "path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        }
+      ],
+      "return": [
+        {
+          "path_id": "path_id-3",
+          "src_name": "rear",
+          "dist_name": "uav2",
+          "trans_type": [
+            "kForwardTarget"
+          ],
+          "path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        }
+      ]
+    },
+    "routing_result": {
+      "forward": [
+        {
+          "path_id": "path_id-4",
+          "src_name": "rear",
+          "dist_name": "uav2",
+          "trans_type": [
+            "kForwardTarget"
+          ],
+          "reason_chenge": [
+            {
+              "linkid": "linkid-5",
+              "reason": [
+                "ber_switch"
+              ]
+            }
+          ],
+          "old_path_id": "old_path_id-6",
+          "new_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        },
+        {
+          "path_id": "path_id-7",
+          "src_name": "rear",
+          "dist_name": "uav3",
+          "trans_type": [
+            "kForwardTarget"
+          ],
+          "reason_chenge": [
+            {
+              "linkid": "linkid-8",
+              "reason": []
+            },
+            {
+              "linkid": "linkid-9",
+              "reason": []
+            }
+          ],
+          "old_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav3",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ],
+          "new_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        }
+      ],
+      "return": [
+        {
+          "path_id": "path_id-10",
+          "src_name": "uav2",
+          "dist_name": "rear",
+          "trans_type": [
+            "kReturnReconStatus"
+          ],
+          "reason_chenge": [
+            {
+              "linkid": "linkid-11",
+              "reason": []
+            }
+          ],
+          "old_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav3",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ],
+          "new_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        },
+        {
+          "path_id": "path_id-12",
+          "src_name": "rear",
+          "dist_name": "uav3",
+          "trans_type": [
+            "kForwardTarget"
+          ],
+          "reason_chenge": [
+            {
+              "linkid": "linkid-13",
+              "reason": []
+            },
+            {
+              "linkid": "linkid-14",
+              "reason": []
+            }
+          ],
+          "old_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav3",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ],
+          "new_path_nodes": [
+            {
+              "plat_name": "rear",
+              "in_port": "",
+              "out_port": "fire_link"
+            },
+            {
+              "plat_name": "conmand",
+              "in_port": "fire_link",
+              "out_port": "c_up"
+            },
+            {
+              "plat_name": "uav2",
+              "in_port": "c_up",
+              "out_port": ""
+            }
+          ]
+        }
+      ],
+      "alarm": [
+        {
+          "pathid": "2412434124",
+          "linkid": "1231312414"
+        },
+        {
+          "pathid": "2412434124",
+          "linkid": "1231312414"
+        }
+      ]
+    }
+  },
+  "events": [
+    {
+      "events_type": "alarm_switch",
+      "events_pathid": "events_pathid-15",
+      "events_uav": [],
+      "events_jammer": []
+    },
+    {
+      "events_type": "into_detect",
+      "events_pathid": "events_pathid-16",
+      "events_uav": [],
+      "events_jammer": []
+    }
+  ]
+}

@@ -12,10 +12,11 @@ import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
 import MetricPanel from '../../components/situation/MetricPanel.vue'
 import QualityMetricPanel from '../../components/situation/QualityMetricPanel.vue'
 import RuntimeLinkDecisionPanel from '../../components/situation/RuntimeLinkDecisionPanel.vue'
+import EngineFramePanel from '../../components/situation/EngineFramePanel.vue'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import SimulationToolbar from '../../components/situation/SimulationToolbar.vue'
 import MissionConsoleLog from '../../components/situation/MissionConsoleLog.vue'
-import type { SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
+import type { ConfiguredLinkSwitchState, SituationMapFocusTarget } from '../../components/situation/situation-map-controller'
 import {
   LINK_TYPE_LABELS,
   JAMMER_TYPE_LABELS,
@@ -43,6 +44,7 @@ import { isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../f
 import { unwrapSuccessData } from '../../stores/api-envelope'
 import { isQualityDataset } from '../../features/data-exchange/quality-records'
 import { saveDownload } from '../../features/shared/download'
+import { resolveEngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -165,6 +167,16 @@ const mapNodes = computed(() => selectedScene.value
 const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
 const missionPositionTime = computed(() => missionPositions.value?.positions?.nodes.length
   ? Math.max(...missionPositions.value.positions.nodes.map(node => node.time)) : null)
+const latestEngineJammerTopic = computed(() => telemetryStore.engineJammerUpdates.at(-1) ?? null)
+const latestEngineSwitchTopic = computed(() => telemetryStore.engineSwitchUpdates.at(-1) ?? null)
+
+/** Position reader and WS share one append source.  A late HTTP response may fill
+ * an initial gap, but must never roll back a newer source generation/record count. */
+function acceptsMissionPositionSource(generation: number, recordCount: number): boolean {
+  const current = missionPositions.value?.positions
+  if (!current) return true
+  return generation > current.generation || (generation === current.generation && recordCount >= current.recordCount)
+}
 
 // 位置只绑定本次真实运行；场景、修订或账号改变时取消在途请求并清除旧坐标。
 watch(missionPositionSource, (source, _, onCleanup) => {
@@ -193,6 +205,9 @@ watch(missionPositionSource, (source, _, onCleanup) => {
       if (cancelled) return
       if (!response.ok || !isMissionPositionSnapshot(data) || data.runId !== runId
         || data.scenarioId !== scenarioId || data.revision !== revision) throw new Error('运行位置响应不一致。')
+      const source = data.positions
+      if (source === null && missionPositions.value?.positions?.fileName === 'mission-position-ws') return
+      if (source !== null && !acceptsMissionPositionSource(source.generation, source.recordCount)) return
       missionPositions.value = data
       hasMore = data.positions?.hasMore ?? false
       missionPositionMessage.value = data.positions?.nodes.length
@@ -216,6 +231,27 @@ watch(missionPositionSource, (source, _, onCleanup) => {
   onCleanup(() => { cancelled = true; clearTimeout(timer); request?.abort(); stopStatusWatch() })
   void read()
 }, { immediate: true, flush: 'sync' })
+
+/** 真实 mission 位置由独立 WS 源推送；不借用引擎帧号或与引擎时刻强行对齐。 */
+watch(() => telemetryStore.missionPositionUpdate, update => {
+  const run = simulationRun.value
+  const scene = selectedScene.value
+  if (!update || !run || !scene || update.runId !== run.runId || update.scenarioId !== scene.config.scenario.id || update.revision !== scene.revision) return
+  if (!acceptsMissionPositionSource(update.sourceGeneration, update.sourceRecordCount)) return
+  missionPositions.value = {
+    runId: update.runId,
+    scenarioId: update.scenarioId,
+    revision: update.revision,
+    positions: {
+      fileName: 'mission-position-ws', generation: update.sourceGeneration,
+      nodes: update.nodes.map(node => ({ ...node })),
+      recordCount: update.sourceRecordCount, issueCount: 0, issues: [], waitingForLine: update.waitingForLine, hasMore: false,
+    },
+  }
+  missionPositionMessage.value = update.nodes.length
+    ? `本次位置已由实时 WebSocket 更新（位置源记录 ${update.sourceRecordCount} 条）。`
+    : '本次位置源暂无可用节点记录。'
+}, { flush: 'sync' })
 
 /** 按本机配置加载初始位置；本地模式未配置时显示空态，仅 Mock 服务加载固定帧，读取失败不回退假数据。 */
 async function initializeSituation(): Promise<void> {
@@ -402,17 +438,45 @@ const displayedLinks = computed(() => {
   }))
 })
 const selectedLink = computed(() => situationLinks.value.find((link) => link.linkId === selectedLinkId.value) ?? null)
-const runtimeStatusMap = computed(() => new Map(runtimeQualityStore.linkStatuses.map(value => [value.linkId, value])))
+// 引擎按设备段给出状态；不得把多段的结论冒充整条场景链路的本机判定。
+const runtimeStatusMap = computed(() => new Map(runtimeQualityStore.linkStatuses.filter(value => !('source' in value)).map(value => [value.linkId, value])))
+/** 仅一个明确设备段关联到一个场景链路时，才将引擎状态投影到地图；多段不合成整链路结论。 */
+const engineSingleSegmentStatusMap = computed(() => {
+  const frame = runtimeQualityStore.engineFrame
+  if (!frame) return new Map<string, { source: 'ENGINE_FRAME'; linkId: string; frameId: number; simulationTime: number; status: UiLinkStatus; gxbDb: number | null; ber: number | null; receivedPowerDbm: number | null }>()
+  const counts = new Map<string, number>()
+  for (const segment of frame.links) for (const linkId of new Set(segment.linkIds)) counts.set(linkId, (counts.get(linkId) ?? 0) + 1)
+  return new Map(frame.links.flatMap(segment => !segment.error && segment.status !== 'UNKNOWN' && segment.linkIds.length === 1 && counts.get(segment.linkIds[0]!) === 1
+    ? [[segment.linkIds[0]!, { source: 'ENGINE_FRAME' as const, linkId: segment.linkIds[0]!, frameId: frame.frameId, simulationTime: frame.simulationTime,
+      status: segment.status, gxbDb: segment.quality.gxbDb, ber: segment.quality.ber, receivedPowerDbm: segment.quality.rxPowerDbm }] as const] : []))
+})
 const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQualityStore.snapshot, runtimeQualityStore.bindings, displayedLinks.value, simulationTime.value, runtimeStatusMap.value))
-const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) })))
-const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries()]
+const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) ?? engineSingleSegmentStatusMap.value.get(link.linkId) })))
+const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries(), ...engineSingleSegmentStatusMap.value.entries()]
   .flatMap(([id, value]) => value.status === 'UNKNOWN' ? [] : [[id, value.status] as const])))
+/** 仅高亮当前引擎帧中按相邻节点端口及唯一场景 linkId 解析出的切换段。 */
+const engineSwitchMap = computed(() => {
+  const frame = runtimeQualityStore.engineFrame
+  if (!frame) return new Map<string, ConfiguredLinkSwitchState>()
+  const before = new Set<string>()
+  const after = new Set<string>()
+  for (const item of runtimeQualityStore.engineSwitches) {
+    if (item.frameId !== frame.frameId) continue
+    const resolved = resolveEngineSwitchHighlights(frame, item.route.oldNodes, item.route.nodes)
+    resolved.before.linkIds.forEach(id => before.add(id))
+    resolved.after.linkIds.forEach(id => after.add(id))
+  }
+  return new Map([...new Set([...before, ...after])].map(id => [id,
+    before.has(id) && after.has(id) ? 'BOTH' : before.has(id) ? 'BEFORE' : 'AFTER'] as const))
+})
 const qualityLinks = computed(() => displayedLinks.value.map(link => ({
   ...(link.live ?? link), runtimeQuality: runtimeQualityViews.value.get(link.linkId) ?? null,
 })))
 const selectedRuntimeQuality = computed(() => runtimeQualityViews.value.get(selectedLinkId.value) ?? null)
+const selectedEngineSegments = computed(() => runtimeQualityStore.engineFrame?.links.filter(segment => segment.linkIds.includes(selectedLinkId.value)) ?? [])
 const qualitySourceKey = computed(() => `${sourceState.value}:${selectedScene.value?.config.scenario.id ?? frame.value?.runId ?? ''}:${runtimeQualityScope.value?.runId ?? ''}:${runtimeQualityScope.value?.startedAt ?? ''}:${selectedScene.value?.revision ?? ''}`)
 const qualitySourceLabel = computed(() => {
+  if (runtimeQualityStore.engineFrame) return '引擎实时推送'
   const source = runtimeQualityStore.importedDataset?.source
   if (!source) return null
   return `文件导入 · ${source.fileName} · ${source.frameIdKind === 'IMPORT_SEQUENCE' ? '采样序号（非引擎帧号）' : '来源帧号'} · ${source.sha256.slice(0, 12)}`
@@ -576,7 +640,7 @@ async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpo
     })
     const body = await response.json() as unknown
     if (revision !== qualityLoadRevision || !sameQualityScope(expectedScope, runtimeQualityScope.value)
-      || requestEpoch !== runtimeQualityStore.epoch) return
+      || requestEpoch !== runtimeQualityStore.epoch || runtimeQualityStore.engineFrame) return
     if (!response.ok) {
       const error = typeof body === 'object' && body !== null ? (body as { error?: { message?: unknown } }).error : undefined
       qualityLoadMessage.value = typeof error?.message === 'string' ? error.message : '质量数据读取失败。'
@@ -765,7 +829,7 @@ function requestStop(): void {
 /**
  * 创建并消费一次性确认后停止当前仿真。
  * @returns 停止流程完成后兑现且不返回值的 Promise。
- * @sideeffect 成功时停止运行、清零规范时钟、解除配置锁并关闭确认框。
+ * @sideeffect 停止完成或 WebSocket 命令发出后关闭确认框；未确认的引擎运行仍保留配置锁。
  */
 async function confirmStop(): Promise<void> {
   if (await simulationStore.stop()) stopDialogVisible.value = false
@@ -915,6 +979,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
       :real-mission="realMissionMode"
+      :engine-control="!otherSceneRun ? simulationRun?.engineControl : undefined"
       :runtime-unknown="runtimeUnknown"
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
@@ -1155,6 +1220,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
           :configured-link-statuses="runtimeMapStatuses"
+          :configured-link-switches="engineSwitchMap"
           :configured-jammers="selectedScene?.config.jammers"
           :file-links="hasMapData && sourceState === 'FILE' ? fileLinks : []"
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
@@ -1207,18 +1273,18 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   tabindex="0"
                   role="button"
                   :data-link-id="link.linkId"
-                  :class="{ 'is-exception': link.live && link.live.status !== 'UP' }"
+                  :class="{ 'is-exception': link.live && link.live.status !== 'UP', 'is-switch-before': engineSwitchMap.get(link.linkId) === 'BEFORE', 'is-switch-after': engineSwitchMap.get(link.linkId) === 'AFTER', 'is-switch-both': engineSwitchMap.get(link.linkId) === 'BOTH' }"
                   @click="handleLinkRowClick(link)"
                   @keydown.enter="handleLinkRowClick(link)"
                 >
-                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong></td>
+                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small v-if="engineSwitchMap.get(link.linkId)">当前引擎帧：切换{{ engineSwitchMap.get(link.linkId) === 'BEFORE' ? '前' : engineSwitchMap.get(link.linkId) === 'AFTER' ? '后' : '前后' }}路径（端口及 linkId 已唯一关联）</small></td>
                   <td>{{ link.file ? (link.type === 'DATALINK' ? '数传' : (FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type).replace('通信', '')) : (link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '')) }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
                   <td>
                     <el-tag v-if="link.runtimeStatus"
                       :type="link.runtimeStatus.status === 'UP' ? 'success' : link.runtimeStatus.status === 'DOWN' ? 'danger' : link.runtimeStatus.status === 'DEGRADED' ? 'warning' : 'info'"
-                      :title="runtimeDecisionReason(link.runtimeStatus.reason)" :data-runtime-link-status="link.runtimeStatus.status">
+                      :title="'source' in link.runtimeStatus ? `引擎分段 ${link.runtimeStatus.frameId}` : runtimeDecisionReason(link.runtimeStatus.reason)" :data-runtime-link-status="link.runtimeStatus.status">
                       {{ RUNTIME_STATUS_LABELS[link.runtimeStatus.status] }}
                     </el-tag>
                     <LinkStateBadge v-else-if="link.live" :link="link.live" />
@@ -1235,9 +1301,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <section class="telemetry-section telemetry-section--jammer">
           <div class="panel-heading">
             <div><strong>干扰 / 侦测设备</strong></div>
-            <span class="panel-heading__more">{{ sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
+            <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
           </div>
-          <div v-if="displayedJammers.length" class="jammer-list">
+          <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" />
+          <div v-else-if="displayedJammers.length" class="jammer-list">
             <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
             <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
             <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
@@ -1252,7 +1319,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             </article>
           </div>
           <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
-          <p v-if="detectionEvent" class="detection-state">
+          <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">引擎干扰主题：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
+          <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
             {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
           </p>
         </section>
@@ -1260,15 +1328,17 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         <section class="telemetry-section telemetry-section--events">
           <div class="panel-heading">
             <div><strong>同帧事件</strong></div>
-            <span class="panel-heading__more">累计 {{ allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
+            <span class="panel-heading__more">累计 {{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineEvents.length} 条` : allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
           </div>
-          <ol v-if="allDisplayedEvents.length" class="event-list">
+          <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" />
+          <ol v-else-if="allDisplayedEvents.length" class="event-list">
             <li v-for="event in allDisplayedEvents" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
               <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
             </li>
           </ol>
           <el-empty v-else class="telemetry-empty-state" description="暂无数据" :image-size="48" />
+          <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">引擎切换主题：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
@@ -1285,7 +1355,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
-            <QualityMetricPanel
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :selected-link-id="selectedLinkId" />
+            <QualityMetricPanel v-else
               :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
               :source-key="qualitySourceKey"
@@ -1298,8 +1369,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               </ol>
             </section>
           </el-tab-pane>
-          <el-tab-pane v-if="runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy>
-            <RuntimeLinkDecisionPanel :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
+          <el-tab-pane v-if="runtimeQualityStore.engineFrame || runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy>
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" />
+            <RuntimeLinkDecisionPanel v-else :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
               :decisions="runtimeQualityStore.routeDecisions" :events="runtimeQualityStore.decisionEvents" />
           </el-tab-pane>
         </el-tabs>
@@ -1326,9 +1398,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" />
     <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">{{ realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
+      <p class="stop-dialog-copy">{{ realMissionMode && simulationRun?.engineControl ? '向引擎发送停止命令。回执尚未接入，发送后保持连接、归档和配置锁；确认本机进程结束并完成归档后再解除锁定。' : realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
         <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
@@ -1470,9 +1542,13 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .link-table--quality th:last-child { width: 20%; }
 .link-table td { padding: .4rem .5rem; border-bottom: 1px solid #16283c; color: #a8bfd4; font-family: Consolas,"Microsoft YaHei",monospace; font-size: 12px; cursor: pointer; }
 .link-table tr.is-exception td { color: #ff7b7b; background: #3a1620; }
+.link-table tr.is-switch-before td { box-shadow: inset 3px 0 #f5b942; }
+.link-table tr.is-switch-after td { box-shadow: inset 3px 0 #4bd9f2; }
+.link-table tr.is-switch-both td { box-shadow: inset 3px 0 #b58cff; }
 .link-table tr:hover td, .link-table tr:focus td { background: #16283c; }
 .link-table tr.is-exception:hover td, .link-table tr.is-exception:focus td { background: #4a1b27; }
 .link-table td strong { display: block; white-space: normal; overflow-wrap: anywhere; }
+.link-table td small { display: block; margin-top: .2rem; color: #829db3; font-size: 11px; }
 .link-device-status { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #829db3; background: rgba(130, 157, 179, .15); font-size: 11px; white-space: nowrap; }
 .link-device-status[data-status="开启"] { color: #49e49a; background: rgba(73, 228, 154, .15); }
 .link-device-status[data-status="关闭"] { color: #ff7b7b; background: rgba(255, 123, 123, .15); }

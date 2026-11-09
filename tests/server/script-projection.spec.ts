@@ -12,7 +12,11 @@ describe('模板脚本预览', () => {
     expect(script.preview).toContain('// ===== comm_platform_REAR.txt =====')
     expect(script.preview).toContain('port_params [')
     expect(script.preview).toContain('// ===== mapping.json =====')
-    expect(inspectScriptPreview(script.preview)).toMatchObject({ valid: true })
+    const result = inspectScriptPreview(script.preview)
+    expect(result).toMatchObject({ valid: true })
+    expect(result.warnings.map((item: { code: string }) => item.code)).toEqual(expect.arrayContaining(['LINK_CALC_PROVIDER_UNCONFIRMED', 'TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED', 'GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED']))
+    expect(result.warnings.map((item: { message: string }) => item.message).join('\n')).toContain('MICRO_REAR_PLATFORM_DIR_ANTENNA')
+    expect(result.warnings.map((item: { message: string }) => item.message).join('\n')).toContain('OMNI_ANTENNA_HIGHGAIN')
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: true, data: { valid: true } })
   })
 

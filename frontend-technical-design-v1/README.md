@@ -2,9 +2,24 @@
 
 本目录是后续 Vue/Node 实现的技术设计基线，只含文档与机器可读合同。它依据两份上位 Word 文档和已评审通过的《前端开发需求基线》保留 29 项能力、7 类接口、10 条路由、权限边界、状态投影和确定性夹具关系；HTML 原型仅用于页面和交互说明，不得覆盖文档需求。本目录不包含应用脚手架、依赖、脚本、服务端/客户端实现或构建产物。
 
-当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-06 AFSIM 模板可选参数”；下方其余记录均为历史，旧哈希保持原样。
+当前前端需求基线为 **V1.1.49**，SHA-256：`DD14B52B2F097300F2551657D8E1C047318E6F5A9EBAA779C6A918BA323F6972`。当前冻结记录为“2026-11-07 引擎链路整帧”；下方其余记录均为历史，旧哈希保持原样。
 
-## AFSIM 模板可选参数（2026-11-06，当前冻结记录）
+## 引擎链路整帧（2026-11-07，当前冻结记录）
+
+OpenAPI **1.12.0**，HTTP 操作数量及现有主题不变。`LinkMetricPayload` 兼容原摘要数组和 `QUALITY_UPDATED`，新增 `ENGINE_FRAME` 整帧载荷。它由本项目服务绑定运行身份，包含设备段质量、引擎状态、探测与干扰、初始热链、切换、告警及事件；不要求先收到 `simulation.frame`。原字段与固定夹具不迁移。
+
+`AVAILABLE/RISK/INVALID` 分别映射 `UP/DEGRADED/DOWN`，未知状态保留为 `UNKNOWN`；不重新执行本机判定。缺测字段为 null，事件、原因和业务字符串保持开放。`EngineFrameSnapshot.engineEpoch` 为必填非负安全整数，由本项目服务从 0 计数。帧号从正数归零或重连首个有效帧号回退时递增轮次，清空初始热链缓存；前端同步清空引擎帧、事件、切换和告警历史。更小轮次拒绝，同轮次重复／倒序帧丢弃，普通递增帧重连保留初始热链。丢弃日志按原因每 10 秒最多一条，包含累计次数。设备段可关联多个场景链路，未匹配时保留原始名字，不推测整条多跳链路状态。
+
+归一化转换 km→m、dBW→dBm、bps→Mbps、海里→m。2026-11-09 按 `websocketNew` 确认：`sim_time_s` 实际为毫秒，入口转换为秒；探测频率字段 `freq_band_hz` 实际为 GHz，转换为 Hz，干扰机同名字段保持 Hz。链路频率读取 `frequency_ghz`，兼容旧字段名 `frequency`。新增参数可展示和归档，固定值用于流程测试；真实计算与控制闭环单独待验证。详见 [websocketNew 适配与待验证清单](../docs/websocketNew适配与待验证清单_20261109.md)。
+
+| 文件 | 当前 SHA-256 |
+|---|---|
+| `contracts/domain-models.ts` | `DBE79F3E00CCB86C773B303E98AA87FA9F134C74FBABBE5962384666AEAEC74C` |
+| `contracts/mock-api.openapi.yaml` | `4AB95D50E7D9ECE165F3C7D280FEEEB0C8898BE496C5D558A4E6DF16A84F652A` |
+| `../scripts/contracts/openapi-schema.snapshot.ts` | `10879AE5A5E879BB3366CF8A032DD4DBFAB1991CC0A90EEB44EF7E96D89BACD4` |
+| `contracts/deterministic-fixtures.json（未修改）` | `6A1B90E0B6932DE7518775B0F2107767906755C56D47F329F7092DB05245F616` |
+
+## AFSIM 模板可选参数（2026-11-06，历史冻结记录）
 
 OpenAPI **1.11.0**，操作数量及 WebSocket 1–4 阶段合同不变。侦测雷达默认功率按 11-06 模板修正为 1000 W，已保存的自定义值保持不变。新增 OMNI_ANTENNA 枚举、端口可选 EIRP/G/T、可选业务发送和 link_calc 更新周期，以及九项可选干扰雷达／链路计算参数。各新增键均保持闭合对象校验；周期及雷达带宽／功率为正数，占空比在 (0,1]，其余为有限数。原 V1.2 干扰功率／带宽限制保持不变。
 

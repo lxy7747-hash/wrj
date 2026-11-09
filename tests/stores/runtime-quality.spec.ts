@@ -1,6 +1,10 @@
 import { createPinia, setActivePinia } from 'pinia'
 import { nextTick } from 'vue'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import engineSample from '../fixtures/engine-frame/params_check.json'
+import newEngineSample from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
+import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
+import { RuntimeLinkDecisionTracker } from '../../src/features/data-exchange/runtime-link-decisions'
 import type { Principal, SimulationRun } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
 import { useRuntimeQualityStore, type RuntimeQualityBinding, type RuntimeQualityScope } from '../../src/stores/runtime-quality'
@@ -54,6 +58,74 @@ function prepare(activeScope = scope()) {
 
 describe('运行质量 Store', () => {
   beforeEach(() => setActivePinia(createPinia()))
+
+  it('新协议换算后的秒值直接用于展示，重复 JAM_ON 状态不生成额外事件或本机决策', () => {
+    const store = prepare(), tracker = vi.spyOn(RuntimeLinkDecisionTracker.prototype, 'accept')
+    const frame = { ...adaptEngineFrameSnapshot(newEngineSample).data!, runId: scope().runId }
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    expect(store.engineFrame?.simulationTime).toBe(350.625)
+    expect(store.engineEvents).toHaveLength(2)
+    const next = { ...frame, frameId: frame.frameId + 1, simulationTime: 351.625, events: [] }
+    expect(store.acceptEngineFrame(store.epoch, next)).toBe(true)
+    expect(store.engineFrame?.jammers[0]?.actions[0]?.action).toBe('JAM_ON')
+    expect(store.engineEvents).toHaveLength(2)
+    expect(store.decisionEvents).toEqual([]); expect(tracker).not.toHaveBeenCalled()
+    expect(store.acceptEngineFrame(store.epoch, next)).toBe(false)
+    tracker.mockRestore()
+  })
+
+  it('引擎状态不经过本机判定，历史各限 200 条；重复帧、错运行和旧 epoch 不回写', () => {
+    const store = prepare(), tracker = vi.spyOn(RuntimeLinkDecisionTracker.prototype, 'accept')
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    frame.links[0]!.status = 'DOWN'
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    expect(store.source).toBe('ENGINE_FRAME'); expect(store.snapshot).toBeNull()
+    expect(store.linkStatuses[0]).toMatchObject({ status: 'DOWN', source: 'ENGINE_FRAME' })
+    expect(tracker).not.toHaveBeenCalled()
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(false)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 0 })).toBe(false)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, runId: 'RUN-OTHER', frameId: 9999 })).toBe(false)
+    for (let i = 1; i < 105; i++) expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: frame.frameId + i })).toBe(true)
+    expect(store.engineEvents).toHaveLength(200); expect(store.engineSwitches).toHaveLength(200); expect(store.engineAlarms).toHaveLength(200)
+    const epoch = store.epoch; store.resetToSafeEmpty()
+    expect(store.engineFrame).toBeNull(); expect(store.engineEvents).toEqual([]); expect(store.engineSwitches).toEqual([]); expect(store.engineAlarms).toEqual([])
+    expect(store.acceptEngineFrame(epoch, { ...frame, frameId: 9999 })).toBe(false)
+    tracker.mockRestore()
+  })
+
+  it('engineEpoch 增大时接受归零帧并清空旧事件、切换和告警；旧轮次及同轮倒序帧不回写', () => {
+    const store = prepare(), frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    expect(store.engineEvents.length).toBeGreaterThan(0)
+    expect(store.engineSwitches.length).toBeGreaterThan(0)
+    expect(store.engineAlarms.length).toBeGreaterThan(0)
+    const restarted = { ...frame, engineEpoch: 1, frameId: 0, simulationTime: 0, initRouting: null, events: [], routing: { switches: [], alarms: [] } }
+    expect(store.acceptEngineFrame(store.epoch, restarted)).toBe(true)
+    expect(store.engineFrame).toEqual(restarted)
+    expect(store.engineEvents).toEqual([]); expect(store.engineSwitches).toEqual([]); expect(store.engineAlarms).toEqual([])
+    const next = { ...frame, engineEpoch: 1, frameId: 2, simulationTime: 2, initRouting: null }
+    expect(store.acceptEngineFrame(store.epoch, next)).toBe(true)
+    expect(store.engineEvents).toHaveLength(frame.events.length)
+    expect(store.engineSwitches).toHaveLength(frame.routing.switches.length)
+    expect(store.engineAlarms).toHaveLength(frame.routing.alarms.length)
+    const retained = { frame: store.engineFrame, events: store.engineEvents, switches: store.engineSwitches, alarms: store.engineAlarms }
+    for (const stale of [{ ...frame, frameId: 9999 }, next, { ...next, frameId: 1 }, { ...next, engineEpoch: -1 }]) {
+      expect(store.acceptEngineFrame(store.epoch, stale)).toBe(false)
+      expect(store.engineFrame).toBe(retained.frame); expect(store.engineEvents).toBe(retained.events)
+      expect(store.engineSwitches).toBe(retained.switches); expect(store.engineAlarms).toBe(retained.alarms)
+    }
+  })
+
+  it('新运行与登出清理引擎帧及历史，同一运行可继续接收', () => {
+    const store = prepare(), frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    useSimulationStore().run!.runId = 'RUN-NEXT'
+    expect(store.engineFrame).toBeNull(); expect(store.engineEvents).toEqual([])
+    const next = { ...scope(), runId: 'RUN-NEXT' }; store.activate(next, ['L-001'])
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, runId: next.runId, frameId: 0 })).toBe(true)
+    useAuthStore().principal = null
+    expect(store.engineFrame).toBeNull(); expect(store.linkStatuses).toEqual([])
+  })
 
   it('通过公开动作接收已绑定快照，并按源帧和源时刻隔离重复或过期帧', () => {
     const store = prepare()

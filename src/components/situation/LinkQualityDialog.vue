@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Link } from '../../contracts/domain-models'
+import type { EngineFrameSnapshot, EngineLinkSegment, Link } from '../../contracts/domain-models'
 import type { RuntimeLinkQualityView } from '../../features/situation/runtime-quality-view'
 import { RUNTIME_STATUS_LABELS, runtimeDecisionReason } from '../../features/situation/runtime-quality-view'
 import { reportTime } from '../../features/reports/local-report'
@@ -15,6 +15,8 @@ const props = defineProps<{
   link: SituationLinkView | null
   configuredLink?: Link | null
   runtimeQuality?: RuntimeLinkQualityView | null
+  engineSegments?: EngineLinkSegment[]
+  engineFrame?: EngineFrameSnapshot | null
   fileLink?: { linkId: string; sourceName: string; destinationName: string; typeLabel: string; registeredAt: number; deviceStatus: string } | null
 }>()
 
@@ -26,6 +28,10 @@ function optionalMetric(value: number | null | undefined, digits: number, unit: 
 }
 
 const runtimeMeasurement = computed(() => props.runtimeQuality?.measurement ?? null)
+const engineSegments = computed(() => props.engineSegments ?? [])
+const communicationType = computed(() => props.configuredLink ? LINK_TYPE_LABELS[props.configuredLink.type] : '暂无数据')
+const engineStatusLabel = (segment: EngineLinkSegment) => segment.error ? '异常（状态未知）'
+  : segment.status === 'UP' ? '正常' : segment.status === 'DEGRADED' ? '劣化' : segment.status === 'DOWN' ? '中断' : '未知'
 const runtimeLossFields = [
   { key: 'freeSpaceLossDb', label: '自由空间损耗' },
   { key: 'seaMultipathLossDb', label: '海面多径损耗' },
@@ -75,16 +81,39 @@ function reasonLabel(reason: string): string {
     <template #header>
       <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ runtimeQuality ? `${runtimeQuality.linkId} · 本次运行 · 帧 ${runtimeQuality.frameId}` : link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
+        <strong>{{ engineSegments.length ? `${configuredLink?.id ?? '所选链路'} · 引擎实时分段` : runtimeQuality ? `${runtimeQuality.linkId} · 本次运行 · 帧 ${runtimeQuality.frameId}` : link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
-    <div v-if="runtimeQuality && runtimeMeasurement" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-runtime" :data-frame-id="runtimeQuality.frameId">
+    <div v-if="engineSegments.length" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-engine-segments">
+      <p>链路体制：{{ communicationType }}。来源帧 {{ engineFrame?.frameId ?? '暂无数据' }} · 源仿真时刻 {{ engineFrame ? reportTime(engineFrame.simulationTime) : '暂无数据' }}。以下为引擎明确关联的设备段；多段不合成为整链路质量。</p>
+      <article v-for="(segment, index) in engineSegments" :key="`${segment.linkId}:${index}`" class="engine-segment">
+        <strong>{{ segment.sourceName ?? segment.sourcePlatformId ?? '暂无数据' }} / {{ segment.sourcePort ?? '暂无数据' }} → {{ segment.targetName ?? segment.targetPlatformId ?? '暂无数据' }} / {{ segment.targetPort ?? '暂无数据' }}</strong>
+        <dl class="link-quality-dialog__grid">
+          <div><dt>引擎段编号</dt><dd>{{ segment.linkId }}</dd></div>
+          <div><dt>引擎状态</dt><dd>{{ engineStatusLabel(segment) }}</dd></div>
+          <div><dt>干信比 GXB</dt><dd>{{ optionalMetric(segment.quality.gxbDb, 2, ' dB') }}</dd></div>
+          <div><dt>误码率 BER</dt><dd>{{ segment.quality.ber === null ? '暂无数据' : formatBer(segment.quality.ber) }}</dd></div>
+          <div><dt>接收功率</dt><dd>{{ optionalMetric(segment.quality.rxPowerDbm, 2, ' dBm') }}</dd></div>
+          <div><dt>总复合损耗（引擎原值）</dt><dd>{{ optionalMetric(segment.losses.totalDb, 2, ' dB') }}</dd></div>
+          <div><dt>雨衰损耗</dt><dd>{{ optionalMetric(segment.losses.rainDb, 2, ' dB') }}</dd></div>
+          <div><dt>云衰损耗</dt><dd>{{ optionalMetric(segment.losses.cloudDb, 2, ' dB') }}</dd></div>
+          <div><dt>频率</dt><dd>{{ optionalMetric(segment.inputTrace.frequencyGHz, 3, ' GHz') }}</dd></div>
+          <div><dt>数据率</dt><dd>{{ optionalMetric(segment.inputTrace.dataRateMbps, 3, ' Mbps') }}</dd></div>
+          <div><dt>时延（原值，单位待确认）</dt><dd>{{ optionalMetric(segment.quality.delay, 6, '') }}</dd></div>
+          <div><dt>传输距离</dt><dd>{{ optionalMetric(segment.distanceM === null ? null : segment.distanceM / 1000, 2, ' km') }}</dd></div>
+          <div><dt>信噪比 SNR</dt><dd>暂无数据（上游未提供）</dd></div>
+          <div><dt>错误信息</dt><dd>{{ segment.error ?? '暂无数据' }}</dd></div>
+        </dl>
+      </article>
+    </div>
+    <div v-else-if="runtimeQuality && runtimeMeasurement" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-runtime" :data-frame-id="runtimeQuality.frameId">
       <div class="link-quality-dialog__route"><span>{{ runtimeQuality.sourceName }}</span><i aria-hidden="true">→</i><span>{{ runtimeQuality.destinationName }}</span></div>
       <dl class="link-quality-dialog__grid">
         <div><dt>质量测量时刻</dt><dd>{{ reportTime(runtimeQuality.simulationTime) }}</dd></div>
         <div><dt>数据年龄</dt><dd>{{ runtimeQuality.ageMs === null ? '暂无数据' : `${runtimeQuality.ageMs} ms` }}</dd></div>
-        <div><dt>信噪比 SNR</dt><dd>暂无数据</dd></div>
+        <div><dt>链路体制</dt><dd>{{ communicationType }}</dd></div>
+        <div><dt>信噪比 SNR</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.snrDb, 2, ' dB') }}</dd></div>
         <div><dt>误码率 BER</dt><dd>{{ runtimeMeasurement.quality.ber === null ? '暂无数据' : formatBer(runtimeMeasurement.quality.ber) }}</dd></div>
         <div><dt>干信比 GXB</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.gxbDb, 2, ' dB') }}</dd></div>
         <div><dt>接收功率</dt><dd>{{ optionalMetric(runtimeMeasurement.quality.receivedPowerDbm, 2, ' dBm') }}</dd></div>
@@ -184,6 +213,7 @@ function reasonLabel(reason: string): string {
 
 <style scoped>
 .link-quality-dialog__runtime { max-height: 60dvh; overflow-y: auto; overflow-wrap: anywhere; }
+.engine-segment { padding: .65rem 0; border-bottom: 1px solid var(--el-border-color-lighter); }
 .link-quality-dialog__header {
   display: grid;
   gap: 0.15rem;
