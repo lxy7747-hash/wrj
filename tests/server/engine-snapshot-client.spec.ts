@@ -203,6 +203,49 @@ it.each([7, 4800])('重连首帧 %s：回退则重启，重复则丢弃；后续
   expect(frames.at(-1)).toMatchObject({ engineEpoch: restarted ? 1 : 0, frameId: firstId + 1, initRouting: restarted ? null : frames[0]!.initRouting })
 })
 
+it.each([
+  [undefined, 'undefined', 'undefined（字段缺失）'],
+  [null, 'null', 'null'],
+  [-1, '-1', 'number'],
+  ['', '""', 'string'],
+  ['2026-11-09T12:00:00Z', '"2026-11-09T12:00:00Z"', 'string'],
+  ['5000ms', '"5000ms"', 'string'],
+  [false, 'false', 'boolean'],
+  [[5000], '[5000]', 'array'],
+  [{ value: 5000 }, '{"value":5000}', 'object'],
+] as const)('无效仿真时间 %j 在日志和页面诊断中保留原值 %s 与类型 %s', async (value, original, type) => {
+  const { server, url } = await upstream(), report = vi.fn(), publish = vi.fn(), diagnostics: EngineConnectionDiagnostic[] = []
+  const client = new EngineSnapshotClient(url, publish, report, (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
+  cleanups.push(() => client.stop())
+  const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
+  socket.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: value }))
+  await vi.waitFor(() => expect(client.diagnostics.rejected).toBe(1))
+  const detail = `原始值=${original}，数据类型=${type}`
+  expect(client.diagnostics.lastError).toContain(detail)
+  expect(report).toHaveBeenCalledWith(expect.stringContaining(detail))
+  expect(diagnostics.find(item => item.state === 'REJECTED')?.message).toContain(`已拒绝上游引擎数据（帧头无效）：sim_time_s：`)
+  expect(diagnostics.find(item => item.state === 'REJECTED')?.message).toContain(detail)
+  expect(publish).not.toHaveBeenCalled()
+  socket.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: '5000' }))
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledWith(run.runId, expect.objectContaining({ frameId: 5, simulationTime: 5 })))
+})
+
+it('无效时间的日志转义换行并限制原值长度，不输出整帧其他字段', async () => {
+  const { server, url } = await upstream(), report = vi.fn(), diagnostics: EngineConnectionDiagnostic[] = []
+  const client = new EngineSnapshotClient(url, vi.fn(), report, (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
+  cleanups.push(() => client.stop())
+  const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
+  socket.send(JSON.stringify({ ...sample, sim_time_s: `bad\r\n${'x'.repeat(2000)}`, unrelated: 'DO_NOT_LOG_WHOLE_FRAME' }))
+  await vi.waitFor(() => expect(client.diagnostics.rejected).toBe(1))
+  const message = diagnostics.find(item => item.state === 'REJECTED')!.message
+  expect(message).toContain('原始值="bad\\r\\n')
+  expect(message).toContain('…（已截断），数据类型=string')
+  expect(message).not.toMatch(/[\r\n]/u)
+  expect(message).not.toContain('DO_NOT_LOG_WHOLE_FRAME')
+  expect(message.length).toBeLessThan(400)
+  expect(report).toHaveBeenCalledWith(expect.stringContaining('…（已截断），数据类型=string'))
+})
+
 it('坏帧和过期帧按原因分别限流，10 秒内累计但不刷屏，下一条日志包含累计数', async () => {
   const { server, url } = await upstream(), report = vi.fn(), frames: EngineFrameSnapshot[] = []
   const client = new EngineSnapshotClient(url, (_: string, frame: EngineFrameSnapshot) => frames.push(frame), report)
