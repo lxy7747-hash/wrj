@@ -1168,7 +1168,7 @@ describe('态势主界面', () => {
   })
 
   it('本机文件与 WebSocket 并行，直接停止防重入，保存失败可重试且成功后归零', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
     const snapshot = structuredClone(LOCAL_REPLAY)
     snapshot.initial.connections = FILE_CONNECTIONS
     snapshot.durationS = 60
@@ -1176,7 +1176,7 @@ describe('态势主界面', () => {
     snapshot.recordCount += 1
     const source = playbackFileSource(snapshot)
     const idle = { ...simulationRun('STOPPED', false), executionSource: 'REMOTE_WS' as const }
-    const fetcher = vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [useSimulationStore().run ?? idle]
+    const fetcher = vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [structuredClone(toRaw(useSimulationStore().run ?? idle))]
       : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot))
     vi.stubGlobal('fetch', fetcher)
     const polls = () => fetcher.mock.calls.filter(([url]) => url.endsWith('/simulations')).length
@@ -1208,14 +1208,17 @@ describe('态势主界面', () => {
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     await flushPromises()
     expect(start).toHaveBeenCalledOnce()
+    useTelemetryStore().connectionState = 'SUBSCRIBED'
     const playback = useReplayStore(), quality = useRuntimeQualityStore()
     expect(quality.scope?.scenarioId).toBe(fileReceptionScenarioId(source))
     await vi.advanceTimersByTimeAsync(1000)
-    expect(playback.replay?.currentTimeS).toBe(1)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(0.9)
     const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: store.run!.runId, frameId: 5, simulationTime: 5 }
     expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
     await vi.advanceTimersByTimeAsync(5000)
-    expect(playback.replay?.currentTimeS).toBe(5)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(9.9)
+    expect(playback.replay!.currentTimeS).toBeLessThanOrEqual(10)
+    const frozenTime = playback.replay!.currentTimeS
     const playingPolls = polls()
     expect(playingPolls).toBeGreaterThan(1)
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
@@ -1224,25 +1227,28 @@ describe('态势主界面', () => {
     expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId: 10, simulationTime: 10 })).toBe(true)
     await vi.advanceTimersByTimeAsync(5000)
     expect(polls()).toBe(playingPolls)
-    expect(playback.replay?.currentTimeS).toBe(5)
+    expect(playback.replay?.currentTimeS).toBe(frozenTime)
     expect(quality.engineFrame?.frameId).toBe(5)
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(wrapper.findComponent({ name: 'ElSlider' }).props('disabled')).toBe(true)
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     await flushPromises()
     expect(resume).toHaveBeenCalledOnce()
-    expect(playback.replay?.currentTimeS).toBe(10)
+    expect(playback.replay?.currentTimeS).toBe(frozenTime)
     expect(quality.engineFrame?.frameId).toBe(10)
+    expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId: 15, simulationTime: 15 })).toBe(true)
+    expect(playback.replay?.currentTimeS).toBe(15)
     await vi.advanceTimersByTimeAsync(1000)
     expect(polls()).toBe(playingPolls + 1)
     // 失联也能暂停本地画面和停止收尾，不将未发送命令报告为成功。
     store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: false, action: 'resume', delivery: 'SENT' } })
+    const disconnectedTime = playback.replay!.currentTimeS
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     expect(pause).toHaveBeenCalledOnce()
     await vi.advanceTimersByTimeAsync(3000)
     expect(polls()).toBe(playingPolls + 1)
     const previousEpoch = quality.epoch
-    expect(quality.acceptEngineFrame(previousEpoch, { ...frame, frameId: 15, simulationTime: 15 })).toBe(true)
+    expect(quality.acceptEngineFrame(previousEpoch, { ...frame, frameId: 20, simulationTime: 20 })).toBe(true)
     let finishStop!: (saved: boolean) => void
     stop.mockImplementationOnce(() => new Promise<boolean>(resolve => { finishStop = resolve }))
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
@@ -1258,7 +1264,7 @@ describe('态势主界面', () => {
     finishStop(false)
     await flushPromises()
     expect(store.run?.configLocked).toBe(true)
-    expect(playback.replay?.currentTimeS).toBe(10)
+    expect(playback.replay?.currentTimeS).toBe(disconnectedTime)
     expect(playback.state).toBe('PAUSED')
     expect(wrapper.text()).toContain('磁盘写入失败')
     expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeUndefined()
@@ -1284,13 +1290,14 @@ describe('态势主界面', () => {
     await flushPromises()
     expect(start).toHaveBeenCalledTimes(2)
     expect(connect).toHaveBeenCalledTimes(2)
+    useTelemetryStore().connectionState = 'SUBSCRIBED'
     expect(store.run?.runId).not.toBe(frame.runId)
     expect(playback.replay?.currentTimeS).toBe(0)
     expect(quality.engineFrame).toBeNull()
     expect(quality.acceptEngineFrame(previousEpoch, frame)).toBe(false)
     expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(false)
     await vi.advanceTimersByTimeAsync(1000)
-    expect(playback.replay?.currentTimeS).toBe(1)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(0.9)
     const nextFrame = { ...frame, runId: store.run!.runId, events: [],
       routing: { ...frame.routing, switches: [], alarms: [] } }
     expect(quality.acceptEngineFrame(quality.epoch, nextFrame)).toBe(true)
@@ -1298,6 +1305,226 @@ describe('态势主界面', () => {
     expect(quality.engineEvents).toEqual([])
     expect(quality.engineSwitches).toEqual([])
     expect(quality.engineAlarms).toEqual([])
+  })
+
+  it.each(['超时', '断线'] as const)('首帧前连接失败仍连续播放，暂停冻结可恢复，接入后%s冻结且新帧校时', async failure => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.durationS = 120
+    snapshot.tracks[1]!.positions = [{ ...snapshot.tracks[1]!.positions[0]!, time: 0, longitude: 0 },
+      { ...snapshot.tracks[1]!.positions[0]!, time: 120, longitude: 120 }]
+    const idle = { ...simulationRun('STOPPED', false), executionSource: 'REMOTE_WS' as const }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [structuredClone(toRaw(useSimulationStore().run ?? idle))]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    const store = useSimulationStore(), telemetry = useTelemetryStore(), quality = useRuntimeQualityStore(), playback = useReplayStore()
+    vi.spyOn(store, 'start').mockImplementation(async fileSource => {
+      store.applyRun({ ...simulationRun('RUNNING', true), fileSource, scenarioId: fileReceptionScenarioId(fileSource!),
+        canonical: { ...simulationRun('RUNNING', true).canonical, processId: null, currentTime: 0 },
+        executionSource: 'REMOTE_WS', engineControl: { connected: false, action: null, delivery: 'IDLE' } })
+      return true
+    })
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    telemetry.connectionState = 'SUBSCRIBED'
+    telemetry.engineDiagnostics.push({ kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: store.run!.runId, state: 'DISCONNECTED', message: '首次连接失败' })
+    await vi.advanceTimersByTimeAsync(12_000)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(11.9)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]!.longitude).toBeCloseTo(playback.replay!.currentTimeS, 6)
+    expect(quality.engineFrame).toBeNull()
+    expect(quality.engineAlarms).toEqual([])
+    expect(wrapper.text()).toContain('本地连续播放，等待 WebSocket 接入')
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    const paused = playback.replay!.currentTimeS
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(playback.replay!.currentTimeS).toBe(paused)
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(paused + 0.9)
+    telemetry.engineDiagnostics.push({ kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: store.run!.runId, state: 'CONNECTED', message: '首次接入' })
+    const connectedAt = playback.replay!.currentTimeS
+    if (failure === '超时') {
+      await vi.advanceTimersByTimeAsync(10_500)
+      expect(playback.replay!.currentTimeS).toBeCloseTo(connectedAt + 10, 1)
+      expect(wrapper.text()).toContain('10 秒无有效帧')
+    } else {
+      telemetry.connectionState = 'RETRYING'
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(playback.replay!.currentTimeS).toBe(connectedAt)
+      telemetry.connectionState = 'SUBSCRIBED'
+    }
+    const frozen = playback.replay!.currentTimeS
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(playback.replay!.currentTimeS).toBe(frozen)
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: store.run!.runId, frameId: 5, simulationTime: 5 }
+    expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
+    expect(playback.replay!.currentTimeS).toBe(5)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(5.9)
+  })
+
+  it.each([false, true])('本地暂停刷新后保留时刻、地图和停止轮询，恢复后继续，停止重播不继承暂停（已接入 %s）', async attached => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.durationS = 60
+    snapshot.tracks[1]!.positions.push({ ...snapshot.tracks[1]!.positions[1]!, time: 60 })
+    snapshot.recordCount += 1
+    const fileSource = playbackFileSource(snapshot)
+    let running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', fileSource,
+      scenarioId: fileReceptionScenarioId(fileSource), canonical: { ...simulationRun('RUNNING', true).canonical, processId: null, currentTime: 0 },
+      engineControl: { connected: attached, action: null, delivery: 'IDLE' } }
+    const fetcher = vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [structuredClone(running)]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot))
+    vi.stubGlobal('fetch', fetcher)
+    let wrapper = await mountSituationPage(undefined, 'LOCAL')
+    vi.spyOn(useSimulationStore(), 'pause').mockResolvedValue(false)
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: running.runId, frameId: 5, simulationTime: 5 }
+    if (attached) {
+      useTelemetryStore().connectionState = 'SUBSCRIBED'
+      const quality = useRuntimeQualityStore()
+      expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
+    }
+    await vi.advanceTimersByTimeAsync(2500)
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    const pausedAt = useReplayStore().replay!.currentTimeS
+    const pausedNodes = structuredClone(mapControllerMock.latestOptions!.initialNodes!)
+    expect(pausedAt).toBeGreaterThan(2.4)
+    expect(useSimulationStore().run?.engineControl?.action).toBeNull()
+    wrapper.unmount(); mountedWrapper = null
+    wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    expect(useReplayStore().replay!.currentTimeS).toBe(pausedAt)
+    expect(mapControllerMock.latestOptions!.initialNodes).toEqual(pausedNodes)
+    expect(useRuntimeQualityStore().presentationPaused).toBe(true)
+    const polls = () => fetcher.mock.calls.filter(([url]) => url.endsWith('/simulations')).length
+    const pausedPolls = polls()
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(polls()).toBe(pausedPolls)
+    expect(useReplayStore().replay!.currentTimeS).toBe(pausedAt)
+    if (attached) useTelemetryStore().connectionState = 'SUBSCRIBED'
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await vi.advanceTimersByTimeAsync(1000)
+    if (attached) {
+      expect(useReplayStore().replay!.currentTimeS).toBe(pausedAt)
+      const quality = useRuntimeQualityStore()
+      expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId: 10, simulationTime: 10 })).toBe(true)
+      await vi.advanceTimersByTimeAsync(1000)
+    }
+    expect(useReplayStore().replay!.currentTimeS).toBeGreaterThan(pausedAt + 0.9)
+    expect(useRuntimeQualityStore().presentationPaused).toBe(false)
+    expect(sessionStorage.getItem('wrj.situation.paused-file-playback')).toBeNull()
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    const stop = vi.spyOn(useSimulationStore(), 'stop').mockResolvedValueOnce(false).mockImplementationOnce(async () => {
+      useSimulationStore().applyRun({ ...running, uiStatus: 'STOPPED', configLocked: false })
+      return true
+    })
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    expect(sessionStorage.getItem('wrj.situation.paused-file-playback')).not.toBeNull()
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(sessionStorage.getItem('wrj.situation.paused-file-playback')).toBeNull()
+    expect(useReplayStore().replay!.currentTimeS).toBe(0)
+    wrapper.unmount(); mountedWrapper = null
+    running = { ...running, runId: 'RUN-RESTARTED', startedAt: '2026-11-09T12:00:00Z' }
+    wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(useReplayStore().replay!.currentTimeS).toBe(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(useReplayStore().replay!.currentTimeS).toBeGreaterThan(0.9)
+  })
+
+  it.each(['账号', '运行', '文件', '损坏'] as const)('刷新时忽略%s不匹配的本地暂停记录', async change => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    const fileSource = playbackFileSource(snapshot)
+    let running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', fileSource,
+      scenarioId: fileReceptionScenarioId(fileSource), canonical: { ...simulationRun('RUNNING', true).canonical, processId: null, currentTime: 0 },
+      engineControl: { connected: false, action: null, delivery: 'IDLE' } }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [structuredClone(running)]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)))
+    let wrapper = await mountSituationPage(undefined, 'LOCAL')
+    await vi.advanceTimersByTimeAsync(500)
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    expect(sessionStorage.getItem('wrj.situation.paused-file-playback')).not.toBeNull()
+    wrapper.unmount(); mountedWrapper = null
+    if (change === '运行') running = { ...running, startedAt: '2026-11-09T12:01:00Z' }
+    if (change === '文件') {
+      snapshot.sha256 = 'd'.repeat(64)
+      running = { ...running, fileSource: playbackFileSource(snapshot), scenarioId: fileReceptionScenarioId(playbackFileSource(snapshot)) }
+    }
+    if (change === '损坏') sessionStorage.setItem('wrj.situation.paused-file-playback', '{')
+    wrapper = await mountSituationPage(undefined, 'LOCAL', change === '账号' ? { ...OPERATOR, userId: 'USR-OTHER' } : OPERATOR)
+    expect(sessionStorage.getItem('wrj.situation.paused-file-playback')).toBeNull()
+    expect(useRuntimeQualityStore().presentationPaused).toBe(false)
+    expect(useReplayStore().replay!.currentTimeS).toBe(0)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(useReplayStore().replay!.currentTimeS).toBeGreaterThan(0.9)
+  })
+
+  it('五秒推送之间连续展示，质量保持真实帧，超时和两段连接中断冻结并等待新帧', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.durationS = 60
+    snapshot.tracks[1]!.positions = [{ ...snapshot.tracks[1]!.positions[0]!, time: 0, longitude: 0 },
+      { ...snapshot.tracks[1]!.positions[0]!, time: 60, longitude: 60 }]
+    const fileSource = playbackFileSource(snapshot)
+    const running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', fileSource,
+      scenarioId: fileReceptionScenarioId(fileSource), canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
+      engineControl: { connected: true, action: null, delivery: 'IDLE' } }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [running]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    const playback = useReplayStore(), quality = useRuntimeQualityStore(), telemetry = useTelemetryStore()
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: running.runId, frameId: 0, simulationTime: 0 }
+    const push = (frameId: number, time = frameId) => expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId, simulationTime: time })).toBe(true)
+    push(0)
+    expect(playback.replay!.currentTimeS).toBe(0)
+    telemetry.connectionState = 'SUBSCRIBED'
+    const alarms = JSON.stringify(quality.engineAlarms)
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(2.4)
+    expect(playback.replay!.currentTimeS).toBeLessThanOrEqual(2.5)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]!.longitude).toBeCloseTo(playback.replay!.currentTimeS, 6)
+    expect(quality.engineFrame?.simulationTime).toBe(0)
+    expect(JSON.stringify(quality.engineAlarms)).toBe(alarms)
+    await vi.advanceTimersByTimeAsync(2500)
+    push(5)
+    await vi.advanceTimersByTimeAsync(2500)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(7.4)
+    expect(playback.replay!.currentTimeS).toBeLessThanOrEqual(7.5)
+    expect(quality.engineFrame?.simulationTime).toBe(5)
+    await vi.advanceTimersByTimeAsync(8000)
+    const timedOut = playback.replay!.currentTimeS
+    expect(timedOut).toBeCloseTo(15)
+    expect(wrapper.text()).toContain('10 秒无有效帧')
+    expect(wrapper.findComponent(OfflineSituationMap).props()).toMatchObject({ filePlaying: false })
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(playback.replay!.currentTimeS).toBe(timedOut)
+    push(20)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(20.9)
+    telemetry.engineDiagnostics.push({ kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: running.runId, state: 'DISCONNECTED', message: '测试断线' })
+    const disconnected = playback.replay!.currentTimeS
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(playback.replay!.currentTimeS).toBe(disconnected)
+    telemetry.engineDiagnostics.push({ kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: running.runId, state: 'CONNECTED', message: '测试重连' })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBe(disconnected)
+    push(25)
+    telemetry.connectionState = 'RETRYING'
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(playback.replay!.currentTimeS).toBe(25)
+    telemetry.connectionState = 'SUBSCRIBED'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBe(25)
+    push(30)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay!.currentTimeS).toBeGreaterThan(30.9)
+    wrapper.unmount(); mountedWrapper = null
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(playback.replay).toBeNull()
   })
 
   it.each(['暂停', '离页'] as const)('%s后在途轮询返回不重新启动定时器', async action => {

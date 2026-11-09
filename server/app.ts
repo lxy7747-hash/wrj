@@ -801,6 +801,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const syncEngineControl = (runId: string): void => {
     const state = engineSnapshots?.controlState?.(runId), run = simulations.get(runId)
     if (state && run.ok && ['RUNNING', 'PAUSED'].includes(run.data.uiStatus)) {
+      const previous = run.data.engineControl
+      // 重试诊断仍推送；控制状态未变时不触发页面重新读取运行列表。
+      if (previous?.connected === state.connected && previous.action === state.action && previous.delivery === state.delivery) return
       realtime.publishRuntimeState(simulations.setEngineControl(runId, state))
     }
   }

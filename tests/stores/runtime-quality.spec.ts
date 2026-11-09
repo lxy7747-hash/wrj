@@ -60,21 +60,27 @@ describe('运行质量 Store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
   it('暂停冻结展示并有界缓存，恢复只接受新帧，切换运行不会带回暂停期间旧数据', () => {
+    const now = vi.spyOn(performance, 'now').mockReturnValue(100)
     const store = prepare()
     const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId, frameId: 5 }
     expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    expect(store.engineFrameReceivedAt).toBe(100)
     store.setPresentationPaused(true)
+    now.mockReturnValue(200)
     expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 10 })).toBe(true)
     expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 10 })).toBe(false)
     expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 15, runId: 'RUN-OTHER' })).toBe(false)
     expect(store.engineFrame?.frameId).toBe(5)
+    now.mockReturnValue(20_000)
     store.setPresentationPaused(false)
     expect(store.engineFrame?.frameId).toBe(10)
+    expect(store.engineFrameReceivedAt).toBe(200)
     store.setPresentationPaused(true)
     expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 15 })).toBe(true)
     store.resetToSafeEmpty()
     store.setPresentationPaused(false)
     expect(store.engineFrame).toBeNull()
+    expect(store.engineFrameReceivedAt).toBeNull()
     expect(store.engineEvents).toEqual([])
   })
 

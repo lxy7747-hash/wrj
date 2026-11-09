@@ -43,13 +43,17 @@ async function setup(file = false) {
   const stop = vi.fn(async () => { complete({ code: null }) })
   const start = vi.fn(async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }))
   let engine!: InstanceType<typeof EngineSnapshotClient>
+  let diagnoseEngine!: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void
   const app = createMockServer({ port: 0,
     loadLocalReplay: file ? async () => replay : undefined,
     engineFrameArchive: archive,
     linkEngineWsUrl: `ws://127.0.0.1:${upstream.address().port}`,
     remoteEngineNow: vi.fn(() => receptionCompletedAt).mockReturnValueOnce(receptionStartedAt),
     createEngineSnapshotClient: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void,
-      diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => engine = new EngineSnapshotClient(url, publish, vi.fn(), diagnose),
+      diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => {
+        diagnoseEngine = diagnose!
+        return engine = new EngineSnapshotClient(url, publish, vi.fn(), diagnose)
+      },
     missionExecution: { start, safetyStatus: () => ({ message: '本机没有 mission.exe，也不应阻止远端连接。' }) },
   })
   cleanups.push(() => app.close())
@@ -63,7 +67,7 @@ async function setup(file = false) {
     await api.post('/api/v1/simulations').set(headers).send({ ...createBody, scenarioId: 'SCN-001' }).expect(409)
   }
   const created = await api.post('/api/v1/simulations').set(headers).send(createBody).expect(201)
-  const runId: string = created.body.data.runId
+  const runId: SimulationRun['runId'] = created.body.data.runId
   const command = (body: object) => api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send(body)
   const read = async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data
   await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
@@ -76,8 +80,40 @@ async function setup(file = false) {
     await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     return command({ command: action, confirmationId })
   }
-  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app, fileSource, sceneBefore }
+  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app, fileSource, sceneBefore, diagnoseEngine }
 }
+
+it('暂停后重复断线诊断不触发运行状态查询，真实控制状态变化仍通知', async () => {
+  const { app, runId, command, read, engine, diagnoseEngine } = await setup(true)
+  await command({ command: 'PAUSE' }).expect(202)
+  const run = await read() as SimulationRun
+  const browser = new WebSocket(`ws://127.0.0.1:${app.httpServer.address().port}/ws/v1?role=OPERATOR`, { origin: headers.Origin })
+  cleanups.push(() => browser.terminate())
+  const received: Array<{ topic?: string; type?: string }> = []
+  browser.on('message', (raw: { toString(): string }) => received.push(JSON.parse(raw.toString())))
+  await once(browser, 'open')
+  browser.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: run.taskId, topics: ['runtime.state', 'mission.log'] }))
+  await vi.waitFor(() => expect(received.some(message => message.type === 'subscribed')).toBe(true))
+  const flush = async () => { const pong = once(browser, 'pong'); browser.ping(); await pong }
+  await flush()
+  const count = () => received.filter(message => message.topic === 'runtime.state').length
+  const baseline = count()
+  const control = vi.spyOn(engine, 'controlState').mockReturnValue({ connected: false, action: 'pause', delivery: 'UNKNOWN' })
+  const diagnose = (state: EngineConnectionDiagnostic['state']) => diagnoseEngine({ runId, taskId: run.taskId }, {
+    kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state, message: '上游连接诊断',
+  })
+  diagnose('DISCONNECTED')
+  await flush()
+  expect(count()).toBe(baseline + 1)
+  for (let attempt = 0; attempt < 5; attempt++) { diagnose('CONNECTING'); diagnose('DISCONNECTED') }
+  await flush()
+  expect(count()).toBe(baseline + 1)
+  expect(await read()).toMatchObject({ configLocked: true, engineControl: { connected: false, action: 'pause', delivery: 'UNKNOWN' } })
+  control.mockReturnValue({ connected: true, action: 'pause', delivery: 'UNKNOWN' })
+  diagnose('CONNECTED')
+  await flush()
+  expect(count()).toBe(baseline + 2)
+})
 
 it('文件与远端接收使用原始端口，校验两份文件指纹，不修改已保存场景，停止完成归档', async () => {
   const { api, runId, peers, read, archive, confirmed, fileSource, sceneBefore, start } = await setup(true)

@@ -140,8 +140,9 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   const bindings = ref<RuntimeQualityBinding[]>([])
   const snapshot = ref<RuntimeQualitySnapshot | null>(null)
   const engineFrame = ref<EngineFrameSnapshot | null>(null)
+  const engineFrameReceivedAt = ref<number | null>(null)
   const presentationPaused = ref(false)
-  let pendingEngineFrames: EngineFrameSnapshot[] = []
+  let pendingEngineFrames: Array<{ frame: EngineFrameSnapshot; receivedAt: number }> = []
   const engineEvents = ref<{ frameId: number; simulationTime: number; event: EngineFrameSnapshot['events'][number] }[]>([])
   const engineSwitches = ref<{ frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number] }[]>([])
   const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number] }[]>([])
@@ -163,7 +164,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   // 数据校验失败的较新源帧同样已被处理；不能让更早的成功帧回写 ERROR。
   let latestMeta: RuntimeQualityFrameMeta | null = null
   const decisionTracker = new RuntimeLinkDecisionTracker()
-  const clearEngine = () => { engineFrame.value = null; engineEvents.value = []; engineSwitches.value = []; engineAlarms.value = [] }
+  const clearEngine = () => { engineFrame.value = null; engineFrameReceivedAt.value = null; engineEvents.value = []; engineSwitches.value = []; engineAlarms.value = [] }
 
   const resetCurrentDecisions = () => {
     decisionTracker.reset()
@@ -413,19 +414,20 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   }
 
   /** 引擎已完成判定，绝不送入本机 decisionTracker 再判一次。 */
-  function acceptEngineFrame(requestEpoch: number, candidate: unknown): boolean {
+  function acceptEngineFrame(requestEpoch: number, candidate: unknown, receivedAt = performance.now()): boolean {
     if (requestEpoch !== epoch.value || !active() || !isEngineFrameSnapshot(candidate) || candidate.runId !== scope.value?.runId) return false
-    const latest = pendingEngineFrames.at(-1) ?? engineFrame.value
+    const latest = pendingEngineFrames.at(-1)?.frame ?? engineFrame.value
     if (latest && (candidate.engineEpoch < latest.engineEpoch
       || (candidate.engineEpoch === latest.engineEpoch && candidate.frameId <= latest.frameId))) return false
     const frame = structuredClone(candidate)
     if (presentationPaused.value) {
       // 页面仅保留最近 200 帧供恢复展示；完整数据由服务端持续归档。
-      pendingEngineFrames = [...pendingEngineFrames, frame].slice(-200)
+      pendingEngineFrames = [...pendingEngineFrames, { frame, receivedAt }].slice(-200)
       return true
     }
     if (engineFrame.value && frame.engineEpoch > engineFrame.value.engineEpoch) clearEngine()
     if (!engineFrame.value) resetCurrentDecisions()
+    engineFrameReceivedAt.value = receivedAt
     engineFrame.value = frame
     snapshot.value = null; importedDataset.value = null; importedSwitchEvents.value = []
     routeCandidates.value = []; routeDecisions.value = []; decisionEvents.value = []
@@ -446,7 +448,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     if (paused) return
     const pending = pendingEngineFrames
     pendingEngineFrames = []
-    for (const frame of pending) acceptEngineFrame(epoch.value, frame)
+    for (const { frame, receivedAt } of pending) acceptEngineFrame(epoch.value, frame, receivedAt)
   }
 
   // 会话、运行实例、场景修订或场景选择改变时立即使旧回调失效；当前时间刷新不影响已接收帧。
@@ -454,5 +456,5 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return [auth.principal?.userId ?? '', auth.requestEpoch, auth.runtimeMode, simulation.run?.taskId ?? '', simulation.run?.runId ?? '', simulation.run?.scenarioId ?? '', simulation.run?.startedAt ?? '', simulation.selectedScene?.config.scenario.id ?? '', simulation.selectedScene?.revision ?? 0]
   }, () => { if (!active() && (scope.value !== null || bindings.value.length || snapshot.value !== null || errors.value.length)) reset() }, { flush: 'sync' })
 
-  return { scope, bindings, snapshot, source, engineFrame, engineEvents, engineSwitches, engineAlarms, presentationPaused, setPresentationPaused, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, acceptEngineFrame, resetToSafeEmpty: reset }
+  return { scope, bindings, snapshot, source, engineFrame, engineFrameReceivedAt, engineEvents, engineSwitches, engineAlarms, presentationPaused, setPresentationPaused, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, acceptEngineFrame, resetToSafeEmpty: reset }
 })

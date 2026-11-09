@@ -47,6 +47,7 @@ import { saveDownload } from '../../features/shared/download'
 import { resolveEngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
 import { fileReceptionLinks, fileReceptionScenarioId, playbackFileSource } from '../../features/situation/file-reception'
 import { canSendEngineControl } from '../../features/situation/engine-control'
+import { FramePlaybackClock, FRAME_PLAYBACK_RENDER_MS, FRAME_PLAYBACK_TIMEOUT_MS } from '../../features/situation/frame-playback-clock'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -110,6 +111,44 @@ const combinedPlayback = computed(() => sourceState.value === 'FILE' && remoteEn
 const combinedActive = computed(() => combinedPlayback.value && Boolean(simulationRun.value?.fileSource && simulationRun.value.configLocked && simulationRun.value.startedAt))
 const combinedPaused = ref(false)
 const sharedRemoteTime = ref<number | null>(null)
+const displayClock = new FramePlaybackClock()
+const displayMoving = ref(false)
+const displayTimedOut = ref(false)
+const displayAttached = ref(false)
+let displayAnimation: number | undefined
+let lastDisplayTick = 0
+let acceptFramesAfter = 0
+let frameBeforeDisconnect: typeof runtimeQualityStore.engineFrame = null
+const PAUSED_FILE_PLAYBACK_KEY = 'wrj.situation.paused-file-playback'
+function pausedPlaybackScope(): string | null {
+  const userId = useAuthStore().principal?.userId, run = simulationRun.value
+  return userId && run?.startedAt && run.configLocked && run.fileSource
+    ? JSON.stringify([userId, run.runId, run.startedAt, run.scenarioId, run.fileSource.eventSha256, run.fileSource.positionSha256]) : null
+}
+function clearPausedPlayback(): void {
+  try { sessionStorage.removeItem(PAUSED_FILE_PLAYBACK_KEY) } catch { /* 存储不可用不影响当前页面控制。 */ }
+}
+function savePausedPlayback(): void {
+  const scope = pausedPlaybackScope()
+  if (!scope) return
+  try { sessionStorage.setItem(PAUSED_FILE_PLAYBACK_KEY, JSON.stringify({ scope, time: fileTime.value, attached: displayClock.attached })) }
+  catch { /* 存储不可用时仍保持当前页面暂停。 */ }
+}
+function readPausedPlayback(): { time: number; attached: boolean } | null {
+  try {
+    const scope = pausedPlaybackScope(), saved = JSON.parse(sessionStorage.getItem(PAUSED_FILE_PLAYBACK_KEY) ?? 'null')
+    if (scope && saved?.scope === scope && typeof saved.time === 'number' && Number.isFinite(saved.time)
+      && saved.time >= 0 && typeof saved.attached === 'boolean') return { time: saved.time, attached: saved.attached }
+  } catch { /* 损坏或不属于本次运行的状态不用于恢复。 */ }
+  clearPausedPlayback()
+  return null
+}
+const displayConnected = computed(() => {
+  const diagnostic = telemetryStore.engineDiagnostics.slice().reverse().find(item => item.runId === simulationRun.value?.runId
+    && ['CONNECTED', 'CONNECTING', 'DISCONNECTED'].includes(item.state))
+  return connectionState.value === 'SUBSCRIBED'
+    && (diagnostic ? diagnostic.state === 'CONNECTED' : simulationRun.value?.engineControl?.connected === true)
+})
 const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL' && !remoteEngineMode.value)
 const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
@@ -150,11 +189,11 @@ key => {
   telemetryStore.disconnectAndReset()
   if (key) telemetryStore.connect()
 }, { flush: 'post' })
-// 收到首个实时帧后由上游仿真时间驱动文件游标，停止本地计时器。
+// 统一展示时钟连续推进；质量和告警保留真实帧时间，不随展示插值改变。
 const fileTime = computed(() => combinedPlayback.value && sharedRemoteTime.value !== null ? sharedRemoteTime.value
   : ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
-  ? selectReplayNodes(filePlayback.localSnapshot, fileTime.value) : initialSnapshot.value?.nodes.filter(node => node.time <= 0) ?? [])
+  ? selectReplayNodes(filePlayback.localSnapshot, fileTime.value, combinedPlayback.value) : initialSnapshot.value?.nodes.filter(node => node.time <= 0) ?? [])
 const fileLinks = computed(() => combinedPlayback.value && initialSnapshot.value ? fileReceptionLinks(initialSnapshot.value, fileTime.value)
   : selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [], fileTime.value))
 const fileMessageLinks = computed(() => initialSnapshot.value?.messageLinks ?? [])
@@ -166,15 +205,83 @@ const fileSliderDragging = ref(false)
 const fileSeekRevision = ref(0)
 watch(combinedActive, (active, previous) => {
   if (previous && !active) {
-    void filePlayback.pause()
+    freezeDisplayClock()
     runtimeQualityStore.setPresentationPaused(true)
+    if (!simulationRun.value?.configLocked) clearPausedPlayback()
   }
 })
-watch([() => runtimeQualityStore.engineFrame, combinedPaused, combinedActive], ([frame, paused, active]) => {
-  if (!active || paused || !frame) return
-  if (sharedRemoteTime.value !== null && frame.simulationTime < sharedRemoteTime.value) fileSeekRevision.value += 1
-  sharedRemoteTime.value = frame.simulationTime
-  filePlayback.followLocalTime(frame.simulationTime, true)
+function freezeDisplayClock(): void {
+  if (displayAnimation !== undefined) cancelAnimationFrame(displayAnimation)
+  displayAnimation = undefined
+  displayClock.freeze()
+  displayMoving.value = false
+  if (ownsFilePlayback.value) filePlayback.followLocalTime(fileTime.value, false)
+}
+function resetDisplayClock(): void {
+  freezeDisplayClock()
+  displayClock.reset()
+  sharedRemoteTime.value = null
+  displayTimedOut.value = false
+  displayAttached.value = false
+  acceptFramesAfter = performance.now()
+  frameBeforeDisconnect = null
+}
+function presentDisplayClock(): void {
+  if (sharedRemoteTime.value !== null && displayClock.time < sharedRemoteTime.value) fileSeekRevision.value += 1
+  sharedRemoteTime.value = displayClock.time
+  displayMoving.value = displayClock.running
+  displayTimedOut.value = displayClock.timedOut
+  displayAttached.value = displayClock.attached
+  filePlayback.followLocalTime(displayClock.time, displayClock.running)
+}
+function animateDisplayClock(now: number): void {
+  displayAnimation = undefined
+  if (!combinedActive.value || combinedPaused.value || (displayClock.attached && !displayConnected.value)) { freezeDisplayClock(); return }
+  if (now - lastDisplayTick >= FRAME_PLAYBACK_RENDER_MS) {
+    lastDisplayTick = now
+    displayClock.advance(now)
+    presentDisplayClock()
+  }
+  if (displayClock.running) displayAnimation = requestAnimationFrame(animateDisplayClock)
+}
+function scheduleDisplayClock(now: number): void {
+  if (displayAnimation !== undefined) cancelAnimationFrame(displayAnimation)
+  displayAnimation = displayClock.running ? requestAnimationFrame(animateDisplayClock) : undefined
+  lastDisplayTick = now
+}
+function startDisplayClock(): void {
+  if (!combinedActive.value || combinedPaused.value) return
+  const now = performance.now()
+  displayClock.startLocal(now)
+  if (displayConnected.value) displayClock.attach(now)
+  presentDisplayClock()
+  scheduleDisplayClock(now)
+  calibrateDisplayClock()
+}
+function calibrateDisplayClock(): void {
+  const frame = runtimeQualityStore.engineFrame
+  const receivedAt = runtimeQualityStore.engineFrameReceivedAt
+  if (!combinedActive.value || combinedPaused.value || !displayConnected.value || !frame
+    || frame === frameBeforeDisconnect
+    || frame.runId !== simulationRun.value?.runId || receivedAt === null || receivedAt < acceptFramesAfter) return
+  const now = performance.now()
+  displayClock.calibrate(frame.simulationTime, frame.engineEpoch, receivedAt, now)
+  presentDisplayClock()
+  scheduleDisplayClock(now)
+}
+watch(() => runtimeQualityStore.engineFrame, calibrateDisplayClock, { flush: 'sync' })
+watch(displayConnected, connected => {
+  if (connected) {
+    if (combinedActive.value && displayClock.running) {
+      displayClock.attach(performance.now())
+      presentDisplayClock()
+    }
+    calibrateDisplayClock()
+  } else if (displayClock.attached) {
+    frameBeforeDisconnect = runtimeQualityStore.engineFrame
+    acceptFramesAfter = performance.now()
+    freezeDisplayClock()
+  }
 }, { flush: 'sync' })
 watch(fileTime, time => { if (!fileSliderDragging.value) fileSliderTime.value = time })
 function fileTimeLabel(time: number): string {
@@ -195,7 +302,10 @@ const combinedFeedback = computed(() => {
   if (fileSourceMismatch.value || combinedActive.value && !initialSnapshot.value) return sourceMessage.value
   if (simulationCapabilityState.value === 'ERROR') return simulationFeedback.value
   if (!combinedActive.value) return '点击播放，同时播放本地文件并接收 WebSocket 数据。'
-  const clock = sharedRemoteTime.value === null ? '等待实时帧，文件计时' : '按实时帧同步'
+  const clock = !displayAttached.value ? combinedPaused.value ? '等待 WebSocket 接入' : '本地连续播放，等待 WebSocket 接入'
+    : !displayConnected.value ? '实时连接已断开，画面冻结'
+    : displayTimedOut.value ? `超过 ${FRAME_PLAYBACK_TIMEOUT_MS / 1000} 秒无有效帧，画面冻结`
+    : !displayMoving.value ? '等待新有效帧，画面冻结' : '文件轨迹平滑展示，WebSocket 帧校时'
   const end = sharedRemoteTime.value !== null && fileTime.value >= (filePlayback.replay?.durationS ?? Infinity) ? '，轨迹文件已到末尾' : ''
   return `${combinedPaused.value ? '本地画面已暂停' : '文件与 WebSocket 并行'} · ${fileTimeLabel(fileTime.value)} · ${clock}${end}`
 })
@@ -303,7 +413,7 @@ async function initializeSituation(): Promise<void> {
   if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
   ownsFilePlayback.value = false
   combinedPaused.value = false
-  sharedRemoteTime.value = null
+  resetDisplayClock()
   fileLoading.value = false
   fileSliderDragging.value = false
   fileSliderTime.value = 0
@@ -319,6 +429,7 @@ async function initializeSituation(): Promise<void> {
       sourceMessage.value = simulationStore.resultMessage
       return
     }
+    if (!simulationRun.value?.configLocked || !simulationRun.value.fileSource) clearPausedPlayback()
   }
   const savedSceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
   const preferFile = remoteEngineMode.value && (!simulationRun.value?.configLocked || Boolean(simulationRun.value.fileSource))
@@ -363,11 +474,15 @@ async function initializeSituation(): Promise<void> {
           sourceMessage.value = '当前文件已变更，请先停止原接收任务再重新播放。'
           return
         }
-        combinedPaused.value = simulationRun.value.engineControl?.action === 'pause'
+        const savedPause = readPausedPlayback()
+        combinedPaused.value = savedPause !== null || simulationRun.value.engineControl?.action === 'pause'
         runtimeQualityStore.setPresentationPaused(combinedPaused.value)
-        sharedRemoteTime.value = simulationTime.value > 0 ? simulationTime.value : null
-        if (sharedRemoteTime.value !== null || combinedPaused.value) filePlayback.followLocalTime(simulationTime.value, !combinedPaused.value)
-        else await filePlayback.play()
+        const restoredTime = savedPause?.time ?? simulationTime.value
+        sharedRemoteTime.value = restoredTime > 0 ? restoredTime : null
+        displayClock.reset(restoredTime)
+        if (savedPause?.attached ?? (simulationTime.value > 0 || Boolean(simulationRun.value.engineControl?.action))) displayClock.attach(performance.now())
+        presentDisplayClock()
+        startDisplayClock()
       }
       return
     }
@@ -441,6 +556,7 @@ watch(() => [
 
 // 登出请求完成或路由卸载前就停止文件播放，并使在途加载失效。
 watch(() => useAuthStore().principal?.userId, () => {
+  clearPausedPlayback()
   if (!ownsFilePlayback.value) return
   sourceEpoch += 1
   sourceRequest?.abort()
@@ -454,6 +570,7 @@ watch(() => useAuthStore().principal?.userId, () => {
 
 onBeforeUnmount(() => {
   unmounted = true
+  freezeDisplayClock()
   sourceRequest?.abort()
   if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
   telemetryStore.disconnectAndReset()
@@ -885,6 +1002,7 @@ async function startSimulation(): Promise<void> {
     const epoch = sourceEpoch
     if (!await loadPlaybackFile(epoch)) return
     if (combinedPlayback.value) {
+      acceptFramesAfter = performance.now()
       if (combinedActive.value) {
         if (simulationRun.value?.scenarioId !== fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot!))) {
           sourceMessage.value = '当前文件已变更，请先停止原接收任务再重新播放。'
@@ -893,16 +1011,16 @@ async function startSimulation(): Promise<void> {
         const control = simulationRun.value?.engineControl
         if (control && canSendEngineControl(control, 'resume')) await simulationStore.resume()
       } else {
-        sharedRemoteTime.value = null
+        resetDisplayClock()
         filePlayback.followLocalTime(0, false)
         fileSeekRevision.value += 1
         if (!await simulationStore.start(playbackFileSource(filePlayback.localSnapshot!))) return
       }
       if (unmounted || epoch !== sourceEpoch) return
+      clearPausedPlayback()
       combinedPaused.value = false
       runtimeQualityStore.setPresentationPaused(false)
-      if (sharedRemoteTime.value !== null) filePlayback.followLocalTime(sharedRemoteTime.value, true)
-      else await filePlayback.play()
+      startDisplayClock()
     } else await filePlayback.play()
     return
   }
@@ -918,6 +1036,8 @@ async function pauseSimulation(): Promise<void> {
   if (sourceState.value === 'FILE') {
     if (combinedPlayback.value) {
       combinedPaused.value = true
+      freezeDisplayClock()
+      savePausedPlayback()
       runtimeQualityStore.setPresentationPaused(true)
     }
     await filePlayback.pause()
@@ -942,11 +1062,14 @@ async function requestStop(): Promise<void> {
   try {
     if (combinedPlayback.value) {
       combinedPaused.value = true
+      freezeDisplayClock()
+      savePausedPlayback()
       runtimeQualityStore.setPresentationPaused(true)
       await filePlayback.pause()
     }
     if (await simulationStore.stop() && !unmounted && epoch === sourceEpoch && combinedPlayback.value) {
-      sharedRemoteTime.value = null
+      clearPausedPlayback()
+      resetDisplayClock()
       filePlayback.followLocalTime(0, false)
       fileSeekRevision.value += 1
     }
@@ -1350,7 +1473,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :file-message-links="hasMapData && sourceState === 'FILE' ? fileMessageLinks : []"
           :file-device-events="hasMapData && sourceState === 'FILE' ? initialSnapshot?.deviceEvents : []"
           :file-time="fileTime"
-          :file-playing="sourceState === 'FILE' && fileStatus === 'RUNNING'"
+          :file-playing="sourceState === 'FILE' && (combinedPlayback ? displayMoving : fileStatus === 'RUNNING')"
           :file-speed="filePlayback.speed"
           :file-seek-revision="fileSeekRevision"
           :links="hasMapData ? situationLinks : []"

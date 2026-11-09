@@ -62,12 +62,13 @@ export function isLocalReplaySnapshot(value: unknown): value is LocalReplaySnaps
 }
 
 /**
- * 二分查找所选时刻各节点最后一条位置；向后拖动也从初始化基线重算，不泄露未来位置。
+ * 二分查找所选时刻的位置；默认返回原始记录，可选在相邻轨迹点之间做展示插值。
  * @param snapshot 本次加载的只读历史快照。
- * @param seconds 回放游标秒数；记录之间保持上次位置，不补造插值轨迹。
+ * @param seconds 回放游标秒数。
+ * @param interpolate 态势连续播放可选的展示插值；默认仍返回原始记录，不修改快照或归档。
  * @remarks 平台删除时刻不晚于游标时，该节点从结果中移除；没有删除记录时行为与旧版本一致。
  */
-export function selectReplayNodes(snapshot: LocalReplaySnapshot, seconds: number): SituationMapNode[] {
+export function selectReplayNodes(snapshot: LocalReplaySnapshot, seconds: number, interpolate = false): SituationMapNode[] {
   const tracks = new Map(snapshot.tracks.map((track) => [track.platformId, track.positions]))
   const deletions = snapshot.initial.platformDeletions ?? []
   return snapshot.initial.nodes
@@ -82,6 +83,16 @@ export function selectReplayNodes(snapshot: LocalReplaySnapshot, seconds: number
       else high = middle
     }
     const latest = positions[low - 1]
-    return latest ? { ...node, ...latest } : node
+    const current = latest ? { ...node, ...latest } : node
+    const next = positions[low]
+    if (!interpolate || !next || seconds <= current.time || next.time <= current.time) return current
+    const ratio = (seconds - current.time) / (next.time - current.time)
+    const longitudeDelta = ((next.longitude - current.longitude + 540) % 360) - 180
+    return { ...current, time: seconds,
+      longitude: ((current.longitude + longitudeDelta * ratio + 540) % 360) - 180,
+      latitude: current.latitude + (next.latitude - current.latitude) * ratio,
+      altitude: current.altitude + (next.altitude - current.altitude) * ratio,
+      speed: current.speed + (next.speed - current.speed) * ratio,
+    }
   })
 }
