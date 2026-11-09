@@ -768,6 +768,7 @@ describe('态势主界面', () => {
       return true
     })
     const resume = vi.spyOn(store, 'resume').mockResolvedValue(true)
+    const stop = vi.spyOn(store, 'stop').mockResolvedValue(true)
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
     expect(pause).toHaveBeenCalledOnce()
@@ -776,11 +777,11 @@ describe('态势主界面', () => {
     expect(resume).toHaveBeenCalledOnce()
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
-    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('停止本地播放并保存已接收的数据')
+    expect(stop).toHaveBeenCalledOnce()
+    expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
     expect(fetcher.mock.calls.some(([url]) => /positions|console|\/quality$/.test(url))).toBe(false)
     expect(connect).toHaveBeenCalledOnce()
     expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
-    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('发送方是否实际停止仍待回执确认')
   })
 
   it('本机 SQLite 场景将真实 mission 模式传给工具栏', async () => {
@@ -791,12 +792,13 @@ describe('态势主界面', () => {
 
     await mountSituationPage('SCN-001', 'LOCAL')
     expect(mountedWrapper!.findComponent({ name: 'SimulationToolbar' }).props('realMission')).toBe(true)
-    // 真实 mission 停止确认不再引用 Mock 运行或固定遥测帧。
-    ;(mountedWrapper!.vm as unknown as { stopDialogVisible: boolean }).stopDialogVisible = true
+    useSimulationStore().applyRun(simulationRun('RUNNING', true))
+    const stop = vi.spyOn(useSimulationStore(), 'stop').mockResolvedValue(true)
     await flushPromises()
-    const copy = document.querySelector('.stop-dialog-copy')?.textContent ?? ''
-    expect(copy).toContain('停止当前 mission 运行')
-    expect(copy).not.toMatch(/Mock|F-00042/)
+    await mountedWrapper!.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
   })
 
   it.each(['MOCK', 'LOCAL', 'UNKNOWN'] as const)('延迟后台同步时 %s 工具栏保持对应能力，不随轮询禁用', async mode => {
@@ -1133,7 +1135,7 @@ describe('态势主界面', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
   })
 
-  it('本机文件与 WebSocket 并行，三个按钮共控、实时帧接管时间、暂停冻结、停止归零', async () => {
+  it('本机文件与 WebSocket 并行，直接停止防重入，保存失败可重试且成功后归零', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
     const snapshot = structuredClone(LOCAL_REPLAY)
     snapshot.initial.connections = FILE_CONNECTIONS
@@ -1196,11 +1198,28 @@ describe('态势主界面', () => {
     store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: false, action: 'resume', delivery: 'SENT' } })
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     expect(pause).toHaveBeenCalledOnce()
+    let finishStop!: (saved: boolean) => void
+    stop.mockImplementationOnce(() => new Promise<boolean>(resolve => { finishStop = resolve }))
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
-    ;(document.querySelector('[data-testid="confirm-stop"]') as HTMLButtonElement).click()
+    expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeDefined()
+    // 直接触发组件事件也不能绕过停止中的防重入。
+    wrapper.findComponent({ name: 'SimulationToolbar' }).vm.$emit('stop')
     await flushPromises()
     expect(stop).toHaveBeenCalledOnce()
+    store.$patch({ capabilityState: 'ERROR', resultMessage: '停止时数据保存失败，配置保持锁定，可再次点击停止重试保存：磁盘写入失败' })
+    finishStop(false)
+    await flushPromises()
+    expect(store.run?.configLocked).toBe(true)
+    expect(playback.replay?.currentTimeS).toBe(10)
+    expect(playback.state).toBe('PAUSED')
+    expect(wrapper.text()).toContain('磁盘写入失败')
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    expect(stop).toHaveBeenCalledTimes(2)
     expect(playback.replay?.currentTimeS).toBe(0)
     expect(playback.state).toBe('PAUSED')
     expect(quality.engineFrame).toBeNull()
@@ -1974,8 +1993,7 @@ describe('态势主界面', () => {
     expect(useSimulationStore().uiStatus).toBe('RUNNING')
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
-    document.querySelector<HTMLElement>('[data-testid="confirm-stop"]')!.click()
-    await flushPromises()
+    expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
     expect(useSimulationStore().uiStatus).toBe('STOPPED')
     expect(useSimulationStore().run?.configLocked).toBe(false)
     expect(JSON.stringify(useSimulationStore().selectedScene?.config)).toBe(savedConfig)
@@ -2109,10 +2127,7 @@ describe('态势主界面', () => {
 
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
-    const confirmButton = document.querySelector<HTMLElement>('[data-testid="confirm-stop"]')
-    expect(confirmButton).not.toBeNull()
-    confirmButton?.click()
-    await flushPromises()
+    expect(document.querySelector('[data-testid="confirm-stop"]')).toBeNull()
 
     expect(useSimulationStore().run).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { currentTime: 0, processId: null } })
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()

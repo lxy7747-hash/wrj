@@ -1472,17 +1472,27 @@ export const useTelemetryStore = defineStore('telemetry', {
     async recoverFromGap(): Promise<void> {
       const runtime = runtimeFor(this)
       const recoveryEpoch = this.requestEpoch
+      const simulation = useSimulationStore()
       runtime.manuallyClosed = true
       runtime.socket?.close()
       runtime.socket = null
       Object.keys(this.topicSequences).forEach((topic) => { this.topicSequences[topic as WsTopic] = 0 })
       // 真实运行没有固定 REST 遥测帧；重新订阅已有 journal 即可恢复引擎整帧。
-      if (useAuthStore().runtimeMode === 'LOCAL' && this.frame === null && useSimulationStore().run?.startedAt) {
+      if (useAuthStore().runtimeMode === 'LOCAL' && this.frame === null && simulation.run?.startedAt) {
         runtime.manuallyClosed = false
         this.connect()
         return
       }
-      if (await this.loadFrame()) {
+      // 其他页面可能已替换当前运行，先同步编号再读取它的快照。
+      if (simulation.run) {
+        const synchronized = !simulation.pending && await simulation.synchronizeRuntimeState()
+        if (this.requestEpoch !== recoveryEpoch) return
+        if (!synchronized || simulation.pending) {
+          this.scheduleReconnect(true)
+          return
+        }
+      }
+      if (await this.loadFrame(simulation.run?.runId)) {
         runtime.manuallyClosed = false
         this.connect()
       } else if (this.requestEpoch === recoveryEpoch) {

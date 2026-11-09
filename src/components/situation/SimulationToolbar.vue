@@ -95,7 +95,7 @@ defineEmits<{
 
     <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
       <small :title="engineControlMessage(wsControl)">{{ engineControlMessage(wsControl) }}</small>
-      <small v-if="combined">{{ feedback }}</small>
+      <small v-if="combined && capabilityState !== 'ERROR'">{{ feedback }}</small>
       <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
     </div>
     <div v-else-if="remoteEngine && status === 'STOPPED' && engineControl" class="simulation-toolbar__runtime" role="status">

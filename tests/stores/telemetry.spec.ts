@@ -1380,6 +1380,34 @@ describe('P3-2 遥测 Store', () => {
     store.disconnectAndReset()
   })
 
+  it('运行切换时等待运行状态同步，再按新编号补偿遥测', async () => {
+    vi.useFakeTimers()
+    const store = useTelemetryStore()
+    const simulation = useSimulationStore()
+    const previousRun = structuredClone(fixtureSource.run) as SimulationRun
+    const nextRun = { ...previousRun, runId: 'RUN-NEXT' }
+    simulation.applyRun(previousRun)
+
+    let finishSync!: (response: Response) => void
+    const fetcher = vi.fn()
+      .mockReturnValueOnce(new Promise<Response>(resolve => { finishSync = resolve }))
+      .mockResolvedValueOnce(successResponse([nextRun]))
+    vi.stubGlobal('fetch', fetcher)
+    const loadFrame = vi.spyOn(store, 'loadFrame').mockResolvedValue(true)
+    const connect = vi.spyOn(store, 'connect').mockImplementation(() => {})
+
+    const sync = simulation.synchronizeRuntimeState()
+    await store.recoverFromGap()
+    expect(loadFrame).not.toHaveBeenCalled()
+    expect(store.connectionState).toBe('RETRYING')
+
+    finishSync(successResponse([nextRun]))
+    await expect(sync).resolves.toBe(true)
+    await vi.advanceTimersByTimeAsync(250)
+    expect(loadFrame).toHaveBeenCalledExactlyOnceWith(nextRun.runId)
+    expect(connect).toHaveBeenCalledOnce()
+  })
+
   it('补偿加载失败后按固定退避继续恢复', async () => {
     vi.useFakeTimers()
     const store = useTelemetryStore()

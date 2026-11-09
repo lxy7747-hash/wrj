@@ -92,7 +92,7 @@ const {
   connectionState,
   resultMessage: telemetryFeedback,
 } = storeToRefs(telemetryStore)
-const stopDialogVisible = ref(false)
+const stopPending = ref(false)
 const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
@@ -193,7 +193,8 @@ const fileSourceMismatch = computed(() => combinedActive.value && filePlayback.l
   && simulationRun.value?.scenarioId !== fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot)))
 const combinedFeedback = computed(() => {
   if (fileSourceMismatch.value || combinedActive.value && !initialSnapshot.value) return sourceMessage.value
-  if (!combinedActive.value) return simulationCapabilityState.value === 'ERROR' ? simulationFeedback.value : '点击播放，同时播放本地文件并接收 WebSocket 数据。'
+  if (simulationCapabilityState.value === 'ERROR') return simulationFeedback.value
+  if (!combinedActive.value) return '点击播放，同时播放本地文件并接收 WebSocket 数据。'
   const clock = sharedRemoteTime.value === null ? '等待实时帧，文件计时' : '按实时帧同步'
   const end = sharedRemoteTime.value !== null && fileTime.value >= (filePlayback.replay?.durationS ?? Infinity) ? '，轨迹文件已到末尾' : ''
   return `${combinedPaused.value ? '本地画面已暂停' : '文件与 WebSocket 并行'} · ${fileTimeLabel(fileTime.value)} · ${clock}${end}`
@@ -594,7 +595,6 @@ watch(() => selectedScene.value?.config.scenario.id, () => {
   selectedNodeId.value = ''
   selectedLinkId.value = ''
   mapFocusTarget.value = null
-  stopDialogVisible.value = false
 })
 const situationMetrics = computed(() => frame.value === null
   ? null
@@ -921,38 +921,30 @@ async function pauseSimulation(): Promise<void> {
   await simulationStore.pause()
 }
 
-/**
- * 文件播放停止并归零；仿真打开停止操作确认框。
- * @returns 无返回值。
- * @sideeffect 修改停止确认框的可见状态。
- */
-function requestStop(): void {
+/** 直接停止；保存失败保持暂停和运行锁，允许再次点击停止重试。 */
+async function requestStop(): Promise<void> {
+  if (stopPending.value || simulationPending.value) return
   if (sourceState.value === 'FILE' && !combinedPlayback.value) {
     filePlayback.resetToSafeEmpty()
     return
   }
-  if (simulationStatus.value === 'RUNNING' || simulationStatus.value === 'PAUSED'
-    || (remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt)) stopDialogVisible.value = true
-}
-
-/**
- * 创建并消费一次性确认后停止当前仿真。
- * @returns 停止流程完成后兑现且不返回值的 Promise。
- * @sideeffect 停止完成或 WebSocket 命令发出后关闭确认框；未确认的引擎运行仍保留配置锁。
- */
-async function confirmStop(): Promise<void> {
-  if (combinedPlayback.value) {
-    combinedPaused.value = true
-    runtimeQualityStore.setPresentationPaused(true)
-    await filePlayback.pause()
-  }
-  if (await simulationStore.stop()) {
-    stopDialogVisible.value = false
+  if (simulationStatus.value !== 'RUNNING' && simulationStatus.value !== 'PAUSED'
+    && !(remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt)) return
+  const epoch = sourceEpoch
+  stopPending.value = true
+  try {
     if (combinedPlayback.value) {
+      combinedPaused.value = true
+      runtimeQualityStore.setPresentationPaused(true)
+      await filePlayback.pause()
+    }
+    if (await simulationStore.stop() && !unmounted && epoch === sourceEpoch && combinedPlayback.value) {
       sharedRemoteTime.value = null
       filePlayback.followLocalTime(0, false)
       fileSeekRevision.value += 1
     }
+  } finally {
+    stopPending.value = false
   }
 }
 
@@ -1108,7 +1100,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
       :capability-state="simulationCapabilityState"
-      :pending="fileLoading || simulationPending || simulationStore.selectingScene"
+      :pending="fileLoading || stopPending || simulationPending || simulationStore.selectingScene"
       :feedback="combinedPlayback ? combinedFeedback : sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
@@ -1528,13 +1520,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </footer>
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" />
-    <el-dialog v-model="stopDialogVisible" title="确认停止" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">{{ remoteEngineMode ? '向发送方发送 stop 命令，停止本地播放并保存已接收的数据。连接不可用时仍可停止本地接收；保存成功后解除配置锁。发送方是否实际停止仍待回执确认。' : realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
-      <template #footer>
-        <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
-        <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
-      </template>
-    </el-dialog>
   </section>
 </template>
 
@@ -1708,7 +1693,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .situation-footer span:first-child { display: inline-flex; align-items: center; gap: .3rem; }
 .situation-footer strong { overflow: hidden; margin-left: auto; color: var(--console-teal); text-overflow: ellipsis; }
 .footer-dot { width: .42rem; height: .42rem; border-radius: 50%; background: var(--console-text-dim); }
-.stop-dialog-copy { margin: 0; color: var(--console-text-muted); line-height: 1.7; }
 .scene-summary .node-jammer-count{ position: absolute;  top:9px; left:62px; color: var(--console-cyan); font-size: var(--console-font-size-min);}
 @media (max-width: 1500px) {
   .situation-page__workspace { --scene-panel-clearance: 15.5rem; --telemetry-panel-clearance: 21.5rem; }

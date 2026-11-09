@@ -21,6 +21,11 @@ test('所选场景刷新和跨页返回保留抽屉，恢复失败仍重试原�
   for (const platform of draft.config.platforms) {
     if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
   }
+  // 固定帧的只读旧值不适用于当前保存校验；使用 20 dBm 和 100 MHz。
+  for (const jammer of draft.config.jammers) {
+    jammer.defaultPower = 0.1
+    jammer.bandwidth = 100
+  }
   expect((await request.post(`${mockOrigin}/api/v1/scenarios`, { headers,
     data: { config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: 0 },
   })).status()).toBe(201)
@@ -74,7 +79,7 @@ test('所选场景刷新和跨页返回保留抽屉，恢复失败仍重试原�
   await expect(page.getByTestId('simulation-step')).toHaveCount(0)
   await expect(page.getByRole('combobox', { name: '运行模式' })).toHaveCount(0)
   await page.getByTestId('simulation-stop').click()
-  await page.getByTestId('confirm-stop').click()
+  await expect(page.getByTestId('confirm-stop')).toHaveCount(0)
   await expect(page.getByTestId('simulation-start')).toBeEnabled()
   await page.reload()
   await verifyScene()
