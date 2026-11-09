@@ -29,6 +29,7 @@
     "src/features/situation/initial-nodes.ts",
     "src/features/situation/frame-evidence.ts",
     "src/features/situation/engine-control.ts",
+    "src/features/situation/file-reception.ts",
     "src/features/situation/file-communication-links.ts",
     "src/features/situation/file-device-events.ts",
     "src/features/situation/file-message-links.ts",

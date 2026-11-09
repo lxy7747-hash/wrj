@@ -59,6 +59,25 @@ function prepare(activeScope = scope()) {
 describe('运行质量 Store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('暂停冻结展示并有界缓存，恢复只接受新帧，切换运行不会带回暂停期间旧数据', () => {
+    const store = prepare()
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId, frameId: 5 }
+    expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
+    store.setPresentationPaused(true)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 10 })).toBe(true)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 10 })).toBe(false)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 15, runId: 'RUN-OTHER' })).toBe(false)
+    expect(store.engineFrame?.frameId).toBe(5)
+    store.setPresentationPaused(false)
+    expect(store.engineFrame?.frameId).toBe(10)
+    store.setPresentationPaused(true)
+    expect(store.acceptEngineFrame(store.epoch, { ...frame, frameId: 15 })).toBe(true)
+    store.resetToSafeEmpty()
+    store.setPresentationPaused(false)
+    expect(store.engineFrame).toBeNull()
+    expect(store.engineEvents).toEqual([])
+  })
+
   it('新协议换算后的秒值直接用于展示，重复 JAM_ON 状态不生成额外事件或本机决策', () => {
     const store = prepare(), tracker = vi.spyOn(RuntimeLinkDecisionTracker.prototype, 'accept')
     const frame = { ...adaptEngineFrameSnapshot(newEngineSample).data!, runId: scope().runId }

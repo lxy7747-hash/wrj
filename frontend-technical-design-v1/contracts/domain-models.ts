@@ -395,7 +395,8 @@ export interface CopyTemplateRequest { name: string; scenarioId?: ScenarioId; }
 /** warningConfirmationId is mandatory by business rule when validation has WARNING and no ERROR. */
 export interface ScriptPreviewRequest { scenarioId: ScenarioId; warningConfirmationId?: Identifier; }
 export interface PreflightRequest { checksum: string; }
-export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioId; }
+export interface PlaybackFileSource { eventSha256: string; positionSha256: string; }
+export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioId; fileSource?: PlaybackFileSource; }
 
 export interface SimulationRun {
   runId: RunId; taskId: TaskId; scenarioId: ScenarioId; uiStatus: UiSimulationStatus;
@@ -404,6 +405,8 @@ export interface SimulationRun {
   engineControl?: EngineControlState;
   /** 远端数据接收会话；运行状态描述本地接收生命周期，不代表发送方执行状态。 */
   executionSource?: 'REMOTE_WS';
+  /** 并行播放绑定的两份文件快照，不代表另一个已保存场景。 */
+  fileSource?: PlaybackFileSource;
 }
 export type EngineControlAction = 'pause' | 'resume' | 'stop';
 export interface EngineControlState {

@@ -28,6 +28,25 @@ function failure(): Response {
 }
 
 describe('P6 历史回放 Store', () => {
+  it('外部时钟接管后没有第二个计时器，暂停与超过轨迹结尾均保持受控游标', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY))))
+    const store = useReplayStore()
+    await store.loadLocalFile()
+    await store.play()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(store.replay?.currentTimeS).toBe(1)
+    store.followLocalTime(2, true)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(store.replay?.currentTimeS).toBe(2)
+    store.followLocalTime(10, false)
+    expect(store.replay).toMatchObject({ currentTimeS: 3, state: 'PAUSED' })
+    store.followLocalTime(NaN, true)
+    store.followLocalTime(-1, true)
+    expect(store.replay?.currentTimeS).toBe(3)
+    store.followLocalTime(0, true)
+    expect(store.replay).toMatchObject({ currentTimeS: 0, state: 'PLAYING' })
+  })
   it('Pinia 开发工具为每次操作创建代理时仍只有一个计时器，暂停和离页可清理', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success(structuredClone(LOCAL_REPLAY))))

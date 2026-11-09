@@ -22,7 +22,8 @@ const props = defineProps<{
   runtimeUnknown?: boolean
 }>()
 
-const wsControl = computed(() => (props.realMission || props.remoteEngine) && !props.filePlayback && (!props.remoteEngine || props.receptionActive) ? props.engineControl : undefined)
+const combined = computed(() => props.filePlayback && props.remoteEngine)
+const wsControl = computed(() => (props.remoteEngine || props.realMission && !props.filePlayback) && (!props.remoteEngine || props.receptionActive) ? props.engineControl : undefined)
 const canControl = (action: EngineControlAction) => Boolean(wsControl.value
   && ['RUNNING', 'PAUSED'].includes(props.status) && canSendEngineControl(wsControl.value, action))
 
@@ -48,7 +49,7 @@ defineEmits<{
         size="small"
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
-        :disabled="readOnly || pending || (remoteEngine && receptionActive && !wsControl) || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED'))"
+        :disabled="readOnly || pending || (combined ? status === 'RUNNING' || engineControl?.delivery === 'SENDING' : (remoteEngine && receptionActive && !wsControl) || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED')))"
         :title="wsControl ? '发送恢复命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
         @click="$emit('start')"
       >
@@ -59,7 +60,7 @@ defineEmits<{
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="readOnly || pending || runtimeUnknown || (wsControl ? !canControl('pause') : realMission || remoteEngine || status !== 'RUNNING')"
+        :disabled="readOnly || pending || runtimeUnknown || (combined ? status !== 'RUNNING' || engineControl?.delivery === 'SENDING' : wsControl ? !canControl('pause') : realMission || remoteEngine || status !== 'RUNNING')"
         :title="wsControl ? '发送暂停命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
@@ -94,6 +95,7 @@ defineEmits<{
 
     <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
       <small :title="engineControlMessage(wsControl)">{{ engineControlMessage(wsControl) }}</small>
+      <small v-if="combined">{{ feedback }}</small>
       <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
     </div>
     <div v-else-if="remoteEngine && status === 'STOPPED' && engineControl" class="simulation-toolbar__runtime" role="status">

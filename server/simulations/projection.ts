@@ -200,7 +200,7 @@ export class SimulationProjection {
     this.run.completedAt = completedAt
     if (this.run.engineControl) this.run.engineControl.connected = false
     delete this.run.canonical.errorMessage
-    this.scenarios.setLocked(this.run.scenarioId, false)
+    if (!this.run.fileSource) this.scenarios.setLocked(this.run.scenarioId, false)
     this.run.configLocked = false
     return structuredClone(this.run)
   }
@@ -318,6 +318,16 @@ export class SimulationProjection {
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
     return { ok: true, data: structuredClone(this.run) }
+  }
+
+  /** 文件会话不创建或修改场景配置；来源已由 API 校验并固定。 */
+  createFile(request: SimulationCreateRequest, duration: number, runId: SimulationRun['runId']): SimulationRun {
+    this.run = createIdleRun(request, duration, runId)
+    this.run.executionSource = 'REMOTE_WS'
+    this.run.fileSource = structuredClone(request.fileSource!)
+    this.processedClosedLoops.clear()
+    this.jammerParameterVersions.clear()
+    return structuredClone(this.run)
   }
 
   /**

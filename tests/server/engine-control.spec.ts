@@ -2,6 +2,8 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineFrameSnapshot, SimulationRun } from '../../src/contracts/domain-models'
 import sample from '../fixtures/engine-frame/websocket-new/fream001.json'
+import { LOCAL_REPLAY } from '../fixtures/local-replay'
+import { playbackFileSource, fileReceptionScenarioId } from '../../src/features/situation/file-reception'
 const { once } = await import('node:' + 'events')
 const { WebSocket, WebSocketServer } = await import('w' + 's')
 const { EngineSnapshotClient } = await import('../../server/local/' + 'engine-snapshot-client.js')
@@ -21,7 +23,13 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const receptionStartedAt = '2026-11-09T02:00:00Z'
 const receptionCompletedAt = '2026-11-09T02:01:00Z'
 
-async function setup() {
+async function setup(file = false) {
+  const replay = structuredClone(LOCAL_REPLAY)
+  replay.initial.connections = [{ sourceEventId: 'LOG-L9', time: 0, scope: 'INTER_PLATFORM',
+    source: { platformName: 'rear_comm_vehicle', communicationName: 'fiber_link', address: '10.0.0.1' },
+    target: { platformName: 'command_vehicle', communicationName: 'fiber_link', address: '10.0.0.2' },
+    sourceType: 'WSF_COMM_TRANSCEIVER', targetType: 'WSF_COMM_TRANSCEIVER' }]
+  const fileSource = playbackFileSource(replay)
   const root = await mkdtemp(join(tmpdir(), 'wrj-remote-control-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const archive = createEngineFrameArchive(root, () => new Date().toISOString())
@@ -36,6 +44,7 @@ async function setup() {
   const start = vi.fn(async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }))
   let engine!: InstanceType<typeof EngineSnapshotClient>
   const app = createMockServer({ port: 0,
+    loadLocalReplay: file ? async () => replay : undefined,
     engineFrameArchive: archive,
     linkEngineWsUrl: `ws://127.0.0.1:${upstream.address().port}`,
     remoteEngineNow: vi.fn(() => receptionCompletedAt).mockReturnValueOnce(receptionStartedAt),
@@ -46,7 +55,14 @@ async function setup() {
   cleanups.push(() => app.close())
   if (!app.httpServer.listening) await once(app.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${app.httpServer.address().port}`)
-  const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+  const sceneBefore = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
+  const createBody = file ? { taskId: 'TASK-001', scenarioId: fileReceptionScenarioId(fileSource), fileSource } : { taskId: 'TASK-001', scenarioId: 'SCN-001' }
+  if (file) {
+    await api.post('/api/v1/simulations').set(headers).send({ ...createBody, fileSource: { ...fileSource, positionSha256: 'c'.repeat(64) } }).expect(409)
+    await api.post('/api/v1/simulations').set(headers).send({ ...createBody, fileSource: { ...fileSource, extra: true } }).expect(422)
+    await api.post('/api/v1/simulations').set(headers).send({ ...createBody, scenarioId: 'SCN-001' }).expect(409)
+  }
+  const created = await api.post('/api/v1/simulations').set(headers).send(createBody).expect(201)
   const runId: string = created.body.data.runId
   const command = (body: object) => api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send(body)
   const read = async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data
@@ -60,8 +76,24 @@ async function setup() {
     await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     return command({ command: action, confirmationId })
   }
-  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app }
+  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app, fileSource, sceneBefore }
 }
+
+it('文件与远端接收使用原始端口，校验两份文件指纹，不修改已保存场景，停止完成归档', async () => {
+  const { api, runId, peers, read, archive, confirmed, fileSource, sceneBefore, start } = await setup(true)
+  expect(await read()).toMatchObject({ fileSource, scenarioId: fileReceptionScenarioId(fileSource), configLocked: true })
+  peers[0]!.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: 5000 }))
+  await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(5))
+  expect((await confirmed('STOP')).status).toBe(200)
+  const saved = await archive.load(runId)
+  expect(saved?.frameCount).toBe(1)
+  const path = await archive.getFile(runId, saved!.sourceSha256)
+  const frame = JSON.parse((await readFile(path!, 'utf8')).trim())
+  expect(frame.links[0]).toMatchObject({ sourcePlatformId: 'rear_comm_vehicle', targetPlatformId: 'command_vehicle', linkIds: ['FILE-LINK-1'] })
+  expect(frame.simulationTime).toBe(5)
+  expect((await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data).toEqual(sceneBefore)
+  expect(start).not.toHaveBeenCalled()
+})
 
 it('独立远端播放发送精确两字段；暂停可恢复，停止发送后完成本地归档并解锁', async () => {
   const { api, runId, command, read, messages, peers, stop, complete, confirmed, start } = await setup()

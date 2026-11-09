@@ -201,6 +201,15 @@ export const useReplayStore = defineStore('replay', {
       return this.executeCommand({ command: 'PAUSE' })
     },
 
+    /** 并行播放只保留一个时钟：收到远端时间后停止本地计时器，末尾保留最后位置。 */
+    followLocalTime(seconds: number, playing: boolean): void {
+      if (!this.localSnapshot || !this.replay || !Number.isFinite(seconds) || seconds < 0) return
+      this.stopPlaybackTimer()
+      this.replay.currentTimeS = Math.min(seconds, this.replay.durationS)
+      this.replay.state = playing ? 'PLAYING' : 'PAUSED'
+      this.state = this.replay.state
+    },
+
     /**
      * 将回放定位到指定秒数。
      * @param seconds 从回放起点计算的目标秒数。

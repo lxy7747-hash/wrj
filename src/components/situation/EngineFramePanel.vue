@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { EngineLinkSegment, EnginePathNode, LinkType } from '../../contracts/domain-models'
+import type { EngineLinkSegment, EnginePathNode, LinkType, Link } from '../../contracts/domain-models'
 import { useRuntimeQualityStore } from '../../stores/runtime-quality'
 import { useSimulationStore } from '../../stores/simulation'
 import { formatSimulationTime, LINK_TYPE_LABELS } from '../../features/situation/situation-model'
 import { includesEngineSimulationTime, resolveEngineSwitchHighlights, type EngineRouteResolution } from '../../features/situation/engine-route-highlights'
 
-const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string }>()
+const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string; links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[] }>()
 const quality = useRuntimeQualityStore()
 const simulation = useSimulationStore()
 const nodeFilter = ref('')
@@ -15,7 +15,7 @@ const typeFilter = ref<LinkType | ''>('')
 const timeRangeStart = ref<number | undefined>()
 const timeRangeEnd = ref<number | undefined>()
 const value = (v: string | number | null | undefined, unit = '') => v == null || v === '' ? '暂无数据' : `${typeof v === 'number' ? Number(v.toPrecision(8)) : v}${unit}`
-const name = (id: string | null) => simulation.selectedScene?.config.platforms.find(p => p.id === id)?.name ?? value(id)
+const name = (id: string | null) => (simulation.run?.fileSource ? undefined : simulation.selectedScene?.config.platforms.find(p => p.id === id)?.name) ?? value(id)
 const path = (nodes: EnginePathNode[]) => nodes.length ? nodes.map(n => `${name(n.platformId)}（入：${value(n.inPort)}；出：${value(n.outPort)}）`).join(' → ') : '暂无数据'
 const labels: Record<string, string> = { UP: '正常', DEGRADED: '劣化', DOWN: '中断', UNKNOWN: '未知',
   BARRAGE: '宽带压制', SPOT: '瞄准式', SWEEP: '扫频', DETECTED: '已探测', ON: '开启', OFF: '关闭', JAM_ON: '起扰',
@@ -25,7 +25,7 @@ const label = (v: string | null | undefined) => v == null ? '暂无数据' : lab
 const losses: [keyof EngineLinkSegment['losses'], string][] = [['freeSpaceDb', '自由空间'], ['seaMultipathDb', '海面多径'],
   ['atmosphericDb', '大气'], ['rainDb', '雨衰'], ['cloudDb', '云衰'], ['cloudRainDb', '云雨合并'], ['jammingDb', '干扰'], ['totalDb', '总复合（原值）']]
 
-const configuredLinks = computed(() => simulation.selectedScene?.config.links ?? [])
+const configuredLinks = computed(() => props.links ?? simulation.selectedScene?.config.links ?? [])
 const segmentLinkIds = computed(() => new Set(quality.engineFrame?.links.flatMap(link => link.linkIds) ?? []))
 const selectableLinks = computed(() => configuredLinks.value.filter(link => segmentLinkIds.value.has(link.id)))
 const selectableTypes = computed(() => [...new Set(selectableLinks.value.map(link => link.type))])

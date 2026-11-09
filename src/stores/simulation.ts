@@ -14,8 +14,10 @@ import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { readScenarioDraft, useScenarioStore } from './scenario'
 import { engineControlAction, engineControlMessage, isEngineControlState, stoppedReceptionMessage } from '../features/situation/engine-control'
+import type { PlaybackFileSource } from '../contracts/domain-models'
+import { fileReceptionScenarioId, isPlaybackFileSource } from '../features/situation/file-reception'
 
-const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt', 'engineControl', 'executionSource'])
+const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt', 'engineControl', 'executionSource', 'fileSource'])
 const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage', 'mode', 'speedMultiplier'])
 const UI_STATUSES = new Set<UiSimulationStatus>(['IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'])
 const CANONICAL_STATUSES = new Set(['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'])
@@ -83,6 +85,8 @@ export function isSimulationRun(value: unknown): value is SimulationRun {
     && (!Object.hasOwn(run, 'engineControl') || isEngineControlState(run.engineControl))
     && (!Object.hasOwn(run, 'executionSource') || run.executionSource === 'REMOTE_WS')
     && (run.executionSource !== 'REMOTE_WS' || canonical.processId === null)
+    && (!Object.hasOwn(run, 'fileSource') || (run.executionSource === 'REMOTE_WS' && isPlaybackFileSource(run.fileSource)
+      && run.scenarioId === fileReceptionScenarioId(run.fileSource)))
     && typeof canonical.status === 'string' && CANONICAL_STATUSES.has(canonical.status)
     && typeof canonical.currentTime === 'number' && Number.isFinite(canonical.currentTime) && canonical.currentTime >= 0
     && typeof canonical.totalDuration === 'number' && Number.isFinite(canonical.totalDuration) && canonical.totalDuration >= 0
@@ -340,7 +344,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @returns 创建成功时返回 `true`，否则返回 `false`。
      * @sideEffects 更新能力状态、当前运行和场景配置锁投影。
      */
-    async create(): Promise<boolean> {
+    async create(fileSource?: PlaybackFileSource): Promise<boolean> {
       this.invalidateRuntimeSync()
       const auth = useAuthStore()
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
@@ -351,12 +355,12 @@ export const useSimulationStore = defineStore('simulation', {
       const requestEpoch = this.requestEpoch
       this.capabilityState = 'EXECUTING'
       this.configurationLockState = 'LOCKING'
-      const scenarioId = this.selectedScene?.config.scenario.id ?? 'SCN-001'
+      const scenarioId = fileSource ? fileReceptionScenarioId(fileSource) : this.selectedScene?.config.scenario.id ?? 'SCN-001'
       try {
         const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/simulations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ taskId: 'TASK-001', scenarioId }),
+          body: JSON.stringify({ taskId: 'TASK-001', scenarioId, ...(fileSource ? { fileSource } : {}) }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'
@@ -453,16 +457,17 @@ export const useSimulationStore = defineStore('simulation', {
      * @returns 操作成功时返回 `true`，否则返回 `false`。
      * @sideEffects 可能依次创建运行、锁定场景并发送 START/RESUME 命令。
      */
-    async start(): Promise<boolean> {
+    async start(fileSource?: PlaybackFileSource): Promise<boolean> {
       if (this.selectingScene || this.pending || this.runtimeSyncRequired) return false
-      if (this.selectedScene && this.run?.configLocked && this.run.scenarioId !== this.selectedScene.config.scenario.id) {
+      if (this.run?.configLocked && (fileSource ? this.run.scenarioId !== fileReceptionScenarioId(fileSource)
+        : this.selectedScene && this.run.scenarioId !== this.selectedScene.config.scenario.id)) {
         this.showError(undefined, '其他场景已有运行，请先停止该运行。')
         return false
       }
       if (this.run?.uiStatus === 'PAUSED' || (this.run?.configLocked && this.run.engineControl?.action === 'pause')) return this.resume()
       if (this.run === null || ['STOPPED', 'COMPLETED', 'ERROR'].includes(this.run.uiStatus)) {
-        if (this.selectedScene && !await this.selectScene(this.selectedScene.config.scenario.id)) return false
-        if (!await this.create()) return false
+        if (!fileSource && this.selectedScene && !await this.selectScene(this.selectedScene.config.scenario.id)) return false
+        if (!await this.create(fileSource)) return false
       }
       return this.sendCommand({ command: 'START', mode: this.mode })
     },

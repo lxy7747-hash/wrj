@@ -140,6 +140,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   const bindings = ref<RuntimeQualityBinding[]>([])
   const snapshot = ref<RuntimeQualitySnapshot | null>(null)
   const engineFrame = ref<EngineFrameSnapshot | null>(null)
+  const presentationPaused = ref(false)
+  let pendingEngineFrames: EngineFrameSnapshot[] = []
   const engineEvents = ref<{ frameId: number; simulationTime: number; event: EngineFrameSnapshot['events'][number] }[]>([])
   const engineSwitches = ref<{ frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number] }[]>([])
   const engineAlarms = ref<{ frameId: number; simulationTime: number; alarm: EngineFrameSnapshot['routing']['alarms'][number] }[]>([])
@@ -177,6 +179,8 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   }
 
   const reset = () => {
+    presentationPaused.value = false
+    pendingEngineFrames = []
     clearEngine()
     epoch.value += 1
     scope.value = null
@@ -197,14 +201,13 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   const currentScope = (): RuntimeQualityScope | null => {
     const run = simulation.run
     const scene = simulation.selectedScene
-    if (!auth.principal || auth.runtimeMode !== 'LOCAL' || !run || !scene
-      || typeof run.startedAt !== 'string' || run.startedAt.length === 0
-      || scene.config.scenario.id !== run.scenarioId) return null
+    if (!auth.principal || auth.runtimeMode !== 'LOCAL' || !run || typeof run.startedAt !== 'string' || run.startedAt.length === 0) return null
+    if (!run.fileSource && (!scene || scene.config.scenario.id !== run.scenarioId)) return null
     return {
       taskId: run.taskId,
       runId: run.runId,
       scenarioId: run.scenarioId,
-      revision: scene.revision,
+      revision: run.fileSource ? 1 : scene!.revision,
       startedAt: run.startedAt,
     }
   }
@@ -220,6 +223,7 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return ids.every(id => typeof id === 'string' && id.trim().length > 0) ? new Set(ids) : null
   }
   const decisionConfig = () => {
+    if (simulation.run?.fileSource) return null
     const config = simulation.selectedScene?.config
     if (!config || !Array.isArray(config.links) || !Array.isArray(config.platforms)
       || !config.links.every(link => typeof link.id === 'string' && typeof link.type === 'string'
@@ -245,13 +249,16 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     const persistedIds = savedLinkIds()
     if (candidate === null) { reset(); return epoch.value }
     if (!isScope(candidate) || allowed.length !== candidateLinkCount || !sameScope(candidate, currentScope())
-      || persistedIds === null || !allowed.every(id => persistedIds.has(id))) {
+      || (simulation.run?.fileSource ? !allowed.every(id => /^FILE-LINK-[1-9]\d*$/.test(id))
+        : persistedIds === null || !allowed.every(id => persistedIds.has(id)))) {
       reset()
       return epoch.value
     }
     if (sameScope(scope.value, candidate) && sameStrings(allowedLinkIds, allowed) && active()) return epoch.value
     epoch.value += 1
     scope.value = { ...candidate }
+    presentationPaused.value = false
+    pendingEngineFrames = []
     clearEngine()
     bindings.value = []
     snapshot.value = null
@@ -408,9 +415,15 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
   /** 引擎已完成判定，绝不送入本机 decisionTracker 再判一次。 */
   function acceptEngineFrame(requestEpoch: number, candidate: unknown): boolean {
     if (requestEpoch !== epoch.value || !active() || !isEngineFrameSnapshot(candidate) || candidate.runId !== scope.value?.runId) return false
-    if (engineFrame.value && (candidate.engineEpoch < engineFrame.value.engineEpoch
-      || (candidate.engineEpoch === engineFrame.value.engineEpoch && candidate.frameId <= engineFrame.value.frameId))) return false
+    const latest = pendingEngineFrames.at(-1) ?? engineFrame.value
+    if (latest && (candidate.engineEpoch < latest.engineEpoch
+      || (candidate.engineEpoch === latest.engineEpoch && candidate.frameId <= latest.frameId))) return false
     const frame = structuredClone(candidate)
+    if (presentationPaused.value) {
+      // 页面仅保留最近 200 帧供恢复展示；完整数据由服务端持续归档。
+      pendingEngineFrames = [...pendingEngineFrames, frame].slice(-200)
+      return true
+    }
     if (engineFrame.value && frame.engineEpoch > engineFrame.value.engineEpoch) clearEngine()
     if (!engineFrame.value) resetCurrentDecisions()
     engineFrame.value = frame
@@ -428,10 +441,18 @@ export const useRuntimeQualityStore = defineStore('runtime-quality', () => {
     return true
   }
 
+  function setPresentationPaused(paused: boolean): void {
+    presentationPaused.value = paused
+    if (paused) return
+    const pending = pendingEngineFrames
+    pendingEngineFrames = []
+    for (const frame of pending) acceptEngineFrame(epoch.value, frame)
+  }
+
   // 会话、运行实例、场景修订或场景选择改变时立即使旧回调失效；当前时间刷新不影响已接收帧。
   watch(() => {
     return [auth.principal?.userId ?? '', auth.requestEpoch, auth.runtimeMode, simulation.run?.taskId ?? '', simulation.run?.runId ?? '', simulation.run?.scenarioId ?? '', simulation.run?.startedAt ?? '', simulation.selectedScene?.config.scenario.id ?? '', simulation.selectedScene?.revision ?? 0]
   }, () => { if (!active() && (scope.value !== null || bindings.value.length || snapshot.value !== null || errors.value.length)) reset() }, { flush: 'sync' })
 
-  return { scope, bindings, snapshot, source, engineFrame, engineEvents, engineSwitches, engineAlarms, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, acceptEngineFrame, resetToSafeEmpty: reset }
+  return { scope, bindings, snapshot, source, engineFrame, engineEvents, engineSwitches, engineAlarms, presentationPaused, setPresentationPaused, importedSwitchEvents, importedDataset, linkStatuses, routeCandidates, routeDecisions, decisionEvents, errors, state, epoch, activate, bindLinks, acceptFrame, acceptDataset, acceptEngineFrame, resetToSafeEmpty: reset }
 })

@@ -67,6 +67,7 @@ import type { InitialNodeSnapshot } from '../src/features/situation/initial-node
 import type { LocalMonitorSnapshot } from '../src/features/data-exchange/local-monitor.js'
 import type { PositionSnapshot } from '../src/features/situation/position-updates.js'
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
+import { fileReceptionMapping, isPlaybackFileSource } from '../src/features/situation/file-reception.js'
 import type { LocalReportExportResult } from '../src/contracts/domain-models.js'
 import { isLocalReport, isLocalReportExport, parseLocalReportFilter } from '../src/features/reports/local-report.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
@@ -693,6 +694,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     controlling?: boolean
     connecting?: boolean
     receiving?: boolean
+    fileInitial?: InitialNodeSnapshot
     completedWhileStopping?: MissionOutcome
     engineArchive?: EngineFrameArchiveSession
     engineArchiveScope?: EngineFrameArchiveScope
@@ -718,6 +720,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   }
   const beginEngineArchive = async (runId: string, slot: MissionSlot): Promise<void> => {
     if (!options.engineFrameArchive) return
+    const run = simulations.get(runId)
+    if (slot.fileInitial && run.ok && run.data.fileSource && run.data.startedAt) {
+      const scope = { taskId: run.data.taskId, runId, scenarioId: run.data.scenarioId, revision: 1, startedAt: run.data.startedAt }
+      slot.engineArchive = await options.engineFrameArchive.begin(scope, fileReceptionMapping(slot.fileInitial).bindings)
+      slot.engineArchiveScope = scope
+      return
+    }
     const context = qualityContext(runId)
     if (!context) throw new Error('运行质量作用域未建立，拒绝接收无法归属的引擎帧。')
     slot.engineArchive = await options.engineFrameArchive.begin(context.scope, Object.fromEntries(context.draft.config.links.map(link => [link.id, {
@@ -1227,13 +1236,23 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   /** 在容量内创建任务运行；同任务和场景保持单实例。 */
-  app.post('/api/v1/simulations', (req, res) => {
+  app.post('/api/v1/simulations', async (req, res) => {
     const requestId = 'REQ-P3-SIMULATION-CREATE'
     const role = requireDemoRole(req, res, auth, 'SIMULATION_CREATE')
     if (role === undefined) return
     const safety = missionSafety()
     if (safety) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: safety.message })); return }
-    const result = simulations.create(req.body)
+    let file: LocalReplaySnapshot | undefined
+    if (req.body && typeof req.body === 'object' && Object.hasOwn(req.body, 'fileSource')) {
+      if (!remoteEngine || !options.loadLocalReplay || !isPlaybackFileSource(req.body.fileSource)) {
+        res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '远端文件播放来源未配置或格式无效。' })); return
+      }
+      try { file = await options.loadLocalReplay() } catch {
+        res.status(503).json(failure('START_FAILED', 503, { message: '文件读取失败，未开启远端接收。' })); return
+      }
+      if (closing) { res.status(503).json(failure('START_FAILED', 503)); return }
+    }
+    const result = simulations.create(req.body, file)
     if (!result.ok) {
       auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE')
       sendSimulationFailure(res, result, requestId)
@@ -1241,6 +1260,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_CREATE', result.data.runId)
     for (const [id, slot] of missions) if (slot.taskId === result.data.taskId) missions.delete(id)
+    if (file) missions.set(result.data.runId, { taskId: result.data.taskId, stopping: false, fileInitial: file.initial })
     realtime.publishRuntimeState(result.data)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
@@ -1471,8 +1491,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       const run = simulations.get(runId)
-      const draft = run.ok ? scenarios.get(run.data.scenarioId) : run
-      if (sendSimulationFailure(res, draft, requestId) || !draft.ok) return
+      const draft = run.ok && !run.data.fileSource ? scenarios.get(run.data.scenarioId) : undefined
+      if (draft && (sendSimulationFailure(res, draft, requestId) || !draft.ok)) return
       missions.set(runId, slot)
       slot.connecting = true
       let settleConnecting!: () => void
@@ -1480,8 +1500,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       try {
         if (!engineSnapshots || !options.engineFrameArchive) throw new Error('远端 WebSocket 客户端或数据留存服务未配置。')
         // 只生成场景名称与端口映射，不落地执行包，也不启动本机进程。
-        const manifest = buildEngineFrameMapping(draft.data.config)
-        slot.qualityDraft = structuredClone(draft.data)
+        if (run.ok && run.data.fileSource && !slot.fileInitial) throw new Error('文件播放快照已失效，请重新加载。')
+        let manifest: unknown
+        if (slot.fileInitial) manifest = fileReceptionMapping(slot.fileInitial).manifest
+        else if (draft?.ok) manifest = buildEngineFrameMapping(draft.data.config)
+        else throw new Error('场景不可用。')
+        if (draft?.ok) slot.qualityDraft = structuredClone(draft.data)
         const started = simulations.startRemote(runId, remoteEngineNow())
         await beginEngineArchive(runId, slot)
         if (closing) throw new Error('服务正在关闭，未建立远端连接。')

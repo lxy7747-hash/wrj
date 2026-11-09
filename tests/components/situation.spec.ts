@@ -2,7 +2,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import ElementPlus, { ElSelect } from 'element-plus'
 import L from 'leaflet'
 import { createPinia, setActivePinia } from 'pinia'
-import { h, reactive } from 'vue'
+import { h, reactive, toRaw } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, resolvePlatformCoordinates } from '../../src/config/map.config'
@@ -31,6 +31,7 @@ import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import engineSample from '../fixtures/engine-frame/params_check.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
+import { playbackFileSource, fileReceptionScenarioId } from '../../src/features/situation/file-reception'
 
 type SituationMapControllerOptions = {
   frame: unknown
@@ -1130,6 +1131,116 @@ describe('态势主界面', () => {
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     expect(fetchSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('本机文件与 WebSocket 并行，三个按钮共控、实时帧接管时间、暂停冻结、停止归零', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.initial.connections = FILE_CONNECTIONS
+    snapshot.durationS = 60
+    snapshot.tracks[1]!.positions.push({ ...snapshot.tracks[1]!.positions[1]!, time: 60 })
+    snapshot.recordCount += 1
+    const source = playbackFileSource(snapshot)
+    const idle = { ...simulationRun('STOPPED', false), executionSource: 'REMOTE_WS' as const }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [idle]
+      : url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    const store = useSimulationStore()
+    const start = vi.spyOn(store, 'start').mockImplementation(async fileSource => {
+      expect(fileSource).toEqual(source)
+      store.applyRun({ ...simulationRun('RUNNING', true), fileSource, scenarioId: fileReceptionScenarioId(source),
+        canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
+        executionSource: 'REMOTE_WS', startedAt: '2026-11-09T01:00:00Z',
+        engineControl: { connected: true, action: null, delivery: 'IDLE' } })
+      return true
+    })
+    const pause = vi.spyOn(store, 'pause').mockImplementation(async () => {
+      store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+      return true
+    })
+    const resume = vi.spyOn(store, 'resume').mockImplementation(async () => {
+      store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: true, action: 'resume', delivery: 'SENT' } })
+      return true
+    })
+    const stop = vi.spyOn(store, 'stop').mockImplementation(async () => {
+      store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), uiStatus: 'STOPPED', configLocked: false,
+        engineControl: { connected: false, action: 'stop', delivery: 'SENT' } })
+      return true
+    })
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(start).toHaveBeenCalledOnce()
+    const playback = useReplayStore(), quality = useRuntimeQualityStore()
+    expect(quality.scope?.scenarioId).toBe(fileReceptionScenarioId(source))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(playback.replay?.currentTimeS).toBe(1)
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: store.run!.runId, frameId: 5, simulationTime: 5 }
+    expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(playback.replay?.currentTimeS).toBe(5)
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    await flushPromises()
+    expect(pause).toHaveBeenCalledOnce()
+    expect(quality.acceptEngineFrame(quality.epoch, { ...frame, frameId: 10, simulationTime: 10 })).toBe(true)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(playback.replay?.currentTimeS).toBe(5)
+    expect(quality.engineFrame?.frameId).toBe(5)
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
+    expect(wrapper.findComponent({ name: 'ElSlider' }).props('disabled')).toBe(true)
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    expect(resume).toHaveBeenCalledOnce()
+    expect(playback.replay?.currentTimeS).toBe(10)
+    expect(quality.engineFrame?.frameId).toBe(10)
+    // 失联也能暂停本地画面和停止收尾，不将未发送命令报告为成功。
+    store.applyRun({ ...structuredClone(toRaw(store.$state.run!)), engineControl: { connected: false, action: 'resume', delivery: 'SENT' } })
+    await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
+    expect(pause).toHaveBeenCalledOnce()
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    await flushPromises()
+    ;(document.querySelector('[data-testid="confirm-stop"]') as HTMLButtonElement).click()
+    await flushPromises()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(playback.replay?.currentTimeS).toBe(0)
+    expect(playback.state).toBe('PAUSED')
+    expect(quality.engineFrame).toBeNull()
+    expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('并行启动失败不遗留文件计时器，错误能在页面看见', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    const idle = { ...simulationRun('STOPPED', false), executionSource: 'REMOTE_WS' as const }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [idle]
+      : url.endsWith('/initial-nodes') ? LOCAL_REPLAY.initial : LOCAL_REPLAY)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    vi.spyOn(useSimulationStore(), 'start').mockImplementation(async () => {
+      useSimulationStore().$patch({ capabilityState: 'ERROR', resultMessage: '归档服务不可用，启动失败。' })
+      return false
+    })
+    await wrapper.get('[data-testid="simulation-start"]').trigger('click')
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(useReplayStore().replay?.currentTimeS).toBe(0)
+    expect(useReplayStore().state).toBe('PAUSED')
+    expect(wrapper.text()).toContain('归档服务不可用，启动失败。')
+  })
+
+  it('正在接收的文件更换后禁止串用新轨迹，仍可停止旧接收任务', async () => {
+    const fileSource = playbackFileSource(LOCAL_REPLAY)
+    const running = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS' as const,
+      canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
+      fileSource, scenarioId: fileReceptionScenarioId(fileSource), startedAt: '2026-11-09T01:00:00Z',
+      engineControl: { connected: true, action: null, delivery: 'IDLE' as const } }
+    const changed = { ...LOCAL_REPLAY, sha256: 'c'.repeat(64) }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => successResponse(url.endsWith('/simulations') ? [running]
+      : url.endsWith('/initial-nodes') ? changed.initial : changed)))
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(wrapper.text()).toContain('当前文件已变更')
+    expect(wrapper.findComponent(OfflineSituationMap).props()).toMatchObject({ initialNodes: [], fileLinks: [], fileMessageLinks: [] })
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeUndefined()
+    expect(useRuntimeQualityStore().scope).toBeNull()
+    expect(useReplayStore().state).toBe('PAUSED')
   })
 
   it('主界面文件播放共用同一游标，位置、关联与设备按流程同步，控制不调用 mission 或 Mock', async () => {

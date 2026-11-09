@@ -45,6 +45,8 @@ import { unwrapSuccessData } from '../../stores/api-envelope'
 import { isQualityDataset } from '../../features/data-exchange/quality-records'
 import { saveDownload } from '../../features/shared/download'
 import { resolveEngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
+import { fileReceptionLinks, fileReceptionScenarioId, playbackFileSource } from '../../features/situation/file-reception'
+import { canSendEngineControl } from '../../features/situation/engine-control'
 
 type SummaryTab = 'nodes' | 'links' | 'interference' | 'timing'
 
@@ -103,7 +105,11 @@ const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'EMPTY' | 'ERROR'>('LOADING')
-const remoteEngineMode = computed(() => sourceState.value !== 'FILE' && simulationRun.value?.executionSource === 'REMOTE_WS')
+const remoteEngineMode = computed(() => simulationRun.value?.executionSource === 'REMOTE_WS')
+const combinedPlayback = computed(() => sourceState.value === 'FILE' && remoteEngineMode.value)
+const combinedActive = computed(() => combinedPlayback.value && Boolean(simulationRun.value?.fileSource && simulationRun.value.configLocked && simulationRun.value.startedAt))
+const combinedPaused = ref(false)
+const sharedRemoteTime = ref<number | null>(null)
 const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL' && !remoteEngineMode.value)
 const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
@@ -122,13 +128,18 @@ const missionPositionSource = computed(() => {
 const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
   const run = simulationRun.value
   const scene = selectedScene.value
+  if (useAuthStore().runtimeMode === 'LOCAL' && useAuthStore().principal && run?.startedAt && run.configLocked && run.fileSource
+    && filePlayback.localSnapshot && run.scenarioId === fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot))) {
+    return { taskId: run.taskId, runId: run.runId, scenarioId: run.scenarioId, revision: 1, startedAt: run.startedAt }
+  }
   return useAuthStore().runtimeMode === 'LOCAL' && useAuthStore().principal && run?.startedAt
     && scene && run.scenarioId === scene.config.scenario.id
     ? { taskId: run.taskId, runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, startedAt: run.startedAt }
     : null
 })
 let qualityLoadRevision = 0
-watch([runtimeQualityScope, () => selectedScene.value?.config.links.map(link => link.id) ?? []], ([scope, ids]) => {
+watch([runtimeQualityScope, () => combinedPlayback.value && initialSnapshot.value
+  ? fileReceptionLinks(initialSnapshot.value).map(link => link.id) : selectedScene.value?.config.links.map(link => link.id) ?? []], ([scope, ids]) => {
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
@@ -139,23 +150,38 @@ key => {
   telemetryStore.disconnectAndReset()
   if (key) telemetryStore.connect()
 }, { flush: 'post' })
-// 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
-const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
+// 收到首个实时帧后由上游仿真时间驱动文件游标，停止本地计时器。
+const fileTime = computed(() => combinedPlayback.value && sharedRemoteTime.value !== null ? sharedRemoteTime.value
+  : ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
   ? selectReplayNodes(filePlayback.localSnapshot, fileTime.value) : initialSnapshot.value?.nodes.filter(node => node.time <= 0) ?? [])
-const fileLinks = computed(() => selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [], fileTime.value))
+const fileLinks = computed(() => combinedPlayback.value && initialSnapshot.value ? fileReceptionLinks(initialSnapshot.value, fileTime.value)
+  : selectFileCommunicationLinks(initialSnapshot.value?.connections ?? [], fileTime.value))
 const fileMessageLinks = computed(() => initialSnapshot.value?.messageLinks ?? [])
-const fileStatus = computed<UiSimulationStatus>(() => !ownsFilePlayback.value || !filePlayback.localSnapshot ? 'STOPPED'
+const fileStatus = computed<UiSimulationStatus>(() => combinedActive.value ? combinedPaused.value ? 'PAUSED' : 'RUNNING'
+  : combinedPlayback.value || !ownsFilePlayback.value || !filePlayback.localSnapshot ? 'STOPPED'
   : filePlayback.state === 'PLAYING' ? 'RUNNING' : filePlayback.state === 'COMPLETED' ? 'COMPLETED' : 'PAUSED')
 const fileSliderTime = ref(0)
 const fileSliderDragging = ref(false)
 const fileSeekRevision = ref(0)
+watch(combinedActive, (active, previous) => {
+  if (previous && !active) {
+    void filePlayback.pause()
+    runtimeQualityStore.setPresentationPaused(true)
+  }
+})
+watch([() => runtimeQualityStore.engineFrame, combinedPaused, combinedActive], ([frame, paused, active]) => {
+  if (!active || paused || !frame) return
+  if (sharedRemoteTime.value !== null && frame.simulationTime < sharedRemoteTime.value) fileSeekRevision.value += 1
+  sharedRemoteTime.value = frame.simulationTime
+  filePlayback.followLocalTime(frame.simulationTime, true)
+}, { flush: 'sync' })
 watch(fileTime, time => { if (!fileSliderDragging.value) fileSliderTime.value = time })
 function fileTimeLabel(time: number): string {
   return `${Math.floor(time / 60)}分${Math.floor(time % 60)}秒`
 }
 async function seekFileTime(time: number | number[]): Promise<void> {
-  if (typeof time === 'number') {
+  if (typeof time === 'number' && !combinedActive.value) {
     fileSeekRevision.value += 1
     await filePlayback.seek(time)
   }
@@ -163,9 +189,18 @@ async function seekFileTime(time: number | number[]): Promise<void> {
   fileSliderTime.value = fileTime.value
 }
 const sourceMessage = ref('正在读取初始节点位置。')
-// 同一时刻只使用一种数据源，不把文件坐标与 Mock 链路、事件混合。
+const fileSourceMismatch = computed(() => combinedActive.value && filePlayback.localSnapshot
+  && simulationRun.value?.scenarioId !== fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot)))
+const combinedFeedback = computed(() => {
+  if (fileSourceMismatch.value || combinedActive.value && !initialSnapshot.value) return sourceMessage.value
+  if (!combinedActive.value) return simulationCapabilityState.value === 'ERROR' ? simulationFeedback.value : '点击播放，同时播放本地文件并接收 WebSocket 数据。'
+  const clock = sharedRemoteTime.value === null ? '等待实时帧，文件计时' : '按实时帧同步'
+  const end = sharedRemoteTime.value !== null && fileTime.value >= (filePlayback.replay?.durationS ?? Infinity) ? '，轨迹文件已到末尾' : ''
+  return `${combinedPaused.value ? '本地画面已暂停' : '文件与 WebSocket 并行'} · ${fileTimeLabel(fileTime.value)} · ${clock}${end}`
+})
+// 文件和实时数据可并行，固定 Mock 帧仍只用于 Mock 模式。
 const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
-const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value)))
+const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value && !fileSourceMismatch.value)))
 const mapNodes = computed(() => selectedScene.value
   ? selectedScene.value.config.platforms.map(platform => ({
     platformId: platform.id, name: platform.name, type: platform.type, ...platform.initialPosition, speed: 0,
@@ -175,8 +210,8 @@ const mapNodes = computed(() => selectedScene.value
 const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
 const missionPositionTime = computed(() => missionPositions.value?.positions?.nodes.length
   ? Math.max(...missionPositions.value.positions.nodes.map(node => node.time)) : null)
-const latestEngineJammerTopic = computed(() => telemetryStore.engineJammerUpdates.at(-1) ?? null)
-const latestEngineSwitchTopic = computed(() => telemetryStore.engineSwitchUpdates.at(-1) ?? null)
+const latestEngineJammerTopic = computed(() => telemetryStore.engineJammerUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
+const latestEngineSwitchTopic = computed(() => telemetryStore.engineSwitchUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
 
 /** Position reader and WS share one append source.  A late HTTP response may fill
  * an initial gap, but must never roll back a newer source generation/record count. */
@@ -266,13 +301,27 @@ async function initializeSituation(): Promise<void> {
   const epoch = ++sourceEpoch
   if (ownsFilePlayback.value) filePlayback.resetToSafeEmpty()
   ownsFilePlayback.value = false
+  combinedPaused.value = false
+  sharedRemoteTime.value = null
   fileLoading.value = false
   fileSliderDragging.value = false
   fileSliderTime.value = 0
   sourceRequest?.abort()
   const request = new AbortController()
   sourceRequest = request
-  const sceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
+  const localMode = useAuthStore().runtimeMode === 'LOCAL'
+  if (localMode) {
+    const loaded = await simulationStore.resetProjection()
+    if (unmounted || epoch !== sourceEpoch) return
+    if (!loaded) {
+      sourceState.value = 'ERROR'
+      sourceMessage.value = simulationStore.resultMessage
+      return
+    }
+  }
+  const savedSceneId = simulationStore.selectedScene?.config.scenario.id ?? simulationStore.readSelectedSceneId()
+  const preferFile = remoteEngineMode.value && (!simulationRun.value?.configLocked || Boolean(simulationRun.value.fileSource))
+  const sceneId = preferFile ? null : savedSceneId
   if (sceneId) {
     initialSnapshot.value = null
     telemetryStore.disconnectAndReset()
@@ -306,22 +355,49 @@ async function initializeSituation(): Promise<void> {
       sourceState.value = 'FILE'
       selectedNodeId.value = fileNodes.value[0]?.platformId ?? ''
       sourceMessage.value = `${body.data.fileName} · 0分0秒初始位置`
+      if (simulationRun.value?.fileSource && simulationRun.value.configLocked) {
+        if (!await loadPlaybackFile(epoch)) return
+        if (simulationRun.value.scenarioId !== fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot!))) {
+          combinedPaused.value = true
+          sourceMessage.value = '当前文件已变更，请先停止原接收任务再重新播放。'
+          return
+        }
+        combinedPaused.value = simulationRun.value.engineControl?.action === 'pause'
+        runtimeQualityStore.setPresentationPaused(combinedPaused.value)
+        sharedRemoteTime.value = simulationTime.value > 0 ? simulationTime.value : null
+        if (sharedRemoteTime.value !== null || combinedPaused.value) filePlayback.followLocalTime(simulationTime.value, !combinedPaused.value)
+        else await filePlayback.play()
+      }
       return
     }
     initialSnapshot.value = null
+    if (simulationRun.value?.fileSource && simulationRun.value.configLocked) {
+      sourceState.value = 'FILE'
+      combinedPaused.value = true
+      sourceMessage.value = '文件来源不可用，请先停止原接收任务，再恢复文件。'
+      return
+    }
+    if (preferFile && savedSceneId && !simulationRun.value?.fileSource) {
+      const loaded = await simulationStore.selectScene(savedSceneId, request.signal)
+      if (unmounted || epoch !== sourceEpoch) return
+      sourceState.value = loaded ? 'SCENE' : 'ERROR'
+      sourceMessage.value = loaded ? '已保存场景配置预览。' : simulationStore.resultMessage
+      return
+    }
     sourceState.value = 'MOCK'
   } catch {
     if (unmounted || epoch !== sourceEpoch) return
-    sourceState.value = 'ERROR'
+    sourceState.value = simulationRun.value?.fileSource && simulationRun.value.configLocked ? 'FILE' : 'ERROR'
+    combinedPaused.value = true
     sourceMessage.value = '初始节点读取失败，请检查本机日志路径、文件完整性及初始坐标后重试。'
     return
   }
-  const simulationLoaded = await simulationStore.resetProjection()
+  const simulationLoaded = localMode || await simulationStore.resetProjection()
   if (unmounted || epoch !== sourceEpoch || !simulationLoaded) return
   if (useAuthStore().runtimeMode === 'LOCAL') {
     // 本地模式不加载固定遥测帧；有运行时恢复其场景，否则提示配置数据源。
     const run = simulationStore.run
-    if (run) {
+    if (run && !run.fileSource) {
       const loaded = await simulationStore.selectScene(run.scenarioId)
       if (unmounted || epoch !== sourceEpoch) return
       if (loaded) { await initializeSituation(); return }
@@ -345,7 +421,7 @@ async function initializeSituation(): Promise<void> {
 onMounted(initializeSituation)
 
 // 所选场景不订阅冻结遥测，Mock 和本机模式都需轮询运行状态；不把原 CSV 当成本次运行结果。
-watch(() => [selectedScene.value?.config.scenario.id, simulationStore.run?.configLocked] as const, ([sceneId, locked], _, onCleanup) => {
+watch(() => [combinedPlayback.value ? simulationRun.value?.scenarioId : selectedScene.value?.config.scenario.id, simulationStore.run?.configLocked] as const, ([sceneId, locked], _, onCleanup) => {
   if (!sceneId || !locked) return
   let cancelled = false
   let timer: ReturnType<typeof setTimeout>
@@ -672,7 +748,7 @@ async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpo
 }
 
 function openQualityImport(): void {
-  if (!runtimeQualityScope.value || qualityImporting.value) return
+  if (!runtimeQualityScope.value || combinedPlayback.value || qualityImporting.value) return
   qualityImportInput.value?.click()
 }
 
@@ -778,32 +854,49 @@ function toggleTelemetryPanel(): void {
   telemetryPanelCollapsed.value = !telemetryPanelCollapsed.value
 }
 
-/**
- * 文件来源启动本地时间轴；其他来源创建并开始仿真，或继续暂停运行。
- * @returns 操作完成后兑现且不返回值的 Promise。
- * @sideeffect 文件播放不调用引擎；仿真交由 simulationStore 同步运行状态和场景配置锁。
- */
+async function loadPlaybackFile(epoch: number): Promise<boolean> {
+  const firstLoad = !ownsFilePlayback.value
+  ownsFilePlayback.value = true
+  if (firstLoad || !filePlayback.localSnapshot) {
+    fileLoading.value = true
+    const loaded = await filePlayback.loadLocalFile()
+    if (unmounted || epoch !== sourceEpoch) return false
+    fileLoading.value = false
+    if (!loaded || !filePlayback.localSnapshot) {
+      initialSnapshot.value = null
+      if (!combinedActive.value) sourceState.value = 'ERROR'
+      sourceMessage.value = filePlayback.resultMessage || '文件播放数据加载失败，请重新加载。'
+      return false
+    }
+    initialSnapshot.value = filePlayback.localSnapshot.initial
+    if (!fileNodes.value.some(node => node.platformId === selectedNodeId.value)) selectedNodeId.value = fileNodes.value[0]?.platformId ?? ''
+  }
+  return true
+}
+
 async function startSimulation(): Promise<void> {
   if (sourceState.value === 'FILE') {
-    if (fileLoading.value) return
+    if (fileLoading.value || simulationPending.value) return
     const epoch = sourceEpoch
-    const firstLoad = !ownsFilePlayback.value
-    ownsFilePlayback.value = true
-    if (firstLoad || !filePlayback.localSnapshot) {
-      fileLoading.value = true
-      const loaded = await filePlayback.loadLocalFile()
-      if (unmounted || epoch !== sourceEpoch) return
-      fileLoading.value = false
-      if (!loaded || !filePlayback.localSnapshot) {
-        initialSnapshot.value = null
-        sourceState.value = 'ERROR'
-        sourceMessage.value = filePlayback.resultMessage || '文件播放数据加载失败，请重新加载。'
-        return
+    if (!await loadPlaybackFile(epoch)) return
+    if (combinedPlayback.value) {
+      if (combinedActive.value) {
+        if (simulationRun.value?.scenarioId !== fileReceptionScenarioId(playbackFileSource(filePlayback.localSnapshot!))) {
+          sourceMessage.value = '当前文件已变更，请先停止原接收任务再重新播放。'
+          return
+        }
+        const control = simulationRun.value?.engineControl
+        if (control && canSendEngineControl(control, 'resume')) await simulationStore.resume()
+      } else {
+        sharedRemoteTime.value = null
+        if (!await simulationStore.start(playbackFileSource(filePlayback.localSnapshot!))) return
       }
-      initialSnapshot.value = filePlayback.localSnapshot.initial
-      if (!fileNodes.value.some(node => node.platformId === selectedNodeId.value)) selectedNodeId.value = fileNodes.value[0]?.platformId ?? ''
-    }
-    await filePlayback.play()
+      if (unmounted || epoch !== sourceEpoch) return
+      combinedPaused.value = false
+      runtimeQualityStore.setPresentationPaused(false)
+      if (sharedRemoteTime.value !== null) filePlayback.followLocalTime(sharedRemoteTime.value, true)
+      else await filePlayback.play()
+    } else await filePlayback.play()
     return
   }
   await simulationStore.start()
@@ -816,7 +909,13 @@ async function startSimulation(): Promise<void> {
  */
 async function pauseSimulation(): Promise<void> {
   if (sourceState.value === 'FILE') {
+    if (combinedPlayback.value) {
+      combinedPaused.value = true
+      runtimeQualityStore.setPresentationPaused(true)
+    }
     await filePlayback.pause()
+    const control = simulationRun.value?.engineControl
+    if (combinedActive.value && control && canSendEngineControl(control, 'pause')) await simulationStore.pause()
     return
   }
   await simulationStore.pause()
@@ -828,7 +927,7 @@ async function pauseSimulation(): Promise<void> {
  * @sideeffect 修改停止确认框的可见状态。
  */
 function requestStop(): void {
-  if (sourceState.value === 'FILE') {
+  if (sourceState.value === 'FILE' && !combinedPlayback.value) {
     filePlayback.resetToSafeEmpty()
     return
   }
@@ -842,7 +941,19 @@ function requestStop(): void {
  * @sideeffect 停止完成或 WebSocket 命令发出后关闭确认框；未确认的引擎运行仍保留配置锁。
  */
 async function confirmStop(): Promise<void> {
-  if (await simulationStore.stop()) stopDialogVisible.value = false
+  if (combinedPlayback.value) {
+    combinedPaused.value = true
+    runtimeQualityStore.setPresentationPaused(true)
+    await filePlayback.pause()
+  }
+  if (await simulationStore.stop()) {
+    stopDialogVisible.value = false
+    if (combinedPlayback.value) {
+      sharedRemoteTime.value = null
+      filePlayback.followLocalTime(0, false)
+      fileSeekRevision.value += 1
+    }
+  }
 }
 
 /**
@@ -852,6 +963,7 @@ async function confirmStop(): Promise<void> {
  * @sideeffect 调用 simulationStore 更新本地选择或发送 SET_SPEED 命令。
  */
 async function updateSpeed(speed: number): Promise<void> {
+  if (combinedPlayback.value) return
   if (sourceState.value === 'FILE') {
     await filePlayback.setSpeed(speed)
     return
@@ -996,8 +1108,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
       :capability-state="simulationCapabilityState"
-      :pending="sourceState === 'FILE' ? fileLoading : simulationPending || simulationStore.selectingScene"
-      :feedback="sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
+      :pending="fileLoading || simulationPending || simulationStore.selectingScene"
+      :feedback="combinedPlayback ? combinedFeedback : sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @stop="requestStop"
@@ -1009,11 +1121,12 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           <el-slider
             v-model="fileSliderTime"
             :min="0"
-            :max="filePlayback.replay.durationS"
+            :max="Math.max(filePlayback.replay.durationS, fileTime)"
             :step="1"
             :show-tooltip="false"
-            :disabled="fileLoading || filePlayback.replay.durationS === 0"
-            aria-label="文件播放进度"
+            :disabled="fileLoading || combinedActive || filePlayback.replay.durationS === 0"
+            :aria-label="combinedPlayback ? '统一播放进度' : '文件播放进度'"
+            :title="combinedActive ? '实时接收期间跟随上游时间，暂不支持跳转。' : undefined"
             @input="fileSliderDragging = true"
             @change="seekFileTime"
           />
@@ -1343,20 +1456,20 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <span class="panel-heading__more">累计 {{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineEvents.length} 条` : allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
           </div>
           <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" />
-          <ol v-else-if="allDisplayedEvents.length" class="event-list">
+          <ol v-if="allDisplayedEvents.length && (combinedPlayback || !runtimeQualityStore.engineFrame)" class="event-list">
             <li v-for="event in allDisplayedEvents" :key="event.eventId">
               <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
               <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
             </li>
           </ol>
-          <el-empty v-else class="telemetry-empty-state" description="暂无数据" :image-size="48" />
+          <el-empty v-if="!runtimeQualityStore.engineFrame && !allDisplayedEvents.length" class="telemetry-empty-state" description="暂无数据" :image-size="48" />
           <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">引擎切换主题：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
             <div class="quality-import-bar">
               <input ref="qualityImportInput" type="file" accept=".json,.csv,application/json,text/csv" class="quality-import-input" data-testid="quality-import-input" @change="importQualityFile" />
-              <el-button size="small" type="primary" :loading="qualityImporting" :disabled="!runtimeQualityScope" data-testid="quality-import-button" @click="openQualityImport">导入 JSON / CSV</el-button>
+              <el-button size="small" type="primary" :loading="qualityImporting" :disabled="!runtimeQualityScope || combinedPlayback" data-testid="quality-import-button" @click="openQualityImport">导入 JSON / CSV</el-button>
               <el-dropdown v-if="qualityDownloadFiles.length" trigger="click">
                 <el-button size="small" data-testid="quality-download-button">下载规范文件</el-button>
                 <template #dropdown><el-dropdown-menu><el-dropdown-item v-for="item in qualityDownloadFiles" :key="item.name" :disabled="!item.enabled" @click="downloadQualityFile(item.name)">{{ item.name }}{{ item.enabled ? '' : '（缺少源数据）' }}</el-dropdown-item></el-dropdown-menu></template>
@@ -1367,7 +1480,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :selected-link-id="selectedLinkId" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" />
             <QualityMetricPanel v-else
               :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"

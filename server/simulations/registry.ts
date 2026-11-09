@@ -2,6 +2,8 @@ import type { SimulationRun, TaskId } from '../../src/contracts/domain-models.js
 import type { ScenarioProjection } from '../scenarios/projection.js'
 import type { MissionOutcome } from './mission-execution.js'
 import { SimulationProjection, type SimulationProjectionResult } from './projection.js'
+import type { LocalReplaySnapshot } from '../../src/features/replays/local-replay.js'
+import { fileReceptionScenarioId, isPlaybackFileSource, playbackFileSource } from '../../src/features/situation/file-reception.js'
 
 /** 每任务沿用原有单运行状态机；并行只发生在不同任务、不同场景之间。 */
 export class SimulationRegistry {
@@ -54,9 +56,9 @@ export class SimulationRegistry {
     return owner
   }
 
-  create(value: unknown): SimulationProjectionResult<SimulationRun> {
+  create(value: unknown, file?: LocalReplaySnapshot): SimulationProjectionResult<SimulationRun> {
     if (!value || typeof value !== 'object' || Array.isArray(value)
-      || Object.keys(value).length !== 2 || !('taskId' in value) || !('scenarioId' in value)
+      || Object.keys(value).some(key => !['taskId', 'scenarioId', 'fileSource'].includes(key)) || !('taskId' in value) || !('scenarioId' in value)
       || typeof value.taskId !== 'string' || !/^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value.taskId)
       || typeof value.scenarioId !== 'string' || !value.scenarioId.startsWith('SCN-')) {
       return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'request', message: '仿真创建请求结构不正确。' }
@@ -69,8 +71,17 @@ export class SimulationRegistry {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '任务或场景已有活动运行，或已达到并行任务容量。' }
     }
     const scene = this.scenarios.get(value.scenarioId)
-    if (!scene.ok) return scene
-    if (scene.data.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, message: '场景已锁定，不能创建另一运行。' }
+    const source = 'fileSource' in value ? value.fileSource : undefined
+    if ('fileSource' in value) {
+      const actual = file && playbackFileSource(file)
+      if (!this.remote || !isPlaybackFileSource(source) || !actual || source.eventSha256 !== actual.eventSha256
+        || source.positionSha256 !== actual.positionSha256 || value.scenarioId !== fileReceptionScenarioId(source)) {
+        return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '文件已改变或来源不匹配，请重新加载后播放。' }
+      }
+    } else {
+      if (!scene.ok) return scene
+      if (scene.data.locked) return { ok: false, code: 'CONFIG_LOCKED', status: 409, message: '场景已锁定，不能创建另一运行。' }
+    }
     // 限制长期登记数量，历史结果由独立持久快照保存，不靠此内存表累积。
     if (!this.tasks.has(value.taskId) && this.tasks.size >= 64) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '任务登记已达64项；请结束活动任务并重置运行上下文。' }
@@ -78,7 +89,9 @@ export class SimulationRegistry {
     const task = this.tasks.get(value.taskId) ?? new SimulationProjection(this.scenarios, value.taskId as TaskId, this.remote)
     const runId = this.createRunId?.() ?? `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
     if (!/^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId) || this.owner(runId)) throw new Error('运行编号生成失败，未锁定场景。')
-    const result = task.create(value, runId)
+    const result: SimulationProjectionResult<SimulationRun> = file && isPlaybackFileSource(source)
+      ? { ok: true, data: task.createFile({ taskId: value.taskId as TaskId, scenarioId: value.scenarioId as SimulationRun['scenarioId'], fileSource: source }, file.durationS, runId) }
+      : task.create(value, runId)
     if (result.ok) { this.nextRunSequence++; this.tasks.set(value.taskId, task) }
     return result
   }

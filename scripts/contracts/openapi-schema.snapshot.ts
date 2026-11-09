@@ -5406,6 +5406,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "string",
         "format": "date-time"
       },
+      "fileSource": { "$ref": "#/components/schemas/PlaybackFileSource" },
       "executionSource": { "type": "string", "enum": ["REMOTE_WS"], "description": "Local reception lifecycle, not sender execution acknowledgement." },
       "engineControl": {
         "type": "object",
@@ -7371,6 +7372,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       }
     }
   },
+  "PlaybackFileSource": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["eventSha256", "positionSha256"],
+    "properties": {
+      "eventSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "positionSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    }
+  },
   "SimulationCreateRequest": {
     "type": "object",
     "additionalProperties": false,
@@ -7379,6 +7389,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "scenarioId"
     ],
     "properties": {
+      "fileSource": { "$ref": "#/components/schemas/PlaybackFileSource" },
       "taskId": {
         "type": "string",
         "pattern": "^TASK-"
