@@ -5406,6 +5406,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "string",
         "format": "date-time"
       },
+      "executionSource": { "type": "string", "enum": ["REMOTE_WS"], "description": "Local reception lifecycle, not sender execution acknowledgement." },
       "engineControl": {
         "type": "object",
         "additionalProperties": false,
@@ -7424,7 +7425,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minLength": 1
       }
     },
-    "description": "START requires mode; SET_SPEED requires speedMultiplier; STEP requires stepCount=1; STOP requires a valid SIMULATION_STOP confirmation when unsaved execution state would be discarded."
+    "description": "START requires mode; SET_SPEED requires speedMultiplier; STEP requires stepCount=1; STOP requires a valid SIMULATION_STOP confirmation. In REMOTE_WS mode it sends stop when available and ends local reception after archive finalization; sender execution remains unconfirmed."
   },
   "ReportExportRequest": {
     "type": "object",

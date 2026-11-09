@@ -9,9 +9,9 @@ export class SimulationRegistry {
   private nextRunSequence = 2
 
   constructor(private readonly scenarios: ScenarioProjection, private readonly capacity = 1,
-    private readonly createRunId?: () => SimulationRun['runId']) {
+    private readonly createRunId?: () => SimulationRun['runId'], private readonly remote = false) {
     if (!Number.isSafeInteger(capacity) || capacity < 1 || capacity > 4) throw new RangeError('并行任务数必须是1至4的整数。')
-    this.tasks.set('TASK-001', new SimulationProjection(scenarios))
+    this.tasks.set('TASK-001', new SimulationProjection(scenarios, 'TASK-001', remote))
   }
 
   list(): SimulationRun[] { return [...this.tasks.values()].flatMap(task => task.list()) }
@@ -41,6 +41,9 @@ export class SimulationRegistry {
     return this.requiredOwner(runId).startMission(pid, startedAt)
   }
   finishMission(runId: string, outcome: MissionOutcome): SimulationRun { return this.requiredOwner(runId).finishMission(outcome) }
+  startRemote(runId: string, startedAt: string): SimulationRun { return this.requiredOwner(runId).startRemote(startedAt) }
+  updateRemoteTime(runId: string, time: number): SimulationRun { return this.requiredOwner(runId).updateRemoteTime(time) }
+  finishRemote(runId: string, completedAt: string): SimulationRun { return this.requiredOwner(runId).finishRemote(completedAt) }
   setEngineControl(runId: string, state: NonNullable<SimulationRun['engineControl']>): SimulationRun {
     return this.requiredOwner(runId).setEngineControl(state)
   }
@@ -72,7 +75,7 @@ export class SimulationRegistry {
     if (!this.tasks.has(value.taskId) && this.tasks.size >= 64) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '任务登记已达64项；请结束活动任务并重置运行上下文。' }
     }
-    const task = this.tasks.get(value.taskId) ?? new SimulationProjection(this.scenarios, value.taskId as TaskId)
+    const task = this.tasks.get(value.taskId) ?? new SimulationProjection(this.scenarios, value.taskId as TaskId, this.remote)
     const runId = this.createRunId?.() ?? `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
     if (!/^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(runId) || this.owner(runId)) throw new Error('运行编号生成失败，未锁定场景。')
     const result = task.create(value, runId)
@@ -82,6 +85,6 @@ export class SimulationRegistry {
 
   reset(): void {
     this.tasks.clear()
-    this.tasks.set('TASK-001', new SimulationProjection(this.scenarios))
+    this.tasks.set('TASK-001', new SimulationProjection(this.scenarios, 'TASK-001', this.remote))
   }
 }

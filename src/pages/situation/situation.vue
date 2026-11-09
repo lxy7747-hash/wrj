@@ -103,7 +103,8 @@ const telemetryPanelCollapsed = ref(false)
 const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'EMPTY' | 'ERROR'>('LOADING')
-const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL')
+const remoteEngineMode = computed(() => sourceState.value !== 'FILE' && simulationRun.value?.executionSource === 'REMOTE_WS')
+const realMissionMode = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'LOCAL' && !remoteEngineMode.value)
 const runtimeUnknown = computed(() => sourceState.value !== 'FILE' && useAuthStore().runtimeMode === 'UNKNOWN')
 let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
@@ -114,7 +115,7 @@ const missionPositionSource = computed(() => {
   const run = simulationRun.value
   const scene = selectedScene.value
   const auth = useAuthStore()
-  return auth.runtimeMode === 'LOCAL' && auth.principal && scene && run?.startedAt
+  return !remoteEngineMode.value && auth.runtimeMode === 'LOCAL' && auth.principal && scene && run?.startedAt
     && run.scenarioId === scene.config.scenario.id
     ? `${auth.principal.userId}:${run.runId}:${scene.config.scenario.id}:${scene.revision}:${run.startedAt}` : null
 })
@@ -131,6 +132,13 @@ watch([runtimeQualityScope, () => selectedScene.value?.config.links.map(link => 
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
+// 远端接收没有本机位置/文件帧作为订阅入口；按会话绑定，普通状态刷新不重连。
+watch(() => remoteEngineMode.value && runtimeQualityScope.value && simulationRun.value?.configLocked
+  ? `${useAuthStore().principal?.userId}:${runtimeQualityScope.value.runId}:${runtimeQualityScope.value.revision}:${runtimeQualityScope.value.startedAt}` : null,
+key => {
+  telemetryStore.disconnectAndReset()
+  if (key) telemetryStore.connect()
+}, { flush: 'post' })
 // 文件播放复用回放游标，位置、关联和设备事件使用同一时刻，不混用引擎时钟。
 const fileTime = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
 const fileNodes = computed(() => ownsFilePlayback.value && filePlayback.localSnapshot
@@ -632,6 +640,7 @@ function sameQualityScope(left: RuntimeQualityScope, right: RuntimeQualityScope 
 
 /** Loads the persisted file after activation, reconnect, or a bounded WS update. */
 async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpoch: number): Promise<void> {
+  if (simulationRun.value?.executionSource === 'REMOTE_WS') return
   const revision = ++qualityLoadRevision
   const runId = expectedScope.runId
   try {
@@ -823,7 +832,8 @@ function requestStop(): void {
     filePlayback.resetToSafeEmpty()
     return
   }
-  if (simulationStatus.value === 'RUNNING' || simulationStatus.value === 'PAUSED') stopDialogVisible.value = true
+  if (simulationStatus.value === 'RUNNING' || simulationStatus.value === 'PAUSED'
+    || (remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt)) stopDialogVisible.value = true
 }
 
 /**
@@ -979,6 +989,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
       :real-mission="realMissionMode"
+      :remote-engine="remoteEngineMode"
+      :reception-active="remoteEngineMode ? Boolean(simulationRun?.configLocked && simulationRun.startedAt && !otherSceneRun) : undefined"
       :engine-control="!otherSceneRun ? simulationRun?.engineControl : undefined"
       :runtime-unknown="runtimeUnknown"
       :status="sourceState === 'FILE' ? fileStatus : otherSceneRun ? 'STOPPED' : simulationStatus"
@@ -1393,14 +1405,18 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       <span>来源：{{ initialSnapshot.fileName }}</span>
       <span>{{ fileTimeLabel(fileTime) }} · 节点 {{ fileNodes.length }} 个 · 点击左侧节点可定位</span>
     </footer>
+    <footer v-else-if="remoteEngineMode" class="situation-footer" role="status">
+      <span>{{ simulationRun?.configLocked ? '远端数据接收会话' : '远端接收未开启或已结束' }} · 发送方执行状态未确认</span>
+      <span>节点使用场景配置位置；当前远端协议未提供动态位置。</span>
+    </footer>
     <footer v-else-if="missionPositionSource" class="situation-footer" role="status">
       <span>本次仿真位置</span>
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
     <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" />
-    <el-dialog v-model="stopDialogVisible" title="确认停止仿真" width="min(26rem, calc(100vw - 2rem))">
-      <p class="stop-dialog-copy">{{ realMissionMode && simulationRun?.engineControl ? '向引擎发送停止命令。回执尚未接入，发送后保持连接、归档和配置锁；确认本机进程结束并完成归档后再解除锁定。' : realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
+    <el-dialog v-model="stopDialogVisible" title="确认停止" width="min(26rem, calc(100vw - 2rem))">
+      <p class="stop-dialog-copy">{{ remoteEngineMode ? '向发送方发送 stop 命令，停止本地播放并保存已接收的数据。连接不可用时仍可停止本地接收；保存成功后解除配置锁。发送方是否实际停止仍待回执确认。' : realMissionMode ? '停止当前 mission 运行并解除场景配置锁，已保存配置不会删除；未正常结束的运行不生成回放和报告。' : selectedScene ? '停止 Mock 运行并解除所选场景配置锁，已保存配置不会删除。' : '停止后将清除当前执行状态并解除场景配置锁，固定遥测帧 F-00042 不会改变。' }}</p>
       <template #footer>
         <el-button :disabled="simulationPending" @click="stopDialogVisible = false">取消</el-button>
         <el-button type="danger" :loading="simulationPending" data-testid="confirm-stop" @click="confirmStop">确认停止</el-button>
@@ -1447,7 +1463,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   display: grid;
   width: 100%;
   height: 100%;
-  min-height: 38rem;
+  min-height: 0;
   grid-template-rows: auto minmax(0, 1fr) auto;
   overflow: hidden;
   border: 1px solid var(--console-border);
@@ -1598,6 +1614,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .situation-page__workspace.situation-empty-map { --legend-clearance: .75rem; --view-controls-clearance: .75rem; }
 .scene-summary.is-collapsed, .telemetry-panel.is-collapsed { bottom: auto; width: 1.75rem; height: 1.75rem; overflow: visible; border-color: transparent; background: transparent; box-shadow: none; }
 @media (max-width: 760px) {
-  .situation-page { height: auto; }
+  .situation-page { height: auto; min-height: 38rem; }
 }
 </style>

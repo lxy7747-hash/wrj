@@ -1,11 +1,16 @@
 // @vitest-environment node
 import { afterEach, expect, it, vi } from 'vitest'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineFrameSnapshot, SimulationRun } from '../../src/contracts/domain-models'
+import sample from '../fixtures/engine-frame/websocket-new/fream001.json'
 const { once } = await import('node:' + 'events')
 const { WebSocket, WebSocketServer } = await import('w' + 's')
 const { EngineSnapshotClient } = await import('../../server/local/' + 'engine-snapshot-client.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
+const { mkdtemp, rm, readFile, readdir } = await import('node:fs/' + 'promises')
+const { tmpdir } = await import('node:' + 'os')
+const { join } = await import('node:' + 'path')
+const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
 
 const cleanups: Array<() => Promise<unknown> | void> = []
 afterEach(async () => {
@@ -13,8 +18,13 @@ afterEach(async () => {
   for (const close of cleanups.splice(0).reverse()) await close()
 })
 const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
+const receptionStartedAt = '2026-11-09T02:00:00Z'
+const receptionCompletedAt = '2026-11-09T02:01:00Z'
 
 async function setup() {
+  const root = await mkdtemp(join(tmpdir(), 'wrj-remote-control-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const archive = createEngineFrameArchive(root, () => new Date().toISOString())
   const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(upstream, 'listening')
   cleanups.push(async () => { for (const peer of upstream.clients) peer.terminate(); await new Promise<void>(resolve => upstream.close(() => resolve())) })
@@ -23,12 +33,15 @@ async function setup() {
   let complete!: (outcome: { code: number | null; completedAt?: string }) => void
   const completed = new Promise<{ code: number | null; completedAt?: string }>(resolve => { complete = resolve })
   const stop = vi.fn(async () => { complete({ code: null }) })
+  const start = vi.fn(async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }))
   let engine!: InstanceType<typeof EngineSnapshotClient>
   const app = createMockServer({ port: 0,
+    engineFrameArchive: archive,
     linkEngineWsUrl: `ws://127.0.0.1:${upstream.address().port}`,
+    remoteEngineNow: vi.fn(() => receptionCompletedAt).mockReturnValueOnce(receptionStartedAt),
     createEngineSnapshotClient: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void,
       diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => engine = new EngineSnapshotClient(url, publish, vi.fn(), diagnose),
-    missionExecution: { start: async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }) },
+    missionExecution: { start, safetyStatus: () => ({ message: '本机没有 mission.exe，也不应阻止远端连接。' }) },
   })
   cleanups.push(() => app.close())
   if (!app.httpServer.listening) await once(app.httpServer, 'listening')
@@ -39,39 +52,82 @@ async function setup() {
   const read = async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data
   await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   await vi.waitFor(async () => expect((await read()).engineControl).toEqual({ connected: true, action: null, delivery: 'IDLE' }))
-  return { api, runId, command, read, engine, messages, peers, stop, complete }
+  expect(start).not.toHaveBeenCalled()
+  expect(await read()).toMatchObject({ executionSource: 'REMOTE_WS', startedAt: receptionStartedAt, canonical: { processId: null } })
+  const confirmed = async (action: 'STOP') => {
+    const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)
+    const confirmationId = context.body.data.confirmationId
+    await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+    return command({ command: action, confirmationId })
+  }
+  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app }
 }
 
-it('REST 到真实 WS 发送精确两字段；暂停、恢复、停止均保留真实状态与配置锁，进程退出才收尾', async () => {
-  const { api, runId, command, read, messages, peers, stop, complete } = await setup()
+it('独立远端播放发送精确两字段；暂停可恢复，停止发送后完成本地归档并解锁', async () => {
+  const { api, runId, command, read, messages, peers, stop, complete, confirmed, start } = await setup()
   for (const [cmd, action] of [['PAUSE', 'pause'], ['RESUME', 'resume']] as const) {
     const response = await command({ command: cmd }).expect(202)
-    expect(response.body.data).toMatchObject({ uiStatus: 'RUNNING', canonical: { status: 'RUNNING', processId: 777 }, configLocked: true,
+    expect(response.body.data).toMatchObject({ uiStatus: 'RUNNING', canonical: { status: 'RUNNING', processId: null }, configLocked: true,
       engineControl: { connected: true, action, delivery: 'SENT' } })
     await vi.waitFor(() => expect(messages.at(-1)).toEqual({ msg_type: 'sim_control', action }))
     await command({ command: cmd }).expect(409)
   }
   await command({ command: 'STEP', stepCount: 1 }).expect(409)
   await command({ command: 'SET_SPEED', speedMultiplier: 2 }).expect(409)
+  // 未确认的建议回执和无关本机进程不能改变远端播放会话。
+  peers[0]!.send(JSON.stringify({ msg_type: 'sim_control_ack', action: 'stop', success: true, state: 'STOPPED' }))
+  complete({ code: 0, completedAt: '2026-11-09T01:01:00Z' })
+  expect((await read()).uiStatus).toBe('RUNNING')
   await command({ command: 'STOP' }).expect(428)
   expect(messages).toHaveLength(2)
   const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)
   const confirmationId = context.body.data.confirmationId
   await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
-  const stopped = await command({ command: 'STOP', confirmationId }).expect(202)
-  expect(stopped.body.data).toMatchObject({ uiStatus: 'RUNNING', configLocked: true, engineControl: { action: 'stop', delivery: 'SENT' } })
+  const stopped = await command({ command: 'STOP', confirmationId }).expect(200)
+  expect(stopped.body.data).toMatchObject({ uiStatus: 'STOPPED', completedAt: receptionCompletedAt, configLocked: false, engineControl: { connected: false, action: 'stop', delivery: 'SENT' } })
   await vi.waitFor(() => expect(messages).toEqual(['pause', 'resume', 'stop'].map(action => ({ msg_type: 'sim_control', action }))))
   expect(stop).not.toHaveBeenCalled()
-  expect(peers[0]!.readyState).toBe(WebSocket.OPEN)
-  expect((await read()).configLocked).toBe(true)
+  await vi.waitFor(() => expect(peers[0]!.readyState).toBe(WebSocket.CLOSED))
   await command({ command: 'RESUME' }).expect(409)
-  // 尚未确认的建议回执绝不能解除锁或伪造成功状态。
-  peers[0]!.send(JSON.stringify({ msg_type: 'sim_control_ack', action: 'stop', success: true, state: 'STOPPED' }))
-  await new Promise(resolve => setTimeout(resolve, 30))
-  expect((await read()).uiStatus).toBe('RUNNING')
-  complete({ code: 0, completedAt: '2026-11-09T01:01:00Z' })
+  expect((await confirmed('STOP')).status).toBe(409)
   await vi.waitFor(async () => expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { status: 'IDLE', processId: null } }))
-  expect(await read()).not.toHaveProperty('engineControl')
+  expect(await read()).toHaveProperty('engineControl.delivery', 'SENT')
+  expect(messages).toHaveLength(3)
+  expect(start).not.toHaveBeenCalled()
+  expect(stop).not.toHaveBeenCalled()
+})
+
+it('远端帧经场景映射推送页面并留存 JSONL/CSV；停止后可重新播放，不混入旧帧', async () => {
+  const { api, app, runId, peers, read, root, archive, confirmed, messages } = await setup()
+  const browser = new WebSocket(`ws://127.0.0.1:${app.httpServer.address().port}/ws/v1?role=OPERATOR`, { origin: headers.Origin })
+  cleanups.push(() => browser.terminate())
+  const received: any[] = []
+  browser.on('message', (raw: { toString(): string }) => received.push(JSON.parse(raw.toString())))
+  await once(browser, 'open')
+  browser.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['link.metric', 'runtime.state', 'simulation.frame'] }))
+  await vi.waitFor(() => expect(received.some(message => message.type === 'subscribed')).toBe(true))
+  const sent = { ...sample, frame_id: 5, sim_time_s: 5000 }
+  peers[0]!.send(JSON.stringify(sent))
+  await vi.waitFor(() => expect(received.some(message => message.topic === 'link.metric' && message.payload.frameId === 5)).toBe(true))
+  expect(received.some(message => message.topic === 'simulation.frame')).toBe(false)
+  expect(await read()).toMatchObject({ canonical: { currentTime: 5, processId: null } })
+  const frame = received.find(message => message.topic === 'link.metric').payload
+  expect(frame.simulationTime).toBe(5)
+  expect(frame.runId).toBe(runId)
+  expect(frame.jammers).toHaveLength(sample.jammer_params.length)
+  peers[0]!.send(JSON.stringify(sent))
+  expect((await confirmed('STOP')).status).toBe(200)
+  const persisted = await archive.load(runId)
+  expect(persisted?.frameCount).toBe(1)
+  const file = await archive.getFile(runId, persisted!.sourceSha256)
+  expect(JSON.parse((await readFile(file!, 'utf8')).trim())).toEqual(frame)
+  expect((await readdir(join(root, runId, 'csv'))).length).toBeGreaterThan(0)
+  expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
+  const next = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+  expect(next.body.data.runId).not.toBe(runId)
+  expect(next.body.data).not.toHaveProperty('engineControl')
+  await api.post(`/api/v1/simulations/${next.body.data.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+  await vi.waitFor(() => expect(peers).toHaveLength(2))
 })
 
 it('发送错误保留 UNKNOWN 和锁；不回退杀进程，不自动重发', async () => {
@@ -85,6 +141,39 @@ it('发送错误保留 UNKNOWN 和锁；不回退杀进程，不自动重发', a
   await command({ command: 'RESUME' }).expect(409)
   expect(messages).toHaveLength(0)
   expect(stop).not.toHaveBeenCalled()
+})
+
+it('停止保持权限和确认保护，归档失败不解锁，再点停止只重试保存且不重发', async () => {
+  const { api, runId, archive, confirmed, read, messages, command } = await setup()
+  await api.post(`/api/v1/simulations/${runId}/commands`).set({ ...headers, 'X-Demo-Role': 'OBSERVER' })
+    .send({ command: 'STOP', confirmationId: 'made-up' }).expect(403)
+  await command({ command: 'STOP', confirmationId: 'made-up' }).expect(409)
+  const finalize = vi.spyOn(archive, 'finalizeCsv').mockRejectedValueOnce(new Error('磁盘暂不可用'))
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true })
+  expect((await confirmed('STOP')).status).toBe(200)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
+  expect(finalize).toHaveBeenCalledTimes(2)
+  expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
+})
+
+it('断线时停止仍完成本地收尾，不声称发送成功', async () => {
+  const { engine, confirmed, read, messages } = await setup()
+  engine.stop()
+  expect((await confirmed('STOP')).status).toBe(200)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, engineControl: { connected: false, action: null, delivery: 'IDLE' } })
+  expect(messages).toEqual([])
+})
+
+it('停止发送失败后标记 UNKNOWN 并保存本地数据，不自动重发', async () => {
+  const { engine, confirmed, read, messages } = await setup()
+  vi.spyOn(WebSocket.prototype, 'send').mockImplementation(function (_data: unknown, callback: unknown) {
+    ;(callback as (error?: Error) => void)(new Error('write failed'))
+  })
+  expect((await confirmed('STOP')).status).toBe(200)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, engineControl: { connected: false, action: 'stop', delivery: 'UNKNOWN' } })
+  expect(engine.controlState((await read()).runId)).toBeUndefined()
+  expect(messages).toEqual([])
 })
 
 it('校验运行归属和动作；发送中不并发；超时和迟到 send 回调不冒充成功', async () => {

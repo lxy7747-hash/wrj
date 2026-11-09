@@ -13,9 +13,9 @@ import type {
 import { resolveMockOrigin, useAuthStore } from './auth'
 import { readApiFailure, readJson, unwrapSuccessData } from './api-envelope'
 import { readScenarioDraft, useScenarioStore } from './scenario'
-import { engineControlAction, engineControlMessage, isEngineControlState } from '../features/situation/engine-control'
+import { engineControlAction, engineControlMessage, isEngineControlState, stoppedReceptionMessage } from '../features/situation/engine-control'
 
-const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt', 'engineControl'])
+const RUN_KEYS = new Set(['runId', 'taskId', 'scenarioId', 'uiStatus', 'canonical', 'configLocked', 'startedAt', 'completedAt', 'engineControl', 'executionSource'])
 const CANONICAL_KEYS = new Set(['status', 'currentTime', 'totalDuration', 'processId', 'progress', 'errorMessage', 'mode', 'speedMultiplier'])
 const UI_STATUSES = new Set<UiSimulationStatus>(['IDLE', 'RUNNING', 'PAUSED', 'STOPPED', 'COMPLETED', 'ERROR'])
 const CANONICAL_STATUSES = new Set(['IDLE', 'RUNNING', 'PAUSED', 'COMPLETED', 'ERROR'])
@@ -81,6 +81,8 @@ export function isSimulationRun(value: unknown): value is SimulationRun {
     && typeof run.uiStatus === 'string' && UI_STATUSES.has(run.uiStatus)
     && typeof run.configLocked === 'boolean'
     && (!Object.hasOwn(run, 'engineControl') || isEngineControlState(run.engineControl))
+    && (!Object.hasOwn(run, 'executionSource') || run.executionSource === 'REMOTE_WS')
+    && (run.executionSource !== 'REMOTE_WS' || canonical.processId === null)
     && typeof canonical.status === 'string' && CANONICAL_STATUSES.has(canonical.status)
     && typeof canonical.currentTime === 'number' && Number.isFinite(canonical.currentTime) && canonical.currentTime >= 0
     && typeof canonical.totalDuration === 'number' && Number.isFinite(canonical.totalDuration) && canonical.totalDuration >= 0
@@ -413,21 +415,22 @@ export const useSimulationStore = defineStore('simulation', {
         this.capabilityState = 'SUCCESS'
         this.resultCode = 'SUCCESS'
         const messages: Record<SimulationCommand['command'], string> = {
-          START: '仿真已开始。',
+          START: run.executionSource === 'REMOTE_WS' ? '已开启远端数据接收，等待连接及数据；未发送启动仿真命令。' : '仿真已开始。',
           PAUSE: '仿真已暂停。',
           RESUME: '仿真已继续。',
           STEP: '仿真已单步推进。',
           STOP: '仿真已停止，场景配置已解锁。',
           SET_SPEED: '仿真倍速已更新。',
         }
-        this.resultMessage = run.engineControl && engineControlAction(command.command)
+        this.resultMessage = run.executionSource === 'REMOTE_WS' && command.command === 'STOP' && !run.configLocked
+          ? stoppedReceptionMessage(run.engineControl) : run.engineControl && engineControlAction(command.command)
           ? engineControlMessage(run.engineControl) : messages[command.command]
         return true
       } catch (error) {
         if (requestEpoch !== this.requestEpoch) return false
         this.configurationLockState = this.run?.configLocked ? 'LOCKED' : 'UNLOCKED'
         this.showError(error, '仿真命令执行失败。')
-        if (command.command === 'START' || (this.run?.engineControl && engineControlAction(command.command))) {
+        if (command.command === 'START' || (command.command === 'STOP' && this.run?.executionSource === 'REMOTE_WS') || (this.run?.engineControl && engineControlAction(command.command))) {
           // HTTP 超时不证明命令未发送；先读取服务端发送状态，禁止自动重试或修改真实运行状态。
           const originalCode = this.resultCode
           const originalMessage = this.resultMessage
@@ -456,7 +459,7 @@ export const useSimulationStore = defineStore('simulation', {
         this.showError(undefined, '其他场景已有运行，请先停止该运行。')
         return false
       }
-      if (this.run?.uiStatus === 'PAUSED' || this.run?.engineControl?.action === 'pause') return this.resume()
+      if (this.run?.uiStatus === 'PAUSED' || (this.run?.configLocked && this.run.engineControl?.action === 'pause')) return this.resume()
       if (this.run === null || ['STOPPED', 'COMPLETED', 'ERROR'].includes(this.run.uiStatus)) {
         if (this.selectedScene && !await this.selectScene(this.selectedScene.config.scenario.id)) return false
         if (!await this.create()) return false
@@ -522,7 +525,8 @@ export const useSimulationStore = defineStore('simulation', {
         this.resultCode = this.run === null ? 'EMPTY' : 'PERMISSION_DENIED'
         return false
       }
-      if (this.run.uiStatus !== 'RUNNING' && this.run.uiStatus !== 'PAUSED') {
+      if (this.run.executionSource === 'REMOTE_WS' ? !this.run.configLocked || !this.run.startedAt
+        : this.run.uiStatus !== 'RUNNING' && this.run.uiStatus !== 'PAUSED') {
         this.showError(undefined, '只有运行中或已暂停的仿真可以停止。')
         this.resultCode = 'INVALID_TRANSITION'
         return false

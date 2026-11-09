@@ -77,7 +77,8 @@ const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'qualit
 const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString())
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
-const missionExecution = lan?.webOnly
+const linkEngineWsUrl = lan?.linkEngineWsUrl ?? readLinkEngineWsUrl(process.env.LINK_ENGINE_WS_URL)
+const missionExecution = linkEngineWsUrl ? undefined : lan?.webOnly
   ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
   : new LocalMissionPool(missionExecutable, missionDirectory, missionResults, missionConcurrency, missionRunTimeoutMs)
 const server = createMockServer({
@@ -91,7 +92,8 @@ const server = createMockServer({
   missionExecution,
   createMissionLogStreamer: (...args) => new MissionLogStreamer(...args),
   createMissionPositionStreamer: (...args) => new MissionPositionStreamer(...args),
-  linkEngineWsUrl: lan?.linkEngineWsUrl ?? readLinkEngineWsUrl(process.env.LINK_ENGINE_WS_URL),
+  linkEngineWsUrl,
+  remoteEngineNow: () => new Date().toISOString(),
   createEngineSnapshotClient: (url, publish, diagnose) => new EngineSnapshotClient(url, publish, undefined, diagnose),
   writeScriptText: (script, revision, draft) => writeScriptText(lan ? join(lan.outputRoot, 'scripts') : fileURLToPath(new URL('../output/scripts/', import.meta.url)), script, revision, draft),
   loadInitialNodes: () => {

@@ -19,6 +19,32 @@ describe('仿真工具栏', () => {
     wrapper = undefined
   })
 
+  it('远端仅显示播放、暂停、停止，暂停后播放恢复，断线或保存失败仍可停止', async () => {
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, status: 'STOPPED', remoteEngine: true, receptionActive: false }, global: { plugins: [ElementPlus] } })
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
+    expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ status: 'RUNNING', receptionActive: true, engineControl: { connected: true, action: null, delivery: 'IDLE' } })
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ engineControl: { connected: true, action: 'stop', delivery: 'SENDING' } })
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeDefined()
+    await wrapper.setProps({ status: 'ERROR', engineControl: { connected: false, action: 'pause', delivery: 'UNKNOWN' } })
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeUndefined()
+    await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
+    expect(wrapper.emitted('stop')).toHaveLength(1)
+    await wrapper.setProps({ status: 'STOPPED', receptionActive: false, engineControl: { connected: false, action: 'stop', delivery: 'SENT' } })
+    expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.text()).toContain('数据已保存、配置已解锁')
+    expect(wrapper.text()).toContain('执行结果待确认')
+  })
+
   it('真实引擎连接开放暂停；发送后允许手动恢复，始终标记待确认且不开放倍速', async () => {
     wrapper = mount(SimulationToolbar, { props: { ...baseProps, realMission: true,
       engineControl: { connected: true, action: null, delivery: 'IDLE' } }, global: { plugins: [ElementPlus] } })

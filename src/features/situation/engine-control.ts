@@ -30,3 +30,10 @@ export function engineControlMessage(state: EngineControlState): string {
   if (state.delivery === 'UNKNOWN') return `${connection}${action}命令发送结果不确定，请核实引擎；不会自动重发，配置保持锁定。`
   return `${connection}${action}命令已发送，执行结果待确认；回执尚未接入，配置保持锁定。`
 }
+
+export function stoppedReceptionMessage(state?: EngineControlState): string {
+  const delivery = state?.action === 'stop'
+    ? state.delivery === 'SENT' ? '停止命令已发送，执行结果待确认' : '停止命令发送结果不确定'
+    : '停止命令未发送，连接不可用或前次命令结果不确定'
+  return `本地播放已停止，数据已保存、配置已解锁；${delivery}，发送方状态未确认。`
+}

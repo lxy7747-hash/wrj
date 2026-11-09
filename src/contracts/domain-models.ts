@@ -400,8 +400,10 @@ export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioI
 export interface SimulationRun {
   runId: RunId; taskId: TaskId; scenarioId: ScenarioId; uiStatus: UiSimulationStatus;
   canonical: SimulationState; configLocked: boolean; startedAt?: Iso8601Utc; completedAt?: Iso8601Utc;
-  /** 仅记录 sim_control 发送状态；SENT 不代表引擎已执行，不修改 canonical 或解除配置锁。 */
+  /** 仅记录 sim_control 发送状态；SENT 不代表发送方已执行；远端播放停止后按本地归档结果解除配置锁。 */
   engineControl?: EngineControlState;
+  /** 远端数据接收会话；运行状态描述本地接收生命周期，不代表发送方执行状态。 */
+  executionSource?: 'REMOTE_WS';
 }
 export type EngineControlAction = 'pause' | 'resume' | 'stop';
 export interface EngineControlState {

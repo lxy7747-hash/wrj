@@ -603,6 +603,39 @@ describe('P3-1 仿真 Store', () => {
     expect(scenario.draft.locked).toBe(false)
   })
 
+  it('远端停止使用 STOP 及二次确认，保存后解锁但不宣称发送方已停止', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    const remote = { ...run('RUNNING', true), executionSource: 'REMOTE_WS' as const }
+    remote.canonical.processId = null
+    simulation.applyRun(remote)
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(successResponse(confirmation('AWAITING_CONFIRMATION')))
+      .mockResolvedValueOnce(successResponse(confirmation('CONFIRMED')))
+      .mockResolvedValueOnce(successResponse({ ...run('STOPPED', false), executionSource: 'REMOTE_WS', engineControl: { connected: false, action: 'stop', delivery: 'SENT' } }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(simulation.stop()).resolves.toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls[2]![1].body)).toMatchObject({ command: 'STOP', confirmationId: expect.any(String) })
+    expect(simulation.configurationLockState).toBe('UNLOCKED')
+    expect(simulation.resultMessage).toContain('发送方状态未确认')
+    expect(simulation.resultMessage).toContain('数据已保存、配置已解锁')
+  })
+
+  it('停止后保留旧暂停发送结果，再点播放仍创建新接收而不是恢复旧会话', async () => {
+    authorizeOperator()
+    const simulation = useSimulationStore()
+    simulation.applyRun({ ...run('STOPPED', false), executionSource: 'REMOTE_WS', engineControl: { connected: false, action: 'pause', delivery: 'UNKNOWN' } })
+    const started = run('RUNNING', true)
+    started.canonical.processId = null
+    const fetchSpy = vi.fn()
+      .mockResolvedValueOnce(successResponse({ ...run('IDLE', true), runId: 'RUN-002', executionSource: 'REMOTE_WS' }))
+      .mockResolvedValueOnce(successResponse({ ...started, runId: 'RUN-002', executionSource: 'REMOTE_WS', engineControl: { connected: false, action: null, delivery: 'IDLE' } }))
+    vi.stubGlobal('fetch', fetchSpy)
+    await expect(simulation.start()).resolves.toBe(true)
+    expect(JSON.parse(fetchSpy.mock.calls[1]![1].body)).toMatchObject({ command: 'START' })
+    expect(simulation.run?.runId).toBe('RUN-002')
+  })
+
   it('拒绝无权限、空运行、无效创建响应和命令失败', async () => {
     const simulation = useSimulationStore()
     await expect(simulation.create()).resolves.toBe(false)

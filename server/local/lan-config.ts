@@ -23,12 +23,13 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
   const publicOrigin = validatePublicOrigin(required('WRJ_PUBLIC_ORIGIN'))
   if (env.WRJ_WEB_ONLY && env.WRJ_WEB_ONLY !== '1') throw new Error('WRJ_WEB_ONLY 只能设置为 1。')
   const webOnly = env.WRJ_WEB_ONLY === '1'
+  const linkEngineWsUrl = readLinkEngineWsUrl(env.LINK_ENGINE_WS_URL)
   const port = portNumber('WRJ_PORT', '8080')
   const tilePort = portNumber('WRJ_MAP_PORT', '4174')
   if (port === tilePort) throw new Error('Web 入口和地图服务不能使用相同端口。')
   const webRoot = path('WRJ_WEB_ROOT')
   const outputRoot = path('WRJ_OUTPUT_ROOT')
-  const executable = webOnly ? undefined : path('MISSION_EXECUTABLE_PATH')
+  const executable = webOnly || linkEngineWsUrl ? undefined : path('MISSION_EXECUTABLE_PATH')
   const database = path('SCENARIO_DB_PATH')
   for (const target of [outputRoot, database, executable].filter((value): value is string => value !== undefined)) {
     const within = relative(webRoot, target)
@@ -43,5 +44,5 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
   await access(dirname(database), constants.W_OK)
   await mkdir(outputRoot, { recursive: true })
   await access(outputRoot, constants.W_OK)
-  return { publicOrigin, port, tilePort, webRoot, outputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0', linkEngineWsUrl: readLinkEngineWsUrl(env.LINK_ENGINE_WS_URL) }
+  return { publicOrigin, port, tilePort, webRoot, outputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0', linkEngineWsUrl }
 }

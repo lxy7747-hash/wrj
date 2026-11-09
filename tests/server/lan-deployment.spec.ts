@@ -128,6 +128,12 @@ describe('内网发布入口', () => {
 
 describe('内网配置校验', () => {
   const env = () => ({ WRJ_PUBLIC_ORIGIN: origin, WRJ_WEB_ROOT: webRoot, WRJ_OUTPUT_ROOT: join(root, 'output'), SCENARIO_DB_PATH: join(root, 'scenarios.db'), MISSION_EXECUTABLE_PATH: join(root, 'mission.exe') })
+  it('远端数据接收无需 mission.exe，仍校验 URL 与私有数据目录', async () => {
+    const remote = { ...env(), MISSION_EXECUTABLE_PATH: '', LINK_ENGINE_WS_URL: 'ws://192.168.1.48:8080/ws/v1' }
+    expect(await readLanConfig(remote)).toMatchObject({ executable: undefined, linkEngineWsUrl: remote.LINK_ENGINE_WS_URL })
+    await expect(readLanConfig({ ...remote, LINK_ENGINE_WS_URL: 'http://192.168.1.48:8080/ws/v1' })).rejects.toThrow('WebSocket')
+    await expect(readLanConfig({ ...remote, SCENARIO_DB_PATH: join(webRoot, 'private.db') })).rejects.toThrow('公开目录')
+  })
   it('允许完整发布目录，拒绝端口冲突、缺少配置和公开目录中的私有数据', async () => {
     expect((await readLanConfig(env())).port).toBe(8080)
     await expect(readLanConfig({ ...env(), WRJ_MAP_PORT: '8080' })).rejects.toThrow('相同端口')

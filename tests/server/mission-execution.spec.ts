@@ -40,6 +40,8 @@ async function readDeliveredTypeFiles(directory: string): Promise<string> {
     let text = (await readFile(join(directory, name), 'utf8')).replace(/UAV_MESH_MEDIUM__\S+/gu, 'UAV_MESH_MEDIUM')
     if (name === 'comm_PerDefinition.txt') {
       text = text.slice(0, text.indexOf('// 本地运行包：'))
+      // /23 为本地 mesh 容量修正；保存给对接方的模板没有该地址行。
+      text = text.replace('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 10.0.0.0/23\n', 'network COM_MESH_NET WSF_COMM_NETWORK_MESH\n')
       for (const antenna of ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) {
         text = text.replace(new RegExp(`antenna_pattern ${antenna}[\\s\\S]*?end_antenna_pattern\\n\\n`, 'u'), '')
       }
@@ -829,7 +831,9 @@ describe('本机 mission 执行器', () => {
       const receipt = JSON.parse(await readFile(join(directory, 'execution.json'), 'utf8'))
       expect(receipt).toMatchObject({ code: 0, scenarioId: 'SCN-001', revision: saved.revision, pid: started.canonical.processId })
       expect(receipt.linkCalcCompatibility).toMatch(/^(PRESERVED|MISSING_PROCESSOR_STUBBED)$/)
-      // 本地包另外保留删除项定义、独立介质，以及缺少 link_calc 时的 local_link_stub。
+      expect(await readTypeFiles(directory)).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 10.0.0.0/23\n')
+      expect(savedPlatforms).not.toContain('network_address 10.0.0.0/23')
+      // 本地包保留独立介质与 mesh 容量修正，以及缺少 link_calc 时的 local_link_stub。
       expect(await readDeliveredTypeFiles(directory)).toBe(receipt.linkCalcCompatibility === 'PRESERVED'
         ? savedPlatforms
         : withoutLinkCalc(savedPlatforms))

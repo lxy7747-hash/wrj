@@ -15,6 +15,10 @@ const { MockProjection } = await import('../../server/state/' + 'projection.js')
 const { attachRealtimeServer } = await import('../../server/ws/' + 'realtime.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
+const { mkdtemp, rm } = await import('node:fs/' + 'promises')
+const { tmpdir } = await import('node:' + 'os')
+const { join } = await import('node:' + 'path')
+const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
 const cleanups: Array<() => Promise<unknown> | void> = []
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); vi.restoreAllMocks() })
 
@@ -238,11 +242,14 @@ it('可选配置只接受 ws/wss 地址，不含凭据与片段', () => {
   for (const value of ['broken','https://host/ws','ws://u:p@host/ws','ws://host/ws#secret']) expect(() => readLinkEngineWsUrl(value)).toThrow('LINK_ENGINE_WS_URL')
 })
 
-it.each(['completed', 'STOP', 'close'])('mission START 后才连接；%s 完成后断开上游，停止发送不提前关闭', async end => {
+it.each(['STOP', 'close'])('远端接收独立连接；%s 后正确收尾', async end => {
   const { server: upstreamServer, url } = await upstream()
+  const root = await mkdtemp(join(tmpdir(), 'wrj-remote-snapshot-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
   let finish!: (value: { code: number | null }) => void
   const completed = new Promise<{ code: number | null }>(resolve => { finish = resolve })
   const server = createMockServer({ port: 0, linkEngineWsUrl: url,
+    engineFrameArchive: createEngineFrameArchive(root, () => new Date().toISOString()),
     createEngineSnapshotClient: (url: string, publish: any, diagnose: any) => new EngineSnapshotClient(url, publish, undefined, diagnose), missionExecution: { start: async () => ({
     pid: 123, startedAt: '2026-11-07T01:00:00Z', entryPath: 'test/scenario.txt', engineManifest: manifest, completed,
     stop: async () => { finish({ code: 0 }) },
@@ -257,18 +264,15 @@ it.each(['completed', 'STOP', 'close'])('mission START 后才连接；%s 完成�
   await api.post(`/api/v1/simulations/${created.body.data.runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   const [socket] = await connected
   const closed = once(socket, 'close')
-  if (end === 'completed') finish({ code: 0 })
-  else if (end === 'STOP') {
+  if (end === 'STOP') {
     await vi.waitFor(async () => expect((await api.get(`/api/v1/simulations/${created.body.data.runId}`).set(headers)).body.data.engineControl.connected).toBe(true))
     const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: created.body.data.runId }).expect(201)).body.data
     await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     const message = once(socket, 'message')
-    await api.post(`/api/v1/simulations/${created.body.data.runId}/commands`).set(headers).send({ command: 'STOP', confirmationId: context.confirmationId }).expect(202)
+    await api.post(`/api/v1/simulations/${created.body.data.runId}/commands`).set(headers).send({ command: 'STOP', confirmationId: context.confirmationId }).expect(200)
     expect(JSON.parse((await message)[0].toString())).toEqual({ msg_type: 'sim_control', action: 'stop' })
-    expect(socket.readyState).toBe(WebSocket.OPEN)
-    finish({ code: 0 })
   }
-  else await server.close()
+  if (end === 'close') await server.close()
   await closed
   expect(upstreamServer.clients.size).toBe(0)
 })

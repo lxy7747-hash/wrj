@@ -521,6 +521,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/EventRecord/allOf/0/if/properties/type/const', 'DETECTION'],
   ['#/components/schemas/EventRecord/allOf/1/if/properties/type/const', 'LINK_SWITCH'],
   ['#/components/schemas/SimulationRun/properties/uiStatus/enum', ['IDLE','RUNNING','PAUSED','STOPPED','COMPLETED','ERROR']],
+  ['#/components/schemas/SimulationRun/properties/executionSource/enum', ['REMOTE_WS']],
   ['#/components/schemas/SimulationRun/properties/engineControl/properties/action/enum', [null,'pause','resume','stop']],
   ['#/components/schemas/SimulationRun/properties/engineControl/properties/delivery/enum', ['IDLE','SENDING','SENT','UNKNOWN']],
   ['#/components/schemas/SimulationRun/properties/engineControl/allOf/0/if/properties/delivery/const', 'IDLE'],

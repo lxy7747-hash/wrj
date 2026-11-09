@@ -48,7 +48,7 @@ import { type SimulationProjectionResult } from './simulations/projection.js'
 import { SimulationRegistry } from './simulations/registry.js'
 import type { MissionExecution, MissionOutcome, MissionProcess, MissionRuntimeControl } from './simulations/mission-execution.js'
 import { ScriptProjection } from './scripts/projection.js'
-import { MissionGenerationError } from './scripts/mission-generator.js'
+import { buildEngineFrameMapping, MissionGenerationError } from './scripts/mission-generator.js'
 import { MockProjection } from './state/projection.js'
 import { ConfirmationProjection, type ConfirmationClock } from './confirmations/projection.js'
 import { TemplateProjection, type TemplateStorage } from './templates/projection.js'
@@ -77,7 +77,7 @@ import { isMissionResultId, type MissionResultParameterComparison, type MissionR
 import type { MissionResults } from './local/mission-results.js'
 import type { RunQualityStore } from './local/run-quality.js'
 import type { EngineSnapshotClient } from './local/engine-snapshot-client.js'
-import { engineControlAction } from '../src/features/situation/engine-control.js'
+import { canSendEngineControl, engineControlAction } from '../src/features/situation/engine-control.js'
 import type { EngineFrameArchive, EngineFrameArchiveScope, EngineFrameArchiveSession } from './local/engine-frame-archive.js'
 import type { MissionLogStreamer } from './local/mission-log-stream.js'
 import type { MissionPositionStreamer } from './local/mission-position-stream.js'
@@ -124,6 +124,7 @@ export interface MockServerOptions {
   createMissionPositionStreamer?: (...args: ConstructorParameters<typeof MissionPositionStreamer>) => MissionPositionStreamer
   /** 可选的外部 C++ 帧来源；只由本服务连接，浏览器不直连。 */
   linkEngineWsUrl?: string
+  remoteEngineNow?: () => string
   /** 已接收引擎帧的本地可靠归档；未配置时 Mock 不触碰磁盘。 */
   engineFrameArchive?: EngineFrameArchive
   /** 本地入口注入外部连接能力，纯 Mock 的模块闭包不引入外连和重连计时器。 */
@@ -674,8 +675,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (!result.ok) throw new Error(result.message)
     },
   }) : undefined)
-  const simulations = new SimulationRegistry(scenarios, options.missionExecution?.maxParallelTasks ?? 1, options.createRunId)
-  const missionSafety = (taskId?: string) => options.missionExecution?.safetyStatus?.(taskId) ?? null
+  const remoteEngine = Boolean(options.linkEngineWsUrl)
+  const remoteEngineNow = options.remoteEngineNow ?? (() => P1_GENERATED_AT)
+  const simulations = new SimulationRegistry(scenarios, remoteEngine ? 1 : options.missionExecution?.maxParallelTasks ?? 1, options.createRunId, remoteEngine)
+  const missionSafety = (taskId?: string) => remoteEngine ? null : options.missionExecution?.safetyStatus?.(taskId) ?? null
   const unresolvedMission = missionSafety()
   if (unresolvedMission?.scenarioId) scenarios.setLocked(unresolvedMission.scenarioId, true)
   interface MissionSlot {
@@ -685,9 +688,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     positions?: { runId: string; read: NonNullable<MissionProcess['readPositions']> }
     /** 本次运行的控制台日志读取入口与超时设置；进程结束后仍保留，供排查查看。 */
     consoleLog?: { runId: string; read: NonNullable<MissionProcess['readConsoleLog']>; timeoutMs?: number }
-    starting?: Promise<MissionProcess>
+    starting?: Promise<unknown>
     stopping: boolean
     controlling?: boolean
+    connecting?: boolean
+    receiving?: boolean
     completedWhileStopping?: MissionOutcome
     engineArchive?: EngineFrameArchiveSession
     engineArchiveScope?: EngineFrameArchiveScope
@@ -710,6 +715,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     const scope: QualityScope = { taskId: result.data.taskId, runId, scenarioId: result.data.scenarioId,
       revision: draft.revision, startedAt: result.data.startedAt }
     return { scope, draft }
+  }
+  const beginEngineArchive = async (runId: string, slot: MissionSlot): Promise<void> => {
+    if (!options.engineFrameArchive) return
+    const context = qualityContext(runId)
+    if (!context) throw new Error('运行质量作用域未建立，拒绝接收无法归属的引擎帧。')
+    slot.engineArchive = await options.engineFrameArchive.begin(context.scope, Object.fromEntries(context.draft.config.links.map(link => [link.id, {
+      type: link.type, sourcePlatformId: link.sourcePlatformId, targetPlatformId: link.targetPlatformId,
+      relayPlatformId: link.relayPlatformId ?? null,
+    }])))
+    slot.engineArchiveScope = context.scope
   }
   const reportWithQuality = async (base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string): Promise<Report> => {
     let report = base
@@ -745,7 +760,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       revision: record.revision, startedAt: record.startedAt })) throw new Error('质量来源与运行结果版本不一致。')
     return attachQualityReport(report, dataset, filter, phases)
   }
-  const hasMissions = () => [...missions.values()].some(slot => slot.mission || slot.starting)
+  const hasMissions = () => [...missions.values()].some(slot => slot.mission || slot.starting || slot.connecting || slot.receiving)
   let closing = false
   const confirmations = new ConfirmationProjection(options.confirmationClock ?? (options.authStorage ? {
     now: () => options.authStorage!.time(),
@@ -791,8 +806,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         if (!slot?.engineArchive) return
         slot.engineArchive.append(frame)
         const failed = slot.engineArchive.failure()
-        if (failed) publishEngineDiagnostic({ runId, taskId: slot.taskId as TaskId }, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state: 'REJECTED', message: `引擎帧归档失败：${failed.message}` })
+        if (failed) {
+          engineSnapshots?.stop(runId)
+          realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, `引擎帧归档失败：${failed.message}`))
+          publishEngineDiagnostic({ runId, taskId: slot.taskId as TaskId }, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state: 'REJECTED', message: `引擎帧归档失败：${failed.message}` })
+          return
+        }
       }
+      if (remoteEngine && slot?.receiving) realtime.publishRuntimeState(simulations.updateRemoteTime(runId, frame.simulationTime))
       realtime.publishEngineFrame(runId, frame)
     }, publishEngineDiagnostic) : undefined
 
@@ -1430,9 +1451,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       res.status(409).json(failure('INVALID_TRANSITION', 409, { message: safety.message }))
       return
     }
-    if (slot.starting || slot.stopping || slot.controlling || closing) {
+    if (slot.starting || slot.connecting || slot.stopping || slot.controlling || closing) {
       auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: 'mission 正在启动或停止，请稍后重试。' }))
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '运行正在连接、启动或结束，请稍后重试。' }))
       return
     }
 
@@ -1443,8 +1464,52 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     const command = inspected.data
-    const wsAction = engineSnapshots?.sendControl && slot.mission ? engineControlAction(command.command) : undefined
-    if (!wsAction && options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
+    const wsAction = engineSnapshots?.sendControl && slot.receiving ? engineControlAction(command.command) : undefined
+    if (remoteEngine && command.command === 'START') {
+      if (command.mode !== 'INTERACTIVE_SINGLE') {
+        res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '远端数据连接仅支持当前所选场景。' }))
+        return
+      }
+      const run = simulations.get(runId)
+      const draft = run.ok ? scenarios.get(run.data.scenarioId) : run
+      if (sendSimulationFailure(res, draft, requestId) || !draft.ok) return
+      missions.set(runId, slot)
+      slot.connecting = true
+      let settleConnecting!: () => void
+      slot.starting = new Promise<void>(resolve => { settleConnecting = resolve })
+      try {
+        if (!engineSnapshots || !options.engineFrameArchive) throw new Error('远端 WebSocket 客户端或数据留存服务未配置。')
+        // 只生成场景名称与端口映射，不落地执行包，也不启动本机进程。
+        const manifest = buildEngineFrameMapping(draft.data.config)
+        slot.qualityDraft = structuredClone(draft.data)
+        const started = simulations.startRemote(runId, remoteEngineNow())
+        await beginEngineArchive(runId, slot)
+        if (closing) throw new Error('服务正在关闭，未建立远端连接。')
+        slot.receiving = true
+        if (!engineSnapshots.start(started, manifest)) throw new Error('远端连接绑定失败，请检查场景映射及运行归属。')
+        syncEngineControl(runId)
+        const current = simulations.get(runId)
+        auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(200).json(success(current.ok ? current.data : started, pageMeta(requestId)))
+      } catch (error) {
+        engineSnapshots?.stop(runId)
+        slot.receiving = false
+        let message = error instanceof Error ? error.message : '远端数据接收初始化失败。'
+        try {
+          await closeEngineArchive(runId, slot)
+          slot.engineArchive = undefined; slot.engineArchiveScope = undefined
+          simulations.finishRemote(runId, remoteEngineNow())
+        } catch (archiveError) {
+          slot.receiving = true
+          message += `；归档未结清：${archiveError instanceof Error ? archiveError.message : String(archiveError)}`
+        }
+        realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(error instanceof MissionGenerationError ? 422 : 503).json(failure(error instanceof MissionGenerationError ? 'VALIDATION_FAILED' : 'START_FAILED', error instanceof MissionGenerationError ? 422 : 503, { message }))
+      } finally { slot.connecting = false; settleConnecting(); slot.starting = undefined }
+      return
+    }
+    if (!remoteEngine && !wsAction && options.missionExecution && command.command !== 'START' && command.command !== 'STOP') {
       if (!slot.mission?.control) {
         auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '本机 mission 尚未接入暂停、继续、单步和倍速控制，未执行此命令。' }))
@@ -1475,8 +1540,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       try {
         missions.set(runId, slot)
         slot.qualityDraft = structuredClone(draft.data)
-        slot.starting = options.missionExecution.start(draft.data, runId, run.ok ? run.data.taskId : undefined)
-        const process = await slot.starting
+        const starting = options.missionExecution.start(draft.data, runId, run.ok ? run.data.taskId : undefined)
+        slot.starting = starting
+        const process = await starting
         slot.positions = process.readPositions ? { runId, read: process.readPositions.bind(process) } : undefined
         slot.consoleLog = process.readConsoleLog ? { runId, read: process.readConsoleLog.bind(process), timeoutMs: process.timeoutMs } : undefined
         slot.mission = process
@@ -1493,15 +1559,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           const streamer = slot.logStreamer = options.createMissionLogStreamer(process.readConsoleLog.bind(process), update => realtime.publishMissionLog(started, update), started.runId)
           try { await streamer.start() } catch { streamer.stop(); slot.logStreamer = undefined }
         }
-        if (options.engineFrameArchive) {
-          const context = qualityContext(runId)
-          if (!context) throw new Error('运行质量作用域未建立，拒绝接收无法归属的引擎帧。')
-          slot.engineArchive = await options.engineFrameArchive.begin(context.scope, Object.fromEntries(context.draft.config.links.map(link => [link.id, {
-            type: link.type, sourcePlatformId: link.sourcePlatformId, targetPlatformId: link.targetPlatformId,
-            relayPlatformId: link.relayPlatformId ?? null,
-          }])))
-          slot.engineArchiveScope = context.scope
-        }
+        await beginEngineArchive(runId, slot)
         void process.dataFailure?.then(message => {
           if (slot.mission !== process || closing) return
           realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
@@ -1530,8 +1588,6 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         realtime.publishRuntimeState(started)
         slot.positionStreamer?.start()
-        if (!closing) engineSnapshots?.start(started, process.engineManifest)
-        syncEngineControl(runId)
         const current = simulations.get(runId)
         res.status(200).json(success(current.ok ? current.data : started, pageMeta(requestId)))
       } catch (error) {
@@ -1575,6 +1631,33 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         return
       }
       stopConfirmed = true
+    }
+
+    if (remoteEngine && command.command === 'STOP') {
+      slot.stopping = true
+      try {
+        const control = engineSnapshots?.controlState?.(runId)
+        // 停止一并收尾本地接收；归档重试不重复发送已发送或结果不确定的命令。
+        if (control && engineSnapshots?.sendControl && canSendEngineControl(control, 'stop')) {
+          const sending = engineSnapshots.sendControl(runId, 'stop')
+          syncEngineControl(runId)
+          await sending.catch(() => undefined)
+          syncEngineControl(runId)
+        }
+        engineSnapshots?.stop(runId)
+        await closeEngineArchive(runId, slot)
+        slot.engineArchive = undefined; slot.engineArchiveScope = undefined; slot.receiving = false
+        const finished = simulations.finishRemote(runId, remoteEngineNow())
+        realtime.publishRuntimeState(finished)
+        auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(200).json(success(finished, pageMeta(requestId)))
+      } catch (error) {
+        const message = `停止时数据保存失败，配置保持锁定，可再次点击停止重试保存：${error instanceof Error ? error.message : String(error)}`
+        realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
+        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
+        res.status(503).json(failure('START_FAILED', 503, { message }))
+      } finally { slot.stopping = false }
+      return
     }
 
     if (wsAction && engineSnapshots?.sendControl) {

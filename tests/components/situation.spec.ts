@@ -749,12 +749,18 @@ describe('态势主界面', () => {
     expect(fetcher.mock.calls.some(([url]) => /initial-nodes|positions|frames|events/.test(url))).toBe(false)
   })
 
-  it('本机引擎控制状态传入工具栏，暂停后点击恢复发送 RESUME，停止确认不承诺立即解锁', async () => {
+  it('远端播放连接，暂停后点播放恢复，停止合并保存且无额外按钮', async () => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
-    const running: SimulationRun = { ...simulationRun('RUNNING', true), engineControl: { connected: true, action: null, delivery: 'IDLE' } }
-    vi.stubGlobal('fetch', vi.fn(async (url: string) => url.endsWith('/simulations') ? successResponse([running]) : successResponse(scene)))
+    const running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', startedAt: '2026-11-09T01:00:00Z', engineControl: { connected: true, action: null, delivery: 'IDLE' } }
+    running.canonical.processId = null
+    const fetcher = vi.fn(async (url: string) => url.endsWith('/simulations') ? successResponse([running]) : successResponse(scene))
+    vi.stubGlobal('fetch', fetcher)
+    const connect = vi.fn(function () { return new SilentWebSocket() })
+    Object.assign(connect, { OPEN: SilentWebSocket.OPEN, CONNECTING: SilentWebSocket.CONNECTING })
+    vi.stubGlobal('WebSocket', connect)
     const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    expect(connect).toHaveBeenCalledOnce()
     const store = useSimulationStore()
     const pause = vi.spyOn(store, 'pause').mockImplementation(async () => {
       store.applyRun({ ...running, engineControl: { connected: true, action: 'pause', delivery: 'SENT' } })
@@ -764,12 +770,16 @@ describe('态势主界面', () => {
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     await flushPromises()
     expect(pause).toHaveBeenCalledOnce()
-    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('恢复')
+    expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     expect(resume).toHaveBeenCalledOnce()
     await wrapper.get('[data-testid="simulation-stop"]').trigger('click')
     await flushPromises()
-    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('发送后保持连接、归档和配置锁')
+    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('停止本地播放并保存已接收的数据')
+    expect(fetcher.mock.calls.some(([url]) => /positions|console|\/quality$/.test(url))).toBe(false)
+    expect(connect).toHaveBeenCalledOnce()
+    expect(wrapper.find('[data-testid="simulation-disconnect"]').exists()).toBe(false)
+    expect(document.querySelector('.stop-dialog-copy')?.textContent).toContain('发送方是否实际停止仍待回执确认')
   })
 
   it('本机 SQLite 场景将真实 mission 模式传给工具栏', async () => {

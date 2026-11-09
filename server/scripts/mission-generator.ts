@@ -976,6 +976,21 @@ function observers(path: string): string {
   ].join('\n')
 }
 
+/** 远端接收只需要模板实例名和端口映射，不依赖脚本生成、输出路径或本机引擎校验。 */
+export function buildEngineFrameMapping(config: ScenarioDraft['config']) {
+  const names = engineNames(config.platforms)
+  const mapped = devices(config)
+  return {
+    platformNaming: 'TEMPLATE_INSTANCE',
+    platforms: config.platforms.map(item => ({ platformId: item.id, name: names.get(item.id)!, generatedType: platformType(item) })),
+    devices: mapped.items.map(item => ({ ...item,
+      source: { ...item.source, platformId: names.get(item.source.platformId)! },
+      target: { ...item.target, platformId: names.get(item.target.platformId)! },
+      relayPlatformId: item.relayPlatformId === null ? null : names.get(item.relayPlatformId)!,
+    })),
+  }
+}
+
 export function buildMissionPackage(draft: ScenarioDraft, output = configuredScenarioOutput(draft.config.scenario.timeStep), runtime?: LocalRuntimeOptions) {
   const inputConfig = { ...draft.config, output }
   inputConfig.platforms.forEach((platform, index) => {

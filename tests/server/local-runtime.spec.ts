@@ -5,13 +5,20 @@ import { createTemplateScenario } from '../fixtures/template-scenario'
 const { mkdtemp, readFile, rm } = await import('node:' + 'fs/promises')
 const { tmpdir } = await import('node:' + 'os')
 const { dirname, join } = await import('node:' + 'path')
-const { buildMissionPackage } = await import('../../server/scripts/' + 'mission-generator.js')
+const { buildMissionPackage, buildEngineFrameMapping } = await import('../../server/scripts/' + 'mission-generator.js')
 const { writeMissionPackage, writeScriptText } = await import('../../server/local/' + 'script-file.js')
 
 const RADIO_FILES = ['comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt'] as const
 const addedMedia = (files: Record<string, string>) => RADIO_FILES.flatMap(name => [...files[name]!.matchAll(/^ {4}add medium (\S+)$/gmu)].map(match => match[1]!))
 
 describe('本地运行包兼容（P4）', () => {
+  it('独立远端映射与交付模板的实例名、端口一致，不修改场景', () => {
+    const draft = createTemplateScenario(), before = structuredClone(draft)
+    const mapping = buildEngineFrameMapping(draft.config)
+    const { manifest } = buildMissionPackage(draft)
+    expect(mapping).toEqual({ platformNaming: manifest.platformNaming, platforms: manifest.platforms, devices: manifest.devices })
+    expect(draft).toEqual(before)
+  })
   it('对接方 TXT 保持模板：共享 UAV_MESH_MEDIUM、保留 link_calc、不含补丁', () => {
     const { files } = buildMissionPackage(createTemplateScenario())
     expect(new Set(addedMedia(files))).toEqual(new Set(['UAV_MESH_MEDIUM']))

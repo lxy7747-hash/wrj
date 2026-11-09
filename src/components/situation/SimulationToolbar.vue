@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { CapabilityState, EngineControlAction, EngineControlState, UiSimulationStatus } from '../../contracts/domain-models'
-import { canSendEngineControl, engineControlMessage } from '../../features/situation/engine-control'
+import { canSendEngineControl, engineControlMessage, stoppedReceptionMessage } from '../../features/situation/engine-control'
 
 const props = defineProps<{
   status: UiSimulationStatus
@@ -15,12 +15,14 @@ const props = defineProps<{
   filePlayback?: boolean
   /** 未配置引擎 WebSocket 时真实 mission 保持本机开始/停止能力。 */
   realMission?: boolean
+  remoteEngine?: boolean
+  receptionActive?: boolean
   engineControl?: EngineControlState
   /** 未确认运行模式时不能假定具备 Mock 的控制能力。 */
   runtimeUnknown?: boolean
 }>()
 
-const wsControl = computed(() => props.realMission && !props.filePlayback ? props.engineControl : undefined)
+const wsControl = computed(() => (props.realMission || props.remoteEngine) && !props.filePlayback && (!props.remoteEngine || props.receptionActive) ? props.engineControl : undefined)
 const canControl = (action: EngineControlAction) => Boolean(wsControl.value
   && ['RUNNING', 'PAUSED'].includes(props.status) && canSendEngineControl(wsControl.value, action))
 
@@ -46,18 +48,18 @@ defineEmits<{
         size="small"
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
-        :disabled="readOnly || pending || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED'))"
+        :disabled="readOnly || pending || (remoteEngine && receptionActive && !wsControl) || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED'))"
         :title="wsControl ? '发送恢复命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
-        {{ wsControl?.action === 'pause' ? '恢复' : status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
+        {{ remoteEngine ? '播放' : wsControl?.action === 'pause' ? '恢复' : status === 'PAUSED' ? '继续' : filePlayback ? '播放' : '开始' }}
       </el-button>
       <el-button
         type="warning"
         size="small"
         data-testid="simulation-pause"
-        :disabled="readOnly || pending || runtimeUnknown || (wsControl ? !canControl('pause') : realMission || status !== 'RUNNING')"
+        :disabled="readOnly || pending || runtimeUnknown || (wsControl ? !canControl('pause') : realMission || remoteEngine || status !== 'RUNNING')"
         :title="wsControl ? '发送暂停命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
@@ -66,7 +68,7 @@ defineEmits<{
         plain
         size="small"
         data-testid="simulation-stop"
-        :disabled="readOnly || pending || (status !== 'RUNNING' && status !== 'PAUSED') || (wsControl && !canControl('stop'))"
+        :disabled="readOnly || pending || (remoteEngine ? !receptionActive || engineControl?.delivery === 'SENDING' : (status !== 'RUNNING' && status !== 'PAUSED') || (wsControl && !canControl('stop')))"
         @click="$emit('stop')"
       ><span aria-hidden="true">■</span> 停止</el-button>
 
@@ -74,7 +76,7 @@ defineEmits<{
         <select
           :value="speed"
           aria-label="仿真倍速"
-          :disabled="readOnly || pending || realMission || runtimeUnknown || (filePlayback && status === 'STOPPED')"
+          :disabled="readOnly || pending || realMission || remoteEngine || runtimeUnknown || (filePlayback && status === 'STOPPED')"
           :title="runtimeUnknown ? '运行模式尚未确认，暂不开放倍速控制。' : realMission ? '真实 mission 未接入倍速控制。' : undefined"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
@@ -93,6 +95,9 @@ defineEmits<{
     <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
       <small :title="engineControlMessage(wsControl)">{{ engineControlMessage(wsControl) }}</small>
       <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
+    </div>
+    <div v-else-if="remoteEngine && status === 'STOPPED' && engineControl" class="simulation-toolbar__runtime" role="status">
+      <small :title="stoppedReceptionMessage(engineControl)">{{ stoppedReceptionMessage(engineControl) }}</small>
     </div>
     <div v-else-if="readOnly || filePlayback" class="simulation-toolbar__runtime" aria-live="polite">
       <small>{{ feedback }}</small>

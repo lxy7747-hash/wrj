@@ -150,7 +150,7 @@ function createIdleRun(request: SimulationCreateRequest, totalDuration: number, 
 /** 固定证据仅属于默认演示场景，不能作为其他场景的运行结果。 */
 export function ownsFixedEvidence(run: SimulationRun | undefined): boolean {
   const fixture = loadFixtureProjection()
-  return run?.taskId === fixture.task.taskId && run.scenarioId === fixture.scenario.scenario.id
+  return !run?.executionSource && run?.taskId === fixture.task.taskId && run.scenarioId === fixture.scenario.scenario.id
 }
 
 /** 固定演示帧只替换运行身份；测量与业务证据仍来自同一冻结夹具。 */
@@ -169,7 +169,41 @@ export class SimulationProjection {
   private readonly processedClosedLoops = new Set<string>()
   private readonly jammerParameterVersions = new Map<string, number>()
 
-  constructor(private readonly scenarios: ScenarioProjection, private readonly taskId = loadFixtureProjection().task.taskId) {}
+  constructor(private readonly scenarios: ScenarioProjection, private readonly taskId = loadFixtureProjection().task.taskId,
+    private readonly remote = false) {
+    if (remote) {
+      this.run = createIdleRun({ taskId, scenarioId: this.run.scenarioId }, this.run.canonical.totalDuration, this.run.runId)
+      this.run.executionSource = 'REMOTE_WS'
+      this.run.uiStatus = 'STOPPED'
+      this.run.configLocked = false
+    }
+  }
+
+  startRemote(startedAt: string): SimulationRun {
+    this.run.uiStatus = 'RUNNING'
+    this.run.canonical.status = 'RUNNING'
+    this.run.canonical.processId = null
+    this.run.startedAt = startedAt
+    this.run.engineControl = { connected: false, action: null, delivery: 'IDLE' }
+    return structuredClone(this.run)
+  }
+
+  updateRemoteTime(time: number): SimulationRun {
+    this.run.canonical.currentTime = time
+    this.run.canonical.progress = Math.min(100, this.run.canonical.totalDuration > 0 ? time / this.run.canonical.totalDuration * 100 : 0)
+    return structuredClone(this.run)
+  }
+
+  finishRemote(completedAt: string): SimulationRun {
+    this.run.uiStatus = 'STOPPED'
+    this.run.canonical.status = 'IDLE'
+    this.run.completedAt = completedAt
+    if (this.run.engineControl) this.run.engineControl.connected = false
+    delete this.run.canonical.errorMessage
+    this.scenarios.setLocked(this.run.scenarioId, false)
+    this.run.configLocked = false
+    return structuredClone(this.run)
+  }
 
   startMission(pid: number, startedAt: string): SimulationRun {
     this.run.uiStatus = 'RUNNING'
@@ -280,6 +314,7 @@ export class SimulationProjection {
     const runId: SimulationRun['runId'] = assignedRunId ?? `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
     this.nextRunSequence += 1
     this.run = createIdleRun(request, locked.data.config.scenario.duration, runId)
+    if (this.remote) this.run.executionSource = 'REMOTE_WS'
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
     return { ok: true, data: structuredClone(this.run) }
@@ -302,6 +337,14 @@ export class SimulationProjection {
     }
 
     const action = engineControlAction(command.command)
+    if (this.remote && command.command === 'STOP') {
+      return this.run.configLocked && Boolean(this.run.startedAt) && this.run.engineControl?.delivery !== 'SENDING'
+        ? { ok: true, data: command }
+        : { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '当前没有可结束的远端接收会话。' }
+    }
+    if (this.remote && (command.command === 'STEP' || command.command === 'SET_SPEED')) {
+      return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '远端数据服务未提供单步或倍速协议。' }
+    }
     if (this.run.engineControl && action) {
       return ACTIVE_STATUSES.has(this.run.uiStatus) && canSendEngineControl(this.run.engineControl, action)
         ? { ok: true, data: command }
@@ -334,6 +377,7 @@ export class SimulationProjection {
     const inspected = this.inspectCommand(runId, value)
     if (!inspected.ok) return inspected
     const command = inspected.data
+    if (this.remote) return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: '远端接收会话必须经过实际连接及归档通道。' }
     if (this.run.engineControl && engineControlAction(command.command)) {
       return { ok: false, code: 'INVALID_TRANSITION', status: 409, message: 'WebSocket 控制必须经过发送通道，不能直接修改运行状态。' }
     }
