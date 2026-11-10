@@ -317,7 +317,7 @@ const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK
 const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value && !fileSourceMismatch.value)))
 const mapNodes = computed(() => selectedScene.value
   ? selectedScene.value.config.platforms.map(platform => ({
-    platformId: platform.id, name: platform.name, type: platform.type, ...platform.initialPosition, speed: 0,
+    platformId: platform.id, name: platform.name, type: platform.type, satelliteType: platform.satelliteType, ...platform.initialPosition, speed: 0,
     ...missionPositions.value?.positions?.nodes.find(node => node.platformId === platform.id),
   }))
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])

@@ -112,6 +112,17 @@ export const MAP_CONFIG = {
     Command_Vehicle_PLATFORM: 'REAR_COMMAND_NODE',
     Drone_MISSION_AIRCRAFT: 'AIRBORNE_MISSION_CLUSTER',
   } as Readonly<Record<string, string>>,
+  /** 用户提供的透明俯视图；静态 URL 由 Vite 打包，离线部署无需访问 Material 源目录。 */
+  nodeTypeImages: {
+    REAR_COMMAND_NODE: new URL('../../Material/top_view_transparent_7_png/rear.png', import.meta.url).href,
+    GROUND_CLUSTER_COMMAND_NODE: new URL('../../Material/top_view_transparent_7_png/comand_vehical1.png', import.meta.url).href,
+    FORWARD_RELAY_NODE: new URL('../../Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
+    AIRBORNE_MISSION_CLUSTER: new URL('../../Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
+    GROUND_JAMMER_DETECTION_STATION: new URL('../../Material/top_view_transparent_7_png/jammer_station.png', import.meta.url).href,
+    AIRBORNE_JAMMER_PLATFORM: new URL('../../Material/top_view_transparent_7_png/jammer_airbround.png', import.meta.url).href,
+    TIANTONG: new URL('../../Material/top_view_transparent_7_png/tiantong_sat.png', import.meta.url).href,
+    SHENTONG: new URL('../../Material/top_view_transparent_7_png/shentong_sat.png', import.meta.url).href,
+  } as Readonly<Record<string, string>>,
   nodeFallbackGlyph: '○',
 } as const
 
@@ -134,6 +145,19 @@ export function nodeCategory(platform: { type?: string; platformId?: string; id?
 export function nodeGlyph(platform: { type?: string; platformId?: string; id?: string; name?: string }): string {
   const category = nodeCategory(platform)
   return (category && MAP_CONFIG.nodeTypeGlyphs[category]) || MAP_CONFIG.nodeFallbackGlyph
+}
+
+/** 只按已知类型、卫星子类型或既有卫星 ID 选图；不根据显示名称猜测设备。 */
+export function nodeIconUrl(platform: { type?: string; platformId?: string; id?: string; name?: string; satelliteType?: string }): string | undefined {
+  const category = nodeCategory(platform)
+  if (category !== 'COMMUNICATION_SATELLITE') return category ? MAP_CONFIG.nodeTypeImages[category] : undefined
+  if (platform.type === 'TIAN_TONG_SAT') return MAP_CONFIG.nodeTypeImages.TIANTONG
+  if (platform.type === 'SHEN_TONG_SAT') return MAP_CONFIG.nodeTypeImages.SHENTONG
+  if (platform.satelliteType === 'TIANTONG' || platform.satelliteType === 'SHENTONG') return MAP_CONFIG.nodeTypeImages[platform.satelliteType]
+  const id = platform.platformId ?? platform.id
+  if (id === 'tiantong_sat') return MAP_CONFIG.nodeTypeImages.TIANTONG
+  if (id === 'shentong_sat') return MAP_CONFIG.nodeTypeImages.SHENTONG
+  return undefined
 }
 
 /**

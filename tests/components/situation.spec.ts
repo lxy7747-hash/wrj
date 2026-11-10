@@ -5,7 +5,7 @@ import { createPinia, setActivePinia } from 'pinia'
 import { h, reactive, toRaw } from 'vue'
 import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, resolvePlatformCoordinates } from '../../src/config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../src/config/map.config'
 import type { ConfirmationContext, Link, Principal, SimulationRun, ScenarioDraft } from '../../src/contracts/domain-models'
 import type { PositionUpdate } from '../../src/features/situation/position-updates'
 import type { SituationLinkView } from '../../src/features/situation/situation-model'
@@ -546,6 +546,12 @@ describe('态势主界面', () => {
     const { wrapper, scene, fetcher } = await mountLiveMission(async scene => successResponse(livePositions(scene, time)))
     const platform = scene.config.platforms[0]!
     const initialPosition = { ...platform.initialPosition }
+    const satellite = useSimulationStore().selectedScene!.config.platforms.find(node => node.type === 'COMMUNICATION_SATELLITE')!
+    satellite.satelliteType = 'SHENTONG'
+    await flushPromises()
+    const mapSatellite = mapControllerMock.latestOptions!.initialNodes!.find(node => node.platformId === satellite.id)!
+    expect(mapSatellite.satelliteType).toBe('SHENTONG')
+    expect(nodeIconUrl(mapSatellite)).toBe(MAP_CONFIG.nodeTypeImages.SHENTONG)
     expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(platform.initialPosition)
     await wrapper.get('.scene-summary__tabs button:last-child').trigger('click')
     expect(wrapper.text()).toContain('等待本次仿真写入位置数据')
@@ -1888,7 +1894,9 @@ describe('态势主界面', () => {
     })
     mountedWrapper = wrapper
     const items = wrapper.get('[data-testid="node-type-legend"]').findAll(':scope > div').map(item => item.text())
-    expect(items).toEqual(['■后方指挥节点', '▼地面无人集群指挥车', '▲通信卫星', '●空中无人作业集群', '★地面干扰设备', '☆机载干扰设备', '○其他节点'])
+    expect(items).toEqual(['后方指挥节点', '地面无人集群指挥车', '天通卫星', '神通卫星', '空中无人作业集群', '地面干扰设备', '机载干扰设备', '○其他节点'])
+    expect(wrapper.get('[data-testid="node-type-legend"]').findAll('img').map(image => image.attributes('src')))
+      .toEqual(nodes.slice(0, 7).map(node => nodeIconUrl(node)))
   })
 
   it.each(['jammer_station_01', 'jammer_airborne_01', 'UNKNOWN'])('文件节点 %s 的指定探测范围独立于干扰事件，详情显示 50 公里且可单独开关', async (id) => {
@@ -3252,21 +3260,72 @@ describe('Leaflet 控制器回归', () => {
     await createController({ initialNodes: nodes })
     expect(markers.mock.calls.filter(([, options]) => options?.title?.startsWith('选择节点')).map(([point]) => point))
       .toEqual(nodes.map(node => [node.latitude, node.longitude]))
-    expect([...container!.querySelectorAll('.situation-map-node__glyph')].map(glyph => glyph.textContent)).toEqual(['■', '■'])
+    expect([...container!.querySelectorAll<HTMLImageElement>('.situation-map-node__image')].map(image => image.src)).toEqual([nodeIconUrl(nodes[0]!), nodeIconUrl(nodes[1]!)])
     expect(container!.textContent).not.toContain('轨道示意')
     expect(JSON.stringify(nodes)).toBe(original)
   })
 
-  it('节点按类型显示差异化图标，未登记的文件类型回退为空心圆', async () => {
-    const types = ['REAR_COMMAND_NODE', 'FORWARD_RELAY_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'AIRBORNE_MISSION_CLUSTER',
-      'COMMUNICATION_SATELLITE', 'GROUND_JAMMER_DETECTION_STATION', 'AIRBORNE_JAMMER_PLATFORM', 'UNKNOWN_FILE_TYPE']
-    const nodes = types.map((type, index) => ({ ...INITIAL_NODES.nodes[1]!, platformId: `N-${index}`, name: `节点${index}`, type }))
+  it('七张俯视图按节点类型渲染，中继复用无人机图，未知类型与旧卫星保留通用符号', async () => {
+    const definitions = [
+      { type: 'REAR_COMMAND_NODE', file: 'rear.png' },
+      { type: 'FORWARD_RELAY_NODE', file: 'UAV.png' },
+      { type: 'GROUND_CLUSTER_COMMAND_NODE', file: 'comand_vehical1.png' },
+      { type: 'AIRBORNE_MISSION_CLUSTER', file: 'UAV.png' },
+      { type: 'COMMUNICATION_SATELLITE', satelliteType: 'TIANTONG' as const, file: 'tiantong_sat.png' },
+      { type: 'COMMUNICATION_SATELLITE', satelliteType: 'SHENTONG' as const, file: 'shentong_sat.png' },
+      { type: 'GROUND_JAMMER_DETECTION_STATION', file: 'jammer_station.png' },
+      { type: 'AIRBORNE_JAMMER_PLATFORM', file: 'jammer_airbround.png' },
+      { type: 'UNKNOWN_FILE_TYPE', glyph: '○' },
+      { type: 'COMMUNICATION_SATELLITE', glyph: '▲' },
+    ]
+    const nodes = definitions.map((item, index) => ({ ...INITIAL_NODES.nodes[1]!, platformId: 'N-' + index, name: '节点' + index, type: item.type, satelliteType: item.satelliteType }))
     await createController({ initialNodes: nodes })
     const glyphs = [...container!.querySelectorAll<HTMLElement>('.situation-map-node__glyph')]
-    const byType = new Map(glyphs.map(glyph => [glyph.dataset.nodeType, glyph.textContent]))
-    expect(new Set(types.slice(0, 7).map(type => byType.get(type))).size).toBe(7)
-    expect(byType.get('COMMUNICATION_SATELLITE')).toBe('▲')
-    expect(byType.get('UNKNOWN_FILE_TYPE')).toBe(MAP_CONFIG.nodeFallbackGlyph)
+    definitions.forEach((item, index) => {
+      const image = glyphs[index]!.querySelector<HTMLImageElement>('img')
+      if (item.file) {
+        expect(image?.src).toBe(nodeIconUrl(nodes[index]!))
+        expect(image?.src.endsWith('/' + item.file)).toBe(true)
+        expect(image?.alt).toBe('')
+        expect(glyphs[index]!.getAttribute('aria-hidden')).toBe('true')
+      } else {
+        expect(image).toBeNull()
+        expect(glyphs[index]!.textContent).toBe(item.glyph)
+      }
+    })
+    glyphs[0]!.querySelector('img')!.dispatchEvent(new Event('error'))
+    expect(glyphs[0]!.textContent).toBe('■')
+  })
+
+  it('卫星按明确子类型选图，不受自定义编号和名称误导，换子类型更新图而移动复用图', async () => {
+    const node: SituationMapNode = { ...INITIAL_NODES.nodes[0]!, platformId: 'SUP-001', name: '自定义卫星', type: 'COMMUNICATION_SATELLITE', satelliteType: 'TIANTONG' }
+    const original = JSON.stringify(node)
+    const onSelectNode = vi.fn()
+    const markers = vi.spyOn(L, 'marker')
+    const controller = await createController({ initialNodes: [node], onSelectNode, useSatelliteDataPosition: true })
+    controller.setSelectedNodeId(node.platformId)
+    const firstImage = container!.querySelector<HTMLImageElement>('.situation-map-node__image')!
+    expect(firstImage.src).toBe(MAP_CONFIG.nodeTypeImages.TIANTONG)
+    const marker = markers.mock.results.map(result => result.value as L.Marker).find(value => value.options.title?.startsWith('选择节点'))!
+    expect(marker.options.icon?.options.iconAnchor).toEqual([80, 24])
+    expect(marker.options.icon?.options.iconSize).toEqual([160, 88])
+    controller.setNodes([{ ...node, longitude: node.longitude + 0.1 }])
+    expect(container!.querySelector('.situation-map-node__image')).toBe(firstImage)
+    expect(marker.getLatLng().lng).toBe(node.longitude + 0.1)
+    controller.setNodes([{ ...node, satelliteType: 'SHENTONG' }])
+    expect(container!.querySelector<HTMLImageElement>('.situation-map-node__image')!.src).toBe(MAP_CONFIG.nodeTypeImages.SHENTONG)
+    controller.setSelectedNodeId(node.platformId)
+    const selected = container!.querySelector<HTMLElement>('.situation-map-node-marker--selected')!
+    expect(selected.querySelector('img')!.src).toBe(MAP_CONFIG.nodeTypeImages.SHENTONG)
+    expect(selected.querySelector<HTMLElement>('.situation-map-node')!.style.color).toBe('rgb(245, 185, 66)')
+    selected.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    expect(onSelectNode).toHaveBeenCalledExactlyOnceWith(node.platformId)
+    expect(JSON.stringify(node)).toBe(original)
+    expect(nodeIconUrl({ type: 'UNKNOWN', id: 'tiantong_sat', name: '天通卫星' })).toBeUndefined()
+    expect(nodeIconUrl({ type: 'REAR_COMMAND_NODE', id: 'tiantong_sat', satelliteType: 'TIANTONG' })).toBe(MAP_CONFIG.nodeTypeImages.REAR_COMMAND_NODE)
+    expect(nodeIconUrl({ type: 'COMMUNICATION_SATELLITE', id: 'tiantong_sat', satelliteType: 'SHENTONG' })).toBe(MAP_CONFIG.nodeTypeImages.SHENTONG)
+    expect(nodeIconUrl({ id: 'tiantong_sat' })).toBe(MAP_CONFIG.nodeTypeImages.TIANTONG)
+    expect(nodeIconUrl({ id: 'shentong_sat' })).toBe(MAP_CONFIG.nodeTypeImages.SHENTONG)
   })
 
   it('真实文件的参考模型名按对应场景类型显示图标与图例，未知类型归入其他节点', () => {
@@ -3275,6 +3334,8 @@ describe('Leaflet 控制器回归', () => {
       ['TIAN_TONG_SAT', '▲'], ['SHEN_TONG_SAT', '▲'], ['GROUND_JAMMER_STATION', '★'], ['AIRBORNE_JAMMER_PLATFORM', '☆'],
     ] as const
     for (const [type, glyph] of cases) expect(nodeGlyph({ type, platformId: type }), type).toBe(glyph)
+    const images = ['rear.png', 'comand_vehical1.png', 'UAV.png', 'tiantong_sat.png', 'shentong_sat.png', 'jammer_station.png', 'jammer_airbround.png']
+    cases.forEach(([type], index) => expect(nodeIconUrl({ type, platformId: 'CUSTOM-ID' })?.endsWith('/' + images[index])).toBe(true))
     expect(nodeCategory({ type: 'MISSION_UAV_PLATFORM' })).toBe('AIRBORNE_MISSION_CLUSTER')
     expect(nodeCategory({ type: 'SOMETHING_NEW' })).toBeUndefined()
     expect(nodeGlyph({ type: 'SOMETHING_NEW' })).toBe(MAP_CONFIG.nodeFallbackGlyph)

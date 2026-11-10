@@ -8,6 +8,8 @@ export interface SituationMapNode {
   platformId: string
   name: string
   type: string
+  /** 场景自定义编号的卫星保留子类型，地图不从名称猜测天通/神通。 */
+  satelliteType?: 'TIANTONG' | 'SHENTONG'
   /** 阵营标识，取自事件日志的 side 字段；Mock 与场景配置没有该信息时省略，界面不得臆造。 */
   side?: string
   longitude: number

@@ -2,7 +2,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import 'leaflet.vectorgrid'
 
-import { MAP_CONFIG, isSatellitePlatform, nodeGlyph, resolvePlatformCoordinates } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame, UiLinkStatus } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
@@ -957,7 +957,8 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
   const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
   const isSat = isSatellitePlatform(platform)
   const root = document.createElement('div')
-  root.className = 'situation-map-node'
+  const imageUrl = nodeIconUrl(platform)
+  root.className = imageUrl ? 'situation-map-node situation-map-node--image' : 'situation-map-node'
   root.style.display = 'flex'
   root.style.flexDirection = 'column'
   root.style.alignItems = 'center'
@@ -966,7 +967,16 @@ function createNodeIconContent(platform: SituationPlatform, selected: boolean): 
 
   const glyph = document.createElement('span')
   glyph.className = 'situation-map-node__glyph'
-  glyph.textContent = nodeGlyph(platform)
+  glyph.setAttribute('aria-hidden', 'true')
+  if (imageUrl) {
+    const image = document.createElement('img')
+    image.className = 'situation-map-node__image'
+    image.src = imageUrl
+    image.alt = ''
+    image.draggable = false
+    image.addEventListener('error', () => glyph.replaceChildren(document.createTextNode(nodeGlyph(platform))), { once: true })
+    glyph.append(image)
+  } else glyph.textContent = nodeGlyph(platform)
   glyph.dataset.nodeType = platform.type ?? ''
   glyph.style.fontSize = selected ? '24px' : '20px'
   glyph.style.lineHeight = '20px'
@@ -1017,7 +1027,7 @@ function renderNodes(
   for (const platform of nodes) {
     const selected = platform.platformId === selectedNodeId
     // 阵营变化也必须重建图标，否则改阵营后配色不会更新。
-    const appearance = JSON.stringify([platform.name, platform.type, platform.side, selected])
+    const appearance = JSON.stringify([platform.name, platform.type, platform.satelliteType, platform.side, selected])
     let entry = entries.get(platform.platformId)
     if (!entry) {
       const isSat = isSatellitePlatform(platform)
@@ -1035,14 +1045,16 @@ function renderNodes(
     if (entry.appearance !== appearance) {
       const isSat = isSatellitePlatform(platform)
       const compact = platform.type === 'AIRBORNE_MISSION_CLUSTER'
+      const hasImage = !!nodeIconUrl(platform)
+      const width = compact ? (hasImage ? 48 : 44) : 160
       const orbitSuffix = isSat ? '（轨道示意）' : ''
       const accessibleName = `选择节点 ${platform.name}${orbitSuffix}`
       marker.options.title = accessibleName
       marker.setIcon(L.divIcon({
         html: createNodeIconContent(platform, selected),
         className: selected ? 'situation-map-node-marker situation-map-node-marker--selected' : 'situation-map-node-marker',
-        iconSize: compact ? [44, 40] : [160, 52],
-        iconAnchor: compact ? [22, 16] : [80, 16], tooltipAnchor: [0, -16],
+        iconSize: [width, hasImage ? (compact ? 68 : 88) : (compact ? 40 : 52)],
+        iconAnchor: [width / 2, hasImage ? 24 : 16], tooltipAnchor: [0, hasImage ? -24 : -16],
       }))
       const element = marker.getElement()
       if (element) element.title = accessibleName

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, resolvePlatformCoordinates } from '../../config/map.config'
+import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
 import type { Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
@@ -80,14 +80,19 @@ const hasFileDetection = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined))
 /** 节点图例列出当前地图上出现的全部类型（含文件参考模型名换算后的类型）；无法识别的类型合并为“其他节点”。 */
 const nodeTypeLegend = computed(() => {
-  const entries = new Map<string, string>()
+  const entries = new Map<string, { glyph: string; image?: string; label: string }>()
   for (const node of props.initialNodes ?? []) {
     const category = nodeCategory(node)
-    const label = category ? PLATFORM_TYPE_LABELS[category as keyof typeof PLATFORM_TYPE_LABELS] ?? '其他节点' : '其他节点'
+    const image = nodeIconUrl(node)
+    const label = image === MAP_CONFIG.nodeTypeImages.TIANTONG ? '天通卫星'
+      : image === MAP_CONFIG.nodeTypeImages.SHENTONG ? '神通卫星'
+      : category ? PLATFORM_TYPE_LABELS[category as keyof typeof PLATFORM_TYPE_LABELS] ?? '其他节点' : '其他节点'
     const glyph = nodeGlyph(node)
-    entries.set(glyph, entries.has(glyph) && !entries.get(glyph)!.includes(label) ? `${entries.get(glyph)} / ${label}` : label)
+    const key = image ?? glyph
+    const previous = entries.get(key)
+    entries.set(key, { glyph, image, label: previous && !previous.label.includes(label) ? previous.label + ' / ' + label : previous?.label ?? label })
   }
-  return [...entries].map(([glyph, label]) => ({ glyph, label }))
+  return [...entries.values()]
 })
 const themeToggleLabel = computed(() => (
   theme.value === 'dark' ? '切换为浅色地图' : '切换为深色地图'
@@ -720,7 +725,7 @@ onBeforeUnmount(() => {
 
     <div class="offline-map__legend">
       <div v-if="nodeTypeLegend.length" class="offline-map__legend-group" aria-label="节点类型图例" data-testid="node-type-legend">
-        <div v-for="item in nodeTypeLegend" :key="item.glyph"><span class="legend-glyph" aria-hidden="true">{{ item.glyph }}</span>{{ item.label }}</div>
+        <div v-for="item in nodeTypeLegend" :key="item.image ?? item.glyph"><span class="legend-glyph" aria-hidden="true"><img v-if="item.image" :src="item.image" alt="" /> <template v-else>{{ item.glyph }}</template></span>{{ item.label }}</div>
       </div>
       <div class="offline-map__legend-group" aria-label="链路类型图例">
       <div><i class="legend-line legend-line--satellite"></i>卫星链路</div>
@@ -986,12 +991,17 @@ onBeforeUnmount(() => {
 }
 
 .legend-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 1.625rem;
   color: #42d8ff;
   font-size: 0.85rem;
   font-style: normal;
   text-align: center;
 }
+
+.legend-glyph img { width: 26px; height: 26px; object-fit: contain; filter: drop-shadow(0 0 1px #42d8ff); }
 
 .legend-arrow {
   width: 1.625rem;
@@ -1116,6 +1126,24 @@ onBeforeUnmount(() => {
 
 :deep(.situation-map-node__glyph) {
   text-shadow: 0 0 6px currentColor;
+}
+
+:deep(.situation-map-node--image .situation-map-node__glyph) {
+  display: flex;
+  width: 48px;
+  height: 48px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+}
+
+:deep(.situation-map-node--image .situation-map-node__image) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  filter: drop-shadow(0 0 2px currentColor);
+  pointer-events: none;
 }
 
 :deep(.leaflet-marker-icon:focus),
