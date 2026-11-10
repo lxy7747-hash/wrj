@@ -9,6 +9,7 @@ import { DiskRealtimeJournal } from './local/realtime-journal.js'
 import { LocalMissionResults } from './local/mission-results.js'
 import { createRunQualityStore } from './local/run-quality.js'
 import { createEngineFrameArchive } from './local/engine-frame-archive.js'
+import { EngineFrameSqliteStorage } from './local/engine-frame-sqlite.js'
 import { EngineSnapshotClient, readLinkEngineWsUrl } from './local/engine-snapshot-client.js'
 import { MissionLogStreamer } from './local/mission-log-stream.js'
 import { MissionPositionStreamer } from './local/mission-position-stream.js'
@@ -30,7 +31,7 @@ import { createLanSite } from './local/lan-site.js'
 import { readEngineConfig } from './local/engine-config.js'
 import { startMockEngine } from './local/mock-engine-server.js'
 
-// 本机路径从忽略的 .env.local 初始化白名单配置库，不写入共享代码或复制凭据。
+// 本机路径和引擎模式统一读取 .env.local；凭据仅通过进程环境提供。
 try {
   if (process.env.WRJ_DEPLOYMENT !== 'lan') loadEnvFile('.env.local')
 } catch (error) {
@@ -76,7 +77,8 @@ let cachedPositionPath: string | null = null
 let positionReader: ReturnType<typeof createPositionReader> | undefined
 const missionResults = new LocalMissionResults(lan ? join(lan.outputRoot, 'results') : fileURLToPath(new URL('../output/results/', import.meta.url)))
 const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'quality') : fileURLToPath(new URL('../output/quality/', import.meta.url)), () => new Date().toISOString())
-const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString())
+const engineFrameDatabase = new EngineFrameSqliteStorage(join(localDataDirectory, 'engine-history.db'))
+const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString(), { database: engineFrameDatabase })
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
 // .env.local 的 useRealEngine 决定连真实地址还是进程内假引擎；LAN 部署仍只读 .env.server。
@@ -139,7 +141,7 @@ const server = createMockServer({
   masterDataStorage,
 })
 function closeStorage(): void {
-  for (const storage of [exchangeMonitor, backupStorage, runtimeConfig, equipmentStorage,
+  for (const storage of [engineFrameDatabase, exchangeMonitor, backupStorage, runtimeConfig, equipmentStorage,
     accessControlStorage, archiveStorage, masterDataStorage, authStorage, scenarioStorage, templateStorage]) {
     try { storage?.close() } catch (error) {
       console.error('本机存储关闭失败：', error)

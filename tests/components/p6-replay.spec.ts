@@ -14,6 +14,7 @@ import { createAppRouter } from '../../src/router'
 import { useAuthStore } from '../../src/stores/auth'
 import { useReplayStore } from '../../src/stores/replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
+import { ENGINE_RESULT, ENGINE_RESULT_ID, engineReplayAt } from '../fixtures/engine-frame/replay'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR',
@@ -25,7 +26,7 @@ function success(data: unknown): Response {
 }
 
 /** 创建带登录身份和工作区路由的页面挂载环境。 */
-async function mountPage(component: typeof ReplaysPage, path: '/replays') {
+async function mountPage(component: typeof ReplaysPage, path: string) {
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore(pinia).$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
@@ -37,6 +38,26 @@ async function mountPage(component: typeof ReplaysPage, path: '/replays') {
 }
 
 describe('P6 历史回放页面', () => {
+  it('选择历史运行后展示质量、选路和告警，回退不保留未来记录', async () => {
+    const fetchSpy = vi.fn(async (url: string) => success(url.includes('/engine-replay?') ? engineReplayAt(Number(new URL(url).searchParams.get('time')))
+      : url.endsWith('/mission-results') ? [ENGINE_RESULT.record] : ENGINE_RESULT))
+    vi.stubGlobal('fetch', fetchSpy)
+    const { wrapper } = await mountPage(ReplaysPage, `/replays?resultId=${ENGINE_RESULT_ID}`)
+    try {
+      const store = useReplayStore()
+      expect(wrapper.get('[data-testid="replay-engine-history"]').text()).toContain('当前时刻尚未收到引擎帧')
+      await store.seek(10); await flushPromises()
+      expect(wrapper.get('[data-testid="engine-quality"]').text()).toContain('历史引擎数据 · 帧 10')
+      expect(wrapper.get('[data-testid="engine-decisions"]').text()).toContain('历史链路告警')
+      expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileTime')).toBe(10)
+      await store.seek(5); await flushPromises()
+      expect(wrapper.get('[data-testid="engine-quality"]').text()).toContain('帧 5')
+      expect(wrapper.get('[data-testid="engine-decisions"]').text()).not.toContain('历史链路告警')
+      await store.seek(0); await flushPromises()
+      expect(wrapper.find('[data-testid="engine-quality"]').exists()).toBe(false)
+      expect(fetchSpy.mock.calls.every(([url]) => url.includes('/mission-results'))).toBe(true)
+    } finally { wrapper.unmount() }
+  })
   afterEach(() => {
     vi.useRealTimers()
     document.body.innerHTML = ''

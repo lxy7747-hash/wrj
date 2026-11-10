@@ -20,7 +20,7 @@ output/
 # Environment and logs
 .env
 .env.*
-!.env.example
+!/.env.local
 !.env.server.example
 *.log
 npm-debug.log*

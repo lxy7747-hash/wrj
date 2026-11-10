@@ -14,6 +14,7 @@ import { readApiFailure, unwrapSuccessData } from './api-envelope'
 import { isSituationEvent, useTelemetryStore } from './telemetry'
 import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../features/replays/local-replay'
 import { isLocalArchiveSnapshot } from '../features/admin/local-archive'
+import { isEngineReplaySnapshot, type EngineReplaySnapshot } from '../features/replays/engine-replay'
 
 type ReplayEvent = DetectionEvent | SwitchEvent
 
@@ -21,6 +22,7 @@ interface ReplayRuntime {
   timer: ReturnType<typeof setInterval> | null
   pendingCommand: number | null
   fileRequest: AbortController | null
+  engineRequest: AbortController | null
 }
 
 const runtimes = new WeakMap<object, ReplayRuntime>()
@@ -34,7 +36,7 @@ function runtimeFor(store: object): ReplayRuntime {
   const owner = toRaw(store)
   const existing = runtimes.get(owner)
   if (existing !== undefined) return existing
-  const runtime = { timer: null, pendingCommand: null, fileRequest: null }
+  const runtime = { timer: null, pendingCommand: null, fileRequest: null, engineRequest: null }
   runtimes.set(owner, runtime)
   return runtime
 }
@@ -81,6 +83,12 @@ export const useReplayStore = defineStore('replay', {
     resultMessage: '尚未加载历史回放。',
     requestEpoch: 0,
     localSnapshot: null as LocalReplaySnapshot | null,
+    engineHistory: null as EngineReplaySnapshot | null,
+    engineResultId: null as string | null,
+    engineRunId: null as string | null,
+    engineScenarioId: null as string | null,
+    engineEpoch: undefined as number | undefined,
+    engineLoading: false,
   }),
 
   actions: {
@@ -116,6 +124,12 @@ export const useReplayStore = defineStore('replay', {
         this.replay = { replayId: 'REPLAY-LOCAL-FILE', runId: 'RUN-LOCAL-FILE', state: 'PAUSED',
           durationS: snapshot.durationS, currentTimeS: 0, eventIds: [] }
         this.state = 'PAUSED'
+        if (result?.record.runId && result.record.taskId) {
+          this.engineResultId = resultId!
+          this.engineRunId = result.record.runId
+          this.engineScenarioId = result.record.scenarioId
+          if (!await this.loadEngineTime(0) || epoch !== this.requestEpoch) return false
+        }
         this.resultCode = 'SUCCESS'
         this.resultMessage = result ? '本次运行回放已加载，重新加载保持同一结果快照。' : '真实文件回放已加载；重新加载可读取新增记录。'
         return true
@@ -127,6 +141,54 @@ export const useReplayStore = defineStore('replay', {
         clearTimeout(timeout)
         if (runtimeFor(this).fileRequest === request) runtimeFor(this).fileRequest = null
       }
+    },
+
+    /** Read only when crossing a stored frame boundary; seeking backwards replaces all histories. */
+    async loadEngineTime(time: number): Promise<boolean> {
+      if (!this.engineResultId) return true
+      const cached = this.engineHistory
+      if (cached && cached.engineEpoch === this.engineEpoch && time >= (cached.engineFrame?.simulationTime ?? 0)
+        && (cached.nextFrameTime === null || time < cached.nextFrameTime)) {
+        runtimeFor(this).engineRequest?.abort(); runtimeFor(this).engineRequest = null; this.engineLoading = false
+        return true
+      }
+      const runtime = runtimeFor(this), epoch = this.requestEpoch, resultId = this.engineResultId
+      runtime.engineRequest?.abort()
+      const request = new AbortController(); runtime.engineRequest = request
+      const timeout = setTimeout(() => request.abort(), 10_000)
+      this.engineLoading = true
+      try {
+        const params = new URLSearchParams({ time: String(time) })
+        if (this.engineEpoch !== undefined) params.set('epoch', String(this.engineEpoch))
+        const response = await apiFetch(`${resolveMockOrigin()}/api/v1/mission-results/${encodeURIComponent(resultId)}/engine-replay?${params}`, {
+          headers: { 'X-Demo-Role': useAuthStore().role }, signal: request.signal,
+        })
+        const data = await readSuccess(response, (value): value is EngineReplaySnapshot | null => value === null || isEngineReplaySnapshot(value))
+        if (epoch !== this.requestEpoch || runtime.engineRequest !== request || request.signal.aborted) return false
+        if (data && (data.runId !== this.engineRunId || data.scenarioId !== this.engineScenarioId || data.time !== time
+          || (this.engineEpoch !== undefined && data.engineEpoch !== this.engineEpoch))) throw new TypeError('引擎回放数据与所选运行、轮次或时间不一致。')
+        this.engineHistory = data ? markRaw(data) : null
+        if (!data) this.engineResultId = null
+        else {
+          this.engineEpoch = data.engineEpoch
+          if (this.replay && this.localSnapshot) this.replay.durationS = Math.max(this.localSnapshot.durationS, data.epochs.find(e => e.engineEpoch === data.engineEpoch)?.lastTime ?? 0)
+        }
+        return true
+      } catch (error) {
+        if (epoch === this.requestEpoch && runtime.engineRequest === request) this.showError(error)
+        return false
+      } finally {
+        clearTimeout(timeout)
+        if (runtime.engineRequest === request) { runtime.engineRequest = null; this.engineLoading = false }
+      }
+    },
+
+    async selectEngineEpoch(epoch: number): Promise<boolean> {
+      if (!this.engineHistory?.epochs.some(item => item.engineEpoch === epoch)) return false
+      await this.pause()
+      this.engineEpoch = epoch; this.engineHistory = null
+      if (!await this.loadEngineTime(0)) return false
+      return this.executeLocalCommand({ command: 'SEEK', value: 0 })
     },
 
     /**
@@ -245,7 +307,20 @@ export const useReplayStore = defineStore('replay', {
      */
     async executeCommand(command: ReplayCommand): Promise<boolean> {
       if (this.replay === null) return false
-      if (this.localSnapshot !== null) return this.executeLocalCommand(command)
+      if (this.localSnapshot !== null) {
+        if (!this.engineResultId) return this.executeLocalCommand(command)
+        if (command.command === 'PAUSE') {
+          runtimeFor(this).engineRequest?.abort(); runtimeFor(this).engineRequest = null; this.engineLoading = false
+        } else {
+          const current = this.replay.currentTimeS, duration = this.replay.durationS
+          const time = command.command === 'SEEK' ? command.value!
+            : command.command === 'PLAY' && current === duration ? 0
+              : command.command === 'STEP_BACK' ? Math.max(0, current - 1)
+                : command.command === 'STEP_FORWARD' ? Math.min(duration, current + 1) : current
+          if (Number.isFinite(time) && time >= 0 && time <= duration && !await this.loadEngineTime(time)) return false
+        }
+        return this.executeLocalCommand(command)
+      }
       // 新控制优先于旧响应；自动 SEEK 不抢占正在执行的手动控制。
       const epoch = ++this.requestEpoch
       const runtime = runtimeFor(this)
@@ -323,7 +398,7 @@ export const useReplayStore = defineStore('replay', {
 
     /** 按当前倍速推进游标，到达末尾时进入 COMPLETED。 */
     async advancePlayback(): Promise<void> {
-      if (this.replay === null || this.state !== 'PLAYING' || runtimeFor(this).pendingCommand !== null) return
+      if (this.replay === null || this.state !== 'PLAYING' || this.engineLoading || runtimeFor(this).pendingCommand !== null) return
       const nextTime = Math.min(this.replay.durationS, this.replay.currentTimeS + this.speed)
       if (!await this.executeCommand({ command: 'SEEK', value: nextTime })) return
       if (nextTime === this.replay.durationS) this.stopPlaybackTimer()
@@ -350,6 +425,7 @@ export const useReplayStore = defineStore('replay', {
       this.replays = []
       this.replay = null
       this.localSnapshot = null
+      this.engineHistory = null
       this.events = []
       this.selectedEventId = null
       this.state = error instanceof TypeError ? 'CORRUPT' : 'ERROR'
@@ -364,6 +440,9 @@ export const useReplayStore = defineStore('replay', {
       runtimeFor(this).pendingCommand = null
       runtimeFor(this).fileRequest?.abort()
       runtimeFor(this).fileRequest = null
+      runtimeFor(this).engineRequest?.abort(); runtimeFor(this).engineRequest = null
+      this.engineHistory = null; this.engineResultId = null; this.engineRunId = null; this.engineScenarioId = null
+      this.engineEpoch = undefined; this.engineLoading = false
       this.replays = []
       this.replay = null
       this.localSnapshot = null

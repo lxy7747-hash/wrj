@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import OfflineSituationMap from '../../components/situation/OfflineSituationMap.vue'
 import ReplayTimeline from '../../components/replays/ReplayTimeline.vue'
 import MissionResults from '../../components/situation/MissionResults.vue'
+import EngineFramePanel from '../../components/situation/EngineFramePanel.vue'
 import type { ReplayState } from '../../contracts/domain-models'
 import { useReplayStore } from '../../stores/replay'
 import { selectReplayNodes } from '../../features/replays/local-replay'
@@ -15,7 +16,9 @@ const replayStore = useReplayStore()
 const route = useRoute()
 const archiveId = computed(() => typeof route.query.archiveId === 'string' ? route.query.archiveId : undefined)
 const resultId = computed(() => typeof route.query.resultId === 'string' ? route.query.resultId : undefined)
-const { replay, events, state, speed, selectedEventId, resultMessage, localSnapshot } = storeToRefs(replayStore)
+const { replay, events, state, speed, selectedEventId, resultMessage, localSnapshot, engineHistory, engineLoading } = storeToRefs(replayStore)
+const historyTab = ref('quality')
+const nodeNames = computed(() => Object.fromEntries((localSnapshot.value?.initial.nodes ?? []).map(node => [node.platformId, node.name])))
 const fileNodes = computed(() => localSnapshot.value ? selectReplayNodes(localSnapshot.value, replay.value?.currentTimeS ?? 0) : [])
 // 以回放游标筛选登记，不使用实时位置时刻，向后定位时也移除未来关联。
 const fileLinks = computed(() => selectFileCommunicationLinks(localSnapshot.value?.initial.connections ?? [], replay.value?.currentTimeS ?? 0))
@@ -137,7 +140,7 @@ onBeforeUnmount(() => {
     </el-result>
     <el-empty v-else-if="!replay || !localSnapshot" description="暂无本地回放数据，请配置数据文件后重新加载。" />
 
-    <main v-else class="replays-page__body">
+    <main v-else class="replays-page__body" :class="{ 'replays-page__body--engine': engineHistory?.frameCount }">
       <section class="replay-view" aria-label="回放视窗">
         <OfflineSituationMap
           :key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}`"
@@ -155,7 +158,7 @@ onBeforeUnmount(() => {
           :focus-target="focusTarget"
           @select-node="selectedNodeId = $event"
         />
-        <div class="replay-view__badge">文件回放 · {{ formatTime(replay.currentTimeS) }}</div>
+        <div class="replay-view__badge">{{ engineHistory?.frameCount ? '历史回放' : '文件回放' }} · {{ formatTime(replay.currentTimeS) }}</div>
       </section>
 
       <aside class="replay-event-detail" aria-label="回放数据" data-testid="replay-event-detail">
@@ -181,6 +184,24 @@ onBeforeUnmount(() => {
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />
+          <section v-if="engineHistory" class="replay-history" aria-label="历史引擎数据" data-testid="replay-engine-history">
+            <div class="panel-title"><strong>历史引擎数据</strong><span>{{ engineHistory.frameCount }} 帧</span></div>
+            <el-select v-if="engineHistory.epochs.length > 1" :model-value="engineHistory.engineEpoch" aria-label="引擎轮次" @update:model-value="replayStore.selectEngineEpoch">
+              <el-option v-for="epoch in engineHistory.epochs" :key="epoch.engineEpoch" :value="epoch.engineEpoch" :label="`轮次 ${epoch.engineEpoch + 1} · ${epoch.frameCount} 帧`" />
+            </el-select>
+            <p v-if="engineLoading" role="status">正在读取对应时刻的历史数据…</p>
+            <p v-if="!engineHistory.engineFrame">{{ engineHistory.frameCount ? '当前时刻尚未收到引擎帧。' : '本次运行没有收到引擎帧。' }}</p>
+            <template v-else>
+              <p>显示不晚于游标的最近一帧；暂停与回退同步冻结或还原历史记录。</p>
+              <p v-if="engineHistory.historyTruncated">事件、切换和告警分别显示游标前最近 200 条；完整数据仍保存在历史归档中。</p>
+              <el-tabs v-model="historyTab" class="replay-history__tabs">
+                <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+                <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+                <el-tab-pane label="事件" name="events"><EngineFramePanel section="events" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+              </el-tabs>
+            </template>
+          </section>
+          <p v-else-if="resultId && !engineLoading">本次结果没有引擎帧归档，保留文件轨迹回放。</p>
       </aside>
 
       <section class="replay-controls" aria-label="回放控制">
@@ -281,6 +302,11 @@ onBeforeUnmount(() => {
 .replays-page__loading {
   padding: 1rem;
 }
+
+.replays-page__body--engine { grid-template-columns: minmax(0, 1fr) minmax(22rem, 38%); }
+.replay-history { min-width: 0; margin-top: 1rem; }
+.replay-history__tabs { min-width: 0; }
+.replay-history__tabs :deep(.el-tabs__content) { overflow: visible; }
 
 .replay-view,
 .replay-event-detail,
@@ -421,7 +447,8 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
-  .replays-page__body {
+  .replays-page__body,
+  .replays-page__body--engine {
     grid-template-columns: 1fr;
   }
 

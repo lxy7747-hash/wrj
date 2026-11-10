@@ -6,6 +6,8 @@ import { isEngineFrameSnapshot } from '../../src/features/data-exchange/engine-f
 import { readStableUtf8Lines } from './afsim-log-reader.js'
 import { createEngineCsvSession, getEngineCsvFile, publishEngineCsv, type EngineCsvEvidence, type EngineLinkBinding } from './engine-frame-csv.js'
 import type { LinkType } from '../../src/contracts/domain-models.js'
+import type { EngineFrameSqliteStorage } from './engine-frame-sqlite.js'
+import type { EngineReplaySnapshot } from '../../src/features/replays/engine-replay.js'
 
 const safeRunId = (value: string) => /^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(value)
 const digest = (value: string) => createHash('sha256').update(value).digest('hex')
@@ -35,6 +37,7 @@ export interface EngineFrameArchive {
   getFile(runId: string, sourceSha256: string): Promise<string | null>
   finalizeCsv(runId: string, expectedScope: EngineFrameArchiveScope, linkBindings: Readonly<Record<string, EngineLinkBinding>>): Promise<EngineCsvEvidence | null>
   getCsvFile(runId: string, sourceSha256: string, fileName: string): Promise<string | null>
+  replay(runId: string, expectedScope: EngineFrameArchiveScope, time: number, engineEpoch?: number): Promise<EngineReplaySnapshot | null>
   aggregate(runId: string, expectedScope: EngineFrameArchiveScope, linkBindings: Readonly<Record<string, EngineLinkBinding>>, selection?: { start: number; end: number; nodeId?: string; linkId?: string }): Promise<{ uniqueSingleSegmentCount: number; averageGxbDb?: number; averageBer?: number; switchCount: number; missing: string[] } | null>
 }
 
@@ -89,7 +92,7 @@ async function regularFile(path: string): Promise<void> {
  * Persists accepted engine frames outside the bounded WebSocket journal.  Each run receives
  * an immutable JSONL generation and a pointer that is published only after the writer flushes.
  */
-export function createEngineFrameArchive(directory: string, now: () => string, limits: { maxReportRows?: number } = {}): EngineFrameArchive {
+export function createEngineFrameArchive(directory: string, now: () => string, limits: { maxReportRows?: number; database?: EngineFrameSqliteStorage } = {}): EngineFrameArchive {
   const root = resolve(directory)
   const maxReportRows = limits.maxReportRows ?? MAX_REPORT_ROWS
   if (!Number.isSafeInteger(maxReportRows) || maxReportRows < 1) throw new RangeError('引擎帧报告明细上限无效。')
@@ -107,6 +110,7 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       await mkdir(runRoot, { recursive: true })
       const run = await lstat(runRoot)
       if (!run.isDirectory() || run.isSymbolicLink()) throw new Error('引擎帧归档运行目录必须为普通目录。')
+      await limits.database?.begin(scope, linkBindings)
       const id = randomUUID()
       const pending = join(runRoot, `.engine-${id}.pending`)
       const target = join(runRoot, `engine-${id}.jsonl`)
@@ -162,6 +166,7 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
           while (queue.length) {
             const { frame, line } = queue[0]!
             await writeAll(line)
+            await limits.database?.append(scope, frame)
             position += Buffer.byteLength(line, 'utf8')
             hash.update(line); frameCount += 1; noteMissing(frame)
             first = first === null ? frame.simulationTime : Math.min(first, frame.simulationTime)
@@ -217,6 +222,7 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
                 firstSimulationTime: first, lastSimulationTime: last, missingFieldNames: [...missing].sort(), completedAt: now(), fileName: `engine-${id}.jsonl`, linkBindings: structuredClone(linkBindings),
               }
               if (!rawPublished) { await rename(pending, target); rawPublished = true }
+              await limits.database?.complete(scope, manifest.sourceSha256, frameCount)
               if (!csvPublished) {
                 if (rebuildCsv) {
                   await csv.abort()
@@ -255,6 +261,18 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       if (expectedScope && ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('引擎帧归档作用域与运行结果不一致。')
       if (selection && (!Number.isFinite(selection.start) || !Number.isFinite(selection.end) || selection.start < 0 || selection.end < selection.start)) throw new Error('引擎帧归档筛选时间范围无效。')
       return readSummary(runRoot, manifest, selection, maxReportRows)
+    },
+    async replay(runId, expectedScope, time, engineEpoch) {
+      if (!Number.isFinite(time) || time < 0 || (engineEpoch !== undefined && (!Number.isSafeInteger(engineEpoch) || engineEpoch < 0))) throw new Error('引擎回放时间或轮次无效。')
+      const runRoot = runDirectory(runId); if (!runRoot) return null
+      const pointer = join(runRoot, 'current.json')
+      try { await regularFile(pointer) } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error }
+      const manifest: unknown = JSON.parse(await readFile(pointer, 'utf8'))
+      if (!isManifest(manifest, runId) || ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt'].some(key => manifest.scope[key as keyof EngineFrameArchiveScope] !== expectedScope[key as keyof EngineFrameArchiveScope])) throw new Error('引擎回放归档与所选运行不一致。')
+      if (!limits.database) throw new Error('引擎历史数据库未配置。')
+      const raw = join(runRoot, manifest.fileName); await regularFile(raw)
+      await limits.database.ensureLegacy(expectedScope, manifest.linkBindings ?? {}, raw, manifest.sourceSha256, manifest.frameCount)
+      return limits.database.replay(expectedScope, time, engineEpoch)
     },
     async getFile(runId, sourceSha256) {
       const runRoot = runDirectory(runId)

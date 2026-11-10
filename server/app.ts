@@ -2268,6 +2268,28 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果损坏或不可读，未切换到其他文件。' })) }
   })
 
+  /** 回放读取所选运行，不订阅实时上游，也不接受浏览器自报的场景或运行归属。 */
+  app.get('/api/v1/mission-results/:resultId/engine-replay', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId) === undefined) return
+    const time = Number(req.query.time), epoch = req.query.epoch === undefined ? undefined : Number(req.query.epoch)
+    if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).some(key => !['time', 'epoch'].includes(key))
+      || typeof req.query.time !== 'string' || !req.query.time.trim() || !Number.isFinite(time) || time < 0
+      || (req.query.epoch !== undefined && (typeof req.query.epoch !== 'string' || !req.query.epoch.trim() || !Number.isSafeInteger(epoch) || epoch! < 0))) {
+      res.status(400).json(failure('INVALID_REQUEST', 400)); return
+    }
+    try {
+      const snapshot = await options.missionResults?.get(req.params.resultId)
+      if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404)); return }
+      const record = snapshot.record
+      const data = record.runId && record.taskId && options.engineFrameArchive
+        ? await options.engineFrameArchive.replay(record.runId, { runId: record.runId, taskId: record.taskId, scenarioId: record.scenarioId, revision: record.revision, startedAt: record.startedAt }, time, epoch)
+        : null
+      res.json(success(data, pageMeta('REQ-ENGINE-REPLAY')))
+    } catch (error) {
+      res.status(503).json(failure('START_FAILED', 503, { message: `引擎历史读取失败：${error instanceof Error ? error.message : String(error)}` }))
+    }
+  })
+
   /** 超大引擎归档不把截取明细伪装为完整报告；授权用户可按本次结果和来源摘要取得完整 JSONL。 */
   app.get('/api/v1/mission-results/:resultId/engine-frames/:sourceSha256', async (req, res) => {
     const role = requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId)

@@ -20,7 +20,7 @@
 
 ## 启用与回退
 
-- 本机入口 `server/local.ts` 读取忽略的 `.env.local`：`SCENARIO_DB_PATH=H:/Project/newWrj/data/scenarios.db`。目录须已存在，路径必须为绝对路径。启动命令仍为 `npm run dev:mock` 或 `npm run dev`。
+- 本机入口 `server/local.ts` 统一读取可随 Git 提交的 `.env.local`，不再复制 `.env.example`。当前 `SCENARIO_DB_PATH=H:/Project/newWrj/data/scenarios.db`；换电脑时在这一份文件中修改事件、位置、数据库和 mission 的绝对路径，数据库目录须已存在。文件中不保存密码或令牌；启动命令仍为 `npm run dev:mock` 或 `npm run dev`。
 - 使用当前 Node v22.14.0 内置 `node:sqlite`，无需安装 npm 驱动；该 Node 版本会输出 SQLite 实验性提示，未隐藏警告。
 - 本机入口必须配置 `SCENARIO_DB_PATH`，缺失时拒绝启动，不回退到假登录。需要纯 Mock 验证时显式使用 `server/index.ts`；不得把它作为本机账号库故障的替代入口。
 - `server/index.ts` 和 Playwright 仍使用纯 Mock，不读取本机数据库。自动化持久化测试只在临时目录建立独立数据库，不改写用户文件。

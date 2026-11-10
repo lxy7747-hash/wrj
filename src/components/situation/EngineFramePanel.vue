@@ -5,9 +5,11 @@ import { useRuntimeQualityStore } from '../../stores/runtime-quality'
 import { useSimulationStore } from '../../stores/simulation'
 import { formatSimulationTime, LINK_TYPE_LABELS } from '../../features/situation/situation-model'
 import { includesEngineSimulationTime, resolveEngineSwitchHighlights, type EngineRouteResolution } from '../../features/situation/engine-route-highlights'
+import type { EngineReplayEvidence } from '../../features/replays/engine-replay'
 
-const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string; links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[] }>()
-const quality = useRuntimeQualityStore()
+const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string; links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[]; evidence?: EngineReplayEvidence; nodeNames?: Record<string, string> }>()
+const runtimeQuality = useRuntimeQualityStore()
+const quality = computed(() => props.evidence ?? runtimeQuality)
 const simulation = useSimulationStore()
 const nodeFilter = ref('')
 const linkFilter = ref('')
@@ -15,7 +17,8 @@ const typeFilter = ref<LinkType | ''>('')
 const timeRangeStart = ref<number | undefined>()
 const timeRangeEnd = ref<number | undefined>()
 const value = (v: string | number | null | undefined, unit = '') => v == null || v === '' ? '暂无数据' : `${typeof v === 'number' ? Number(v.toPrecision(8)) : v}${unit}`
-const name = (id: string | null) => (simulation.run?.fileSource ? undefined : simulation.selectedScene?.config.platforms.find(p => p.id === id)?.name) ?? value(id)
+const name = (id: string | null) => props.evidence ? props.nodeNames?.[id ?? ''] ?? value(id)
+  : (simulation.run?.fileSource ? undefined : simulation.selectedScene?.config.platforms.find(p => p.id === id)?.name) ?? value(id)
 const path = (nodes: EnginePathNode[]) => nodes.length ? nodes.map(n => `${name(n.platformId)}（入：${value(n.inPort)}；出：${value(n.outPort)}）`).join(' → ') : '暂无数据'
 const labels: Record<string, string> = { UP: '正常', DEGRADED: '劣化', DOWN: '中断', UNKNOWN: '未知',
   BARRAGE: '宽带压制', SPOT: '瞄准式', SWEEP: '扫频', DETECTED: '已探测', ON: '开启', OFF: '关闭', JAM_ON: '起扰',
@@ -25,34 +28,34 @@ const label = (v: string | null | undefined) => v == null ? '暂无数据' : lab
 const losses: [keyof EngineLinkSegment['losses'], string][] = [['freeSpaceDb', '自由空间'], ['seaMultipathDb', '海面多径'],
   ['atmosphericDb', '大气'], ['rainDb', '雨衰'], ['cloudDb', '云衰'], ['cloudRainDb', '云雨合并'], ['jammingDb', '干扰'], ['totalDb', '总复合（原值）']]
 
-const configuredLinks = computed(() => props.links ?? simulation.selectedScene?.config.links ?? [])
-const segmentLinkIds = computed(() => new Set(quality.engineFrame?.links.flatMap(link => link.linkIds) ?? []))
+const configuredLinks = computed(() => props.links ?? (props.evidence ? [] : simulation.selectedScene?.config.links ?? []))
+const segmentLinkIds = computed(() => new Set(quality.value.engineFrame?.links.flatMap(link => link.linkIds) ?? []))
 const selectableLinks = computed(() => configuredLinks.value.filter(link => segmentLinkIds.value.has(link.id)))
-const unboundSegments = computed(() => [...new Map((quality.engineFrame?.links ?? [])
+const unboundSegments = computed(() => [...new Map((quality.value.engineFrame?.links ?? [])
   .filter(segment => !selectableLinks.value.some(link => segment.linkIds.includes(link.id)))
   .map(segment => [segment.linkId, segment])).values()])
 const selectableTypes = computed(() => [...new Set(selectableLinks.value.map(link => link.type))])
-const selectableNodes = computed(() => [...new Set((quality.engineFrame?.links ?? []).flatMap(link => [link.sourcePlatformId, link.targetPlatformId]).filter((id): id is string => id !== null))])
+const selectableNodes = computed(() => [...new Set((quality.value.engineFrame?.links ?? []).flatMap(link => [link.sourcePlatformId, link.targetPlatformId]).filter((id): id is string => id !== null))])
 const selectedType = (link: EngineLinkSegment): LinkType[] => link.linkIds.flatMap(id => configuredLinks.value.filter(configured => configured.id === id).map(configured => configured.type))
 const displayedStatus = (link: EngineLinkSegment) => link.error ? 'UNKNOWN' : link.status
-const segmentKey = (link: EngineLinkSegment) => JSON.stringify([quality.engineFrame?.runId, quality.engineFrame?.engineEpoch,
+const segmentKey = (link: EngineLinkSegment) => JSON.stringify([quality.value.engineFrame?.runId, quality.value.engineFrame?.engineEpoch,
   link.linkId, link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort])
 const sourceHint = computed(() => {
-  const frame = quality.engineFrame
+  const frame = quality.value.engineFrame
   return frame ? [`源仿真时刻：${frame.simulationTime} s`,
     ...(frame.wallTimeMs == null ? [] : [`上游计时：${frame.wallTimeMs} ms（起点待确认）`]),
     `模型版本：${value(frame.modelVersion)}；调制：${value(frame.modulation)}`,
     '时延单位、总复合损耗口径待确认；按源值展示。',
     '当前只提供本帧测量；时间范围按源仿真时刻筛选，范围外或起始大于结束时为空。'].join('；') : ''
 })
-const filteredLinks = computed(() => (quality.engineFrame?.links ?? []).filter(link =>
+const filteredLinks = computed(() => (quality.value.engineFrame?.links ?? []).filter(link =>
   (!nodeFilter.value || link.sourcePlatformId === nodeFilter.value || link.targetPlatformId === nodeFilter.value)
   && (!linkFilter.value || link.linkId === linkFilter.value || link.linkIds.includes(linkFilter.value))
   && (!typeFilter.value || selectedType(link).includes(typeFilter.value))
-  && includesEngineSimulationTime(quality.engineFrame?.simulationTime ?? NaN, timeRangeStart.value, timeRangeEnd.value),
+  && includesEngineSimulationTime(quality.value.engineFrame?.simulationTime ?? NaN, timeRangeStart.value, timeRangeEnd.value),
 ))
 watch(() => props.selectedLinkId, value => { linkFilter.value = selectableLinks.value.some(link => link.id === value) || unboundSegments.value.some(link => link.linkId === value) ? value ?? '' : '' }, { immediate: true })
-const switchHighlights = (oldNodes: EnginePathNode[], newNodes: EnginePathNode[]) => resolveEngineSwitchHighlights(quality.engineFrame, oldNodes, newNodes)
+const switchHighlights = (oldNodes: EnginePathNode[], newNodes: EnginePathNode[]) => resolveEngineSwitchHighlights(quality.value.engineFrame, oldNodes, newNodes)
 const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
   if (resolution.totalHops === 0) return `${title}：路径无可解析段`
   if (resolution.resolvedHops === resolution.totalHops) return `${title}：已唯一关联 ${resolution.linkIds.join('、') || '无'}（${resolution.resolvedHops}/${resolution.totalHops} 段）`
@@ -63,13 +66,13 @@ const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
 <template>
   <section v-if="quality.engineFrame" class="engine-evidence" :class="{ 'engine-evidence--quality': section === 'quality', 'quality-card-panel': section === 'quality' }" :data-testid="`engine-${section}`">
     <div v-if="section === 'quality'" class="quality-card-source">
-      <p class="engine-evidence__source">引擎推送 · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }}</p>
+      <p class="engine-evidence__source">{{ evidence ? '历史引擎数据' : '引擎推送' }} · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }}</p>
       <el-tooltip :content="sourceHint" :popper-style="{ maxWidth: '280px', whiteSpace: 'normal', overflowWrap: 'anywhere' }">
         <button type="button" class="quality-card-info" aria-label="查看引擎数据说明">数据说明</button>
       </el-tooltip>
     </div>
     <template v-else>
-    <p class="engine-evidence__source">引擎推送 · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }} · {{ value(quality.engineFrame.simulationTime, ' s') }}</p>
+    <p class="engine-evidence__source">{{ evidence ? '历史引擎数据' : '引擎推送' }} · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }} · {{ value(quality.engineFrame.simulationTime, ' s') }}</p>
     <p v-if="quality.engineFrame.wallTimeMs != null" class="engine-evidence__note">上游计时 {{ value(quality.engineFrame.wallTimeMs, ' ms') }}（起点待确认）</p>
     </template>
     <template v-if="section === 'quality'">

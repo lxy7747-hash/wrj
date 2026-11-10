@@ -10,7 +10,7 @@ import {
 } from '../../src/features/situation/file-message-links'
 
 // 真实数据冒烟：读取 .env.local 的 AFSIM_EVENT_LOG_PATH，只验证跨版本应保持的不变量，
-// 不硬编码绝对路径、不断言具体消息计数；其他机器无配置时整体跳过。
+// 配置文件随 Git 共享，其他机器尚未配置路径或没有对应文件时整体跳过。
 // 模块路径用拼接变量，避免 tsc 把服务端 node 代码拉进浏览器 app 项目编译图（与既有服务端测试一致）。
 const fsModule = 'node:fs/' + 'promises'
 const readerModule = '../../server/local/' + 'afsim-log-reader.js'
@@ -25,6 +25,11 @@ const eventPath = await (async () => {
   }
 })()
 
+const eventFileAvailable = eventPath ? await (await import(fsModule)).access(eventPath).then(() => true, (error: { code?: string }) => {
+  if (error.code === 'ENOENT') return false
+  throw error
+}) : false
+
 async function loadReal() {
   const { readFile } = await import(fsModule)
   const { readInitialNodes } = await import(readerModule)
@@ -32,7 +37,7 @@ async function loadReal() {
   return { parsed: parseAfsimEventLog(text), snapshot: await readInitialNodes(eventPath) }
 }
 
-describe('真实数据冒烟（需 .env.local 配置 AFSIM_EVENT_LOG_PATH）', () => {
+describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置 AFSIM_EVENT_LOG_PATH）', () => {
   it.skipIf(!eventPath)('事件日志解析有效、初始快照结构不变量成立', async () => {
     const { parsed, snapshot } = await loadReal()
     expect(parsed.valid).toBe(true)

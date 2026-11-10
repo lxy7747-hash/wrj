@@ -37,6 +37,7 @@
     "src/features/situation/position-updates.ts",
     "src/features/situation/mission-positions.ts",
     "src/features/replays/local-replay.ts",
+    "src/features/replays/engine-replay.ts",
     "src/features/reports/local-report.ts",
     "src/features/reports/detection-events.ts",
     "src/features/results/mission-result.ts",

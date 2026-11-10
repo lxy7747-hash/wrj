@@ -14,6 +14,7 @@ const { mkdtemp, rm, readFile, readdir, mkdir, open } = await import('node:fs/' 
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
 const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
+const { EngineFrameSqliteStorage } = await import('../../server/local/' + 'engine-frame-sqlite.js')
 
 const cleanups: Array<() => Promise<unknown> | void> = []
 afterEach(async () => {
@@ -33,7 +34,9 @@ async function setup(file = false, saveFileReception?: (run: SimulationRun, comp
   const fileSource = playbackFileSource(replay)
   const root = await mkdtemp(join(tmpdir(), 'wrj-remote-control-'))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
-  const archive = createEngineFrameArchive(root, () => new Date().toISOString())
+  const database = new EngineFrameSqliteStorage(join(root, 'engine-history.db'))
+  cleanups.push(() => database.close())
+  const archive = createEngineFrameArchive(root, () => new Date().toISOString(), { database })
   const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(upstream, 'listening')
   cleanups.push(async () => { for (const peer of upstream.clients) peer.terminate(); await new Promise<void>(resolve => upstream.close(() => resolve())) })
@@ -82,7 +85,7 @@ async function setup(file = false, saveFileReception?: (run: SimulationRun, comp
     await api.post(`/api/v1/confirmations/${confirmationId}`).set(headers).send({ confirm: true }).expect(200)
     return command({ command: action, confirmationId })
   }
-  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, root, confirmed, app, fileSource, sceneBefore, diagnoseEngine }
+  return { api, runId, command, read, engine, messages, peers, stop, complete, start, archive, database, root, confirmed, app, fileSource, sceneBefore, diagnoseEngine }
 }
 
 it('暂停后重复断线诊断不触发运行状态查询，真实控制状态变化仍通知', async () => {
@@ -283,6 +286,29 @@ it('实际归档发布失败保留两帧和时间，停止重试成功后才发�
   expect(await readFile(join(root, runId, raw), 'utf8')).toBe(before)
   expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780)
   expect(messages).toEqual(['pause', 'resume', 'stop'].map(action => ({ msg_type: 'sim_control', action })))
+})
+
+it('数据库收尾失败保留运行和两帧，停止重试后可按时间回放且不重发 stop', async () => {
+  const save = vi.fn<NonNullable<Parameters<typeof setup>[1]>>().mockResolvedValue(undefined)
+  const { confirmed, read, peers, runId, archive, database, messages } = await setup(true, save)
+  for (const sample of latestSamples) {
+    peers[0]!.send(JSON.stringify(sample))
+    await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(sample.frame_id))
+  }
+  const fault = vi.spyOn(database, 'complete').mockRejectedValueOnce(new Error('数据库暂不可写'))
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true })
+  expect(save).not.toHaveBeenCalled()
+  expect((await confirmed('STOP')).status).toBe(200)
+  const run = await read()
+  expect(run).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
+  const scope = { taskId: run.taskId, runId, scenarioId: run.scenarioId, revision: 1, startedAt: run.startedAt }
+  expect(await archive.replay(runId, scope, 3774)).toMatchObject({ frameCount: 2, engineFrame: null })
+  expect(await archive.replay(runId, scope, 3775)).toMatchObject({ engineFrame: { frameId: 3775 } })
+  expect(await archive.replay(runId, scope, 3780)).toMatchObject({ engineFrame: { frameId: 3780 } })
+  expect(fault).toHaveBeenCalledTimes(2)
+  expect(save).toHaveBeenCalledTimes(1)
+  expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
 })
 
 it('停止等待正在写入的帧，不提前成功、不把最后一帧留在报表外', async () => {
