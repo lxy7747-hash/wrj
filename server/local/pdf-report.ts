@@ -61,7 +61,7 @@ export async function createLocalReportPdf(input: {
         document.fontSize(9).text(chart.scope ?? input.chartScope)
         if (!chart.rows.length || (chart.kind === 'RADAR' && chart.rows.length < 3)) { document.fontSize(10).text('暂无数据'); continue }
         if (chart.kind === 'LINE') {
-          const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = Math.max(1e-12, maximum - minimum)
+          const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = (maximum - minimum) || 1
           const times = chart.rows.map((row, index) => row.time ?? index), startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
           if (document.y + 190 > document.page.height - document.page.margins.bottom) document.addPage()
           const startX = document.page.margins.left, startY = document.y + 20

@@ -23,7 +23,7 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const receptionStartedAt = '2026-11-09T02:00:00Z'
 const receptionCompletedAt = '2026-11-09T02:01:00Z'
 
-async function setup(file = false) {
+async function setup(file = false, saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number) => Promise<void>) {
   const replay = structuredClone(LOCAL_REPLAY)
   replay.initial.connections = [{ sourceEventId: 'LOG-L9', time: 0, scope: 'INTER_PLATFORM',
     source: { platformName: 'rear_comm_vehicle', communicationName: 'fiber_link', address: '10.0.0.1' },
@@ -45,6 +45,7 @@ async function setup(file = false) {
   let engine!: InstanceType<typeof EngineSnapshotClient>
   let diagnoseEngine!: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void
   const app = createMockServer({ port: 0,
+    saveFileReception,
     loadLocalReplay: file ? async () => replay : undefined,
     engineFrameArchive: archive,
     linkEngineWsUrl: `ws://127.0.0.1:${upstream.address().port}`,
@@ -118,7 +119,7 @@ it('暂停后重复断线诊断不触发运行状态查询，真实控制状态�
 it('文件与远端接收使用原始端口，校验两份文件指纹，不修改已保存场景，停止完成归档', async () => {
   const { api, runId, peers, read, archive, confirmed, fileSource, sceneBefore, start } = await setup(true)
   expect(await read()).toMatchObject({ fileSource, scenarioId: fileReceptionScenarioId(fileSource), configLocked: true })
-  peers[0]!.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: 5000 }))
+  peers[0]!.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: undefined }))
   await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(5))
   expect((await confirmed('STOP')).status).toBe(200)
   const saved = await archive.load(runId)
@@ -174,7 +175,7 @@ it.each([false, true])('远端帧经场景映射推送页面并留存 JSONL/CSV�
   await once(browser, 'open')
   browser.send(JSON.stringify({ type: 'subscribe', schemaVersion: '1.0', taskId: 'TASK-001', topics: ['link.metric', 'runtime.state', 'simulation.frame'] }))
   await vi.waitFor(() => expect(received.some(message => message.type === 'subscribed')).toBe(true))
-  const sent = { ...sample, frame_id: 5, sim_time_s: 5000 }
+  const sent = { ...sample, frame_id: 5, sim_time_s: undefined }
   peers[0]!.send(JSON.stringify(sent))
   await vi.waitFor(() => expect(received.some(message => message.topic === 'link.metric' && message.payload.frameId === 5)).toBe(true))
   expect(received.some(message => message.topic === 'simulation.frame')).toBe(false)
@@ -201,7 +202,7 @@ it.each([false, true])('远端帧经场景映射推送页面并留存 JSONL/CSV�
   const nextRunId: string = next.body.data.runId
   expect((await api.get(`/api/v1/simulations/${nextRunId}`).set(headers).expect(200)).body.data)
     .toMatchObject({ canonical: { currentTime: 0 }, engineControl: { action: null, delivery: 'IDLE' } })
-  peers[1]!.send(JSON.stringify({ ...sample, frame_id: 0, sim_time_s: 0 }))
+  peers[1]!.send(JSON.stringify({ ...sample, frame_id: 0, sim_time_s: undefined }))
   await vi.waitFor(() => expect(received.some(message => message.payload?.runId === nextRunId && message.payload.frameId === 0)).toBe(true))
   const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: nextRunId }).expect(201)
   const confirmationId = context.body.data.confirmationId
@@ -253,6 +254,20 @@ it('断线时停止仍完成本地收尾，不声称发送成功', async () => {
   expect((await confirmed('STOP')).status).toBe(200)
   expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, engineControl: { connected: false, action: null, delivery: 'IDLE' } })
   expect(messages).toEqual([])
+})
+
+it('停止等待报表发布；发布失败保留锁，重试不重发 stop', async () => {
+  const save = vi.fn<NonNullable<Parameters<typeof setup>[1]>>().mockRejectedValueOnce(new Error('报表写盘失败')).mockResolvedValue(undefined)
+  const { confirmed, read, messages, peers, runId } = await setup(true, save)
+  peers[0]!.send(JSON.stringify({ ...sample, frame_id: 3780, sim_time_s: undefined }))
+  await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(3780))
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true })
+  expect((await confirmed('STOP')).status).toBe(200)
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
+  expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
 })
 
 it('停止发送失败后标记 UNKNOWN 并保存本地数据，不自动重发', async () => {

@@ -44,6 +44,7 @@
     "src/features/data-exchange/quality-records.ts",
     "src/features/reports/quality-report.ts",
     "src/features/reports/engine-frame-report.ts",
+    "src/features/reports/engine-segment-details.ts",
     "src/features/scenarios/scenario-validation.ts",
     "src/features/scenarios/position-distance.ts",
     "src/features/scenarios/scenario-snapshot.ts",

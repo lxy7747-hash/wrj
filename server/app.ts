@@ -103,6 +103,7 @@ export interface MockServerOptions {
   loadLocalReport?: () => Promise<Report | null>
   exportLocalReport?: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string, source?: MissionResultRecord, comparisons?: MissionResultParameterComparison[], filter?: LocalReportFilter) => Promise<LocalReportExportResult>
   missionResults?: MissionResults
+  saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number) => Promise<void>
   /** 规范质量文件的持久接入，缺省不访问文件系统。 */
   runQualityStore?: RunQualityStore
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
@@ -1673,8 +1674,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         }
         engineSnapshots?.stop(runId)
         await closeEngineArchive(runId, slot)
+        const completedAt = remoteEngineNow()
+        const finalRun = simulations.get(runId)
+        if (finalRun.ok && finalRun.data.fileSource && options.saveFileReception) {
+          const archive = await options.engineFrameArchive?.load(runId, slot.engineArchiveScope)
+          await options.saveFileReception(finalRun.data, completedAt, archive?.lastSimulationTime ?? finalRun.data.canonical.currentTime)
+        }
         slot.engineArchive = undefined; slot.engineArchiveScope = undefined; slot.receiving = false
-        const finished = simulations.finishRemote(runId, remoteEngineNow())
+        const finished = simulations.finishRemote(runId, completedAt)
         realtime.publishRuntimeState(finished)
         auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
         res.status(200).json(success(finished, pageMeta(requestId)))
@@ -2273,6 +2280,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const path = await options.engineFrameArchive.getFile(snapshot.record.runId, req.params.sourceSha256)
       if (!path) { res.status(404).json(failure('NOT_FOUND', 404)); return }
       auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_RESULT_READ', req.params.resultId)
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
       res.download(path, `engine-frames-${req.params.sourceSha256}.jsonl`, error => {
         if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '引擎帧归档下载失败。' }))
       })
@@ -2295,6 +2303,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const path = await options.engineFrameArchive.getCsvFile(snapshot.record.runId, sourceSha256, req.params.fileName)
       if (!path) { res.status(404).json(failure('NOT_FOUND', 404)); return }
       auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_RESULT_READ', req.params.resultId)
+      res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
       res.download(path, req.params.fileName, error => {
         if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '引擎规范 CSV 下载失败。' }))
       })

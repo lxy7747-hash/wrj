@@ -92,6 +92,11 @@ const missionExecution = linkEngineWsUrl ? undefined : lan?.webOnly
   : new LocalMissionPool(missionExecutable, missionDirectory, missionResults, missionConcurrency, missionRunTimeoutMs)
 const server = createMockServer({
   missionResults,
+  saveFileReception: async (run, completedAt, lastFrameTime) => {
+    const { eventPath, positionPath } = runtimeConfig.load()
+    if (!eventPath || !positionPath) throw new Error('缺少本次播放文件路径。')
+    await missionResults.captureFileReception(eventPath, positionPath, run, completedAt, lastFrameTime)
+  },
   runQualityStore,
   engineFrameArchive,
   createRunId: () => `RUN-${randomUUID()}`,

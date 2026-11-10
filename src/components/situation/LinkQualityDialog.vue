@@ -4,6 +4,7 @@ import type { EngineFrameSnapshot, EngineLinkSegment, Link } from '../../contrac
 import type { RuntimeLinkQualityView } from '../../features/situation/runtime-quality-view'
 import { RUNTIME_STATUS_LABELS, runtimeDecisionReason } from '../../features/situation/runtime-quality-view'
 import { reportTime } from '../../features/reports/local-report'
+import { engineSegmentDetails } from '../../features/reports/engine-segment-details'
 import {
   LINK_TYPE_LABELS,
   formatBer,
@@ -105,6 +106,13 @@ function reasonLabel(reason: string): string {
           <div><dt>信噪比 SNR</dt><dd>暂无数据（上游未提供）</dd></div>
           <div><dt>错误信息</dt><dd>{{ segment.error ?? '暂无数据' }}</dd></div>
         </dl>
+        <details>
+          <summary>分项损耗与计算输入</summary>
+          <section v-for="group in engineSegmentDetails(segment)" :key="group.title">
+            <h4>{{ group.title }}</h4>
+            <dl class="link-quality-dialog__grid"><div v-for="(item, index) in group.rows" :key="index"><dt>{{ item[0] }}</dt><dd>{{ item[1] }}</dd></div></dl>
+          </section>
+        </details>
       </article>
     </div>
     <div v-else-if="runtimeQuality && runtimeMeasurement" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-runtime" :data-frame-id="runtimeQuality.frameId">

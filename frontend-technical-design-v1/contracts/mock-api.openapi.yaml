@@ -19226,7 +19226,7 @@
           "simulationTime": {
             "type": "number",
             "minimum": 0,
-            "description": "Internal simulation time in seconds. Upstream websocketNew sim_time_s is milliseconds and is converted once at ingestion."
+            "description": "Internal simulation time in seconds. Newly ingested websocketNew frames use frame_id as seconds (5, 10, 15). Legacy sim_time_s is ignored; existing normalized archives retain their stored time."
           },
           "modelVersion": {
             "type": [

@@ -28,17 +28,30 @@ const losses: [keyof EngineLinkSegment['losses'], string][] = [['freeSpaceDb', '
 const configuredLinks = computed(() => props.links ?? simulation.selectedScene?.config.links ?? [])
 const segmentLinkIds = computed(() => new Set(quality.engineFrame?.links.flatMap(link => link.linkIds) ?? []))
 const selectableLinks = computed(() => configuredLinks.value.filter(link => segmentLinkIds.value.has(link.id)))
+const unboundSegments = computed(() => [...new Map((quality.engineFrame?.links ?? [])
+  .filter(segment => !selectableLinks.value.some(link => segment.linkIds.includes(link.id)))
+  .map(segment => [segment.linkId, segment])).values()])
 const selectableTypes = computed(() => [...new Set(selectableLinks.value.map(link => link.type))])
 const selectableNodes = computed(() => [...new Set((quality.engineFrame?.links ?? []).flatMap(link => [link.sourcePlatformId, link.targetPlatformId]).filter((id): id is string => id !== null))])
 const selectedType = (link: EngineLinkSegment): LinkType[] => link.linkIds.flatMap(id => configuredLinks.value.filter(configured => configured.id === id).map(configured => configured.type))
 const displayedStatus = (link: EngineLinkSegment) => link.error ? 'UNKNOWN' : link.status
+const segmentKey = (link: EngineLinkSegment) => JSON.stringify([quality.engineFrame?.runId, quality.engineFrame?.engineEpoch,
+  link.linkId, link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort])
+const sourceHint = computed(() => {
+  const frame = quality.engineFrame
+  return frame ? [`源仿真时刻：${frame.simulationTime} s`,
+    ...(frame.wallTimeMs == null ? [] : [`上游计时：${frame.wallTimeMs} ms（起点待确认）`]),
+    `模型版本：${value(frame.modelVersion)}；调制：${value(frame.modulation)}`,
+    '时延单位、总复合损耗口径待确认；按源值展示。',
+    '当前只提供本帧测量；时间范围按源仿真时刻筛选，范围外或起始大于结束时为空。'].join('；') : ''
+})
 const filteredLinks = computed(() => (quality.engineFrame?.links ?? []).filter(link =>
   (!nodeFilter.value || link.sourcePlatformId === nodeFilter.value || link.targetPlatformId === nodeFilter.value)
-  && (!linkFilter.value || link.linkIds.includes(linkFilter.value))
+  && (!linkFilter.value || link.linkId === linkFilter.value || link.linkIds.includes(linkFilter.value))
   && (!typeFilter.value || selectedType(link).includes(typeFilter.value))
   && includesEngineSimulationTime(quality.engineFrame?.simulationTime ?? NaN, timeRangeStart.value, timeRangeEnd.value),
 ))
-watch(() => props.selectedLinkId, value => { linkFilter.value = selectableLinks.value.some(link => link.id === value) ? value ?? '' : '' }, { immediate: true })
+watch(() => props.selectedLinkId, value => { linkFilter.value = selectableLinks.value.some(link => link.id === value) || unboundSegments.value.some(link => link.linkId === value) ? value ?? '' : '' }, { immediate: true })
 const switchHighlights = (oldNodes: EnginePathNode[], newNodes: EnginePathNode[]) => resolveEngineSwitchHighlights(quality.engineFrame, oldNodes, newNodes)
 const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
   if (resolution.totalHops === 0) return `${title}：路径无可解析段`
@@ -48,29 +61,73 @@ const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
 </script>
 
 <template>
-  <section v-if="quality.engineFrame" class="engine-evidence" :data-testid="`engine-${section}`">
+  <section v-if="quality.engineFrame" class="engine-evidence" :class="{ 'engine-evidence--quality': section === 'quality', 'quality-card-panel': section === 'quality' }" :data-testid="`engine-${section}`">
+    <div v-if="section === 'quality'" class="quality-card-source">
+      <p class="engine-evidence__source">引擎推送 · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }}</p>
+      <el-tooltip :content="sourceHint" :popper-style="{ maxWidth: '280px', whiteSpace: 'normal', overflowWrap: 'anywhere' }">
+        <button type="button" class="quality-card-info" aria-label="查看引擎数据说明">数据说明</button>
+      </el-tooltip>
+    </div>
+    <template v-else>
     <p class="engine-evidence__source">引擎推送 · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }} · {{ value(quality.engineFrame.simulationTime, ' s') }}</p>
     <p v-if="quality.engineFrame.wallTimeMs != null" class="engine-evidence__note">上游计时 {{ value(quality.engineFrame.wallTimeMs, ' ms') }}（起点待确认）</p>
+    </template>
     <template v-if="section === 'quality'">
-      <el-form label-position="top" class="engine-evidence__filters">
+      <el-form label-position="top" class="engine-evidence__filters quality-card-filters">
         <el-form-item label="节点"><el-select v-model="nodeFilter" clearable placeholder="全部节点"><el-option v-for="node in selectableNodes" :key="node" :label="name(node)" :value="node" /></el-select></el-form-item>
-        <el-form-item label="链路"><el-select v-model="linkFilter" clearable placeholder="全部已关联链路"><el-option v-for="link in selectableLinks" :key="link.id" :label="`${link.id} · ${link.sourcePlatformId} → ${link.targetPlatformId}`" :value="link.id" /></el-select></el-form-item>
         <el-form-item label="链路类型"><el-select v-model="typeFilter" clearable placeholder="全部类型"><el-option v-for="type in selectableTypes" :key="type" :label="LINK_TYPE_LABELS[type]" :value="type" /></el-select></el-form-item>
-        <el-form-item label="仿真时间范围（秒）"><div class="engine-evidence__time-range"><el-input-number v-model="timeRangeStart" :min="0" :precision="3" controls-position="right" placeholder="起始" /><span>至</span><el-input-number v-model="timeRangeEnd" :min="0" :precision="3" controls-position="right" placeholder="结束" /></div></el-form-item>
+        <details class="quality-card-advanced">
+          <summary>更多筛选<span v-if="linkFilter || timeRangeStart != null || timeRangeEnd != null">（已应用）</span></summary>
+          <el-form-item label="链路"><el-select v-model="linkFilter" clearable placeholder="全部链路 / 引擎段"><el-option v-for="link in selectableLinks" :key="`link:${link.id}`" :label="`${link.id} · ${name(link.sourcePlatformId)} → ${name(link.targetPlatformId)}`" :value="link.id" /><el-option v-for="link in unboundSegments" :key="`segment:${link.linkId}`" :label="`引擎段 ${link.linkId} · ${name(link.sourcePlatformId)} → ${name(link.targetPlatformId)}`" :value="link.linkId" /></el-select></el-form-item>
+          <el-form-item label="仿真时间范围（秒）"><div class="engine-evidence__time-range"><el-input-number v-model="timeRangeStart" :min="0" :precision="3" controls-position="right" placeholder="起始" /><span>至</span><el-input-number v-model="timeRangeEnd" :min="0" :precision="3" controls-position="right" placeholder="结束" /></div></el-form-item>
+        </details>
       </el-form>
-      <p class="engine-evidence__note">上游当前只提供帧 {{ quality.engineFrame.frameId }}（{{ formatSimulationTime(quality.engineFrame.simulationTime) }}）；时间范围按该源仿真时刻筛选。超出范围或起始大于结束时为空，不补造历史测量。</p>
-      <div v-if="filteredLinks.length" class="engine-evidence__table">
-        <table aria-label="引擎链路质量">
-          <thead><tr><th>链路段</th><th>引擎状态</th><th>距离（m）</th><th v-for="[, title] in losses" :key="title">{{ title }}损耗（dB）</th><th>干信比（dB）</th><th>误码率</th><th>接收功率</th><th>频率（GHz）</th><th>数据率（Mbps）</th><th>时延（原值，单位待确认）</th><th>造成干扰的干扰站</th></tr></thead>
-          <tbody><tr v-for="(link, index) in filteredLinks" :key="`${link.linkId}:${index}`">
-            <td>{{ name(link.sourcePlatformId) }} / {{ value(link.sourcePort) }} → {{ name(link.targetPlatformId) }} / {{ value(link.targetPort) }}<small>关联链路：{{ link.linkIds.join('、') || '暂无数据' }}</small></td>
-            <td><el-tag :type="displayedStatus(link) === 'UP' ? 'success' : displayedStatus(link) === 'DEGRADED' ? 'warning' : displayedStatus(link) === 'DOWN' ? 'danger' : 'info'">{{ link.error ? '异常（状态未知）' : label(displayedStatus(link)) }}</el-tag><small>{{ value(link.engineStatus) }}</small><small v-if="link.error" role="alert">{{ link.error }}</small></td>
-            <td>{{ value(link.distanceM) }}</td><td v-for="[key] in losses" :key="key">{{ value(link.losses[key]) }}</td>
-            <td>{{ value(link.quality.gxbDb) }}</td><td>{{ value(link.quality.ber) }}</td><td>{{ value(link.quality.rxPowerDbw, ' dBW') }} / {{ value(link.quality.rxPowerDbm, ' dBm') }}</td>
-            <td>{{ value(link.inputTrace.frequencyGHz) }}</td><td>{{ value(link.inputTrace.dataRateMbps) }}</td><td>{{ value(link.quality.delay) }}</td>
-            <td><span v-if="!link.inputTrace.jammers.length">暂无数据</span><p v-for="(jammer, j) in link.inputTrace.jammers" :key="j">{{ name(jammer.platformId) }} · 距离 {{ value(jammer.distanceM, ' m') }} · EIRP {{ value(jammer.eirpDbw, ' dBW') }} · 损耗 {{ value(jammer.lossDb, ' dB') }}</p></td>
-          </tr></tbody>
-        </table>
+      <div v-if="filteredLinks.length" class="quality-card-list" role="list" aria-label="引擎链路质量">
+        <article v-for="link in filteredLinks" :key="segmentKey(link)" class="quality-card" role="listitem" :data-link-id="link.linkId">
+          <header class="quality-card-heading">
+            <strong>{{ name(link.sourcePlatformId) }} → {{ name(link.targetPlatformId) }}</strong>
+            <el-tag :type="displayedStatus(link) === 'UP' ? 'success' : displayedStatus(link) === 'DEGRADED' ? 'warning' : displayedStatus(link) === 'DOWN' ? 'danger' : 'info'">{{ link.error ? '异常（状态未知）' : label(displayedStatus(link)) }}</el-tag>
+          </header>
+          <p v-if="link.error" class="quality-card-error" role="alert">{{ link.error }}</p>
+          <dl class="quality-card-metrics">
+            <div><dt>干信比（dB）</dt><dd>{{ value(link.quality.gxbDb) }}</dd></div>
+            <div><dt>误码率 BER</dt><dd>{{ value(link.quality.ber) }}</dd></div>
+            <div><dt>接收功率（dBm）</dt><dd>{{ value(link.quality.rxPowerDbm) }}</dd></div>
+            <div><dt>距离（m）</dt><dd>{{ value(link.distanceM) }}</dd></div>
+          </dl>
+          <details class="quality-card-details">
+            <summary>详细参数</summary>
+            <h4>链路信息</h4>
+            <dl class="quality-card-fields">
+              <div><dt>链路段编号</dt><dd>{{ link.linkId }}</dd></div>
+              <div><dt>发送平台 / 端口</dt><dd>{{ value(link.sourceName) }} / {{ value(link.sourcePort) }}</dd></div>
+              <div><dt>接收平台 / 端口</dt><dd>{{ value(link.targetName) }} / {{ value(link.targetPort) }}</dd></div>
+              <div><dt>关联链路</dt><dd>{{ link.linkIds.join('、') || '暂无数据' }}</dd></div>
+              <div><dt>引擎原始状态</dt><dd>{{ value(link.engineStatus) }}</dd></div>
+            </dl>
+            <h4>损耗明细</h4>
+            <dl class="quality-card-fields"><div v-for="[key, title] in losses" :key="key"><dt>{{ title }}损耗（dB）</dt><dd>{{ value(link.losses[key]) }}</dd></div></dl>
+            <h4>通信参数</h4>
+            <dl class="quality-card-fields">
+              <div><dt>接收功率</dt><dd>{{ value(link.quality.rxPowerDbw, ' dBW') }} / {{ value(link.quality.rxPowerDbm, ' dBm') }}</dd></div>
+              <div><dt>频率（GHz）</dt><dd>{{ value(link.inputTrace.frequencyGHz) }}</dd></div>
+              <div><dt>数据率（Mbps）</dt><dd>{{ value(link.inputTrace.dataRateMbps) }}</dd></div>
+              <div><dt>时延（原值，单位待确认）</dt><dd>{{ value(link.quality.delay) }}</dd></div>
+              <div><dt>EIRP（dBW）</dt><dd>{{ value(link.inputTrace.eirpDbw) }}</dd></div>
+              <div><dt>G/T（dB/K）</dt><dd>{{ value(link.inputTrace.gtDbk) }}</dd></div>
+            </dl>
+            <h4>干扰来源</h4>
+            <p v-if="!link.inputTrace.jammers.length">暂无数据</p>
+            <section v-for="(jammer, j) in link.inputTrace.jammers" :key="j" class="quality-card-jammer">
+              <strong>{{ name(jammer.platformId) }}</strong>
+              <dl class="quality-card-fields">
+                <div><dt>距离（m）</dt><dd>{{ value(jammer.distanceM) }}</dd></div>
+                <div><dt>EIRP（dBW）</dt><dd>{{ value(jammer.eirpDbw) }}</dd></div>
+                <div><dt>损耗（dB）</dt><dd>{{ value(jammer.lossDb) }}</dd></div>
+              </dl>
+            </section>
+          </details>
+        </article>
       </div>
       <p v-else>当前帧暂无符合筛选条件的引擎链路段。</p>
     </template>
@@ -137,12 +194,10 @@ const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
 .engine-evidence__switch-before { color: #f5b942; }
 .engine-evidence__switch-after { color: #4bd9f2; }
 .engine-evidence__filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.engine-evidence__filters :deep(.el-form-item) { margin-bottom: 0; }
+.engine-evidence__filters :deep(.el-form-item) { min-width: 0; margin-bottom: 0; }
 .engine-evidence__time-range { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 4px; }
 .engine-evidence__time-range :deep(.el-input-number) { width: 100%; }
 .engine-evidence small { display: block; margin-top: 4px; }
-.engine-evidence__table { max-width: 100%; overflow: auto; }
-.engine-evidence table { border-collapse: collapse; width: 100%; }
-.engine-evidence th, .engine-evidence td { min-width: 80px; padding: 8px; border: 1px solid #244455; vertical-align: top; }
-.engine-evidence th:first-child, .engine-evidence td:first-child { min-width: 180px; }
 </style>
+
+<style scoped src="./quality-cards.css"></style>

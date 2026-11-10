@@ -84,13 +84,13 @@ describe('运行质量 Store', () => {
     expect(store.engineEvents).toEqual([])
   })
 
-  it('新协议换算后的秒值直接用于展示，重复 JAM_ON 状态不生成额外事件或本机决策', () => {
+  it('帧号对应的秒值直接用于展示，重复 JAM_ON 状态不生成额外事件或本机决策', () => {
     const store = prepare(), tracker = vi.spyOn(RuntimeLinkDecisionTracker.prototype, 'accept')
     const frame = { ...adaptEngineFrameSnapshot(newEngineSample).data!, runId: scope().runId }
     expect(store.acceptEngineFrame(store.epoch, frame)).toBe(true)
-    expect(store.engineFrame?.simulationTime).toBe(350.625)
+    expect(store.engineFrame?.simulationTime).toBe(375)
     expect(store.engineEvents).toHaveLength(2)
-    const next = { ...frame, frameId: frame.frameId + 1, simulationTime: 351.625, events: [] }
+    const next = { ...frame, frameId: frame.frameId + 5, simulationTime: frame.simulationTime + 5, events: [] }
     expect(store.acceptEngineFrame(store.epoch, next)).toBe(true)
     expect(store.engineFrame?.jammers[0]?.actions[0]?.action).toBe('JAM_ON')
     expect(store.engineEvents).toHaveLength(2)

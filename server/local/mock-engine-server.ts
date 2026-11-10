@@ -22,7 +22,7 @@ export interface MockEngine {
  * - 地址 ws://127.0.0.1:<随机端口>/ws/v1，端口由系统分配，避免与本机服务冲突；
  * - 连接即推送，不需要登录或订阅；
  * - 循环 tests/fixtures/engine-frame/websocket-new 四份样例，帧号重排为 5/10/15…；
- * - sim_time_s 按毫秒写入（tick × 5000），wall_time_ms 用当前墙钟；
+ * - 不再发送 sim_time_s，帧号即仿真秒数，wall_time_ms 用当前墙钟；
  * - 接收 {"msg_type":"sim_control","action":"pause|resume|stop"}，暂停/恢复推送。
  */
 export async function startMockEngine(intervalMs: number): Promise<MockEngine> {
@@ -39,8 +39,8 @@ export async function startMockEngine(intervalMs: number): Promise<MockEngine> {
     const sendNext = (): void => {
       if (paused) return
       tick += 1
-      const sample = samples[(tick - 1) % samples.length]!
-      socket.send(JSON.stringify({ ...sample, frame_id: tick * 5, sim_time_s: tick * 5000, wall_time_ms: Date.now() }))
+      const { sim_time_s: _legacyTime, ...sample } = samples[(tick - 1) % samples.length]!
+      socket.send(JSON.stringify({ ...sample, frame_id: tick * 5, wall_time_ms: Date.now() }))
     }
     const timer = setInterval(sendNext, intervalMs)
     sendNext()

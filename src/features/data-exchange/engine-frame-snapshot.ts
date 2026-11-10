@@ -31,12 +31,11 @@ function route(value: unknown, direction: EngineRoute['direction'], switching: b
 /** 仅必需帧头/链路数组无效时拒绝整帧；其余缺测值留空，原始原因字符串不收紧。 */
 export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSnapshot } | { data: null; errors: ValidationIssue[] } {
   const input = record(value), calc = record(input.link_calc), manager = record(input.link_manager)
-  // 对接方确认：sim_time_s 虽有 _s 后缀，实际单位为毫秒；帧号独立于时间。
-  const frameId = number(input.frame_id), simulationTime = number(input.sim_time_s, 1e-3)
+  // 对接方已取消 sim_time_s；帧号 5→10 对应仿真 5→10 秒，旧时间字段不再使用。
+  const frameId = number(input.frame_id)
   const errors: ValidationIssue[] = []
   const error = (fieldPath: string, message: string) => errors.push({ severity: 'ERROR', code: 'ENGINE_FRAME_INVALID', fieldPath, message })
   if (frameId === null || !Number.isSafeInteger(frameId) || frameId < 0) error('frame_id', '引擎帧号必须为非负整数。')
-  if (simulationTime === null || simulationTime < 0) error('sim_time_s', '引擎仿真时间必须为非负毫秒数。')
   if (!Array.isArray(calc.links)) error('link_calc.links', '引擎链路段必须为数组。')
   if (errors.length) return { data: null, errors }
   const links = list(calc.links).map((value): EngineLinkSegment => {
@@ -93,7 +92,7 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
   }))
   return { data: {
     // 运行身份和重启轮次由服务端连接所有者覆盖，不信任外部消息中的身份。
-    kind: 'ENGINE_FRAME', runId: '', engineEpoch: 0, frameId: frameId!, simulationTime: simulationTime!, modelVersion: text(calc.model_version), modulation: text(calc.modulation),
+    kind: 'ENGINE_FRAME', runId: '', engineEpoch: 0, frameId: frameId!, simulationTime: frameId!, modelVersion: text(calc.model_version), modulation: text(calc.modulation),
     wallTimeMs: number(input.wall_time_ms),
     links, jammers, initRouting: manager.init_routing_result == null ? null : routes(manager.init_routing_result, false),
     routing: { switches, alarms: [...list(manager.alarm), ...list(routing.alarm)].map(value => { const item = record(value); return {

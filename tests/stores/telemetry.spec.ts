@@ -1304,6 +1304,27 @@ describe('P3-2 遥测 Store', () => {
     expect(store).toMatchObject({ frame: null, connectionState: 'DISCONNECTED', capabilityState: 'EMPTY' })
   })
 
+  it('开发工具逐次包装 action 时仍复用并关闭同一连接，旧回调不能污染重连', () => {
+    const store = useTelemetryStore()
+    const wrapped = () => new Proxy(store, { get: Reflect.get, set: Reflect.set })
+    store.connect.call(wrapped())
+    const socket = TestWebSocket.instances[0]!
+    socket.emit('open')
+    store.connect.call(wrapped())
+    expect(TestWebSocket.instances).toHaveLength(1)
+    store.disconnectAndReset.call(wrapped())
+    expect(socket.readyState).toBe(3)
+    store.connect.call(wrapped())
+    expect(TestWebSocket.instances).toHaveLength(2)
+    socket.emit('message', JSON.stringify({
+      type: 'subscribed', schemaVersion: '1.0', taskId: 'TASK-001',
+      topics: ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update'],
+      lastSequence: 0, nextSequence: 1,
+    }))
+    expect(store.connectionState).toBe('CONNECTING')
+    store.disconnectAndReset.call(wrapped())
+  })
+
   it('重连时按主题发送真实游标，避免较快主题挤出较慢主题的续传窗口', async () => {
     vi.useFakeTimers()
     const store = useTelemetryStore()

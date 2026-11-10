@@ -557,7 +557,7 @@ export interface EngineJammer {
   actions: { action: string | null; targetName: string | null; targetPlatformId: string | null; mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null }[];
 }
 export interface EngineFrameSnapshot {
-  /** simulationTime 为内部秒数；上游 sim_time_s 实际为毫秒，仅在接收入口转换。 */
+  /** simulationTime 为内部秒数；新接收帧按 frame_id 取值，历史归档保留已存秒值。 */
   kind: 'ENGINE_FRAME'; runId: string; engineEpoch: number; frameId: number; simulationTime: number;
   /** 上游计时原值，起点未约定，不用于推送延迟判定。 */
   wallTimeMs?: number | null;

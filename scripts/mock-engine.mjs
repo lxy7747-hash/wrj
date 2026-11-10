@@ -26,8 +26,8 @@ engine.on('connection', (socket, request) => {
   const sendNext = () => {
     if (paused) return
     tick += 1
-    const sample = samples[(tick - 1) % samples.length]
-    socket.send(JSON.stringify({ ...sample, frame_id: tick * 5, sim_time_s: tick * 5000, wall_time_ms: Date.now() }))
+    const { sim_time_s: _legacyTime, ...sample } = samples[(tick - 1) % samples.length]
+    socket.send(JSON.stringify({ ...sample, frame_id: tick * 5, wall_time_ms: Date.now() }))
     console.log(`[mock-engine] 推送 frame_id=${tick * 5}`)
   }
   const timer = setInterval(sendNext, intervalMs)

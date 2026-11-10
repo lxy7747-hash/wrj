@@ -17,7 +17,7 @@ const roots: string[] = []
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 function frame(frameId: number) {
-  const parsed = adaptEngineFrameSnapshot({ ...sample, frame_id: frameId, sim_time_s: frameId * 1000 })
+  const parsed = adaptEngineFrameSnapshot({ ...sample, frame_id: frameId, sim_time_s: undefined })
   if (!parsed.data) throw new Error('fixture invalid')
   return { ...parsed.data, runId: 'RUN-ARCHIVE', engineEpoch: 0 }
 }
@@ -31,9 +31,9 @@ describe('引擎帧可靠归档', () => {
     const session = await archive.begin({ taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-09T00:00:00Z' },
       { 'L-1': { type: 'MICROWAVE', sourcePlatformId: received.links[0]!.sourcePlatformId!, targetPlatformId: received.links[0]!.targetPlatformId! } })
     session.append(received); await session.close()
-    const summary = (await archive.load('RUN-ARCHIVE', undefined, { start: 350, end: 351 }))!
+    const summary = (await archive.load('RUN-ARCHIVE', undefined, { start: 375, end: 376 }))!
     expect(summary.segmentRows).toHaveLength(5)
-    expect(summary.segmentRows[0]).toMatchObject({ simulationTime: 350.625, segment: {
+    expect(summary.segmentRows[0]).toMatchObject({ simulationTime: 375, segment: {
       losses: { rainDb: newSample.link_calc.links[0]!.losses.atten_rain_db, totalDb: newSample.link_calc.links[0]!.losses.total_composite_db },
       quality: { delay: newSample.link_calc.links[0]!.quality.delay, rxPowerDbm: null }, inputTrace: { frequencyGHz: 8.2 } } })
     const path = (await archive.getFile('RUN-ARCHIVE', summary.sourceSha256))!
@@ -107,6 +107,7 @@ describe('引擎帧可靠归档', () => {
       const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
       await api.get(`/api/v1/mission-results/${resultId}/engine-frames/${summary.sourceSha256}`).set('Origin', 'http://127.0.0.1:5173').expect(403)
       const ok = await api.get(`/api/v1/mission-results/${resultId}/engine-frames/${summary.sourceSha256}`).set({ Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }).expect(200)
+      expect(ok.headers['access-control-expose-headers']).toContain('Content-Disposition')
       expect(ok.headers['content-disposition']).toContain(`${summary.sourceSha256}.jsonl`)
       expect(ok.body.toString('utf8')).toContain('ENGINE_FRAME')
       await api.get(`/api/v1/mission-results/${resultId}/engine-frames/${'b'.repeat(64)}`).set({ Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }).expect(404)
@@ -186,6 +187,7 @@ describe('引擎帧可靠归档', () => {
       expect(result.body.data.report.localEvidence.engineCsv.files).toEqual(expect.arrayContaining([expect.objectContaining({ fileName: 'link_state.csv', status: 'COMPLETE', skippedCount: 0 })]))
       await api.get(`/api/v1/mission-results/${resultId}/engine-csv/link_state.csv`).set('Origin', 'http://127.0.0.1:5173').expect(403)
       const csv = await api.get(`/api/v1/mission-results/${resultId}/engine-csv/link_state.csv`).set({ Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }).expect(200)
+      expect(csv.headers['access-control-expose-headers']).toContain('Content-Disposition')
       expect(csv.headers['content-disposition']).toContain('link_state.csv')
       expect(csv.text).toContain('task_id')
       await api.get(`/api/v1/mission-results/${resultId}/engine-csv/other.csv`).set({ Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }).expect(400)

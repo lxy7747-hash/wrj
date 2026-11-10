@@ -1,6 +1,6 @@
 import { createPinia, disposePinia, setActivePinia, type Pinia } from 'pinia'
 import { flushPromises, mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
-import ElementPlus, { ElInputNumber, ElSelect } from 'element-plus'
+import ElementPlus, { ElInputNumber, ElSelect, ElTooltip } from 'element-plus'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { EngineFrameSnapshot, EngineLinkSegment, EngineRouteSwitch, LinkType } from '../../src/contracts/domain-models'
 import EngineFramePanel from '../../src/components/situation/EngineFramePanel.vue'
@@ -10,6 +10,7 @@ import detected from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 import { useRuntimeQualityStore } from '../../src/stores/runtime-quality'
 import { useSimulationStore } from '../../src/stores/simulation'
+import { LATEST_FRAMES } from '../fixtures/engine-frame/latest-report'
 
 const losses = { freeSpaceDb: null, seaMultipathDb: null, atmosphericDb: null, cloudRainDb: null, jammingDb: null, totalDb: null }
 const quality = { gxbDb: null, ber: null, rxPowerDbw: null, rxPowerDbm: null }
@@ -57,7 +58,7 @@ function configureStore(): void {
   } as never })
 }
 
-function qualityRows(): DOMWrapper<HTMLTableRowElement>[] { return wrapper!.get('table[aria-label="引擎链路质量"] tbody').findAll('tr') }
+function qualityCards(): DOMWrapper<HTMLElement>[] { return wrapper!.findAll<HTMLElement>('.quality-card') }
 
 beforeEach(() => {
   pinia = createPinia(); setActivePinia(pinia); configureStore()
@@ -65,23 +66,72 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; disposePinia(pinia) })
 
 describe('EngineFramePanel', () => {
+  it('最新报文的未关联链路可按原始段编号筛选，零值和极小 BER 正常显示', async () => {
+    useRuntimeQualityStore().engineFrame = structuredClone(LATEST_FRAMES[0]!)
+    wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
+    expect(qualityCards()).toHaveLength(5)
+    const filter = wrapper.findAllComponents(ElSelect)[2]!
+    expect(filter.findAllComponents({ name: 'ElOption' }).map(option => option.props('value'))).toContain(LATEST_FRAMES[0]!.links[0]!.linkId)
+    await filter.vm.$emit('update:modelValue', LATEST_FRAMES[0]!.links[0]!.linkId); await flushPromises()
+    expect(qualityCards()).toHaveLength(1)
+    expect(qualityCards()[0]!.text()).toContain('4.4076422e-85')
+    expect(qualityCards()[0]!.findAll('.quality-card-metrics dd')[0]!.text()).toBe('0')
+    useRuntimeQualityStore().engineFrame = structuredClone(LATEST_FRAMES[1]!)
+    await flushPromises()
+    expect(qualityCards()).toHaveLength(1)
+    expect(qualityCards()[0]!.text()).toContain('2.7755125e-85')
+  })
   it('新帧在页面显示秒、GHz、分离损耗与原始时延，并能按秒筛选', async () => {
     const frame = { ...adaptEngineFrameSnapshot(detected).data!, runId: 'RUN-1' }
     useRuntimeQualityStore().engineFrame = frame
     wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
-    expect(wrapper.text()).toContain('350.625 s')
+    expect(wrapper.getComponent(ElTooltip).props('content')).toContain('375 s')
+    expect(wrapper.find('table').exists()).toBe(false)
+    await qualityCards()[0]!.get('.quality-card-details summary').trigger('click')
     expect(wrapper.text()).toContain('雨衰损耗（dB）'); expect(wrapper.text()).toContain('云衰损耗（dB）')
     expect(wrapper.text()).toContain('总复合（原值）损耗（dB）'); expect(wrapper.text()).toContain('时延（原值，单位待确认）')
-    expect(qualityRows()[0]!.text()).toContain('8.2'); expect(qualityRows()[0]!.text()).toContain('5.9199462')
+    expect(qualityCards()[0]!.text()).toContain('8.2'); expect(qualityCards()[0]!.text()).toContain('5.9199462')
     const inputs = wrapper.findAllComponents(ElInputNumber)
-    await inputs[0]!.vm.$emit('update:modelValue', 350); await inputs[1]!.vm.$emit('update:modelValue', 351); await flushPromises()
-    expect(qualityRows()).toHaveLength(5)
+    await inputs[0]!.vm.$emit('update:modelValue', 375); await inputs[1]!.vm.$emit('update:modelValue', 376); await flushPromises()
+    expect(qualityCards()).toHaveLength(5)
     await wrapper.setProps({ section: 'jammers' })
     expect(wrapper.text()).toContain('探测频率 2400000000 Hz')
     expect(wrapper.text()).toContain('频率 2400000000 Hz')
     expect(wrapper.text()).toContain('经度 121.55°'); expect(wrapper.text()).toContain('纬度 25.15°')
     expect(wrapper.text()).toContain('设备模式 宽带压制'); expect(wrapper.text()).toContain('探测概率 暂无数据')
     expect(useRuntimeQualityStore().engineEvents).toHaveLength(0)
+  })
+  it('摘要卡片默认收起详情，展开后保留全部指标，新帧与重排不收起，换引擎轮次才重置', async () => {
+    const runtime = useRuntimeQualityStore()
+    const source = { ...adaptEngineFrameSnapshot(detected).data!, runId: 'RUN-1' }
+    runtime.engineFrame = source
+    wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
+    const card = qualityCards()[0]!
+    const details = card.get<HTMLDetailsElement>('.quality-card-details')
+    expect(details.element.open).toBe(false)
+    expect(card.get('.quality-card-heading').text()).toContain('正常')
+    const link = source.links[0]!
+    expect(card.get('.quality-card-metrics').text()).toContain('235075.02')
+    await details.get('summary').trigger('click')
+    expect(details.element.open).toBe(true)
+    const fields = Object.fromEntries(details.findAll('dl > div').map(row => [row.get('dt').text(), row.get('dd').text()]))
+    expect(fields['发送平台 / 端口']).toBe(link.sourceName + ' / ' + link.sourcePort)
+    expect(fields['接收平台 / 端口']).toBe(link.targetName + ' / ' + link.targetPort)
+    expect(fields['引擎原始状态']).toBe(link.engineStatus)
+    expect(details.findAll('dt').map(row => row.text())).toEqual(expect.arrayContaining([
+      '自由空间损耗（dB）', '海面多径损耗（dB）', '大气损耗（dB）', '雨衰损耗（dB）', '云衰损耗（dB）',
+      '云雨合并损耗（dB）', '干扰损耗（dB）', '总复合（原值）损耗（dB）', '接收功率', '频率（GHz）',
+      '数据率（Mbps）', '时延（原值，单位待确认）', 'EIRP（dBW）', 'G/T（dB/K）',
+    ]))
+    expect(details.findAll('.quality-card-jammer')).toHaveLength(link.inputTrace.jammers.length)
+    runtime.engineFrame = { ...structuredClone(source), frameId: source.frameId + 1, links: [...source.links].reverse() }
+    await flushPromises()
+    const refreshed = qualityCards().find(item => item.attributes('data-link-id') === link.linkId)!
+    expect(refreshed.get('.quality-card-details').element).toBe(details.element)
+    expect(details.element.open).toBe(true)
+    runtime.engineFrame = { ...structuredClone(source), engineEpoch: source.engineEpoch + 1, frameId: 0 }
+    await flushPromises()
+    expect(qualityCards()[0]!.get<HTMLDetailsElement>('.quality-card-details').element.open).toBe(false)
   })
   it('初始路径展示嵌套的业务与原值参数', () => {
     useRuntimeQualityStore().engineFrame = { ...adaptEngineFrameSnapshot(initial).data!, runId: 'RUN-1' }
@@ -101,20 +151,20 @@ describe('EngineFramePanel', () => {
   })
   it('将节点、体制和链路筛选实际作用于引擎段，并把错误优先显示为未知', async () => {
     wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
-    expect(qualityRows()).toHaveLength(3)
+    expect(qualityCards()).toHaveLength(3)
     expect(wrapper.text()).toContain('异常（状态未知）')
-    expect(qualityRows().find(row => row.text().includes('节点-N4'))!.find('.el-tag--info').exists()).toBe(true)
+    expect(qualityCards().find(row => row.text().includes('节点-N4'))!.find('.el-tag--info').exists()).toBe(true)
 
     const selects = wrapper.findAllComponents(ElSelect)
     await selects[0]!.vm.$emit('update:modelValue', 'N1'); await flushPromises()
-    expect(qualityRows()).toHaveLength(2)
-    await selects[2]!.vm.$emit('update:modelValue', 'LASER'); await flushPromises()
-    expect(qualityRows()).toHaveLength(1)
-    expect(qualityRows()[0]!.text()).toContain('节点-N3')
-    await selects[2]!.vm.$emit('update:modelValue', '')
-    await selects[1]!.vm.$emit('update:modelValue', 'L-OLD'); await flushPromises()
-    expect(qualityRows()).toHaveLength(1)
-    expect(qualityRows()[0]!.text()).toContain('节点-N2')
+    expect(qualityCards()).toHaveLength(2)
+    await selects[1]!.vm.$emit('update:modelValue', 'LASER'); await flushPromises()
+    expect(qualityCards()).toHaveLength(1)
+    expect(qualityCards()[0]!.text()).toContain('节点-N3')
+    await selects[1]!.vm.$emit('update:modelValue', '')
+    await selects[2]!.vm.$emit('update:modelValue', 'L-OLD'); await flushPromises()
+    expect(qualityCards()).toHaveLength(1)
+    expect(qualityCards()[0]!.text()).toContain('节点-N2')
   })
 
   it('按当前源仿真时刻执行起止范围筛选，反向与范围外均为空', async () => {
@@ -122,7 +172,7 @@ describe('EngineFramePanel', () => {
     const inputs = wrapper.findAllComponents(ElInputNumber)
     await inputs[0]!.vm.$emit('update:modelValue', 12)
     await inputs[1]!.vm.$emit('update:modelValue', 13); await flushPromises()
-    expect(qualityRows()).toHaveLength(3)
+    expect(qualityCards()).toHaveLength(3)
     await inputs[0]!.vm.$emit('update:modelValue', 13); await flushPromises()
     expect(wrapper.text()).toContain('当前帧暂无符合筛选条件的引擎链路段。')
     await inputs[1]!.vm.$emit('update:modelValue', 12); await flushPromises()

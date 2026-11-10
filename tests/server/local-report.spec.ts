@@ -4,6 +4,7 @@ import { LOCAL_REPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { INITIAL_LOG, POSITION_CSV } from '../fixtures/local-replay'
 import { STEP_FIVE_REPORT } from '../fixtures/engine-frame/step-five-report'
+import { LATEST_FRAME_REPORT } from '../fixtures/engine-frame/latest-report'
 const { appendFile, mkdtemp, readFile, writeFile, rm, readdir, stat } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -22,6 +23,23 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const pdfFont = [env.WRJ_PDF_FONT_PATH, 'C:\\Windows\\Fonts\\Deng.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'].find(path => !!path && existsSync(path) && !/\.ttc$/i.test(path))
 async function directory() { const dir = await mkdtemp(join(tmpdir(), 'wrj-report-test-')); dirs.push(dir); return dir }
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
+
+for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`最新报文 ${format} 导出保留分项损耗、通信参数、干扰源及待确认标记`, async () => {
+  const textCalls = format === 'PDF' ? vi.spyOn(PDFDocument.prototype, 'text') : undefined
+  try {
+    const result = await exportLocalReport(await directory(), LATEST_FRAME_REPORT, format, 'operator')
+    const text: string = format === 'PDF' ? textCalls!.mock.calls.map(call => String(call[0])).join('\n') : await readFile(result.filePath, 'utf8')
+    for (const value of ['自由空间', '雨衰', '云衰', '44.092173718306995', '频率（GHz）', '数据率（Mbps）', 'G/T（dB/K）', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '口径待确认', '1.189035332459013e-243']) expect(text).toContain(value)
+    if (format === 'HTML') {
+      const points = [...text.matchAll(/<polyline points="([^"]+)"/g)].map(match => match[1]!.trim().split(/\s+/).map(point => point.split(',')[1]))
+      expect(points.some(ys => new Set(ys).size === 2)).toBe(true)
+      const { reportCurveSvg } = await import('../../server/local/' + 'report-file.js')
+      const svg = reportCurveSvg({ title: '极小 BER', unit: 'BER', rows: [{ label: '3775', value: 1.189035332459013e-243 }, { label: '3780', value: 8.484338827878784e-244 }] }, '实际报文')
+      const y = [...svg.matchAll(/<circle[^>]* cy="([^"]+)"/g)].map(match => match[1])
+      expect(new Set(y).size).toBe(2)
+    }
+  } finally { textCalls?.mockRestore() }
+})
 
 describe('本地报告读取和真实文件导出', () => {
   it('HTML引擎曲线与页面一致：5秒步长连续，缺帧处保留断点', async () => {

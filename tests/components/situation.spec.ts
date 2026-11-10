@@ -300,6 +300,28 @@ describe('态势主界面', () => {
     sessionStorage.clear()
   })
 
+  it('当前运行拒收详情默认展开，完整显示诊断文字且不混入其他运行或执行原值中的 HTML', async () => {
+    const wrapper = await mountSituationPage()
+    const simulation = useSimulationStore()
+    simulation.run = simulationRun('STOPPED', false)
+    await flushPromises()
+    const telemetry = useTelemetryStore()
+    const message = '已拒绝上游引擎数据（帧头无效）：frame_id：引擎帧号必须为非负整数。（原始值="<img src=x onerror=alert(1)>",数据类型=string）；link_calc.links：引擎链路段必须为数组。（原始值=undefined，数据类型=undefined（字段缺失））'
+    const envelope = { type: 'event', schemaVersion: '1.0', topic: 'mission.log', taskId: 'TASK-001', sequence: 1,
+      payload: { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: 'RUN-001', state: 'REJECTED', message } }
+    expect(telemetry.acceptEnvelope(envelope)).toBe(true)
+    await flushPromises()
+    const details = wrapper.get('[data-testid="engine-rejection-detail"]')
+    expect(details.attributes('open')).toBeDefined()
+    expect(details.get('pre').text()).toBe(message)
+    expect(details.find('img').exists()).toBe(false)
+    expect(telemetry.acceptEnvelope({ ...envelope, sequence: 2, payload: { ...envelope.payload, runId: 'RUN-OTHER' } })).toBe(false)
+    expect(details.get('pre').text()).toBe(message)
+    telemetry.disconnectAndReset()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="engine-rejection-detail"]').exists()).toBe(false)
+  })
+
   it('没有 simulation.frame 也能通过 link.metric 在现有页签展示引擎证据与缺测值', async () => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
@@ -368,9 +390,11 @@ describe('态势主界面', () => {
     await wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(tab => tab.text() === '质量指标')!.trigger('click')
     await flushPromises()
     const panel = wrapper.get('[data-testid="quality-metric-panel"]')
-    const row = panel.findAll('.el-table__body tbody tr').find(row => row.text().includes('1.2e-4'))!
+    const row = panel.findAll('.quality-card').find(row => row.text().includes('1.2e-4'))!
     expect(row).toBeDefined()
-    expect(row.findAll('td').slice(1, 7).map(cell => cell.text())).toEqual(['1分5.5秒', '暂无数据', '1.2e-4', '-80', '107.00', '-7.50'])
+    await row.get('.quality-card-details summary').trigger('click')
+    const metrics = Object.fromEntries(row.findAll('dl > div').map(item => [item.get('dt').text(), item.get('dd').text()]))
+    expect(['源时刻', 'SNR（dB）', 'BER', '接收功率（dBm）', '路径损耗（dB）', '干信比 GXB（dB）'].map(label => metrics[label])).toEqual(['1分5.5秒', '暂无数据', '1.2e-4', '-80', '107.00', '-7.50'])
     await stateRow.trigger('click')
     await flushPromises()
     expect(document.querySelector('[data-testid="link-detail-runtime"]')?.textContent).toContain('1.2e-4')
@@ -705,12 +729,12 @@ describe('态势主界面', () => {
     const quality = panel.get('[data-testid="quality-metric-panel"]')
     expect(quality.isVisible()).toBe(true)
     expect(document.querySelector('[role="dialog"][aria-label="实时质量指标"]')).toBeNull()
-    expect(quality.findAllComponents(ElSelect)[1]!.props('modelValue')).toBe(SITUATION_LINKS_F00042[0]!.linkId)
-    quality.findAllComponents(ElSelect)[2]!.vm.$emit('update:modelValue', 5000)
+    expect(quality.findAllComponents(ElSelect)[2]!.props('modelValue')).toBe(SITUATION_LINKS_F00042[0]!.linkId)
+    quality.findAllComponents(ElSelect)[3]!.vm.$emit('update:modelValue', 5000)
     await tabs[0]!.trigger('click')
     expect(panel.get('.telemetry-section--links').isVisible()).toBe(true)
     await tabs[1]!.trigger('click')
-    expect(quality.findAllComponents(ElSelect)[2]!.props('modelValue')).toBe(5000)
+    expect(quality.findAllComponents(ElSelect)[3]!.props('modelValue')).toBe(5000)
     await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
     await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
     expect(tabs[1]!.attributes('aria-selected')).toBe('true')
@@ -1333,7 +1357,7 @@ describe('态势主界面', () => {
     expect(mapControllerMock.latestOptions!.initialNodes![0]!.longitude).toBeCloseTo(playback.replay!.currentTimeS, 6)
     expect(quality.engineFrame).toBeNull()
     expect(quality.engineAlarms).toEqual([])
-    expect(wrapper.text()).toContain('本地连续播放，等待 WebSocket 接入')
+    expect(wrapper.text()).toContain('播放中 · 等待数据')
     await wrapper.get('[data-testid="simulation-pause"]').trigger('click')
     const paused = playback.replay!.currentTimeS
     await vi.advanceTimersByTimeAsync(3000)
@@ -1346,7 +1370,7 @@ describe('态势主界面', () => {
     if (failure === '超时') {
       await vi.advanceTimersByTimeAsync(10_500)
       expect(playback.replay!.currentTimeS).toBeCloseTo(connectedAt + 10, 1)
-      expect(wrapper.text()).toContain('10 秒无有效帧')
+      expect(wrapper.text()).toContain('数据超时 · 画面冻结')
     } else {
       telemetry.connectionState = 'RETRYING'
       await vi.advanceTimersByTimeAsync(2000)
@@ -1435,6 +1459,35 @@ describe('态势主界面', () => {
     expect(useReplayStore().replay!.currentTimeS).toBeGreaterThan(0.9)
   })
 
+  it('刷新文件接收任务时在数据源初始化后订阅，初始化清理不会取消有效连接', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
+    const snapshot = structuredClone(LOCAL_REPLAY)
+    snapshot.durationS = 60
+    snapshot.tracks[1]!.positions.push({ ...snapshot.tracks[1]!.positions[1]!, time: 60 })
+    snapshot.recordCount += 1
+    const fileSource = playbackFileSource(snapshot)
+    const running: SimulationRun = { ...simulationRun('RUNNING', true), executionSource: 'REMOTE_WS', fileSource,
+      scenarioId: fileReceptionScenarioId(fileSource), canonical: { ...simulationRun('RUNNING', true).canonical, processId: null, currentTime: 0 },
+      engineControl: { connected: true, action: null, delivery: 'IDLE' } }
+    let connect: ReturnType<typeof vi.spyOn> | undefined
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) {
+        const telemetry = useTelemetryStore()
+        connect ??= vi.spyOn(telemetry, 'connect').mockImplementation(() => { telemetry.connectionState = 'SUBSCRIBED' })
+        return successResponse([running])
+      }
+      return successResponse(url.endsWith('/initial-nodes') ? snapshot.initial : snapshot)
+    }))
+    await mountSituationPage(undefined, 'LOCAL')
+    expect(connect).toHaveBeenCalledOnce()
+    expect(useTelemetryStore().connectionState).toBe('SUBSCRIBED')
+    const quality = useRuntimeQualityStore()
+    const frame = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: running.runId, frameId: 5, simulationTime: 5 }
+    expect(quality.acceptEngineFrame(quality.epoch, frame)).toBe(true)
+    await vi.advanceTimersByTimeAsync(500)
+    expect(useReplayStore().replay!.currentTimeS).toBeGreaterThan(5.4)
+  })
+
   it.each(['账号', '运行', '文件', '损坏'] as const)('刷新时忽略%s不匹配的本地暂停记录', async change => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame'] })
     const snapshot = structuredClone(LOCAL_REPLAY)
@@ -1498,7 +1551,7 @@ describe('态势主界面', () => {
     await vi.advanceTimersByTimeAsync(8000)
     const timedOut = playback.replay!.currentTimeS
     expect(timedOut).toBeCloseTo(15)
-    expect(wrapper.text()).toContain('10 秒无有效帧')
+    expect(wrapper.text()).toContain('数据超时 · 画面冻结')
     expect(wrapper.findComponent(OfflineSituationMap).props()).toMatchObject({ filePlaying: false })
     await vi.advanceTimersByTimeAsync(2000)
     expect(playback.replay!.currentTimeS).toBe(timedOut)

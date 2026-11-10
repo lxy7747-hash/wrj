@@ -2,7 +2,8 @@ import { engineNameMap, toScenarioDevices } from './engine-name-mapping.js'
 import { randomUUID, createHash } from 'node:crypto'
 import { mkdir, readFile, writeFile, readdir, lstat, realpath, rename, unlink } from 'node:fs/promises'
 import { join, resolve, relative, isAbsolute } from 'node:path'
-import { EVENTS_CSV_HEADER, type ScenarioDraft } from '../../src/contracts/domain-models.js'
+import { EVENTS_CSV_HEADER, type ScenarioDraft, type SimulationRun } from '../../src/contracts/domain-models.js'
+import { fileReceptionMapping } from '../../src/features/situation/file-reception.js'
 import { isMissionResultId, isMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../../src/features/results/mission-result.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
 import { readLocalReport } from './report-file.js'
@@ -73,6 +74,29 @@ async function validateContinuousEventArchive(
 export class LocalMissionResults implements MissionResults {
   private readonly directory: string
   constructor(directory: string) { this.directory = resolve(directory) }
+
+  /** 文件与 WS 并行接收结束后发布结果；文件统计仍属于所播放的源文件。 */
+  async captureFileReception(eventPath: string, positionPath: string, run: Pick<SimulationRun, 'fileSource' | 'startedAt' | 'scenarioId' | 'runId' | 'taskId'>, completedAt: string, lastFrameTime: number): Promise<void> {
+    if (!run.fileSource || !run.startedAt) throw new Error('文件接收运行缺少来源或开始时刻。')
+    const [replay, report, log] = await Promise.all([
+      readLocalReplay(eventPath, positionPath), readLocalReport(eventPath, positionPath), readAfsimLogFile(eventPath),
+    ])
+    if (!report?.localEvidence || replay.initial.sha256 !== run.fileSource.eventSha256 || replay.sha256 !== run.fileSource.positionSha256
+      || log.source.sha256 !== run.fileSource.eventSha256) throw new Error('播放文件已变化，不能将其他来源保存为本次运行结果。')
+    // 引擎可能运行得比文件轨迹更久，报告范围不能截掉已接收的帧。
+    report.localEvidence.endTimeS = Math.max(report.localEvidence.endTimeS, lastFrameTime)
+    const record: MissionResultRecord = {
+      resultId: `RESULT-${randomUUID()}`, scenarioId: run.scenarioId, scenarioName: `文件与 WebSocket · ${replay.initial.fileName}`,
+      revision: 1, startedAt: run.startedAt, completedAt, runId: run.runId, taskId: run.taskId, executionSource: 'REMOTE_WS',
+    }
+    const snapshot = { record, replay, report }
+    if (!isMissionResultSnapshot(snapshot)) throw new Error('播放文件快照或报告来源不一致，无法发布接收结果。')
+    await mkdir(this.directory, { recursive: true })
+    await publishReportFilterIndex(this.directory, record, report, replay, log, { devices: fileReceptionMapping(replay.initial).manifest.devices })
+    const payload = JSON.stringify(snapshot), pending = join(this.directory, `${record.resultId}.pending`)
+    await writeFile(pending, JSON.stringify({ sha256: hash(payload), payload }), { flag: 'wx' })
+    await rename(pending, join(this.directory, `${record.resultId}.json`))
+  }
 
   async capture(entryDirectory: string, draft: ScenarioDraft, startedAt: string, completedAt: string, canPublish: () => boolean = () => true, context?: TimeSeriesContext, continuousArchiveDirectory?: string): Promise<void> {
     const manifest = JSON.parse(await readFile(join(entryDirectory, 'mapping.json'), 'utf8'))

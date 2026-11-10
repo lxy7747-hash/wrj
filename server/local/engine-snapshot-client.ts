@@ -7,14 +7,21 @@ import { engineNameMap, toScenarioId } from './engine-name-mapping.js'
 const BACKOFF_MS = [1000, 2000, 5000, 10000] as const
 const routeKey = (route: EngineRoute, pathId = route.pathId) => JSON.stringify([route.direction, route.sourceName, route.targetName, pathId])
 
-function describeSimulationTime(input: object): string {
-  const value = 'sim_time_s' in input ? input.sim_time_s : undefined
+function describeInvalidField(input: object, fieldPath: string): string {
+  let value: unknown = input
+  let present = true
+  for (const key of fieldPath.split('.')) {
+    if (value === null || typeof value !== 'object' || !Object.hasOwn(value, key)) {
+      value = undefined; present = false; break
+    }
+    value = (value as Record<string, unknown>)[key]
+  }
   const type = value === null ? 'null' : Array.isArray(value) ? 'array' : typeof value
   let raw: string
   try { raw = typeof value === 'number' ? String(value) : JSON.stringify(value) ?? 'undefined' }
   catch { raw = '[无法序列化]' }
-  // 只输出时间字段的有界预览，JSON 转义保留字符串空白而不伪造日志换行。
-  return `原始值=${raw.slice(0, 256)}${raw.length > 256 ? '…（已截断）' : ''}，数据类型=${type}${Object.hasOwn(input, 'sim_time_s') ? '' : '（字段缺失）'}`
+  // 只输出失败字段的有界预览，JSON 转义保留字符串空白而不伪造日志换行。
+  return `原始值=${raw.slice(0, 256)}${raw.length > 256 ? '…（已截断）' : ''}，数据类型=${type}${present ? '' : '（字段缺失）'}`
 }
 
 export function readLinkEngineWsUrl(value: string | undefined): string | undefined {
@@ -135,7 +142,7 @@ export class EngineSnapshotClient {
           if (!input || typeof input !== 'object' || !('msg_type' in input) || input.msg_type !== 'frame_snapshot') throw new Error('引擎消息类型不是 frame_snapshot。')
           reason = '帧头无效'
           const adapted = adaptEngineFrameSnapshot(input)
-          if (!adapted.data) throw new Error(adapted.errors.map(error => `${error.fieldPath}：${error.message}${error.fieldPath === 'sim_time_s' ? `（${describeSimulationTime(input)}）` : ''}`).join('；'))
+          if (!adapted.data) throw new Error(adapted.errors.map(error => `${error.fieldPath}：${error.message}（${describeInvalidField(input, error.fieldPath)}）`).join('；'))
           const frame = adapted.data
           // 初次连接 lastFrameId 为 -1；坏消息不消耗重连后的首个有效帧判断。
           const restarted = (frame.frameId === 0 && this.lastFrameId > 0) || (firstFrame && frame.frameId < this.lastFrameId)

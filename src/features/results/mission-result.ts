@@ -13,6 +13,7 @@ export interface MissionResultRecord {
   completedAt: string
   runId?: string
   taskId?: string
+  executionSource?: 'REMOTE_WS'
 }
 
 /**
@@ -60,7 +61,8 @@ export function isMissionResultRecord(value: unknown): value is MissionResultRec
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const r = value as MissionResultRecord
   return ['resultId', 'scenarioId', 'scenarioName', 'revision', 'startedAt', 'completedAt'].every(key => Object.hasOwn(r, key))
-    && Object.keys(r).every(key => ['resultId', 'scenarioId', 'scenarioName', 'revision', 'startedAt', 'completedAt', 'runId', 'taskId'].includes(key)) && isMissionResultId(r.resultId)
+    && Object.keys(r).every(key => ['resultId', 'scenarioId', 'scenarioName', 'revision', 'startedAt', 'completedAt', 'runId', 'taskId', 'executionSource'].includes(key)) && isMissionResultId(r.resultId)
+    && (r.executionSource === undefined || r.executionSource === 'REMOTE_WS' && r.runId !== undefined && r.taskId !== undefined)
     && ((r.runId === undefined && r.taskId === undefined) || (typeof r.runId === 'string' && /^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(r.runId) && typeof r.taskId === 'string' && /^TASK-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(r.taskId)))
     && typeof r.scenarioId === 'string' && r.scenarioId.startsWith('SCN-')
     && typeof r.scenarioName === 'string' && r.scenarioName.trim().length > 0
@@ -102,7 +104,7 @@ export function isMissionResultSnapshot(value: unknown): value is MissionResultS
   if (!isMissionResultRecord(record) || !isLocalReplaySnapshot(replay) || !isLocalReport(report)) return false
   if (parameters !== undefined && (!isMissionResultParameters(parameters) || parameters.scenarioId !== record.scenarioId || parameters.revision !== record.revision)) return false
   const e = report.localEvidence
-  return e.simulationComplete && !replay.waitingForLine && !e.waitingForPositionLine
+  return (e.simulationComplete || record.executionSource === 'REMOTE_WS') && !replay.waitingForLine && !e.waitingForPositionLine
     && e.eventFile.sha256 === replay.initial.sha256 && e.eventFile.fileName === replay.initial.fileName
     && e.positionFile.sha256 === replay.sha256 && e.positionFile.fileName === replay.fileName
     && e.positionCount === replay.recordCount && e.nodes.length === replay.initial.nodes.length

@@ -173,6 +173,7 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
       <p v-if="selectedReport?.localEvidence">报告编号：{{ selectedReport.reportId }} · 统计生成：{{ formatDateTime(selectedReport.generatedTime) }}</p>
       <el-skeleton v-if="capabilityState === 'LOADING' || capabilityState === 'VALIDATING'" :rows="8" animated />
       <template v-else-if="selectedReport?.localEvidence">
+        <p v-if="resultSource?.executionSource === 'REMOTE_WS'">本次 WebSocket 接收已结束；引擎指标来自本次归档，文件事件与轨迹来自所播放的文件，不表示引擎已确认停止。</p>
         <el-alert v-if="resultSource && (capabilityState === 'ERROR' || !localFilterResult)" type="warning" :closable="false" :title="resultMessage || '该历史结果没有完整筛选索引，请重新生成结果。'" />
         <p v-if="resultSource" data-testid="report-applied-filter">当前图表与导出范围：{{ appliedFilterLabel }}</p>
         <el-button v-if="resultSource && engineArchive" data-testid="engine-frame-archive-download" :loading="engineArchiveDownloading" :disabled="pending" @click="downloadEngineFrames">下载完整引擎帧 JSONL</el-button>
@@ -280,7 +281,7 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
   overflow-wrap: anywhere;
   padding: 0.85rem;
   border: 1px solid var(--console-border);
@@ -321,6 +322,10 @@ async function downloadEngineCsv(fileName: string): Promise<void> {
 .reports-page__content :deep(.el-tabs__header) {
   flex: 0 0 auto;
 }
+
+/* 来源与归档汇总较多时允许整页滚动，避免把明细页签压到零高度。 */
+.reports-page__content :deep(.local-report) { flex: 1 0 auto; }
+.reports-page__content :deep(.local-report > .el-tabs) { flex: 1 0 28rem; }
 
 .reports-page__content :deep(.el-tabs__content) {
   flex: 1;

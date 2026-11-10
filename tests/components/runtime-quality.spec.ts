@@ -61,7 +61,11 @@ function detail(label: string): string {
   expect(row, label).toBeDefined()
   return row!.get('dd').text()
 }
-function cells(): string[] { return wrapper!.findAll('.el-table__body tbody tr')[0]!.findAll('td').map(cell => cell.text()) }
+function cardValues(): string[] {
+  const card = wrapper!.get('.quality-card')
+  const metrics = Object.fromEntries(card.findAll('dl > div').map(row => [row.get('dt').text(), row.get('dd').text()]))
+  return [card.get('.quality-card-heading strong').text(), ...['源时刻', 'SNR（dB）', 'BER', '接收功率（dBm）', '路径损耗（dB）', '干信比 GXB（dB）', '时延（ms）', '可用率（%）'].map(label => metrics[label]!)]
+}
 
 beforeEach(() => {
   pinia = createPinia()
@@ -82,9 +86,9 @@ describe('统一运行质量投影与展示', () => {
     mountViews()
     expect(store.acceptFrame(epoch, { frameId: 10, simulationTime: 65.5 }, qualityInput())).toBe(true)
     await flushPromises()
-    expect(cells()).toEqual(['发送节点 → 接收节点', '1分5.5秒', '暂无数据', '1.2e-4', '-80', '107.00', '-7.50', '暂无数据', '暂无数据'])
+    expect(cardValues()).toEqual(['发送节点 → 接收节点', '1分5.5秒', '暂无数据', '1.2e-4', '-80', '107.00', '-7.50', '暂无数据', '暂无数据'])
     expect(detail('质量测量时刻')).toBe('1分5.5秒')
-    expect(detail('误码率 BER')).toBe(cells()[3])
+    expect(detail('误码率 BER')).toBe(cardValues()[3])
     expect(detail('接收功率')).toBe('-80.00 dBm')
     expect(detail('路径损耗')).toBe('107.00 dB')
     expect(detail('干信比 GXB')).toBe('-7.50 dB')
@@ -134,7 +138,7 @@ describe('统一运行质量投影与展示', () => {
       link_id: source.links[0]!.link_id, tx_platform: 'TX', rx_platform: 'RX', tx_port: 'TX-PORT', rx_port: 'RX-PORT',
     }] })).toBe(true)
     await flushPromises()
-    expect(cells().slice(2)).toEqual(Array(7).fill('暂无数据'))
+    expect(cardValues().slice(2)).toEqual(Array(7).fill('暂无数据'))
     for (const label of ['误码率 BER', '接收功率', '干信比 GXB', '路径损耗', '模型版本', '调制方式']) expect(detail(label)).toBe('暂无数据')
   })
 
@@ -147,7 +151,7 @@ describe('统一运行质量投影与展示', () => {
     invalid.links[0]!.quality.ber = 2
     expect(store.acceptFrame(epoch, { frameId: 11, simulationTime: 66 }, invalid)).toBe(false)
     await flushPromises()
-    expect(cells().slice(2)).toEqual(Array(7).fill('暂无数据'))
+    expect(cardValues().slice(2)).toEqual(Array(7).fill('暂无数据'))
     expect(wrapper!.find('[data-testid="link-detail-runtime"]').exists()).toBe(false)
     expect(detail('误码率 BER')).toBe('暂无数据')
     expect(store.acceptFrame(epoch, { frameId: 10, simulationTime: 65.5 }, qualityInput())).toBe(false)
@@ -169,7 +173,7 @@ describe('统一运行质量投影与展示', () => {
     else useSimulationStore().run = { ...useSimulationStore().run!, runId: 'RUN-NEW' }
     await flushPromises()
     expect(store.snapshot).toBeNull()
-    expect(cells().slice(2)).toEqual(Array(7).fill('暂无数据'))
+    expect(cardValues().slice(2)).toEqual(Array(7).fill('暂无数据'))
     expect(detail('误码率 BER')).toBe('暂无数据')
     expect(store.acceptFrame(epoch, { frameId: 11, simulationTime: 66 }, qualityInput())).toBe(false)
     expect(wrapper!.find('[data-testid="link-detail-runtime"]').exists()).toBe(false)
@@ -184,12 +188,12 @@ describe('统一运行质量投影与展示', () => {
     expect(detail('数据年龄')).toBe('暂无数据')
     useSimulationStore().run!.canonical.currentTime = 67
     await flushPromises()
-    expect(wrapper!.findAll('.el-table__body tbody tr')).toHaveLength(0)
+    expect(wrapper!.findAll('.quality-card')).toHaveLength(0)
     expect(detail('数据年龄')).toBe('1000 ms')
-    wrapper!.findAllComponents(ElSelect)[2]!.vm.$emit('update:modelValue', 1000)
+    wrapper!.findAllComponents(ElSelect)[3]!.vm.$emit('update:modelValue', 1000)
     await flushPromises()
-    expect(cells()[1]).toBe('1分6秒')
-    expect(detail('误码率 BER')).toBe(cells()[3])
+    expect(cardValues()[1]).toBe('1分6秒')
+    expect(detail('误码率 BER')).toBe(cardValues()[3])
   })
 
   it('统一投影精确匹配端点和端口，不按同名或相同 BER 错套，清空帧返回空映射', () => {

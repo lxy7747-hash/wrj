@@ -13,10 +13,22 @@ import { isLocalReport, isLocalReportExport, localReportTables } from '../../src
 import { LOCAL_REPORT, LOCAL_EXPORT, LOCAL_QUALITY_REPORT } from '../fixtures/local-report'
 import type { EngineFrameArchiveSummary } from '../../src/contracts/domain-models'
 import { STEP_FIVE_REPORT } from '../fixtures/engine-frame/step-five-report'
+import { LATEST_FRAME_REPORT } from '../fixtures/engine-frame/latest-report'
 
 const response = (data: unknown) => ({ ok: true, json: async () => ({ ok: true, data }) }) as Response
 afterEach(() => { vi.unstubAllGlobals(); document.body.innerHTML = '' })
 describe('本地文件报告页面与信任边界', () => {
+  it('最新报文的极小 BER 曲线保留变化，报表可展开全部接收参数', async () => {
+    const wrapper = mount(LocalReportTabs, { props: { evidence: LATEST_FRAME_REPORT.localEvidence }, global: { plugins: [ElementPlus] } })
+    try {
+      await wrapper.get('#tab-引擎链路段实测').trigger('click'); await flushPromises()
+      const chart = wrapper.findAllComponents(ReportChart).find(chart => chart.get('h4').text().includes('BER'))!
+      expect(new Set(chart.findAll('circle').map(point => point.attributes('cy'))).size).toBe(2)
+      await wrapper.findAll('.el-table__expand-icon')[1]!.trigger('click'); await flushPromises()
+      const details = wrapper.get('[data-testid="engine-segment-details"]')
+      for (const value of ['雨衰', '云衰', '44.092173718306995', '8.2', '80', '30', '-3', '0.3433178367922316', 'jammer_station_01', '144.5182955065433', '单位待确认', '口径待确认']) expect(details.text()).toContain(value)
+    } finally { wrapper.unmount() }
+  })
   it('引擎曲线连通5→10→15，仅在缺少20的25之前断开', async () => {
     const wrapper = mount(LocalReportTabs, { props: { evidence: STEP_FIVE_REPORT.localEvidence }, global: { plugins: [ElementPlus] } })
     try {

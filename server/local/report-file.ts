@@ -11,6 +11,7 @@ import type { MissionResultRecord } from '../../src/features/results/mission-res
 import type { MissionResultParameterComparison } from '../../src/features/results/mission-result.js'
 import { createLocalReportPdf } from './pdf-report.js'
 import { toDetectionEvent } from '../../src/features/reports/detection-events.js'
+import { engineSegmentDetails } from '../../src/features/reports/engine-segment-details.js'
 
 /** 侦测规范事件明细上限；计数仍在事件分类统计中完整保留。 */
 const DETECTION_DETAIL_LIMIT = 500
@@ -71,7 +72,7 @@ export function reportChartSvg(chart: { title: string; rows: Array<{ label: stri
 
 export function reportCurveSvg(chart: { title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; unit: string }, scope: string): string {
   if (!chart.rows.length) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>暂无数据</p>`
-  const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = Math.max(1e-12, maximum - minimum)
+  const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = (maximum - minimum) || 1
   const times = chart.rows.map((row, index) => row.time ?? index), startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
   const points = chart.rows.map((row, index) => {
     const x = chart.rows.length === 1 ? 320 : 50 + ((row.time ?? index) - startTime) / timeSpan * 540
@@ -112,6 +113,7 @@ export async function exportLocalReport(directory: string, report: Report, forma
   if (filter) metadata.push(['已应用筛选', [filter.nodeId && `节点=${filter.nodeId}`, filter.linkId && `链路=${filter.linkId}`, filter.stage && `任务阶段=${filter.stage}`,
     (filter.from !== undefined || filter.to !== undefined) && `时间=${filter.from ?? report.localEvidence.startTimeS}～${filter.to ?? report.localEvidence.endTimeS} 秒`].filter(Boolean).join('； ') || '全部'])
   if (source) metadata.unshift(['执行结果编号', source.resultId], ['场景编号', source.scenarioId], ['场景名称', source.scenarioName], ['场景修订', String(source.revision)], ['运行开始', source.startedAt], ['运行完成', source.completedAt])
+  if (source?.executionSource === 'REMOTE_WS') metadata.push(['接收结果说明', '本次 WebSocket 接收已结束；引擎指标来自本次归档，文件事件与轨迹来自所播放的文件，不表示引擎已确认停止。'])
   if (quality) metadata.push(['质量来源文件', quality.dataset.source.fileName], ['质量来源 SHA-256', quality.dataset.source.sha256])
   if (engine) metadata.push(['引擎帧归档 SHA-256', engine.sourceSha256], ['引擎帧数', String(engine.frameCount)], ['引擎帧时刻范围', `${engine.firstSimulationTime ?? '暂无'}～${engine.lastSimulationTime ?? '暂无'} 秒`])
   if (engineCsv) metadata.push(['引擎规范CSV来源 SHA-256', engineCsv.sourceSha256], ['已生成规范CSV', engineCsv.files.map(file => `${file.fileName}（${file.rowCount}行）`).join('；') || '无'])
@@ -125,11 +127,14 @@ export async function exportLocalReport(directory: string, report: Report, forma
     rows: parameterRows.length ? parameterRows : [['当前结果未保存参数快照', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据']],
   }]
   const engineSections = engine === undefined ? [] : [{ title: '引擎链路段实测（仅已接收帧）',
-    columns: ['轮次', '帧', '时刻（秒）', '段标识', '源端', '目标端', 'GXB（dB）', 'BER', '接收功率（dBm）', '接收功率（dBW）', '总损耗（dB）'],
+    columns: ['轮次', '帧', '时刻（秒）', '段标识', '源端', '目标端', 'GXB（dB）', 'BER', '接收功率（dBm）', '接收功率（dBW）', '总复合损耗（dB，原值）'],
     rows: engine.segmentRows.length ? engine.segmentRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.segment.linkId,
       `${row.segment.sourceName ?? '暂无'}:${row.segment.sourcePort ?? '暂无'}`, `${row.segment.targetName ?? '暂无'}:${row.segment.targetPort ?? '暂无'}`,
       String(row.segment.quality.gxbDb ?? '暂无'), String(row.segment.quality.ber ?? '暂无'), String(row.segment.quality.rxPowerDbm ?? '暂无'), String(row.segment.quality.rxPowerDbw ?? '暂无'), String(row.segment.losses.totalDb ?? '暂无')])
       : [['暂无接收到的链路段', '', '', '', '', '', '', '', '', '', '']],
+  }, { title: '引擎链路段完整参数（源值）', columns: ['轮次/帧/时刻（秒）/段标识', '链路信息', '损耗明细', '通信参数', '干扰来源（计算输入）'],
+    rows: engine.segmentRows.map(row => [`${row.engineEpoch}/${row.frameId}/${row.simulationTime}/${row.segment.linkId}`,
+      ...engineSegmentDetails(row.segment).map(group => group.rows.map(([label, value]) => `${label}：${value}`).join('；'))]),
   }, { title: '引擎路由切换（仅已接收帧）', columns: ['轮次', '帧', '时刻（秒）', '方向', '旧路径', '新路径', '原因（段/原始原因）'],
     rows: engine.switchRows.length ? engine.switchRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.value.direction,
       row.value.oldPathId ?? '暂无', row.value.pathId, row.value.reasons.map(reason => `${reason.linkId ?? '暂无'}:${reason.reasons.join('|') || '暂无'}`).join('；') || '暂无'])

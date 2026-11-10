@@ -18,7 +18,7 @@ const barRange = computed(() => Math.max(1, Math.max(0, ...rows.value.map(row =>
 const barZero = computed(() => -barMinimum.value / barRange.value * 100)
 const lineMinimum = computed(() => Math.min(...rows.value.map(row => row.value)))
 const lineMaximum = computed(() => Math.max(...rows.value.map(row => row.value)))
-const lineRange = computed(() => Math.max(1e-12, lineMaximum.value - lineMinimum.value))
+const lineRange = computed(() => (lineMaximum.value - lineMinimum.value) || 1)
 const lineStartTime = computed(() => Math.min(...rows.value.map((row, index) => row.time ?? index)))
 const lineEndTime = computed(() => Math.max(...rows.value.map((row, index) => row.time ?? index)))
 const lineTimeRange = computed(() => Math.max(1e-12, lineEndTime.value - lineStartTime.value))

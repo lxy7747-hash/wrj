@@ -16,10 +16,20 @@ const validate = ajv.compile({ $ref: 'engine#/components/schemas/LinkMetricPaylo
 const adapt = (input: unknown = sample) => { const result = adaptEngineFrameSnapshot(input); expect(result.data).not.toBeNull(); return { ...result.data!, runId: 'RUN-ENGINE' } }
 
 describe('引擎帧归一化及合同', () => {
-  it.each([initial, changed, detected, alarm])('websocketNew 帧 $frame_id 保留帧号，毫秒只转换一次，新增字段通过合同', raw => {
+  it.each([0, 5, 10, 3770.0])('无 sim_time_s 的帧 %s 直接按帧号提供秒制时间', frame_id => {
+    const { sim_time_s: _legacyTime, ...raw } = sample
+    const frame = adapt({ ...raw, frame_id })
+    expect(frame).toMatchObject({ frameId: frame_id, simulationTime: frame_id })
+    expect(isEngineFrameSnapshot(frame)).toBe(true)
+    expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
+  })
+  it.each([5000, null, -1, false, '5000ms', [5000], { value: 5000 }])('旧 sim_time_s=%j 不再参与校验或时间计算', sim_time_s => {
+    expect(adapt({ ...sample, frame_id: 3770, sim_time_s })).toMatchObject({ frameId: 3770, simulationTime: 3770 })
+  })
+  it.each([initial, changed, detected, alarm])('websocketNew 帧 $frame_id 按帧号生成秒值，忽略旧时间字段，新增字段通过合同', raw => {
     const frame = adapt(raw)
     expect(frame.frameId).toBe(raw.frame_id)
-    expect(frame.simulationTime).toBeCloseTo(raw.sim_time_s / 1000, 10)
+    expect(frame.simulationTime).toBe(raw.frame_id)
     expect(frame.wallTimeMs).toBe(raw.wall_time_ms)
     frame.links.forEach((link, index) => {
       const source = raw.link_calc.links[index]!
@@ -30,7 +40,7 @@ describe('引擎帧归一化及合同', () => {
     expect(isEngineFrameSnapshot(frame)).toBe(true)
     expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
     expect(isEngineFrameSnapshot(JSON.parse(JSON.stringify(frame)))).toBe(true)
-    expect(frame.simulationTime).toBeCloseTo(raw.sim_time_s / 1000, 10)
+    expect(frame.simulationTime).toBe(raw.frame_id)
   })
   it('探测频率从 GHz 转 Hz，干扰机同名字段保持 Hz；不补造概率或启停事件', () => {
     const frame = adapt(detected)
@@ -105,9 +115,9 @@ describe('引擎帧归一化及合同', () => {
     expect(frame).toMatchObject({ jammers: [], events: [], initRouting: null, routing: { switches: [], alarms: [] } })
     expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
   })
-  it.each([{ frame_id: undefined }, { frame_id: -1 }, { frame_id: 1.5 }, { frame_id: '' }, { sim_time_s: undefined }, { sim_time_s: Infinity }, { link_calc: {} }])('必要帧头不合法拒绝并定位 %j', change => {
+  it.each([{ frame_id: undefined }, { frame_id: -1 }, { frame_id: 1.5 }, { frame_id: '' }, { link_calc: {} }])('必要帧头不合法拒绝并定位 %j', change => {
     const result = adaptEngineFrameSnapshot({ ...sample, ...change })
-    expect(result.data).toBeNull(); if (!result.data) expect(result.errors[0]!.fieldPath).toMatch(/frame_id|sim_time_s|link_calc.links/)
+    expect(result.data).toBeNull(); if (!result.data) expect(result.errors[0]!.fieldPath).toMatch(/frame_id|link_calc.links/)
   })
   it.each([undefined, null, -1, 0.5, '0', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])('运行时和 OpenAPI 拒绝非法 engineEpoch：%s', engineEpoch => {
     const frame = { ...adapt(), engineEpoch }

@@ -1,5 +1,6 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
+import { toRaw } from 'vue'
 import { isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
 import { useRuntimeQualityStore } from './runtime-quality'
 import type {
@@ -59,6 +60,8 @@ const runtimes = new WeakMap<object, TelemetryRuntime>()
 
 /** 返回指定 Store 实例独享的非响应式连接资源。 */
 function runtimeFor(store: object): TelemetryRuntime {
+  // 开发工具为每次 action 包装不同代理，连接资源必须绑定同一个原始 Store。
+  store = toRaw(store)
   const existing = runtimes.get(store)
   if (existing !== undefined) return existing
   const runtime: TelemetryRuntime = { socket: null, retryTimer: null, retryAttempt: 0, manuallyClosed: false }

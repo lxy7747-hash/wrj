@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { POSITION_CSV } from '../fixtures/local-replay'
+import { fileReceptionScenarioId, playbackFileSource } from '../../src/features/situation/file-reception'
 import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilterResult } from '../../src/contracts/domain-models'
 import type { MissionResultParameterComparison, MissionResultRecord, MissionResultSnapshot } from '../../src/features/results/mission-result'
 const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:fs/' + 'promises')
@@ -16,6 +17,7 @@ const { ScenarioProjection } = await import('../../server/scenarios/' + 'project
 const { AuthSqliteStorage } = await import('../../server/local/' + 'auth-sqlite.js')
 const { exportLocalReport } = await import('../../server/local/' + 'report-file.js')
 const { readAfsimLogFile } = await import('../../server/local/' + 'afsim-log-reader.js')
+const { readLocalReplay } = await import('../../server/local/' + 'afsim-replay-reader.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { env } = await import('node:' + 'process')
 const cleanup: Array<() => Promise<void> | void> = []
@@ -38,6 +40,26 @@ async function setup() {
 }
 
 describe('真实仿真结果闭环', () => {
+  it.each([true, false])('文件与 WS 接收可发布可筛选快照，重建后仍保留来源；文件变化不能混入（源文件结束标记 %s）', async complete => {
+    const { root, output, results } = await setup()
+    const eventPath = join(output, 'scenario_events.csv'), positionPath = join(output, 'position.csv')
+    if (!complete) await writeFile(eventPath, REPORT_EVENT_CSV.split('\n').filter(line => !line.startsWith('10,SIMULATION_COMPLETE')).join('\n') + '\n')
+    const fileSource = playbackFileSource(await readLocalReplay(eventPath, positionPath))
+    const run = { runId: 'RUN-WS' as const, taskId: 'TASK-001' as const, scenarioId: fileReceptionScenarioId(fileSource), startedAt: start, fileSource }
+    await results.captureFileReception(eventPath, positionPath, run, end, 3780)
+    const record = (await results.list())[0]!
+    expect(record).toMatchObject({ runId: run.runId, executionSource: 'REMOTE_WS' })
+    const reopened = new LocalMissionResults(join(root, 'results'))
+    const snapshot = (await reopened.get(record.resultId))!
+    expect(snapshot.report.localEvidence!.simulationComplete).toBe(complete)
+    expect(snapshot.report.localEvidence!.endTimeS).toBe(3780)
+    expect(snapshot.replay.initial.sha256).toBe(fileSource.eventSha256)
+    expect((await reopened.filter(record.resultId, snapshot.report.reportId, { from: 3775, to: 3780 })).report.localEvidence!.endTimeS).toBe(3780)
+    await writeFile(positionPath, POSITION_CSV + '4,A,-79,32,20,20,175\n')
+    await expect(results.captureFileReception(eventPath, positionPath, { ...run, runId: 'RUN-NEW' }, end, 3780)).rejects.toThrow('播放文件已变化')
+    expect(await reopened.list()).toHaveLength(1)
+    expect(await reopened.get(record.resultId)).toEqual(snapshot)
+  })
   it.each([true, false])('入库统一回映射、中文名称与筛选闭合，源 CSV 不变；新包=%s', async marked => {
     const { entry, output, draft, results } = await setup()
     const csvIds = marked ? ['rear_comm_vehicle', 'mission_uav_01'] : ['CMD-01', 'AIR-01']

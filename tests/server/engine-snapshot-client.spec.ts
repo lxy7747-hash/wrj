@@ -5,7 +5,8 @@ import initialNew from '../fixtures/engine-frame/websocket-new/fream001.json'
 import switchNew from '../fixtures/engine-frame/websocket-new/fream_chenge1.json'
 import detectedNew from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import alarmNew from '../fixtures/engine-frame/websocket-new/fream_chenge3.json'
-import type { EngineConnectionDiagnostic, EngineFrameSnapshot, MissionLogUpdate } from '../../src/contracts/domain-models'
+import latestSamples from '../fixtures/engine-frame/websocket-latest.json'
+import type { EngineConnectionDiagnostic, EngineFrameArchiveSegmentRow, EngineFrameSnapshot, MissionLogUpdate } from '../../src/contracts/domain-models'
 const { once } = await import('node:' + 'events')
 const { createServer } = await import('node:' + 'http')
 const { WebSocket, WebSocketServer } = await import('w' + 's')
@@ -37,6 +38,37 @@ async function upstream() {
 }
 const run = { runId: 'RUN-ENGINE' as const, taskId: 'TASK-001' as const }
 
+it('最新两条无时间字段报文经 WS 接收与 JSONL 往返保留全部指标，规范 CSV 缺测不伪造', async () => {
+  const { server, url } = await upstream(), frames: EngineFrameSnapshot[] = []
+  const root = await mkdtemp(join(tmpdir(), 'wrj-latest-frame-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+  const scope = { ...run, scenarioId: 'SCN-LATEST', revision: 1, startedAt: '2026-11-10T00:00:00Z' }
+  const session = await archive.begin(scope)
+  const diagnostics: EngineConnectionDiagnostic[] = []
+  const client = new EngineSnapshotClient(url, (_run: string, frame: EngineFrameSnapshot) => { frames.push(frame); session.append(frame) }, vi.fn(), (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
+  cleanups.push(() => client.stop())
+  const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
+  latestSamples.forEach(raw => socket.send(JSON.stringify(raw)))
+  await vi.waitFor(() => expect(frames).toHaveLength(2))
+  expect(client.diagnostics.rejected).toBe(0)
+  expect(diagnostics.some(item => item.state === 'FRAME_ADVANCE_OBSERVED')).toBe(false)
+  expect(frames.map(frame => frame.simulationTime)).toEqual([3775, 3780])
+  expect(frames.every(frame => frame.links.length === 5 && !frame.jammers.length && !frame.events.length)).toBe(true)
+  expect(frames[0]!.links[0]!.quality).toMatchObject({ gxbDb: 0, ber: latestSamples[0]!.link_calc.links[0]!.quality.ber, rxPowerDbm: null })
+  expect(frames[0]!.links[1]!.inputTrace.jammers[0]!.lossDb).toBe(latestSamples[0]!.link_calc.links[1]!.quality.input_trace.jammers[0]!.Loss_dB)
+  await session.close()
+  const saved = (await archive.load(run.runId))!
+  expect(saved).toMatchObject({ frameCount: 2, firstSimulationTime: 3775, lastSimulationTime: 3780, switchRows: [], eventRows: [] })
+  expect(saved.segmentRows.map((row: EngineFrameArchiveSegmentRow) => row.segment)).toEqual(frames.flatMap(frame => frame.links))
+  const { readFile } = await import('node:fs/' + 'promises')
+  const restored = (await readFile((await archive.getFile(run.runId, saved.sourceSha256))!, 'utf8')).trim().split('\n').map((line: string) => JSON.parse(line))
+  expect(restored).toEqual(frames)
+  const csv = (await archive.finalizeCsv(run.runId, scope, {}))!
+  expect(csv.files).toEqual([])
+  expect(csv.missing.map((file: { fileName: string }) => file.fileName)).toHaveLength(5)
+})
+
 it('websocketNew 四帧经本地 WS 转发保留新增字段、统一秒值，仅从本轮历史恢复旧路径', async () => {
   const { server, url } = await upstream(), frames: EngineFrameSnapshot[] = []
   const projection = new MockProjection(), http = createServer()
@@ -53,16 +85,16 @@ it('websocketNew 四帧经本地 WS 转发保留新增字段、统一秒值，�
   const client = new EngineSnapshotClient(url, (id: string, frame: EngineFrameSnapshot) => { frames.push(frame); realtime.publishEngineFrame(id, frame) })
   cleanups.push(() => client.stop())
   const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
-  for (const raw of [initialNew, switchNew, detectedNew, alarmNew]) socket.send(JSON.stringify(raw))
+  for (const raw of [initialNew, switchNew, detectedNew, alarmNew]) socket.send(JSON.stringify({ ...raw, sim_time_s: undefined }))
   const delivered = () => messages.filter(message => message.payload?.kind === 'ENGINE_FRAME')
   await vi.waitFor(() => expect(delivered()).toHaveLength(4))
   expect(frames[1]!.routing.switches[0]!.oldNodes.map(node => node.platformName)).toEqual(['rear_comm_vehicle', 'command_vehicle', 'mission_uav_03'])
   expect(frames[1]!.routing.switches[1]!.oldNodes.map(node => node.platformName)).toEqual(['mission_uav_03', 'command_vehicle', 'rear_comm_vehicle'])
   expect(frames[3]!.routing.switches[0]!.oldNodes).toEqual([])
-  expect(delivered()[2]).toMatchObject({ taskId: run.taskId, simulationTime: 350.625,
-    payload: { simulationTime: 350.625, frameId: 375, jammers: [{ platformId: 'PLAT-JAM', frequencyHz: 2400000000, detections: [{ frequencyHz: 2400000000 }], position: { longitude: 121.55 } }] } })
-  expect(messages.find(message => message.payload?.kind === 'ENGINE_JAMMER_FRAME' && message.payload.sourceFrameId === 375)).toMatchObject({ simulationTime: 350.625, payload: { simulationTime: 350.625 } })
-  expect(messages.find(message => message.payload?.kind === 'ENGINE_SWITCH_FRAME' && message.payload.sourceFrameId === 254)).toMatchObject({ simulationTime: 160.655, payload: { switches: [{ parameters: { transFrequency: 10 } }, { parameters: { transFrequency: 10 } }] } })
+  expect(delivered()[2]).toMatchObject({ taskId: run.taskId, simulationTime: 375,
+    payload: { simulationTime: 375, frameId: 375, jammers: [{ platformId: 'PLAT-JAM', frequencyHz: 2400000000, detections: [{ frequencyHz: 2400000000 }], position: { longitude: 121.55 } }] } })
+  expect(messages.find(message => message.payload?.kind === 'ENGINE_JAMMER_FRAME' && message.payload.sourceFrameId === 375)).toMatchObject({ simulationTime: 375, payload: { simulationTime: 375 } })
+  expect(messages.find(message => message.payload?.kind === 'ENGINE_SWITCH_FRAME' && message.payload.sourceFrameId === 254)).toMatchObject({ simulationTime: 254, payload: { switches: [{ parameters: { transFrequency: 10 } }, { parameters: { transFrequency: 10 } }] } })
   socket.send(JSON.stringify(alarmNew)); await vi.waitFor(() => expect(client.diagnostics.stale).toBe(1))
   expect(frames).toHaveLength(4)
   socket.send(JSON.stringify({ ...switchNew, frame_id: 0, sim_time_s: 0 }))
@@ -175,10 +207,10 @@ it('5→10 为正常连续帧，10→20 提示间隔异常且不补造帧，后�
     (_run: { runId: string; taskId: string }, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
   cleanups.push(() => client.stop())
   const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
-  for (const frame_id of [5, 10]) socket.send(JSON.stringify({ ...sample, frame_id, sim_time_s: frame_id * 1000 }))
+  for (const frame_id of [5, 10]) socket.send(JSON.stringify({ ...sample, frame_id, sim_time_s: undefined }))
   await vi.waitFor(() => expect(frames).toHaveLength(2))
   expect(diagnostics.filter(item => item.state === 'FRAME_ADVANCE_OBSERVED')).toEqual([])
-  for (const frame_id of [20, 25]) socket.send(JSON.stringify({ ...sample, frame_id, sim_time_s: frame_id * 1000 }))
+  for (const frame_id of [20, 25]) socket.send(JSON.stringify({ ...sample, frame_id, sim_time_s: undefined }))
   await vi.waitFor(() => expect(frames).toHaveLength(4))
   expect(frames.map(frame => [frame.frameId, frame.simulationTime])).toEqual([[5, 5], [10, 10], [20, 20], [25, 25]])
   expect(diagnostics.filter(item => item.state === 'FRAME_ADVANCE_OBSERVED')).toEqual([
@@ -213,29 +245,58 @@ it.each([
   [false, 'false', 'boolean'],
   [[5000], '[5000]', 'array'],
   [{ value: 5000 }, '{"value":5000}', 'object'],
-] as const)('无效仿真时间 %j 在日志和页面诊断中保留原值 %s 与类型 %s', async (value, original, type) => {
+] as const)('无效帧号 %j 在日志和页面诊断中保留原值 %s 与类型 %s', async (value, original, type) => {
   const { server, url } = await upstream(), report = vi.fn(), publish = vi.fn(), diagnostics: EngineConnectionDiagnostic[] = []
   const client = new EngineSnapshotClient(url, publish, report, (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
   cleanups.push(() => client.stop())
   const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
-  socket.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: value }))
+  socket.send(JSON.stringify({ ...sample, frame_id: value }))
   await vi.waitFor(() => expect(client.diagnostics.rejected).toBe(1))
   const detail = `原始值=${original}，数据类型=${type}`
   expect(client.diagnostics.lastError).toContain(detail)
   expect(report).toHaveBeenCalledWith(expect.stringContaining(detail))
-  expect(diagnostics.find(item => item.state === 'REJECTED')?.message).toContain(`已拒绝上游引擎数据（帧头无效）：sim_time_s：`)
+  expect(diagnostics.find(item => item.state === 'REJECTED')?.message).toContain(`已拒绝上游引擎数据（帧头无效）：frame_id：`)
   expect(diagnostics.find(item => item.state === 'REJECTED')?.message).toContain(detail)
   expect(publish).not.toHaveBeenCalled()
-  socket.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: '5000' }))
+  socket.send(JSON.stringify({ ...sample, frame_id: 5, sim_time_s: undefined }))
   await vi.waitFor(() => expect(publish).toHaveBeenCalledWith(run.runId, expect.objectContaining({ frameId: 5, simulationTime: 5 })))
 })
 
-it('无效时间的日志转义换行并限制原值长度，不输出整帧其他字段', async () => {
+it.each([
+  [{ frame_id: 'bad-id' }, ['frame_id：引擎帧号必须为非负整数。（原始值="bad-id"，数据类型=string）']],
+  [{ frame_id: null, sim_time_s: false, link_calc: { links: { unexpected: true } } }, [
+    'frame_id：引擎帧号必须为非负整数。（原始值=null，数据类型=null）',
+    'link_calc.links：引擎链路段必须为数组。（原始值={"unexpected":true}，数据类型=object）',
+  ]],
+  [{ frame_id: undefined, sim_time_s: undefined, link_calc: undefined }, [
+    'frame_id：引擎帧号必须为非负整数。（原始值=undefined，数据类型=undefined（字段缺失））',
+    'link_calc.links：引擎链路段必须为数组。（原始值=undefined，数据类型=undefined（字段缺失））',
+  ]],
+  [{ link_calc: { links: '[]' } }, ['link_calc.links：引擎链路段必须为数组。（原始值="[]"，数据类型=string）']],
+] as const)('帧头诊断逐项输出所有失败字段的原值和类型：%j', async (invalid, details) => {
+  const { server, url } = await upstream(), report = vi.fn(), publish = vi.fn(), diagnostics: EngineConnectionDiagnostic[] = []
+  const client = new EngineSnapshotClient(url, publish, report, (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
+  cleanups.push(() => client.stop())
+  const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
+  socket.send(JSON.stringify({ ...sample, ...invalid, unrelated: 'DO_NOT_LOG_WHOLE_FRAME' }))
+  await vi.waitFor(() => expect(client.diagnostics.rejected).toBe(1))
+  const message = diagnostics.find(item => item.state === 'REJECTED')!.message
+  for (const detail of details) {
+    expect(message).toContain(detail)
+    expect(report).toHaveBeenCalledWith(expect.stringContaining(detail))
+  }
+  expect(message).not.toContain('DO_NOT_LOG_WHOLE_FRAME')
+  expect(publish).not.toHaveBeenCalled()
+  socket.send(JSON.stringify(sample))
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1))
+})
+
+it('无效帧号的日志转义换行并限制原值长度，不输出整帧其他字段', async () => {
   const { server, url } = await upstream(), report = vi.fn(), diagnostics: EngineConnectionDiagnostic[] = []
   const client = new EngineSnapshotClient(url, vi.fn(), report, (_run: unknown, diagnostic: EngineConnectionDiagnostic) => diagnostics.push(diagnostic))
   cleanups.push(() => client.stop())
   const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
-  socket.send(JSON.stringify({ ...sample, sim_time_s: `bad\r\n${'x'.repeat(2000)}`, unrelated: 'DO_NOT_LOG_WHOLE_FRAME' }))
+  socket.send(JSON.stringify({ ...sample, frame_id: `bad\r\n${'x'.repeat(2000)}`, unrelated: 'DO_NOT_LOG_WHOLE_FRAME' }))
   await vi.waitFor(() => expect(client.diagnostics.rejected).toBe(1))
   const message = diagnostics.find(item => item.state === 'REJECTED')!.message
   expect(message).toContain('原始值="bad\\r\\n')

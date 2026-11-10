@@ -107,6 +107,8 @@ const mapFocusTarget = ref<SituationMapFocusTarget | null>(null)
 let unmounted = false
 const sourceState = ref<'LOADING' | 'MOCK' | 'FILE' | 'SCENE' | 'EMPTY' | 'ERROR'>('LOADING')
 const remoteEngineMode = computed(() => simulationRun.value?.executionSource === 'REMOTE_WS')
+const latestEngineRejection = computed(() => telemetryStore.engineDiagnostics.findLast(item =>
+  item.runId === simulationRun.value?.runId && item.state === 'REJECTED'))
 const combinedPlayback = computed(() => sourceState.value === 'FILE' && remoteEngineMode.value)
 const combinedActive = computed(() => combinedPlayback.value && Boolean(simulationRun.value?.fileSource && simulationRun.value.configLocked && simulationRun.value.startedAt))
 const combinedPaused = ref(false)
@@ -182,9 +184,8 @@ watch([runtimeQualityScope, () => combinedPlayback.value && initialSnapshot.valu
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
-// 远端接收没有本机位置/文件帧作为订阅入口；只要远端运行已锁定并启动就连接，
-// 文件播放时 runtimeQualityScope 可能为空，不能再作为连接前置条件。
-watch(() => remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt
+// 数据源初始化会清理旧订阅，待其完成后按运行绑定连接；不依赖质量首帧。
+watch(() => ['FILE', 'SCENE'].includes(sourceState.value) && remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt
   ? `${useAuthStore().principal?.userId}:${simulationRun.value.runId}:${simulationRun.value.startedAt}` : null,
 key => {
   telemetryStore.disconnectAndReset()
@@ -302,13 +303,14 @@ const fileSourceMismatch = computed(() => combinedActive.value && filePlayback.l
 const combinedFeedback = computed(() => {
   if (fileSourceMismatch.value || combinedActive.value && !initialSnapshot.value) return sourceMessage.value
   if (simulationCapabilityState.value === 'ERROR') return simulationFeedback.value
-  if (!combinedActive.value) return '点击播放，同时播放本地文件并接收 WebSocket 数据。'
-  const clock = !displayAttached.value ? combinedPaused.value ? '等待 WebSocket 接入' : '本地连续播放，等待 WebSocket 接入'
-    : !displayConnected.value ? '实时连接已断开，画面冻结'
-    : displayTimedOut.value ? `超过 ${FRAME_PLAYBACK_TIMEOUT_MS / 1000} 秒无有效帧，画面冻结`
-    : !displayMoving.value ? '等待新有效帧，画面冻结' : '文件轨迹平滑展示，WebSocket 帧校时'
-  const end = sharedRemoteTime.value !== null && fileTime.value >= (filePlayback.replay?.durationS ?? Infinity) ? '，轨迹文件已到末尾' : ''
-  return `${combinedPaused.value ? '本地画面已暂停' : '文件与 WebSocket 并行'} · ${fileTimeLabel(fileTime.value)} · ${clock}${end}`
+  if (!combinedActive.value) return '等待播放'
+  const clock = combinedPaused.value ? '画面已暂停'
+    : !displayAttached.value ? '播放中 · 等待数据'
+    : !displayConnected.value ? '连接断开 · 画面冻结'
+    : displayTimedOut.value ? '数据超时 · 画面冻结'
+    : !displayMoving.value ? '等待新帧 · 画面冻结' : '播放中'
+  const end = sharedRemoteTime.value !== null && fileTime.value >= (filePlayback.replay?.durationS ?? Infinity) ? ' · 轨迹已结束' : ''
+  return `${clock}${end}`
 })
 // 文件和实时数据可并行，固定 Mock 帧仍只用于 Mock 模式。
 const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK' ? mockFrame.value : null)
@@ -1262,6 +1264,10 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         />
       </template>
     </SimulationToolbar>
+    <details v-if="latestEngineRejection" :key="latestEngineRejection.message" open class="engine-rejection-detail" data-testid="engine-rejection-detail">
+      <summary>最近一次引擎数据拒收</summary>
+      <pre tabindex="0" aria-label="引擎数据拒收详情">{{ latestEngineRejection.message }}</pre>
+    </details>
     </div>
 
     <div
@@ -1551,26 +1557,28 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div><strong>干扰 / 侦测设备</strong></div>
             <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
           </div>
-          <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" />
-          <div v-else-if="displayedJammers.length" class="jammer-list">
-            <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
-            <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
-            <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
-              <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
-              <small>搭载平台：{{ jammer.platformName }} · {{ jammer.platformId }}</small>
-              <dl>
-                <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
-                <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
-                <div><dt>带宽</dt><dd>{{ jammer.bandwidth }} MHz</dd></div>
-              </dl>
-              <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
-            </article>
+          <div class="telemetry-section__body">
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" />
+            <div v-else-if="displayedJammers.length" class="jammer-list">
+              <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
+              <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
+              <article v-for="jammer in displayedJammers" :key="jammer.jammerId" :class="{ active: jammer.active }">
+                <div><strong>{{ jammerTypeLabel(jammer.jammerId, jammer.platformId) }}</strong><span>{{ jammer.active === null ? '暂无数据' : jammer.active ? '活动' : '待机' }}</span></div>
+                <small>搭载平台：{{ jammer.platformName }} · {{ jammer.platformId }}</small>
+                <dl>
+                  <div><dt>功率</dt><dd>{{ jammer.power }} W</dd></div>
+                  <div><dt>频率</dt><dd>{{ jammer.frequency }} MHz</dd></div>
+                  <div><dt>带宽</dt><dd>{{ jammer.bandwidth }} MHz</dd></div>
+                </dl>
+                <div v-if="!selectedScene" class="power-bar"><i :style="{ width: `${Math.min(jammer.power, 100)}%` }"></i></div>
+              </article>
+            </div>
+            <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
+            <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">引擎干扰主题：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
+            <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
+              {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
+            </p>
           </div>
-          <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
-          <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">引擎干扰主题：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
-          <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
-            {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
-          </p>
         </section>
 
         <section class="telemetry-section telemetry-section--events">
@@ -1578,15 +1586,17 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <div><strong>同帧事件</strong></div>
             <span class="panel-heading__more">累计 {{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineEvents.length} 条` : allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
           </div>
-          <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" />
-          <ol v-if="allDisplayedEvents.length && (combinedPlayback || !runtimeQualityStore.engineFrame)" class="event-list">
-            <li v-for="event in allDisplayedEvents" :key="event.eventId">
-              <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
-              <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
-            </li>
-          </ol>
-          <el-empty v-if="!runtimeQualityStore.engineFrame && !allDisplayedEvents.length" class="telemetry-empty-state" description="暂无数据" :image-size="48" />
-          <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">引擎切换主题：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
+          <div class="telemetry-section__body">
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" />
+            <ol v-if="allDisplayedEvents.length && (combinedPlayback || !runtimeQualityStore.engineFrame)" class="event-list">
+              <li v-for="event in allDisplayedEvents" :key="event.eventId">
+                <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
+                <p>{{ event.description }}</p><small>{{ event.eventId }}{{ event.frameId ? ` · ${event.frameId}` : '' }}</small>
+              </li>
+            </ol>
+            <el-empty v-if="!runtimeQualityStore.engineFrame && !allDisplayedEvents.length" class="telemetry-empty-state" description="暂无数据" :image-size="48" />
+            <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">引擎切换主题：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
+          </div>
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
@@ -1617,7 +1627,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               </ol>
             </section>
           </el-tab-pane>
-          <el-tab-pane v-if="runtimeQualityStore.engineFrame || runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy>
+          <el-tab-pane v-if="runtimeQualityStore.engineFrame || runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy class="telemetry-decisions-pane">
             <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" />
             <RuntimeLinkDecisionPanel v-else :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
               :decisions="runtimeQualityStore.routeDecisions" :events="runtimeQualityStore.decisionEvents" />
@@ -1702,6 +1712,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
   box-shadow: var(--console-shadow);
 }
 .situation-page__semantic-title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.engine-rejection-detail { min-width: 0; margin: 0 .7rem .5rem; padding: .5rem .65rem; border: 1px solid var(--console-border); border-radius: 4px; font-size: 12px; }
+.engine-rejection-detail summary { cursor: pointer; color: var(--console-danger); }
+.engine-rejection-detail pre { max-height: 10rem; margin: .5rem 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.5 Consolas, "Microsoft YaHei", monospace; }
 .situation-empty-map { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; }
 .telemetry-empty { display: flex; align-items: center; flex-wrap: wrap; gap: .35rem .75rem; min-width: 0; padding: .4rem .75rem; border-top: 1px solid var(--console-border); background: var(--console-bg-elevated); color: var(--console-text-muted); font-size: 12px; }
 .telemetry-empty strong { flex-shrink: 0; color: var(--console-text); }
@@ -1723,8 +1736,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-tabs :deep(.el-tabs__content) { min-height: 0; overflow: hidden; }
 .telemetry-status-pane { display: grid; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, .8fr); }
 .telemetry-quality-pane { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: .65rem; box-sizing: border-box; overflow: hidden; }
-.telemetry-quality-pane .quality-metric-panel { flex: 1; height: auto; }
-.quality-import-bar { display: flex; flex: 0 0 auto; align-items: center; gap: .5rem; margin-bottom: .5rem; min-width: 0; font-size: var(--console-font-size-min); color: var(--console-text-muted); overflow-wrap: anywhere; }
+.telemetry-quality-pane > .engine-evidence, .telemetry-quality-pane .quality-metric-panel { flex: 1; min-height: 0; height: auto; }
+.telemetry-decisions-pane { height: 100%; min-height: 0; overflow: auto; }
+.telemetry-decisions-pane > .engine-evidence { padding: .65rem; }
+.quality-import-bar { display: flex; flex-wrap: wrap; flex: 0 0 auto; align-items: center; gap: .5rem; margin-bottom: .5rem; min-width: 0; font-size: var(--console-font-size-min); color: var(--console-text-muted); overflow-wrap: anywhere; }
+.quality-import-bar > span { flex: 1 1 8rem; min-width: 0; }
 .quality-import-input { display: none; }
 .quality-source-events { flex: 0 1 auto; max-height: 7rem; overflow: auto; margin-top: .5rem; font-size: var(--console-font-size-min); color: var(--console-text-muted); }
 .quality-source-events strong, .quality-source-events span { display: block; }
@@ -1769,8 +1785,11 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .situation-center { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0,1fr); }
 .telemetry-section { min-height: 0; overflow: hidden; border-bottom: 1px solid #1e3448; }
 .telemetry-section:last-child { border-bottom: 0; }
-.telemetry-section--links, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
-.telemetry-section--jammer { display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.telemetry-section--links, .telemetry-section--jammer, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
+.telemetry-section__body { min-width: 0; min-height: 0; overflow: auto; overflow-wrap: anywhere; }
+.telemetry-section__body > .engine-evidence { padding: .25rem .85rem; }
+.telemetry-section__body > .panel-caption { margin: 0; padding: .4rem .85rem; color: #829db3; font-size: 12px; }
+.telemetry-section__body > .event-list { margin: 0; }
 .telemetry-empty-state { min-height: 0; overflow-y: auto; padding: .5rem; }
 .telemetry-empty-state :deep(.el-empty__description) { margin-top: .6rem; }
 .telemetry-empty-state :deep(.el-empty__description p) { color: #829db3; font-size: 12px; line-height: 1.5; text-align: center; }

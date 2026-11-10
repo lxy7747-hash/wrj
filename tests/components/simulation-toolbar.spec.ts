@@ -19,6 +19,23 @@ describe('仿真工具栏', () => {
     wrapper = undefined
   })
 
+  it.each([
+    [{ connected: false, action: null, delivery: 'IDLE' }, 'WebSocket 未连接', '控制回执尚未接入'],
+    [{ connected: true, action: null, delivery: 'IDLE' }, 'WebSocket 已连接', '控制回执尚未接入'],
+    [{ connected: true, action: 'stop', delivery: 'SENDING' }, '停止发送中', '尚未确认引擎执行'],
+    [{ connected: true, action: 'pause', delivery: 'SENT' }, '暂停已发送 · 待确认', '执行结果待确认'],
+    [{ connected: false, action: 'resume', delivery: 'UNKNOWN' }, '恢复发送结果不确定（离线）', '不会自动重发'],
+  ] as const)('控制状态简短显示，详细说明保留在悬停提示：%s', async (engineControl, summary, detail) => {
+    wrapper = mount(SimulationToolbar, { props: { ...baseProps, filePlayback: true, remoteEngine: true, receptionActive: true,
+      engineControl, feedback: '播放中 · 等待数据' }, global: { plugins: [ElementPlus] } })
+    const status = wrapper.get('[data-testid="engine-control-status"] small')
+    expect(status.text()).toBe(summary)
+    expect(status.attributes('title')).toContain(detail)
+    expect(wrapper.text()).toContain('播放中 · 等待数据')
+    expect(wrapper.text()).not.toContain('控制回执尚未接入')
+    await wrapper.setProps({ capabilityState: 'ERROR', feedback: '保存失败，请重试；数据尚未归档。' })
+    expect(wrapper.get('.simulation-toolbar__error').text()).toBe('保存失败，请重试；数据尚未归档。')
+  })
   it('远端仅显示播放、暂停、停止，暂停后播放恢复，断线或保存失败仍可停止', async () => {
     wrapper = mount(SimulationToolbar, { props: { ...baseProps, status: 'STOPPED', remoteEngine: true, receptionActive: false }, global: { plugins: [ElementPlus] } })
     expect(wrapper.get('[data-testid="simulation-start"]').text()).toContain('播放')
@@ -58,11 +75,11 @@ describe('仿真工具栏', () => {
     expect(wrapper.get('[data-testid="simulation-start"]').attributes('disabled')).toBeUndefined()
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     expect(wrapper.emitted('start')).toHaveLength(1)
-    expect(wrapper.get('[data-testid="engine-control-status"]').text()).toContain('执行结果待确认')
+    expect(wrapper.get('[data-testid="engine-control-status"]').text()).toContain('待确认')
     expect(wrapper.text()).not.toContain('仿真已暂停')
     await wrapper.setProps({ engineControl: { connected: true, action: 'stop', delivery: 'SENT' } })
     for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('配置保持锁定')
+    expect(wrapper.get('[data-testid="engine-control-status"] small').attributes('title')).toContain('配置保持锁定')
   })
 
   it.each(['SENDING', 'UNKNOWN'] as const)('%s 或断线时禁用引擎控制，不通过重复点击重发', async delivery => {

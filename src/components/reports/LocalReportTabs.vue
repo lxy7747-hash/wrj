@@ -6,6 +6,7 @@ import { engineAggregateSummary, EVENT_LABELS, localReportTables, localReportCha
 import { qualityReportView } from '../../features/reports/quality-report'
 import { ENGINE_FRAME_ID_STEP } from '../../features/data-exchange/engine-frame-snapshot'
 import ReportChart from './ReportChart.vue'
+import { engineSegmentDetails } from '../../features/reports/engine-segment-details'
 
 const props = withDefaults(defineProps<{ evidence: LocalReportEvidence; generatedTime?: string; filter?: LocalReportFilter; comparison?: MissionResultParameterComparison[]; preciseFilter?: boolean; timeline?: Array<{ id: string; time: number; type: string; subject: string; target?: string }>; timelineTotal?: number }>(), { comparison: () => [], preciseFilter: false, timeline: () => [], timelineTotal: 0 })
 const tables = computed(() => localReportTables(props.evidence))
@@ -210,12 +211,20 @@ watch(engineSegmentPageSize, () => { engineSegmentPage.value = 1 })
             <el-descriptions-item v-for="file in engineCsv.missing" :key="file.fileName" :label="file.fileName">{{ file.status }} · {{ file.reason }}</el-descriptions-item>
           </el-descriptions>
           <el-table :data="engineSegmentRows" stripe height="280" aria-label="引擎链路段实测明细" empty-text="暂无接收到的链路段">
+            <el-table-column type="expand"><template #default="{ row }">
+              <div class="engine-segment-details" data-testid="engine-segment-details">
+                <section v-for="group in engineSegmentDetails(row.segment)" :key="group.title">
+                  <h4>{{ group.title }}</h4>
+                  <dl><div v-for="(item, index) in group.rows" :key="index"><dt>{{ item[0] }}</dt><dd>{{ item[1] }}</dd></div></dl>
+                </section>
+              </div>
+            </template></el-table-column>
             <el-table-column label="轮次/帧/时刻" min-width="150"><template #default="{ row }">{{ row.engineEpoch }}/{{ row.frameId }}/{{ row.simulationTime }}</template></el-table-column>
             <el-table-column label="链路段" min-width="210"><template #default="{ row }">{{ row.segment.linkId }} · {{ row.segment.sourceName ?? '未提供' }}:{{ row.segment.sourcePort ?? '未提供' }} → {{ row.segment.targetName ?? '未提供' }}:{{ row.segment.targetPort ?? '未提供' }}</template></el-table-column>
             <el-table-column label="GXB dB" min-width="100"><template #default="{ row }">{{ row.segment.quality.gxbDb ?? '暂无' }}</template></el-table-column>
             <el-table-column label="BER" min-width="100"><template #default="{ row }">{{ row.segment.quality.ber ?? '暂无' }}</template></el-table-column>
             <el-table-column label="接收功率 dBm/dBW" min-width="140"><template #default="{ row }">{{ row.segment.quality.rxPowerDbm ?? '暂无' }} / {{ row.segment.quality.rxPowerDbw ?? '暂无' }}</template></el-table-column>
-            <el-table-column label="总损耗 dB" min-width="110"><template #default="{ row }">{{ row.segment.losses.totalDb ?? '暂无' }}</template></el-table-column>
+            <el-table-column label="总复合损耗 dB（原值）" min-width="160"><template #default="{ row }">{{ row.segment.losses.totalDb ?? '暂无' }}</template></el-table-column>
           </el-table>
           <el-pagination v-if="engineSegments.length > 50" v-model:current-page="engineSegmentPage" v-model:page-size="engineSegmentPageSize" class="connection-pagination" data-testid="engine-segment-pagination" :page-sizes="[50, 100]" :total="engineSegments.length" layout="sizes, prev, pager, next" />
           <template v-for="curve in engineCurves" :key="curve.identity">
@@ -272,6 +281,10 @@ watch(engineSegmentPageSize, () => { engineSegmentPage.value = 1 })
 <style scoped>
 .local-report { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
 .local-report-sources { margin: 12px 0; overflow-wrap: anywhere; }
+.engine-segment-details { padding: 12px; max-height: 22rem; overflow: auto; white-space: normal; overflow-wrap: anywhere; }
+.engine-segment-details dl { margin: 0; }
+.engine-segment-details dl > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; margin: 6px 0; }
+.engine-segment-details dd { margin: 0; min-width: 0; }
 .engine-metric-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin: 12px 0; }
 .engine-metric-card h4 { margin: 0; font-size: 13px; color: var(--el-text-color-secondary); }
 .engine-metric-card p { margin: 8px 0 0; font-size: 16px; font-weight: 600; }

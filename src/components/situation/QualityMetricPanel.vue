@@ -42,35 +42,49 @@ watch(() => props.selectedLinkId, selected => {
 </script>
 
 <template>
-  <section class="quality-metric-panel" aria-label="实时质量指标" data-testid="quality-metric-panel">
-    <el-form label-position="top" class="quality-filters">
+  <section class="quality-metric-panel quality-card-panel" aria-label="实时质量指标" data-testid="quality-metric-panel">
+    <el-form label-position="top" class="quality-filters quality-card-filters">
       <el-form-item label="节点"><el-select v-model="node" clearable placeholder="全部节点"><el-option v-for="name in nodes" :key="name" :label="name" :value="name" /></el-select></el-form-item>
-      <el-form-item label="链路"><el-select v-model="linkId" clearable placeholder="全部链路"><el-option v-for="link in links" :key="link.linkId" :value="link.linkId" :label="`${link.sourceName} → ${link.destinationName}`" /></el-select></el-form-item>
-      <el-form-item label="时间窗口"><el-select v-model="windowMs"><el-option label="当前时刻" :value="0" /><el-option label="最近1秒" :value="1000" /><el-option label="最近5秒" :value="5000" /></el-select></el-form-item>
       <el-form-item label="链路类型"><el-select v-model="linkType" clearable placeholder="全部类型" data-testid="quality-link-type"><el-option v-for="type in linkTypes" :key="type" :value="type" :label="LINK_TYPE_LABELS[type]" /></el-select></el-form-item>
+      <details class="quality-card-advanced">
+        <summary>更多筛选<span v-if="linkId || windowMs">（已应用）</span></summary>
+        <el-form-item label="链路"><el-select v-model="linkId" clearable placeholder="全部链路"><el-option v-for="link in links" :key="link.linkId" :value="link.linkId" :label="`${link.sourceName} → ${link.destinationName}`" /></el-select></el-form-item>
+        <el-form-item label="时间窗口"><el-select v-model="windowMs"><el-option label="当前时刻" :value="0" /><el-option label="最近1秒" :value="1000" /><el-option label="最近5秒" :value="5000" /></el-select></el-form-item>
+        <p>时间窗口筛选年龄已知的测量；年龄未知时保留源时刻。未提供的指标显示“暂无数据”，不代表当前时刻已有测量。</p>
+      </details>
     </el-form>
-    <el-table :data="rows" empty-text="暂无数据" height="100%">
-      <el-table-column label="链路" min-width="200"><template #default="{ row }">{{ row.sourceName }} → {{ row.destinationName }}</template></el-table-column>
-      <el-table-column label="源时刻" min-width="100"><template #default="{ row }">{{ row.runtimeQuality ? reportTime(row.runtimeQuality.simulationTime) : Number.isFinite(row.updatedAt) ? reportTime(row.updatedAt) : '暂无数据' }}</template></el-table-column>
-      <el-table-column label="SNR（dB）" min-width="100"><template #default="{ row }">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.snrDb : row.snrDb, 2) }}</template></el-table-column>
-      <el-table-column label="BER" min-width="100"><template #default="{ row }">{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</template></el-table-column>
-      <el-table-column label="接收功率（dBm）" min-width="140"><template #default="{ row }">{{ row.runtimeQuality ? row.runtimeQuality.measurement.quality.receivedPowerDbm ?? '暂无数据' : row.detailed?.receivedPower ?? '暂无数据' }}</template></el-table-column>
-      <el-table-column label="路径损耗（dB）" min-width="130"><template #default="{ row }">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.losses.totalLossDb : row.detailed?.pathLoss, 2) }}</template></el-table-column>
-      <el-table-column v-for="column in OPTIONAL_METRIC_COLUMNS" :key="column.key" :label="column.label" min-width="110">
-        <template #default="{ row }">{{ metricText(row.runtimeQuality ? (column.key === 'jsrDb' ? row.runtimeQuality.measurement.quality.gxbDb : null) : row.detailed?.[column.key], column.digits) }}</template>
-      </el-table-column>
-      <el-table-column v-if="links.some(link => link.runtimeQuality?.assessment)" label="质量状态" min-width="110">
-        <template #default="{ row }"><el-tag v-if="row.runtimeQuality?.assessment" :type="row.runtimeQuality.assessment.status === 'UP' ? 'success' : row.runtimeQuality.assessment.status === 'DEGRADED' ? 'warning' : row.runtimeQuality.assessment.status === 'DOWN' ? 'danger' : 'info'" :title="runtimeDecisionReason(row.runtimeQuality.assessment.reason)">{{ RUNTIME_STATUS_LABELS[row.runtimeQuality.assessment.status] }}</el-tag><span v-else>暂无数据</span></template>
-      </el-table-column>
-    </el-table>
-    <p>时间窗口筛选年龄已知的测量；年龄未知时保留源时刻。未提供的指标显示“暂无数据”，不代表当前时刻已有测量。</p>
+    <div v-if="rows.length" class="quality-card-list" role="list" aria-label="链路质量摘要">
+      <article v-for="row in rows" :key="`${sourceKey}:${row.linkId}`" class="quality-card" role="listitem" :data-link-id="row.linkId">
+        <header class="quality-card-heading">
+          <strong>{{ row.sourceName }} → {{ row.destinationName }}</strong>
+          <el-tag v-if="row.runtimeQuality?.assessment" :type="row.runtimeQuality.assessment.status === 'UP' ? 'success' : row.runtimeQuality.assessment.status === 'DEGRADED' ? 'warning' : row.runtimeQuality.assessment.status === 'DOWN' ? 'danger' : 'info'" :title="runtimeDecisionReason(row.runtimeQuality.assessment.reason)">{{ RUNTIME_STATUS_LABELS[row.runtimeQuality.assessment.status] }}</el-tag>
+        </header>
+        <dl class="quality-card-metrics">
+          <div><dt>干信比 GXB（dB）</dt><dd data-metric="jsrDb">{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.gxbDb : row.detailed?.jsrDb, 2) }}</dd></div>
+          <div><dt>BER</dt><dd>{{ berText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.ber : row.ber) }}</dd></div>
+          <div><dt>接收功率（dBm）</dt><dd>{{ row.runtimeQuality ? row.runtimeQuality.measurement.quality.receivedPowerDbm ?? '暂无数据' : row.detailed?.receivedPower ?? '暂无数据' }}</dd></div>
+          <div><dt>距离（m）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.distanceMeters : row.detailed?.distance, 2) }}</dd></div>
+        </dl>
+        <details class="quality-card-details">
+          <summary>详细参数</summary>
+          <dl class="quality-card-fields">
+            <div><dt>链路编号</dt><dd>{{ row.linkId }}</dd></div>
+            <div><dt>链路类型</dt><dd>{{ row.type ? LINK_TYPE_LABELS[row.type] : '暂无数据' }}</dd></div>
+            <div><dt>源时刻</dt><dd>{{ row.runtimeQuality ? reportTime(row.runtimeQuality.simulationTime) : Number.isFinite(row.updatedAt) ? reportTime(row.updatedAt) : '暂无数据' }}</dd></div>
+            <div><dt>SNR（dB）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.quality.snrDb : row.snrDb, 2) }}</dd></div>
+            <div><dt>路径损耗（dB）</dt><dd>{{ metricText(row.runtimeQuality ? row.runtimeQuality.measurement.losses.totalLossDb : row.detailed?.pathLoss, 2) }}</dd></div>
+            <div v-for="column in OPTIONAL_METRIC_COLUMNS.filter(column => column.key !== 'jsrDb')" :key="column.key"><dt>{{ column.label }}</dt><dd :data-metric="column.key">{{ metricText(row.runtimeQuality ? null : row.detailed?.[column.key], column.digits) }}</dd></div>
+            <div v-if="row.runtimeQuality?.assessment"><dt>状态原因</dt><dd>{{ runtimeDecisionReason(row.runtimeQuality.assessment.reason) }}</dd></div>
+          </dl>
+        </details>
+      </article>
+    </div>
+    <p v-else>暂无数据</p>
   </section>
 </template>
 
 <style scoped>
-.quality-metric-panel { display: flex; flex-direction: column; height: 100%; min-width: 0; min-height: 0; }
-.quality-metric-panel > .el-table { flex: 1; min-height: 0; }
-.quality-filters { display: grid; flex: 0 0 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-.quality-filters :deep(.el-form-item) { min-width: 0; margin-bottom: 8px; }
-p { flex: 0 0 auto; font-size: 12px; color: var(--el-text-color-secondary); overflow-wrap: anywhere; }
+.quality-metric-panel { height: 100%; font-size: 12px; color: var(--console-text); }
+.quality-metric-panel p { margin: 6px 0; color: var(--el-text-color-secondary); }
 </style>
+<style scoped src="./quality-cards.css"></style>

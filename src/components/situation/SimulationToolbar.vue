@@ -27,6 +27,14 @@ const wsControl = computed(() => (props.remoteEngine || props.realMission && !pr
 const canControl = (action: EngineControlAction) => Boolean(wsControl.value
   && ['RUNNING', 'PAUSED'].includes(props.status) && canSendEngineControl(wsControl.value, action))
 
+const controlSummary = computed(() => {
+  const state = wsControl.value
+  if (!state) return ''
+  if (state.delivery === 'IDLE') return state.connected ? 'WebSocket 已连接' : 'WebSocket 未连接'
+  const action = state.action ? { pause: '暂停', resume: '恢复', stop: '停止' }[state.action] : ''
+  const delivery = { SENDING: '发送中', SENT: '已发送 · 待确认', UNKNOWN: '发送结果不确定' }[state.delivery]
+  return `${action}${delivery}${state.connected ? '' : '（离线）'}`
+})
 defineEmits<{
   start: []
   pause: []
@@ -94,7 +102,7 @@ defineEmits<{
     </div>
 
     <div v-if="wsControl" class="simulation-toolbar__runtime" data-testid="engine-control-status" role="status">
-      <small :title="engineControlMessage(wsControl)">{{ engineControlMessage(wsControl) }}</small>
+      <small :title="engineControlMessage(wsControl)">{{ controlSummary }}</small>
       <small v-if="combined && capabilityState !== 'ERROR'">{{ feedback }}</small>
       <small v-if="capabilityState === 'ERROR'" class="simulation-toolbar__error">{{ feedback }}</small>
     </div>
