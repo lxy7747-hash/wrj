@@ -1,10 +1,10 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import sample from '../fixtures/engine-frame/params_check.json'
 import newSample from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import { LOCAL_REPORT } from '../fixtures/local-report'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
-const { mkdtemp, rm } = await import('node:' + 'fs/promises')
+const { mkdtemp, rm, mkdir, readdir, open } = await import('node:' + 'fs/promises')
 const { readFile, writeFile } = await import('node:' + 'fs/promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -14,7 +14,7 @@ const { default: request } = await import('super' + 'test')
 const { once } = await import('node:' + 'events')
 
 const roots: string[] = []
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))) })
 
 function frame(frameId: number) {
   const parsed = adaptEngineFrameSnapshot({ ...sample, frame_id: frameId, sim_time_s: undefined })
@@ -23,6 +23,86 @@ function frame(frameId: number) {
 }
 
 describe('引擎帧可靠归档', () => {
+  it.each([['current.json', 2], ['csv/current.json', 2], ['csv/current.json', 0]] as const)('发布 %s 失败保留 %s 帧，再次关闭可完成保存且不重复', async (pointer, count) => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-retry-')); roots.push(root)
+    const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-10T00:00:00Z' }
+    const session = await archive.begin(scope)
+    for (let i = 1; i <= count; i++) await session.append(frame(i * 5))
+    const blocked = join(root, scope.runId, pointer)
+    await mkdir(blocked)
+    await expect(session.close()).rejects.toThrow()
+    const files = await readdir(join(root, scope.runId))
+    const raw = files.find((name: string) => name.endsWith('.jsonl') || name.endsWith('.pending'))!
+    expect((await readFile(join(root, scope.runId, raw), 'utf8')).trim().split('\n').filter(Boolean)).toHaveLength(count)
+    await rm(blocked, { recursive: true })
+    await Promise.all([session.close(), session.close()])
+    expect(session.failure()).toBeNull()
+    expect(await archive.load(scope.runId)).toMatchObject({ frameCount: count, firstSimulationTime: count ? 5 : null, lastSimulationTime: count ? 10 : null })
+    expect(await archive.finalizeCsv(scope.runId, scope, {})).not.toBeNull()
+  })
+
+  it('半帧写盘失败保留待写帧，停止重试覆盖半行并验证完整摘要', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-retry-')); roots.push(root)
+    const probe = await open(join(root, 'probe'), 'wx'), prototype = Object.getPrototypeOf(probe)
+    await probe.close()
+    const original = prototype.write
+    let calls = 0
+    const write = vi.spyOn(prototype, 'write').mockImplementation(async function (this: any, ...args: any[]) {
+      if (calls++ === 0) return original.call(this, args[0], args[1], 17, args[3])
+      throw new Error('模拟磁盘暂不可用')
+    })
+    const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+    const session = await archive.begin({ taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-10T00:00:00Z' })
+    await session.append(frame(5))
+    await expect(session.close()).rejects.toThrow('模拟磁盘暂不可用')
+    write.mockRestore()
+    await session.close()
+    const saved = (await archive.load('RUN-ARCHIVE'))!
+    expect(saved.frameCount).toBe(1)
+    expect(JSON.parse((await readFile((await archive.getFile('RUN-ARCHIVE', saved.sourceSha256))!, 'utf8')).trim())).toEqual(frame(5))
+  })
+
+  it('刷盘失败保留文件句柄和全部帧，恢复后重复停止不重复记录', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-sync-')); roots.push(root)
+    const probe = await open(join(root, 'probe'), 'wx'), prototype = Object.getPrototypeOf(probe)
+    await probe.close()
+    const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+    const session = await archive.begin({ taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-10T00:00:00Z' })
+    await session.append(frame(5))
+    const sync = vi.spyOn(prototype, 'sync').mockRejectedValue(new Error('模拟刷盘失败'))
+    await expect(session.close()).rejects.toThrow('模拟刷盘失败')
+    sync.mockRestore()
+    await session.close(); await session.close()
+    expect(await archive.load('RUN-ARCHIVE')).toMatchObject({ frameCount: 1 })
+  })
+
+  it('连续 CSV 写入失败后从完整 JSONL 重建，保留每一行且不重复', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-engine-csv-retry-')); roots.push(root)
+    const probe = await open(join(root, 'probe'), 'wx'), prototype = Object.getPrototypeOf(probe)
+    await probe.close()
+    const original = prototype.write
+    const write = vi.spyOn(prototype, 'write').mockImplementation(async function (this: any, ...args: any[]) {
+      if (args[0].toString().startsWith('TASK-001,1.1,')) throw new Error('模拟 CSV 写盘失败')
+      return original.apply(this, args)
+    })
+    const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+    const scope = { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-10T00:00:00Z' }
+    const session = await archive.begin(scope, { 'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B' } })
+    const received = frame(5), link = received.links[0]!
+    Object.assign(link, { linkIds: ['L-1'], sourcePlatformId: 'A', targetPlatformId: 'B', status: 'UP' })
+    Object.assign(link.quality, { gxbDb: 2, ber: 0.01, rxPowerDbm: -80 })
+    await session.append(received)
+    expect(session.failure()?.message).toContain('CSV 写盘失败')
+    await expect(session.close()).rejects.toThrow('CSV 写盘失败')
+    write.mockRestore()
+    await session.close()
+    expect(await archive.load(scope.runId)).toMatchObject({ frameCount: 1 })
+    const csv = (await archive.finalizeCsv(scope.runId, scope, {}))!
+    expect(csv.files.find((file: { fileName: string }) => file.fileName === 'link_state.csv')).toMatchObject({ rowCount: 1 })
+    expect(await archive.getCsvFile(scope.runId, csv.sourceSha256, 'link_state.csv')).toBeTruthy()
+  })
+
   it('新协议秒值、新增原始指标往返归档不丢失，不伪造缺测 CSV', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-engine-archive-')); roots.push(root)
     const archive = createEngineFrameArchive(root, () => '2026-11-09T00:00:00Z')

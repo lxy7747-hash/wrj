@@ -38,6 +38,36 @@ async function upstream() {
 }
 const run = { runId: 'RUN-ENGINE' as const, taskId: 'TASK-001' as const }
 
+it('突发 600 帧随写盘背压顺序接收，不并发堆积或丢帧', async () => {
+  const { server, url } = await upstream()
+  const root = await mkdtemp(join(tmpdir(), 'wrj-burst-frame-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const archive = createEngineFrameArchive(root, () => '2026-11-10T00:00:00Z')
+  const session = await archive.begin({ ...run, scenarioId: 'SCN-LATEST', revision: 1, startedAt: '2026-11-10T00:00:00Z' })
+  let release!: () => void
+  const slowDisk = new Promise<void>(resolve => { release = resolve })
+  let active = 0, peak = 0, saved = 0
+  const client = new EngineSnapshotClient(url, async (_: string, frame: EngineFrameSnapshot) => {
+    peak = Math.max(peak, ++active)
+    await slowDisk
+    await session.append(frame)
+    active--; saved++
+  }, vi.fn())
+  cleanups.push(async () => { release(); client.stop(); await session.close() })
+  const connected = once(server, 'connection'); client.start(run, manifest); const [socket] = await connected
+  for (let i = 0; i < 600; i++) socket.send(JSON.stringify({ ...latestSamples[i % 2], frame_id: i * 5 }))
+  await vi.waitFor(() => expect(active).toBeGreaterThan(0))
+  await new Promise(resolve => setTimeout(resolve, 50))
+  release()
+  await vi.waitFor(() => expect(saved).toBe(600), { timeout: 15000 })
+  expect(peak).toBe(1)
+  expect(session.failure()).toBeNull()
+  client.stop(); await session.close()
+  const summary = (await archive.load(run.runId))!
+  expect(summary).toMatchObject({ frameCount: 600, firstSimulationTime: 0, lastSimulationTime: 2995 })
+  expect(summary.segmentRows).toHaveLength(3000)
+}, 20000)
+
 it('最新两条无时间字段报文经 WS 接收与 JSONL 往返保留全部指标，规范 CSV 缺测不伪造', async () => {
   const { server, url } = await upstream(), frames: EngineFrameSnapshot[] = []
   const root = await mkdtemp(join(tmpdir(), 'wrj-latest-frame-'))

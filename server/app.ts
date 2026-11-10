@@ -130,7 +130,7 @@ export interface MockServerOptions {
   /** 已接收引擎帧的本地可靠归档；未配置时 Mock 不触碰磁盘。 */
   engineFrameArchive?: EngineFrameArchive
   /** 本地入口注入外部连接能力，纯 Mock 的模块闭包不引入外连和重连计时器。 */
-  createEngineSnapshotClient?: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void,
+  createEngineSnapshotClient?: (url: string, publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void | Promise<void>,
     diagnose?: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void) => Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>>
   /** 本地入口注入磁盘日志；纯Mock继续只使用有界内存，不导入文件能力。 */
   realtimeJournal?: RealtimeJournalStore
@@ -813,16 +813,17 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     syncEngineControl(run.runId)
   }
   engineSnapshots = options.linkEngineWsUrl
-    ? options.createEngineSnapshotClient?.(options.linkEngineWsUrl, (runId, frame) => {
+    ? options.createEngineSnapshotClient?.(options.linkEngineWsUrl, async (runId, frame) => {
       const slot = missions.get(runId)
       if (options.engineFrameArchive) {
         if (!slot?.engineArchive) return
-        slot.engineArchive.append(frame)
+        await slot.engineArchive.append(frame)
         const failed = slot.engineArchive.failure()
         if (failed) {
           engineSnapshots?.stop(runId)
-          realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, `引擎帧归档失败：${failed.message}`))
-          publishEngineDiagnostic({ runId, taskId: slot.taskId as TaskId }, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state: 'REJECTED', message: `引擎帧归档失败：${failed.message}` })
+          const message = `引擎帧保存失败，已停止接收并保留数据；恢复写盘后可点击停止重试：${failed.message}`
+          realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
+          publishEngineDiagnostic({ runId, taskId: slot.taskId as TaskId }, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId, state: 'REJECTED', message })
           return
         }
       }

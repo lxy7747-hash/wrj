@@ -1,4 +1,4 @@
-import { WebSocket } from 'ws'
+import { createWebSocketStream, WebSocket } from 'ws'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineControlState, EngineFrameSnapshot, EnginePathNode, EngineRoute, SimulationRun } from '../../src/contracts/domain-models.js'
 import { adaptEngineFrameSnapshot, ENGINE_FRAME_ID_STEP } from '../../src/features/data-exchange/engine-frame-snapshot.js'
 import { canSendEngineControl } from '../../src/features/situation/engine-control.js'
@@ -82,6 +82,7 @@ function frameBinder(manifest: unknown): (frame: EngineFrameSnapshot) => void {
 export class EngineSnapshotClient {
   private owner: Pick<SimulationRun, 'runId' | 'taskId'> | undefined
   private socket: WebSocket | undefined
+  private incoming: ReturnType<typeof createWebSocketStream> | undefined
   private timer: ReturnType<typeof setTimeout> | undefined
   private generation = 0
   private retry = 0
@@ -94,7 +95,7 @@ export class EngineSnapshotClient {
   private readonly discardLogs = new Map<string, { count: number; loggedAt: number }>()
   readonly diagnostics = { rejected: 0, stale: 0, lastError: '', connected: false }
 
-  constructor(private readonly url: string, private readonly publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void,
+  constructor(private readonly url: string, private readonly publish: (runId: SimulationRun['runId'], frame: EngineFrameSnapshot) => void | Promise<void>,
     private readonly report: (message: string) => void = message => console.warn(message),
     private readonly diagnose: (run: Pick<SimulationRun, 'runId' | 'taskId'>, diagnostic: EngineConnectionDiagnostic) => void = () => {}) {}
 
@@ -126,17 +127,19 @@ export class EngineSnapshotClient {
       this.timer = undefined
       this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTING', message: '正在连接上游引擎 WebSocket。' })
       const socket = this.socket = new WebSocket(this.url, { handshakeTimeout: 10_000, maxPayload: 4 * 1024 * 1024 })
+      // Preserve message boundaries and stop reading the socket while disk writes catch up.
+      const incoming = this.incoming = createWebSocketStream(socket, { readableObjectMode: true, highWaterMark: 1 })
       let firstFrame = true
       socket.on('open', () => {
         if (!current()) return
         this.diagnostics.connected = true
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'CONNECTED', message: '已连接上游引擎 WebSocket。' })
       })
-      socket.on('message', (raw, binary) => {
+      const receive = async (raw: string | Buffer) => {
         if (!current()) return
         let reason = 'JSON 格式错误'
         try {
-          if (binary) throw new Error('引擎帧必须为 JSON 文本。')
+          if (typeof raw !== 'string') throw new Error('引擎帧必须为 JSON 文本。')
           const input: unknown = JSON.parse(raw.toString())
           reason = '消息类型错误'
           if (!input || typeof input !== 'object' || !('msg_type' in input) || input.msg_type !== 'frame_snapshot') throw new Error('引擎消息类型不是 frame_snapshot。')
@@ -174,11 +177,12 @@ export class EngineSnapshotClient {
           }
           if (frame.initRouting !== null) this.initRouting = structuredClone(frame.initRouting)
           frame.initRouting = structuredClone(this.initRouting)
-          this.publish(run.runId, frame)
+          await this.publish(run.runId, frame)
+          if (!current()) return
           this.lastFrameId = frame.frameId
           this.retry = 0
-        } catch (error) { this.reject(error, reason) }
-      })
+        } catch (error) { if (current()) this.reject(error, reason) }
+      }
       socket.on('error', error => {
         if (!current()) return
         this.cancelControl?.()
@@ -188,14 +192,20 @@ export class EngineSnapshotClient {
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: `上游引擎连接错误：${error.message}` })
       })
       socket.on('close', () => {
-        this.cancelControl?.()
-        socket.removeAllListeners()
         if (!current()) return
+        this.cancelControl?.()
         if (this.control.action) this.control.delivery = 'UNKNOWN'
         this.socket = undefined; this.diagnostics.connected = false
         this.diagnose(run, { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: run.runId, state: 'DISCONNECTED', message: '上游引擎 WebSocket 已断开，正在按退避策略重连。' })
-        this.timer = setTimeout(connect, BACKOFF_MS[Math.min(this.retry++, BACKOFF_MS.length - 1)])
       })
+      void (async () => {
+        try { for await (const raw of incoming) { if (!current()) break; await receive(raw) } }
+        catch { /* socket error handler publishes the connection diagnostic */ }
+        finally {
+          incoming.destroy()
+          if (current()) this.timer = setTimeout(connect, BACKOFF_MS[Math.min(this.retry++, BACKOFF_MS.length - 1)])
+        }
+      })()
     }
     connect()
     return true
@@ -269,11 +279,11 @@ export class EngineSnapshotClient {
     ++this.generation
     clearTimeout(this.timer); this.timer = undefined
     const socket = this.socket
+    this.incoming?.destroy(); this.incoming = undefined
     this.socket = undefined; this.owner = undefined; this.diagnostics.connected = false
     this.lastFrameId = -1; this.engineEpoch = 0; this.initRouting = null
     this.routeHistory.clear()
     if (socket) {
-      socket.removeAllListeners()
       // CONNECTING 时终止也会异步发出 error；等 close 后再移除最后的保护监听。
       socket.on('error', () => {})
       socket.once('close', () => socket.removeAllListeners())

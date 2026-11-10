@@ -24,7 +24,7 @@ export interface EngineFrameArchiveScope {
 }
 
 export interface EngineFrameArchiveSession {
-  append(frame: EngineFrameSnapshot): void
+  append(frame: EngineFrameSnapshot): Promise<void>
   close(): Promise<void>
   failure(): Error | null
 }
@@ -122,9 +122,16 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
       let last: number | null = null
       let closed = false
       let closePromise: Promise<void> | undefined
-      let writeTail = Promise.resolve()
+      const queue: Array<{ frame: EngineFrameSnapshot; line: string }> = []
+      let draining: Promise<void> | undefined
       let failure: Error | null = null
-      let pendingWrites = 0
+      let invalid: Error | null = null
+      let position = 0
+      let handleClosed = false
+      let rawPublished = false
+      let csvPublished = false
+      let rebuildCsv = false
+      let manifest: Manifest | undefined
       let sinceSync = 0
       const fail = (error: unknown) => {
         if (!failure) failure = error instanceof Error ? error : new Error(String(error))
@@ -133,15 +140,11 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
         const bytes = Buffer.from(text, 'utf8')
         let offset = 0
         while (offset < bytes.length) {
-          const written = await handle.write(bytes, offset, bytes.length - offset, null)
+          // Retry overwrites a partial line at its original offset, never appends a duplicate.
+          const written = await handle.write(bytes, offset, bytes.length - offset, position + offset)
           if (!Number.isSafeInteger(written.bytesWritten) || written.bytesWritten <= 0) throw new Error('引擎帧归档写入未完成。')
           offset += written.bytesWritten
         }
-      }
-      const enqueue = (action: () => Promise<void>) => {
-        if (pendingWrites >= MAX_PENDING_WRITES) { fail(new Error(`引擎帧归档写盘积压超过 ${MAX_PENDING_WRITES} 帧，已停止接收以避免无界内存队列。`)); return }
-        pendingWrites += 1
-        writeTail = writeTail.then(action).catch(error => { fail(error) }).finally(() => { pendingWrites -= 1 })
       }
       const noteMissing = (frame: EngineFrameSnapshot) => {
         // The external frame's per-segment payload deliberately has no SNR contract.  The
@@ -153,26 +156,45 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
         if (frame.links.some(link => link.inputTrace.frequencyGHz === null)) missing.add('frequency')
         if (frame.links.some(link => link.inputTrace.dataRateMbps === null)) missing.add('dataRate')
       }
+      const drain = (): Promise<void> => {
+        if (draining) return draining
+        draining = (async () => {
+          while (queue.length) {
+            const { frame, line } = queue[0]!
+            await writeAll(line)
+            position += Buffer.byteLength(line, 'utf8')
+            hash.update(line); frameCount += 1; noteMissing(frame)
+            first = first === null ? frame.simulationTime : Math.min(first, frame.simulationTime)
+            last = last === null ? frame.simulationTime : Math.max(last, frame.simulationTime)
+            queue.shift()
+            if (!rebuildCsv) {
+              try { await csv.append(frame) }
+              catch (error) { rebuildCsv = true; throw error }
+            }
+            sinceSync += 1
+            if (sinceSync >= SYNC_EVERY_FRAMES) { await handle.sync(); sinceSync = 0 }
+          }
+        })().catch(fail).finally(() => { draining = undefined })
+        return draining
+      }
       return {
-        append(frame) {
+        async append(frame) {
           if (closed) { fail(new Error('引擎帧归档已关闭，拒绝追加帧。')); return }
           if (failure) return
           if (frame.runId !== scope.runId || !Number.isSafeInteger(frame.engineEpoch) || frame.engineEpoch < 0 || !Number.isSafeInteger(frame.frameId) || frame.frameId < 0) {
-            fail(new Error('引擎帧归档作用域、轮次或帧号无效。'))
+            invalid = new Error('引擎帧归档作用域、轮次或帧号无效。'); fail(invalid)
             return
           }
           const key = `${frame.engineEpoch}:${frame.frameId}`
           if (seen.has(key)) return
-          seen.add(key); noteMissing(frame)
-          first = first === null ? frame.simulationTime : Math.min(first, frame.simulationTime)
-          last = last === null ? frame.simulationTime : Math.max(last, frame.simulationTime)
-          const line = `${JSON.stringify(frame)}\n`
-          hash.update(line); frameCount += 1
-          enqueue(async () => {
-            await writeAll(line); await csv.append(frame)
-            sinceSync += 1
-            if (sinceSync >= SYNC_EVERY_FRAMES) { await handle.sync(); sinceSync = 0 }
-          })
+          // Callers must await append; the upstream stream applies TCP backpressure.
+          if (queue.length >= MAX_PENDING_WRITES) {
+            invalid = new Error('引擎帧写入调用未等待背压，已停止接收；已接收数据保留。'); fail(invalid); return
+          }
+          const snapshot = structuredClone(frame)
+          seen.add(key)
+          queue.push({ frame: snapshot, line: `${JSON.stringify(snapshot)}\n` })
+          await drain()
         },
         async close() {
           if (closePromise) return closePromise
@@ -180,29 +202,44 @@ export function createEngineFrameArchive(directory: string, now: () => string, l
           closePromise = (async () => {
             let pendingPointer: string | undefined
             try {
-              await writeTail
-              try { await handle.sync() } finally { await handle.close() }
+              await draining
+              if (invalid) {
+                if (!handleClosed) { await handle.close(); handleClosed = true }
+                await csv.abort()
+                throw invalid
+              }
+              failure = null
+              await drain()
               if (failure) throw failure
-              const manifest: Manifest = {
-                schemaVersion: '1.0', scope, sourceSha256: hash.digest('hex'), frameCount,
+              if (!handleClosed) { await handle.sync(); await handle.close(); handleClosed = true }
+              manifest ??= {
+                schemaVersion: '1.0', scope, sourceSha256: hash.copy().digest('hex'), frameCount,
                 firstSimulationTime: first, lastSimulationTime: last, missingFieldNames: [...missing].sort(), completedAt: now(), fileName: `engine-${id}.jsonl`, linkBindings: structuredClone(linkBindings),
+              }
+              if (!rawPublished) { await rename(pending, target); rawPublished = true }
+              if (!csvPublished) {
+                if (rebuildCsv) {
+                  await csv.abort()
+                  await publishEngineCsv(join(runRoot, 'csv'), target, scope.taskId, manifest.sourceSha256, linkBindings, frameCount)
+                } else {
+                  try { await csv.close(manifest.sourceSha256) }
+                  catch (error) { rebuildCsv = true; throw error }
+                }
+                csvPublished = true
               }
               const pointer = join(runRoot, 'current.json')
               pendingPointer = join(runRoot, `.current-${randomUUID()}.json`)
-              await rename(pending, target)
               await writeFile(pendingPointer, JSON.stringify(manifest), { encoding: 'utf8', flag: 'wx' })
               await rename(pendingPointer, pointer)
-              await csv.close(manifest.sourceSha256)
             } catch (error) {
-              await unlink(pending).catch(() => undefined)
               if (pendingPointer) await unlink(pendingPointer).catch(() => undefined)
-              await csv.abort().catch(() => undefined)
               fail(error)
               throw failure
             }
             return undefined
           })()
-          return closePromise
+          try { await closePromise }
+          catch (error) { closePromise = undefined; throw error }
         },
         failure: () => failure,
       }

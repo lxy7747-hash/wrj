@@ -55,7 +55,7 @@ export async function publishEngineCsv(directory: string, rawJsonl: string, task
   try {
     let rows = 0
     const source = await readStableUtf8Lines(rawJsonl, async line => { const frame: unknown = JSON.parse(line); if (!isEngineFrameSnapshot(frame)) throw new Error('引擎帧 CSV 来源无效。'); rows += 1; await session.append(frame) }, MAX_ARCHIVE_BYTES)
-    if (source.waitingForLine || source.source.sha256 !== sourceSha256 || rows === 0 || (expectedFrameCount !== undefined && rows !== expectedFrameCount)) throw new Error('引擎帧 CSV 来源摘要、尾行或记录数无效。')
+    if (source.waitingForLine || source.source.sha256 !== sourceSha256 || (rows === 0 && expectedFrameCount !== 0) || (expectedFrameCount !== undefined && rows !== expectedFrameCount)) throw new Error('引擎帧 CSV 来源摘要、尾行或记录数无效。')
     return await session.close(sourceSha256)
   } catch (error) { await session.abort(); throw error }
 }

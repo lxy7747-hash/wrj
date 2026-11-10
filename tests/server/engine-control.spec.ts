@@ -2,6 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import type { EngineConnectionDiagnostic, EngineControlAction, EngineFrameSnapshot, SimulationRun } from '../../src/contracts/domain-models'
 import sample from '../fixtures/engine-frame/websocket-new/fream001.json'
+import latestSamples from '../fixtures/engine-frame/websocket-latest.json'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import { playbackFileSource, fileReceptionScenarioId } from '../../src/features/situation/file-reception'
 const { once } = await import('node:' + 'events')
@@ -9,7 +10,7 @@ const { WebSocket, WebSocketServer } = await import('w' + 's')
 const { EngineSnapshotClient } = await import('../../server/local/' + 'engine-snapshot-client.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
-const { mkdtemp, rm, readFile, readdir } = await import('node:fs/' + 'promises')
+const { mkdtemp, rm, readFile, readdir, mkdir, open } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
 const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
@@ -254,6 +255,82 @@ it('断线时停止仍完成本地收尾，不声称发送成功', async () => {
   expect((await confirmed('STOP')).status).toBe(200)
   expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, engineControl: { connected: false, action: null, delivery: 'IDLE' } })
   expect(messages).toEqual([])
+})
+
+it('实际归档发布失败保留两帧和时间，停止重试成功后才发布报表并解锁', async () => {
+  const save = vi.fn<NonNullable<Parameters<typeof setup>[1]>>().mockResolvedValue(undefined)
+  const { confirmed, read, messages, peers, runId, root, archive, command } = await setup(true, save)
+  peers[0]!.send(JSON.stringify(latestSamples[0]))
+  await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(3775))
+  await command({ command: 'PAUSE' }).expect(202)
+  expect(await read()).toMatchObject({ engineControl: { action: 'pause', delivery: 'SENT' } })
+  await command({ command: 'RESUME' }).expect(202)
+  peers[0]!.send(JSON.stringify(latestSamples[1]))
+  await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(3780))
+  const blocked = join(root, runId, 'current.json')
+  await mkdir(blocked)
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true, canonical: { currentTime: 3780 } })
+  expect(save).not.toHaveBeenCalled()
+  const files = await readdir(join(root, runId))
+  const raw = files.find((name: string) => name.endsWith('.jsonl'))!
+  const before = await readFile(join(root, runId, raw), 'utf8')
+  expect(before.trim().split('\n').map((line: string) => JSON.parse(line).frameId)).toEqual([3775, 3780])
+  await rm(blocked, { recursive: true })
+  expect((await confirmed('STOP')).status).toBe(200)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { currentTime: 3780 } })
+  expect(await archive.load(runId)).toMatchObject({ frameCount: 2 })
+  expect(await readFile(join(root, runId, raw), 'utf8')).toBe(before)
+  expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780)
+  expect(messages).toEqual(['pause', 'resume', 'stop'].map(action => ({ msg_type: 'sim_control', action })))
+})
+
+it('停止等待正在写入的帧，不提前成功、不把最后一帧留在报表外', async () => {
+  const { confirmed, read, peers, runId, root, archive } = await setup(true)
+  const probe = await open(join(root, 'probe'), 'wx'), prototype = Object.getPrototypeOf(probe)
+  await probe.close()
+  const original = prototype.write
+  let release!: () => void, entered = false
+  const gate = new Promise<void>(resolve => { release = resolve })
+  vi.spyOn(prototype, 'write').mockImplementation(async function (this: any, ...args: any[]) {
+    if (args[0].toString().includes('ENGINE_FRAME')) { entered = true; await gate }
+    return original.apply(this, args)
+  })
+  try {
+    peers[0]!.send(JSON.stringify(latestSamples[0]))
+    await vi.waitFor(() => expect(entered).toBe(true))
+    let finished = false
+    const stopping = confirmed('STOP').then(response => { finished = true; return response })
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(finished).toBe(false)
+    expect((await read()).configLocked).toBe(true)
+    release()
+    expect((await stopping).status).toBe(200)
+    expect(await archive.load(runId)).toMatchObject({ frameCount: 1, lastSimulationTime: 3775 })
+    expect(await read()).toMatchObject({ uiStatus: 'STOPPED', canonical: { currentTime: 3775 } })
+  } finally { release() }
+})
+
+it('首帧写盘失败立即锁定并保留待写数据，磁盘恢复后停止可保存该帧', async () => {
+  const { confirmed, read, peers, runId, root, archive } = await setup(true)
+  const probe = await open(join(root, 'probe'), 'wx'), prototype = Object.getPrototypeOf(probe)
+  await probe.close()
+  const original = prototype.write
+  const write = vi.spyOn(prototype, 'write').mockImplementation(async function (this: any, ...args: any[]) {
+    if (args[0].toString().includes('ENGINE_FRAME')) throw new Error('模拟磁盘暂不可用')
+    return original.apply(this, args)
+  })
+  peers[0]!.send(JSON.stringify(latestSamples[0]))
+  await vi.waitFor(async () => expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true }))
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect((await read()).configLocked).toBe(true)
+  write.mockRestore()
+  expect((await confirmed('STOP')).status).toBe(200)
+  const saved = (await archive.load(runId))!
+  expect(saved).toMatchObject({ frameCount: 1, lastSimulationTime: 3775 })
+  const restored = JSON.parse((await readFile((await archive.getFile(runId, saved.sourceSha256))!, 'utf8')).trim())
+  expect(restored.links[1].quality.ber).toBe(latestSamples[0]!.link_calc.links[1]!.quality.ber)
+  expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
 })
 
 it('停止等待报表发布；发布失败保留锁，重试不重发 stop', async () => {
