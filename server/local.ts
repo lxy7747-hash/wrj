@@ -27,6 +27,8 @@ import { ArchiveSqliteStorage } from './local/archive-sqlite.js'
 import { MasterDataSqliteStorage } from './local/master-data-sqlite.js'
 import { readLanConfig } from './local/lan-config.js'
 import { createLanSite } from './local/lan-site.js'
+import { readEngineConfig } from './local/engine-config.js'
+import { startMockEngine } from './local/mock-engine-server.js'
 
 // 本机路径从忽略的 .env.local 初始化白名单配置库，不写入共享代码或复制凭据。
 try {
@@ -77,7 +79,14 @@ const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'qualit
 const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString())
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
-const linkEngineWsUrl = lan?.linkEngineWsUrl ?? readLinkEngineWsUrl(process.env.LINK_ENGINE_WS_URL)
+// config/engine.json 的 useRealEngine 决定连真实地址还是进程内假引擎；LAN 部署仍只读 .env.server。
+// 真实模式优先使用 LINK_ENGINE_WS_URL，其次 realUrl；假模式忽略这两个地址。
+const engineConfig = readEngineConfig()
+const mockEngine = lan || engineConfig.useRealEngine ? undefined : await startMockEngine(engineConfig.mockIntervalMs)
+const linkEngineWsUrl = lan ? lan.linkEngineWsUrl
+  : engineConfig.useRealEngine
+    ? readLinkEngineWsUrl(process.env.LINK_ENGINE_WS_URL) ?? engineConfig.realUrl
+    : mockEngine!.url
 const missionExecution = linkEngineWsUrl ? undefined : lan?.webOnly
   ? { start: async () => { throw new Error('当前是仅网页部署，仿真引擎尚未部署。') } }
   : new LocalMissionPool(missionExecutable, missionDirectory, missionResults, missionConcurrency, missionRunTimeoutMs)

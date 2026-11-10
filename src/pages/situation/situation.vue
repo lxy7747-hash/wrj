@@ -182,13 +182,14 @@ watch([runtimeQualityScope, () => combinedPlayback.value && initialSnapshot.valu
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
-// 远端接收没有本机位置/文件帧作为订阅入口；按会话绑定，普通状态刷新不重连。
-watch(() => remoteEngineMode.value && runtimeQualityScope.value && simulationRun.value?.configLocked
-  ? `${useAuthStore().principal?.userId}:${runtimeQualityScope.value.runId}:${runtimeQualityScope.value.revision}:${runtimeQualityScope.value.startedAt}` : null,
+// 远端接收没有本机位置/文件帧作为订阅入口；只要远端运行已锁定并启动就连接，
+// 文件播放时 runtimeQualityScope 可能为空，不能再作为连接前置条件。
+watch(() => remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt
+  ? `${useAuthStore().principal?.userId}:${simulationRun.value.runId}:${simulationRun.value.startedAt}` : null,
 key => {
   telemetryStore.disconnectAndReset()
   if (key) telemetryStore.connect()
-}, { flush: 'post' })
+}, { flush: 'post', immediate: true })
 // 统一展示时钟连续推进；质量和告警保留真实帧时间，不随展示插值改变。
 const fileTime = computed(() => combinedPlayback.value && sharedRemoteTime.value !== null ? sharedRemoteTime.value
   : ownsFilePlayback.value && filePlayback.localSnapshot ? filePlayback.replay?.currentTimeS ?? 0 : 0)
