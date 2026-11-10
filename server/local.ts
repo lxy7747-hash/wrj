@@ -79,9 +79,9 @@ const runQualityStore = createRunQualityStore(lan ? join(lan.outputRoot, 'qualit
 const engineFrameArchive = createEngineFrameArchive(lan ? join(lan.outputRoot, 'engine-frames') : fileURLToPath(new URL('../output/engine-frames/', import.meta.url)), () => new Date().toISOString())
 const missionDirectory = lan ? join(lan.outputRoot, 'mission-runs') : fileURLToPath(new URL('../output/mission-runs/', import.meta.url))
 const missionExecutable = lan?.executable ?? (process.env.MISSION_EXECUTABLE_PATH?.trim() || fileURLToPath(new URL('../../Release/Release/mission.exe', import.meta.url)))
-// config/engine.json 的 useRealEngine 决定连真实地址还是进程内假引擎；LAN 部署仍只读 .env.server。
+// .env.local 的 useRealEngine 决定连真实地址还是进程内假引擎；LAN 部署仍只读 .env.server。
 // 真实模式优先使用 LINK_ENGINE_WS_URL，其次 realUrl；假模式忽略这两个地址。
-const engineConfig = readEngineConfig()
+const engineConfig = readEngineConfig(lan ? {} : process.env)
 const mockEngine = lan || engineConfig.useRealEngine ? undefined : await startMockEngine(engineConfig.mockIntervalMs)
 const linkEngineWsUrl = lan ? lan.linkEngineWsUrl
   : engineConfig.useRealEngine

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readLinkEngineWsUrl } from './engine-snapshot-client.js'
 
 export interface EngineConfig {
   /** true 连接 realUrl；false 在进程内启动假引擎。 */
@@ -9,35 +9,23 @@ export interface EngineConfig {
   mockIntervalMs: number
 }
 
-/**
- * 文件缺失时按真实引擎处理，避免生产环境意外进入假数据模式；
- * 开发机用 config/engine.json 显式置 false 才启用假引擎。
- */
-
 const DEFAULT: EngineConfig = {
   useRealEngine: true,
   realUrl: 'ws://192.168.1.48:8080/ws/v1',
   mockIntervalMs: 5000,
 }
 
-/** 读取 config/engine.json；文件缺失或字段无效时回退默认值。 */
-export function readEngineConfig(path = new URL('../../config/engine.json', import.meta.url)): EngineConfig {
-  let input: unknown
-  try {
-    input = JSON.parse(readFileSync(path, 'utf8'))
-  } catch {
-    return { ...DEFAULT }
-  }
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) return { ...DEFAULT }
-  const value = input as Record<string, unknown>
-  const realUrl = typeof value.realUrl === 'string' && /^wss?:\/\//.test(value.realUrl.trim())
-    ? value.realUrl.trim()
-    : DEFAULT.realUrl
-  const interval = typeof value.mockIntervalMs === 'number' && Number.isFinite(value.mockIntervalMs) && value.mockIntervalMs >= 100
-    ? value.mockIntervalMs
-    : DEFAULT.mockIntervalMs
+/** 由启动入口先加载 .env.local；缺省使用真实引擎，仅显式 false 启用模拟数据。 */
+export function readEngineConfig(env: NodeJS.ProcessEnv = process.env): EngineConfig {
+  const useRealEngine = env.useRealEngine?.trim().toLowerCase()
+  if (useRealEngine && useRealEngine !== 'true' && useRealEngine !== 'false') throw new Error('useRealEngine 必须为 true 或 false。')
+  const interval = env.mockIntervalMs?.trim() ? Number(env.mockIntervalMs) : DEFAULT.mockIntervalMs
+  if (!Number.isFinite(interval) || interval < 100 || interval > 2_147_483_647) throw new Error('mockIntervalMs 必须为 100～2147483647 毫秒。')
+  let realUrl: string
+  try { realUrl = readLinkEngineWsUrl(env.realUrl) ?? DEFAULT.realUrl }
+  catch { throw new Error('realUrl 必须为不含账号密码或片段的完整 ws:// 或 wss:// 地址。') }
   return {
-    useRealEngine: value.useRealEngine === true,
+    useRealEngine: useRealEngine ? useRealEngine === 'true' : DEFAULT.useRealEngine,
     realUrl,
     mockIntervalMs: interval,
   }
