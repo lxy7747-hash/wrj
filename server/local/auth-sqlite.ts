@@ -4,6 +4,7 @@ import { randomBytes, scrypt, scryptSync, timingSafeEqual, createHash } from 'no
 import type { AuditDeleteRequest, AuditRecord, User } from '../../src/contracts/domain-models.js'
 import type { AuthStorage } from '../auth/projection.js'
 import { isManagedUsername } from '../auth/projection.js'
+import type { AccessControlSqliteStorage } from './access-control-sqlite.js'
 
 const SESSION_MS = 8 * 60 * 60 * 1000
 export const SESSION_COOKIE = 'wrj_session'
@@ -23,6 +24,7 @@ export class AuthSqliteStorage implements AuthStorage {
   // ponytail: 账号撤权会保守地淘汰所有在途登录；高并发管理场景再细化到单账号。
   private authRevision = 0
   private closed = false
+  private removeRoleAssignment?: (userId: string) => void
 
   constructor(path: string, bootstrapPassword?: string, private readonly now = Date.now) {
     if (!isAbsolute(path)) throw new Error('账号数据库路径必须为绝对路径。')
@@ -48,6 +50,9 @@ export class AuthSqliteStorage implements AuthStorage {
           result TEXT NOT NULL CHECK(result IN ('SUCCESS','DENIED','ERROR')),
           occurred_at TEXT NOT NULL
         ) STRICT;`)
+      if (!this.db.prepare('PRAGMA table_info(users)').all().some(row => row.name === 'display_name')) {
+        this.db.exec('ALTER TABLE users ADD COLUMN display_name TEXT')
+      }
       if (this.list().length === 0) {
         if (!validPassword(bootstrapPassword) || bootstrapPassword.length < 12) throw new Error('首次启动请设置 12–128 位 AUTH_BOOTSTRAP_PASSWORD，不能全为空白；不会使用演示密码。')
         this.insertUser({ userId: 'USR-ADMIN', username: 'admin', role: 'ADMIN', status: 'ACTIVE' }, bootstrapPassword)
@@ -56,8 +61,8 @@ export class AuthSqliteStorage implements AuthStorage {
   }
 
   list(): User[] {
-    return this.db.prepare('SELECT user_id, username, role, status, last_login_at FROM users ORDER BY user_id').all().map(row => ({
-      userId: String(row.user_id), username: String(row.username), role: row.role as User['role'], status: row.status as User['status'],
+    return this.db.prepare('SELECT user_id, username, display_name, role, status, last_login_at FROM users ORDER BY user_id').all().map(row => ({
+      userId: String(row.user_id), username: String(row.username), displayName: String(row.display_name ?? row.username), role: row.role as User['role'], status: row.status as User['status'],
       ...(row.last_login_at === null ? {} : { lastLoginAt: String(row.last_login_at) }),
     }))
   }
@@ -119,7 +124,7 @@ export class AuthSqliteStorage implements AuthStorage {
     // 不排无界队列，最多两次 scrypt 并行，为文件读取等线程池任务留余量。
     if (this.closed || this.activeVerifications >= MAX_CONCURRENT_SCRYPT) return false
     const revision = this.authRevision
-    const query = 'SELECT user_id, username, role, status, password_salt, password_hash FROM users WHERE username = ?'
+    const query = 'SELECT user_id, username, display_name, role, status, password_salt, password_hash FROM users WHERE username = ?'
     const row = this.db.prepare(query).get(username)
     const salt = Buffer.from(row ? String(row.password_salt) : '00'.repeat(16), 'hex')
     const expected = Buffer.from(row ? String(row.password_hash) : '00'.repeat(32), 'hex')
@@ -135,17 +140,40 @@ export class AuthSqliteStorage implements AuthStorage {
     } finally { this.activeVerifications-- }
   }
 
+  connectAccessControl(storage: Pick<AccessControlSqliteStorage, 'attachAccountDatabase'>): void {
+    this.removeRoleAssignment = storage.attachAccountDatabase(this.db)
+  }
+
+  private writeUser(userId: string, nextRole: User['role'] | undefined, write: () => void): void {
+    if (!this.removeRoleAssignment) { write(); return }
+    this.db.exec('BEGIN IMMEDIATE')
+    try {
+      const previous = this.db.prepare('SELECT role FROM users WHERE user_id=?').get(userId)
+      write()
+      if (!previous || previous.role !== nextRole) this.removeRoleAssignment(userId)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
+    }
+  }
+
   save(user: User, password?: string): void {
     const current = password === undefined ? this.db.prepare('SELECT username FROM users WHERE user_id=?').get(user.userId) : undefined
     if (!isManagedUsername(user.username) && current?.username !== user.username) {
-      throw new Error('用户名须为 1–64 位，且不能包含首尾空格。')
+      throw new Error('登录账号须为 1–64 位，且不能包含首尾空格。')
+    }
+    if (user.displayName !== undefined && (typeof user.displayName !== 'string' || !user.displayName.trim() || user.displayName.length > 64)) {
+      throw new Error('用户名须为 1–64 位，不能全为空白。')
     }
     if (password !== undefined) {
       if (!validPassword(password) || password.length > 32) throw new Error('密码须为 6–32 位。密码不能全为空白。')
-      this.insertUser(user, password)
+      this.writeUser(user.userId, user.role, () => this.insertUser(user, password))
     } else {
-      this.db.prepare('UPDATE users SET username=?, role=?, status=? WHERE user_id=?')
-        .run(user.username, user.role, user.status, user.userId)
+      this.writeUser(user.userId, user.role, () => {
+        this.db.prepare('UPDATE users SET username=?, display_name=COALESCE(?, display_name, username), role=?, status=? WHERE user_id=?')
+          .run(user.username, user.displayName ?? null, user.role, user.status, user.userId)
+      })
     }
   }
 
@@ -156,11 +184,14 @@ export class AuthSqliteStorage implements AuthStorage {
   // 初始化管理员与界面新建账号的长度规则独立，校验后共用同一哈希写入路径。
   private insertUser(user: User, password: string): void {
     const salt = randomBytes(16)
-    this.db.prepare(`INSERT INTO users (user_id, username, role, status, password_salt, password_hash, last_login_at)
-      VALUES (?, ?, ?, ?, ?, ?, NULL)`).run(user.userId, user.username, user.role, user.status, salt.toString('hex'), derive(password, salt).toString('hex'))
+    this.db.prepare(`INSERT INTO users (user_id, username, role, status, password_salt, password_hash, last_login_at, display_name)
+      VALUES (?, ?, ?, ?, ?, ?, NULL, ?)`).run(user.userId, user.username, user.role, user.status, salt.toString('hex'), derive(password, salt).toString('hex'), user.displayName ?? user.username)
   }
 
-  delete(id: string): void { this.db.prepare('DELETE FROM users WHERE user_id=?').run(id); this.revokeUser(id) }
+  delete(id: string): void {
+    this.writeUser(id, undefined, () => { this.db.prepare('DELETE FROM users WHERE user_id=?').run(id) })
+    this.revokeUser(id)
+  }
   revokeUser(id: string): void {
     this.authRevision++
     for (const [key, session] of this.sessions) if (session.userId === id) this.sessions.delete(key)

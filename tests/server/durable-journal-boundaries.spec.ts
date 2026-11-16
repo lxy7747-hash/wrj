@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest'
 const { DiskRealtimeJournal } = await import('../../server/local/' + 'realtime-journal.js')
+const { MemoryRealtimeJournal } = await import('../../server/ws/' + 'realtime-journal.js')
 const { mkdtemp, readFile, writeFile, readdir, rm } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -14,6 +15,25 @@ async function topicPath(root: string, topic: string) {
 }
 
 describe('持久WS的代际、损坏及有界页', () => {
+  it.each(['memory', 'disk'])('%s 日志和位置主题切换运行后，零游标只补当前运行，旧游标拒绝', async storage => {
+    const disk = await fixture()
+    let journal = storage === 'disk' ? disk.journal : new MemoryRealtimeJournal(8)
+    journal.prepareRun('TASK-001', 'RUN-A')
+    for (const topic of ['mission.log', 'position.update'] as const) {
+      journal.append('TASK-001', topic, { sequence: 1, message: 'old-' + topic })
+    }
+    journal.prepareRun('TASK-001', 'RUN-B')
+    journal.append('TASK-001', 'mission.log', { sequence: 2, message: 'current-log' })
+    if (storage === 'disk') journal = new DiskRealtimeJournal(disk.root, 2)
+    expect(journal.prepareRun('TASK-001', 'RUN-B')).toBe(false)
+    for (const topic of ['mission.log', 'position.update'] as const) {
+      expect(journal.canResume('TASK-001', topic, 1, true)).toMatchObject({ ok: false })
+      expect(journal.canResume('TASK-001', topic, 0, true)).toMatchObject({ ok: true })
+    }
+    expect(journal.readAfter('TASK-001', 'mission.log', 0, 64)).toMatchObject({ ok: true, events: [{ sequence: 2, message: 'current-log' }] })
+    expect(journal.readAfter('TASK-001', 'position.update', 0, 64)).toMatchObject({ ok: true, events: [] })
+  })
+
   it('混合订阅中的零游标也只读取当前运行，不泄漏上一运行的链路消息', async () => {
     const { journal } = await fixture()
     journal.prepareRun('TASK-001', 'RUN-A')

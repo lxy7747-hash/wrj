@@ -87,6 +87,23 @@ class IncrementalEventDecoder {
   private block: string[] = []
   private blockBytes = 0
   private blockStart = 0
+  get isCsv(): boolean { return this.csvDeclarations.size > 0 }
+
+  isTruncatedTail(line: string, reason: string): boolean {
+    const cells = parseCsvLine(line)
+    if (!cells) return reason.includes('CSV 引号未闭合')
+    if (cells.length === 1) return /^\s*\d[\d.eE+-]*\s*$/.test(line)
+    const declaration = this.csvDeclarations.get(cells[1]?.trim() ?? '')
+    const missing = /事件缺少字段 (\w+)/.exec(reason)?.[1]
+    if (!declaration || !missing) return false
+    const aliases: Record<string, string> = { Size: 'message_size', Number: 'message_serial_number', DataTag: 'data_tag',
+      System: cells[1]?.trim() === 'MESSAGE_HOP' ? 'receiver_system' : 'comm', Type: 'message_type' }
+    const columns = parseCsvLine(declaration)!.slice(1).map(column => column.trim().replace(/<[^<>]+>$/, ''))
+    if (columns[0] !== 'time') columns.unshift('time', 'event')
+    const index = columns.findIndex(column => column === (aliases[missing] ?? missing.toLowerCase()))
+    // 已存在但为空的必填列仍属坏数据；只接受尚未写到必填列的尾部截断。
+    return index >= cells.length
+  }
 
   private parse(text: string, start: number, end: number): AfsimLogEvent[] {
     const parsed = parseAfsimEventLog(text)
@@ -337,12 +354,13 @@ export class ContinuousTimeSeriesWriter {
   }
 
   /** 关闭前串行收尾最后一个已落盘块；失败/停止同样发布不可完成的可追溯清单。 */
-  async close(completion: Completion): Promise<string> {
-    this.closePromise ??= this.closeOnce(completion)
+  async close(completion: Completion, options: { stopped?: boolean } = {}): Promise<string> {
+    this.closePromise ??= this.closeOnce(completion, options.stopped === true)
     return this.closePromise
   }
 
-  private async closeOnce(completion: Completion): Promise<string> {
+  private async closeOnce(completion: Completion, stopped: boolean): Promise<string> {
+    const incompleteTails: { sourceFile: string; bytes: number; reason: string }[] = []
     this.closed = true
     clearInterval(this.timer)
     try { await this.polling }
@@ -359,7 +377,17 @@ export class ContinuousTimeSeriesWriter {
         if (source.pending) {
           const line = source.pending
           source.pending = ''
-          await this.writeLine(source, line)
+          if (source.contract.name === 'events.csv' && this.eventDecoder.isCsv && stopped && completion === 'INCOMPLETE') {
+            let events: AfsimLogEvent[] = []
+            try { events = this.eventDecoder.read(line) }
+            catch (error) {
+              const reason = error instanceof Error ? error.message : String(error)
+              // 只容纳停止后未换行尾部的缺字段/未闭合记录；完整行与非法字段值仍严格拒绝。
+              if (!this.eventDecoder.isTruncatedTail(line, reason)) throw error
+              incompleteTails.push({ sourceFile: basename(source.sourcePath), bytes: Buffer.byteLength(line, 'utf8'), reason })
+            }
+            for (const event of events) await this.writeEvent(source, event)
+          } else await this.writeLine(source, line)
         }
         if (source.contract.name === 'events.csv') {
           for (const event of this.eventDecoder.close()) {
@@ -401,7 +429,7 @@ export class ContinuousTimeSeriesWriter {
       // COMPLETED 仅表示本次连续采集收尾无错误；五类合同是否齐备由 contractsComplete 单独说明。
       contractsComplete: missing.length === 0, statusNote: 'COMPLETED 表示连续采集正常收尾，不表示全部五类时序合同均已提供。', ...this.context,
       measurementNote: '批次耗时单位ms；writeCall为文件写入调用返回，observedSnapshotToWrite从本轮观察到源文件快照起计，不是逐条引擎产生时刻。finalSyncMs为收尾sync调用耗时。直方图末档null表示超过5000ms，分档不是验收阈值。',
-      files, missing, ...(this.failure ? { errorCode: 'CSV_STREAM_ERROR', error: this.failure.message } : {}) }
+      files, missing, ...(incompleteTails.length ? { incompleteTails } : {}), ...(this.failure ? { errorCode: 'CSV_STREAM_ERROR', error: this.failure.message } : {}) }
     const pending = join(this.root, `manifest-${randomUUID()}.pending`)
     const published = join(this.root, 'manifest.json')
     await writeFile(pending, JSON.stringify(manifest, null, 2), { encoding: 'utf8', flag: 'wx', flush: true })

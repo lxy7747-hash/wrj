@@ -404,4 +404,65 @@ describe('装备参数库', () => {
     expect(error).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
+
+  it('B2 挂载：查看历史/事件、无效核验拒绝、有效核验保存', async () => {
+    const activeHistory = { equipmentId: EQUIPMENT.equipmentId, deleted: false, current: { ...EQUIPMENT }, history: [{ ...EQUIPMENT }], references: [], publishedReferences: [],
+      lifecycle: [{ eventType: 'DELETE', version: 1, occurredAt: '2026-09-21T00:00:00Z', operator: 'admin' }, { eventType: 'RECREATE', version: 2, occurredAt: '2026-09-21T01:00:00Z', operator: 'admin' }],
+      verification: null, pendingVerification: true }
+    const verificationRecord = { equipmentId: EQUIPMENT.equipmentId, coveredTargets: 'SCN-001', evidenceSummary: '核查依据', conclusion: '通过', operator: 'admin', verifiedAt: '2026-09-21T00:00:00Z' }
+    const deletedHistory = { equipmentId: 'DEL-EQ', deleted: true, current: null, history: [{ ...EQUIPMENT, equipmentId: 'DEL-EQ', version: 2 }, { ...EQUIPMENT, equipmentId: 'DEL-EQ', version: 1 }], references: [], publishedReferences: [],
+      lifecycle: [{ eventType: 'DELETE', version: 2, occurredAt: '2026-09-21T00:00:00Z', operator: 'admin' }], verification: null, pendingVerification: false }
+    const recreateResult = { equipment: { ...EQUIPMENT, equipmentId: 'DEL-EQ', version: 3 }, event: { eventType: 'RECREATE', version: 3, occurredAt: '2026-09-21T02:00:00Z', operator: 'admin' } }
+    const fetcher = vi.fn(async (url: unknown, init?: RequestInit) => {
+      const u = String(url)
+      if (init?.method === 'POST' && u.endsWith('/verification')) {
+        const body = JSON.parse(String(init.body)) as { coveredTargets?: string; evidenceSummary?: string; conclusion?: string }
+        if (!body.coveredTargets?.trim() || !body.evidenceSummary?.trim() || !body.conclusion?.trim()) {
+          return new Response(JSON.stringify({ ok: false, error: { code: 'VALIDATION_FAILED', message: '核验须提供覆盖目标、依据摘要与结论，不能只靠确认。', retryable: false, correlationId: 'C' },
+            meta: { requestId: 'R', generatedAt: '2026-08-06T08:00:00Z' } }), { status: 422 })
+        }
+        return response(verificationRecord)
+      }
+      if (init?.method === 'POST' && u.endsWith('/recreate')) return response(recreateResult)
+      if (u.includes('/admin/equipment/DEL-EQ/history')) return response(deletedHistory)
+      if (u.endsWith('/details')) return response({ history: [{ ...EQUIPMENT }], references: [] })
+      if (u.endsWith('/scenarios')) return response([])
+      if (u.includes('/history')) return response(activeHistory)
+      return response([EQUIPMENT])
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const success = vi.spyOn(ElMessage, 'success')
+    const wrapper = setup()
+    await flushPromises()
+    await wrapper.findAll('button').find(item => item.text() === '查看')!.trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="equipment-history-load"]').trigger('click')
+    await flushPromises()
+    // 历史/事件展示
+    expect(wrapper.get('[data-testid="equipment-history"]').text()).toContain('RECREATE')
+    // 无效核验（空依据）被拒绝，不提示成功
+    await wrapper.get('[data-testid="equipment-verify-submit"]').trigger('click')
+    await flushPromises()
+    expect(success).not.toHaveBeenCalledWith('核验依据已保存。')
+    // 有效核验保存成功
+    await wrapper.get('[data-testid="equipment-verify-targets"]').setValue('SCN-001')
+    await wrapper.get('[data-testid="equipment-verify-evidence"]').setValue('核查依据')
+    await wrapper.get('[data-testid="equipment-verify-conclusion"]').setValue('通过')
+    await wrapper.get('[data-testid="equipment-verify-submit"]').trigger('click')
+    await flushPromises()
+    expect(success).toHaveBeenCalledWith('核验依据已保存。')
+    // 显式重建：查询已删除历史 → 打开重建对话框 → 提交，返回实际版本
+    await wrapper.get('[data-testid="equipment-deleted-query"]').setValue('DEL-EQ')
+    await wrapper.get('[data-testid="equipment-deleted-search"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="equipment-recreate-open"]').trigger('click')
+    await flushPromises()
+    const recreate = wrapper.findAll('[role="dialog"]').find(dialog => dialog.text().includes('重建装备'))!
+    expect(recreate.text()).toContain('不恢复旧引用，也不会解除待核验')
+    expect(recreate.text()).not.toContain('expectedHistoryVersion')
+    await wrapper.get('[data-testid="equipment-recreate-submit"]').trigger('click')
+    await flushPromises()
+    expect(success).toHaveBeenCalledWith('装备已重建为版本 3。')
+    wrapper.unmount()
+  })
 })

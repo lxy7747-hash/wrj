@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest'
 import type { LocalReportFilter, QualityImportRequest, QualitySample, QualityScope, Report, ScenarioDraft } from '../../src/contracts/domain-models'
 import { isMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultSnapshot, type MissionResultRecord, type MissionResultParameterComparison } from '../../src/features/results/mission-result'
@@ -19,7 +20,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true })
 })
 
-async function setup() {
+async function setup(buildSamples?: (scene: ScenarioDraft) => QualitySample[]) {
   const root = await mkdtemp(join(tmpdir(), 'wrj-quality-api-'))
   roots.push(root)
   const store = createRunQualityStore(root, () => '2026-11-01T02:00:00Z')
@@ -46,7 +47,7 @@ async function setup() {
   const started = await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   const scope: QualityScope = { taskId: 'TASK-001', runId, scenarioId: 'SCN-001', revision: scene.revision, startedAt: started.body.data.startedAt }
   const link = scene.config.links[0]!
-  const samples: QualitySample[] = [0, 1, 2].map(index => ({ frameId: index + 1, linkId: link.id, time: index * scene.config.scenario.timeStep,
+  const defaultSamples: QualitySample[] = [0, 1, 2].map(index => ({ frameId: index + 1, linkId: link.id, time: index * scene.config.scenario.timeStep,
     sourcePlatform: link.sourcePlatformId, destPlatform: link.targetPlatformId, linkType: link.type,
     frequency: link.frequency, bandwidth: link.bandwidth, distance: 1000, txPower: link.txPower,
     txAntennaGain: link.antennaGain.tx, rxAntennaGain: link.antennaGain.rx, pathLoss: 100, jammingPower: -90,
@@ -54,6 +55,7 @@ async function setup() {
     berThreshold: 1e-5, dataRate: 2, interferenceActive: true,
     losses: { freeSpaceLossDb: 90, seaMultipathLossDb: 2, atmosphericLossDb: 2, cloudRainLossDb: 1, jammingLossDb: 5, totalLossDb: 100 },
   }))
+  const samples = buildSamples ? buildSamples(scene) : defaultSamples
   const payload = (values = samples, valueScope = scope): QualityImportRequest => ({ scope: valueScope, fileName: '质量输入.json', format: 'JSON',
     text: JSON.stringify({ format: 'wrj.quality.v1', scope: valueScope, samples: values }) })
   const replay = structuredClone(LOCAL_REPLAY)
@@ -140,5 +142,51 @@ describe('质量接入真实HTTP与文件生产', () => {
     const oldExport = (await api.post(`/api/v1/reports/${reportId}/export?resultId=${resultId}`).set(headers).send(exportRequest).expect(200)).body.data
     expect(await readFile(oldExport.filePath, 'utf8')).toContain(first.source.sha256)
     expect(second.source.sha256).not.toBe(first.source.sha256)
+  })
+
+  it('A3 筛选后反转子集经真实HTTP报告/筛选/导出：帧序合法、范围来源一致、HTML+PDF 生成', async () => {
+    const build = (scene: ScenarioDraft): QualitySample[] => {
+      const mw = scene.config.links.find(link => link.id === 'L-MW-01')!
+      const sat = scene.config.links.find(link => link.id === 'L-SAT-02')!
+      const mk = (link: typeof mw, frameId: number, time: number, jsrDb: number): QualitySample => ({
+        frameId, linkId: link.id, time, sourcePlatform: link.sourcePlatformId, destPlatform: link.targetPlatformId, linkType: link.type,
+        frequency: link.frequency, bandwidth: link.bandwidth, distance: 1000, txPower: link.txPower,
+        txAntennaGain: link.antennaGain.tx, rxAntennaGain: link.antennaGain.rx, pathLoss: 100, jammingPower: -90,
+        receivedPower: -80, snr: 12, jsrDb, modulation: 'QPSK', ber: 1e-6, linkStatus: 'UP', berThreshold: 1e-5, dataRate: 2, interferenceActive: true,
+        losses: { freeSpaceLossDb: 90, seaMultipathLossDb: 2, atmosphericLossDb: 2, cloudRainLossDb: 1, jammingLossDb: 5, totalLossDb: 100 },
+      })
+      // 已知帧后补充另一条链路：筛选 L-SAT-02 会得到 [f1, f0] 的反转子集
+      return [mk(mw, 0, 0, 10), mk(sat, 1, 1, 20), mk(sat, 0, 0, 30)]
+    }
+    const { api, payload, resultId, path } = await setup(build)
+    const imported = (await api.post(path).set(headers).send(payload()).expect(200)).body.data
+    // 报告成功挂载（若投影帧序非法会在此抛错）
+    const result = (await api.get(`/api/v1/mission-results/${resultId}`).set(headers).expect(200)).body.data
+    const reportId = result.report.reportId as string
+    expect(reportId).toContain(`-Q-${imported.source.sha256}`)
+    // 真实 HTTP 按链路筛选：反转被校正为合法全局帧序 [0,1]
+    const filtered = (await api.get(`/api/v1/reports/${reportId}/filter?resultId=${resultId}&linkId=L-SAT-02`).set(headers).expect(200)).body.data
+    const filteredSamples = filtered.report.localEvidence.quality.samples as Array<{ frameId: number; linkId: string; jsrDb: number }>
+    expect(filteredSamples.map(sample => sample.frameId)).toEqual([0, 1])
+    expect(filteredSamples.every(sample => sample.linkId === 'L-SAT-02')).toBe(true)
+    expect(filteredSamples.map(sample => sample.jsrDb)).toEqual([30, 20])
+    // 导出 HTML/PDF 使用同一筛选范围与来源
+    for (const format of ['HTML', 'PDF'] as const) {
+      const exportRequest = { reportId, format, qualitySha256: imported.source.sha256, filter: { linkId: 'L-SAT-02' } }
+      const exported = (await api.post(`/api/v1/reports/${reportId}/export?resultId=${resultId}`).set(headers).send(exportRequest).expect(200)).body.data
+      const bytes = await readFile(exported.filePath)
+      if (format === 'PDF') expect(bytes.subarray(0, 5).toString()).toBe('%PDF-')
+      else {
+        const text = bytes.toString('utf8')
+        const start = text.indexOf('<h2>GXB 随时间变化 · L-SAT-02</h2>')
+        expect(start).toBeGreaterThanOrEqual(0)
+        const cut = text.indexOf('<h2>', start + 1)
+        const gxb = text.slice(start, cut < 0 ? undefined : cut)
+        expect(gxb).toContain('<title>0分0秒: 30 dB</title>')
+        expect(gxb).toContain('<title>0分1秒: 20 dB</title>')
+        expect(gxb).toContain('横轴：0～1 秒；纵轴：20～30 dB')
+        expect(text).toContain('链路=L-SAT-02')
+      }
+    }
   })
 })

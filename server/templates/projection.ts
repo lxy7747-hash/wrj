@@ -120,6 +120,29 @@ export class TemplateProjection {
   }
 
   /**
+   * 在落盘之前预览本次新建将使用的模板编号与版本。
+   * @param value 未受信任的模板请求体。
+   * @returns 预览编号、版本与规范化配置，或校验、重名错误。
+   * @remarks 不写入存储、不递增编号；调用方据此先登记来源，再提交新建。
+   */
+  previewCreate(value: unknown): TemplateProjectionResult<{ templateId: string; version: string; config: ScenarioConfig }> {
+    if (!this.refresh()) return storageFailure
+    const mutation = inspectTemplateMutation(value)
+    if (!mutation.ok) return mutation
+    if (this.state.templates.some((template) => template.name === mutation.data.name)) {
+      return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'name', message: '模板名称已存在。' }
+    }
+    return {
+      ok: true,
+      data: {
+        templateId: `TPL-SCN-${String(this.state.nextSequence).padStart(3, '0')}`,
+        version: '1',
+        config: structuredClone(mutation.data.config),
+      },
+    }
+  }
+
+  /**
    * 新建官方模板；配置了持久化存储时先落盘再更新内存。
    * @param value 未受信任的模板请求体。
    * @returns 新建模板，或校验、重名错误。

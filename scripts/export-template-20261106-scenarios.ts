@@ -45,7 +45,7 @@ for (const link of config.links) for (const platform of config.platforms) {
   if ([link.sourcePlatformId, link.targetPlatformId, link.relayPlatformId].includes(platform.id)) platform.linkIds.push(link.id)
 }
 
-const description = '4 类共 50 个信息节点（后方 1、指挥车 1、中继 1、作业无人机 47），另保留 4 个卫星／干扰支撑实体。使用 11-06 模板默认值（雷达功率 1000 W）；交给对接方的 TXT 已删除三个旧天线定义和地面站 weapon prophet_jammer 块，本地运行包仍保留；干扰功率及带宽遵守 V1.2 GNZB-15 / XNZB-10。'
+const description = '4 类共 50 个信息节点（后方 1、指挥车 1、中继 1、作业无人机 47），另保留 4 个卫星／干扰支撑实体。使用 11-06 模板默认值（雷达功率 1000 W）；交付 TXT 已恢复模板已有的三种天线定义（MICRO_UAV_OMNI_ANTENNA、MICRO_REAR_PLATFORM_DIR_ANTENNA、OMNI_ANTENNA_HIGHGAIN），地面站 weapon prophet_jammer 块按 B02 未确认仍不生成；干扰功率及带宽遵守 V1.2 GNZB-15 / XNZB-10。'
 const scenarios = [
   ['SCN-TEMPLATE-20261106-01', '11-06 模板对齐验证（50 节点，默认）', '基线 / GNZB-08：公共基础不变，完整航线和模板实例命名；地面宽带压制 1 W / 200 MHz，机载 0.1 W / 100 MHz。'],
   ['SCN-TEMPLATE-20261106-02', '11-06 模板对齐验证（50 节点，瞄准式干扰）', 'GNZB-15 第 4 步：地面瞄准式 1 W / 5 MHz，对准 C 上行 4500 MHz；机载保持宽带压制 0.1 W / 100 MHz。'],
@@ -95,11 +95,11 @@ for (const [index, draft] of scenarios.entries()) {
     const definitions = files['comm_PerDefinition.txt']!, jammerScript = files['comm_platform_JAMMER.txt']!
     const rear = files['comm_platform_REAR.txt']!
     for (const name of ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) {
-      assert(!new RegExp(`^antenna_pattern ${name}(?:\\s|$)`, 'mu').test(definitions), `comm_PerDefinition.txt：残留 ${name} 定义`)
+      assert(new RegExp(`^antenna_pattern ${name}(?:\\s|$)`, 'mu').test(definitions), `comm_PerDefinition.txt：缺少 ${name} 定义（1112 起应恢复模板已有内容）`)
     }
-    assert(!jammerScript.includes('weapon prophet_jammer'), 'comm_platform_JAMMER.txt：残留地面站武器块')
+    assert(!/^\s*weapon prophet_jammer\b/mu.test(jammerScript), 'comm_platform_JAMMER.txt：残留地面站武器块')
     const radarBlocks = [...jammerScript.matchAll(/sensor detection_radar[\s\S]*?end_sensor/gu)]
-    assert.equal(radarBlocks.length, 2, 'comm_platform_JAMMER.txt：应包含两类侦测雷达')
+    assert.equal(radarBlocks.length, 1, 'comm_platform_JAMMER.txt：应包含模板现有的一类侦测雷达')
     for (const [radarIndex, [block]] of radarBlocks.entries()) {
       assert(/^\s*power 1000 W$/mu.test(block), `comm_platform_JAMMER.txt.sensors[${radarIndex}].power：应为 1000 W`)
     }

@@ -61,7 +61,7 @@ describe('P4 剩余交互能力', () => {
     const frame = structuredClone(fixtureSource.frame) as unknown as TelemetryFrame
     frame.evidence.jammerExecution.jammerId = draft.config.jammers[0]!.id
     frame.evidence.jammerExecutions = [frame.evidence.jammerExecution,
-      { ...frame.evidence.jammerExecution, jammerId: secondId, frequency: 2250, bandwidth: 9, power: 17 }]
+      { ...frame.evidence.jammerExecution, jammerId: secondId, frequency: 2250, bandwidth: 9, power: 0.1 }]
     expect(useTelemetryStore().acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'simulation.frame',
       taskId: frame.taskId, sequence: 1, frameId: frame.frameId, simulationTime: frame.simulationTime, payload: frame })).toBe(true)
     for (const component of [RfJammerPanel, JammerSyncPanel]) {
@@ -69,7 +69,9 @@ describe('P4 剩余交互能力', () => {
       wrapper.findComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', secondId)
       await nextTick()
       const values = wrapper.findAllComponents({ name: 'ElInputNumber' }).map(input => input.props('modelValue'))
-      expect(values).toEqual(expect.arrayContaining([2250, 9, 17]))
+      expect(values).toEqual(expect.arrayContaining([2250, 9]))
+      // 0.1 W 对应 +20 dBm 合法档位。
+      expect(wrapper.text()).toContain('20 dBm')
       wrapper.unmount()
     }
   })
@@ -117,25 +119,34 @@ describe('P4 剩余交互能力', () => {
     await wrapper.get('button').trigger('click')
     await vi.waitFor(() => expect(useTelemetryStore().closedLoopState).toBe('SUCCESS'))
     expect(wrapper.get('[data-testid="closed-loop-state"]').text()).toBe('闭环完成')
+    expect(wrapper.get('[data-testid="closed-loop-source"]').text()).toContain('本地证据校验')
+    expect(wrapper.get('[data-testid="closed-loop-source"]').text()).toContain('未接入')
   })
 
   it('展示四端同步、正反向排名以及接受和拒绝切换记录', async () => {
     // 场景不再提供方向和持续时间，发送命令默认值。
     const syncResult = {
       taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
-      configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
-      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'SYNCHRONIZED',
-      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 72, frequency: 2200, bandwidth: 40, active: true },
+      configParameterVersion: 5, nodeParameterVersion: 5, engineSync: 'NOT_CONNECTED', uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'LOCAL_ACCEPTED',
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 1, frequency: 2200, bandwidth: 40, active: true },
     }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse(syncResult)))
     const sync = mount(JammerSyncPanel, { global: { plugins: [ElementPlus] } })
+    // 历史默认功率 72 W 超出受控档位，先选 +30 dBm（1 W）合法档位再同步。
+    sync.findAllComponents({ name: 'ElSelect' })[1]?.vm.$emit('update:modelValue', 30)
+    await nextTick()
     await sync.findAll('button').find((button) => button.text().includes('同步参数'))?.trigger('click')
     await vi.waitFor(() => expect(useTelemetryStore().syncState).toBe('SUCCESS'))
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ parameters: { direction: 0, duration: 1 } })
+    expect(JSON.parse(
+      vi.mocked(fetch).mock.calls.find((call) => ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'POST')![1]!.body as string,
+    )).toMatchObject({ parameters: { direction: 0, duration: 1 } })
     expect(sync.text()).toContain('配置端')
     expect(sync.text()).toContain('AFSIM 引擎')
     expect(sync.text()).toContain('v5')
     expect(sync.text()).toContain('F-00042')
+    expect(sync.get('[data-testid="sync-source-note"]').text()).toContain('本地投影')
+    expect(sync.get('[data-testid="sync-source-note"]').text()).toContain('未接入')
 
     const forward = mount(RouteRankingPanel, { props: { direction: 'FORWARD', requirementId: 'T-XQ-019' }, global: { plugins: [ElementPlus] } })
     const reverse = mount(RouteRankingPanel, { props: { direction: 'REVERSE', requirementId: 'T-XQ-020' }, global: { plugins: [ElementPlus] } })
@@ -160,6 +171,8 @@ describe('P4 剩余交互能力', () => {
     expect(sync.text()).toContain('v4')
 
     sync.getComponent({ name: 'ElSelect' }).vm.$emit('update:modelValue', 'JAM-WB-01-TX')
+    await nextTick()
+    sync.findAllComponents({ name: 'ElSelect' })[1]?.vm.$emit('update:modelValue', 30)
     await nextTick()
     await sync.findAll('button').find((button) => button.text().includes('同步参数'))?.trigger('click')
     await vi.waitFor(() => expect(useTelemetryStore().syncState).toBe('SUCCESS'))

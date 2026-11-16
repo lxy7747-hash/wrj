@@ -28,7 +28,7 @@ function withoutRetiredBatchGrants(value: unknown): unknown {
 /** 独立扩展库，不 ALTER 原账号表；空配置表示保持所有既有权限。 */
 export class AccessControlSqliteStorage {
   private readonly db: DatabaseSync
-  constructor(path: string) {
+  constructor(private readonly path: string) {
     if (!isAbsolute(path)) throw new Error('角色配置库须使用绝对路径。')
     this.db = new DatabaseSync(path)
     try {
@@ -46,6 +46,25 @@ export class AccessControlSqliteStorage {
   save(config: AccessControlConfig, expected: number): boolean {
     if (!isAccessControlConfig(config) || config.version !== expected + 1) throw new Error('角色配置版本不正确。')
     return this.db.prepare('UPDATE access_control SET version=?, config=? WHERE id=1 AND version=?').run(config.version, JSON.stringify(config), expected).changes === 1
+  }
+  attachAccountDatabase(db: DatabaseSync): (userId: string) => void {
+    db.prepare('ATTACH DATABASE ? AS account_roles').run(this.path)
+    db.exec('PRAGMA main.synchronous=FULL; PRAGMA account_roles.synchronous=FULL')
+    return userId => {
+      const row = db.prepare('SELECT * FROM account_roles.access_control WHERE id=1').get()
+      const raw = JSON.parse(String(row?.config))
+      const config = withoutRetiredBatchGrants(raw)
+      if (!isAccessControlConfig(config, 'read') || config.version !== row?.version) throw new Error('角色配置损坏，账号变更已取消。')
+      const assignments = config.assignments.filter(item => item.userId !== userId)
+      if (assignments.length === config.assignments.length) return
+      // 跨库提交沿用项目的回滚日志要求，不自动改变已有库的日志模式。
+      for (const scope of ['main', 'account_roles']) {
+        const mode = Object.values(db.prepare(`PRAGMA ${scope}.journal_mode`).get()!)[0]
+        if (!['delete', 'truncate', 'persist'].includes(String(mode))) throw new Error('账号关联变更需要数据库使用回滚日志模式。')
+      }
+      db.prepare('UPDATE account_roles.access_control SET version=?, config=? WHERE id=1')
+        .run(config.version + 1, JSON.stringify({ ...raw, version: config.version + 1, assignments }))
+    }
   }
   close(): void { this.db.close() }
 }

@@ -75,6 +75,8 @@ describe('海面区域地图框选', () => {
     expect(leafletMocks.map.invalidateSize).toHaveBeenCalledWith({ pan: false })
     expect(button('confirm-sea-area').disabled).toBe(true)
     expect(button('sea-area-undo').disabled).toBe(true)
+    expect(document.body.textContent).toContain('依次单击地图放置区域顶点')
+    expect(document.body.textContent).not.toContain('按海况等级计算海面多径衰落')
     expect(document.body.textContent).toContain(`还需 ${SEA_POLYGON_LIMITS.minPoints} 个`)
     await click(118.12345678, 24.1)
     expect(L.polygon).not.toHaveBeenCalled()

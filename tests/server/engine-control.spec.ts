@@ -5,6 +5,7 @@ import sample from '../fixtures/engine-frame/websocket-new/fream001.json'
 import latestSamples from '../fixtures/engine-frame/websocket-latest.json'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import { playbackFileSource, fileReceptionScenarioId } from '../../src/features/situation/file-reception'
+import { snapshotMissionResultParameters, type MissionResultParameters } from '../../src/features/results/mission-result'
 const { once } = await import('node:' + 'events')
 const { WebSocket, WebSocketServer } = await import('w' + 's')
 const { EngineSnapshotClient } = await import('../../server/local/' + 'engine-snapshot-client.js')
@@ -25,7 +26,7 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const receptionStartedAt = '2026-11-09T02:00:00Z'
 const receptionCompletedAt = '2026-11-09T02:01:00Z'
 
-async function setup(file = false, saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number) => Promise<void>) {
+async function setup(file = false, saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number, parameters?: MissionResultParameters) => Promise<void>, reference = false) {
   const replay = structuredClone(LOCAL_REPLAY)
   replay.initial.connections = [{ sourceEventId: 'LOG-L9', time: 0, scope: 'INTER_PLATFORM',
     source: { platformName: 'rear_comm_vehicle', communicationName: 'fiber_link', address: '10.0.0.1' },
@@ -59,25 +60,37 @@ async function setup(file = false, saveFileReception?: (run: SimulationRun, comp
         diagnoseEngine = diagnose!
         return engine = new EngineSnapshotClient(url, publish, vi.fn(), diagnose)
       },
-    missionExecution: { start, safetyStatus: () => ({ message: '本机没有 mission.exe，也不应阻止远端连接。' }) },
   })
   cleanups.push(() => app.close())
   if (!app.httpServer.listening) await once(app.httpServer, 'listening')
   const api = request(`http://127.0.0.1:${app.httpServer.address().port}`)
-  const sceneBefore = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
-  const createBody = file ? { taskId: 'TASK-001', scenarioId: fileReceptionScenarioId(fileSource), fileSource } : { taskId: 'TASK-001', scenarioId: 'SCN-001' }
+  let sceneBefore = (await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data
+  if (reference) {
+    Object.assign(sceneBefore.config.jammers[0], { defaultPower: 1, bandwidth: 200 })
+    for (const platform of sceneBefore.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
+    sceneBefore.config.scenario.phases = [{ id: 'PH-1', name: '前段', startTimeS: 0, endTimeS: 5 }, { id: 'PH-2', name: '后段', startTimeS: 5, endTimeS: 10 }]
+    sceneBefore = (await api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: sceneBefore.config, uiExtensions: sceneBefore.uiExtensions, expectedRevision: sceneBefore.revision }).expect(200)).body.data
+  }
+  const createBody = file ? { taskId: 'TASK-001', scenarioId: fileReceptionScenarioId(fileSource), fileSource, ...(reference ? { referenceScenarioId: 'SCN-001' } : {}) } : { taskId: 'TASK-001', scenarioId: 'SCN-001' }
   if (file) {
     await api.post('/api/v1/simulations').set(headers).send({ ...createBody, fileSource: { ...fileSource, positionSha256: 'c'.repeat(64) } }).expect(409)
     await api.post('/api/v1/simulations').set(headers).send({ ...createBody, fileSource: { ...fileSource, extra: true } }).expect(422)
     await api.post('/api/v1/simulations').set(headers).send({ ...createBody, scenarioId: 'SCN-001' }).expect(409)
+    for (const referenceScenarioId of ['SCN-MISSING', null, {}, '']) await api.post('/api/v1/simulations').set(headers).send({ ...createBody, referenceScenarioId }).expect(422)
+    await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001', referenceScenarioId: 'SCN-001' }).expect(422)
   }
   const created = await api.post('/api/v1/simulations').set(headers).send(createBody).expect(201)
+  if (reference) {
+    const changed = structuredClone(sceneBefore)
+    changed.config.scenario.phases[0].name = '之后修改的阶段'
+    changed.config.links[0].txPower += 1
+    await api.put('/api/v1/scenarios/SCN-001').set(headers).send({ config: changed.config, uiExtensions: changed.uiExtensions, expectedRevision: changed.revision }).expect(200)
+  }
   const runId: SimulationRun['runId'] = created.body.data.runId
   const command = (body: object) => api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send(body)
   const read = async () => (await api.get(`/api/v1/simulations/${runId}`).set(headers).expect(200)).body.data
   await command({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
   await vi.waitFor(async () => expect((await read()).engineControl).toEqual({ connected: true, action: null, delivery: 'IDLE' }))
-  expect(start).not.toHaveBeenCalled()
   expect(await read()).toMatchObject({ executionSource: 'REMOTE_WS', startedAt: receptionStartedAt, canonical: { processId: null } })
   const confirmed = async (action: 'STOP') => {
     const context = await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)
@@ -133,7 +146,21 @@ it('文件与远端接收使用原始端口，校验两份文件指纹，不修�
   expect(frame.links[0]).toMatchObject({ sourcePlatformId: 'rear_comm_vehicle', targetPlatformId: 'command_vehicle', linkIds: ['FILE-LINK-1'] })
   expect(frame.simulationTime).toBe(5)
   expect((await api.get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body.data).toEqual(sceneBefore)
-  expect(start).not.toHaveBeenCalled()
+})
+
+it('文件播放冻结显式关联的参数与阶段，后续场景编辑和停止重试均不改变快照或归档作用域', async () => {
+  const save = vi.fn<NonNullable<Parameters<typeof setup>[1]>>().mockRejectedValueOnce(new Error('保存失败')).mockResolvedValue(undefined)
+  const { runId, sceneBefore, fileSource, confirmed, peers, archive, read } = await setup(true, save, true)
+  peers[0]!.send(JSON.stringify({ ...sample, frame_id: 5 }))
+  await vi.waitFor(async () => expect((await read()).canonical.currentTime).toBe(5))
+  expect((await confirmed('STOP')).status).toBe(503)
+  expect((await read()).configLocked).toBe(true)
+  expect((await confirmed('STOP')).status).toBe(200)
+  const parameters = { ...snapshotMissionResultParameters(sceneBefore), source: 'PROJECT_REFERENCE' }
+  expect(save).toHaveBeenCalledTimes(2)
+  for (const call of save.mock.calls) expect(call[3]).toEqual(parameters)
+  expect(parameters.phases?.[0]?.name).toBe('前段')
+  expect(await archive.load(runId, { taskId: 'TASK-001', runId, scenarioId: fileReceptionScenarioId(fileSource), revision: 1, startedAt: receptionStartedAt })).toMatchObject({ frameCount: 1 })
 })
 
 it('独立远端播放发送精确两字段；暂停可恢复，停止发送后完成本地归档并解锁', async () => {
@@ -166,7 +193,6 @@ it('独立远端播放发送精确两字段；暂停可恢复，停止发送后�
   await vi.waitFor(async () => expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { status: 'IDLE', processId: null } }))
   expect(await read()).toHaveProperty('engineControl.delivery', 'SENT')
   expect(messages).toHaveLength(3)
-  expect(start).not.toHaveBeenCalled()
   expect(stop).not.toHaveBeenCalled()
 })
 
@@ -284,7 +310,7 @@ it('实际归档发布失败保留两帧和时间，停止重试成功后才发�
   expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false, canonical: { currentTime: 3780 } })
   expect(await archive.load(runId)).toMatchObject({ frameCount: 2 })
   expect(await readFile(join(root, runId, raw), 'utf8')).toBe(before)
-  expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780)
+  expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780, undefined)
   expect(messages).toEqual(['pause', 'resume', 'stop'].map(action => ({ msg_type: 'sim_control', action })))
 })
 
@@ -367,7 +393,7 @@ it('停止等待报表发布；发布失败保留锁，重试不重发 stop', as
   expect((await confirmed('STOP')).status).toBe(503)
   expect(await read()).toMatchObject({ uiStatus: 'ERROR', configLocked: true })
   expect((await confirmed('STOP')).status).toBe(200)
-  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780)
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ runId }), receptionCompletedAt, 3780, undefined)
   expect(save).toHaveBeenCalledTimes(2)
   expect(await read()).toMatchObject({ uiStatus: 'STOPPED', configLocked: false })
   expect(messages).toEqual([{ msg_type: 'sim_control', action: 'stop' }])
@@ -412,4 +438,38 @@ it('断线后标记待核实；自动重连只恢复数据连接，不补发控�
   expect(peers).toHaveLength(2)
   expect(messages).toHaveLength(1)
   await command({ command: 'RESUME' }).expect(409)
+})
+
+it('本机 mission 运行时同时建立外部 WS 接收，STOP 停止 mission 并断开连接', async () => {
+  const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await once(upstream, 'listening')
+  cleanups.push(async () => { for (const peer of upstream.clients) peer.terminate(); await new Promise<void>(resolve => upstream.close(() => resolve())) })
+  const root = await mkdtemp(join(tmpdir(), 'wrj-local-mission-ws-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const database = new EngineFrameSqliteStorage(join(root, 'engine-history.db'))
+  cleanups.push(() => database.close())
+  const archive = createEngineFrameArchive(root, () => new Date().toISOString(), { database })
+  let finish!: (value: { code: number | null }) => void
+  const completed = new Promise<{ code: number | null }>(resolve => { finish = resolve })
+  const stop = vi.fn(async () => { finish({ code: 0 }) })
+  const start = vi.fn(async () => ({ pid: 777, startedAt: '2026-11-09T01:00:00Z', entryPath: 'mission.txt', completed, stop }))
+  const server = createMockServer({ port: 0, linkEngineWsUrl: `ws://127.0.0.1:${(upstream.address() as { port: number }).port}/ws/v1`,
+    engineFrameArchive: archive,
+    createEngineSnapshotClient: (url: string, publish: any, diagnose: any) => new EngineSnapshotClient(url, publish, undefined, diagnose),
+    missionExecution: { start, safetyStatus: () => null } })
+  cleanups.push(() => server.close())
+  if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+  const api = request(`http://127.0.0.1:${server.httpServer.address().port}`)
+  const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-001' }).expect(201)
+  const runId = created.body.data.runId
+  const connection = once(upstream, 'connection')
+  await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'START', mode: 'INTERACTIVE_SINGLE' }).expect(200)
+  expect(start).toHaveBeenCalledTimes(1)
+  const [socket] = await connection
+  const closed = once(socket, 'close')
+  const context = (await api.post('/api/v1/confirmations').set(headers).send({ action: 'SIMULATION_STOP', objectId: runId }).expect(201)).body.data
+  await api.post(`/api/v1/confirmations/${context.confirmationId}`).set(headers).send({ confirm: true }).expect(200)
+  await api.post(`/api/v1/simulations/${runId}/commands`).set(headers).send({ command: 'STOP', confirmationId: context.confirmationId }).expect(200)
+  expect(stop).toHaveBeenCalledTimes(1)
+  await closed
 })

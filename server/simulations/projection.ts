@@ -4,6 +4,10 @@ import type {
   JammingDecision,
   JammingCommand,
   JammingParameterSet,
+  JammerPlanSaveRequest,
+  JammerPlanSaved,
+  JammerRuntimeParameters,
+  Jammer,
   JammerState,
   SimulationCommand,
   SimulationCreateRequest,
@@ -14,7 +18,9 @@ import type {
   SyncResult,
 } from '../../src/contracts/domain-models.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
+import { InMemoryJammerPlanStorage, toRuntimeParameters, type JammerPlanRecord, type JammerPlanStorage } from './jammer-plan-storage.js'
 import { frameJammerExecutions } from '../../src/features/situation/frame-evidence.js'
+import { isControlledPowerWatts, JAMMER_RANGE_METERS } from '../../src/features/scenarios/jammer-settings.js'
 import { canSendEngineControl, engineControlAction } from '../../src/features/situation/engine-control.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
 import type { MissionOutcome } from './mission-execution.js'
@@ -55,18 +61,36 @@ function readClosedLoopContext(value: unknown): ClosedLoopContext | undefined {
     : undefined
 }
 
-/** 从未受信任值读取带版本和生效帧的干扰参数集。 */
+/** 从未受信任值读取带版本、生效帧和可选探测范围的干扰参数集。 */
 function readJammingParameterSet(value: unknown): JammingParameterSet | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
   const candidate = value as Partial<JammingParameterSet>
   const keys = Object.keys(value)
-  return keys.length === 3
-    && keys.every((key) => ['version', 'effectiveFrameId', 'parameters'].includes(key))
+  const hasDetectionRange = keys.includes('detectionRangeM')
+  return keys.length === 3 + Number(hasDetectionRange)
+    && keys.every((key) => ['version', 'effectiveFrameId', 'parameters', 'detectionRangeM'].includes(key))
     && Number.isSafeInteger(candidate.version) && Number(candidate.version) > 0
     && typeof candidate.effectiveFrameId === 'string' && candidate.effectiveFrameId.startsWith('F-')
+    && (!hasDetectionRange
+      || (typeof candidate.detectionRangeM === 'number' && Number.isFinite(candidate.detectionRangeM) && candidate.detectionRangeM > 0))
     && readJammingCommand(candidate.parameters) !== undefined
     ? candidate as JammingParameterSet
     : undefined
+}
+
+/** 从未受信任值读取运行期干扰计划保存请求（样式/俯仰/计划帧；均只做结构读取，范围在保存时校验）。 */
+function readJammerPlanSaveRequest(value: unknown): JammerPlanSaveRequest | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const candidate = value as Partial<JammerPlanSaveRequest>
+  const allowed = ['style', 'elevation', 'plannedStartFrame', 'plannedStopFrame']
+  if (!Object.keys(value).every((key) => allowed.includes(key))) return undefined
+  if (candidate.style !== 'BARRAGE' && candidate.style !== 'SPOT') return undefined
+  if (typeof candidate.elevation !== 'number' || !Number.isFinite(candidate.elevation)) return undefined
+  for (const key of ['plannedStartFrame', 'plannedStopFrame'] as const) {
+    const frame = candidate[key]
+    if (frame !== undefined && (!Number.isSafeInteger(frame) || frame < 0)) return undefined
+  }
+  return candidate as JammerPlanSaveRequest
 }
 
 /** 判断未知值是否为闭合的仿真创建请求。 */
@@ -166,11 +190,13 @@ export function fixedFrameForRun(runId: SimulationRun['runId']): TelemetryFrame 
 export class SimulationProjection {
   private run = structuredClone(loadFixtureProjection().run)
   private nextRunSequence = 2
+  // 已替换但尚未由注册表确认的运行；提交失败时据此恢复被替换的运行与场景锁。
+  private unconfirmed: { runId: string; scenarioId: string; locked: boolean; previous: SimulationRun } | null = null
   private readonly processedClosedLoops = new Set<string>()
   private readonly jammerParameterVersions = new Map<string, number>()
 
   constructor(private readonly scenarios: ScenarioProjection, private readonly taskId = loadFixtureProjection().task.taskId,
-    private readonly remote = false) {
+    private readonly remote = false, private readonly jammerPlanStorage: JammerPlanStorage = new InMemoryJammerPlanStorage()) {
     if (remote) {
       this.run = createIdleRun({ taskId, scenarioId: this.run.scenarioId }, this.run.canonical.totalDuration, this.run.runId)
       this.run.executionSource = 'REMOTE_WS'
@@ -217,9 +243,9 @@ export class SimulationProjection {
     return structuredClone(this.run)
   }
 
-  finishMission(outcome: MissionOutcome): SimulationRun {
+  finishMission(outcome: MissionOutcome, explicitlyStopped = false): SimulationRun {
     const failed = outcome.code !== 0 || Boolean(outcome.errorMessage)
-    const stopped = !failed && this.run.engineControl?.action === 'stop'
+    const stopped = !failed && (explicitlyStopped || this.run.engineControl?.action === 'stop')
     this.run.uiStatus = failed ? 'ERROR' : stopped ? 'STOPPED' : 'COMPLETED'
     this.run.canonical.status = failed ? 'ERROR' : stopped ? 'IDLE' : 'COMPLETED'
     delete this.run.engineControl
@@ -228,7 +254,8 @@ export class SimulationProjection {
     delete this.run.canonical.speedMultiplier
     this.run.completedAt = outcome.completedAt
     if (failed) this.run.canonical.errorMessage = outcome.errorMessage ?? 'mission 执行失败。'
-    else if (!stopped) {
+    else if (stopped) delete this.run.canonical.errorMessage
+    else {
       this.run.canonical.currentTime = this.run.canonical.totalDuration
       this.run.canonical.progress = 100
     }
@@ -313,21 +340,53 @@ export class SimulationProjection {
 
     const runId: SimulationRun['runId'] = assignedRunId ?? `RUN-${String(this.nextRunSequence).padStart(3, '0')}`
     this.nextRunSequence += 1
+    const previous = structuredClone(this.run)
     this.run = createIdleRun(request, locked.data.config.scenario.duration, runId)
+    this.unconfirmed = { runId, scenarioId: request.scenarioId, locked: true, previous }
     if (this.remote) this.run.executionSource = 'REMOTE_WS'
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
+    // 新运行从空白开始，不继承同一编号的旧本地计划。
+    this.jammerPlanStorage.deleteRun(this.run.runId)
     return { ok: true, data: structuredClone(this.run) }
   }
 
   /** 文件会话不创建或修改场景配置；来源已由 API 校验并固定。 */
   createFile(request: SimulationCreateRequest, duration: number, runId: SimulationRun['runId']): SimulationRun {
+    const previous = structuredClone(this.run)
     this.run = createIdleRun(request, duration, runId)
+    // 文件会话不持有场景锁，回滚时只恢复被替换的运行。
+    this.unconfirmed = { runId, scenarioId: request.scenarioId, locked: false, previous }
     this.run.executionSource = 'REMOTE_WS'
     this.run.fileSource = structuredClone(request.fileSource!)
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
+    this.jammerPlanStorage.deleteRun(this.run.runId)
     return structuredClone(this.run)
+  }
+
+  /**
+   * 注册表登记成功后确认本次运行提交；此后丢弃请求不再回滚。
+   * @returns 无返回值。
+   * @sideEffects 清除待确认运行快照。
+   */
+  confirmUnconfirmed(): void { this.unconfirmed = null }
+
+  /**
+   * 提交失败时丢弃本次未确认运行，恢复被替换的运行并释放本次持有的场景锁。
+   * @param runId 期望回滚的本次运行编号。
+   * @returns 无返回值。
+   * @remarks 只回滚匹配的待确认运行；重复调用或成功提交后调用均为无操作。
+   *          先恢复运行再释放锁，避免中间态出现空运行却仍被锁定的组合。
+   */
+  discardUnconfirmed(runId?: string): void {
+    const pending = this.unconfirmed
+    if (!pending || (runId !== undefined && pending.runId !== runId)) return
+    this.run = pending.previous
+    this.unconfirmed = null
+    this.processedClosedLoops.clear()
+    this.jammerParameterVersions.clear()
+    if (pending.locked) this.scenarios.setLocked(pending.scenarioId, false)
   }
 
   /**
@@ -449,6 +508,37 @@ export class SimulationProjection {
   }
 
   /**
+   * 纯干扰命令范围校验（频率/带宽/功率/方向/时长），供控制命令与本地参数接受复用。
+   * @param jammer 场景中的干扰设备。
+   * @param command 已通过结构校验的命令。
+   * @param scenarioDuration 场景时长（秒）。
+   * @returns 通过返回 `{ ok: true }`，否则返回可定位的 422 错误。
+   * @remarks 不读写运行期状态，也不依赖固定演示证据。
+   */
+  private validateJammerRange(jammer: Jammer, command: JammingCommand, scenarioDuration: number):
+    { ok: true } | { ok: false; code: 'OUT_OF_RANGE'; status: 422; fieldPath: keyof JammingCommand; message: string } {
+    // ponytail: 原始设备合同未给独立上下限；频率/带宽/方向/时长沿用 Mock 可测边界，接入真实设备能力合同后替换。
+    // 功率按 GNZB-15 统一为 -10～+30 dBm、5 dB 档位（合同仍存 W）；defaultPower 只是默认值，不再作为额定上限。
+    // 停扰 enabled=false 允许 0 W 安全停止，仅要求有限非负值，不受未编辑的旧功率回显阻断。
+    const frequencyMin = jammer.frequency - jammer.bandwidth / 2
+    const frequencyMax = jammer.frequency + jammer.bandwidth / 2
+    const powerWithinRange = command.enabled ? isControlledPowerWatts(command.power) : command.power >= 0
+    const checks: Array<[boolean, keyof JammingCommand, string]> = [
+      [command.frequency >= frequencyMin && command.frequency <= frequencyMax, 'frequency', `频率必须在 ${frequencyMin}–${frequencyMax} MHz 范围内。`],
+      [command.bandwidth > 0 && command.bandwidth <= jammer.bandwidth, 'bandwidth', `带宽必须大于 0 且不超过 ${jammer.bandwidth} MHz。`],
+      [powerWithinRange, 'power', command.enabled
+        ? '启扰功率必须为 -10～30 dBm 且按 5 dB 档位设置。'
+        : '停机功率必须为不小于 0 的有限值。'],
+      [command.direction >= 0 && command.direction <= 360, 'direction', '方向必须在 0–360° 范围内。'],
+      [command.duration > 0 && command.duration <= scenarioDuration, 'duration', `持续时间必须大于 0 且不超过 ${scenarioDuration} 秒。`],
+    ]
+    const rejected = checks.find(([valid]) => !valid)
+    return rejected === undefined
+      ? { ok: true }
+      : { ok: false, code: 'OUT_OF_RANGE', status: 422, fieldPath: rejected[1], message: rejected[2] }
+  }
+
+  /**
    * 校验并执行任务级 RF 干扰机命令。
    * @param taskId 命令所属任务编号。
    * @param jammerId 目标干扰设备编号。
@@ -473,20 +563,8 @@ export class SimulationProjection {
       return { ok: false, code: 'DEVICE_DISABLED', status: 409, fieldPath: 'jammerId', message: '所选干扰设备不可用。' }
     }
 
-    // ponytail: 原始设备合同未给独立上下限；Mock 暂以中心频率±半带宽、默认功率和场景时长形成可测边界，接入真实设备能力合同后替换。
-    const frequencyMin = jammer.frequency - jammer.bandwidth / 2
-    const frequencyMax = jammer.frequency + jammer.bandwidth / 2
-    const checks: Array<[boolean, keyof JammingCommand, string]> = [
-      [command.frequency >= frequencyMin && command.frequency <= frequencyMax, 'frequency', `频率必须在 ${frequencyMin}–${frequencyMax} MHz 范围内。`],
-      [command.bandwidth > 0 && command.bandwidth <= jammer.bandwidth, 'bandwidth', `带宽必须大于 0 且不超过 ${jammer.bandwidth} MHz。`],
-      [command.power >= 0 && command.power <= jammer.defaultPower, 'power', `功率必须在 0–${jammer.defaultPower} W 范围内。`],
-      [command.direction >= 0 && command.direction <= 360, 'direction', '方向必须在 0–360° 范围内。'],
-      [command.duration > 0 && command.duration <= draft.data.config.scenario.duration, 'duration', `持续时间必须大于 0 且不超过 ${draft.data.config.scenario.duration} 秒。`],
-    ]
-    const rejected = checks.find(([valid]) => !valid)
-    if (rejected !== undefined) {
-      return { ok: false, code: 'OUT_OF_RANGE', status: 422, fieldPath: rejected[1], message: rejected[2] }
-    }
+    const range = this.validateJammerRange(jammer, command, draft.data.config.scenario.duration)
+    if (!range.ok) return range
 
     return {
       ok: true,
@@ -562,36 +640,163 @@ export class SimulationProjection {
   }
 
   /**
-   * 在明确帧边界同步一版干扰参数。
+   * 读取当前运行/设备的本地参数记录；持久化无记录时按场景探测范围与当前版本返回默认值（不落库）。
+   * @param jammerId 目标干扰设备编号。
+   * @returns 运行期参数记录（可修改后再持久化）。
+   */
+  private readRuntimeRecord(jammerId: string): JammerPlanRecord {
+    const stored = this.jammerPlanStorage.load(this.run.taskId, this.run.runId, jammerId)
+    if (stored !== undefined) return stored
+    const draft = this.scenarios.get(this.run.scenarioId)
+    const jammer = draft.ok ? draft.data.config.jammers.find((item) => item.id === jammerId) : undefined
+    return { version: this.jammerParameterVersions.get(jammerId) ?? 4, detectionRangeM: jammer?.detectionRange ?? 0 }
+  }
+
+  /**
+   * 读取当前运行的干扰机运行期本地参数（版本 + 本地已接受值与计划）；不依赖固定演示证据。
    * @param taskId 参数所属任务编号。
    * @param jammerId 目标干扰设备编号。
-   * @param value 未受信任的版本化参数集。
-   * @returns 四端版本一致的同步结果，或旧版本、乱序帧和设备能力错误。
-   * @sideEffects 成功时更新设备的最新参数版本；失败不修改版本。
+   * @returns 运行期参数，或任务/场景/设备不匹配的 404。
    */
-  syncJammerParameters(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<SyncResult> {
-    if (!ownsFixedEvidence(this.run)) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'scenarioId', message: '当前场景暂无对应运行证据。' }
-    const parameterSet = readJammingParameterSet(value)
-    if (parameterSet === undefined) {
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'parameters', message: '干扰参数同步请求结构不正确。' }
+  getJammerRuntimeParameters(taskId: string, jammerId: string): SimulationProjectionResult<JammerRuntimeParameters> {
+    if (taskId !== this.run.taskId) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'taskId', message: '未找到指定任务。' }
+    const draft = this.scenarios.get(this.run.scenarioId)
+    if (!draft.ok) return draft
+    if (!draft.data.config.jammers.some((item) => item.id === jammerId)) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'jammerId', message: '未找到指定干扰设备。' }
     }
-    const frame = loadFixtureProjection().frame
-    if (parameterSet.effectiveFrameId !== frame.frameId) {
-      return { ok: false, code: 'FRAME_MISMATCH', status: 409, fieldPath: 'effectiveFrameId', message: '参数只能在当前明确帧边界生效。' }
+    const record = this.readRuntimeRecord(jammerId)
+    return { ok: true, data: toRuntimeParameters(this.run.taskId, jammerId, record) as JammerRuntimeParameters }
+  }
+
+  /**
+   * 保存当前运行的干扰计划与新增控制字段（仅本地留存并持久化，不修改场景原配置、不代表引擎执行）。
+   * @param taskId 计划所属任务编号。
+   * @param jammerId 目标干扰设备编号。
+   * @param value 未受信任的计划保存请求。
+   * @returns 保存结果（storage=LOCAL_RUN），或参数、范围、任务/设备错误。
+   */
+  saveJammerPlan(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<JammerPlanSaved> {
+    if (taskId !== this.run.taskId) return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'taskId', message: '未找到指定任务。' }
+    const request = readJammerPlanSaveRequest(value)
+    if (request === undefined) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'plan', message: '干扰计划保存请求结构不正确。' }
     }
-    const currentVersion = this.jammerParameterVersions.get(jammerId) ?? 4
-    if (parameterSet.version <= currentVersion) {
-      return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: `参数版本必须大于当前版本 ${currentVersion}。` }
+    if (request.elevation < -10 || request.elevation > 60) {
+      return { ok: false, code: 'OUT_OF_RANGE', status: 422, fieldPath: 'elevation', message: '俯仰角必须在 -10～60° 之间。' }
     }
-    const controlled = this.controlJammer(taskId, jammerId, parameterSet.parameters)
-    if (!controlled.ok) return controlled
+    if (request.plannedStartFrame !== undefined && request.plannedStopFrame !== undefined
+      && request.plannedStopFrame <= request.plannedStartFrame) {
+      return { ok: false, code: 'OUT_OF_RANGE', status: 422, fieldPath: 'plannedStopFrame', message: '计划停止帧必须大于计划启动帧。' }
+    }
     const draft = this.scenarios.get(this.run.scenarioId)
     if (!draft.ok) return draft
     const jammer = draft.data.config.jammers.find((item) => item.id === jammerId)
     if (jammer === undefined) {
       return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'jammerId', message: '未找到指定干扰设备。' }
     }
-    const existingStatus = frame.platforms.flatMap((platform) => platform.jammers).find((item) => item.jammerId === jammerId)
+    const record = this.readRuntimeRecord(jammerId)
+    record.style = request.style
+    record.elevation = request.elevation
+    if (request.plannedStartFrame === undefined) delete record.plannedStartFrame
+    else record.plannedStartFrame = request.plannedStartFrame
+    if (request.plannedStopFrame === undefined) delete record.plannedStopFrame
+    else record.plannedStopFrame = request.plannedStopFrame
+    this.jammerPlanStorage.save(this.run.taskId, this.run.runId, jammerId, record)
+    return {
+      ok: true,
+      data: {
+        taskId: this.run.taskId,
+        jammerId,
+        style: request.style,
+        elevation: request.elevation,
+        plannedStartFrame: request.plannedStartFrame,
+        plannedStopFrame: request.plannedStopFrame,
+        storage: 'LOCAL_RUN',
+      },
+    }
+  }
+
+  /**
+   * 本地接受并持久化一版干扰参数（含可选探测范围）。
+   * @param taskId 参数所属任务编号。
+   * @param jammerId 目标干扰设备编号。
+   * @param value 未受信任的版本化参数集。
+   * @returns 本地接受结果（LOCAL_ACCEPTED / engineSync=NOT_CONNECTED），或版本、范围、任务/设备错误。
+   * @remarks 与真实插件执行分离：不调用受固定证据限制的 controlJammer；先持久化成功再推进内存版本，
+   *          写盘失败不改变版本/参数/状态，允许同一版本重试。固定证据运行保留原帧校验，非固定运行接受请求帧号为本地记录。
+   */
+  syncJammerParameters(taskId: string, jammerId: string, value: unknown): SimulationProjectionResult<SyncResult> {
+    if (taskId !== this.run.taskId) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'taskId', message: '未找到指定任务。' }
+    }
+    const parameterSet = readJammingParameterSet(value)
+    if (parameterSet === undefined) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'parameters', message: '干扰参数同步请求结构不正确。' }
+    }
+    // 探测范围为可选扩展字段；提供时按合同米制范围（1～100 km）校验，旧请求缺省不受影响。
+    if (parameterSet.detectionRangeM !== undefined
+      && (parameterSet.detectionRangeM < JAMMER_RANGE_METERS.min || parameterSet.detectionRangeM > JAMMER_RANGE_METERS.max)) {
+      return {
+        ok: false,
+        code: 'OUT_OF_RANGE',
+        status: 422,
+        fieldPath: 'detectionRangeM',
+        message: `探测范围必须在 ${JAMMER_RANGE_METERS.min / 1000}～${JAMMER_RANGE_METERS.max / 1000} km 之间。`,
+      }
+    }
+    const draft = this.scenarios.get(this.run.scenarioId)
+    if (!draft.ok) return draft
+    const jammer = draft.data.config.jammers.find((item) => item.id === jammerId)
+    if (jammer === undefined) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, fieldPath: 'jammerId', message: '未找到指定干扰设备。' }
+    }
+    const extension = draft.data.uiExtensions.jammers.find((item) => item.jammerId === jammerId)
+    if (extension === undefined || !extension.enabled) {
+      return { ok: false, code: 'DEVICE_DISABLED', status: 409, fieldPath: 'jammerId', message: '所选干扰设备不可用。' }
+    }
+    // 本地参数接受只做纯范围校验，不调用受固定证据限制的 controlJammer。
+    const range = this.validateJammerRange(jammer, parameterSet.parameters, draft.data.config.scenario.duration)
+    if (!range.ok) return range
+
+    // 固定证据运行保留原帧严格校验；非固定/远端运行接受请求帧号作为本地记录，不宣称引擎帧生效。
+    const fixedEvidence = ownsFixedEvidence(this.run)
+    let effectiveSimulationTime: number
+    let targetPlatform: string | undefined
+    if (fixedEvidence) {
+      const frame = loadFixtureProjection().frame
+      if (parameterSet.effectiveFrameId !== frame.frameId) {
+        return { ok: false, code: 'FRAME_MISMATCH', status: 409, fieldPath: 'effectiveFrameId', message: '参数只能在当前明确帧边界生效。' }
+      }
+      effectiveSimulationTime = frame.simulationTime
+      targetPlatform = frame.platforms.flatMap((platform) => platform.jammers)
+        .find((item) => item.jammerId === jammerId)?.targetPlatform
+    } else {
+      effectiveSimulationTime = this.run.canonical.currentTime
+    }
+
+    const storedRecord = this.jammerPlanStorage.load(this.run.taskId, this.run.runId, jammerId)
+    const currentVersion = storedRecord?.version ?? this.jammerParameterVersions.get(jammerId) ?? 4
+    if (parameterSet.version <= currentVersion) {
+      return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: `参数版本必须大于当前版本 ${currentVersion}。` }
+    }
+
+    const record = this.readRuntimeRecord(jammerId)
+    record.version = parameterSet.version
+    if (parameterSet.detectionRangeM !== undefined) record.detectionRangeM = parameterSet.detectionRangeM
+    try {
+      this.jammerPlanStorage.save(this.run.taskId, this.run.runId, jammerId, record)
+    } catch {
+      // 写盘失败：不推进内存版本，旧记录保持完整；返回明确失败以允许同版本重试。
+      return {
+        ok: false,
+        code: 'ATOMIC_REPLACE_FAILED',
+        status: 503,
+        fieldPath: 'parameters',
+        message: '干扰参数保存失败，请重试；本次未推进版本。',
+      }
+    }
+    // 仅在持久化成功后推进内存已接受版本。
     this.jammerParameterVersions.set(jammerId, parameterSet.version)
     return {
       ok: true,
@@ -601,20 +806,21 @@ export class SimulationProjection {
         parameterVersion: parameterSet.version,
         configParameterVersion: parameterSet.version,
         nodeParameterVersion: parameterSet.version,
-        engineParameterVersion: parameterSet.version,
         uiParameterVersion: parameterSet.version,
         effectiveFrameId: parameterSet.effectiveFrameId,
-        effectiveSimulationTime: frame.simulationTime,
-        status: 'SYNCHRONIZED',
+        effectiveSimulationTime,
+        status: 'LOCAL_ACCEPTED',
+        engineSync: 'NOT_CONNECTED',
+        detectionRangeM: record.detectionRangeM,
         jammerStatus: {
-          time: frame.simulationTime,
+          time: effectiveSimulationTime,
           jammerId,
           platformId: jammer.platformId,
-          ...(existingStatus?.targetPlatform === undefined ? {} : { targetPlatform: existingStatus.targetPlatform }),
-          power: controlled.data.power,
-          frequency: controlled.data.frequency,
-          bandwidth: controlled.data.bandwidth,
-          active: controlled.data.enabled,
+          ...(targetPlatform === undefined ? {} : { targetPlatform }),
+          power: parameterSet.parameters.power,
+          frequency: parameterSet.parameters.frequency,
+          bandwidth: parameterSet.parameters.bandwidth,
+          active: parameterSet.parameters.enabled,
         },
       },
     }
@@ -627,5 +833,6 @@ export class SimulationProjection {
     delete this.run.canonical.speedMultiplier
     this.processedClosedLoops.clear()
     this.jammerParameterVersions.clear()
+    this.jammerPlanStorage.deleteRun(this.run.runId)
   }
 }

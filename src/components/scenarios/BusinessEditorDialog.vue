@@ -95,14 +95,12 @@ watch([() => props.modelValue, () => props.embedded ? props.demand?.direction : 
       </el-form-item>
       <el-form-item required label="最低业务速率（Mbps）" :error="fieldError('minDataRateMbps')"><el-input-number v-model="editor.minDataRateMbps" :min="validate ? undefined : 0" :step="0.001" controls-position="right" data-testid="demand-rate" /></el-form-item>
       <el-form-item required label="最大时延（ms）" :error="fieldError('maxLatencyMs')"><el-input-number v-model="editor.maxLatencyMs" :min="validate ? undefined : 0" controls-position="right" data-testid="demand-latency" /></el-form-item>
-      <small class="business-editor__hint" data-testid="demand-qos-hint">最低业务速率、最大时延：新模板无对应参数，不写入脚本。传输频次写入 link_calc 的 trans_freq，本机运行按模板固定 5 秒发送。</small>
     </component>
     <template v-if="!embedded" #footer><el-button @click="emit('update:modelValue', false)">取消</el-button><el-button type="primary" :disabled="disabled" data-testid="apply-business" @click="apply">确认</el-button></template>
   </component>
 </template>
 
 <style scoped>
-.business-editor__hint { grid-column: 1 / -1; color: var(--console-text-muted); font-size: 12px; line-height: 1.5; }
 .business-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; margin-top: 1rem; }
 .business-editor :deep(.el-input-number) { width: 100%; }
 .business-editor__volume { display: flex; gap: 0.5rem; width: 100%; }

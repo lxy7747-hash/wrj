@@ -44,3 +44,25 @@ export function scenarioSnapshotId(value: unknown): string | undefined {
   if (!snapshot || !isRecord(snapshot.config) || !isRecord(snapshot.config.scenario)) return undefined
   return typeof snapshot.config.scenario.id === 'string' ? snapshot.config.scenario.id : undefined
 }
+
+/**
+ * 界面本地迁移提示：仅旧版纯 ScenarioConfig 导入时，比较输入与服务端返回草稿，
+ * 列出被补齐的运动字段实际值；不伪称这是服务端警告，也不覆盖已有值。
+ */
+export function scenarioImportMigrationNotes(rawValue: unknown, imported: Pick<ScenarioDraft, 'config'>): string[] {
+  const snapshot = parseScenarioSnapshot(rawValue)
+  if (!snapshot || snapshot.versioned || !isRecord(snapshot.config)) return []
+  const raw = snapshot.config as { platforms?: unknown }
+  if (!Array.isArray(raw.platforms)) return []
+  const notes: string[] = []
+  raw.platforms.forEach((platform, index) => {
+    if (!isRecord(platform) || !Array.isArray(platform.waypoints)) return
+    const importedPlatform = imported.config.platforms[index] as { waypoints?: Array<{ arrivalTime?: unknown }> } | undefined
+    platform.waypoints.forEach((point, waypointIndex) => {
+      if (!isRecord(point) || Object.hasOwn(point, 'arrivalTime')) return
+      const value = importedPlatform?.waypoints?.[waypointIndex]?.arrivalTime
+      if (typeof value === 'number' && Number.isFinite(value)) notes.push(`platforms[${index}].waypoints[${waypointIndex}].arrivalTime=${value}`)
+    })
+  })
+  return notes
+}

@@ -6,7 +6,8 @@ import { isMissionResultRecord, type MissionResultRecord } from '../../features/
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { formatDateTime } from '../../features/shared/date-time'
 
-const props = defineProps<{ startedAt?: string; status?: string; view?: 'report' | 'replay' }>()
+const props = defineProps<{ startedAt?: string; status?: string; view?: 'report' | 'replay'; refreshing?: boolean }>()
+const emit = defineEmits<{ refresh: [] }>()
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
@@ -36,6 +37,7 @@ function select(id: string) {
   selected.value = id
   if (props.view) void router.push({ path: route.path, query: { resultId: id } })
 }
+function refresh() { void load(); emit('refresh') }
 watch(() => [auth.runtimeMode, props.startedAt, props.status, route.query.resultId], () => { void load() }, { immediate: true })
 onBeforeUnmount(() => { epoch++ })
 </script>
@@ -47,7 +49,7 @@ onBeforeUnmount(() => { epoch++ })
       <el-option v-for="record in records" :key="record.resultId" :value="record.resultId"
         :label="`${record.scenarioName} · 修订 ${record.revision} · ${formatDateTime(record.completedAt)}`" />
     </el-select>
-    <el-button :loading="loading" @click="load">刷新结果</el-button>
+    <el-button :loading="loading || refreshing" @click="refresh">{{ view === 'report' ? '刷新报告' : '刷新结果' }}</el-button>
     <el-button v-if="current && view !== 'replay'" @click="router.push({ path: '/replays', query: { resultId: current.resultId } })">查看回放</el-button>
     <el-button v-if="current && view !== 'report'" @click="router.push({ path: '/reports', query: { resultId: current.resultId } })">查看报告／下载</el-button>
     <span v-if="error" role="alert">{{ error }}</span>

@@ -47,6 +47,6 @@ async function parseJson(): Promise<void> {
       <el-table-column prop="fieldPath" label="字段路径" min-width="160" />
       <el-table-column prop="message" label="说明" min-width="220" />
     </el-table>
-    <p v-if="store.jsonResult" class="exchange-card__note">输出：{{ store.jsonResult.scenario.id }} · {{ store.jsonResult.platforms.length }} 个场景实体 · 未修改场景草稿</p>
+    <p v-if="store.jsonResult" class="exchange-card__note">输出：{{ store.jsonResult.scenario.id }} · {{ store.jsonResult.platforms.length }} 个节点 · 未修改场景草稿</p>
   </el-card>
 </template>

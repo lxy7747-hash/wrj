@@ -8,6 +8,7 @@ import type { ScenarioConfig, ScenarioDraft } from '../../src/contracts/domain-m
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
+import { readDeviceParameters } from '../../src/features/scenarios/template-defaults'
 
 enableAutoUnmount(afterEach)
 afterEach(() => { ElMessage.closeAll(); vi.unstubAllGlobals(); vi.restoreAllMocks(); document.body.innerHTML = '' })
@@ -54,7 +55,44 @@ async function loadPage() {
   return { wrapper, store, fetch, select, number, confirm }
 }
 
-describe('场景实体弹框确认校验', () => {
+describe('节点弹框确认校验', () => {
+  it('定位折叠区内的历史端口错误会展开高级区并切换到对应平台', async () => {
+    const { wrapper, store } = await loadPage()
+    const parameters = readDeviceParameters({})
+    parameters.ports.TIAN_TONG_SAT!.sat_link!.eirpDbw = Number.NaN
+    store.draft!.config.deviceParameters = parameters
+    store.markDirty()
+    await wrapper.get('[data-testid="save-scenario"]').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('button').find(button => button.text() === '定位首个问题')!.trigger('click')
+    await flushPromises()
+    expect((wrapper.get('[data-testid="scenario-device-advanced"]').element as HTMLDetailsElement).open).toBe(true)
+    const input = wrapper.get('[data-testid="port-TIAN_TONG_SAT-sat_link-eirpDbw"] input')
+    await vi.waitFor(() => expect(document.activeElement).toBe(input.element))
+    expect(store.draft!.config.deviceParameters!.ports!.TIAN_TONG_SAT!.sat_link!.eirpDbw).toBeNaN()
+  })
+
+  it('参数入口合并后折叠和切换不改草稿，隐藏的历史值与传感器配置保留', async () => {
+    const { wrapper, store } = await loadPage()
+    const original = structuredClone(toRaw(store.draft!))
+    expect(wrapper.find('#tab-devices').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
+    await wrapper.get('#tab-links').trigger('click')
+    await flushPromises()
+    const advanced = wrapper.get('[data-testid="scenario-device-advanced"]').element as HTMLDetailsElement
+    expect(advanced.open).toBe(false)
+    advanced.open = true
+    await wrapper.get('#tab-data').trigger('click')
+    await flushPromises()
+    const planning = wrapper.get('[data-testid="sensor-planning-0"]').element as HTMLDetailsElement
+    expect(planning.open).toBe(false)
+    planning.open = true
+    await wrapper.get('#tab-scenario').trigger('click')
+    await flushPromises()
+    expect(store.draft).toEqual(original)
+    expect(store.dirty).toBe(false)
+  })
+
   it('切换页签只挂载当前列表，传感器数字输入保留实例及待修正值', async () => {
     const { wrapper, store } = await loadPage()
     for (const [tab, table] of [['platforms', 'platform-table'], ['links', 'link-table'], ['jammers', 'jammer-table']] as const) {
@@ -229,7 +267,7 @@ describe('场景实体弹框确认校验', () => {
     await wrapper.get('[data-testid="add-jammer"]').trigger('click')
     await flushPromises()
     await confirm('apply-jammer')
-    expectValidationMessage('干扰设备必须归属于当前场景实体。')
+    expectValidationMessage('干扰设备必须归属于当前节点。')
     expect(store.draft).toEqual(original)
     select('jammer-platform', 'AJ-T01')
     number('jammer-power', undefined)
@@ -280,12 +318,17 @@ describe('5.2.2 输入时字段下即时校验', () => {
     await new Promise(resolve => setTimeout(resolve, 120))
   }
 
-  it('基础环境参数保留越界输入，字段下报错且修正即清除', async () => {
-    await loadPage()
-    await input('scenario-trans-distance', '500')
+  it('隐藏的旧参数异常时显示修复入口，其他环境字段仍即时校验', async () => {
+    const { store, wrapper } = await loadPage()
+    expect(wrapper.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
+    store.draft!.config.scenario.environment.transmissionDistance = 500
+    await flushPromises()
+    await new Promise(resolve => setTimeout(resolve, 120))
     expect(errorFor('scenario-trans-distance')).toContain('150～410')
     await input('scenario-trans-distance', '200')
     expect(errorFor('scenario-trans-distance')).toBe('')
+    expect(wrapper.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
+    expect(store.draft!.config.scenario.environment.transmissionDistance).toBe(200)
     await input('scenario-env-rainAltitudeLimitM', '30001')
     expect(errorFor('scenario-env-rainAltitudeLimitM')).toContain('30000')
     await input('scenario-env-rainAltitudeLimitM', '1000')

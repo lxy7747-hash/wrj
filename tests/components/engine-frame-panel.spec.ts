@@ -66,6 +66,25 @@ beforeEach(() => {
 afterEach(() => { wrapper?.unmount(); wrapper = undefined; disposePinia(pinia) })
 
 describe('EngineFramePanel', () => {
+  it.each([
+    ['引擎实时数据', '实时更新'],
+    ['最后收到的引擎数据（等待新帧）', '等待更新'],
+    ['最后收到的引擎数据（连接中断）', '连接中断'],
+    ['暂停展示的引擎数据', '已暂停'],
+    ['历史引擎数据（运行已结束）', '已结束'],
+    ['历史引擎数据', '历史回放'],
+    ['引擎数据（状态未确认）', '状态未确认'],
+  ])('质量顶部只显示数据时刻及%s，帧号与说明收进悬浮提示', (sourceLabel, status) => {
+    useRuntimeQualityStore().engineFrame = { ...useRuntimeQualityStore().engineFrame!, frameId: 175.25, simulationTime: 175.25 }
+    wrapper = mount(EngineFramePanel, { props: { section: 'quality', sourceLabel }, global: { plugins: [pinia, ElementPlus] } })
+    expect(wrapper.findAll('[data-testid="quality-source"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:02:55 · ' + status)
+    expect(wrapper.get('.quality-card-source').text()).not.toContain('帧 175.25')
+    expect(wrapper.get('.quality-card-source').text()).not.toContain('数据说明')
+    expect(wrapper.getComponent(ElTooltip).props('content')).toContain('帧 175.25')
+    expect(wrapper.getComponent(ElTooltip).props('content')).toContain('时间范围只筛选当前帧。时延单位、总复合损耗口径尚未确认。')
+    expect(wrapper.getComponent(ElTooltip).props('trigger')).toEqual(['hover', 'focus'])
+  })
   it('最新报文的未关联链路可按原始段编号筛选，零值和极小 BER 正常显示', async () => {
     useRuntimeQualityStore().engineFrame = structuredClone(LATEST_FRAMES[0]!)
     wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
@@ -85,7 +104,8 @@ describe('EngineFramePanel', () => {
     const frame = { ...adaptEngineFrameSnapshot(detected).data!, runId: 'RUN-1' }
     useRuntimeQualityStore().engineFrame = frame
     wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
-    expect(wrapper.getComponent(ElTooltip).props('content')).toContain('375 s')
+    expect(wrapper.get('.engine-evidence__source').text()).toContain('00:06:15')
+    expect(wrapper.getComponent(ElTooltip).props('content')).toContain('时延单位、总复合损耗口径尚未确认')
     expect(wrapper.find('table').exists()).toBe(false)
     await qualityCards()[0]!.get('.quality-card-details summary').trigger('click')
     expect(wrapper.text()).toContain('雨衰损耗（dB）'); expect(wrapper.text()).toContain('云衰损耗（dB）')
@@ -149,6 +169,23 @@ describe('EngineFramePanel', () => {
     expect(wrapper.text()).toContain('时延（原值，单位待确认）'); expect(wrapper.text()).toContain('0.823583')
     expect(wrapper.text()).toContain('接收功率暂无数据')
   })
+  it('质量卡片和详情保留断线来源说明及源时刻，历史回放明确标记历史', async () => {
+    const frame = useRuntimeQualityStore().engineFrame!
+    wrapper = mount(LinkQualityDialog, { props: { modelValue: true, link: null, engineFrame: frame, engineSegments: frame.links,
+      engineSourceLabel: '最后收到的引擎数据（连接中断）' },
+      global: { plugins: [pinia, ElementPlus], stubs: { ElDialog: { template: '<div><slot name="header" /><slot /></div>' } } } })
+    expect(wrapper.text()).toContain('连接中断')
+    expect(wrapper.text()).toContain('来源帧 7')
+    expect(wrapper.text()).not.toContain('实时')
+    await wrapper.setProps({ engineSourceLabel: '暂停展示的引擎数据' })
+    expect(wrapper.text()).toContain('暂停展示')
+    expect(wrapper.text()).not.toContain('过期')
+    wrapper.unmount()
+    wrapper = mount(EngineFramePanel, { props: { section: 'quality', sourceLabel: '最后收到的引擎数据（连接中断）' }, global: { plugins: [pinia, ElementPlus] } })
+    expect(wrapper.get('.engine-evidence__source').text()).toContain('连接中断')
+    await wrapper.setProps({ sourceLabel: '历史引擎数据（运行已结束）' })
+    expect(wrapper.get('.engine-evidence__source').text()).toContain('已结束')
+  })
   it('将节点、体制和链路筛选实际作用于引擎段，并把错误优先显示为未知', async () => {
     wrapper = mount(EngineFramePanel, { props: { section: 'quality' }, global: { plugins: [pinia, ElementPlus] } })
     expect(qualityCards()).toHaveLength(3)
@@ -184,6 +221,22 @@ describe('EngineFramePanel', () => {
     const text = wrapper.text()
     expect(text).toContain('切换前高亮：已唯一关联 L-OLD（1/1 段）')
     expect(text).toContain('切换后高亮：已唯一关联 L-NEW（1/1 段）')
-    expect(text).toContain('历史切换：未保留该帧的设备段关联证据，未使用当前帧推断或高亮。')
+    expect(text).toContain('该次历史切换暂无可高亮的链路。')
+    expect(text).not.toContain('上游计时')
+  })
+
+  it('接收切换事件帧时冻结的历史解析结果，即使非当前帧也显示前后高亮（整改10）', () => {
+    const runtime = useRuntimeQualityStore()
+    const oldNodes = [node('N1', '', 'old-out'), node('N2', 'old-in', '')]
+    const newNodes = [node('N1', '', 'new-out'), node('N3', 'new-in', '')]
+    runtime.engineSwitches = [{
+      frameId: 6, simulationTime: 11.5, route: switchRoute(oldNodes, newNodes),
+      resolution: { before: { linkIds: ['L-OLD'], totalHops: 1, resolvedHops: 1 }, after: { linkIds: ['L-NEW'], totalHops: 1, resolvedHops: 1 } },
+    }]
+    wrapper = mount(EngineFramePanel, { props: { section: 'decisions' }, global: { plugins: [pinia, ElementPlus] } })
+    const text = wrapper.text()
+    expect(text).toContain('切换前高亮：已唯一关联 L-OLD（1/1 段）')
+    expect(text).toContain('切换后高亮：已唯一关联 L-NEW（1/1 段）')
+    expect(text).not.toContain('该次历史切换暂无可高亮的链路。')
   })
 })

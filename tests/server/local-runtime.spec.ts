@@ -1,6 +1,13 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
+import { allTemplateCommPorts } from '../../src/features/scenarios/template-defaults'
 import { createTemplateScenario } from '../fixtures/template-scenario'
+
+function withAllTemplateCommPorts() {
+  const draft = createTemplateScenario()
+  draft.config.deviceParameters = { ...draft.config.deviceParameters, commPorts: allTemplateCommPorts() }
+  return draft
+}
 
 const { mkdtemp, readFile, rm } = await import('node:' + 'fs/promises')
 const { tmpdir } = await import('node:' + 'os')
@@ -9,7 +16,7 @@ const { buildMissionPackage, buildEngineFrameMapping } = await import('../../ser
 const { writeMissionPackage, writeScriptText } = await import('../../server/local/' + 'script-file.js')
 
 const RADIO_FILES = ['comm_platform_COMMAND_VEHICLE.txt', 'comm_platform_MISSION_UAV.txt', 'comm_platform_REAR.txt', 'comm_platform_SAT.txt'] as const
-const addedMedia = (files: Record<string, string>) => RADIO_FILES.flatMap(name => [...files[name]!.matchAll(/^ {4}add medium (\S+)$/gmu)].map(match => match[1]!))
+const addedMedia = (files: Record<string, string>) => RADIO_FILES.flatMap(name => [...files[name]!.matchAll(/^\s*add medium (\S+)\s*$/gmu)].map(match => match[1]!))
 
 describe('本地运行包兼容（P4）', () => {
   it('独立远端映射与交付模板的实例名、端口一致，不修改场景', () => {
@@ -23,19 +30,34 @@ describe('本地运行包兼容（P4）', () => {
     const { files } = buildMissionPackage(createTemplateScenario())
     expect(new Set(addedMedia(files))).toEqual(new Set(['UAV_MESH_MEDIUM']))
     expect(files['comm_PerDefinition.txt']).not.toContain('UAV_MESH_MEDIUM__')
-    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\nend_network')
-    expect(files['comm_PerDefinition.txt']).not.toContain('network_address')
+    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH')
+    expect(files['comm_PerDefinition.txt']).toContain('network_address 192.168.0.0/16')
     expect(files['comm_platform_REAR.txt']).toContain('add processor link_calc WSF_LINK_CALC_PROCESSOR')
     expect(Object.values(files).join('\n')).not.toContain('local_link_stub')
     expect(JSON.parse(files['mapping.json']!)).not.toHaveProperty('localRuntime')
   })
 
+  it('本地位置按链路周期从零采样，结束时补采并去重；交付观察器不变', () => {
+    const draft = createTemplateScenario()
+    draft.config.linkSettings!.linkCalc!.updateIntervalS = 0.25
+    const delivered = buildMissionPackage(draft).files['observers.txt']!
+    const local = buildMissionPackage(draft, undefined, { linkCalc: 'PRESERVE' }).files['observers.txt']!
+    expect(delivered).toContain('enable MOVER_UPDATED MoverUpdated')
+    expect(delivered).not.toContain('wrj_position_sampler')
+    expect(local).not.toContain('enable MOVER_UPDATED')
+    expect(local).toContain('update_interval 0.25 sec')
+    expect(local).toContain('if (TIME_NOW <= wrjPositionTime) return;')
+    expect(local).toContain('execute at_time ' + draft.config.scenario.duration + ' sec absolute')
+    expect(local).toContain('WsfSimulation.PlatformEntry(i)')
+    expect(local).toContain('p.Longitude()')
+  })
+
   it('本地包为每个射频端口派生独立介质，引擎有 link_calc 时原样保留', () => {
-    const shared = buildMissionPackage(createTemplateScenario()).files
-    const { files } = buildMissionPackage(createTemplateScenario(), undefined, { linkCalc: 'PRESERVE' })
+    const shared = buildMissionPackage(withAllTemplateCommPorts()).files
+    const { files } = buildMissionPackage(withAllTemplateCommPorts(), undefined, { linkCalc: 'PRESERVE' })
     const media = addedMedia(files)
     // 无人机 6 + 指挥车 4 + 后方车 3 + 天通 1 + 神通 1。
-    expect(media).toHaveLength(15)
+    expect(media).toHaveLength(16)
     expect(new Set(media).size).toBe(media.length)
     expect(media).toContain('UAV_MESH_MEDIUM__MISSION_UAV_PLATFORM__c_band_uplink')
     expect(media).toContain('UAV_MESH_MEDIUM__SHEN_TONG_SAT__sat_link')
@@ -47,14 +69,14 @@ describe('本地运行包兼容（P4）', () => {
     expect(JSON.parse(files['mapping.json']!).localRuntime).toMatchObject({ linkCalc: 'PRESERVED', splitMedia: media })
   })
 
-  it.each(['PRESERVE', 'STUB'] as const)('本地 %s 包扩大 COM_MESH_NET 地址容量，保留光纤网络与全部通信端口', linkCalc => {
+  it.each(['PRESERVE', 'STUB'] as const)('本地 %s 包保留模板 COM_MESH_NET 地址容量、光纤网络与全部通信端口', linkCalc => {
     const draft = createTemplateScenario()
     const { files } = buildMissionPackage(draft, undefined, { linkCalc })
-    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 10.0.0.0/23\nend_network')
-    expect(files['comm_PerDefinition.txt']).toContain('network FIBER_NET WSF_COMM_NETWORK_P2P\nend_network')
+    expect(files['comm_PerDefinition.txt']).toContain('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 192.168.0.0/16\nend_network')
+    expect(files['comm_PerDefinition.txt']).toContain('network FIBER_NET WSF_COMM_NETWORK_P2P')
     const shared = buildMissionPackage(draft).files
     for (const file of RADIO_FILES) {
-      const ports = (text: string) => [...text.matchAll(/^ {2}comm (\S+) (\S+)$/gmu)].map(match => match[0])
+      const ports = (text: string) => [...text.matchAll(/^\s*comm (\S+) (\S+)\s*$/gmu)].map(match => match[0])
       expect(ports(files[file]!)).toEqual(ports(shared[file]!))
     }
   })
@@ -102,7 +124,7 @@ describe('本地运行包兼容（P4）', () => {
   it('writeMissionPackage 写本地包，writeScriptText 保存的 TXT 不含本地改动', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-local-runtime-'))
     try {
-      const draft = createTemplateScenario()
+      const draft = withAllTemplateCommPorts()
       const entry = await writeMissionPackage(join(root, 'runs'), draft, true)
       const local = await readFile(join(dirname(entry), 'comm_platform_REAR.txt'), 'utf8')
       expect(local).toContain('local_link_stub')

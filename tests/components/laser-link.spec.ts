@@ -56,15 +56,28 @@ function fillLaser(wrapper: VueWrapper): void {
 }
 
 describe('激光链路编辑器', () => {
-  it('切换激光时清空射频默认值，不虚构光学参数或显示射频字段', async () => {
+  it('切换激光时采用 1112 lazer_link 缺省参数集，不虚构光学扩展或显示射频字段', async () => {
     const wrapper = mountEditor(link())
     await switchToLaser(wrapper)
 
-    for (const id of ['link-frequency', 'link-bandwidth', 'link-power', 'link-data-rate', 'link-rx-frequency', 'link-rx-bandwidth', 'laser-tx-aperture', 'laser-rx-aperture', 'laser-pulse-width']) {
+    // 频率 681300 GHz=681300000 MHz；带宽 1000 MHz；功率 0.1 W；速率 2500 Mbps。
+    expect(numberInput(wrapper, 'link-frequency').props('modelValue')).toBe(681_300_000)
+    expect(numberInput(wrapper, 'link-bandwidth').props('modelValue')).toBe(1_000)
+    expect(numberInput(wrapper, 'link-power').props('modelValue')).toBe(0.1)
+    expect(numberInput(wrapper, 'link-data-rate').props('modelValue')).toBe(2_500)
+    expect(numberInput(wrapper, 'link-rx-frequency').props('modelValue')).toBe(681_300_000)
+    expect(numberInput(wrapper, 'link-rx-bandwidth').props('modelValue')).toBe(1_000)
+    // 激光链路可选数值：EIRP 20 dBW / G-T 15 dB/K / 噪声 5 dB。
+    expect(wrapper.find('[data-testid="laser-eirp"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="laser-gt"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="link-laser-advanced"]').attributes('open')).toBeUndefined()
+    expect(numberInput(wrapper, 'laser-noise').props('modelValue')).toBe(5)
+    // 光学口径/脉宽/OOK 为可选扩展，切换时不强制填写。
+    for (const id of ['laser-tx-aperture', 'laser-rx-aperture', 'laser-pulse-width']) {
       expect(numberInput(wrapper, id).props('modelValue')).toBeUndefined()
     }
     expect(select(wrapper, 'laser-modulation').props('modelValue')).toBeUndefined()
-    expect(wrapper.get('[data-testid="laser-wavelength"]').text()).toContain('填写激光频率')
+    expect(wrapper.get('[data-testid="laser-wavelength"]').text()).toContain('440')
     expect(wrapper.find('[data-testid="link-modulation"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="link-tx-polarization"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="link-rx-polarization"]').exists()).toBe(false)
@@ -73,9 +86,8 @@ describe('激光链路编辑器', () => {
     await wrapper.get('[data-testid="apply-link"]').trigger('click')
     const emitted = wrapper.emitted('apply')![0]![0] as Link
     expect(emitted).not.toHaveProperty('laser')
-    expect(emitted).not.toHaveProperty('frequency')
-    expect(emitted).not.toHaveProperty('bandwidth')
-    expect(emitted).not.toHaveProperty('txPower')
+    expect(emitted).toMatchObject({ type: 'LASER', frequency: 681_300_000, bandwidth: 1_000, txPower: 0.1, dataRate: 2_500, eirpDbw: 20, gtDbk: 15, noiseFigureDb: 5 })
+    expect(emitted.antennaGain).toEqual({ tx: 45, rx: 45 })
     wrapper.unmount()
 
     // 旧激光链路缺少新光学字段时保持空白，不能在重开时静默补一个口径或 OOK 值。

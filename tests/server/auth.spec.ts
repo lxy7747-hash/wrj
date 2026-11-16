@@ -10,6 +10,7 @@ type UserOperation = 'CREATE' | 'UPDATE' | 'DELETE' | 'ENABLE' | 'DISABLE'
 interface User {
   userId: string
   username: string
+  displayName?: string
   role: Role
   status: UserStatus
   lastLoginAt?: string
@@ -259,6 +260,7 @@ describe('P1 in-memory authentication boundary', () => {
     const reviewer: User = {
       userId: 'USR-REVIEWER',
       username: 'reviewer',
+      displayName: 'reviewer',
       role: 'OPERATOR',
       status: 'ACTIVE',
     }
@@ -394,7 +396,7 @@ describe('P1 in-memory authentication boundary', () => {
     const unchangedAdmin = await admin.put('/api/v1/admin/users/USR-ADMIN')
       .send(command('UPDATE', fixtureAdmin))
       .expect(200)
-    expect(unchangedAdmin.body.data).toEqual(fixtureAdmin)
+    expect(unchangedAdmin.body.data).toEqual({ ...fixtureAdmin, displayName: fixtureAdmin.username })
 
     const duplicateUpdate = await admin.put('/api/v1/admin/users/USR-OPERATOR')
       .send(command('UPDATE', { ...fixtureOperator, username: 'admin' }))
@@ -445,6 +447,7 @@ describe('P1 in-memory authentication boundary', () => {
         role: 'OPERATOR',
       })),
       admin.put('/api/v1/admin/users/USR-ADMIN').send(command('DISABLE', fixtureAdmin)),
+      admin.put('/api/v1/admin/users/USR-ADMIN').send(command('UPDATE', { ...fixtureAdmin, status: 'DISABLED' })),
       admin.delete('/api/v1/admin/users/USR-ADMIN'),
     ]) {
       const response = await attempt.expect(409)

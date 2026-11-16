@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import type { CapabilityState } from '../../contracts/domain-models'
 import { ERROR_GUIDANCE } from '../../features/diagnostics'
 import { CAPABILITY_LABELS } from '../../stores/traceability'
 import { useUiStore } from '../../stores/ui'
 import { useAuthStore } from '../../stores/auth'
+import { useScenarioStore } from '../../stores/scenario'
+import { useSimulationStore } from '../../stores/simulation'
+import { useTelemetryStore } from '../../stores/telemetry'
 import ClosedLoopStepper from '../../components/interactions/ClosedLoopStepper.vue'
 import CompositeLossExample from '../../components/interactions/CompositeLossExample.vue'
 import EsmSensorPanel from '../../components/interactions/EsmSensorPanel.vue'
@@ -17,7 +20,33 @@ import SwitchDecisionPanel from '../../components/interactions/SwitchDecisionPan
 
 const ui = useUiStore()
 const auth = useAuthStore()
+const scenarioStore = useScenarioStore()
+const simulationStore = useSimulationStore()
+const telemetryStore = useTelemetryStore()
 const exampleState = ref<CapabilityState>('EMPTY')
+
+/**
+ * 父页面先建立当前场景与运行上下文：仅在尚无草稿时加载演示场景，
+ * 绝不覆盖用户正在编辑的当前场景；运行/帧未知时保持空态，交回子组件的未接入提示。
+ * @returns 无返回值。
+ * @sideEffects 可能加载演示场景、运行投影与当前帧，并建立共享实时订阅。
+ */
+async function establishContext(): Promise<void> {
+  if (scenarioStore.draft === null && scenarioStore.currentScenarioId === null && scenarioStore.panelState === 'EMPTY') {
+    await scenarioStore.loadScenario('SCN-001')
+  }
+  if (scenarioStore.draft === null) return
+  if (telemetryStore.frame !== null) return
+  if (telemetryStore.capabilityState === 'LOADING' || telemetryStore.capabilityState === 'VALIDATING') return
+  if (simulationStore.run === null) await simulationStore.resetProjection()
+  const runId = simulationStore.run?.runId
+  if (runId === undefined) return
+  const loaded = await telemetryStore.loadFrame(runId)
+  if (loaded) telemetryStore.connect()
+}
+
+onMounted(() => { void establishContext() })
+onBeforeUnmount(() => { telemetryStore.disconnectAndReset() })
 
 /** 用户确认丢弃本机模拟改动后，仅调用全局协调 action 一次；取消不产生请求。 */
 async function reset(): Promise<void> {
@@ -35,6 +64,7 @@ async function reset(): Promise<void> {
         <p class="eyebrow">能力治理 / 感知、干扰与选路</p>
         <h2 id="interactions-title">感知、干扰与选路</h2>
         <p class="interactions-page__summary">集中展示侦测、干扰控制、参数同步、逐帧闭环、正反向选路及切换决策的完整可追溯证据。</p>
+        <p class="interactions-page__source" data-testid="interactions-source-note">本页交互结果均为本地演示/校验投影，来源以当前服务端已知运行/场景为准，未知时显示未确认；真实引擎执行、参数回读与 ESM 实时遥测尚未接入。</p>
       </div>
       <el-button :disabled="auth.role !== 'ADMIN' || !auth.permissions.includes('USER_ROLE_MAINTAIN')" :loading="ui.resetState === 'EXECUTING'" data-testid="reset-all" @click="reset">{{ ui.resetState === 'ERROR' ? '重试重置' : '重置模拟数据' }}</el-button>
     </header>
@@ -103,6 +133,14 @@ async function reset(): Promise<void> {
   line-height: 1.7;
 }
 
+.interactions-page__source {
+  max-width: 52rem;
+  margin: var(--space-2) 0 0;
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
+  line-height: 1.6;
+}
+
 .interactions-page__chip {
   flex: 0 0 auto;
   margin-top: var(--space-1);
@@ -164,6 +202,11 @@ async function reset(): Promise<void> {
 :deep(.sync-versions strong) {
   color: var(--console-teal);
   font-size: 1.08rem;
+}
+
+:deep(.sync-versions__tag) {
+  color: var(--console-text-muted);
+  font-size: var(--console-font-size-min);
 }
 
 :deep(.sync-form) {

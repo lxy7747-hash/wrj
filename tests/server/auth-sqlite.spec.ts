@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AuditRecord } from '../../src/contracts/domain-models'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 const storagePath = '../../server/local/' + 'auth-sqlite.js'
 const serverPath = '../../server/' + 'app.js'
@@ -93,14 +94,13 @@ describe('SQLite authentication', () => {
     const firstCookie = await login()
     const secondCookie = await login('second-admin')
     const asUser = (cookie: string) => ({ ...headers, Cookie: cookie })
-    const draft = (await api.get('/api/v1/scenarios/SCN-001').set(asUser(firstCookie)).expect(200)).body.data
-    Object.assign(draft.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
-    for (const platform of draft.config.platforms) if (platform.type === 'COMMUNICATION_SATELLITE') platform.satelliteType = 'TIANTONG'
-    // 激光链路不写入新模板脚本，会产生需要确认的警告；本用例直接生成脚本，去掉激光链路。
-    draft.config.links = draft.config.links.filter((link: { type: string }) => link.type !== 'LASER')
-    for (const platform of draft.config.platforms) platform.linkIds = platform.linkIds.filter((id: string) => draft.config.links.some((link: { id: string }) => link.id === id))
+    const current = (await api.get('/api/v1/scenarios/SCN-001').set(asUser(firstCookie)).expect(200)).body.data
+    // 1112 固定模板只接受模板实例范围内的场景；本用例关注审计与一次性确认，使用模板兼容配置。
+    const draft = createTemplateScenario()
+    draft.config.scenario.id = 'SCN-001'
+    draft.config.jammers.forEach(jammer => { jammer.frequency = 4500 })
     await api.put('/api/v1/scenarios/SCN-001').set(asUser(firstCookie))
-      .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: draft.revision }).expect(200)
+      .send({ config: draft.config, uiExtensions: draft.uiExtensions, expectedRevision: current.revision }).expect(200)
     const script = (await api.post('/api/v1/scripts/preview').set(asUser(firstCookie))
       .send({ scenarioId: 'SCN-001' }).expect(200)).body.data
     const writing = api.post(`/api/v1/scripts/${script.scriptId}/local-file`).set(asUser(firstCookie))
@@ -468,4 +468,53 @@ describe('SQLite authentication', () => {
     expect((await api.post('/api/v1/auth/login').set(headers).send({ username: 'admin', passwordFixture: PASSWORD })).status).toBe(429)
     expect((await api.post('/api/v1/auth/logout').set(headers).send({ confirm: false })).status).toBe(400)
   })
+})
+
+
+it('旧账号迁移及独立用户名/登录账号修改保留 ID、密码、角色绑定，登录仅认账号', async () => {
+  const { AccessControlSqliteStorage } = await import('../../server/local/' + 'access-control-sqlite.js')
+  const roles = new AccessControlSqliteStorage(join(directory, 'roles.db'))
+  cleanups.push(() => roles.close())
+  const original = new AuthSqliteStorage(path, PASSWORD)
+  const user = { userId: 'PRESERVED-ID', username: 'legacy-login', role: 'OPERATOR', status: 'ACTIVE' }
+  original.save(user, PASSWORD)
+  original.close()
+  const db = new DatabaseSync(path)
+  cleanups.push(() => db.close())
+  db.exec('ALTER TABLE users DROP COLUMN display_name')
+  const before = db.prepare('SELECT * FROM users ORDER BY user_id').all()
+  roles.save({ version: 2, profiles: [{ profileId: 'READ', name: '只读角色', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ'], menuPaths: ['/situation'] }], assignments: [{ userId: user.userId, profileId: 'READ' }] }, 1)
+  const bindings = roles.load()
+  const { api, login, storage } = await start(undefined, { accessControlStorage: roles })
+  const oldColumns = 'user_id,username,role,status,password_salt,password_hash,last_login_at'
+  expect(db.prepare(`SELECT ${oldColumns} FROM users ORDER BY user_id`).all()).toEqual(before)
+  expect(storage.list()).toContainEqual({ ...user, displayName: user.username })
+  const admin = { ...headers, Cookie: await login() }
+  const oldCookie = await login(user.username)
+  const renamed = { ...user, displayName: '张三' }
+  await api.put('/api/v1/admin/users/PRESERVED-ID').set(admin).send({ operation: 'UPDATE', user: renamed }).expect(200)
+  expect((await api.get('/api/v1/auth/session').set(headers).set('Cookie', oldCookie)).body.data.authenticated).toBe(false)
+  const loginAs = (username: string) => api.post('/api/v1/auth/login').set(headers).send({ username, passwordFixture: PASSWORD })
+  expect((await loginAs('张三')).body.error.code).toBe('INVALID_CREDENTIALS')
+  expect((await loginAs(user.username)).body.data.principal).toMatchObject({ userId: user.userId, username: user.username, displayName: '张三', menuPaths: ['/situation'] })
+  // 旧客户端不传 displayName 时，修改登录账号仍保留已设置的显示名。
+  await api.put('/api/v1/admin/users/PRESERVED-ID').set(admin).send({ operation: 'UPDATE', user: { ...user, username: 'new-login' } }).expect(200)
+  expect((await loginAs(user.username)).body.error.code).toBe('INVALID_CREDENTIALS')
+  expect((await loginAs('new-login')).body.data.principal).toMatchObject({ userId: user.userId, username: 'new-login', displayName: '张三' })
+  expect(roles.load()).toEqual(bindings)
+  const after = db.prepare('SELECT * FROM users WHERE user_id=?').get(user.userId)!
+  expect(after.password_salt).toBe(before[0]!.password_salt)
+  expect(after.password_hash).toBe(before[0]!.password_hash)
+  const sameName = { userId: 'SECOND-ID', username: 'second-login', displayName: '张三', role: 'OPERATOR', status: 'ACTIVE' }
+  await api.post('/api/v1/admin/users').set(admin).send({ operation: 'CREATE', user: sameName, password: PASSWORD }).expect(201)
+  await api.post('/api/v1/admin/users').set(admin).send({ operation: 'CREATE', user: { ...sameName, userId: 'THIRD-ID' }, password: PASSWORD }).expect(409)
+  for (const displayName of ['', '   ', 'x'.repeat(65), null, 12]) {
+    await api.put('/api/v1/admin/users/SECOND-ID').set(admin).send({ operation: 'UPDATE', user: { ...sameName, displayName } }).expect(400)
+    await api.post('/api/v1/admin/users').set(admin).send({ operation: 'CREATE', user: { ...sameName, userId: 'INVALID-NAME', username: 'unused', displayName }, password: PASSWORD }).expect(400)
+  }
+  const reopened = new AuthSqliteStorage(path)
+  try {
+    expect(reopened.list().find((row: { userId: string }) => row.userId === user.userId)).toMatchObject({ username: 'new-login', displayName: '张三' })
+    expect(await reopened.verify('new-login', PASSWORD)).toBe(true)
+  } finally { reopened.close() }
 })

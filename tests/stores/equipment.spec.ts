@@ -134,4 +134,25 @@ describe('装备参数正式 Store 入口', () => {
   it.each([{ frequencyMinMHz: Infinity }, { readOnly: 'false' }, { modulation: 'x'.repeat(33) }, { type: 'x'.repeat(101) }, { version: 1.5 }])('共享规则拒绝 %j', change => {
     expect(equipmentIssue({ ...EQUIPMENT, ...change })).not.toBeNull()
   })
+
+  it('显式重建走独立入口接受实际版本 V3，普通新建仍断言 V1', async () => {
+    const store = useAdminStore()
+    const history = {
+      equipmentId: EQUIPMENT.equipmentId, deleted: true, current: null,
+      history: [{ ...EQUIPMENT, version: 2 }, EQUIPMENT], references: [], publishedReferences: [],
+      lifecycle: [{ eventType: 'DELETE', version: 2, occurredAt: '2026-08-06T08:00:00Z', operator: 'admin' }],
+      verification: null, pendingVerification: false,
+    }
+    const rebuilt = { ...EQUIPMENT, version: 3 }
+    const fetcher = vi.fn().mockResolvedValueOnce(equipmentResponse(history))
+      .mockResolvedValueOnce(equipmentResponse({ equipment: rebuilt, event: { eventType: 'RECREATE', version: 3, occurredAt: '2026-08-06T08:01:00Z', operator: 'admin' } }))
+      .mockResolvedValueOnce(equipmentResponse({ ...EQUIPMENT, equipmentId: 'NEW-EQ', version: 1 }))
+    vi.stubGlobal('fetch', fetcher)
+    expect(await store.loadEquipmentHistory(EQUIPMENT.equipmentId)).toMatchObject({ deleted: true, history: expect.any(Array) })
+    expect(await store.recreateEquipment(EQUIPMENT.equipmentId, { expectedHistoryVersion: 2, parameters: { type: '微波通信设备', frequencyMinMHz: 100, frequencyMaxMHz: 200, modulation: 'QPSK', berThreshold: 0.00001 } })).toMatchObject({ version: 3 })
+    expect(store.equipment.find(row => row.equipmentId === EQUIPMENT.equipmentId)?.version).toBe(3)
+    // 普通新建仍走 V1 断言，不因重建入口放宽。
+    expect(await store.saveEquipment({ ...EQUIPMENT, equipmentId: 'NEW-EQ' }, true)).toBe(true)
+    expect(store.equipment.find(row => row.equipmentId === 'NEW-EQ')?.version).toBe(1)
+  })
 })

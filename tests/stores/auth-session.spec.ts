@@ -11,10 +11,12 @@ beforeEach(() => { sessionStorage.clear(); setActivePinia(createPinia()) })
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); onSessionExpired(() => {}); sessionStorage.clear() })
 
 it('server-verified menu restrictions survive session projection and block direct navigation', async () => {
-  const limited = { ...principal, menuPaths: ['/reports', '/admin'] }
+  const limited = { ...principal, displayName: '管理员显示名', menuPaths: ['/reports', '/admin'] }
   vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => success({ authenticated: true, sessionCreated: true, principal: limited })))
   const auth = useAuthStore()
   await auth.restoreSession()
+  expect(auth.principal?.displayName).toBe(limited.displayName)
+  expect(JSON.parse(sessionStorage.getItem('wrj.auth.principal')!).displayName).toBe(limited.displayName)
   expect(auth.principal?.menuPaths).toEqual(limited.menuPaths)
   expect(JSON.parse(sessionStorage.getItem('wrj.auth.principal')!).menuPaths).toEqual(limited.menuPaths)
   const { createAppRouter } = await import('../../src/router')
@@ -167,4 +169,18 @@ it('handles current-session 401 but ignores stale-session and public login failu
   expect(expired).not.toHaveBeenCalled()
   await apiFetch('/api/v1/scenarios')
   expect(expired).toHaveBeenCalledOnce()
+})
+
+
+it('登录账号改名后可重新使用原登录账号，新账号不复用旧 ID', async () => {
+  const admin = useAdminStore()
+  admin.users = [{ userId: 'USR-old-login', username: 'renamed-login', displayName: '张三', role: 'OPERATOR', status: 'ACTIVE' }]
+  let created: unknown
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async (_url: string, init: RequestInit) => {
+    created = JSON.parse(String(init.body)).user
+    return success(created)
+  }))
+  expect(await admin.createUser('old-login', 'OPERATOR', 'ACTIVE', 'test-123456', '张三')).toBe(true)
+  expect(created).toMatchObject({ username: 'old-login', displayName: '张三', userId: 'USR-old-login-1' })
+  expect(admin.users.map(user => user.userId)).toEqual(['USR-old-login', 'USR-old-login-1'])
 })

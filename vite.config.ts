@@ -18,6 +18,17 @@ export default defineConfig(({ mode }) => ({
     Components({ resolvers: [ElementPlusResolver()], dts: false }),
     createVersaTilesPlugin(),
     {
+      // 本地预览生产构建时提供与离线包启动器相同格式的运行配置；离线包由启动器按 deployment.env 生成。
+      name: 'wrj-preview-runtime-config',
+      configurePreviewServer(server) {
+        server.middlewares.use('/runtime-config.json', (_req, res) => {
+          res.setHeader('Content-Type', 'application/json; charset=utf-8')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end(JSON.stringify({ apiPort: 4173, mapPort: 4174 }))
+        })
+      },
+    },
+    {
       name: 'wrj-lan-marker',
       transformIndexHtml: () => mode === 'lan'
         ? [{ tag: 'meta', attrs: { name: 'wrj-deployment', content: 'lan' }, injectTo: 'head' as const }]

@@ -353,13 +353,14 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.get('[data-testid="scenario-id"]').isVisible()).toBe(true)
     await toggle.setValue(false)
     for (const [tab, kind, header] of [
-      ['platforms', 'platform', '场景实体 ID'], ['links', 'link', '链路 ID'], ['jammers', 'jammer', '设备 ID'],
+      ['platforms', 'platform', '节点 ID'], ['links', 'link', '链路 ID'], ['jammers', 'jammer', '设备 ID'],
     ]) {
       await wrapper.get(`#tab-${tab}`).trigger('click')
       await flushPromises()
       expect(wrapper.get(`[data-testid="${kind}-table"]`).text()).not.toContain(header)
       await wrapper.get(`[data-testid="edit-${kind}-0"]`).trigger('click')
       await flushPromises()
+      if (kind === 'platform') expect(document.querySelector('[data-testid="platform-dialog"] .el-dialog__title')?.textContent).toBe('编辑节点')
       const id = document.querySelector<HTMLInputElement>(`[data-testid="${kind}-id"]`)!
       expect(id.closest('.el-form-item')?.getAttribute('style')).toContain('display: none')
       const value = id.value
@@ -503,7 +504,7 @@ describe('P2-1 场景管理页面', () => {
     expect(owner.props('modelValue')).toBe('')
     document.querySelector<HTMLElement>('[data-testid="apply-jammer"]')!.click()
     await flushPromises()
-    expect(document.body.textContent).toContain('干扰设备必须归属于当前场景实体。')
+    expect(document.body.textContent).toContain('干扰设备必须归属于当前节点。')
     expect(scenario.draft!.config.jammers).toHaveLength(2)
     expect(owner.findAllComponents({ name: 'ElOption' }).some(c => c.props('label').startsWith('机载干扰测试'))).toBe(true)
   })
@@ -539,8 +540,20 @@ describe('P2-1 场景管理页面', () => {
     const table = wrapper.get('[data-testid="link-table"]')
     expect(table.text()).not.toContain('参与场景')
     expect(table.text()).toContain('链路状态')
-    expect(table.findAll('th').map(cell => cell.text())).not.toContain('中继卫星')
-    expect(table.findAll('th').map(cell => cell.text())).not.toContain('业务')
+    const headers = table.findAll('th').map(cell => cell.text())
+    expect(headers).not.toContain('中继卫星')
+    expect(headers).toContain('中继平台')
+    expect(headers).not.toContain('业务')
+    const relayColumnIndex = headers.indexOf('中继平台')
+    const sat01Label = scenarioPlatformLabel(scenario.draft!.config.platforms, 'SAT-01', false)
+    const satStLabel = scenarioPlatformLabel(scenario.draft!.config.platforms, 'SAT-ST', false)
+    expect(table.findAll('tbody tr').map(row => row.findAll('td')[relayColumnIndex]?.text())).toEqual([
+      sat01Label,
+      sat01Label,
+      sat01Label,
+      '不经中继',
+      satStLabel,
+    ])
     const selectedSatellite = () => wrapper.get('[data-testid="scenario-selected-satellite"]')
     expect(wrapper.findAll('[data-testid="scenario-selected-satellite"]')).toHaveLength(1)
     expect(table.find('[data-testid="scenario-selected-satellite"]').exists()).toBe(false)
@@ -572,7 +585,7 @@ describe('P2-1 场景管理页面', () => {
     await flushPromises()
     const original = structuredClone(toRaw(scenario.draft!.config))
     await wrapper.get('#tab-links').trigger('click')
-    expect(wrapper.findAll('[role="tab"]')).toHaveLength(6)
+    expect(wrapper.findAll('.scenario-tabs > .el-tabs__header [role="tab"]')).toHaveLength(5)
     expect(wrapper.find('[data-testid="add-information-demand"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="information-demand-table"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('未关联的旧业务')
@@ -637,7 +650,7 @@ describe('P2-1 场景管理页面', () => {
     expect(dialog.props('error')).toBe('请检查通信方向')
     dialog.vm.$emit('opened')
     await flushPromises()
-    expect(document.activeElement?.closest('[data-testid="link-direction"]')).not.toBeNull()
+    await vi.waitFor(() => expect(document.activeElement?.closest('[data-testid="link-direction"]')).not.toBeNull())
     const snapshot = structuredClone(toRaw(scenario.draft!.config))
     scenario.draft!.locked = true
     document.querySelector<HTMLElement>('[data-testid="apply-link"]')!.click()
@@ -793,7 +806,7 @@ describe('P2-1 场景管理页面', () => {
     wrapper.findComponent({ name: 'ValidationPanel' }).vm.$emit('locate', { severity: 'ERROR', code: 'TEST', message: '请检查触发时间', fieldPath: 'jammers[0].triggerTimeS' })
     await flushPromises()
     dialog.vm.$emit('opened')
-    expect(document.activeElement?.closest('[data-testid="jammer-trigger-time"]')).not.toBeNull()
+    await vi.waitFor(() => expect(document.activeElement?.closest('[data-testid="jammer-trigger-time"]')).not.toBeNull())
     scenario.draft!.locked = true
     totalSwitch.vm.$emit('update:modelValue', false)
     await nextTick()
@@ -833,7 +846,9 @@ describe('P2-1 场景管理页面', () => {
     expect(scenario.draft!.config.sensors).toHaveLength(previousCount + 1)
     const nativeSensorId = scenario.draft!.config.sensors.at(-1)!.id
     expect(scenario.draft!.uiExtensions.sensors.at(-1)?.esm).toEqual({ sensitivityDbw: -200, detectionThresholdDb: 0, dwellTimeS: 1, revisitTimeS: 1 })
-    expect(wrapper.get(`[data-testid="native-esm-${nativeSensorId}"]`).text()).toContain('WSF_ESM_SENSOR')
+    const nativeEditor = wrapper.get(`[data-testid="native-esm-${nativeSensorId}"]`)
+    expect(nativeEditor.text()).toContain('已配置')
+    expect(nativeEditor.text()).not.toContain('WSF_ESM_SENSOR')
     wrapper.findAllComponents({ name: 'ElSwitch' }).find(item => item.attributes('data-testid') === `native-esm-enabled-${nativeSensorId}`)!
       .vm.$emit('update:modelValue', false)
     await nextTick()
@@ -864,7 +879,7 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.find('[data-testid="scenario-sea-state"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="scenario-editor"]').exists()).toBe(true)
     expect(wrapper.findAll('[role="tab"]').map((tab) => tab.text())).toEqual([
-      '场景基础', '节点配置', '链路配置', '通信设备参数', '干扰设备', '传感器',
+      '场景基础', '节点配置', '链路配置', '干扰设备', '传感器',
     ])
     expect(wrapper.find('.scenario-workflow-hint').exists()).toBe(false)
     expect(wrapper.get('.scenario-workflow-bar').text()).toContain('已就绪')
@@ -911,8 +926,9 @@ describe('P2-1 场景管理页面', () => {
     const labels = (root: ReturnType<typeof wrapper.get>) => root.findAll('.el-form-item__label').map((item) => item.text())
     expect(labels(fields)).toEqual([
       '场景编号', '场景名称', '开始时间', '时间步长（秒）',
-      '仿真总时长（min）', '任务阶段（可选）', '运行模式', '仿真时钟倍速（倍）', '海峡宽度（km）', '场景描述',
+      '仿真总时长（min）', '任务阶段（可选）', '仿真倍速', '场景描述',
     ])
+    expect(fields.text()).not.toMatch(/clock_rate|不写入脚本/)
     // 环境参数按《与前端字段确认说明》“环境参数（全局）”的五个小标题分组。
     const environment = wrapper.get('[data-testid="scenario-environment"]')
     expect(environment.get('.environment-section__title').text()).toBe('环境参数（全局）')
@@ -941,8 +957,30 @@ describe('P2-1 场景管理页面', () => {
     expect(wrapper.findAll('[data-testid="scenario-multipath"]')).toHaveLength(1)
     const duration = fields.get('[data-testid="scenario-duration"] input')
     expect((duration.element as HTMLInputElement).value).toBe('20')
-    expect(fields.get('[data-testid="scenario-sim-clock-speed"] input').attributes('aria-valuenow')).toBe('2')
-    expect(fields.get('[data-testid="scenario-trans-distance"] input').attributes('aria-valuenow')).toBe('300')
+    const simSpeed = fields.findAllComponents({ name: 'ElSelect' })
+      .find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-sim-speed')!
+    // 旧场景缺省倍速按文档默认值回显 x2；回显本身不写 simClockSpeed。
+    expect(simSpeed.props('modelValue')).toBe('x2')
+    delete scenario.draft!.config.scenario.environment.simClockSpeed
+    await nextTick()
+    expect(simSpeed.props('modelValue')).toBe('x2')
+    expect(scenario.draft!.config.scenario.environment).not.toHaveProperty('simClockSpeed')
+    // 全速=非实时 + clock_rate 32；x32=实时 + clock_rate 32；x8=实时 + clock_rate 8。
+    simSpeed.vm.$emit('update:modelValue', 'full')
+    await nextTick()
+    expect(scenario.draft!.config.scenario.realtime).toBe(false)
+    expect(scenario.draft!.config.scenario.environment.simClockSpeed).toBe(32)
+    simSpeed.vm.$emit('update:modelValue', 'x32')
+    await nextTick()
+    expect(scenario.draft!.config.scenario).not.toHaveProperty('realtime')
+    expect(scenario.draft!.config.scenario.environment.simClockSpeed).toBe(32)
+    simSpeed.vm.$emit('update:modelValue', 'x8')
+    await nextTick()
+    expect(scenario.draft!.config.scenario).not.toHaveProperty('realtime')
+    expect(scenario.draft!.config.scenario.environment.simClockSpeed).toBe(8)
+    expect(scenario.dirty).toBe(true)
+    expect(fields.find('[data-testid="scenario-trans-distance"]').exists()).toBe(false)
+    expect(scenario.draft!.config.scenario.environment.transmissionDistance).toBe(300)
     const rainTier = environment.findAllComponents({ name: 'ElSelect' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-rain-cloud-atten')!
     const multipath = environment.findAllComponents({ name: 'ElSwitch' }).find((item: { attributes: (name: string) => string | undefined }) => item.attributes('data-testid') === 'scenario-multipath')!
     expect(rainTier.props('modelValue')).toBe('lightRain')
@@ -950,10 +988,6 @@ describe('P2-1 场景管理页面', () => {
 
     await duration.setValue('20.5')
     await duration.trigger('change')
-    await fields.get('[data-testid="scenario-sim-clock-speed"] input').setValue('3')
-    await fields.get('[data-testid="scenario-sim-clock-speed"] input').trigger('change')
-    await fields.get('[data-testid="scenario-trans-distance"] input').setValue('350')
-    await fields.get('[data-testid="scenario-trans-distance"] input').trigger('change')
     rainTier.vm.$emit('update:modelValue', 'heavyRain')
     multipath.vm.$emit('update:modelValue', false)
     await nextTick()
@@ -963,7 +997,7 @@ describe('P2-1 场景管理页面', () => {
     saved.config.scenario.duration = 1230
     Object.assign(saved.config.scenario.environment, {
       // 选择雨强档位时同步降雨强度（大雨 50 mm/h）。
-      simClockSpeed: 3, transmissionDistance: 350, rainCloudAttenuation: 'heavyRain', rainRateMmPerHour: 50, multipathEnabled: false,
+      simClockSpeed: 8, transmissionDistance: 300, rainCloudAttenuation: 'heavyRain', rainRateMmPerHour: 50, multipathEnabled: false,
     })
     const fetchSpy = vi.fn().mockResolvedValue(response(saved))
     vi.stubGlobal('fetch', fetchSpy)
@@ -1594,7 +1628,7 @@ describe('P2-1 场景管理页面', () => {
     await openValidationTab()
     await wrapper.get('[data-testid="locate-validation-issue-2"]').trigger('click')
     await flushPromises()
-    expect(document.activeElement).toBe(document.querySelector('[data-testid="scenario-time-step"] input'))
+    await vi.waitFor(() => expect(document.activeElement).toBe(document.querySelector('[data-testid="scenario-time-step"] input')))
     wrapper.unmount()
   })
 
@@ -1639,10 +1673,13 @@ describe('P2-1 场景管理页面', () => {
     const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
 
     expect(wrapper.text()).toContain(`信息节点 6 / ${INFORMATION_NODE_LIMIT}`)
-    expect(wrapper.text()).toContain('节点类型 4 / 4')
+    expect(wrapper.text()).toContain('信息节点类型 4 / 4')
     expect(wrapper.text()).toContain('支撑实体 3')
     await wrapper.get('[data-testid="add-platform"]').trigger('click')
     await nextTick()
+    // 弹框标题与“新增节点”入口一致，界面不再使用“场景实体”这一旧称。
+    expect(document.querySelector('[data-testid="platform-dialog"] .el-dialog__title')?.textContent).toBe('新增节点')
+    expect(document.querySelector('[data-testid="platform-dialog"]')?.textContent).not.toContain('场景实体')
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount)
     const nameInput = document.querySelector<HTMLInputElement>('[data-testid="platform-name"]')!
     nameInput.value = '新增空中无人作业集群'
@@ -1662,7 +1699,7 @@ describe('P2-1 场景管理页面', () => {
     document.querySelector<HTMLElement>('[data-testid="apply-platform"]')!.click()
     await nextTick()
 
-    expect(document.body.textContent).toContain('场景实体已新增，保存草稿后生效。')
+    expect(document.body.textContent).toContain('节点已新增，保存草稿后生效。')
     expect(wrapper.find('[aria-label="节点配置"] .platform-feedback').exists()).toBe(false)
     expect(scenario.draft?.config.platforms).toHaveLength(originalCount + 1)
     expect(scenario.draft?.config.platforms.at(-1)).toMatchObject({
@@ -1674,7 +1711,7 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
-  it('新增和编辑场景实体时通过地图选点回填航点并将高度设为零', async () => {
+  it('新增和编辑节点时通过地图选点回填航点并将高度设为零', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const scenario = useScenarioStore(pinia)
@@ -1729,6 +1766,25 @@ describe('P2-1 场景管理页面', () => {
       latitude: 24.456789,
       altitude: 0,
     })
+    wrapper.unmount()
+  })
+
+  it('新增节点弹框不在节点类型下显示整场景业务类型覆盖警告', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenario = useScenarioStore(pinia)
+    const current = draft()
+    // 缺少一类业务信息节点时，整场景校验会给出 WARNING；它不应落到节点类型字段。
+    current.config.platforms = current.config.platforms.filter(platform => platform.type !== 'FORWARD_RELAY_NODE')
+    scenario.$patch({ draft: current, panelState: 'SUCCESS' })
+    const wrapper = mount(ScenariosPage, { attachTo: document.body, global: { plugins: [pinia, ElementPlus] } })
+    await wrapper.get('[data-testid="add-platform"]').trigger('click')
+    await flushPromises()
+    const form = document.querySelector('.platform-editor-form')
+    expect(form).not.toBeNull()
+    expect(form!.textContent).not.toContain('未覆盖全部四类业务信息节点')
+    expect(document.querySelector('[data-testid="platform-type"]')!.closest('.el-form-item')!.textContent)
+      .not.toContain('未覆盖全部四类业务信息节点')
     wrapper.unmount()
   })
 
@@ -2244,7 +2300,7 @@ describe('P2-1 场景管理页面', () => {
     wrapper.unmount()
   })
 
-  it('场景实体不足时以浮层消息提示，且不打开链路或干扰弹框', async () => {
+  it('节点不足时以浮层消息提示，且不打开链路或干扰弹框', async () => {
     const messageSpy = vi.spyOn(ElMessage, 'error')
     const pinia = createPinia()
     setActivePinia(pinia)
@@ -2260,7 +2316,7 @@ describe('P2-1 场景管理页面', () => {
     await wrapper.get('[data-testid="add-link"]').trigger('click')
     await nextTick()
 
-    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('至少需要两个场景实体才能新增链路。')
+    expect(messageSpy).toHaveBeenCalledExactlyOnceWith('至少需要两个节点才能新增链路。')
     expect(wrapper.find('.platform-feedback').exists()).toBe(false)
     expect(document.querySelector('[data-testid="link-dialog"]')).toBeNull()
 

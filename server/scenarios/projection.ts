@@ -403,11 +403,16 @@ class ScenarioDocument {
     }
     const config = dropRetiredScenarioFields(structuredClone(snapshot.config as ScenarioConfig))
     const extensions = dropRetiredUiExtensionFields(structuredClone(snapshot.uiExtensions))
-    restoreRequiredMotionFields(config, extensions)
+    // 版本化快照必须先按原始必填字段校验，禁止先补值再宣告成功；
+    // 只有旧版纯 ScenarioConfig 允许在服务端副本上迁移补值后校验提交。
+    if (!snapshot.versioned) restoreRequiredMotionFields(config, extensions)
     const inspection = inspectScenarioConfig(config, 'write')
     if (!inspection.result.valid) {
       const issue = inspection.result.errors[0]!
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }
+      const fieldPath = snapshot.versioned
+        ? (issue.fieldPath === 'config' ? 'items[0].config' : `items[0].config.${issue.fieldPath}`)
+        : (issue.fieldPath === 'config' ? 'items[0]' : `items[0].${issue.fieldPath}`)
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath, message: issue.message }
     }
     const extensionInspection = inspectScenarioUiExtensions(
       extensions ?? createUiExtensions(config),
@@ -416,7 +421,7 @@ class ScenarioDocument {
     )
     if (!extensionInspection.result.valid) {
       const issue = extensionInspection.result.errors[0]!
-      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].uiExtensions.${issue.fieldPath}`, message: issue.message }
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: `items[0].${issue.fieldPath}`, message: issue.message }
     }
     const draft: ScenarioDraft = {
       config,

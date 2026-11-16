@@ -211,17 +211,11 @@ function changeType(type: LinkType): void {
   if (type === 'DATALINK') editor.value.band ??= 'C'
   else delete editor.value.band
   if (type === 'LASER') {
-    // 切入激光时不沿用射频默认值；频率、带宽、光功率和速率均由用户显式填写。
-    delete editor.value.frequency
-    delete editor.value.bandwidth
-    delete editor.value.txPower
-    delete editor.value.dataRate
-    delete editor.value.rxFrequency
-    delete editor.value.rxBandwidth
+    // 采用 1112 lazer_link 缺省参数集（含 EIRP 20 / G-T 15 / 噪声 5）；光学口径、脉宽与 OOK 为可选扩展，切入时不强制填写。
+    delete editor.value.laser
     delete editor.value.txPolarization
     delete editor.value.rxPolarization
-    delete editor.value.noiseFigureDb
-    delete editor.value.laser
+    Object.assign(editor.value, linkTypeDefaults('LASER'))
     return
   }
   delete editor.value.laser
@@ -287,6 +281,13 @@ function setNoiseFigure(value: number | null | undefined): void {
   if (!editor.value) return
   if (typeof value === 'number') editor.value.noiseFigureDb = value
   else delete editor.value.noiseFigureDb
+}
+
+/** 激光链路可选数值字段（EIRP/G-T/噪声）：清空即删除属性，留待校验。 */
+function setLaserNumberField(key: 'eirpDbw' | 'gtDbk' | 'noiseFigureDb', value: number | null | undefined): void {
+  if (!editor.value) return
+  if (typeof value === 'number' && Number.isFinite(value)) editor.value[key] = value
+  else delete editor.value[key]
 }
 
 /** 保存编码选择；空字符串转为“未指定”，value 为选项或用户录入的后端编码标识。 */
@@ -402,14 +403,13 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             <el-select :model-value="editor.relayPlatformId ?? ''" clearable placeholder="不经中继" style="width: 100%" data-testid="link-relay" @update:model-value="setRelay">
               <el-option v-for="platform in relayOptions" :key="platform.id" :label="scenarioPlatformLabel(platforms, platform.id, showIds)" :value="platform.id" />
             </el-select>
-            <small class="link-editor-hint">{{ editor.type === 'SAT' ? '后方指挥节点与任务无人机之间的卫通须经通信卫星中继。' : '经高空中继节点转发，中继收发使用同名端口。' }}</small>
+            <small v-if="editor.type === 'SAT'" class="link-editor-hint">后方指挥节点与任务无人机之间的卫通须经通信卫星中继。</small>
           </el-form-item>
         </div>
       </section>
 
       <section class="link-editor-section" aria-labelledby="link-communication-title">
         <h4 id="link-communication-title" class="link-editor-section__title">通信参数</h4>
-        <p v-if="!laser" class="link-editor-hint" data-testid="link-retained-hint">AFSIM 脚本的收发参数以“通信设备参数”为准，此处参数暂保留，不写入脚本。</p>
         <div class="link-parameter-source" data-testid="link-parameter-source">
           <div class="link-parameter-source__controls">
             <el-select v-model="selectedParameter" placeholder="选择设备参数或通用基础数据" aria-label="链路基础数据" filterable clearable :loading="parameterLoading" :disabled="referenceDisabled"
@@ -456,7 +456,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
             </el-select>
             <el-input-number v-else v-model="editor.dataRate" :min="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.min : 0" :max="validate ? undefined : fiber ? FIBER_DATA_RATE_MBPS.max : Infinity"
               controls-position="right" data-testid="link-data-rate" />
-            <small class="link-editor-hint">{{ fixedDataRate !== null ? '按对接文档固定显示；脚本速率以“通信设备参数”为准' : editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : laser ? '控制报文传输时间；光学脉宽单独配置，须显式填写' : '单位 Mbps' }}</small>
+            <small v-if="fixedDataRate === null && !laser" class="link-editor-hint">{{ editor.type === 'DATALINK' ? '按波段与方向分档' : fiber ? '10～1000 Mbps' : '单位 Mbps' }}</small>
           </el-form-item>
           <template v-if="editor.type === 'SAT'">
             <el-form-item label="前向速率（Mbps）" :error="fieldError('forwardDataRate')">
@@ -473,7 +473,7 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
           <el-form-item required :label="fiber ? '发送频率（MHz）' : laser ? '激光频率（MHz）' : '发射频率（MHz）'" :error="fieldError('frequency')">
             <el-input-number v-model="editor.frequency" :min="validate ? undefined : Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="link-frequency" @input="emit('frequency-input', $event)" />
             <small v-if="laser" class="link-editor-hint" data-testid="laser-wavelength">
-              {{ laserWavelengthNm === null ? '填写激光频率后显示波长换算值' : `波长约 ${Number(laserWavelengthNm.toPrecision(8))} nm（由频率换算，只读）` }}
+              {{ laserWavelengthNm === null ? '填写激光频率后显示波长' : `波长约 ${Number(laserWavelengthNm.toPrecision(8))} nm（只读）` }}
             </small>
           </el-form-item>
           <template v-if="!fiber">
@@ -500,40 +500,52 @@ function setDirectionalRate(key: 'forwardDataRate' | 'reverseDataRate', value: n
                 data-testid="link-noise-figure" @update:model-value="setNoiseFigure" />
             </el-form-item>
           </template>
+        </div>
+        <details class="scenario-advanced" data-testid="link-gain-advanced" :open="['antennaGainCorrectionDb', 'antiJammingGainDb', 'spatialIsolationDb'].some(key => fieldError(key))">
+          <summary>增益修正与抗干扰参数</summary>
+          <div class="link-editor-grid">
           <el-form-item label="天线增益修正值（dB）" :error="fieldError('antennaGainCorrectionDb')"><el-input-number v-model="editor.antennaGainCorrectionDb" controls-position="right" data-testid="link-gain-correction" /></el-form-item>
           <el-form-item label="波形抗干扰增益（dB）" :error="fieldError('antiJammingGainDb')"><el-input-number v-model="editor.antiJammingGainDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-anti-jamming-gain" /></el-form-item>
           <el-form-item label="空域隔离量（dB）" :error="fieldError('spatialIsolationDb')"><el-input-number v-model="editor.spatialIsolationDb" :min="validate ? undefined : 0" controls-position="right" data-testid="link-spatial-isolation" /></el-form-item>
-        </div>
+          </div>
+        </details>
       </section>
 
-      <section v-if="laser" class="link-editor-section" aria-labelledby="link-laser-title">
-        <h4 id="link-laser-title" class="link-editor-section__title">光学配置</h4>
+      <details v-if="laser" class="link-editor-section scenario-advanced" data-testid="link-laser-advanced"
+        :open="validationIssues.some(issue => issue.fieldPath.startsWith('laser.') || ['eirpDbw', 'gtDbk', 'noiseFigureDb'].includes(issue.fieldPath))">
+        <summary>激光专业参数与可选扩展</summary>
         <div class="link-editor-grid">
-          <el-form-item required label="发射光学口径（m）" :error="fieldError('laser.txApertureDiameterM')">
+          <el-form-item v-if="fieldError('eirpDbw')" label="历史 EIRP（dBW，待修正）" :error="fieldError('eirpDbw')">
+            <el-input-number :model-value="editor.eirpDbw" :step="0.1" controls-position="right" data-testid="laser-eirp" @update:model-value="setLaserNumberField('eirpDbw', $event)" />
+          </el-form-item>
+          <el-form-item v-if="fieldError('gtDbk')" label="历史 G/T（dB/K，待修正）" :error="fieldError('gtDbk')">
+            <el-input-number :model-value="editor.gtDbk" :step="0.1" controls-position="right" data-testid="laser-gt" @update:model-value="setLaserNumberField('gtDbk', $event)" />
+          </el-form-item>
+          <el-form-item label="噪声系数（dB）" :error="fieldError('noiseFigureDb')">
+            <el-input-number :model-value="editor.noiseFigureDb" :min="validate ? undefined : 0" :step="0.1" controls-position="right" data-testid="laser-noise" @update:model-value="setLaserNumberField('noiseFigureDb', $event)" />
+          </el-form-item>
+          <el-form-item label="发射光学口径（m）" :error="fieldError('laser.txApertureDiameterM')">
             <el-input-number :model-value="editor.laser?.txApertureDiameterM" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
               data-testid="laser-tx-aperture" @update:model-value="setLaserNumber('txApertureDiameterM', $event)" />
           </el-form-item>
-          <el-form-item required label="接收光学口径（m）" :error="fieldError('laser.rxApertureDiameterM')">
+          <el-form-item label="接收光学口径（m）" :error="fieldError('laser.rxApertureDiameterM')">
             <el-input-number :model-value="editor.laser?.rxApertureDiameterM" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
               data-testid="laser-rx-aperture" @update:model-value="setLaserNumber('rxApertureDiameterM', $event)" />
           </el-form-item>
-          <el-form-item required label="激光脉宽（ns）" :error="fieldError('laser.pulseWidthS')">
+          <el-form-item label="激光脉宽（ns）" :error="fieldError('laser.pulseWidthS')">
             <el-input-number :model-value="editor.laser?.pulseWidthS === undefined ? undefined : editor.laser.pulseWidthS * 1e9" :min="validate ? undefined : Number.MIN_VALUE" controls-position="right"
               data-testid="laser-pulse-width" @update:model-value="setLaserPulseWidthNs" />
-            <small class="link-editor-hint">界面按 ns 输入，保存为 s。</small>
           </el-form-item>
-          <el-form-item required label="光调制方式" :error="fieldError('laser.modulation')">
-            <el-select :model-value="editor.laser?.modulation" placeholder="请选择 OOK" style="width: 100%" data-testid="laser-modulation" @update:model-value="setLaserModulation">
+          <el-form-item label="光调制方式" :error="fieldError('laser.modulation')">
+            <el-select :model-value="editor.laser?.modulation" placeholder="可选：OOK" style="width: 100%" data-testid="laser-modulation" @update:model-value="setLaserModulation">
               <el-option :label="LASER_LINK_MODULATION" :value="LASER_LINK_MODULATION" />
             </el-select>
           </el-form-item>
-          <p class="link-editor-field--wide link-editor-hint">激光链路以光学口径生成收发模型；射频极化、噪声系数、调制和天线增益不适用于此配置。</p>
         </div>
-      </section>
+      </details>
 
       <section class="link-editor-section" aria-labelledby="link-quality-title">
         <h4 id="link-quality-title" class="link-editor-section__title">质量与方向</h4>
-        <p class="link-editor-hint">调制方式、信道编码类型、BER 阈值：新模板无对应参数，不写入脚本；通信方向决定数传上行 / 下行端口。</p>
         <div class="link-editor-grid">
           <el-form-item v-if="!laser" required label="调制方式" :error="fieldError('modulation')">
             <el-select v-model="editor.modulation" style="width: 100%" data-testid="link-modulation">

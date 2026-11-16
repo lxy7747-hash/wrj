@@ -12,6 +12,7 @@ import type {
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { isSimulationRun, useSimulationStore } from '../../src/stores/simulation'
+import { fileReceptionScenarioId } from '../../src/features/situation/file-reception'
 
 const OPERATOR: Principal = {
   userId: 'USR-OPERATOR',
@@ -119,6 +120,20 @@ describe('P3-1 仿真 Store', () => {
   function authorizeOperator(): void {
     useAuthStore().$patch({ principal: OPERATOR, role: OPERATOR.role, permissions: [...OPERATOR.permissions] })
   }
+
+  it.each([undefined, 'SCN-001'])('文件播放显式传递可选参考场景 %s，不改变文件归属', async referenceScenarioId => {
+    authorizeOperator()
+    const store = useSimulationStore()
+    const fileSource = { eventSha256: 'a'.repeat(64), positionSha256: 'b'.repeat(64) }
+    const fileRun = { ...run('IDLE', true), scenarioId: fileReceptionScenarioId(fileSource), fileSource, executionSource: 'REMOTE_WS' as const }
+    const bodies: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return successResponse(bodies.length === 1 ? fileRun : { ...fileRun, uiStatus: 'RUNNING', canonical: { ...fileRun.canonical, status: 'RUNNING' } })
+    }))
+    expect(await store.start(fileSource, referenceScenarioId)).toBe(true)
+    expect(bodies[0]).toEqual({ taskId: 'TASK-001', scenarioId: fileRun.scenarioId, fileSource, ...(referenceScenarioId ? { referenceScenarioId } : {}) })
+  })
 
   it('接受发送状态扩展但拒绝非法组合，不接受冒充执行确认的字段', () => {
     const current = run('RUNNING')

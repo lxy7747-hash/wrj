@@ -93,7 +93,7 @@ const confirmationStateLabels: Record<ConfirmationContext['state'], string> = {
       <el-descriptions-item label="版本">{{ selectedTemplate.version }}</el-descriptions-item>
       <el-descriptions-item label="历史引用">{{ selectedTemplate.referenceCount }}</el-descriptions-item>
       <el-descriptions-item label="场景名称">{{ selectedTemplate.config.scenario.name }}</el-descriptions-item>
-      <el-descriptions-item label="场景实体">{{ selectedTemplate.config.platforms.length }}</el-descriptions-item>
+      <el-descriptions-item label="节点">{{ selectedTemplate.config.platforms.length }}</el-descriptions-item>
       <el-descriptions-item label="链路 / 干扰">{{ selectedTemplate.config.links.length }} / {{ selectedTemplate.config.jammers.length }}</el-descriptions-item>
     </el-descriptions>
 

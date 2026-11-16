@@ -15,6 +15,8 @@ import { useAuthStore } from '../../src/stores/auth'
 import { useReplayStore } from '../../src/stores/replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import { ENGINE_RESULT, ENGINE_RESULT_ID, engineReplayAt } from '../fixtures/engine-frame/replay'
+import detected from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
+import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR',
@@ -38,6 +40,30 @@ async function mountPage(component: typeof ReplaysPage, path: string) {
 }
 
 describe('P6 历史回放页面', () => {
+  it('历史干扰与探测随游标显示，回退到空帧时不残留后续设备状态', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (!url.includes('/engine-replay?')) return success(url.endsWith('/mission-results') ? [ENGINE_RESULT.record] : ENGINE_RESULT)
+      const time = Number(new URL(url).searchParams.get('time')), history = engineReplayAt(time)
+      if (time >= 10) history.engineFrame!.jammers = adaptEngineFrameSnapshot(detected).data!.jammers
+      return success(history)
+    }))
+    const { wrapper } = await mountPage(ReplaysPage, `/replays?resultId=${ENGINE_RESULT_ID}`)
+    try {
+      const store = useReplayStore()
+      await store.seek(10); await flushPromises()
+      const tab = wrapper.findAll('[role="tab"]').find(tab => tab.text() === '干扰与探测')!
+      expect(tab).toBeDefined(); await tab.trigger('click')
+      const panel = wrapper.get('[data-testid="engine-jammers"]')
+      expect(panel.isVisible()).toBe(true)
+      for (const value of ['历史引擎数据 · 帧 10', '200 W', '18.52 km', '已探测']) expect(panel.text()).toContain(value)
+      await store.seek(5); await flushPromises()
+      expect(panel.text()).toContain('帧 5')
+      expect(panel.text()).toContain('暂无数据')
+      expect(panel.findAll('article')).toHaveLength(0)
+      await store.seek(0); await flushPromises()
+      expect(wrapper.find('[data-testid="engine-jammers"]').exists()).toBe(false)
+    } finally { wrapper.unmount() }
+  })
   it('选择历史运行后展示质量、选路和告警，回退不保留未来记录', async () => {
     const fetchSpy = vi.fn(async (url: string) => success(url.includes('/engine-replay?') ? engineReplayAt(Number(new URL(url).searchParams.get('time')))
       : url.endsWith('/mission-results') ? [ENGINE_RESULT.record] : ENGINE_RESULT))
@@ -47,11 +73,11 @@ describe('P6 历史回放页面', () => {
       const store = useReplayStore()
       expect(wrapper.get('[data-testid="replay-engine-history"]').text()).toContain('当前时刻尚未收到引擎帧')
       await store.seek(10); await flushPromises()
-      expect(wrapper.get('[data-testid="engine-quality"]').text()).toContain('历史引擎数据 · 帧 10')
+      expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:00:10 · 历史回放')
       expect(wrapper.get('[data-testid="engine-decisions"]').text()).toContain('历史链路告警')
       expect(wrapper.getComponent({ name: 'OfflineSituationMap' }).props('fileTime')).toBe(10)
       await store.seek(5); await flushPromises()
-      expect(wrapper.get('[data-testid="engine-quality"]').text()).toContain('帧 5')
+      expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:00:05 · 历史回放')
       expect(wrapper.get('[data-testid="engine-decisions"]').text()).not.toContain('历史链路告警')
       await store.seek(0); await flushPromises()
       expect(wrapper.find('[data-testid="engine-quality"]').exists()).toBe(false)

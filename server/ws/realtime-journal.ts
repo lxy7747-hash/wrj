@@ -13,7 +13,7 @@ export interface RealtimeJournalStore {
 }
 
 interface State { latest?: number; boundary?: number; hot: JournalEvent[] }
-const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event']
+export const REALTIME_TOPICS: readonly WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update']
 
 /** Bounded pure-memory fallback for Mock servers; it has no filesystem capability. */
 export class MemoryRealtimeJournal implements RealtimeJournalStore {
@@ -33,7 +33,7 @@ export class MemoryRealtimeJournal implements RealtimeJournalStore {
     if (previous === runId) return false
     this.runs.set(taskId, runId)
     if (previous === undefined) return false
-    for (const topic of TOPICS) { const state = this.state(taskId, topic); state.boundary = (state.latest ?? 0) + 1; state.hot = [] }
+    for (const topic of REALTIME_TOPICS) { const state = this.state(taskId, topic); state.boundary = (state.latest ?? 0) + 1; state.hot = [] }
     return true
   }
   canResume(taskId: TaskId, topic: WsTopic, cursor: number, resumesAnyTopic: boolean): JournalRead {

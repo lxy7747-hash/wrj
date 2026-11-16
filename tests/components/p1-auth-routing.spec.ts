@@ -30,6 +30,8 @@ import type {
 import { createAppRouter, requireAdmin, requirePrincipal, routeRecords } from '../../src/router'
 import { resolveMockOrigin, useAuthStore } from '../../src/stores/auth'
 import { useAdminStore } from '../../src/stores/admin'
+import { useScenarioStore } from '../../src/stores/scenario'
+import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
@@ -102,6 +104,10 @@ async function mountAt(
   setActivePinia(pinia)
   const auth = useAuthStore(pinia)
   if (path === '/admin') {
+    const fetch = globalThis.fetch
+    vi.stubGlobal('fetch', (input: RequestInfo | URL, init?: RequestInit) => String(input).endsWith('/admin/access-control')
+      ? Promise.resolve(response(success({ version: 1, profiles: [], assignments: [] })))
+      : fetch(input, init))
     auth.$patch({ principal: ADMIN, role: 'ADMIN', permissions: [...ADMIN.permissions] })
   } else if (path === '/interactions') {
     auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
@@ -113,6 +119,21 @@ async function mountAt(
   const router = createAppRouter(createMemoryHistory(), pinia)
   await router.push(path)
   const wrapper = mount(component, { global: { plugins: [pinia, router, ElementPlus] } })
+  return { auth, router, wrapper }
+}
+
+/** 交互页上下文分支：不预置帧，仅保留既有运行，迫使页面自行建立场景、帧与事件请求。 */
+async function mountInteractionsWithoutFrame(capabilityState: 'EMPTY' | 'LOADING' = 'EMPTY') {
+  const pinia = createPinia()
+  setActivePinia(pinia)
+  const auth = useAuthStore(pinia)
+  auth.$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+  // 已有运行可让页面跳过恢复运行投影，只加载帧与事件。
+  useSimulationStore(pinia).$patch({ run: { runId: 'RUN-001' } as never })
+  useTelemetryStore(pinia).$patch({ frame: null, capabilityState })
+  const router = createAppRouter(createMemoryHistory(), pinia)
+  await router.push('/interactions')
+  const wrapper = mount(InteractionsPage, { global: { plugins: [pinia, router, ElementPlus] } })
   return { auth, router, wrapper }
 }
 
@@ -462,14 +483,14 @@ describe('P1 authentication and routing', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
     const feedback = wrapper.get('[data-testid="auth-feedback"]')
     expect(feedback.get('.el-alert__title').text()).toBe('登录失败')
-    expect(feedback.get('.el-alert__description').text()).toBe('用户名或密码错误，请重新输入。')
+    expect(feedback.get('.el-alert__description').text()).toBe('登录账号或密码错误，请重新输入。')
     expect(feedback.text()).not.toContain('INVALID_CREDENTIALS')
     expect(router.currentRoute.value.path).toBe('/login')
     expect(wrapper.text()).not.toMatch(/夹具|演示|P0|P1|Mock|页面外壳|shell/i)
   })
 
   it.each([
-    ['INVALID_CREDENTIALS', '内部凭据校验细节', '用户名或密码错误，请重新输入。'],
+    ['INVALID_CREDENTIALS', '内部凭据校验细节', '登录账号或密码错误，请重新输入。'],
     ['ACCOUNT_LOCKED', '内部账号锁定细节', '账号已锁定，请联系管理员。'],
   ] as const)('shows stable %s code with safe Chinese feedback and no server details', async (code, message, description) => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(failure(code, message), false)))
@@ -546,10 +567,10 @@ describe('P1 authentication and routing', () => {
   })
 
   it.each([
-    ['启用', 'ENABLE', 'DISABLED', 'OPERATOR', 'ACTIVE', '用户 operator 已启用。'],
-    ['禁用', 'DISABLE', 'ACTIVE', 'OPERATOR', 'DISABLED', '用户 operator 已禁用。'],
-    ['切换角色', 'UPDATE', 'ACTIVE', 'ADMIN', 'ACTIVE', '用户 operator 已切换为管理员（ADMIN）。'],
-  ] as const)('shows successful %s feedback through the AdminPage adapter', async (label, operation, status, nextRole, nextStatus, message) => {
+    ['启用', 'DISABLED', 'OPERATOR', 'ACTIVE'],
+    ['禁用', 'ACTIVE', 'OPERATOR', 'DISABLED'],
+    ['修改角色', 'ACTIVE', 'ADMIN', 'ACTIVE'],
+  ] as const)('shows successful %s feedback through the edit dialog', async (_label, status, nextRole, nextStatus) => {
     const notify = vi.spyOn(ElMessage, 'success').mockReturnValue({ close: vi.fn() })
     const disabled: User = {
       userId: 'USR-OPERATOR',
@@ -557,7 +578,7 @@ describe('P1 authentication and routing', () => {
       role: 'OPERATOR',
       status,
     }
-    const enabled: User = { ...disabled, role: nextRole, status: nextStatus }
+    const enabled: User = { ...disabled, role: nextRole, status: nextStatus, displayName: disabled.username }
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(response(success([disabled])))
       .mockResolvedValueOnce(response(success(enabled)))
@@ -567,18 +588,23 @@ describe('P1 authentication and routing', () => {
     await flushPromises()
     expect(wrapper.text()).toContain(status)
 
-    const enableButton = wrapper.findAll('button').find((button) => button.text().trim() === label)
-    expect(enableButton).toBeDefined()
-    await enableButton!.trigger('click')
+    await wrapper.get('[data-testid="edit-user-USR-OPERATOR"]').trigger('click')
+    await flushPromises()
+    wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === 'edit-role')!.vm.$emit('update:modelValue', nextRole)
+    wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === 'edit-status')!.vm.$emit('update:modelValue', nextStatus)
+    await flushPromises()
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(useAdminStore().users).toEqual([disabled])
+    await wrapper.get('[data-testid="edit-user-dialog"] form').trigger('submit')
     await flushPromises()
     const [mutationUrl, mutationInit] = fetchSpy.mock.calls.at(-1) as [string, RequestInit]
     const mutation = JSON.parse(String(mutationInit.body)) as { operation: string; user: User }
     expect(mutationUrl).toBe(`http://127.0.0.1:4173/api/v1/admin/users/${mutation.user.userId}`)
     expect(mutationInit.method).toBe('PUT')
-    expect(mutation.operation).toBe(operation)
+    expect(mutation.operation).toBe('UPDATE')
     expect(mutation.user).toEqual(enabled)
     expect(useAdminStore().users).toEqual([enabled])
-    expect(notify).toHaveBeenCalledExactlyOnceWith(message)
+    expect(notify).toHaveBeenCalledExactlyOnceWith('用户 operator 已更新。')
     expect(wrapper.find('.result-section').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -587,6 +613,7 @@ describe('P1 authentication and routing', () => {
     const created: User = {
       userId: 'USR-reviewer',
       username: 'reviewer',
+      displayName: '测试审阅员',
       role: 'OPERATOR',
       status: 'ACTIVE',
     }
@@ -604,6 +631,7 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.get('[data-testid="role-permission-map"]').text()).toContain('BUSINESS_READ')
     await wrapper.get('[data-testid="open-create-user"]').trigger('click')
     await flushPromises()
+    await wrapper.get('input[data-testid="create-display-name"]').setValue('测试审阅员')
     await wrapper.get('input[data-testid="create-username"]').setValue('reviewer')
     expect(wrapper.get('input[data-testid="create-password"]').attributes('placeholder')).toBe('6–32 位')
     expect(wrapper.get('input[data-testid="create-password"]').attributes('maxlength')).toBe('32')
@@ -656,7 +684,7 @@ describe('P1 authentication and routing', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('VALIDATION_FAILED')
     expect(wrapper.text()).toContain('用户名')
-    expect(wrapper.get('[data-testid="create-user-error"]').text()).toContain('请输入用户名')
+    expect(wrapper.get('[data-testid="create-user-error"]').text()).toContain('请输入登录账号')
     expect(wrapper.findComponent({ name: 'ElDialog' }).props('modelValue')).toBe(true)
     await wrapper.get('input[data-testid="create-username"]').setValue('cancelled-user')
     await wrapper.get('input[data-testid="create-password"]').setValue('cancelled-password')
@@ -696,8 +724,7 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.get('[data-testid="user-role-panel"]').text()).toContain('operator')
   })
 
-  it.each(['切换角色', '禁用'])('shows %s rejection feedback after a stale multi-admin listing and refresh failures', async (label) => {
-    const notify = vi.spyOn(ElMessage, 'error').mockReturnValue({ close: vi.fn() })
+  it.each([['edit-role', 'OPERATOR'], ['edit-status', 'DISABLED']])('shows %s rejection feedback after a stale multi-admin listing and refresh failures', async (field, value) => {
     const other: User = { userId: 'USR-SECOND', username: 'second-admin', role: 'ADMIN', status: 'ACTIVE' }
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(response(success([...USERS, other])))
@@ -709,13 +736,17 @@ describe('P1 authentication and routing', () => {
     await flushPromises()
 
     const row = wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row').find(item => item.text().includes(other.username))!
-    const roleButton = row.findAll('button').find((button) => button.text().trim() === label)
+    const roleButton = row.findAll('button').find((button) => button.text().trim() === '修改')
     expect(roleButton!.attributes('disabled')).toBeUndefined()
     await roleButton!.trigger('click')
     await flushPromises()
+    wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === field)!.vm.$emit('update:modelValue', value)
+    await flushPromises()
+    await wrapper.get('[data-testid="edit-user-dialog"] form').trigger('submit')
+    await flushPromises()
     expect(wrapper.text()).toContain('LAST_ADMIN_GUARD')
     expect(wrapper.text()).toContain('不能变更最后一个管理员')
-    expect(notify).toHaveBeenCalledExactlyOnceWith('不能变更最后一个管理员')
+    expect(wrapper.get('[data-testid="edit-user-error"]').text()).toBe('不能变更最后一个管理员')
     expect(useAdminStore().users).toEqual([...USERS, other])
     await useAdminStore().refreshUsers()
     await flushPromises()
@@ -733,18 +764,24 @@ describe('P1 authentication and routing', () => {
     await flushPromises()
     const rows = wrapper.get('[data-testid="user-role-panel"]').findAll('.el-table__row')
     const current = rows.find(row => row.findAll('td')[0]?.text() === 'admin')!
-    for (const label of ['切换角色', '禁用', '删除']) {
-      const button = current.findAll('button').find(item => item.text() === label)!
-      expect(button.attributes('disabled')).toBeDefined()
-      expect(button.attributes('title')).toContain('当前登录')
-      await button.trigger('click')
+    const deleteButton = current.findAll('button').find(item => item.text() === '删除')!
+    expect(deleteButton.attributes('disabled')).toBeDefined()
+    expect(deleteButton.attributes('title')).toContain('当前登录')
+    await deleteButton.trigger('click')
+    await current.get('[data-testid="edit-user-USR-ADMIN"]').trigger('click')
+    await flushPromises()
+    for (const id of ['edit-role', 'edit-status']) {
+      expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === id)!.props('disabled')).toBe(true)
     }
     if (scenario === 'with-disabled-admin') {
       const disabled = rows.find(row => row.text().includes('second-admin'))!
-      const demote = disabled.findAll('button').find(item => item.text() === '切换角色')!
-      expect(demote.attributes('disabled')).toBeDefined()
-      expect(demote.attributes('title')).toContain('至少一个启用的管理员')
-      expect(disabled.findAll('button').find(item => item.text() === '启用')!.attributes('disabled')).toBeUndefined()
+      await disabled.get('[data-testid="edit-user-USR-SECOND"]').trigger('click')
+      await flushPromises()
+      expect(wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === 'edit-role')!.props('disabled')).toBe(true)
+      expect(wrapper.get('[data-testid="edit-user-dialog"]').text()).toContain('至少一个启用的管理员')
+      const status = wrapper.findAllComponents({ name: 'ElSelect' }).find(select => select.attributes('data-testid') === 'edit-status')!
+      expect(status.props('disabled')).toBe(false)
+      expect(status.findAllComponents({ name: 'ElOption' }).filter(option => !option.props('disabled')).map(option => option.props('value'))).toEqual(['ACTIVE'])
     }
     expect(fetchSpy).toHaveBeenCalledTimes(1)
     wrapper.unmount()
@@ -824,9 +861,31 @@ describe('P1 authentication and routing', () => {
   })
 
   it('keeps fixed calculation evidence on the authoritative interactions route', async () => {
-    const fetchSpy = vi.fn()
+    const fetchSpy = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/scenarios/SCN-001')) {
+        return Promise.resolve(response(success({
+          config: structuredClone(fixtureSource.scenario),
+          uiExtensions: {
+            jammers: fixtureSource.scenario.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true })),
+            sensors: fixtureSource.scenario.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM' as const, direction: 'OMNI' as const, probability: 0.9, enabled: true })),
+          },
+          revision: 1,
+          officialLibraryChanged: false,
+          locked: false,
+        })))
+      }
+      if (url.endsWith('/api/v1/simulations/RUN-001/frames/F-00042')) {
+        return Promise.resolve(response(success(structuredClone(fixtureSource.frame))))
+      }
+      if (url.endsWith('/api/v1/simulations/RUN-001/events')) {
+        return Promise.resolve(response(success(structuredClone(fixtureSource.events))))
+      }
+      return Promise.reject(new Error(`unexpected request ${url}`))
+    })
     vi.stubGlobal('fetch', fetchSpy)
-    const { wrapper } = await mountAt(InteractionsPage, '/interactions')
+    const { wrapper } = await mountInteractionsWithoutFrame()
+    await flushPromises()
 
     expect(wrapper.text()).toContain('感知、干扰与选路')
     expect(wrapper.text()).toContain('ESM 传感器与侦测结果')
@@ -837,10 +896,89 @@ describe('P1 authentication and routing', () => {
     expect(wrapper.get('[data-testid="composite-loss-example"]')).toBeTruthy()
     expect(wrapper.get('[data-testid="snr-ber-example"]')).toBeTruthy()
     expect(wrapper.text()).not.toMatch(/P0|P1|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
+    // 有效场景上下文下页面按既有运行加载场景、帧与事件，不把三请求折叠为一次。
+    const urls = fetchSpy.mock.calls.map(([url]) => String(url))
+    // 设备运行期参数读取属合理业务行为：场景仅 1 台干扰机 JAM-WB-01-TX，loadFrame 成功预取 1 次，
+    // JammerSyncPanel 与 RfJammerPanel 各自在挂载和帧上下文变化时 force 读取 2 次，共 5 次同一 URL；无空 jammerId。
+    const jammerParameters = 'http://127.0.0.1:4173/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters'
+    expect(urls.filter(url => url === jammerParameters)).toHaveLength(5)
+    expect(urls.filter(url => url !== jammerParameters).sort()).toEqual([
+      'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
+      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/events',
+      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/frames/F-00042',
+    ])
+    expect(urls).toHaveLength(8)
+    expect(useScenarioStore().draft?.config.scenario.id).toBe('SCN-001')
+  })
+
+  it('does not request frames or events when the scenario context is missing', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: vi.fn().mockResolvedValue(apiFailure('NOT_FOUND', '未找到指定场景。')),
+    } as unknown as Response)
+    vi.stubGlobal('fetch', fetchSpy)
+    // 预置加载中状态可避免固定算例子组件自行兜底请求，只观察页面上下文建立行为。
+    const { wrapper } = await mountInteractionsWithoutFrame('LOADING')
+    await flushPromises()
+
+    expect(useScenarioStore().draft).toBeNull()
+    expect(useScenarioStore().panelState).toBe('EMPTY')
     expect(fetchSpy.mock.calls.map(([url]) => String(url))).toEqual([
       'http://127.0.0.1:4173/api/v1/scenarios/SCN-001',
-      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/frames/F-00042',
-      'http://127.0.0.1:4173/api/v1/simulations/RUN-001/events',
     ])
+    // 操作员不具备重置权限，且缺少场景上下文时不得请求帧与事件。
+    expect(wrapper.get('[data-testid="reset-all"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('感知、干扰与选路')
+    expect(wrapper.text()).not.toMatch(/P0|P1|Mock|夹具|demo|gallery|passwordFixture|T-JK/i)
+  })
+
+  it('preserves an existing user draft instead of loading the default scenario fixture', async () => {
+    const userDraft = {
+      config: { ...structuredClone(fixtureSource.scenario), scenario: { ...structuredClone(fixtureSource.scenario.scenario), id: 'SCN-USER', name: '用户自定义场景' } },
+      uiExtensions: {
+        jammers: fixtureSource.scenario.jammers.map(jammer => ({ jammerId: jammer.id, direction: 0, enabled: true })),
+        sensors: fixtureSource.scenario.sensors.map(sensor => ({ sensorId: sensor.id, type: 'ESM' as const, direction: 'OMNI' as const, probability: 0.9, enabled: true })),
+      },
+      revision: 7,
+      officialLibraryChanged: false,
+      locked: false,
+    }
+    const fetchSpy = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/api/v1/simulations/RUN-001/frames/F-00042')) return Promise.resolve(response(success(structuredClone(fixtureSource.frame))))
+      if (url.endsWith('/api/v1/simulations/RUN-001/events')) return Promise.resolve(response(success(structuredClone(fixtureSource.events))))
+      return Promise.reject(new Error(`unexpected request ${url}`))
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: OPERATOR, role: 'OPERATOR', permissions: [...OPERATOR.permissions] })
+    useSimulationStore(pinia).$patch({ run: { runId: 'RUN-001' } as never })
+    // 帧为空但能力已 SUCCESS：让页面自行加载帧，同时避免固定算例子组件重复兜底请求。
+    useTelemetryStore(pinia).$patch({ frame: null, capabilityState: 'SUCCESS' })
+    useScenarioStore(pinia).$patch({ draft: userDraft as never, currentScenarioId: 'SCN-USER', panelState: 'SUCCESS' })
+    const router = createAppRouter(createMemoryHistory(), pinia)
+    await router.push('/interactions')
+    const wrapper = mount(InteractionsPage, { global: { plugins: [pinia, router, ElementPlus] } })
+    await flushPromises()
+    try {
+      // 用户草稿身份与内容保持不变，未被默认 SCN-001 夹具替换
+      const draft = useScenarioStore().draft
+      expect(draft?.config.scenario.id).toBe('SCN-USER')
+      expect(draft?.config.scenario.name).toBe('用户自定义场景')
+      expect(draft?.revision).toBe(7)
+      // 不请求默认场景；只在既有运行上下文下加载帧与事件
+      const urls = fetchSpy.mock.calls.map(([url]) => String(url))
+      // 用户草稿仍未被默认场景替换；设备运行期参数读取为合理新增（1 台干扰机：预取 1 + 两个面板各 2 次 force 读取）。
+      const jammerParameters = 'http://127.0.0.1:4173/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters'
+      expect(urls.filter(url => url === jammerParameters)).toHaveLength(5)
+      expect(urls.filter(url => url !== jammerParameters).sort()).toEqual([
+        'http://127.0.0.1:4173/api/v1/simulations/RUN-001/events',
+        'http://127.0.0.1:4173/api/v1/simulations/RUN-001/frames/F-00042',
+      ])
+      expect(urls.some(url => url.includes('/api/v1/scenarios/'))).toBe(false)
+      expect(wrapper.text()).toContain('感知、干扰与选路')
+    } finally { wrapper.unmount() }
   })
 })

@@ -13,8 +13,11 @@ const { createMockServer } = await tsImport('../../server/app.ts', import.meta.u
 const { LocalMissionResults } = await tsImport('../../server/local/mission-results.ts', import.meta.url)
 const { ScenarioProjection } = await tsImport('../../server/scenarios/projection.ts', import.meta.url)
 const { exportLocalReport } = await tsImport('../../server/local/report-file.ts', import.meta.url)
+const { readLocalReplay } = await tsImport('../../server/local/afsim-replay-reader.ts', import.meta.url)
+const { fileReceptionScenarioId, playbackFileSource } = await tsImport('../../src/features/situation/file-reception.ts', import.meta.url)
+const { snapshotMissionResultParameters } = await tsImport('../../src/features/results/mission-result.ts', import.meta.url)
 
-test('报告统一筛选经真实HTTP刷新全部统计，HTML/PDF下载沿用范围并包含图表', async ({ page }, testInfo) => {
+for (const reference of [false, true]) test(`报告统一筛选经真实HTTP刷新统计，HTML/PDF下载沿用范围；项目参考快照=${reference}`, async ({ page }, testInfo) => {
   const root = await mkdtemp(join(tmpdir(), 'wrj-report-filter-browser-'))
   const entry = join(root, 'entry'), output = join(entry, 'data')
   await mkdir(output, { recursive: true })
@@ -24,7 +27,13 @@ test('报告统一筛选经真实HTTP刷新全部统计，HTML/PDF下载沿用�
   await writeFile(join(output, 'scenario_events.csv'), REPORT_EVENT_CSV + '\n')
   await writeFile(join(output, 'position.csv'), POSITION_CSV)
   const results = new LocalMissionResults(join(root, 'results'))
-  await results.capture(entry, draft, '2026-10-27T00:00:00Z', '2026-10-27T00:00:10Z')
+  if (reference) {
+    draft.config.scenario.phases = [{ id: 'PH-1', name: '前段', startTimeS: 0, endTimeS: 5 }, { id: 'PH-2', name: '后段', startTimeS: 5, endTimeS: 10 }]
+    const fileSource = playbackFileSource(await readLocalReplay(join(output, 'scenario_events.csv'), join(output, 'position.csv')))
+    await results.captureFileReception(join(output, 'scenario_events.csv'), join(output, 'position.csv'), {
+      runId: 'RUN-REFERENCE', taskId: 'TASK-001', scenarioId: fileReceptionScenarioId(fileSource), fileSource, startedAt: '2026-10-27T00:00:00Z',
+    }, '2026-10-27T00:00:10Z', 10, { ...snapshotMissionResultParameters(draft), source: 'PROJECT_REFERENCE' })
+  } else await results.capture(entry, draft, '2026-10-27T00:00:00Z', '2026-10-27T00:00:10Z')
   const record = (await results.list())[0]!
   const server = createMockServer({ port: 0, missionResults: results,
     exportLocalReport: (...args: [Report, 'HTML' | 'PDF' | 'CSV', string, MissionResultRecord?, MissionResultParameterComparison[]?, LocalReportFilter?]) => exportLocalReport(join(root, 'exports'), ...args) })
@@ -45,7 +54,22 @@ test('报告统一筛选经真实HTTP刷新全部统计，HTML/PDF下载沿用�
     await page.getByTestId('login-submit').click()
     await page.waitForURL('**/situation')
     await page.goto(`/reports?resultId=${record.resultId}`)
+    await expect(page.getByTestId('report-metric-cards')).toBeVisible()
+    await expect(page.getByTestId('report-metric-cards').locator('h4')).toHaveCount(6)
+    await expect(page.getByRole('tab', { name: '节点与位置', exact: true })).toBeHidden()
+    await expect(page.getByTestId('report-evidence-load')).toBeHidden()
+    await page.screenshot({ path: testInfo.outputPath('report-simplified.png'), fullPage: true })
     const form = page.getByRole('form', { name: '报告统一筛选' })
+    if (reference) {
+      await expect(page.getByTestId('report-reference-parameters')).toContainText('未确认引擎实际执行版本')
+      await page.getByRole('tab', { name: '已完成运行参数对比', exact: true }).click()
+      await expect(page.getByTestId('completed-result-parameter-comparison')).toContainText('SCN-001 · 项目参考配置')
+      await form.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '任务阶段', exact: true }) }).click()
+      await page.getByRole('option', { name: 'PH-1', exact: true }).click()
+      await form.getByRole('button', { name: '应用精确筛选' }).click()
+      await expect(page.getByTestId('report-applied-filter')).toContainText('阶段 PH-1')
+      await form.getByRole('button', { name: '重置', exact: true }).click()
+    }
     await expect(page.getByTestId('report-applied-filter')).toContainText('全部数据')
     await form.locator('.el-select').filter({ has: page.getByRole('combobox', { name: '节点', exact: true }) }).click()
     await page.getByRole('option', { name: 'A', exact: true }).click()
@@ -53,7 +77,9 @@ test('报告统一筛选经真实HTTP刷新全部统计，HTML/PDF下载沿用�
     await form.getByRole('spinbutton', { name: '结束时刻（秒）' }).fill('3')
     await form.getByRole('button', { name: '应用精确筛选' }).click()
     await expect(page.getByTestId('report-applied-filter')).toContainText('节点 A；1～3 秒')
-    await expect(page.locator('.el-table[aria-label="汇总"]').locator('tr').filter({ hasText: '有效位置记录' })).toContainText('2')
+    await page.getByRole('button', { name: '运行明细与来源校验' }).click()
+    await expect(page.locator('.el-table[aria-label="运行统计明细"]').locator('tr').filter({ hasText: '有效位置记录' })).toContainText('2')
+    await page.getByRole('button', { name: '运行明细与来源校验' }).click()
     await page.getByRole('tab', { name: '柱状图', exact: true }).click()
     await expect(page.getByText('筛选范围事件记录数')).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('filtered-report.png'), fullPage: true })
@@ -66,6 +92,7 @@ test('报告统一筛选经真实HTTP刷新全部统计，HTML/PDF下载沿用�
       await file.saveAs(testInfo.outputPath(`filtered.${format.toLowerCase()}`))
       const bytes = await readFile((await file.path())!)
       if (format === 'HTML') {
+        if (reference) expect(bytes.toString()).toContain('未确认引擎实际执行版本')
         expect(bytes.toString()).toContain('节点=A； 时间=1～3 秒')
         expect(bytes.toString().match(/<svg /g)).toHaveLength(2)
       } else expect(bytes.subarray(0, 5).toString()).toBe('%PDF-')

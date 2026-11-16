@@ -9,9 +9,10 @@ import EsmSensorPanel from '../../src/components/interactions/EsmSensorPanel.vue
 import RfJammerPanel from '../../src/components/interactions/RfJammerPanel.vue'
 import SnrBerExample from '../../src/components/interactions/SnrBerExample.vue'
 import InteractionsPage from '../../src/pages/interactions/interactions.vue'
-import type { DetectionEvent, Principal, ScenarioDraft, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
+import type { DetectionEvent, Principal, ScenarioDraft, Sensor, SensorUiExtension, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
 import { useScenarioStore } from '../../src/stores/scenario'
+import { useSimulationStore } from '../../src/stores/simulation'
 import { useTelemetryStore } from '../../src/stores/telemetry'
 
 const frame = fixtureSource.frame as unknown as TelemetryFrame
@@ -36,7 +37,7 @@ function successResponse(data: unknown): Response {
 }
 
 describe('感知、干扰与选路页面', () => {
-  it('保留控制、参数同步及诊断入口，页面不显示 Mock 或仅演示文案', async () => {
+  it('保留控制、参数同步及诊断入口，页面标注本地演示/校验来源且不显示 Mock 文案', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
@@ -51,10 +52,11 @@ describe('感知、干扰与选路页面', () => {
       expect(wrapper.find('[aria-label="界面状态示例"]').exists()).toBe(true)
       expect(wrapper.find('[data-testid="error-catalog"]').exists()).toBe(true)
       expect(wrapper.text()).toContain('频率边界')
-      expect(wrapper.text()).toContain('功率上限')
+      expect(wrapper.text()).toContain('默认功率')
       expect(wrapper.text()).toContain('时长上限')
       expect(wrapper.text()).not.toContain('Mock')
-      expect(wrapper.text()).not.toContain('仅演示')
+      expect(wrapper.get('[data-testid="interactions-source-note"]').text()).toContain('本地演示/校验投影')
+      expect(wrapper.text()).toContain('真实引擎执行')
       expect(wrapper.find('.rf-panel__boundary').exists()).toBe(false)
     } finally { wrapper.unmount() }
   })
@@ -93,8 +95,14 @@ describe('P4-1 ESM 传感器与侦测', () => {
 
     telemetryStore.$patch({ capabilityState: 'SUCCESS', events: [] })
     await nextTick()
+    // 没有任何侦测事件时不得写“未检出”，只有可信 detected=false 才是未检出。
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('暂无数据')
+    expect(wrapper.text()).toContain('当前帧暂无该传感器侦测数据')
+
+    telemetryStore.$patch({ capabilityState: 'SUCCESS', events: [{ ...structuredClone(events[0] as DetectionEvent), detected: false }] })
+    await nextTick()
     expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('未检出')
-    expect(wrapper.text()).toContain('当前帧未检出目标')
+    expect(wrapper.text()).toContain('未发现')
 
     telemetryStore.events = [{ ...structuredClone(events[0] as DetectionEvent), targetPlatformId: 'UNKNOWN' }]
     await nextTick()
@@ -168,9 +176,9 @@ describe('P4-2 RF 干扰机控制', () => {
       enabled: true,
       frequency: 2200,
       bandwidth: 40,
-      power: 72,
-      direction: 360,
-      duration: 120,
+      power: 1,
+      direction: 0,
+      duration: 1,
       executionStatus: 'SUCCESS',
       effectiveFrameId: 'F-00042',
       reason: '任务手动启扰',
@@ -179,15 +187,26 @@ describe('P4-2 RF 干扰机控制', () => {
     const wrapper = mount(RfJammerPanel, { global: { plugins: [ElementPlus] } })
     expect(wrapper.text()).toContain('2180–2220 MHz')
     expect(wrapper.text()).toContain('72 W')
+    // 历史回显 72 W 超出受控档位，仅提示；选择合法档位 +30 dBm（1 W）后再执行。
+    expect(wrapper.find('[data-testid="rf-power-legacy-warning"]').exists()).toBe(true)
+    const selects = wrapper.findAllComponents({ name: 'ElSelect' })
+    selects[1]?.vm.$emit('update:modelValue', 30)
+    await nextTick()
     const executeButton = wrapper.findAll('button').find((button) => button.text().includes('执行命令'))
     if (executeButton === undefined) throw new Error('未找到 RF 干扰控制执行按钮')
     await executeButton.trigger('click')
     await vi.waitFor(() => expect(telemetryStore.jammerControlState).toBe('SUCCESS'))
 
-    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('命令已发送')
     expect(wrapper.text()).toContain('任务手动启扰，生效帧 F-00042。')
-    expect(wrapper.text()).toContain('72 W / 2200 MHz / 120 s')
-    expect(JSON.parse(vi.mocked(fetch).mock.calls[0]![1]!.body as string)).toMatchObject({ direction: 0, duration: 1 })
+    expect(wrapper.text()).toContain('1 W / 2200 MHz / 1 s')
+    expect(wrapper.get('[data-testid="rf-result-source"]').text()).toContain('本地演示/校验投影')
+    expect(wrapper.get('[data-testid="rf-result-source"]').text()).toContain('真实设备执行未接入')
+    const sentBody = JSON.parse(
+      vi.mocked(fetch).mock.calls.find((call) => ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'POST')![1]!.body as string,
+    ) as { power: number; direction: number; duration: number }
+    expect(sentBody).toMatchObject({ direction: 0, duration: 1 })
+    expect(sentBody.power).toBeCloseTo(1, 10)
   })
 
   it('覆盖六态并优先显示加载错误且不展示其他设备的旧结果', async () => {
@@ -247,7 +266,8 @@ describe('P4-2 RF 干扰机控制', () => {
       },
     })
     await nextTick()
-    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('执行成功')
+    // F06：真实调度与回执未接入时不得显示“执行成功”，仅表示命令已发送（本地投影）。
+    expect(wrapper.get('[data-testid="rf-state"]').text()).toBe('命令已发送')
     const options = wrapper.findAllComponents({ name: 'ElOption' })
     expect(options[0]?.props('label')).toContain('宽带压制')
 
@@ -444,5 +464,129 @@ describe('P3-5 SNR/BER 固定算例', () => {
     const loadFrame = vi.spyOn(telemetryStore, 'loadFrame').mockResolvedValue(true)
     mount(SnrBerExample, { global: { plugins: [ElementPlus] } })
     expect(loadFrame).toHaveBeenCalledWith()
+  })
+})
+
+describe('P4-1b ESM 按当前场景选择传感器', () => {
+  const sensorA: Sensor = { id: 'ESM-01', platformId: 'STN-01', frequencyRange: { min: 2000, max: 5000 }, detectionRange: 150000 }
+  const sensorB: Sensor = { id: 'ESM-02', platformId: 'STN-01', frequencyRange: { min: 1000, max: 2000 }, detectionRange: 80000 }
+  const sensorC: Sensor = { id: 'ESM-03', platformId: 'STN-01', frequencyRange: { min: 300, max: 900 }, detectionRange: 60000 }
+  const extension = (sensorId: string, overrides: Partial<SensorUiExtension> = {}): SensorUiExtension => ({
+    sensorId, type: 'ESM', direction: 'OMNI', probability: 0.9, enabled: true, ...overrides,
+  })
+  /** 用当前场景草稿构造多传感器配置，不依赖后端。 */
+  function draftWith(sensorList: Sensor[], extensions: SensorUiExtension[], scenarioId: ScenarioDraft['config']['scenario']['id'] = 'SCN-001'): ScenarioDraft {
+    const config = structuredClone(fixtureSource.scenario) as ScenarioDraft['config']
+    config.scenario.id = scenarioId
+    config.sensors = sensorList
+    return { config, uiExtensions: { jammers: [], sensors: extensions }, revision: 4, officialLibraryChanged: false, locked: false }
+  }
+  const detectionFor = (sensorId: string, eventId: string, extra: Partial<DetectionEvent> = {}): DetectionEvent => ({
+    ...structuredClone(events[0] as DetectionEvent), sensorId, eventId, dedupeKey: eventId, ...extra,
+  })
+
+  beforeEach(() => { setActivePinia(createPinia()) })
+
+  it('默认选当前有效项，切换选择与场景变化后保留有效选择或选第一项', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    const both = [detectionFor('ESM-01', 'DET-ESM01'), detectionFor('ESM-02', 'DET-ESM02')]
+    scenarioStore.$patch({ draft: draftWith([sensorA, sensorB], [extension('ESM-01'), extension('ESM-02')]), panelState: 'SUCCESS' })
+    telemetryStore.$patch({ frame: structuredClone(frame), events: both, capabilityState: 'SUCCESS' })
+    const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+    const select = () => wrapper.findAllComponents({ name: 'ElSelect' })[0]!
+    expect(select().props('modelValue')).toBe('ESM-01')
+    expect(wrapper.text()).toContain('2000–5000 MHz')
+    select().vm.$emit('update:modelValue', 'ESM-02')
+    await nextTick()
+    expect(select().props('modelValue')).toBe('ESM-02')
+    expect(wrapper.text()).toContain('1000–2000 MHz')
+    scenarioStore.$patch({ draft: draftWith([sensorB, sensorC], [extension('ESM-02'), extension('ESM-03')]) })
+    await nextTick()
+    expect(select().props('modelValue')).toBe('ESM-02')
+    scenarioStore.$patch({ draft: draftWith([sensorC], [extension('ESM-03')]) })
+    await nextTick()
+    expect(select().props('modelValue')).toBe('ESM-03')
+    wrapper.unmount()
+  })
+
+  it('无传感器、停用、缺扩展分别给出明确空态', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    telemetryStore.$patch({ frame: structuredClone(frame), events: structuredClone(events), capabilityState: 'SUCCESS' })
+    const cases: Array<[ScenarioDraft, string, string]> = [
+      [draftWith([], []), '无传感器', '当前场景未配置 ESM 传感器'],
+      [draftWith([sensorA], [extension('ESM-01', { enabled: false })]), '已停用', '该 ESM 传感器已停用'],
+      [draftWith([sensorA], []), '缺扩展', '该 ESM 传感器缺少界面扩展配置'],
+    ]
+    for (const [draft, label, text] of cases) {
+      scenarioStore.$patch({ draft, panelState: 'SUCCESS' })
+      const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+      await nextTick()
+      expect(wrapper.get('[data-testid="esm-state"]').text()).toBe(label)
+      expect(wrapper.text()).toContain(text)
+      wrapper.unmount()
+    }
+  })
+
+  it('普通运行无固定帧显示未接入，reload 不回退默认编号也不触发 resetProjection', async () => {
+    const scenarioStore = useScenarioStore()
+    const simulationStore = useSimulationStore()
+    const telemetryStore = useTelemetryStore()
+    scenarioStore.$patch({ draft: draftWith([sensorA], [extension('ESM-01')], 'SCN-CUSTOM'), panelState: 'SUCCESS' })
+    simulationStore.run = { runId: 'RUN-REAL', taskId: 'TASK-001', scenarioId: 'SCN-CUSTOM', executionSource: 'REMOTE_WS' } as unknown as typeof simulationStore.run
+    telemetryStore.$patch({ frame: null, events: [], capabilityState: 'EMPTY' })
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const resetSpy = vi.spyOn(simulationStore, 'resetProjection')
+    const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+    await nextTick()
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('未接入')
+    expect(wrapper.text()).toContain('当前运行暂无固定 ESM 侦测数据（未接入真实 ESM 遥测）')
+    await wrapper.findAll('button').find((button) => button.text().includes('重新加载'))?.trigger('click')
+    await nextTick()
+    expect(fetchSpy).not.toHaveBeenCalled()
+    expect(resetSpy).not.toHaveBeenCalled()
+    wrapper.unmount()
+    vi.unstubAllGlobals()
+  })
+
+  it('切换传感器清空旧侦测结果，帧不一致报证据错误', async () => {
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    const both = [detectionFor('ESM-01', 'DET-ESM01'), detectionFor('ESM-02', 'DET-ESM02')]
+    scenarioStore.$patch({ draft: draftWith([sensorA, sensorB], [extension('ESM-01'), extension('ESM-02')]), panelState: 'SUCCESS' })
+    telemetryStore.$patch({ frame: structuredClone(frame), events: both, capabilityState: 'SUCCESS' })
+    const wrapper = mount(EsmSensorPanel, { global: { plugins: [ElementPlus] } })
+    expect(wrapper.text()).toContain('DET-ESM01')
+    wrapper.findAllComponents({ name: 'ElSelect' })[0]!.vm.$emit('update:modelValue', 'ESM-02')
+    await nextTick()
+    expect(wrapper.text()).toContain('DET-ESM02')
+    expect(wrapper.text()).not.toContain('DET-ESM01')
+    telemetryStore.$patch({ events: [detectionFor('ESM-02', 'DET-ESM02', { frameId: 'F-OTHER' })] })
+    await nextTick()
+    expect(wrapper.get('[data-testid="esm-state"]').text()).toBe('数据错误')
+    expect(wrapper.text()).toContain('侦测事件与当前帧不一致')
+    wrapper.unmount()
+  })
+
+  it('父页面挂载不覆盖当前草稿，也不加载 SCN-001', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const scenarioStore = useScenarioStore()
+    const telemetryStore = useTelemetryStore()
+    scenarioStore.$patch({ draft: draftWith([sensorA], [extension('ESM-01')], 'SCN-CUSTOM'), panelState: 'SUCCESS' })
+    telemetryStore.$patch({ frame: structuredClone(frame), events: structuredClone(events), capabilityState: 'SUCCESS' })
+    const loadSpy = vi.spyOn(scenarioStore, 'loadScenario')
+    const fetchSpy = vi.fn()
+    vi.stubGlobal('fetch', fetchSpy)
+    const wrapper = mount(InteractionsPage, { global: { plugins: [pinia, ElementPlus], stubs: { RouterLink: true } } })
+    await flushPromises()
+    expect(loadSpy).not.toHaveBeenCalled()
+    // 首挂载会按设备读取运行期本地参数（GET /jammers/.../parameters），但不得加载 SCN-001 场景。
+    expect(fetchSpy.mock.calls.every((call) => String(call[0]).includes('/jammers/'))).toBe(true)
+    expect(scenarioStore.draft?.config.scenario.id).toBe('SCN-CUSTOM')
+    wrapper.unmount()
+    vi.unstubAllGlobals()
   })
 })

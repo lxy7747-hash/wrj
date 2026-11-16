@@ -192,8 +192,7 @@ onMounted(queryAudit)
       </el-button>
     </div>
 
-    <p v-if="auditState === 'LOADING'" data-testid="audit-state">正在准备审计查询…</p>
-    <p v-else-if="auditState === 'VALIDATING'" data-testid="audit-state">正在校验审计响应…</p>
+    <p v-if="auditState === 'LOADING' || auditState === 'VALIDATING'" data-testid="audit-state">正在加载审计日志…</p>
     <p v-else-if="auditState === 'EXECUTING'" data-testid="audit-state">正在执行审计操作…</p>
     <el-alert
       v-else-if="auditState === 'ERROR'"
@@ -269,7 +268,7 @@ onMounted(queryAudit)
       width="460px"
       @update:model-value="(visible: boolean) => { if (!visible) cancelExport() }"
     >
-      <p>将按发起导出时的筛选条件下载 TXT 日志。文件为开发验证用明文，尚未加密，请妥善保管。</p>
+      <p>将按发起导出时的筛选条件下载日志。文件尚未加密，请妥善保管。</p>
       <template #footer>
         <el-button @click="cancelExport">取消</el-button>
         <el-button

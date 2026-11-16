@@ -80,3 +80,9 @@
 - 汇总：`output/websocket-new-20261109/validation-summary.json`；本次增量差异：`output/websocket-new-20261109/scoped.diff`。
 
 帧步长补充验证：7 个相关测试文件、197 项通过；类型检查、契约校验及构建通过。覆盖正常 5→10→15 连续、缺帧诊断、页面/导出曲线断点以及既有消息序列号与质量文件规则。结果见 `output/ws-frame-step-20261109/validation-summary.json`；未进行真实引擎或现场实测。
+
+## 2026-11-15 亚秒帧号兼容
+
+实际拒收日志出现 frame_id=0.25、80.25，界面反馈出现 12.75。接收端沿用 frame_id 对应仿真秒数的口径，保留非负有限小数及整数，不取整、不改成消息序列号；安全上限仍为 Number.MAX_SAFE_INTEGER。原 5 秒步长仅用于观测间隔诊断，不作为接收门槛。
+
+同 frame_id 的 link_calc/jammer_params 与 link_manager/events 两包仍需配对后才能发布和归档。选路包自身没有 link_calc.links 不视为坏帧；无配对、重复和倒序的处理不变。前端整帧、干扰与切换主题以及历史回放均保留小数帧号。

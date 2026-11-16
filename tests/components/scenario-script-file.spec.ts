@@ -6,6 +6,7 @@ import type { ScenarioDraft, ScriptContract } from '../../src/contracts/domain-m
 import ScenariosPage from '../../src/pages/scenarios/scenarios.vue'
 import { useScenarioStore } from '../../src/stores/scenario'
 import { useAuthStore } from '../../src/stores/auth'
+import { createTemplateScenario } from '../fixtures/template-scenario'
 
 enableAutoUnmount(afterEach)
 let ScenarioProjection: new () => { get(id: string): { ok: true; data: ScenarioDraft } }
@@ -23,8 +24,10 @@ async function setup(preview?: () => Promise<Response>, write?: () => Promise<Re
   const pinia = createPinia()
   setActivePinia(pinia)
   useAuthStore().$patch({ principal: { userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] }, role: 'OPERATOR', permissions: ['BUSINESS_READ', 'SCENARIO_DRAFT_WRITE'] })
-  let persisted = new ScenarioProjection().get('SCN-001').data
-  Object.assign(persisted.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+  // 1112 固定模板只接受模板实例范围内的场景；页面流程用例使用模板兼容配置。
+  let persisted = createTemplateScenario()
+  persisted.config.scenario.id = 'SCN-001'
+  persisted.config.jammers.forEach(jammer => { jammer.frequency = 4500 })
   const generator = new ScriptProjection()
   let script: ScriptContract
   const fetchSpy = vi.fn(async (url: unknown, init?: RequestInit): Promise<Response> => {
@@ -80,9 +83,12 @@ describe('保存后由 Node 写入 TXT', () => {
     expect(wrapper.find('[data-testid="generate-script"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(path)
     expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain(`已生成脚本入口：${path}`)
-    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[已写入执行] scenario.startTime')
-    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[依赖待确认] definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA')
-    expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('可追溯入口')
+    // 1112 固定模板：开始时间/时长/平台航线只保留快照，不再声称写入执行；link_calc 仍写入。
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[仅保留快照] scenario.startTime')
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).toContain('[已写入执行] linkSettings.linkCalc')
+    // F09：三种天线已定义，不再作为“依赖待确认”记录。
+    expect(wrapper.get('[data-testid="script-generation-log"]').text()).not.toContain('definitions.antennaPatterns.MICRO_REAR_PLATFORM_DIR_ANTENNA')
+    expect(wrapper.get('[data-testid="script-preview"]').text()).toContain('include_once comm_SimSetup.txt')
     expect(fetchSpy.mock.calls.filter(([url]) => String(url).endsWith('/local-file'))).toHaveLength(1)
     expect(fetchSpy.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
   })

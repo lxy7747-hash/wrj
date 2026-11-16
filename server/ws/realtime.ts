@@ -22,20 +22,12 @@ import type {
   WsSubscribeRequest,
   WsTopic,
 } from '../../src/contracts/domain-models.js'
-import { assertLoopbackRequest, assertLanRequest } from '../http/loopback.js'
+import { assertLoopbackRequest, assertLanRequest, type DeploymentAccess } from '../http/loopback.js'
 import type { MockProjection } from '../state/projection.js'
 import { fixedFrameForRun, ownsFixedEvidence } from '../simulations/projection.js'
-import { MemoryRealtimeJournal, type RealtimeJournalStore } from './realtime-journal.js'
+import { MemoryRealtimeJournal, REALTIME_TOPICS, type RealtimeJournalStore } from './realtime-journal.js'
 
-const CANONICAL_TOPICS = new Set<WsTopic>([
-  'simulation.frame',
-  'runtime.state',
-  'link.metric',
-  'jammer.event',
-  'switch.event',
-  'mission.log',
-  'position.update',
-])
+const CANONICAL_TOPICS = new Set(REALTIME_TOPICS)
 const MAX_SUBSCRIPTION_BYTES = 16_384
 const MAX_TRANSPORT_PAYLOAD_BYTES = 65_536
 const MAX_CLIENTS = 64
@@ -187,13 +179,15 @@ export function attachRealtimeServer(
   projection: MockProjection,
   currentRun: (taskId?: TaskId) => SimulationRun | undefined = () => projection.snapshot().run,
   authorize?: (request: IncomingMessage) => boolean,
-  publicOrigin?: string,
+  /** 字符串为单入口内网部署；对象为分端口部署来源范围；缺省仅本机。 */
+  publicOrigin?: string | DeploymentAccess,
   limits: { maxClients: number; maxPerSource: number; heartbeatMs: number; maxBufferedBytes?: number; maxRetainedEvents?: number } = {
     maxClients: MAX_CLIENTS,
     maxPerSource: MAX_CLIENTS_PER_SOURCE,
     heartbeatMs: HEARTBEAT_MS,
   },
   journalOptions?: RealtimeJournalOptions,
+  onSubscribe?: (run: SimulationRun, request: IncomingMessage) => (() => void) | undefined,
 ): RealtimeController {
   const clients = new Map<WebSocket, ClientSubscription>()
   const requests = new Map<WebSocket, IncomingMessage>()
@@ -365,7 +359,9 @@ export function attachRealtimeServer(
     return undefined
   }
 
-  const trackClient = (client: WebSocket): void => {
+  const trackClient = (client: WebSocket, request: IncomingMessage): void => {
+    let unsubscribe: (() => void) | undefined
+    client.once('close', () => unsubscribe?.())
     client.on('error', () => { clients.delete(client); replaying.delete(client) })
     clients.set(client, { topics: new Set() })
     client.once('close', () => { clients.delete(client); replaying.delete(client) })
@@ -387,6 +383,7 @@ export function attachRealtimeServer(
       if (gap !== undefined) { reject(client, 'SEQUENCE_GAP', `The requested sequence is outside the retained realtime event window: ${gap}`); return }
       subscribed = true
       clients.set(client, { taskId, topics: new Set(parsed.request.topics) })
+      if (run) unsubscribe = onSubscribe?.(run, request)
       send(client, JSON.stringify({ type: 'subscribed', schemaVersion: '1.0', taskId, topics: [...parsed.request.topics], lastSequence, nextSequence: lastSequence + 1, ...(parsed.request.lastSequences === undefined ? {} : { lastSequences }) } satisfies SubscriptionAcknowledgement))
       for (const topic of parsed.request.topics) replayTopic(client, taskId, topic, lastSequences[topic] ?? 0, resumesAnyTopic && (lastSequences[topic] ?? 0) === 0)
     })
@@ -397,7 +394,7 @@ export function attachRealtimeServer(
     alive.set(client, true)
     client.on('pong', () => alive.set(client, true))
     client.once('close', () => { requests.delete(client); alive.delete(client) })
-    trackClient(client)
+    trackClient(client, request)
   })
 
   httpServer.on('upgrade', (request: IncomingMessage, socket, head) => {
@@ -407,7 +404,7 @@ export function attachRealtimeServer(
       return
     }
 
-    const loopback = publicOrigin ? assertLanRequest(request, publicOrigin, true) : assertLoopbackRequest(request)
+    const loopback = typeof publicOrigin === 'string' ? assertLanRequest(request, publicOrigin, true) : assertLoopbackRequest(request, publicOrigin)
     const role = request.headers['x-demo-role']
     const roleValue = (Array.isArray(role) ? undefined : role) ?? requestUrl.searchParams.get('role') ?? undefined
 
@@ -523,14 +520,15 @@ export function attachRealtimeServer(
       const message = retain(envelope)
       if (message === undefined) return
       for (const [client, subscription] of clients) {
-        if (subscription.taskId === run.taskId && subscription.topics.has('link.metric') && !replaying.get(client)?.has('link.metric')) send(client, message)
+        // 高频大帧使用 journal 按发送完成回调推进，避免突发填满 socket 缓冲；不丢帧。
+        if (subscription.taskId === run.taskId && subscription.topics.has('link.metric')) replayTopic(client, run.taskId, 'link.metric', envelope.sequence - 1, true)
       }
       const publishFrameTopic = <T>(topic: 'jammer.event' | 'switch.event', framePayload: T): void => {
         const event = createEnvelope(run.taskId, topic, framePayload, payload.simulationTime, `F-ENGINE-${payload.frameId}`)
         const serialized = retain(event)
         if (serialized === undefined) return
         for (const [client, subscription] of clients) {
-          if (subscription.taskId === run.taskId && subscription.topics.has(topic) && !replaying.get(client)?.has(topic)) send(client, serialized)
+          if (subscription.taskId === run.taskId && subscription.topics.has(topic)) replayTopic(client, run.taskId, topic, event.sequence - 1, true)
         }
       }
       if (payload.jammers.length || payload.events.length) {

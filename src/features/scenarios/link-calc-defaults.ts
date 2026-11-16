@@ -67,6 +67,25 @@ export const SATELLITE_DATA_RATE_MBPS = { TIANTONG: 0.016, SHENTONG: 16 } as con
 export const LINK_MODULATIONS: readonly Modulation[] = ['BPSK', 'QPSK']
 export const LASER_LINK_MODULATION = 'OOK' as const
 
+/**
+ * 1112 模板 comm_platform_REAR.txt 中 MISSION_UAV_PLATFORM 的 lazer_link 端口参数集（缺省基准）。
+ * 频率 681300 GHz = 681300000 MHz；带宽 1000 MHz；功率 0.1 W；速率 2500 Mbps；EIRP 20 dBW；
+ * 收发峰值增益 45 dB；接收 G/T 15 dB/K；噪声系数 5 dB。仅用于“新建且未自定义”的激光链路；
+ * 已有明确自定义值优先，打开/保存旧场景不据此强制重置。EIRP/G-T/噪声归属设备端口，不写入链路字段。
+ */
+export const LASER_LINK_DEFAULTS = {
+  frequency: 681_300_000,
+  rxFrequency: 681_300_000,
+  bandwidth: 1_000,
+  rxBandwidth: 1_000,
+  txPower: 0.1,
+  dataRate: 2_500,
+  antennaGain: { tx: 45, rx: 45 },
+  eirpDbw: 20,
+  gtDbk: 15,
+  noiseFigureDb: 5,
+} as const
+
 /** 链路涉及的通信卫星（端点或中继），用于确定天通的固定速率与噪声系数。 */
 export function linkSatellite(link: Pick<Link, 'sourcePlatformId' | 'targetPlatformId' | 'relayPlatformId'>, platforms: readonly Platform[]): Platform | undefined {
   return platforms.find(platform => platform.type === 'COMMUNICATION_SATELLITE'
@@ -99,16 +118,24 @@ export function linkPowerMaxW(type: LinkType): number {
   return type === 'SAT' ? 1000 : 100
 }
 
-type LinkParameterDefaults = Pick<Link, 'frequency' | 'bandwidth' | 'rxFrequency' | 'rxBandwidth' | 'txPower' | 'antennaGain' | 'dataRate' | 'txPolarization' | 'rxPolarization'>
+type LinkParameterDefaults = Partial<Pick<Link, 'frequency' | 'bandwidth' | 'rxFrequency' | 'rxBandwidth' | 'txPower' | 'antennaGain' | 'dataRate' | 'txPolarization' | 'rxPolarization' | 'eirpDbw' | 'gtDbk' | 'noiseFigureDb'>>
 
 /**
  * 文档按链路类型给出的端口默认值（任务机/中继机口径）；频率单位 MHz，速率 Mbps。
  * 噪声系数不写入链路，留给生成器取缺省值（3 dB）。
- * 激光链路文档未给出，沿用项目原有新建链路默认值。
+ * 激光链路采用 1112 模板 lazer_link 参数集（频率/带宽/功率/速率/收发增益）。
  */
 export function linkTypeDefaults(type: LinkType, band: DatalinkBand = 'C', direction: LinkDirection = 'FORWARD'): LinkParameterDefaults {
   const polarization = defaultPolarization(type)
   const base = { txPolarization: polarization, rxPolarization: polarization }
+  // 激光采用 1112 lazer_link 参数集；光学口径/脉宽/OOK 为可选扩展，不在此强制，只给射频口径缺省。
+  if (type === 'LASER') return {
+    frequency: LASER_LINK_DEFAULTS.frequency, rxFrequency: LASER_LINK_DEFAULTS.rxFrequency,
+    bandwidth: LASER_LINK_DEFAULTS.bandwidth, rxBandwidth: LASER_LINK_DEFAULTS.rxBandwidth,
+    txPower: LASER_LINK_DEFAULTS.txPower, dataRate: LASER_LINK_DEFAULTS.dataRate,
+    antennaGain: { ...LASER_LINK_DEFAULTS.antennaGain },
+    eirpDbw: LASER_LINK_DEFAULTS.eirpDbw, gtDbk: LASER_LINK_DEFAULTS.gtDbk, noiseFigureDb: LASER_LINK_DEFAULTS.noiseFigureDb,
+  }
   if (type === 'SAT') return { ...base, frequency: 200, rxFrequency: 200, bandwidth: 20, rxBandwidth: 50, txPower: 100, antennaGain: { tx: 25, rx: 25 }, dataRate: SATELLITE_DATA_RATE_MBPS.SHENTONG }
   if (type === 'MICROWAVE') return { ...base, frequency: 8200, rxFrequency: 8200, bandwidth: 30, rxBandwidth: 50, txPower: 20, antennaGain: { tx: 0, rx: 0 }, dataRate: MICROWAVE_DATA_RATE_MBPS }
   if (type === 'FIBER') return { ...base, frequency: 1300, rxFrequency: 1300, bandwidth: 20, rxBandwidth: 20, txPower: 50, antennaGain: { tx: 10, rx: 10 }, dataRate: 100 }

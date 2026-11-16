@@ -474,6 +474,7 @@ describe('场景拆分面板', () => {
     expect(wrapper.get('[data-testid="satellite-geo-position"]').text()).toBe('GEO 轨道，定点 0°N 120°E，高度 35786 km')
     for (const field of ['longitude', 'latitude', 'altitude']) expect(wrapper.find(`[data-testid="platform-${field}"]`).exists()).toBe(false)
     expect(wrapper.find('[data-testid="pick-satellite-position"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pick-initial-position"]').exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
     await wrapper.get('[data-testid="apply-platform"]').trigger('click')
@@ -599,7 +600,9 @@ describe('场景拆分面板', () => {
     expect(wrapper.find('[data-testid="formation-origin-hint"]').exists()).toBe(false)
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
     expect(wrapper.find('[data-testid="add-waypoint"]').exists()).toBe(false)
-    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
+    // 后方指挥节点初始位置支持地图选点（复用 WaypointMapPicker）。
+    expect(wrapper.find('[data-testid="pick-initial-position"]').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(true)
     expect(longitude.attributes()).toMatchObject({ min: '118.5', max: '120' })
     expect(latitude.attributes()).toMatchObject({ min: '24', max: '25' })
     for (const [lng, lat, expectedLng, expectedLat] of [
@@ -653,7 +656,8 @@ describe('场景拆分面板', () => {
     expect(latitude.attributes()).toMatchObject({ min: '24.8', max: '25.4' })
     // 地面干扰站位置固定：航点区隐藏，切换前填的航点不提交。
     expect(wrapper.find('#platform-waypoint-title').exists()).toBe(false)
-    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(false)
+    expect(wrapper.find('[data-testid="pick-initial-position"]').exists()).toBe(true)
+    expect(wrapper.findComponent({ name: 'WaypointMapPicker' }).exists()).toBe(true)
     expect(longitude.attributes('disabled')).toBeUndefined()
     expect(latitude.attributes('disabled')).toBeUndefined()
     for (const [lng, lat, expectedLng, expectedLat] of [
@@ -675,6 +679,48 @@ describe('场景拆分面板', () => {
     await flushPromises()
     expect(longitude.attributes()).toMatchObject({ min: '117', max: '122' })
     expect(latitude.attributes()).toMatchObject({ min: '21', max: '26' })
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['REAR_COMMAND_NODE', 0, { longitude: 119.25, latitude: 24.5 }, { minLongitude: 118.5, maxLongitude: 120, minLatitude: 24, maxLatitude: 25 }],
+    ['GROUND_CLUSTER_COMMAND_NODE', 2, { longitude: 119.2, latitude: 24.6 }, undefined],
+    ['GROUND_JAMMER_DETECTION_STATION', 7, { longitude: 121.5, latitude: 25.1 }, { minLongitude: 121.2, maxLongitude: 121.8, minLatitude: 24.8, maxLatitude: 25.4 }],
+  ] as const)('%s 初始位置可地图选点，只回填经纬度并按类型限位', async (type, index, picked, bounds) => {
+    const platform = structuredClone(fixtureSource.scenario.platforms[index]) as Platform
+    const original = structuredClone(platform)
+    const wrapper = mount(PlatformEditorDialog, {
+      props: {
+        modelValue: true, platform, editing: true, error: '', pending: false, locked: false,
+        businessTypeOptions: [{ value: type, label: '测试节点' }],
+        supportingTypeOptions: [], satelliteTypeOptions: [],
+        businessTypeCounts: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 3 },
+        businessTypeLimits: { REAR_COMMAND_NODE: 1, FORWARD_RELAY_NODE: 1, GROUND_CLUSTER_COMMAND_NODE: 1, AIRBORNE_MISSION_CLUSTER: 47 },
+        deploymentDomainLabels: { ground: '地面', air: '空中', space: '天基' },
+      },
+      global: { plugins: [ElementPlus], stubs: { ElDialog: { template: '<section><slot /><slot name="footer" /></section>' } } },
+    })
+    await flushPromises()
+    expect(wrapper.get('#platform-position-title').text()).toBe('初始位置')
+    // 输入框按类型限位，可能把越界旧值夹到边界；选点框以夹取后的当前值为起点。
+    const initialLongitude = Number((wrapper.get('[data-testid="platform-longitude"] input').element as HTMLInputElement).value)
+    const initialLatitude = Number((wrapper.get('[data-testid="platform-latitude"] input').element as HTMLInputElement).value)
+    await wrapper.get('[data-testid="pick-initial-position"]').trigger('click')
+    const picker = wrapper.getComponent({ name: 'WaypointMapPicker' })
+    expect(picker.props()).toMatchObject({ modelValue: true, longitude: initialLongitude, latitude: initialLatitude })
+    expect(picker.props('bounds')).toEqual(bounds)
+    picker.vm.$emit('confirm', picked)
+    await flushPromises()
+    expect(Number((wrapper.get('[data-testid="platform-longitude"] input').element as HTMLInputElement).value)).toBe(picked.longitude)
+    expect(Number((wrapper.get('[data-testid="platform-latitude"] input').element as HTMLInputElement).value)).toBe(picked.latitude)
+    // 二维地图不含高度：确认后高度保持原值。
+    expect(Number((wrapper.get('[data-testid="platform-altitude"] input').element as HTMLInputElement).value)).toBe(original.initialPosition.altitude)
+    await wrapper.get('[data-testid="apply-platform"]').trigger('click')
+    expect(wrapper.emitted('apply')!.at(-1)![0]).toMatchObject({
+      type,
+      initialPosition: { longitude: picked.longitude, latitude: picked.latitude, altitude: original.initialPosition.altitude },
+    })
+    expect(platform).toEqual(original)
     wrapper.unmount()
   })
 

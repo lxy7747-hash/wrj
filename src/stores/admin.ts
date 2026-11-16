@@ -32,6 +32,7 @@ import { isArchiveRecord, isBackupRecord, isMasterData, isMasterDetails, isMaste
 import { isLocalArchiveRecord } from '../features/admin/local-archive'
 import type { LocalArchiveRecord } from '../contracts/domain-models'
 import { equipmentIssue, isEquipmentParameter } from '../features/admin/equipment-contract'
+import { isEquipmentHistoryDetails, isEquipmentRecreateResult, isEquipmentVerificationRecord, type EquipmentHistoryDetails, type EquipmentRecreateRequest, type EquipmentVerificationRecord } from '../features/admin/equipment-history-contract'
 import { isBackupPlan, isBackupPlanStatus } from '../features/admin/backup-plan'
 
 type MaintenanceSection = 'master' | 'equipment' | 'backup' | 'archive' | 'health' | 'export'
@@ -57,7 +58,7 @@ async function requestMaintenance(path: string, init: RequestInit = {}): Promise
   return payload
 }
 
-const USER_KEYS = new Set(['userId', 'username', 'role', 'status', 'lastLoginAt'])
+const USER_KEYS = new Set(['userId', 'username', 'displayName', 'role', 'status', 'lastLoginAt'])
 const AUDIT_KEYS = new Set(['auditId', 'actor', 'role', 'module', 'action', 'objectId', 'result', 'occurredAt', 'immutableFixture'])
 const META_KEYS = new Set(['requestId', 'generatedAt', 'page', 'pageSize', 'total'])
 const CONFIRMATION_KEYS = new Set(['confirmationId', 'state', 'actor', 'role', 'createdAt', 'expiresAt'])
@@ -172,6 +173,7 @@ export function isUser(value: unknown): value is User {
   return typeof candidate.userId === 'string'
     && candidate.userId.length >= 1
     && typeof candidate.username === 'string'
+    && (candidate.displayName === undefined || (typeof candidate.displayName === 'string' && candidate.displayName.trim().length > 0 && candidate.displayName.length <= 64))
     && (candidate.role === 'ADMIN' || candidate.role === 'OPERATOR')
     && (candidate.status === 'ACTIVE' || candidate.status === 'DISABLED' || candidate.status === 'LOCKED')
     && (candidate.lastLoginAt === undefined
@@ -530,6 +532,36 @@ export const useAdminStore = defineStore('admin', {
       }
     },
 
+    /** 只读查询设备历史（含已删除），用于核验状态、发布引用与生命周期展示。 */
+    async loadEquipmentHistory(equipmentId: string): Promise<EquipmentHistoryDetails | null> {
+      if (!equipmentId.trim()) return null
+      try {
+        const data = readStrictData(await requestMaintenance(`admin/equipment/${encodeURIComponent(equipmentId)}/history`))
+        if (!isEquipmentHistoryDetails(data) || data.equipmentId !== equipmentId) throw new Error('装备历史响应格式不正确。')
+        return data
+      } catch (error) { this.showMaintenanceError('equipment', error); return null }
+    },
+
+    /** 提交核验依据；无依据由服务端拒绝，成功返回保存后的核验记录。 */
+    async recordEquipmentVerification(equipmentId: string, value: { coveredTargets: string; evidenceSummary: string; conclusion: string }): Promise<EquipmentVerificationRecord | null> {
+      try {
+        const data = readStrictData(await requestMaintenance(`admin/equipment/${encodeURIComponent(equipmentId)}/verification`, { method: 'POST', body: JSON.stringify(value) }))
+        if (!isEquipmentVerificationRecord(data)) throw new Error('核验响应格式不正确。')
+        return data
+      } catch (error) { this.showMaintenanceError('equipment', error); return null }
+    },
+
+    /** 显式重建：提交 expectedHistoryVersion 与可编辑参数，成功后用实际版本更新列表。 */
+    async recreateEquipment(equipmentId: string, request: EquipmentRecreateRequest): Promise<EquipmentParameter | null> {
+      try {
+        const payload = readStrictData(await requestMaintenance(`admin/equipment/${encodeURIComponent(equipmentId)}/recreate`, { method: 'POST', body: JSON.stringify(request) }))
+        if (!isEquipmentRecreateResult(payload) || payload.equipment.equipmentId !== equipmentId) throw new Error('重建响应格式不正确。')
+        this.equipment = [...this.equipment.filter(item => item.equipmentId !== payload.equipment.equipmentId), payload.equipment]
+        this.maintenance.equipment = { state: 'SUCCESS', message: '装备已重建。', fieldPath: '' }
+        return payload.equipment
+      } catch (error) { this.showMaintenanceError('equipment', error); return null }
+    },
+
     /**
      * 保存通用数据编辑副本；成功后用服务端版本替换列表对应行。
      * @param data 包含当前版本和只读引用数量的完整数据。
@@ -863,6 +895,13 @@ export const useAdminStore = defineStore('admin', {
       await Promise.resolve()
       if (epoch !== this.requestEpoch) return false
       this.panelState = 'VALIDATING'
+      if ((operation === 'CREATE' || operation === 'UPDATE') && next.displayName !== undefined
+        && (!next.displayName.trim() || next.displayName.length > 64)) {
+        this.panelState = 'ERROR'
+        this.resultCode = 'VALIDATION_FAILED'
+        this.resultMessage = '用户名须为 1–64 位，不能全为空白。'
+        return false
+      }
       const command: UserRoleCommand = { operation, user: next, ...(password ? { password } : {}) }
       if (operation === 'CREATE' && password !== undefined && (!password.trim() || password.length < 6 || password.length > 32)) {
         this.panelState = 'ERROR'
@@ -925,31 +964,34 @@ export const useAdminStore = defineStore('admin', {
 
     /**
      * 校验创建表单并通过统一用户变更流程创建用户。
-     * @param usernameInput 用户输入的原始用户名；首尾空白应报错而不是静默移除。
+     * @param usernameInput 用户输入的原始登录账号；首尾空白应报错而不是静默移除。
      * @param role 冻结合同定义的用户角色。
      * @param status 冻结合同定义的账号状态。
      * @returns 创建成功时为 `true`，本地校验或服务端处理失败时为 `false`。
      * @sideEffects 更新面板状态与结果信息；服务端创建成功时向用户列表追加新用户。
      */
-    async createUser(usernameInput: string, role: Role, status: User['status'], password?: string): Promise<boolean> {
+    async createUser(usernameInput: string, role: Role, status: User['status'], password?: string, displayName: string = usernameInput): Promise<boolean> {
       const username = usernameInput
       this.panelState = 'VALIDATING'
       if (username.trim().length === 0) {
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
-        this.resultMessage = '用户名：请输入用户名。'
+        this.resultMessage = '登录账号：请输入登录账号。'
         return false
       }
       if (username.length > 64 || username !== username.trim()) {
         this.panelState = 'ERROR'
         this.resultCode = 'VALIDATION_FAILED'
-        this.resultMessage = '用户名须为 1–64 位，且不能包含首尾空格。'
+        this.resultMessage = '登录账号须为 1–64 位，且不能包含首尾空格。'
         return false
       }
 
+      let userId = `USR-${username}`
+      for (let suffix = 1; this.users.some(user => user.userId === userId); suffix++) userId = `USR-${username}-${suffix}`
       const user: User = {
-        userId: `USR-${username}`,
+        userId,
         username,
+        displayName,
         role,
         status,
       }

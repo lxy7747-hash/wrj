@@ -27,6 +27,10 @@ it('P5 场景JSON导入、SQLite重载及模板HTTP往返保留全部新字段',
     draft.config.scenario.realtime = false
     draft.config.deviceParameters = readDeviceParameters(draft.config)
     draft.config.deviceParameters.ports!.MISSION_UAV_PLATFORM!.microwave_link!.noiseFigureDb = 4
+    Object.assign(draft.config.deviceParameters.ports!.MISSION_UAV_PLATFORM!.microwave_link!, { eirpDbw: -5, gtDbk: -10 })
+    draft.config.scenario.environment.transmissionDistance = 250
+    draft.config.linkSettings!.messageIntervalS = 7
+    draft.config.linkSettings!.linkCalc!.jammingRangeKm = 31
     draft.config = withScenarioBasicDefaults(draft.config)
     const snapshot = JSON.parse(JSON.stringify(createScenarioSnapshot(draft)))
     expect(parseScenarioSnapshot(snapshot)?.config).toEqual(draft.config)

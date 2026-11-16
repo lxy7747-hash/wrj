@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import engineSample from '../fixtures/engine-frame/params_check.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 const { createServer } = await import('node:' + 'http')
+const { Buffer } = await import('node:' + 'buffer')
 const { once } = await import('node:' + 'events')
 const { mkdtemp, rm } = await import('node:' + 'fs/promises')
 const { tmpdir } = await import('node:' + 'os')
@@ -128,6 +129,35 @@ async function setup(
   }
   return { realtime, projection, connect, setRun: (run: typeof selectedRun) => { selectedRun = run }, port: http.address().port, clients }
 }
+
+it.each(['memory', 'disk'])('%s 跨运行后的混合游标重连不读取旧日志或旧位置，也不误报 SEQUENCE_GAP', async storage => {
+  const root = await mkdtemp(join(tmpdir(), 'wrj-reconnect-'))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
+  const journal = storage === 'disk' ? new DiskRealtimeJournal(root) : new MemoryRealtimeJournal()
+  const { connect, realtime, projection, setRun } = await setup(false, undefined, undefined, { journal })
+  const old = { ...projection.snapshot().run!, runId: 'RUN-OLD' as const, scenarioId: 'SCN-REAL' }
+  const current = { ...old, runId: 'RUN-CURRENT' as const }
+  const log = (run: typeof old | typeof current, text: string) => realtime.publishMissionLog(run, {
+    kind: 'MISSION_LOG', runId: run.runId, text, replace: false, bytes: 3, truncated: false,
+    chunkIndex: 0, chunkCount: 1, startByteOffset: 0, endByteOffset: 3,
+  })
+  const position = (run: typeof old | typeof current) => realtime.publishMissionPositions(run, {
+    kind: 'MISSION_POSITION', runId: run.runId, scenarioId: run.scenarioId, revision: 1,
+    sourceGeneration: 1, sourceRecordCount: 1, waitingForLine: false,
+    nodes: [{ platformId: 'P-1', time: 5, longitude: 120, latitude: 30, altitude: 1, speed: 2, heading: 3 }],
+  })
+  setRun(old); realtime.publishRuntimeState(old); log(old, 'old'); position(old)
+  setRun(current); realtime.publishRuntimeState(current); log(current, 'new')
+  const latest = journal.next('TASK-001', 'runtime.state') - 1
+  const resumed = await connect(['runtime.state', 'mission.log', 'position.update'], { 'runtime.state': latest, 'mission.log': 0, 'position.update': 0 })
+  await vi.waitFor(() => expect(resumed.messages).toHaveLength(2))
+  expect(resumed.messages[1]).toMatchObject({ topic: 'mission.log', sequence: 2, payload: { runId: current.runId, text: 'new' } })
+  position(current)
+  await vi.waitFor(() => expect(resumed.messages).toHaveLength(3))
+  expect(resumed.messages[2]).toMatchObject({ topic: 'position.update', sequence: 2, payload: { runId: current.runId } })
+  expect(resumed.client.readyState).toBe(WebSocket.OPEN)
+  expect(resumed.messages.some(message => message.type === 'rejected')).toBe(false)
+})
 
 it('缺失运行与事件时不伪造信封，仍返回可用的链路摘要；新订阅重放缓存快照', async () => {
   const { connect } = await setup(true)
@@ -366,6 +396,37 @@ it('慢连接缓冲超限后断开，健康订阅者仍收到广播', async () =
   expect(healthy.messages.at(-1)).toMatchObject({ topic: 'runtime.state' })
   expect(healthy.client.readyState).toBe(WebSocket.OPEN)
   expect(realtime.activeClientCount()).toBe(1)
+})
+
+it('高频引擎大帧等待发送完成后从 journal 连续发送，不因一轮突发写满缓冲而断线', async () => {
+  const serverClients: InstanceType<typeof WebSocket>[] = []
+  const emit = WebSocketServer.prototype.emit
+  vi.spyOn(WebSocketServer.prototype, 'emit').mockImplementation(function (this: InstanceType<typeof WebSocketServer>, event, ...args) {
+    if (event === 'connection') serverClients.push(args[0] as InstanceType<typeof WebSocket>)
+    return emit.call(this, event, ...args)
+  })
+  const { connect, realtime, projection, setRun } = await setup()
+  const run = { ...projection.snapshot().run!, runId: 'RUN-BURST' as const, scenarioId: 'SCN-REAL' }
+  setRun(run); realtime.publishRuntimeState(run)
+  const receiver = await connect(['link.metric'])
+  await vi.waitFor(() => expect(receiver.messages).toHaveLength(1))
+  const sender = serverClients[0]!
+  const send = sender.send.bind(sender)
+  let pendingBytes = 0
+  Object.defineProperty(sender, 'bufferedAmount', { configurable: true, get: () => pendingBytes })
+  vi.spyOn(sender, 'send').mockImplementation((data: any, callback: any) => {
+    const size = Buffer.byteLength(String(data))
+    pendingBytes += size
+    send(data, (error?: Error) => { pendingBytes -= size; callback?.(error) })
+  })
+  const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId, jammers: [], events: [] }
+  base.routing.switches = []
+  base.links = Array.from({ length: 100 }, () => structuredClone(base.links[0]!))
+  expect(Buffer.byteLength(JSON.stringify(base))).toBeLessThan(1_048_576)
+  for (let index = 0; index < 32; index += 1) realtime.publishEngineFrame(run.runId, { ...base, frameId: index / 4, simulationTime: index / 4 })
+  await vi.waitFor(() => expect(receiver.messages).toHaveLength(33))
+  expect(receiver.messages.slice(1).map(message => message.payload.frameId)).toEqual(Array.from({ length: 32 }, (_, index) => index / 4))
+  expect(receiver.client.readyState).toBe(WebSocket.OPEN)
 })
 
 it('磁盘 journal 在热缓存之外逐页重放离线运行状态，且序号连续不重复', async () => {

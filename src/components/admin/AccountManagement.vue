@@ -1,21 +1,61 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
-import type { Role, User } from '../../contracts/domain-models'
+import type { AccessControlConfig, Role, User } from '../../contracts/domain-models'
 import { useAdminStore } from '../../stores/admin'
-import { useAuthStore } from '../../stores/auth'
+import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
+import { apiFetch } from '../../features/shared/api-fetch'
+import { isAccessControlConfig } from '../../features/admin/access-control'
 import RoleProfiles from './RoleProfiles.vue'
 
 const admin = useAdminStore()
 const showRoleProfiles = ref(false)
 const auth = useAuthStore()
-onMounted(() => { void admin.refreshUsers() })
+onMounted(() => { void admin.refreshUsers(); void refreshRoleConfig() })
 const { users, panelState, resultCode, resultMessage } = storeToRefs(admin)
-const filters = reactive<{ username: string; role: Role | ''; status: User['status'] | '' }>({ username: '', role: '', status: '' })
+const roleConfig = ref<AccessControlConfig | null>(null)
+const roleError = ref('')
+let roleEpoch = 0
+let roleController: AbortController | undefined
+async function refreshRoleConfig(): Promise<void> {
+  const current = ++roleEpoch
+  roleController?.abort()
+  const controller = new AbortController()
+  roleController = controller
+  const timer = setTimeout(() => controller.abort(), 10_000)
+  roleConfig.value = null
+  roleError.value = ''
+  try {
+    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/admin/access-control`, { signal: controller.signal, headers: { 'X-Demo-Role': auth.role } })
+    const body = await response.json()
+    if (current !== roleEpoch) return
+    if (!response.ok || body.ok !== true || !isAccessControlConfig(body.data, 'read')) throw new Error('自定义角色读取失败，请重试。')
+    roleConfig.value = body.data
+    if (filters.profileId && !roleConfig.value!.profiles.some(profile => profile.profileId === filters.profileId)) filters.profileId = ''
+  } catch { if (current === roleEpoch) roleError.value = '自定义角色读取失败，请重试。' }
+  finally { clearTimeout(timer) }
+}
+function clearRoleConfig(): void {
+  roleEpoch++
+  roleController?.abort()
+  roleConfig.value = null
+  roleError.value = ''
+}
+watch(() => auth.principal?.userId, clearRoleConfig, { flush: 'sync' })
+onBeforeUnmount(clearRoleConfig)
+const profileIdFor = (user: User) => roleConfig.value?.assignments.find(item => item.userId === user.userId)?.profileId
+function profileLabel(user: User): string {
+  if (!roleConfig.value) return roleError.value ? '读取失败' : '加载中…'
+  const profile = roleConfig.value.profiles.find(item => item.profileId === profileIdFor(user))
+  if (!profile) return '未分配（使用基础权限）'
+  return `${profile.name}（${profile.profileId}）${profile.baseRole !== user.role ? ' · 身份不匹配，请重新分配' : ''}`
+}
+const filters = reactive<{ username: string; role: Role | ''; status: User['status'] | ''; profileId: string }>({ username: '', role: '', status: '', profileId: '' })
 const filteredUsers = computed(() => users.value.filter(user =>
-  user.username.toLowerCase().includes(filters.username.trim().toLowerCase())
+  (user.displayName ?? user.username).toLowerCase().includes(filters.username.trim().toLowerCase())
   && (!filters.role || user.role === filters.role)
+  && (!filters.profileId || profileIdFor(user) === filters.profileId)
   && (!filters.status || user.status === filters.status)))
 
 /**
@@ -44,8 +84,9 @@ function adminProtection(user: User): string | undefined {
   return undefined
 }
 
-const createForm = reactive<{ username: string; role: Role; status: User['status'] }>({
+const createForm = reactive<{ username: string; displayName: string; role: Role; status: User['status'] }>({
   username: '',
+  displayName: '',
   role: 'OPERATOR',
   status: 'ACTIVE',
 })
@@ -55,7 +96,7 @@ const createDialogVisible = ref(false)
 const createError = ref('')
 
 function resetCreateForm(): void {
-  Object.assign(createForm, { username: '', role: 'OPERATOR', status: 'ACTIVE' })
+  Object.assign(createForm, { username: '', displayName: '', role: 'OPERATOR', status: 'ACTIVE' })
   initialPassword.value = ''
   createError.value = ''
 }
@@ -90,39 +131,29 @@ const rolePermissions = [
 async function createUser(): Promise<void> {
   if (pending.value) return
   createError.value = ''
-  const created = await admin.createUser(createForm.username, createForm.role, createForm.status, initialPassword.value)
+  const created = await admin.createUser(createForm.username, createForm.role, createForm.status, initialPassword.value, createForm.displayName)
   initialPassword.value = ''
   if (created) {
+    void refreshRoleConfig()
     createDialogVisible.value = false
     ElMessage.success(resultMessage.value)
   }
   else createError.value = resultMessage.value
 }
 
-async function updateUser(user: User, operation: 'UPDATE' | 'ENABLE' | 'DISABLE', next: User): Promise<void> {
-  if (pending.value || (operation !== 'ENABLE' && adminProtection(user))) return
-  const epoch = admin.requestEpoch
-  const updated = await admin.mutateUser(user, operation, next)
-  if (epoch !== admin.requestEpoch) return
-  if (!updated) {
-    ElMessage.error(resultMessage.value)
-    return
-  }
-  ElMessage.success(operation === 'UPDATE'
-    ? `用户 ${user.username} 已切换为${roleLabels[next.role]}。`
-    : resultMessage.value)
-}
-
 const editingUser = ref<User | null>(null)
-const editForm = reactive<{ username: string; role: Role; status: User['status'] }>({ username: '', role: 'OPERATOR', status: 'ACTIVE' })
+const editForm = reactive<{ username: string; displayName: string; role: Role; status: User['status'] }>({ username: '', displayName: '', role: 'OPERATOR', status: 'ACTIVE' })
 const editError = ref('')
-/** 当前登录管理员或最后一个启用管理员只允许修改用户名，角色和状态保持锁定。 */
+/** 当前登录管理员或最后一个启用管理员只允许修改用户名和登录账号，角色和状态保持锁定。 */
 const editProtection = computed(() => editingUser.value ? adminProtection(editingUser.value) : undefined)
+// 合并启用入口后，仍允许恢复其他已禁用管理员，不开放降权或锁定。
+const restoreOnly = computed(() => !!editProtection.value && editingUser.value?.status === 'DISABLED'
+  && editingUser.value.userId !== auth.principal?.userId)
 
 function openEdit(user: User): void {
   if (pending.value) return
   editingUser.value = user
-  Object.assign(editForm, { username: user.username, role: user.role, status: user.status })
+  Object.assign(editForm, { username: user.username, displayName: user.displayName ?? user.username, role: user.role, status: user.status })
   editError.value = ''
 }
 
@@ -135,13 +166,14 @@ async function submitEdit(): Promise<void> {
   const user = editingUser.value
   if (user === null || pending.value) return
   editError.value = ''
-  const next: User = { ...user, username: editForm.username, role: editForm.role, status: editForm.status }
-  if (next.username === user.username && next.role === user.role && next.status === user.status) {
+  const next: User = { ...user, username: editForm.username, displayName: editForm.displayName, role: editForm.role, status: editForm.status }
+  if (next.displayName === (user.displayName ?? user.username) && next.username === user.username && next.role === user.role && next.status === user.status) {
     editingUser.value = null
     return
   }
   const updated = await admin.mutateUser(user, 'UPDATE', next)
   if (updated) {
+    void refreshRoleConfig()
     editingUser.value = null
     ElMessage.success(resultMessage.value)
   }
@@ -177,7 +209,7 @@ async function confirmDelete(): Promise<void> {
   const user = pendingDelete.value
   if (user === null || pending.value || user.userId === auth.principal?.userId) return
   const deleted = await admin.mutateUser(user, 'DELETE', user)
-  if (deleted) ElMessage.success(resultMessage.value)
+  if (deleted) { void refreshRoleConfig(); ElMessage.success(resultMessage.value) }
   pendingDelete.value = null
 }
 </script>
@@ -194,7 +226,10 @@ async function confirmDelete(): Promise<void> {
     >
       <el-form class="create-form" label-position="top" :model="createForm" :disabled="pending" @submit.prevent="createUser">
         <el-form-item label="用户名">
-          <el-input v-model="createForm.username" data-testid="create-username" autocomplete="off" />
+          <el-input v-model="createForm.displayName" data-testid="create-display-name" maxlength="64" autocomplete="off" />
+        </el-form-item>
+        <el-form-item label="登录账号">
+          <el-input v-model="createForm.username" data-testid="create-username" maxlength="64" autocomplete="off" />
         </el-form-item>
         <el-form-item label="初始密码">
           <el-input v-model="initialPassword" type="password" show-password autocomplete="new-password" placeholder="6–32 位" :minlength="6" :maxlength="32" data-testid="create-password" />
@@ -245,18 +280,25 @@ async function confirmDelete(): Promise<void> {
         <el-form-item label="用户名"><el-input v-model="filters.username" clearable aria-label="筛选用户名" /></el-form-item>
         <el-form-item label="角色"><el-select v-model="filters.role" aria-label="筛选角色"><el-option label="全部角色" value="" /><el-option v-for="(label, role) in roleLabels" :key="role" :label="label" :value="role" /></el-select></el-form-item>
         <el-form-item label="状态"><el-select v-model="filters.status" aria-label="筛选状态"><el-option label="全部状态" value="" /><el-option v-for="(label, status) in statusLabels" :key="status" :label="label" :value="status" /></el-select></el-form-item>
-        <el-form-item><el-button @click="Object.assign(filters, { username: '', role: '', status: '' })">重置筛选</el-button></el-form-item>
+        <el-form-item label="自定义角色"><el-select v-model="filters.profileId" aria-label="筛选自定义角色" :disabled="!roleConfig"><el-option label="全部自定义角色" value="" /><el-option v-for="profile in roleConfig?.profiles ?? []" :key="profile.profileId" :label="`${profile.name}（${profile.profileId}）`" :value="profile.profileId" /></el-select></el-form-item>
+        <el-form-item><el-button @click="Object.assign(filters, { username: '', role: '', status: '', profileId: '' })">重置筛选</el-button></el-form-item>
       </el-form>
+      <p v-if="roleError" role="alert">{{ roleError }} <el-button link type="primary" @click="refreshRoleConfig">重试角色读取</el-button></p>
+      <p>切换基础角色会解除该账号的自定义角色绑定；修改用户名、登录账号或启用、禁用不影响绑定。</p>
       <div class="console-table-frame table-scroll" tabindex="0" aria-label="用户列表，可横向滚动">
         <el-table class="admin-table" :data="filteredUsers" row-key="userId" empty-text="暂无匹配账号" data-testid="user-role-panel">
-          <el-table-column prop="username" label="用户" min-width="120" />
+          <el-table-column label="用户名" min-width="120"><template #default="{ row }">{{ row.displayName ?? row.username }}</template></el-table-column>
+          <el-table-column prop="username" label="登录账号" min-width="120" />
           <el-table-column label="角色" min-width="180">
             <template #default="scope">{{ roleLabels[scope.row.role as Role] }}</template>
           </el-table-column>
           <el-table-column label="状态" min-width="180">
             <template #default="scope">{{ statusLabels[scope.row.status as User['status']] }}</template>
           </el-table-column>
-          <el-table-column label="操作" min-width="400">
+          <el-table-column label="自定义角色" min-width="240">
+            <template #default="scope">{{ profileLabel(scope.row) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" min-width="180">
             <template #default="scope">
               <el-button
                 size="small"
@@ -267,31 +309,6 @@ async function confirmDelete(): Promise<void> {
                 @click="openEdit(scope.row)"
               >
                 修改
-              </el-button>
-              <el-button
-                size="small"
-                :disabled="pending || !!adminProtection(scope.row)"
-                :title="adminProtection(scope.row)"
-                @click="updateUser(scope.row, 'UPDATE', { ...scope.row, role: scope.row.role === 'ADMIN' ? 'OPERATOR' : 'ADMIN' })"
-              >
-                切换角色
-              </el-button>
-              <el-button
-                v-if="scope.row.status === 'DISABLED'"
-                size="small"
-                :disabled="pending"
-                @click="updateUser(scope.row, 'ENABLE', { ...scope.row, status: 'ACTIVE' })"
-              >
-                启用
-              </el-button>
-              <el-button
-                v-else
-                size="small"
-                :disabled="pending || !!adminProtection(scope.row)"
-                :title="adminProtection(scope.row)"
-                @click="updateUser(scope.row, 'DISABLE', { ...scope.row, status: 'DISABLED' })"
-              >
-                禁用
               </el-button>
               <el-button
                 size="small"
@@ -321,22 +338,25 @@ async function confirmDelete(): Promise<void> {
     >
       <el-form class="create-form" label-position="top" :model="editForm" :disabled="pending" @submit.prevent="submitEdit">
         <el-form-item label="用户名">
-          <el-input v-model="editForm.username" data-testid="edit-username" autocomplete="off" />
+          <el-input v-model="editForm.displayName" data-testid="edit-display-name" maxlength="64" autocomplete="off" />
         </el-form-item>
-        <el-form-item label="角色">
+        <el-form-item label="登录账号">
+          <el-input v-model="editForm.username" data-testid="edit-username" maxlength="64" autocomplete="off" />
+        </el-form-item>
+        <el-form-item label="基础角色">
           <el-select v-model="editForm.role" :disabled="!!editProtection" data-testid="edit-role">
             <el-option :label="roleLabels.OPERATOR" value="OPERATOR" />
             <el-option :label="roleLabels.ADMIN" value="ADMIN" />
           </el-select>
         </el-form-item>
         <el-form-item label="状态">
-          <el-select v-model="editForm.status" :disabled="!!editProtection" data-testid="edit-status">
+          <el-select v-model="editForm.status" :disabled="!!editProtection && !restoreOnly" data-testid="edit-status">
             <el-option :label="statusLabels.ACTIVE" value="ACTIVE" />
-            <el-option :label="statusLabels.DISABLED" value="DISABLED" />
-            <el-option :label="statusLabels.LOCKED" value="LOCKED" />
+            <el-option :label="statusLabels.DISABLED" value="DISABLED" :disabled="restoreOnly" />
+            <el-option :label="statusLabels.LOCKED" value="LOCKED" :disabled="restoreOnly" />
           </el-select>
         </el-form-item>
-        <p v-if="editProtection" class="section-note edit-note">{{ editProtection }}，角色和状态不可修改。</p>
+        <p v-if="editProtection" class="section-note edit-note">{{ editProtection }}，{{ restoreOnly ? '基础角色不可修改，状态仅可恢复为启用' : '基础角色和状态不可修改' }}。</p>
         <p class="section-note edit-note">保存后该用户现有登录会话失效，重新登录后按新角色和状态生效。</p>
         <el-alert v-if="editError" type="error" :title="editError" :closable="false" data-testid="edit-user-error" />
         <div class="create-actions">
@@ -377,10 +397,8 @@ async function confirmDelete(): Promise<void> {
     <section class="console-panel console-section" aria-labelledby="permission-map-title">
       <div class="section-heading">
         <div>
-          <p class="section-kicker">RBAC 基线</p>
           <h3 id="permission-map-title">角色与权限映射</h3>
         </div>
-        <span class="section-note">权限范围由当前角色合同定义</span>
       </div>
       <div class="console-table-frame table-scroll" tabindex="0" aria-label="角色权限映射，可横向滚动">
         <el-table class="permission-table" :data="rolePermissions" data-testid="role-permission-map">
@@ -397,7 +415,7 @@ async function confirmDelete(): Promise<void> {
       :close-on-click-modal="false"
       destroy-on-close
     >
-      <RoleProfiles v-if="showRoleProfiles" :users="users" />
+      <RoleProfiles v-if="showRoleProfiles" :users="users" @saved="refreshRoleConfig" />
       <template #footer>
         <el-button @click="showRoleProfiles = false">关闭</el-button>
       </template>

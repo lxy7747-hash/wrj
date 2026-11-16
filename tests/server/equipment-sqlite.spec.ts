@@ -73,8 +73,9 @@ describe('装备参数正式存储与接口', () => {
     await second.api.put(`${path}/TEST-RADIO/reference`).set(headers).send({ reference, remove: true }).expect(200)
     expect(second.storage.details('TEST-RADIO').references).toEqual([])
     expect(second.storage.delete('TEST-RADIO', 2)).toBe(true)
-    expect(second.storage.save(EQUIPMENT)).toBe(true)
-    expect(second.storage.details('TEST-RADIO').history).toEqual([EQUIPMENT])
+    // 规格变更（整改03）：删除保留全部历史，编号已有删除历史时普通新建被拒绝且不清空历史。
+    expect(second.storage.save(EQUIPMENT)).toBe(false)
+    expect(second.storage.details('TEST-RADIO').history).toEqual([{ ...edited, version: 2 }, EQUIPMENT])
   })
 
   it.each([{ bandwidthMHz: 0 }, { bandwidthMHz: -1 }, { txPowerW: -1 }, { dataRateMbps: 0 }, { dataRateMbps: '2' }])('完整参数拒绝非法数值 %j', async change => {

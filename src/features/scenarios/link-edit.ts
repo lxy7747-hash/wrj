@@ -1,5 +1,6 @@
 import type { InformationDemand, Link, ScenarioConfig } from '../../contracts/domain-models'
 import { toRaw } from 'vue'
+import { deriveCommPortsFromLinks } from './template-defaults'
 
 /** 编辑副本可含嵌套 Vue 代理和未填的 NaN，不能用 JSON 序列化改变草稿值。 */
 export function copyScenarioEdit<T>(value: T): T {
@@ -34,4 +35,17 @@ export function applyLinkEdit(config: ScenarioConfig, link: Link, demand: Inform
   else config.informationDemand[demandIndex] = edited
   if (previousLinkId !== link.id) synchronizePlatformLinkIds(config, previousLinkId)
   synchronizePlatformLinkIds(config, link.id)
+  if (config.deviceParameters?.commPorts !== undefined) {
+    const derived = deriveCommPortsFromLinks(config)
+    for (const [platformType, ports] of Object.entries(derived)) {
+      if (!ports) continue
+      const current = config.deviceParameters.commPorts[platformType as keyof typeof config.deviceParameters.commPorts]
+      if (current === undefined) continue
+      for (const [portName, definition] of Object.entries(ports)) {
+        if (definition !== undefined && !Object.hasOwn(current, portName)) {
+          current[portName] = { ...definition }
+        }
+      }
+    }
+  }
 }

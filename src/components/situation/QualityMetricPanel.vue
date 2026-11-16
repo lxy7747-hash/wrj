@@ -50,7 +50,7 @@ watch(() => props.selectedLinkId, selected => {
         <summary>更多筛选<span v-if="linkId || windowMs">（已应用）</span></summary>
         <el-form-item label="链路"><el-select v-model="linkId" clearable placeholder="全部链路"><el-option v-for="link in links" :key="link.linkId" :value="link.linkId" :label="`${link.sourceName} → ${link.destinationName}`" /></el-select></el-form-item>
         <el-form-item label="时间窗口"><el-select v-model="windowMs"><el-option label="当前时刻" :value="0" /><el-option label="最近1秒" :value="1000" /><el-option label="最近5秒" :value="5000" /></el-select></el-form-item>
-        <p>时间窗口筛选年龄已知的测量；年龄未知时保留源时刻。未提供的指标显示“暂无数据”，不代表当前时刻已有测量。</p>
+        <p>时间筛选只适用于时效已知的数据。「暂无数据」表示没有测量值。</p>
       </details>
     </el-form>
     <div v-if="rows.length" class="quality-card-list" role="list" aria-label="链路质量摘要">

@@ -25,7 +25,11 @@ function setup(connectionCount?: number) {
   return { wrapper: wrapper as VueWrapper, evidence }
 }
 async function tab(wrapper: VueWrapper, name: string) {
-  await wrapper.findAll('[role="tab"]').find(row => row.text() === name)!.trigger('click')
+  const control = wrapper.findAll('[role="tab"]').find(row => row.text() === name)!
+  const details = wrapper.get('[data-testid="report-details"]')
+  const header = details.get('.el-collapse-item__header')
+  if (details.element.contains(control.element) && !header.classes().includes('is-active')) await header.trigger('click')
+  await control.trigger('click')
   await flushPromises()
 }
 async function select(wrapper: VueWrapper, index: number, value: string) {

@@ -5,6 +5,7 @@ import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
 vi.mock('node:child_process', { spy: true })
+vi.mock('../../server/local/mission-process-inspection.js', { spy: true })
 
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
@@ -20,6 +21,7 @@ const { mkdtemp, mkdir, readFile, readdir, rm, appendFile, writeFile } = await i
 const { tmpdir } = await import('node:' + 'os')
 const { join, dirname } = await import('node:' + 'path')
 const childProcess = await import('node:' + 'child_process')
+const processInspection = await import('../../server/local/' + 'mission-process-inspection.js')
 const { env } = await import('node:' + 'process')
 const { default: nodeProcess } = await import('node:' + 'process')
 const { setTimeout: delay } = await import('node:' + 'timers/promises')
@@ -42,9 +44,6 @@ async function readDeliveredTypeFiles(directory: string): Promise<string> {
       text = text.slice(0, text.indexOf('// 本地运行包：'))
       // /23 为本地 mesh 容量修正；保存给对接方的模板没有该地址行。
       text = text.replace('network COM_MESH_NET WSF_COMM_NETWORK_MESH\n  network_address 10.0.0.0/23\n', 'network COM_MESH_NET WSF_COMM_NETWORK_MESH\n')
-      for (const antenna of ['MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) {
-        text = text.replace(new RegExp(`antenna_pattern ${antenna}[\\s\\S]*?end_antenna_pattern\\n\\n`, 'u'), '')
-      }
     }
     if (name === 'comm_platform_JAMMER.txt') text = text.replace(/\n {2}weapon prophet_jammer[\s\S]*?\n {2}end_weapon\n/u, '\n')
     return text.replace(/\n {2}processor local_link_stub WSF_SCRIPT_PROCESSOR[\s\S]*?\n {2}end_processor/u, '')
@@ -407,6 +406,72 @@ describe('本机 mission 执行器', () => {
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
+  it('强制 local_link_stub 时不探测外部 LinkCalc 插件，运行包不加载 WSF_LINK_CALC_PROCESSOR', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-force-stub-'))
+    vi.mocked(childProcess.spawn).mockImplementation(() => {
+      const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => true) })
+      queueMicrotask(() => { child.emit('spawn'); child.emit('close', 1) })
+      return child
+    })
+    const probe = vi.fn(async () => true)
+    try {
+      const runner = new LocalMissionRunner(join(root, 'mission.exe'), root, undefined, probe, 0, undefined, true)
+      const process = await runner.start(draftForMission(), 'RUN-FORCE-STUB')
+      await process.completed
+      const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
+      expect(rear).not.toContain('WSF_LINK_CALC_PROCESSOR')
+      expect(rear).toContain('processor local_link_stub WSF_SCRIPT_PROCESSOR')
+      expect(JSON.parse(await readFile(join(dirname(process.entryPath), 'execution.json'), 'utf8')))
+        .toMatchObject({ linkCalcCompatibility: 'MISSING_PROCESSOR_STUBBED' })
+      expect(probe).not.toHaveBeenCalled()
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎：强制 local_link_stub 时本机 mission 完整运行并完成', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-force-stub-real-'))
+    try {
+      const runner = new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, async () => { throw new Error('强制 stub 不应探测外部插件') }, 0, undefined, true)
+      const draft = createTemplateScenario()
+      draft.config.scenario.duration = 80
+      draft.config.scenario.realtime = false
+      draft.config.output.directory = 'output'
+      for (const platform of draft.config.platforms) delete platform.returnPlan
+      const process = await runner.start(draft)
+      const outcome = await process.completed
+      expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
+      expect(outcome.errorMessage).toBeUndefined()
+      const rear = await readFile(join(dirname(process.entryPath), 'comm_platform_REAR.txt'), 'utf8')
+      expect(rear).not.toContain('WSF_LINK_CALC_PROCESSOR')
+      expect(rear).toContain('local_link_stub')
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
+  it.skipIf(!env.MISSION_SMOKE_EXECUTABLE).each([2, 2.1])('真实引擎：4 Hz 位置逐帧齐全且包含结束时刻 %s', async duration => {
+    const root = await mkdtemp(join(tmpdir(), 'wrj-mission-position-clock-'))
+    try {
+      const draft = createTemplateScenario()
+      draft.config.scenario.duration = duration
+      draft.config.scenario.realtime = false
+      draft.config.output.directory = 'output'
+      draft.config.linkSettings!.linkCalc!.updateIntervalS = 0.25
+      for (const platform of draft.config.platforms) delete platform.returnPlan
+      const process = await new LocalMissionRunner(env.MISSION_SMOKE_EXECUTABLE!, root, undefined, undefined, 0, undefined, true).start(draft)
+      const outcome = await process.completed
+      expect(outcome, await readFile(join(dirname(process.entryPath), 'mission-console.log'), 'utf8')).toMatchObject({ code: 0 })
+      const csv: string = await readFile(join(dirname(process.entryPath), 'output/position.csv'), 'utf8')
+      const rows = csv.trim().split(/\r?\n/u).slice(1).map(line => line.split(','))
+      const times = [...Array(9)].map((_, i) => i / 4)
+      if (duration > 2) times.push(duration)
+      expect([...new Set(rows.map(row => Number(row[0])))]).toEqual(times)
+      for (const time of times) {
+        const frame = rows.filter(row => Number(row[0]) === time)
+        expect(new Set(frame.map(row => row[1])).size).toBe(draft.config.platforms.length)
+        expect(frame).toHaveLength(draft.config.platforms.length)
+        expect(frame.every(row => row.slice(2).every(value => Number.isFinite(Number(value))))).toBe(true)
+      }
+    } finally { await rm(root, { recursive: true, force: true }) }
+  })
+
   it.skipIf(!env.MISSION_SMOKE_EXECUTABLE)('真实引擎探测 WSF_LINK_CALC_PROCESSOR 不抛错且不残留临时目录', async () => {
     expect(typeof await engineHasLinkCalc(env.MISSION_SMOKE_EXECUTABLE!)).toBe('boolean')
   })
@@ -439,7 +504,7 @@ describe('本机 mission 执行器', () => {
       await mkdir(marker)
       await writeFile(join(marker, 'record.json'), '{invalid')
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
-      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('未结清') })
+      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('遗留 Mission') })
       await expect(runner.start(draftForMission(), 'RUN-123')).rejects.toThrow()
       expect(childProcess.spawn).not.toHaveBeenCalled()
       const server = createMockServer({ port: 0, missionExecution: runner })
@@ -460,13 +525,14 @@ describe('本机 mission 执行器', () => {
       const runner = new LocalMissionRunner(join(root, 'mission.exe'), root)
       await expect(runner.start(draftForMission(), 'RUN-123')).rejects.toThrow('disk full')
       expect(childProcess.spawn).not.toHaveBeenCalled()
-      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('未结清') })
+      expect(runner.safetyStatus()).toMatchObject({ message: expect.stringContaining('遗留 Mission') })
     } finally { await rm(root, { recursive: true, force: true }) }
   })
 
   it('新的服务实例拒绝未结清 Mission 的 CREATE/START 和关联场景写入，关闭后恢复', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-mission-restart-'))
     const db = join(root, 'scenarios.db')
+    vi.spyOn(processInspection, 'readMissionProcesses').mockImplementation(async () => [{ pid: 8765, parentPid: 1, startedAt: Date.parse(JSON.parse(await readFile(join(root, 'runs', '.mission-active', 'record.json'), 'utf8')).spawnedAt), executable: join(root, 'mission.exe'), commandLine: 'mission.exe -es scenario.txt' }])
     const child = Object.assign(new EventEmitter(), { pid: 8765, kill: vi.fn(() => { child.emit('close', null); return true }) })
     vi.mocked(childProcess.spawn).mockImplementation(() => { queueMicrotask(() => child.emit('spawn')); return child })
     const storageA = new ScenarioSqliteStorage(db)

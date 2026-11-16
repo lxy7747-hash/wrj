@@ -30,6 +30,7 @@ import { useReplayStore } from '../../src/stores/replay'
 import { LOCAL_REPLAY } from '../fixtures/local-replay'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import engineSample from '../fixtures/engine-frame/params_check.json'
+import jammerSample from '../fixtures/engine-frame/websocket-new/fream_chenge2.json'
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 import { playbackFileSource, fileReceptionScenarioId } from '../../src/features/situation/file-reception'
 
@@ -80,6 +81,8 @@ const MESSAGE_LINK: FileMessageLink = {
 const mapControllerMock = vi.hoisted(() => {
   const controller = {
     setFrame: vi.fn(),
+    setEngineFrame: vi.fn(),
+    setNodeTrails: vi.fn(),
     setNodes: vi.fn(),
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),
@@ -322,6 +325,23 @@ describe('态势主界面', () => {
     expect(wrapper.find('[data-testid="engine-rejection-detail"]').exists()).toBe(false)
   })
 
+  it('仿真运行中显示进度条，停止后隐藏', async () => {
+    const wrapper = await mountSituationPage()
+    const simulation = useSimulationStore()
+    simulation.applyRun({
+      ...simulationRun('RUNNING', true),
+      canonical: { ...simulationRun('RUNNING', true).canonical, currentTime: 2880, totalDuration: 7200, progress: 40 },
+    })
+    await flushPromises()
+    const bar = wrapper.get('[data-testid="simulation-progress"]')
+    expect(bar.attributes('aria-valuenow')).toBe('40')
+    expect(bar.text()).toContain('48分0秒')
+    expect(bar.text()).toContain('120分0秒')
+    simulation.applyRun(simulationRun('STOPPED', false))
+    await flushPromises()
+    expect(wrapper.find('[data-testid="simulation-progress"]').exists()).toBe(false)
+  })
+
   it('没有 simulation.frame 也能通过 link.metric 在现有页签展示引擎证据与缺测值', async () => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
@@ -340,9 +360,13 @@ describe('态势主界面', () => {
     payload.links.push({ ...payload.links[0]!, linkId: 'segment-error', error: '计算输入缺失' })
     const telemetry = useTelemetryStore()
     expect(telemetry.frame).toBeNull()
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
     expect(telemetry.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: run.taskId, sequence: 1,
       frameId: `F-ENGINE-${payload.frameId}`, simulationTime: payload.simulationTime, payload })).toBe(true)
     await flushPromises()
+    const mapStatus = wrapper.get('.offline-map__layer-status')
+    expect(mapStatus.text()).toContain('离线矢量 · Z')
+    expect(mapStatus.get('[data-testid="engine-map-source"]').text()).toBe('历史数据')
     expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('探测概率 92%')
     expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('经度 118.5°')
     expect(wrapper.get('[data-testid="engine-jammers"]').text()).toContain('宽带压制')
@@ -350,6 +374,9 @@ describe('态势主界面', () => {
     const tab = (label: string) => wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(t => t.text() === label)!
     await tab('质量指标').trigger('click'); await flushPromises()
     const panel = wrapper.get('[data-testid="engine-quality"]')
+    expect(panel.get('.engine-evidence__source').text()).toContain('数据时刻：')
+    expect(wrapper.findAll('[data-testid="quality-source"]')).toHaveLength(1)
+    expect(panel.get('.engine-evidence__source').text()).not.toContain(`帧 ${payload.frameId}`)
     expect(panel.text()).toContain('自由空间损耗'); expect(panel.text()).toContain('145.2')
     expect(panel.text()).toContain('正常'); expect(panel.text()).toContain('暂无数据')
     expect(panel.text()).toContain('异常（状态未知）')
@@ -358,10 +385,10 @@ describe('态势主界面', () => {
     expect(panel.text()).toContain('jammer_station_01')
     await tab('选路判定').trigger('click'); await flushPromises()
     const decisions = wrapper.get('[data-testid="engine-decisions"]')
-    for (const label of ['引擎推送', '初始热链', '切换记录', '旧路径', '新路径', '链路劣化切换', '告警']) expect(decisions.text()).toContain(label)
+    for (const label of ['历史引擎数据（运行已结束）', '初始热链', '切换记录', '旧路径', '新路径', '链路劣化切换', '告警']) expect(decisions.text()).toContain(label)
     finishLoad(successResponse(null)); await flushPromises()
     expect(useRuntimeQualityStore().source).toBe('ENGINE_FRAME')
-    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('引擎实时推送')
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('已结束')
   })
 
   it('本次运行质量驱动连续帧状态、面板与详情，错误或离页同步清空判定', async () => {
@@ -380,7 +407,7 @@ describe('态势主界面', () => {
     expect(quality.scope?.runId).toBe(run.runId)
     const stateRow = wrapper.get('tr[data-link-id="L-MW-01"]')
     expect(stateRow.findAll('td').at(-1)!.text()).toBe('暂无数据')
-    const beforeMapLinks = JSON.parse(JSON.stringify(mapControllerMock.latestOptions?.configuredLinks))
+    expect(mapControllerMock.latestOptions?.configuredLinks).toEqual([])
     expect(quality.bindLinks(quality.epoch, [{ linkId: 'L-MW-01', sourceLinkId: 'ENGINE-MW', sourcePlatformId: 'TX', destinationPlatformId: 'RX', sourcePortId: 'TX-PORT', destinationPortId: 'RX-PORT' }])).toBe(true)
     const epoch = quality.epoch
     const input = { links: [{ link_id: 'ENGINE-MW', tx_platform: 'TX', rx_platform: 'RX', tx_port: 'TX-PORT', rx_port: 'RX-PORT',
@@ -409,7 +436,7 @@ describe('态势主界面', () => {
     expect(mapControllerMock.latestOptions?.configuredLinkStatuses?.get('L-MW-01')).toBe('DEGRADED')
     expect(document.querySelector('[data-testid="link-detail-runtime"]')?.textContent).toContain('稳定帧数3')
     expect(mapControllerMock.latestOptions?.frame).toBeNull()
-    expect(mapControllerMock.latestOptions?.configuredLinks).toEqual(beforeMapLinks)
+    expect(mapControllerMock.latestOptions?.configuredLinks?.map(link => link.id)).toEqual(['L-MW-01'])
     const bad = structuredClone(input)
     bad.links[0]!.quality.ber = 2
     expect(quality.acceptFrame(epoch, { frameId: 13, simulationTime: 66.25 }, bad)).toBe(false)
@@ -419,6 +446,7 @@ describe('态势主界面', () => {
     expect(document.querySelector('[data-testid="link-detail-runtime"]')).toBeNull()
     expect(stateRow.findAll('td').at(-1)!.text()).toBe('暂无数据')
     expect(mapControllerMock.latestOptions?.configuredLinkStatuses?.size).toBe(0)
+    expect(mapControllerMock.latestOptions?.configuredLinks).toEqual([])
     expect(quality.acceptFrame(epoch, { frameId: 14, simulationTime: 67 }, input)).toBe(true)
     await flushPromises()
     wrapper.unmount()
@@ -428,7 +456,128 @@ describe('态势主界面', () => {
     expect(quality.acceptFrame(epoch, { frameId: 15, simulationTime: 68 }, input)).toBe(false)
   })
 
-  it('质量页导入文件后提交当前作用域、消费服务端规范数据并标明文件来源', async () => {
+  it('地图仅显示启用且正常或劣化的链路，缺测、停用、中断及歧义段隐藏，列表保留全部数据', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const base: Link = scene.config.links.find((link: Link) => link.type === 'MICROWAVE')!
+    const links = Array.from({ length: 8 }, (_, index) => ({ ...base, id: `VISIBLE-${index}`, enabled: index !== 5 }))
+    const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-11-15T01:00:00Z' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([run])
+      if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
+      if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
+      if (url.endsWith('/quality')) return successResponse(null)
+      throw new Error(`Unexpected request ${url}`)
+    }))
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    useSimulationStore().selectedScene!.config.links = links
+    const quality = useRuntimeQualityStore()
+    const visibleIds = () => mapControllerMock.latestOptions?.configuredLinks?.map(link => link.id)
+    expect(visibleIds()).toEqual([])
+    const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+    const segment = payload.links[0]!
+    payload.links = links.flatMap((link, index) => index === 4 ? [] : [{ ...segment,
+      linkId: `SEGMENT-${index}`, linkIds: [link.id],
+      status: index === 1 ? 'DEGRADED' as const : index === 2 ? 'DOWN' as const : index === 3 ? 'UNKNOWN' as const : 'UP' as const,
+      error: index === 6 ? '参数缺失' : null,
+    }])
+    payload.links.push({ ...payload.links.at(-1)!, linkId: 'AMBIGUOUS-SEGMENT' })
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(visibleIds()).toEqual(['VISIBLE-0', 'VISIBLE-1'])
+    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(8)
+
+    // 中断恢复后重新出现；选中或切换高亮不应让已停用的链路重新出现。
+    useSimulationStore().selectedScene!.config.links[0]!.enabled = false
+    payload.frameId += 1
+    payload.links[2]!.status = 'UP'
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await wrapper.get('tr[data-link-id="VISIBLE-0"]').trigger('click')
+    await flushPromises()
+    expect(visibleIds()).toEqual(['VISIBLE-1', 'VISIBLE-2'])
+    payload.frameId += 1
+    payload.links = []
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(visibleIds()).toEqual([])
+    expect(wrapper.findAll('tr[data-link-id]')).toHaveLength(8)
+  })
+
+  it('切换高亮只保留最近一次前后路径，无新切换时保留，下次切换及新运行清除旧高亮', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const base: Link = scene.config.links.find((link: Link) => link.type === 'MICROWAVE')!
+    const links = Array.from({ length: 3 }, (_, index) => ({ ...base, id: `SWITCH-${index}`, enabled: true }))
+    const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-11-15T01:00:00Z' }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/simulations')) return successResponse([run])
+      if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
+      if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
+      if (url.endsWith('/quality')) return successResponse(null)
+      throw new Error(`Unexpected request ${url}`)
+    }))
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    useSimulationStore().selectedScene!.config.links = links
+    const quality = useRuntimeQualityStore()
+    const highlights = () => Object.fromEntries(wrapper.findComponent({ name: 'OfflineSituationMap' }).props('configuredLinkSwitches'))
+    const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+    const segment = payload.links[0]!
+    payload.links = links.map((link, index) => ({ ...segment,
+      linkId: `SEGMENT-${index}`, linkIds: [link.id], status: 'UP', error: null,
+      sourcePlatformId: link.sourcePlatformId, targetPlatformId: link.targetPlatformId,
+      sourcePort: `tx-${index}`, targetPort: `rx-${index}`,
+    }))
+    const nodes = (index: number) => {
+      const link = payload.links[index]!
+      return [
+        { platformName: link.sourceName, platformId: link.sourcePlatformId, inPort: null, outPort: link.sourcePort },
+        { platformName: link.targetName, platformId: link.targetPlatformId, inPort: link.targetPort, outPort: null },
+      ]
+    }
+    const route = payload.routing.switches[0]!
+    payload.routing.switches = [{ ...route, oldNodes: nodes(0), nodes: nodes(1) }]
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({ 'SWITCH-0': 'BEFORE', 'SWITCH-1': 'AFTER' })
+    payload.frameId += 1
+    payload.routing.switches = [{ ...route, oldNodes: nodes(1), nodes: nodes(2) }]
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({ 'SWITCH-1': 'BEFORE', 'SWITCH-2': 'AFTER' })
+    expect(quality.engineSwitches).toHaveLength(2)
+    expect(wrapper.get('tr[data-link-id="SWITCH-0"]').classes()).not.toContain('is-switch-before')
+    expect(wrapper.get('tr[data-link-id="SWITCH-1"]').text()).toContain('最近一次切换：前路径')
+
+    payload.frameId += 1
+    payload.routing.switches = []
+    payload.links[1]!.status = 'DOWN'
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({ 'SWITCH-1': 'BEFORE', 'SWITCH-2': 'AFTER' })
+    expect(mapControllerMock.latestOptions?.configuredLinks?.map(link => link.id)).toEqual(['SWITCH-0', 'SWITCH-2'])
+
+    // 最新切换无法解析时，也不能继续显示上一条切换的高亮。
+    payload.frameId += 1
+    payload.routing.switches = [{ ...route, oldNodes: [], nodes: [] }]
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({})
+    expect(quality.engineSwitches).toHaveLength(3)
+    payload.frameId += 1
+    payload.routing.switches = [{ ...route, oldNodes: nodes(2), nodes: nodes(2) }]
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({ 'SWITCH-2': 'BOTH' })
+    payload.engineEpoch += 1
+    payload.frameId = 0
+    payload.routing.switches = []
+    expect(quality.acceptEngineFrame(quality.epoch, payload)).toBe(true)
+    await flushPromises()
+    expect(highlights()).toEqual({})
+    expect(quality.engineSwitches).toEqual([])
+  })
+
+  it('质量页无手动导入入口，仍自动读取已有质量数据并下载规范文件', async () => {
     const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
     const scene = new ScenarioProjection().list()[0]!
     const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-10-31T01:00:00Z' }
@@ -448,8 +597,7 @@ describe('态势主界面', () => {
       if (url.endsWith('/simulations')) return successResponse([run])
       if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
       if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
-      if (url.endsWith(`/simulations/${run.runId}/quality`) && init?.method === 'POST') return successResponse(dataset)
-      if (url.endsWith(`/simulations/${run.runId}/quality`)) return successResponse(null)
+      if (url.endsWith(`/simulations/${run.runId}/quality`)) return successResponse(dataset)
       if (url.includes(`/simulations/${run.runId}/quality/files/manifest.json?`)) return {
         ok: true, headers: new Headers({ 'Content-Disposition': 'attachment; filename="manifest.json"', 'X-Quality-Source-Sha256': 'a'.repeat(64) }),
         blob: vi.fn().mockResolvedValue(new Blob(['{}'], { type: 'application/json' })),
@@ -460,26 +608,14 @@ describe('态势主界面', () => {
     const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
     await wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(tab => tab.text() === '质量指标')!.trigger('click')
     await flushPromises()
-    const input = wrapper.get<HTMLInputElement>('[data-testid="quality-import-input"]')
-    const originalText = '\uFEFF{"format":"wrj.quality.v1"}'
-    const file = { name: 'quality.json', size: 100,
-      arrayBuffer: vi.fn().mockResolvedValue(new TextEncoder().encode(originalText).buffer) } as unknown as File
-    Object.defineProperty(input.element, 'files', { configurable: true, value: [file] })
-    await input.trigger('change')
-    await vi.waitFor(() => expect(useRuntimeQualityStore().snapshot?.source).toBe('FILE_IMPORT'))
-    const post = fetcher.mock.calls.find(([, init]) => (init as RequestInit | undefined)?.method === 'POST')!
-    const importRequest = JSON.parse((post[1] as RequestInit).body as string)
-    expect(importRequest).toMatchObject({ scope, fileName: 'quality.json', format: 'JSON' })
-    expect(importRequest.text).toBe(originalText)
+    expect(wrapper.find('[data-testid="quality-import-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="evidence-import-button"]').exists()).toBe(false)
+    expect(wrapper.find('input[type="file"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('选择当前运行的规范质量')
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+    expect(useRuntimeQualityStore().snapshot?.source).toBe('FILE_IMPORT')
     expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('文件导入 · quality.json · 来源帧号')
     expect(useRuntimeQualityStore().snapshot?.data.links[0]).toMatchObject({ sourcePortId: null, destinationPortId: null, quality: { snrDb: 11, interferencePowerDbm: -95 } })
-    const postCount = fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST').length
-    const invalidFile = { name: 'broken.json', size: 2,
-      arrayBuffer: vi.fn().mockResolvedValue(new Uint8Array([0xc3, 0x28]).buffer) } as unknown as File
-    Object.defineProperty(input.element, 'files', { configurable: true, value: [invalidFile] })
-    await input.trigger('change')
-    await flushPromises()
-    expect(fetcher.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(postCount)
     const createObjectUrl = vi.fn().mockReturnValue('blob:test')
     const revokeObjectUrl = vi.fn()
     Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl })
@@ -541,6 +677,64 @@ describe('态势主界面', () => {
         issueCount: 0, issues: [], waitingForLine: false, hasMore } }
   }
 
+  it('本机 mission 订阅当前任务，结束后收齐 TXT 尾帧，离开页面仍关闭订阅', async () => {
+    const socket = Object.assign(new EventTarget(), { readyState: 0, send: vi.fn<(data: string) => void>(), close: vi.fn() })
+    const connect = Object.assign(vi.fn(function () { return socket }), { OPEN: 1, CONNECTING: 0 })
+    vi.stubGlobal('WebSocket', connect)
+    const { wrapper, setRun } = await mountLiveMission(async scene => successResponse(livePositions(scene, null)))
+    const run = useSimulationStore().run!
+    expect(run.executionSource).not.toBe('REMOTE_WS')
+    expect(connect).toHaveBeenCalledOnce()
+    expect(connect).toHaveBeenCalledWith(expect.stringContaining('missionRunId=' + run.runId))
+    expect(socket.close).not.toHaveBeenCalled()
+    socket.readyState = 1
+    socket.dispatchEvent(new Event('open'))
+    const subscription = JSON.parse(socket.send.mock.calls[0]![0])
+    expect(subscription).toMatchObject({ type: 'subscribe', taskId: run.taskId })
+    expect(subscription.topics).toEqual(expect.arrayContaining(['link.metric', 'mission.log', 'position.update']))
+    const receive = (value: unknown) => socket.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(value) }))
+    receive({ ...subscription, type: 'subscribed', lastSequence: 0, nextSequence: 1 })
+    expect(useTelemetryStore().connectionState).toBe('SUBSCRIBED')
+
+    const { readMockFrames } = await import('../../scripts/websocketData/' + 'read-frames.mjs')
+    const quality = useRuntimeQualityStore()
+    let lastEnvelope: unknown
+    for (const [index, raw] of readMockFrames('scripts/websocketData/frame_snap.txt').slice(0, 2).entries()) {
+      const payload = { ...adaptEngineFrameSnapshot(raw).data!, runId: run.runId }
+      lastEnvelope = { type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: run.taskId, sequence: index + 1,
+        frameId: 'F-ENGINE-' + payload.frameId, simulationTime: payload.simulationTime, payload }
+      receive(lastEnvelope)
+      await vi.advanceTimersByTimeAsync(100)
+      await flushPromises()
+      expect(quality.engineFrame).toEqual(payload)
+      expect(quality.engineFrame!.frameId).toBe(index * 5)
+    }
+    await wrapper.get('[id$="tab-quality"]').trigger('click')
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:00:05 · 连接中断')
+    expect(wrapper.findAll('[data-testid="engine-quality"] .quality-card')).toHaveLength(quality.engineFrame!.links.length)
+    expect(connect).toHaveBeenCalledOnce()
+
+    setRun({ ...run, uiStatus: 'STOPPED', configLocked: false })
+    await flushPromises()
+    expect(socket.close).not.toHaveBeenCalled()
+    const payload = { ...structuredClone(quality.engineFrame!), frameId: 450, simulationTime: 450 }
+    receive({ type: 'event', schemaVersion: '1.0', topic: 'link.metric', taskId: run.taskId, sequence: 3,
+      frameId: 'F-ENGINE-450', simulationTime: 450, payload })
+    await vi.advanceTimersByTimeAsync(100)
+    await flushPromises()
+    expect(quality.engineFrame).toEqual(payload)
+    expect(useTelemetryStore().topicSequences['link.metric']).toBe(3)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toBe('数据时刻：00:07:30 · 已结束')
+    wrapper.unmount()
+    mountedWrapper = null
+    expect(socket.close).toHaveBeenCalledOnce()
+    expect(useTelemetryStore().connectionState).toBe('DISCONNECTED')
+    receive(lastEnvelope)
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(connect).toHaveBeenCalledOnce()
+    expect(useTelemetryStore().topicSequences['link.metric']).toBe(0)
+  })
+
   it('真实运行等待本次CSV后持续更新地图，配置位置和旧input文件不被当成运行位置', async () => {
     let time: number | null = null
     const { wrapper, scene, fetcher } = await mountLiveMission(async scene => successResponse(livePositions(scene, time)))
@@ -582,6 +776,32 @@ describe('态势主界面', () => {
     expect(wrapper.get('[data-testid="engine-jammer-topic-status"]').text()).toContain('帧 21')
     expect(wrapper.get('[data-testid="engine-switch-topic-status"]').text()).toContain('帧 21')
     expect(wrapper.findAll('.event-list li')).toHaveLength(0)
+  })
+
+  it('链路帧落后或位置先到时不展示未来坐标，尾帧到齐后展示最后位置', async () => {
+    const { scene, setRun } = await mountLiveMission(async scene => successResponse(livePositions(scene, 10)))
+    const run = useSimulationStore().run!
+    const quality = useRuntimeQualityStore()
+    const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: run.runId }
+    quality.acceptEngineFrame(quality.epoch, { ...base, frameId: 10, simulationTime: 10 })
+    const node = (time: number) => ({ ...livePositions(scene, time).positions!.nodes[0]! })
+    useTelemetryStore().missionPositionUpdate = { kind: 'MISSION_POSITION', runId: run.runId, scenarioId: scene.config.scenario.id,
+      revision: scene.revision, sourceGeneration: 1, sourceRecordCount: 2, waitingForLine: false, nodes: [node(20)] }
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(node(10))
+    quality.acceptEngineFrame(quality.epoch, { ...base, frameId: 15, simulationTime: 15 })
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(node(10))
+    expect(quality.engineFrame?.simulationTime).toBe(10)
+    quality.acceptEngineFrame(quality.epoch, { ...base, frameId: 20, simulationTime: 20 })
+    await flushPromises()
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(node(20))
+    expect(quality.engineFrame?.simulationTime).toBe(20)
+    setRun({ ...run, uiStatus: 'COMPLETED', configLocked: false })
+    quality.acceptEngineFrame(quality.epoch, { ...base, frameId: 25, simulationTime: 25 })
+    await flushPromises()
+    expect(quality.engineFrame?.simulationTime).toBe(25)
+    expect(mapControllerMock.latestOptions!.initialNodes![0]).toMatchObject(node(20))
   })
 
   it('迟到的位置 HTTP 快照不会覆盖更新后的同源 WebSocket 记录', async () => {
@@ -744,6 +964,27 @@ describe('态势主界面', () => {
     await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
     await panel.get('[data-testid="toggle-telemetry-panel"]').trigger('click')
     expect(tabs[1]!.attributes('aria-selected')).toBe('true')
+  })
+
+  it.each([false, true])('关闭 mission 后重新打开不恢复运行，仅保留场景选择=%s', async hasSelection => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    scene.locked = false
+    const stopped = { ...simulationRun('STOPPED', false), scenarioId: scene.config.scenario.id }
+    if (hasSelection) sessionStorage.setItem('wrj.simulation.selectedScene', JSON.stringify({ userId: OPERATOR.userId, scenarioId: scene.config.scenario.id }))
+    const fetcher = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith('/simulations')) return successResponse([stopped])
+      if (url.endsWith('/scenarios/' + scene.config.scenario.id)) return successResponse(scene)
+      if (url.endsWith('/initial-nodes')) return successResponse(INITIAL_NODES)
+      throw new Error('Unexpected request ' + url)
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = await mountSituationPage(undefined, 'LOCAL')
+    expect(useSimulationStore().selectedScene?.config.scenario.id).toBe(hasSelection ? scene.config.scenario.id : undefined)
+    expect(useSimulationStore().run?.configLocked).toBe(false)
+    expect(wrapper.get('[data-testid="simulation-stop"]').attributes('disabled')).toBeDefined()
+    expect(useTelemetryStore().connectionState).toBe('DISCONNECTED')
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
   it.each(['SCN-001', 'SCN-B'])('刷新恢复 %s 的地图、两行节点和右侧抽屉，不切回本机文件', async id => {
@@ -1213,8 +1454,14 @@ describe('态势主界面', () => {
     const wrapper = await mountSituationPage(undefined, 'LOCAL')
     const store = useSimulationStore()
     const connect = vi.spyOn(useTelemetryStore(), 'connect')
-    const start = vi.spyOn(store, 'start').mockImplementation(async fileSource => {
+    const referencePicker = wrapper.get('[data-testid="file-parameter-reference"]').getComponent(ElSelect)
+    expect(referencePicker.props('modelValue')).toBe('')
+    expect(referencePicker.props('disabled')).toBe(false)
+    referencePicker.vm.$emit('update:modelValue', 'SCN-001')
+    await flushPromises()
+    const start = vi.spyOn(store, 'start').mockImplementation(async (fileSource, referenceScenarioId) => {
       expect(fileSource).toEqual(source)
+      expect(referenceScenarioId).toBe('SCN-001')
       store.applyRun({ ...simulationRun('RUNNING', true), fileSource, scenarioId: fileReceptionScenarioId(source),
         runId: `RUN-${start.mock.calls.length}`,
         canonical: { ...simulationRun('RUNNING', true).canonical, processId: null },
@@ -1238,6 +1485,7 @@ describe('态势主界面', () => {
     await wrapper.get('[data-testid="simulation-start"]').trigger('click')
     await flushPromises()
     expect(start).toHaveBeenCalledOnce()
+    expect(referencePicker.props('disabled')).toBe(true)
     useTelemetryStore().connectionState = 'SUBSCRIBED'
     const playback = useReplayStore(), quality = useRuntimeQualityStore()
     expect(quality.scope?.scenarioId).toBe(fileReceptionScenarioId(source))
@@ -1554,6 +1802,10 @@ describe('态势主界面', () => {
     expect(playback.replay!.currentTimeS).toBeGreaterThan(7.4)
     expect(playback.replay!.currentTimeS).toBeLessThanOrEqual(7.5)
     expect(quality.engineFrame?.simulationTime).toBe(5)
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
+    await wrapper.get('[id$="tab-quality"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('实时更新')
     await vi.advanceTimersByTimeAsync(8000)
     const timedOut = playback.replay!.currentTimeS
     expect(timedOut).toBeCloseTo(15)
@@ -1568,9 +1820,14 @@ describe('态势主界面', () => {
     const disconnected = playback.replay!.currentTimeS
     await vi.advanceTimersByTimeAsync(2000)
     expect(playback.replay!.currentTimeS).toBe(disconnected)
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('连接中断')
+    expect(wrapper.getComponent({ name: 'LinkQualityDialog' }).props('engineSourceLabel')).toContain('连接中断')
     telemetry.engineDiagnostics.push({ kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: running.runId, state: 'CONNECTED', message: '测试重连' })
     await vi.advanceTimersByTimeAsync(1000)
     expect(playback.replay!.currentTimeS).toBe(disconnected)
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('等待更新')
     push(25)
     telemetry.connectionState = 'RETRYING'
     await vi.advanceTimersByTimeAsync(2000)
@@ -1581,6 +1838,14 @@ describe('态势主界面', () => {
     push(30)
     await vi.advanceTimersByTimeAsync(1000)
     expect(playback.replay!.currentTimeS).toBeGreaterThan(30.9)
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('实时更新')
+    quality.setPresentationPaused(true)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="engine-map-source"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="quality-source"]').text()).toContain('已暂停')
+    await vi.advanceTimersByTimeAsync(20000)
+    expect(wrapper.getComponent({ name: 'LinkQualityDialog' }).props('engineSourceLabel')).toBe('暂停展示的引擎数据')
     wrapper.unmount(); mountedWrapper = null
     await vi.advanceTimersByTimeAsync(5000)
     expect(playback.replay).toBeNull()
@@ -2304,12 +2569,11 @@ describe('态势主界面', () => {
     expect(Array.from(linkButton.element.children).map(element => element.tagName)).toEqual(['SPAN', 'SMALL'])
     expect(linkButton.get('span').text()).toBe('L-MW-01')
     expect(linkButton.get('small').text()).toBe('微波链路')
-    const configured = mapControllerMock.latestOptions!.configuredLinks!
     expect(mapControllerMock.latestOptions!.configuredJammers).toEqual(scene.config.jammers)
-    expect(configured.map(link => link.id)).toEqual(config.links.map(link => link.id))
+    expect(mapControllerMock.latestOptions!.configuredLinks).toEqual([])
     await summary.get('[data-testid="focus-link-L-MW-01"]').trigger('click')
     expect(mapControllerMock.controller.focusTarget).toHaveBeenLastCalledWith({ kind: 'link', targetId: 'L-MW-01' })
-    mapControllerMock.latestOptions!.onSelectConfiguredLink!(configured.find(link => link.id === 'L-MW-01')!)
+    await wrapper.get('tr[data-link-id="L-MW-01"]').trigger('click')
     await flushPromises()
     const detail = document.querySelector('[data-testid="link-detail-configured"]')
     expect(detail?.textContent).not.toContain('尚无当前运行结果')
@@ -2390,6 +2654,47 @@ describe('态势主界面', () => {
     expect(JSON.stringify(useSimulationStore().selectedScene?.config)).toBe(savedConfig)
     expect(wrapper.find('[data-testid="saved-scene-preview"]').exists()).toBe(true)
     expect(fetcher.mock.calls.filter(([url]) => /frames|events|initial-nodes|positions/.test(url))).toHaveLength(telemetryCalls)
+  })
+
+  it('已选场景存在中继链路时在链路表和配置详情弹框展示中继平台', async () => {
+    const config = structuredClone(fixtureSource.scenario)
+    config.scenario.id = 'SCN-REL'
+    const scene = {
+      config,
+      revision: 3,
+      officialLibraryChanged: false,
+      locked: false,
+      uiExtensions: {
+        jammers: config.jammers.map(item => ({ jammerId: item.id, direction: 360, duration: 60, enabled: true })),
+        sensors: config.sensors.map(item => ({ sensorId: item.id, type: 'ESM', direction: 'OMNI', probability: 0.95, enabled: true })),
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.endsWith('/situation/initial-nodes')) return successResponse(null)
+      if (url.endsWith('/scenarios')) return successResponse([scene])
+      if (url.endsWith('/scenarios/SCN-REL')) return successResponse(scene)
+      return successResponse([])
+    }))
+    const wrapper = await mountSituationPage('SCN-REL')
+    const telemetryPanel = wrapper.get('.telemetry-panel')
+    expect(telemetryPanel.get('tr[data-link-id="L-SAT-02"] td').text()).toBe('后方指挥节点→通信卫星→高空前出中继节点')
+    expect(telemetryPanel.get('tr[data-link-id="L-MW-01"] td').text()).toBe('高空前出中继节点→后方指挥节点')
+
+    const satRelayLink = config.links.find(link => link.id === 'L-SAT-02')!
+    const directLink = config.links.find(link => link.id === 'L-MW-01')!
+    mapControllerMock.latestOptions!.onSelectConfiguredLink!(satRelayLink as Link)
+    await flushPromises()
+    let detail = document.querySelector('[data-testid="link-detail-configured"]')
+    expect(detail?.textContent).toContain('CMD-01 → SAT-01 → UAV-01')
+    expect([...detail!.querySelectorAll('div')].map(div => [div.querySelector('dt')?.textContent, div.querySelector('dd')?.textContent]))
+      .toContainEqual(['中继平台', 'SAT-01'])
+
+    mapControllerMock.latestOptions!.onSelectConfiguredLink!(directLink as Link)
+    await flushPromises()
+    detail = document.querySelector('[data-testid="link-detail-configured"]')
+    expect(detail?.textContent).toContain('UAV-01 → CMD-01')
+    expect([...detail!.querySelectorAll('div')].map(div => [div.querySelector('dt')?.textContent, div.querySelector('dd')?.textContent]))
+      .toContainEqual(['中继平台', '不经中继'])
   })
 
   it('真实日志读取失败保留空底图，不回显预置 Mock 数据，重试成功后显示节点', async () => {
@@ -2557,6 +2862,22 @@ describe('态势主界面', () => {
     const mapLinks = mapControllerMock.controller.setLinks.mock.lastCall?.[0]
     expect(mapLinks).toHaveLength(10)
     expect(mapLinks).toEqual(expect.arrayContaining([expect.objectContaining({ linkId: 'L-DL-03', snrDb: 7.1 })]))
+  })
+
+  it('遥测链路中断时只从地图移除，恢复正常后重新显示，状态列表始终保留', async () => {
+    const wrapper = await mountSituationPage()
+    const frame = structuredClone(SITUATION_FRAME_F00042)
+    const link = frame.uiLinks[0]!
+    link.status = 'DOWN'
+    useTelemetryStore().$patch({ frame })
+    await flushPromises()
+    const mapLinks = () => mapControllerMock.controller.setLinks.mock.lastCall?.[0] as SituationLinkView[]
+    expect(mapLinks().some(item => item.linkId === link.linkId)).toBe(false)
+    expect(wrapper.get(`tr[data-link-id="${link.linkId}"]`).text()).toContain('中断')
+    link.status = 'UP'
+    useTelemetryStore().$patch({ frame: structuredClone(frame) })
+    await flushPromises()
+    expect(mapLinks().some(item => item.linkId === link.linkId)).toBe(true)
   })
 
   it('从左侧摘要重复定位节点、链路和干扰设备并恢复对应图层', async () => {
@@ -2855,6 +3176,41 @@ describe('态势主界面', () => {
     expect(JSON.stringify(frame)).toBe(original)
   })
 
+  it('WS位置和范围进入节点详情及控制器，轨迹可关闭且换运行清理', async () => {
+    const frame = adaptEngineFrameSnapshot(jammerSample).data!
+    const jammer = frame.jammers[0]!
+    const nodes = [{ ...INITIAL_NODES.nodes[0]!, platformId: jammer.platformId!, type: 'GROUND' }]
+    mountedWrapper = mount(OfflineSituationMap, {
+      props: { frame: null, engineFrame: frame, engineSourceLabel: '历史引擎数据',
+        trailSourceKey: 'run-a', initialNodes: nodes, configuredJammers: [{ id: 'J-1', platformId: jammer.platformId!, jammingRange: 1000 }],
+        links: [], selectedNodeId: jammer.platformId!, focusTarget: null },
+      attachTo: document.body, global: { plugins: [ElementPlus] },
+    })
+    await flushPromises()
+    expect(mountedWrapper.get('[data-testid="engine-map-source"]').text()).toBe(`历史引擎数据 · 帧 ${frame.frameId}`)
+    mapControllerMock.latestOptions!.onSelectNode(jammer.platformId!)
+    await flushPromises()
+    expect(document.querySelector('[data-testid="selected-node-dialog"]')!.textContent).toContain('引擎位置121.55°E / 25.15°N')
+    expect(document.querySelector('[data-testid="configured-jammer-range"]')!.textContent).toContain('18.52 公里（引擎报告范围）')
+    const next = { ...frame, frameId: frame.frameId + 5, simulationTime: frame.simulationTime + 5,
+      jammers: [{ ...jammer, rangeM: 20000, position: { longitude: 121.6, latitude: 25.2, altitudeM: 0 } }] }
+    await mountedWrapper.setProps({ engineFrame: next })
+    expect(mapControllerMock.controller.setEngineFrame).toHaveBeenLastCalledWith(next)
+    expect(mapControllerMock.controller.setNodeTrails.mock.calls.at(-1)![0][0].points).toHaveLength(2)
+    expect(document.querySelector('[data-testid="configured-jammer-range"]')!.textContent).toContain('20 公里')
+    const toggle = mountedWrapper.findAll('[aria-label="态势图层"] button').find(button => button.text() === '运动轨迹')!
+    await toggle.trigger('click')
+    expect(mapControllerMock.controller.setLayerVisible).toHaveBeenLastCalledWith('trails', false)
+    await mountedWrapper.setProps({ trailSourceKey: 'run-b' })
+    expect(mapControllerMock.controller.setNodeTrails).toHaveBeenLastCalledWith([])
+    expect(toggle.attributes('aria-pressed')).toBe('false')
+    await mountedWrapper.setProps({ engineFrame: { ...next, simulationTime: next.simulationTime + 5,
+      jammers: [{ ...jammer, position: { longitude: 121.8, latitude: 25.4, altitudeM: 0 } }] } })
+    expect(mapControllerMock.controller.setNodeTrails.mock.calls.at(-1)![0][0].points).toHaveLength(2)
+    await mountedWrapper.setProps({ engineFrame: { ...next, runId: 'another-engine-run', simulationTime: next.simulationTime + 10 } })
+    expect(mapControllerMock.controller.setNodeTrails).toHaveBeenLastCalledWith([])
+  })
+
   it('通过 Leaflet 控制器同步图层、视图、选择和销毁', async () => {
     const wrapper = await mountSituationPage()
     const options = mapControllerMock.latestOptions
@@ -2862,8 +3218,8 @@ describe('态势主界面', () => {
     expect(options).not.toBeNull()
     const layerbar = wrapper.get('[aria-label="态势图层"]')
     const layerButtons = layerbar.findAll('button')
-    expect(layerButtons).toHaveLength(6)
-    expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '流向动画', '干扰范围', '经纬网', '探测范围'])
+    expect(layerButtons).toHaveLength(7)
+    expect(layerButtons.map((button) => button.text())).toEqual(['节点', '链路', '流向动画', '干扰范围', '经纬网', '探测范围', '运动轨迹'])
     const gridButton = layerButtons[4]
     expect(gridButton.attributes('aria-pressed')).toBe('false')
     expect(gridButton.classes()).not.toContain('active')
@@ -2980,6 +3336,45 @@ describe('态势主界面', () => {
     expect(mapControllerMock.createSituationMapController).toHaveBeenCalledOnce()
     expect(mapControllerMock.controller.destroy).toHaveBeenCalledOnce()
   })
+
+  it('同作用域刷新及链路重排保留质量上下文，重复链路ID仍拒绝激活', async () => {
+    const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
+    const scene = new ScenarioProjection().list()[0]!
+    const run = { ...simulationRun('COMPLETED', false), startedAt: '2026-10-31T01:00:00Z' }
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/simulations')) return successResponse([run])
+      if (url.endsWith('/positions')) return successResponse({ runId: run.runId, scenarioId: run.scenarioId, revision: scene.revision, positions: null })
+      if (url.endsWith('/scenarios/SCN-001')) return successResponse(scene)
+      if (url.includes('/quality')) return successResponse(null)
+      return successResponse([])
+    })
+    vi.stubGlobal('fetch', fetcher)
+    const wrapper = await mountSituationPage('SCN-001', 'LOCAL')
+    await wrapper.get('.telemetry-panel').findAll('.el-tabs__item').find(tab => tab.text() === '质量指标')!.trigger('click')
+    useSimulationStore().$patch({ run })
+    await flushPromises()
+    const qualityStore = useRuntimeQualityStore()
+    const epochBefore = qualityStore.epoch
+    // 1) 同作用域真实刷新（新对象、同五字段与同链路集合）→ epoch 不变
+    const before = useSimulationStore().selectedScene!
+    expect(await useSimulationStore().selectScene(before.config.scenario.id)).toBe(true)
+    await flushPromises()
+    expect(qualityStore.epoch).toBe(epochBefore)
+    // 2) 纯链路重排（顺序变化、集合相同）→ epoch 不变
+    const reordered = { ...before, config: { ...before.config, links: [...before.config.links].reverse() } }
+    useSimulationStore().selectedScene = reordered
+    await flushPromises()
+    expect(qualityStore.epoch).toBe(epochBefore)
+    // 3) 新增重复链路ID → activate 既有拒绝（scope 置空、epoch 递增）
+    const duplicateLinks = [...reordered.config.links, reordered.config.links[0]!]
+    useSimulationStore().selectedScene = { ...reordered, config: { ...reordered.config, links: duplicateLinks } }
+    await flushPromises()
+    expect(useRuntimeQualityStore().scope).toBeNull()
+    expect(useRuntimeQualityStore().epoch).toBeGreaterThan(epochBefore)
+  })
+
+
 })
 
 describe('Leaflet 控制器回归', () => {
@@ -3105,6 +3500,55 @@ describe('Leaflet 控制器回归', () => {
     return controller
   }
 
+
+  it('引擎干扰范围随位置和半径更新，空数组仅回退配置，明确关闭才移除覆盖', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const frame = adaptEngineFrameSnapshot(jammerSample).data!, jammer = frame.jammers[0]!
+    const nodes = [{ ...INITIAL_NODES.nodes[0]!, platformId: jammer.platformId!, type: 'GROUND' }]
+    const controller = await createController({ initialNodes: nodes,
+      configuredJammers: [{ id: 'J-1', platformId: jammer.platformId!, jammingRange: 1000 }] })
+    const ranges = groups.mock.results[4]!.value as L.LayerGroup
+    controller.setEngineFrame(frame)
+    const circle = ranges.getLayers()[0] as L.Circle
+    expect(circle.getRadius()).toBe(18520)
+    expect(circle.getLatLng()).toEqual(L.latLng(25.15, 121.55))
+    expect((circle.getTooltip()!.getContent() as HTMLElement).textContent).toContain('引擎报告范围')
+    controller.setEngineFrame({ ...frame, jammers: [{ ...jammer, deviceStatus: null }] })
+    expect(ranges.getLayers()).toEqual([circle])
+    expect((circle.getTooltip()!.getContent() as HTMLElement).textContent).toContain('启停未确认')
+    controller.setEngineFrame({ ...frame, jammers: [{ ...jammer, rangeM: 21000, position: { longitude: 121.7, latitude: 25.3, altitudeM: 0 } }] })
+    expect(ranges.getLayers()).toEqual([circle])
+    expect(circle.getRadius()).toBe(21000)
+    expect(circle.getLatLng()).toEqual(L.latLng(25.3, 121.7))
+    const markers = (groups.mock.results[0]!.value as L.LayerGroup).getLayers() as L.Marker[]
+    expect(markers[0]!.getLatLng()).toEqual(L.latLng(25.3, 121.7))
+    controller.setEngineFrame({ ...frame, jammers: [] })
+    const fallback = ranges.getLayers()[0] as L.Circle
+    expect(fallback.getRadius()).toBe(1000)
+    expect((fallback.getTooltip()!.getContent() as HTMLElement).textContent).toContain('配置范围，非实测覆盖')
+    controller.setEngineFrame({ ...frame, jammers: [{ ...jammer, deviceStatus: 'OFF' }] })
+    expect(ranges.getLayers()).toEqual([])
+  })
+
+  it('轨迹使用独立图层，更新复用折线，显隐不丢点，清空移除旧轨迹', async () => {
+    const groups = vi.spyOn(L, 'layerGroup')
+    const nodes = [{ ...INITIAL_NODES.nodes[0]!, type: 'AIR' }]
+    const controller = await createController({ initialNodes: nodes })
+    const trails = groups.mock.results[7]!.value as L.LayerGroup
+    const points = [{ longitude: 120, latitude: 25, time: 0 }, { longitude: 121, latitude: 26, time: 1 }]
+    controller.setNodeTrails([{ platformId: nodes[0]!.platformId, points }])
+    const line = trails.getLayers()[0] as L.Polyline
+    expect(line.getLatLngs()).toEqual([L.latLng(25, 120), L.latLng(26, 121)])
+    expect(line.options.interactive).toBe(false)
+    controller.setLayerVisible('trails', false)
+    expect((line as any)._map).toBeNull()
+    controller.setNodeTrails([{ platformId: nodes[0]!.platformId, points: [...points, { longitude: 122, latitude: 27, time: 2 }] }])
+    expect(trails.getLayers()).toEqual([line])
+    controller.setLayerVisible('trails', true)
+    expect(line.getLatLngs()).toHaveLength(3)
+    controller.setNodeTrails([])
+    expect(trails.getLayers()).toEqual([])
+  })
 
   it('两类指定节点的探测圈半径为 50 公里，移动和倒退复用圆，切换数据源移除，其他节点不冒用范围', async () => {
     const groups = vi.spyOn(L, 'layerGroup')
@@ -3355,12 +3799,17 @@ describe('Leaflet 控制器回归', () => {
       const nodes = satellites.slice(0, count)
       const points = nodes.map(node => resolvePlatformCoordinates(node, nodes))
       expect(new Set(points.map(point => JSON.stringify(point))).size).toBe(count)
+      // 两颗卫星时需同时在水平（经度）与垂直（纬度）方向拉开距离。
+      if (count === 2) {
+        expect(Math.abs(points[0]!.latitude - points[1]!.latitude)).toBeGreaterThan(0)
+        expect(Math.abs(points[0]!.longitude - points[1]!.longitude)).toBeGreaterThan(0)
+      }
       expect(points.reduce((sum, point) => sum + point.longitude, 0) / count).toBeCloseTo(center.longitude, 10)
       expect(points.reduce((sum, point) => sum + point.latitude, 0) / count).toBeCloseTo(center.latitude, 10)
       points.forEach((point, index) => {
         const x = (point.longitude - center.longitude) * Math.cos(center.latitude * Math.PI / 180)
         const y = point.latitude - center.latitude
-        expect(Math.hypot(x, y)).toBeCloseTo(0.05, 10)
+        expect(Math.hypot(x, y)).toBeCloseTo(MAP_CONFIG.temporarySatelliteSpreadRadiusDegrees, 10)
         expect(resolvePlatformCoordinates(nodes[index]!, [...nodes].reverse())).toEqual(point)
       })
     }
@@ -3397,6 +3846,27 @@ describe('Leaflet 控制器回归', () => {
     expect(nodeMarkers[0]!.getLatLng()).toEqual(L.latLng(MAP_CONFIG.temporarySatellitePosition.latitude, MAP_CONFIG.temporarySatellitePosition.longitude))
     expect((connectionLines[0]!.getLatLngs() as L.LatLng[])[0]).toEqual(nodeMarkers[0]!.getLatLng())
     expect(JSON.stringify(nodes)).toBe(original)
+  })
+
+  it.each(['BEFORE', 'AFTER', 'BOTH'] as const)('切换路径 %s 的光晕随链路体制和质量状态更新，复用原线条', async switching => {
+    const polyline = vi.spyOn(L, 'polyline')
+    const nodes = fixtureSource.scenario.platforms.map(platform => ({ platformId: platform.id, name: platform.name,
+      type: platform.type, ...platform.initialPosition, speed: 0 }))
+    const link = structuredClone(fixtureSource.scenario.links.find(link => link.type === 'MICROWAVE')!) as Link
+    const controller = await createController({ initialNodes: nodes, configuredLinks: [link] })
+    const line = polyline.mock.results.map(result => result.value as L.Polyline)
+      .find(line => line.options.className === 'situation-map-configured-link')!
+    const element = line.getElement()! as SVGElement
+    controller.setConfiguredLinkSwitches(new Map([[link.id, switching]]))
+    expect(element.classList.contains(`situation-map-link--switch-${switching.toLowerCase()}`)).toBe(true)
+    expect(element.style.getPropertyValue('--situation-link-color')).toBe('#409eff')
+    controller.setConfiguredLinkStatuses(new Map([[link.id, 'DOWN']]))
+    expect(line.getElement()).toBe(element)
+    expect(element.style.getPropertyValue('--situation-link-color')).toBe('#f56c6c')
+    controller.setConfiguredLinkStatuses(new Map([[link.id, 'UP']]))
+    expect(element.style.getPropertyValue('--situation-link-color')).toBe('#409eff')
+    controller.setConfiguredLinkSwitches(undefined)
+    expect(element.className.baseVal).not.toContain('situation-map-link--switch-')
   })
 
   it('所选场景配置链路可点击和定位，不生成状态、质量或干扰圈，切换配置清除旧线', async () => {
@@ -3447,6 +3917,75 @@ describe('Leaflet 控制器回归', () => {
     controller.setConfiguredLinks(undefined)
     controller.destroy()
     controller.setConfiguredLinks(links)
+  })
+
+  it('配置链路指定中继平台时按源-中继-目标分段连线，点击与定位覆盖中继节点', async () => {
+    const polyline = vi.spyOn(L, 'polyline')
+    const marker = vi.spyOn(L, 'marker')
+    const fit = vi.spyOn(L.Map.prototype, 'fitBounds')
+    const nodes: SituationMapNode[] = [
+      { ...INITIAL_NODES.nodes[1]!, platformId: 'REAR', name: '后方通信车', type: 'REAR_COMMAND_NODE', longitude: 117.72, latitude: 24.01 },
+      { ...INITIAL_NODES.nodes[0]!, platformId: 'SAT', name: '天通卫星', type: 'COMMUNICATION_SATELLITE', satelliteType: 'TIANTONG', longitude: 125.0, latitude: 0.0 },
+      { ...INITIAL_NODES.nodes[1]!, platformId: 'RELAY', name: '中继无人机01', type: 'FORWARD_RELAY_NODE', longitude: 118.80, latitude: 24.30 },
+      { ...INITIAL_NODES.nodes[1]!, platformId: 'UAV', name: '任务无人机02', type: 'AIRBORNE_MISSION_CLUSTER', longitude: 119.41, latitude: 24.08 },
+    ]
+    const baseLink = fixtureSource.scenario.links[0]! as Link
+    const relayLinks: Link[] = [
+      { ...baseLink, id: 'L-SAT-RELAY', type: 'SAT', sourcePlatformId: 'REAR', targetPlatformId: 'UAV', relayPlatformId: 'SAT', enabled: true },
+      { ...baseLink, id: 'L-DL-RELAY', type: 'DATALINK', sourcePlatformId: 'REAR', targetPlatformId: 'UAV', relayPlatformId: 'RELAY', enabled: true },
+    ]
+    const selected = vi.fn()
+    const controller = await createController({ initialNodes: nodes, configuredLinks: relayLinks, onSelectConfiguredLink: selected })
+    const lineCalls = polyline.mock.calls.filter(([, options]) => options?.className === 'situation-map-configured-link')
+    expect(lineCalls).toHaveLength(2)
+
+    const toTuple = (node: SituationMapNode): L.LatLngTuple => {
+      const coords = resolvePlatformCoordinates(node, nodes)
+      return [coords.latitude, coords.longitude]
+    }
+    const rearPoint = toTuple(nodes[0]!)
+    const satPoint = toTuple(nodes[1]!)
+    const relayPoint = toTuple(nodes[2]!)
+    const uavPoint = toTuple(nodes[3]!)
+
+    const satPoints = lineCalls[0]![0] as L.LatLngTuple[]
+    expect(satPoints[0]).toEqual(rearPoint)
+    expect(satPoints[satPoints.length - 1]).toEqual(uavPoint)
+    expect(satPoints).toContainEqual(satPoint)
+
+    const dlPoints = lineCalls[1]![0] as L.LatLngTuple[]
+    expect(dlPoints[0]).toEqual(rearPoint)
+    expect(dlPoints[dlPoints.length - 1]).toEqual(uavPoint)
+    expect(dlPoints).toContainEqual(relayPoint)
+
+    const satHitCall = marker.mock.calls.find(([, options]) => options?.title?.includes('L-SAT-RELAY ·'))
+    expect(satHitCall?.[1]?.title).toContain('后方通信车 → 天通卫星 → 任务无人机02')
+    expect(satHitCall?.[0]).not.toEqual(satPoint)
+    const dlHitCall = marker.mock.calls.find(([, options]) => options?.title?.includes('L-DL-RELAY ·'))
+    expect(dlHitCall?.[1]?.title).toContain('后方通信车 → 中继无人机01 → 任务无人机02')
+    expect(dlHitCall?.[0]).not.toEqual(relayPoint)
+
+    const hitIndex = marker.mock.calls.indexOf(satHitCall!)
+    ;(marker.mock.results[hitIndex]!.value as L.Marker).fire('click')
+    expect(selected).toHaveBeenCalledWith(relayLinks[0])
+
+    fit.mockClear()
+    controller.focusTarget({ kind: 'link', targetId: 'L-SAT-RELAY' })
+    expect(fit).toHaveBeenCalledOnce()
+    const satBounds = fit.mock.calls[0]![0] as L.LatLngBounds
+    expect(satBounds.contains(rearPoint)).toBe(true)
+    expect(satBounds.contains(satPoint)).toBe(true)
+    expect(satBounds.contains(uavPoint)).toBe(true)
+
+    fit.mockClear()
+    controller.focusTarget({ kind: 'link', targetId: 'L-DL-RELAY' })
+    expect(fit).toHaveBeenCalledOnce()
+    const dlBounds = fit.mock.calls[0]![0] as L.LatLngBounds
+    expect(dlBounds.contains(rearPoint)).toBe(true)
+    expect(dlBounds.contains(relayPoint)).toBe(true)
+    expect(dlBounds.contains(uavPoint)).toBe(true)
+
+    controller.destroy()
   })
 
   it('无遥测帧时按真实坐标创建节点，保留西经并支持定位高亮', async () => {
@@ -4232,6 +4771,7 @@ describe('Leaflet 控制器回归', () => {
         weight: 6,
         opacity: 1,
       }))
+    expect((currentLinkLines[0]?.line.getElement() as SVGElement)?.style.getPropertyValue('--situation-link-color')).toBe(currentLinkLines[0]?.line.options.color)
 
     controller.destroy()
   })

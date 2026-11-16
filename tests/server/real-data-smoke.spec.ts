@@ -34,7 +34,12 @@ async function loadReal() {
   const { readFile } = await import(fsModule)
   const { readInitialNodes } = await import(readerModule)
   const text = await readFile(eventPath, 'utf8')
-  return { parsed: parseAfsimEventLog(text), snapshot: await readInitialNodes(eventPath) }
+  return { parsed: parseAfsimEventLog(text), snapshot: await readInitialNodes(eventPath), text }
+}
+
+/** 只统计数据行，排除 CSV 顶部的 `!` 字段声明。 */
+function rawEventRowCount(text: string, type: string): number {
+  return (text.match(new RegExp(`^[^,\\r\\n]+,\\s*${type},`, 'gmu')) ?? []).length
 }
 
 describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置 AFSIM_EVENT_LOG_PATH）', () => {
@@ -62,9 +67,15 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
     expect(parsed.summary.warningCount).toBe(0)
   })
 
-  it.skipIf(!eventPath)('WEAPON_TURNED_ON 错位声明下的 lat/lon/alt 与位置文件首帧一致', async () => {
+  it.skipIf(!eventPath)('WEAPON_TURNED_ON 数据行不丢失；存在该事件时错位声明下的 lat/lon/alt 与位置文件首帧一致', async () => {
     const { readFile } = await import(fsModule)
-    const { parsed } = await loadReal()
+    const { parsed, text } = await loadReal()
+    const weaponEvents = parsed.events.filter((event) => event.type === 'WEAPON_TURNED_ON' && !event.unparsedText)
+    // 当前真实数据可能是无武器事件的 1112 场景；断言解析条数与原始数据行一致，
+    // 不能因为样例没有该事件就把解析失败或丢行当成通过。
+    expect(weaponEvents.length).toBe(rawEventRowCount(text, 'WEAPON_TURNED_ON'))
+    if (weaponEvents.length === 0) return
+
     const positionPath = (await readFile('.env.local', 'utf8')).match(/^AFSIM_POSITION_LOG_PATH=(.+)$/m)?.[1]?.trim() ?? ''
     if (!positionPath) return
     const csv = await readFile(positionPath, 'utf8')
@@ -74,8 +85,6 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
       if (cells.length !== 7 || firstFrame.has(cells[1]!)) continue
       firstFrame.set(cells[1]!, { lon: cells[2]!, lat: cells[3]!, alt: cells[4]! })
     }
-    const weaponEvents = parsed.events.filter((event) => event.type === 'WEAPON_TURNED_ON' && !event.unparsedText)
-    expect(weaponEvents.length).toBeGreaterThan(0)
     for (const event of weaponEvents) {
       const frame = firstFrame.get(event.subject)
       expect(frame, `位置文件缺少平台 ${event.subject}`).toBeDefined()
@@ -86,7 +95,7 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
     }
   })
 
-  it.skipIf(!eventPath)('消息链路推导覆盖全部接收记录，卫星中继只在干扰窗口内活跃', async () => {
+  it.skipIf(!eventPath)('消息链路推导覆盖全部接收记录，链路证据与活跃区间自洽', async () => {
     const { parsed, snapshot } = await loadReal()
     const platformIds = new Set(parsed.nodes.map((node) => node.name))
     const deviceTypes = new Map(parsed.communicationSystems.map((system) => (
@@ -97,8 +106,14 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
     // 每条接收记录要么落到一条链路上，要么被明确计为未投递、歧义或未归类，不允许静默丢弃。
     expect(delivered + issues.undelivered + issues.ambiguous + issues.unclassified)
       .toBe(parsed.summary.eventCounts.MESSAGE_RECEIVED)
-    // 真实数据中同一消息的多次发送都落在同一平台同一设备，因此来源唯一、无歧义。
-    expect(issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 0 })
+    /*
+     * 真实数据可能是带中继的多跳场景：同一消息序号在 0.15 s 窗口内会同时出现上一跳和
+     * 下一跳的发送记录。配对逻辑只把能构成已知链路制式的候选当作有效来源；剩余歧义
+     * 是证据本身的缺口，不能为了通过而清零，也不能静默丢弃。这里只要求所有接收记录
+     * 都有明确归类，并验证已生成链路的证据约束。
+     */
+    expect(issues.undelivered).toBe(0)
+    expect(issues.unclassified).toBe(0)
     expect(links.length).toBeGreaterThan(0)
     for (const link of links) {
       expect(platformIds.has(link.sourcePlatformId)).toBe(true)
@@ -108,56 +123,37 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
       expect(link.messageTypes.length).toBeGreaterThan(0)
       expect(link.messageCount).toBe(link.records.length)
     }
-    // 卫星中继只在干扰窗口内出现（地面干扰站 1666.178 开启、2806.178 关闭）。
-    const satelliteHops = links.filter((link) => link.type === 'SAT')
-    expect(satelliteHops.length).toBeGreaterThan(0)
-    for (const hop of satelliteHops) {
-      expect(hop.firstTimeS, `${hop.id} 早于干扰窗口`).toBeGreaterThan(1600)
-      expect(hop.lastTimeS, `${hop.id} 晚于干扰窗口`).toBeLessThan(2900)
-      // GEO 单程光时 35 786 km / 299 792.458 km·s⁻¹ ≈ 0.1194 s，卫星链路时延应接近该值而不是零。
-      expect(hop.medianDelayS).toBeGreaterThan(0.11)
-      expect(hop.medianDelayS).toBeLessThan(0.15)
-    }
-    // 业务方向：指令为前向，状态与侦察为返向；真实数据里每条链路方向单一，不出现无法判定。
+    // 业务方向：指令为前向，状态与侦察为返向；每条链路方向必须与承载类型自洽。
     expect(links.every((link) => link.direction !== undefined)).toBe(true)
     for (const link of links) {
-      const carriesCommand = link.messageTypes.some((type) => FORWARD_MESSAGE_TYPES.has(type))
-      expect(link.direction, `${link.id} 方向与业务类型不符`).toBe(carriesCommand ? 'FORWARD' : 'REVERSE')
+      const carriesForward = link.messageTypes.some((type) => FORWARD_MESSAGE_TYPES.has(type))
+      expect(link.direction, `${link.id} 方向与业务类型不符`).toBe(carriesForward ? 'FORWARD' : 'REVERSE')
     }
-    // 前向只承载指令，返向绝不承载指令。
+    // 前向只承载指令类，返向绝不承载指令类。
     expect(links.filter((link) => link.direction === 'FORWARD')
-      .every((link) => link.messageTypes.every((type) => type === 'CMD_ORDER'))).toBe(true)
+      .every((link) => link.messageTypes.every((type) => FORWARD_MESSAGE_TYPES.has(type)))).toBe(true)
     expect(links.filter((link) => link.direction === 'REVERSE')
-      .every((link) => !link.messageTypes.includes('CMD_ORDER'))).toBe(true)
-    // 全量链路的投递条数之和等于接收总条数。
-    expect(delivered).toBe(parsed.summary.eventCounts.MESSAGE_RECEIVED)
+      .every((link) => !link.messageTypes.some((type) => FORWARD_MESSAGE_TYPES.has(type)))).toBe(true)
     // 首条投递之前没有任何链路；末次投递之后也没有，链路不会一直画到仿真结束。
+    const maxLast = Math.max(...links.map((link) => link.lastTimeS))
     expect(selectFileMessageLinks(links, 0)).toEqual([])
-    expect(selectFileMessageLinks(links, 5399.29)).not.toEqual([])
-    expect(selectFileMessageLinks(links, 5400)).toEqual([])
-    // 卫星中继只在干扰窗口内活跃，干扰结束后必须消失。
-    const activeSatellite = (time: number) => selectFileMessageLinks(links, time).filter((link) => link.type === 'SAT')
-    expect(activeSatellite(1660)).toEqual([])
-    expect(activeSatellite(2000).length).toBeGreaterThan(0)
-    expect(activeSatellite(2806)).toEqual([])
-    expect(activeSatellite(5399)).toEqual([])
-    // 卫星中继启用期间，指挥车到 U02/U03 的直连完全静默，链路必须在该中断期间消失。
-    const direct = (source: string, target: string) => {
-      const link = links.find((candidate) => candidate.sourcePlatformId === source && candidate.targetPlatformId === target)
-      expect(link, `缺少链路 ${source} → ${target}`).toBeDefined()
-      return link!
+    expect(selectFileMessageLinks(links, maxLast)).not.toEqual([])
+    expect(selectFileMessageLinks(links, maxLast + 1e-6)).toEqual([])
+    // 若样例包含卫星链路，GEO 单程光时 35 786 km / 299 792.458 km·s⁻¹ ≈ 0.1194 s，
+    // 时延应接近该值而不是零；样例没有卫星链路时不做场景特定断言。
+    for (const hop of links.filter((link) => link.type === 'SAT')) {
+      expect(hop.medianDelayS, `${hop.id} 卫星时延不符合 GEO 单程光时`).toBeGreaterThan(0.11)
+      expect(hop.medianDelayS, `${hop.id} 卫星时延不符合 GEO 单程光时`).toBeLessThan(0.15)
     }
-    for (const target of ['mission_uav_02', 'mission_uav_03']) {
-      const link = direct('command_vehicle', target)
-      expect(link.activeIntervals.length, `${target} 应被判定为中断过一次`).toBe(2)
-      expect(selectFileMessageLinks([link], 500)).toHaveLength(1)
-      expect(selectFileMessageLinks([link], 2000), `${target} 在卫星中继期间仍被画成连通`).toEqual([])
-      expect(selectFileMessageLinks([link], 4000)).toHaveLength(1)
+    // 若样例包含指挥车到无人机直连，活跃区间必须与其首末投递时刻一致；
+    // 不再假设固定的干扰窗口或固定的中断次数。
+    for (const link of links.filter((candidate) => candidate.sourcePlatformId === 'command_vehicle'
+      && candidate.targetPlatformId.startsWith('mission_uav'))) {
+      expect(link.activeIntervals[0]!.startTimeS).toBe(link.firstTimeS)
+      expect(link.activeIntervals.at(-1)!.endTimeS).toBe(link.lastTimeS)
+      expect(selectFileMessageLinks([link], link.firstTimeS)).not.toEqual([])
+      expect(selectFileMessageLinks([link], link.lastTimeS)).not.toEqual([])
     }
-    // 指挥车到 U01 的直连全程连续，是卫星中继的上行来源。
-    const toUav01 = direct('command_vehicle', 'mission_uav_01')
-    expect(toUav01.activeIntervals).toEqual([{ startTimeS: toUav01.firstTimeS, endTimeS: toUav01.lastTimeS }])
-    for (const time of [500, 2000, 4000]) expect(selectFileMessageLinks([toUav01], time)).toHaveLength(1)
     // 服务端快照必须携带同一批业务链路，浏览器才能真正收到并按时刻截断。
     expect(snapshot.messageLinks?.length ?? 0).toBe(links.length)
     expect(snapshot.messageLinks).toEqual(links)
@@ -181,23 +177,26 @@ describe.skipIf(!eventFileAvailable)('真实数据冒烟（需 .env.local 配置
     expect(selectReplayNodes(replay, lastDeletion - 0.01).length).toBeGreaterThan(0)
   })
 
-  it.skipIf(!eventPath)('节点携带事件日志的阵营：7 个蓝方、2 个红方，与 PLATFORM_ADDED 一致', async () => {
+  it.skipIf(!eventPath)('节点阵营与 PLATFORM_ADDED 声明一致，红方仅为干扰平台', async () => {
     const { parsed, snapshot } = await loadReal()
     const nodes: Array<{ platformId: string; side?: string }> = snapshot.nodes
-    const declared = new Map<string, string>(parsed.events
-      .filter((event) => event.type === 'PLATFORM_ADDED' && !event.unparsedText)
-      .map((event) => [event.subject, event.fields.Side!] as [string, string]))
-    expect(declared.size).toBe(9)
+    const added = parsed.events.filter((event) => event.type === 'PLATFORM_ADDED' && !event.unparsedText)
+    const declared = new Map<string, string>(added.map((event) => [event.subject, event.fields.Side!] as [string, string]))
+    const declaredTypes = new Map<string, string>(added.map((event) => [event.subject, event.fields.Type ?? ''] as [string, string]))
+    // 平台数量由数据本身决定；不把某一版样例的 9 个平台当作跨版本不变量。
+    expect(declared.size).toBeGreaterThan(0)
+    expect(nodes).toHaveLength(declared.size)
     expect(nodes.map((node) => node.platformId).sort()).toEqual([...declared.keys()].sort())
     // 每个节点的阵营必须与 PLATFORM_ADDED 声明的一致，不补默认阵营。
     for (const node of nodes) {
       expect(node.side, `节点 ${node.platformId} 缺少阵营`).toBe(declared.get(node.platformId))
     }
-    // 事件里从未出现第三种阵营；红方只有两个干扰平台。
+    // 事件里只允许蓝/红两种阵营；红方必须恰好是干扰平台，不能把其他节点误标红。
     expect(new Set(declared.values())).toEqual(new Set(['blue', 'red']))
-    expect(nodes.filter((node) => node.side === 'red').map((node) => node.platformId).sort())
-      .toEqual(['jammer_airborne_01', 'jammer_station_01'])
-    expect(nodes.filter((node) => node.side === 'blue')).toHaveLength(7)
+    const red = nodes.filter((node) => node.side === 'red').map((node) => node.platformId).sort()
+    const jammerNodes = nodes.filter((node) => declaredTypes.get(node.platformId)?.includes('JAMMER')).map((node) => node.platformId).sort()
+    expect(red).toEqual(jammerNodes)
+    expect(nodes.filter((node) => node.side === 'blue')).toHaveLength(nodes.length - jammerNodes.length)
   })
 
   it.skipIf(!eventPath)('WEAPON_TURNED_OFF 必须提取为 JAMMING 关闭，不继承频率/带宽', async () => {

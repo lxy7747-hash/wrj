@@ -2,12 +2,14 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { MAP_CONFIG, isSatellitePlatform, nodeCategory, nodeGlyph, nodeIconUrl, resolvePlatformCoordinates } from '../../config/map.config'
 import type { MapBasemap, MapTheme } from '../../config/map.config'
-import type { Link, TelemetryFrame } from '../../contracts/domain-models'
+import type { EngineFrameSnapshot, Link, TelemetryFrame } from '../../contracts/domain-models'
 import type { SituationMapNode } from '../../features/situation/initial-nodes'
 import { FILE_COMMUNICATION_LABELS, type FileCommunicationLink } from '../../features/situation/file-communication-links'
 import { selectFileMessageLinks, FILE_MESSAGE_DIRECTION_LABELS, type FileMessageLink } from '../../features/situation/file-message-links'
 import { fileJammerRadiusMeters, selectFileDeviceStates, type FileDeviceEvent } from '../../features/situation/file-device-events'
-import { selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
+import { engineJammerNodes, interferenceRangeSource, selectInterferenceRanges, type ConfiguredJammerRange } from '../../features/situation/interference-ranges'
+import { createNodeTrailTracker, replayNodeTrails, type NodeTrail } from '../../features/situation/node-trails'
+import type { LocalReplaySnapshot } from '../../features/replays/local-replay'
 import {
   PLATFORM_TYPE_LABELS,
   type SituationLinkView,
@@ -24,6 +26,10 @@ const props = defineProps<{
   /** 数据源更换只清理业务选择与详情，不销毁底图。 */
   sourceKey?: string
   frame: TelemetryFrame | null
+  engineFrame?: EngineFrameSnapshot | null
+  engineSourceLabel?: string
+  trailSourceKey?: string
+  positionReplay?: LocalReplaySnapshot | null
   initialNodes?: SituationMapNode[]
   /** 已登记的通信关联；只表示路由登记，不是已发生的业务。 */
   fileLinks?: FileCommunicationLink[]
@@ -73,8 +79,18 @@ const hasFileLinks = computed(() => !props.frame && !props.configuredLinks && (p
 const hasFileMessageLinks = computed(() => visibleMessageLinks.value.length > 0)
 const hasFileInterference = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => fileJammerRadiusMeters(node.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) !== undefined))
-const configuredRanges = computed(() => props.configuredJammers === undefined ? []
-  : selectInterferenceRanges(props.frame?.platforms ?? props.initialNodes ?? [], null, props.configuredJammers))
+const nodes = computed(() => engineJammerNodes(props.frame?.platforms ?? props.initialNodes ?? [], props.engineFrame))
+const fileDeviceStates = computed(() => !props.frame && !props.configuredLinks
+  ? selectFileDeviceStates(props.fileDeviceEvents ?? [], props.fileTime ?? 0) : [])
+const configuredRanges = computed(() => selectInterferenceRanges(nodes.value, props.frame, props.configuredJammers, fileDeviceStates.value, props.engineFrame))
+const trackNodes = createNodeTrailTracker()
+const liveTrails = ref<NodeTrail[]>([])
+watch([nodes, () => props.frame?.simulationTime, () => JSON.stringify([props.sourceKey, props.trailSourceKey, props.frame?.runId,
+  props.engineFrame?.runId, props.engineFrame?.engineEpoch, props.fileSeekRevision])], ([current, time, key]) => {
+  liveTrails.value = trackNodes(key, props.positionReplay ? current.filter(node => node.positionSource === 'ENGINE') : current, time)
+}, { immediate: true })
+const nodeTrails = computed(() => props.positionReplay
+  ? [...replayNodeTrails(props.positionReplay, props.fileTime ?? 0, nodes.value.filter(node => node.positionSource !== 'ENGINE')), ...liveTrails.value] : liveTrails.value)
 const hasInterference = computed(() => props.frame !== null || configuredRanges.value.length > 0 || !!hasFileInterference.value)
 const hasFileDetection = computed(() => !props.frame && !props.configuredLinks
   && props.initialNodes?.some(node => MAP_CONFIG.fileDetectionRadiiMeters[node.platformId] !== undefined))
@@ -116,11 +132,8 @@ const layers = reactive<Record<MapLayer, boolean>>({
   interference: hasInterference.value,
   grid: MAP_CONFIG.defaults.gridVisible,
   detection: true,
+  trails: true,
 })
-
-const nodes = computed(() => props.frame?.platforms ?? props.initialNodes ?? [])
-const fileDeviceStates = computed(() => !props.frame && !props.configuredLinks
-  ? selectFileDeviceStates(props.fileDeviceEvents ?? [], props.fileTime ?? 0) : [])
 
 function fileEndpointLabel(platformId: string, includeId = true): string {
   const name = nodes.value.find(node => node.platformId === platformId)?.name
@@ -164,9 +177,9 @@ function layerDisabled(layer: MapLayer): boolean {
   if (layer === 'interference') return !hasInterference.value
   return false
 }
-const selectedConfiguredRanges = computed(() => configuredRanges.value.filter(range => range.platformId === selectedNode.value?.platformId))
-const selectedFileInterferenceRadius = computed(() => props.configuredJammers === undefined && !props.frame && !props.configuredLinks && selectedNode.value
-  ? fileJammerRadiusMeters(selectedNode.value.platformId, props.fileDeviceEvents ?? [], MAP_CONFIG.fileInterferenceRadiusMeters) : undefined)
+const selectedConfiguredRanges = computed(() => configuredRanges.value.filter(range => range.platformId === selectedNode.value?.platformId && (range.configured || range.sourceLabel)))
+const selectedFileInterferenceRadius = computed(() => !props.frame && !props.configuredLinks
+  ? configuredRanges.value.find(range => range.platformId === selectedNode.value?.platformId && !range.configured && !range.sourceLabel)?.radiusMeters : undefined)
 const selectedFileDetectionRadius = computed(() => !props.frame && !props.configuredLinks && selectedNode.value
   ? MAP_CONFIG.fileDetectionRadiiMeters[selectedNode.value.platformId] : undefined)
 const selectedFileDevices = computed(() => fileDeviceStates.value.filter(event => event.platformId === selectedNode.value?.platformId))
@@ -331,6 +344,8 @@ onMounted(() => {
   mapController.value = createSituationMapController({
     container: mapContainer.value,
     frame: props.frame,
+    engineFrame: props.engineFrame,
+    nodeTrails: nodeTrails.value,
     initialNodes: props.initialNodes,
     fileLinks: props.fileLinks,
     fileMessageLinks: visibleMessageLinks.value,
@@ -369,6 +384,9 @@ watch(() => props.links, (links) => {
 watch(() => props.frame, (frame) => {
   mapController.value?.setFrame(frame)
 })
+
+watch(() => props.engineFrame, frame => mapController.value?.setEngineFrame(frame ?? null))
+watch(nodeTrails, trails => mapController.value?.setNodeTrails(trails), { flush: 'post' })
 
 /** 将追加文件合并后的节点位置传入现有地图，保留视图、图层开关和选中状态。 */
 watch(() => props.initialNodes, (nodes) => {
@@ -479,6 +497,7 @@ onBeforeUnmount(() => {
             ['interference', '干扰范围'],
             ['grid', '经纬网'],
             ['detection', '探测范围'],
+            ['trails', '运动轨迹'],
           ] as const)"
           :key="layer[0]"
           type="button"
@@ -487,7 +506,11 @@ onBeforeUnmount(() => {
           :disabled="layerDisabled(layer[0])"
           @click="toggleLayer(layer[0])"
         >{{ layer[1] }}</button>
-        <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
+        <div class="offline-map__layer-status">
+          <span>{{ basemap === 'vector' ? '离线矢量' : '离线卫星' }} · Z{{ zoom }}</span>
+          <slot v-if="engineFrame && $slots['engine-source']" name="engine-source" />
+          <span v-else-if="engineFrame" role="status" data-testid="engine-map-source">{{ engineSourceLabel ?? '引擎数据（状态未确认）' }} · 帧 {{ engineFrame.frameId }}</span>
+        </div>
       </div>
     </div>
 
@@ -604,11 +627,11 @@ onBeforeUnmount(() => {
       >
         <dl class="selected-node-dialog__grid">
           <div><dt>类型</dt><dd>{{ selectedNodeType }}</dd></div>
-          <div><dt>{{ frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
+          <div><dt>{{ selectedNode.positionSource === 'ENGINE' ? '引擎位置' : frame ? '遥测位置' : '节点位置' }}</dt><dd>{{ Math.abs(selectedNode.longitude) }}°{{ selectedNode.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNode.latitude) }}°{{ selectedNode.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div v-if="usesTemporarySatellitePosition"><dt>地图临时示意位置</dt><dd>{{ Math.abs(selectedNodePosition.longitude) }}°{{ selectedNodePosition.longitude < 0 ? 'W' : 'E' }} / {{ Math.abs(selectedNodePosition.latitude) }}°{{ selectedNodePosition.latitude < 0 ? 'S' : 'N' }}</dd></div>
           <div><dt>高度</dt><dd>{{ selectedNode.altitude }} m</dd></div>
           <div><dt>速度</dt><dd>{{ configuredLinks && !('time' in selectedNode) ? '暂无运行数据' : `${selectedNode.speed} m/s` }}</dd></div>
-          <div v-for="range in selectedConfiguredRanges" :key="range.id" data-testid="configured-jammer-range"><dt>{{ range.jammerId }} 干扰范围（半径）</dt><dd>{{ range.radiusMeters / 1000 }} 公里（配置范围，非实测覆盖）</dd></div>
+          <div v-for="range in selectedConfiguredRanges" :key="range.id" data-testid="configured-jammer-range"><dt>{{ range.jammerId ?? selectedNode.name }} 干扰范围（半径）</dt><dd>{{ range.radiusMeters / 1000 }} 公里（{{ interferenceRangeSource(range) }}）</dd></div>
           <div v-if="selectedFileInterferenceRadius !== undefined"><dt>干扰范围（半径）</dt><dd>{{ selectedFileInterferenceRadius / 1000 }} 公里（示意范围，缺少设备配置）</dd></div>
           <div v-if="selectedFileDetectionRadius !== undefined"><dt>探测范围（半径）</dt><dd>{{ selectedFileDetectionRadius / 1000 }} 公里（指定范围）</dd></div>
         </dl>
@@ -787,6 +810,10 @@ onBeforeUnmount(() => {
   padding: 0.25rem;
   border-radius: 5px;
   pointer-events: auto;
+}
+
+.offline-map__layer-status {
+  display: contents;
 }
 
 .offline-map__view-controls {
@@ -1114,15 +1141,19 @@ onBeforeUnmount(() => {
   background: rgba(245, 185, 66, 0.2);
 }
 
-:deep(.situation-map-link--selected),
 :deep(.situation-map-interference--selected) {
   filter: drop-shadow(0 0 4px #f5b942) drop-shadow(0 0 8px rgba(245, 185, 66, 0.9));
 }
 
-/* 切换前后仅叠加光晕，保留底层链路状态色：劣化/中断仍为红色。 */
-:deep(.situation-map-link--switch-before) { filter: drop-shadow(0 0 3px #f5b942) drop-shadow(0 0 7px rgba(245, 185, 66, 0.8)); }
-:deep(.situation-map-link--switch-after) { filter: drop-shadow(0 0 3px #4bd9f2) drop-shadow(0 0 7px rgba(75, 217, 242, 0.85)); }
-:deep(.situation-map-link--switch-both) { filter: drop-shadow(0 0 3px #b58cff) drop-shadow(0 0 7px rgba(181, 140, 255, 0.85)); }
+/* 光晕跟随当前链路颜色，线芯稍调浅；异常链路仍保持红色系。 */
+:deep(.situation-map-link--selected),
+:deep(.situation-map-link--switch-before),
+:deep(.situation-map-link--switch-after),
+:deep(.situation-map-link--switch-both) {
+  stroke: color-mix(in srgb, var(--situation-link-color) 75%, white);
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--situation-link-color) 65%, transparent))
+    drop-shadow(0 0 7px color-mix(in srgb, var(--situation-link-color) 35%, transparent));
+}
 
 :deep(.situation-map-node__glyph) {
   text-shadow: 0 0 6px currentColor;

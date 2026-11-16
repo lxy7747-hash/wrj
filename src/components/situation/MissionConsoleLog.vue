@@ -128,7 +128,7 @@ onBeforeUnmount(close)
   <el-button size="small" data-testid="mission-console-open" @click="open">进程日志</el-button>
   <el-dialog :model-value="visible" title="mission 进程日志" width="min(960px, calc(100vw - 32px))" append-to-body data-testid="mission-console-dialog" @close="close">
     <p class="console-meta" aria-live="polite">
-      运行 {{ runId }}{{ running ? ' · 运行中，实时增量通过 WebSocket 更新' : ' · 已结束' }}
+      运行 {{ runId }}{{ running ? ' · 实时更新' : ' · 已结束' }}
       <template v-if="log"> · 日志 {{ log.bytes }} 字节{{ log.truncated ? '（仅显示末尾 64 KiB）' : '' }} · 运行超时：{{ log.timeoutMs ? `${log.timeoutMs / 1000} 秒后自动终止` : '未启用' }}</template>
     </p>
     <el-alert v-for="(diagnostic, index) in diagnostics" :key="`${diagnostic.state}-${diagnostic.message}-${index}`" type="info" :title="diagnostic.message" :closable="false" show-icon class="engine-diagnostic" data-testid="mission-engine-diagnostic" />
@@ -148,7 +148,8 @@ onBeforeUnmount(close)
   overflow: auto;
   border: 1px solid var(--el-border-color);
   border-radius: 6px;
-  background: var(--el-fill-color-darker);
+  /* 与弹框背景保持一致，避免日志区出现色块反差。 */
+  background: var(--el-bg-color);
   color: var(--el-text-color-primary);
   font: 12px/1.5 Consolas, "SFMono-Regular", monospace;
   white-space: pre-wrap;

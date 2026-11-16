@@ -11,6 +11,7 @@ import ReportsPage from '../../src/pages/reports/reports.vue'
 import type { Principal, Report, ReportExportResult, SwitchEvent } from '../../src/contracts/domain-models'
 import { useAuthStore } from '../../src/stores/auth'
 import { useReportStore } from '../../src/stores/report'
+import { LOCAL_REPORT } from '../fixtures/local-report'
 
 const operator: Principal = {
   userId: 'USR-OPERATOR', username: 'operator', role: 'OPERATOR',
@@ -125,7 +126,7 @@ describe('P3 报表内容', () => {
     const radar = () => charts().find(chart => chart.get('h4').text().includes('样本连通率'))!
     expect(radar().findAll('li').map(row => Number.parseFloat(row.text().split('：')[1]!))).toEqual([50, 100, 0])
     expect(radar().get('svg').attributes('aria-label')).toContain('0–100%')
-    expect(wrapper.get('[data-testid="report-radar-chart"]').text()).toContain('组织运用约束 1E-5')
+    expect(wrapper.get('[data-testid="report-radar-chart"]').text()).toContain('默认 BER 门限（1E-5）')
     expect(radar().text()).toContain(`生成时刻 ${formatDateTime(report.generatedTime)}`)
     const inputs = wrapper.findAllComponents(ElInputNumber)
     inputs[1]!.vm.$emit('update:modelValue', 0); await flushPromises()
@@ -138,7 +139,8 @@ describe('P3 报表内容', () => {
     expect(bars()[0]!.text()).toContain('0分0秒～0分0秒 · 全部节点 · L-A')
     await wrapper.get('#tab-radar').trigger('click'); await flushPromises()
     expect(radar().find('svg[role="img"]').exists()).toBe(false)
-    expect(radar().text()).toContain('暂无数据')
+    expect(radar().text()).toContain('有效链路不足三条，按数值展示连通率')
+    expect(radar().findAll('li').map(row => row.text())).toEqual(['L-A：100 %'])
     selects[1]!.vm.$emit('update:modelValue', '')
     selects[0]!.vm.$emit('update:modelValue', 'A'); await flushPromises()
     expect(radar().text()).toContain(' · A · 全部链路')
@@ -275,6 +277,8 @@ describe('P3 报表内容', () => {
 
     expect(wrapper.attributes('aria-label')).toBe('评估报表')
     expect(wrapper.get('[data-testid="report-tabs"]').attributes('data-report-id')).toBe('RPT-001')
+    expect(wrapper.get('[data-testid="report-export"]').isVisible()).toBe(false)
+    await wrapper.get('[data-testid="report-tools"] .el-collapse-item__header').trigger('click')
     await wrapper.get('[data-testid="report-export"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('.reports-page__export-result').text()).toContain('未生成文件')
@@ -291,6 +295,149 @@ describe('P3 报表内容', () => {
     expect(wrapper.find('.el-skeleton')).toBeTruthy()
     wrapper.unmount()
     expect(report.capabilityState).toBe('EMPTY')
+  })
+
+  it('打开已生成链路 CSV 的运行报告时自动选中任务 CSV 并加载明细和曲线', async () => {
+    const pinia = createPinia(); setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+    const store = useReportStore(pinia), sha = 'c'.repeat(64)
+    const report = structuredClone(LOCAL_REPORT)
+    report.localEvidence!.engineCsv = { sourceSha256: 'a'.repeat(64), missing: [], files: [{ fileName: 'link_state.csv', rowCount: 1, sha256: 'b'.repeat(64), status: 'PARTIAL', skippedCount: 0 }] }
+    vi.spyOn(store, 'loadResult').mockImplementation(async () => {
+      store.$patch({ selectedReport: report, capabilityState: 'SUCCESS', resultSource: { resultId: 'RESULT-1' } as never }); return true
+    })
+    vi.spyOn(store, 'applyLocalFilter').mockResolvedValue(true)
+    const overview = vi.spyOn(store, 'loadEvidenceOverview').mockImplementation(async selected => {
+      store.evidenceOverview = { sources: [{ sourceSha256: sha, label: '任务 CSV（部分覆盖）', sourceKind: 'FILE_SET', capabilities: ['state'], totals: { state: 1 }, series: [] }], selectedSourceSha256: selected ?? null,
+        capabilities: ['state', 'loss', 'switch'], series: [{ seriesId: 'state:L-1:gxb' }] } as never
+      return true
+    })
+    const comparisons = vi.spyOn(store, 'loadResultComparisons').mockResolvedValue(true)
+    const rows = vi.spyOn(store, 'loadEvidenceRows').mockResolvedValue(true)
+    const series = vi.spyOn(store, 'loadEvidenceSeries').mockResolvedValue(true)
+    const router = reportsRouter(); await router.push('/reports?resultId=RESULT-1')
+    const wrapper = mount(ReportsPage, { global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true, ReportTabs: true, ReportChart: true } } })
+    await flushPromises()
+    expect(overview).toHaveBeenCalledWith(sha)
+    expect(rows).toHaveBeenCalledWith('state', { filter: undefined })
+    expect(series).toHaveBeenCalledWith('state:L-1:gxb', { filter: undefined })
+    expect(comparisons).not.toHaveBeenCalled()
+    await wrapper.get('#tab-链路质量与曲线').trigger('click'); await flushPromises()
+    expect(comparisons).not.toHaveBeenCalled()
+    await wrapper.get('#tab-已完成运行参数对比').trigger('click'); await flushPromises()
+    expect(comparisons).toHaveBeenCalledTimes(1)
+    store.comparisonsLoading = true
+    await flushPromises()
+    expect(wrapper.get('#pane-已完成运行参数对比').attributes('aria-busy')).toBe('true')
+    wrapper.unmount()
+  })
+
+  it('证据元信息：全源统计与当前筛选明细分开展示，不把全源 total 当筛选 total', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(success([LOCAL_REPORT]))
+      .mockResolvedValueOnce(success(LOCAL_REPORT)))
+    const router = reportsRouter()
+    await router.push('/reports')
+    const wrapper = mount(ReportsPage, {
+      attachTo: document.body,
+      global: {
+        plugins: [pinia, router, ElementPlus],
+        stubs: { MissionResults: true, LocalReportTabs: true, ReportTabs: true, ReportChart: true },
+      },
+    })
+    await flushPromises()
+    const store = useReportStore(pinia)
+    const sha = 'a'.repeat(64)
+    store.$patch({
+      capabilityState: 'SUCCESS',
+      resultSource: { resultId: 'RESULT-1', scenarioId: 'SCN-1', scenarioName: 'x', revision: 1, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:01:00Z', runId: 'RUN-1', taskId: 'TASK-1' } as never,
+      localFilterResult: { report: structuredClone(LOCAL_REPORT), filter: {}, timeline: [], timelineTotal: 0, stages: [], links: [] } as never,
+      evidenceOverview: {
+        reportId: LOCAL_REPORT.reportId, resultId: 'RESULT-1', runId: 'RUN-1', generatedTime: LOCAL_REPORT.generatedTime,
+        effectiveFilter: {}, sources: [{ sourceSha256: sha, sourceKind: 'FILE_SET', capabilities: ['state'], totals: { state: 123 }, series: [], label: 'src' }],
+        selectedSourceSha256: sha, capabilities: ['state'], totals: { state: 123 }, missing: [], series: [],
+      } as never,
+      evidenceRows: { reportId: LOCAL_REPORT.reportId, resultId: 'RESULT-1', runId: 'RUN-1', sourceSha256: sha, kind: 'state', effectiveFilter: {}, total: 7, rows: [{ id: 'r1', time: 1, gxbDb: 0, receivedPower: null, cloudRainLossDb: null }], nextCursor: null } as never,
+    })
+    await flushPromises()
+    await wrapper.get('[data-testid="report-tools"] .el-collapse-item__header').trigger('click')
+    const sourceTotals = wrapper.get('[data-testid="report-evidence-source-totals"]').text()
+    expect(sourceTotals).toContain('全源统计')
+    expect(sourceTotals).toContain('state 123')
+    expect(wrapper.get('[data-testid="report-evidence-filtered-total"]').text()).toContain('7')
+    expect(sourceTotals).not.toContain('7')
+    const csvTable = wrapper.get('[data-testid="report-evidence-rows"]')
+    expect(csvTable.text()).toContain('接收功率（dBm）')
+    expect(csvTable.text()).toContain('云雨损耗（dB）')
+    expect(csvTable.text()).toContain('暂无数据')
+    expect(csvTable.findAll('.el-table__body td').map(cell => cell.text())).toContain('0')
+    wrapper.unmount()
+  })
+
+  it('仅编辑未应用筛选不触发请求；成功应用后才按已应用筛选刷新当前 kind 与 series', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    useAuthStore(pinia).$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(success([LOCAL_REPORT]))
+      .mockResolvedValueOnce(success(LOCAL_REPORT)))
+    const router = reportsRouter()
+    await router.push('/reports')
+    const wrapper = mount(ReportsPage, {
+      attachTo: document.body,
+      global: { plugins: [pinia, router, ElementPlus], stubs: { MissionResults: true, LocalReportTabs: true, ReportTabs: true, ReportChart: true } },
+    })
+    await flushPromises()
+    const store = useReportStore(pinia)
+    const sha = 'a'.repeat(64)
+    store.$patch({
+      capabilityState: 'SUCCESS',
+      resultSource: { resultId: 'RESULT-1', scenarioId: 'SCN-1', scenarioName: 'x', revision: 1, startedAt: '2026-01-01T00:00:00Z', completedAt: '2026-01-01T00:01:00Z', runId: 'RUN-1', taskId: 'TASK-1' } as never,
+      localFilterResult: { report: structuredClone(LOCAL_REPORT), filter: {}, timeline: [], timelineTotal: 0, stages: [], links: [] } as never,
+      evidenceOverview: {
+        reportId: LOCAL_REPORT.reportId, resultId: 'RESULT-1', runId: 'RUN-1', generatedTime: LOCAL_REPORT.generatedTime,
+        effectiveFilter: {}, sources: [{ sourceSha256: sha, sourceKind: 'FILE_SET', capabilities: ['state'], totals: { state: 1 }, series: [{ seriesId: 'state:L-1:gxb', kind: 'state', unit: 'dB' }], label: 'src' }],
+        selectedSourceSha256: sha, capabilities: ['state'], totals: { state: 1 }, missing: [], series: [{ seriesId: 'state:L-1:gxb', kind: 'state', unit: 'dB' }],
+      } as never,
+    })
+    await flushPromises()
+    const rowsSpy = vi.spyOn(store, 'loadEvidenceRows').mockResolvedValue(true)
+    const seriesSpy = vi.spyOn(store, 'loadEvidenceSeries').mockResolvedValue(true)
+    const applySpy = vi.spyOn(store, 'applyLocalFilter').mockImplementation(async (filter) => {
+      store.localFilterResult = { report: structuredClone(LOCAL_REPORT), filter, timeline: [], timelineTotal: 0, stages: [], links: [] } as never
+      return true
+    })
+    await wrapper.get('[data-testid="report-tools"] .el-collapse-item__header').trigger('click')
+    const selects = wrapper.findAllComponents(ElSelect)
+    const byTestId = (id: string) => selects.find(select => (select.vm.$el as HTMLElement).getAttribute('data-testid') === id)!
+    byTestId('evidence-kind').vm.$emit('change', 'state'); await flushPromises()
+    byTestId('evidence-series').vm.$emit('change', 'state:L-1:gxb'); await flushPromises()
+    const rowsBefore = rowsSpy.mock.calls.length
+    const seriesBefore = seriesSpy.mock.calls.length
+    expect(rowsBefore).toBeGreaterThanOrEqual(1)
+    expect(seriesBefore).toBeGreaterThanOrEqual(1)
+
+    // 仅编辑筛选（未应用）：不触发任何证据请求
+    const inputs = wrapper.findAllComponents(ElInputNumber)
+    inputs[0]!.vm.$emit('update:modelValue', 1)
+    inputs[1]!.vm.$emit('update:modelValue', 3)
+    await flushPromises()
+    expect(applySpy).not.toHaveBeenCalled()
+    expect(rowsSpy.mock.calls.length).toBe(rowsBefore)
+    expect(seriesSpy.mock.calls.length).toBe(seriesBefore)
+
+    // 成功应用后才用“已应用筛选”刷新当前 kind/series
+    await wrapper.findAll('button').find(button => button.text() === '应用精确筛选')!.trigger('click')
+    await flushPromises()
+    expect(applySpy).toHaveBeenCalledWith({ from: 1, to: 3 })
+    await vi.waitFor(() => expect(rowsSpy.mock.calls.length).toBe(rowsBefore + 1))
+    expect(seriesSpy.mock.calls.length).toBe(seriesBefore + 1)
+    expect(rowsSpy.mock.calls.at(-1)![1]).toMatchObject({ filter: { from: 1, to: 3 } })
+    expect(seriesSpy.mock.calls.at(-1)![1]).toMatchObject({ filter: { from: 1, to: 3 } })
+    wrapper.unmount()
   })
 
 })

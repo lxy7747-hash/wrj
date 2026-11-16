@@ -9,6 +9,8 @@ import type { ApiSuccess, Replay, ScenarioConfig, ScenarioDraft, SimulationRun }
 const mapControllerMock = vi.hoisted(() => ({
   createSituationMapController: vi.fn(() => ({
     setFrame: vi.fn(),
+    setEngineFrame: vi.fn(),
+    setNodeTrails: vi.fn(),
     setNodes: vi.fn(),
     setLinks: vi.fn(),
     setFileLinks: vi.fn(),

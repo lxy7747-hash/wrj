@@ -1,4 +1,5 @@
 import { createPinia, setActivePinia } from 'pinia'
+import { nextTick, watch } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { ClosedLoopContext, DetectionEvent, JammingParameterSet, Principal, RealtimeEnvelope, ScenarioDraft, SimulationRun, SwitchEvent, TelemetryFrame } from '../../src/contracts/domain-models'
@@ -59,7 +60,11 @@ class TestWebSocket {
 describe('P3-2 遥测 Store', () => {
   beforeEach(() => {
     setActivePinia(createPinia())
-    useAuthStore().$patch({ principal: operator, role: operator.role, permissions: [...operator.permissions] })
+    useAuthStore().$patch({
+      principal: { ...operator, permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'] },
+      role: 'OPERATOR',
+      permissions: ['BUSINESS_READ', 'SIMULATION_CONTROL'],
+    })
     TestWebSocket.instances.length = 0
     vi.stubGlobal('WebSocket', TestWebSocket)
   })
@@ -69,7 +74,7 @@ describe('P3-2 遥测 Store', () => {
     vi.unstubAllGlobals()
   })
 
-  it('真实运行无固定帧时接收引擎整帧，拒绝跨任务/运行且保留主题序号连续校验', async () => {
+  it.each([4800, 12.75])('真实运行接收引擎整帧 %s，拒绝跨任务/运行且保留主题序号连续校验', async frame_id => {
     const simulation = useSimulationStore(), store = useTelemetryStore()
     useAuthStore().runtimeMode = 'LOCAL'
     simulation.run = { ...fixtureSource.run, runId: 'RUN-ENGINE', taskId: 'TASK-ENGINE', scenarioId: 'SCN-ENGINE', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
@@ -77,7 +82,7 @@ describe('P3-2 遥测 Store', () => {
     const quality = useRuntimeQualityStore()
     quality.activate({ taskId: simulation.run.taskId, runId: simulation.run.runId, scenarioId: simulation.run.scenarioId, revision: 1, startedAt: simulation.run.startedAt! }, [])
     expect(quality.scope?.runId).toBe('RUN-ENGINE')
-    const payload = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: 'RUN-ENGINE' }
+    const payload = { ...adaptEngineFrameSnapshot({ ...engineSample, frame_id }).data!, runId: 'RUN-ENGINE' }
     const value = { type: 'event', schemaVersion: '1.0', topic: 'link.metric', sequence: 1, taskId: 'TASK-ENGINE',
       frameId: `F-ENGINE-${payload.frameId}`, simulationTime: payload.simulationTime, payload }
     expect(store.frame).toBeNull()
@@ -99,6 +104,47 @@ describe('P3-2 遥测 Store', () => {
     loading.mockRestore(); connecting.mockRestore()
   })
 
+  it('高频消息顺序消费全部帧与事件，同批只刷新一次，断线前收齐尾帧并按游标续传', async () => {
+    vi.useFakeTimers()
+    const simulation = useSimulationStore(), store = useTelemetryStore()
+    useAuthStore().runtimeMode = 'LOCAL'
+    simulation.run = { ...fixtureSource.run, runId: 'RUN-ENGINE', taskId: 'TASK-ENGINE', scenarioId: 'SCN-ENGINE', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
+    simulation.selectedScene = { revision: 1, config: { scenario: { id: 'SCN-ENGINE' }, links: [] } } as unknown as ScenarioDraft
+    const quality = useRuntimeQualityStore()
+    quality.activate({ taskId: 'TASK-ENGINE', runId: 'RUN-ENGINE', scenarioId: 'SCN-ENGINE', revision: 1, startedAt: simulation.run.startedAt! }, [])
+    const render = vi.fn()
+    const unwatch = watch(() => quality.engineFrame, render)
+    const base = adaptEngineFrameSnapshot(engineSample).data!
+    const send = (socket: TestWebSocket, index: number) => {
+      const payload = { ...base, runId: 'RUN-ENGINE', frameId: index / 4, simulationTime: index / 4,
+        events: [{ type: 'TEST', pathId: String(index), uavNames: [], jammerNames: [], uavIds: [], jammerIds: [] }] }
+      socket.emit('message', JSON.stringify({ type: 'event', schemaVersion: '1.0', topic: 'link.metric', sequence: index + 1,
+        taskId: 'TASK-ENGINE', frameId: 'F-ENGINE-' + payload.frameId, simulationTime: payload.simulationTime, payload }))
+    }
+    store.connect()
+    const socket = TestWebSocket.instances[0]!
+    for (let i = 0; i < 60; i++) { send(socket, i); await nextTick() }
+    expect(quality.engineFrame).toBeNull()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(render).toHaveBeenCalledOnce()
+    expect(quality.engineFrame?.simulationTime).toBe(14.75)
+    expect(quality.engineEvents.map(item => item.event.pathId)).toEqual(Array.from({ length: 60 }, (_, i) => String(i)))
+    send(socket, 60)
+    socket.emit('close')
+    expect(quality.engineFrame?.simulationTime).toBe(15)
+    expect(store.topicSequences['link.metric']).toBe(61)
+    await vi.advanceTimersByTimeAsync(250)
+    const resumed = TestWebSocket.instances[1]!
+    resumed.emit('open')
+    expect(JSON.parse(resumed.sent[0]!).lastSequences['link.metric']).toBe(61)
+    send(resumed, 61)
+    store.disconnectAndReset()
+    await vi.advanceTimersByTimeAsync(100)
+    expect(quality.engineFrame?.simulationTime).toBe(15)
+    expect(store.topicSequences['link.metric']).toBe(0)
+    unwatch()
+  })
+
   it('任务日志和上游诊断只接收当前运行，且不把墙钟日志伪装成仿真帧', () => {
     const simulation = useSimulationStore(), store = useTelemetryStore()
     simulation.run = { ...fixtureSource.run, runId: 'RUN-LOG', taskId: 'TASK-LOG', scenarioId: 'SCN-LOG', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
@@ -110,13 +156,31 @@ describe('P3-2 遥测 Store', () => {
     expect(store.acceptEnvelope(envelope)).toBe(true)
     expect(store.missionLogUpdate).toEqual(update)
     expect(store.topicSequences['mission.log']).toBe(1)
-    const diagnostic = { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: 'RUN-LOG', state: 'FRAME_ADVANCE_OBSERVED', previousFrameId: 7, observedFrameId: 13,
-      message: '上游帧号由 7 变为 13；与约定步长 5（5 秒）不一致，仅记录帧号间隔异常，不推定上游补发能力。' }
+    const diagnostic = { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: 'RUN-LOG', state: 'FRAME_ADVANCE_OBSERVED', previousFrameId: 0.25, observedFrameId: 12.75,
+      message: '上游帧号由 0.25 变为 12.75；与约定步长 5（5 秒）不一致，仅记录帧号间隔异常，不推定上游补发能力。' }
     expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'mission.log', taskId: 'TASK-LOG', sequence: 2, payload: diagnostic })).toBe(true)
     expect(store.engineDiagnostics).toEqual([diagnostic])
   })
 
-  it('真实 mission 位置与引擎干扰/切换主题分别消费，不要求伪造同一仿真帧', () => {
+  it('高频帧诊断不挤掉最近连接状态，断线状态仍可更新且重置时清空', () => {
+    const simulation = useSimulationStore(), store = useTelemetryStore()
+    simulation.run = { ...fixtureSource.run, runId: 'RUN-LOG', taskId: 'TASK-LOG' } as SimulationRun
+    let sequence = 0
+    const accept = (state: string) => {
+      expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'mission.log', taskId: 'TASK-LOG',
+        sequence: ++sequence, payload: { kind: 'ENGINE_CONNECTION_DIAGNOSTIC', runId: 'RUN-LOG', state, message: state } })).toBe(true)
+    }
+    for (const state of ['CONNECTED', 'DISCONNECTED', 'CONNECTING', 'CONNECTED']) {
+      accept(state)
+      for (let index = 0; index < 30; index++) accept('FRAME_ADVANCE_OBSERVED')
+      expect(store.engineDiagnostics).toHaveLength(20)
+      expect(store.engineDiagnostics.slice().reverse().find(item => ['CONNECTED', 'CONNECTING', 'DISCONNECTED'].includes(item.state))?.state).toBe(state)
+    }
+    store.resetToSafeEmpty()
+    expect(store.engineDiagnostics).toEqual([])
+  })
+
+  it.each([12, 12.75])('真实 mission 位置与引擎干扰/切换帧 %s 分别消费', sourceFrameId => {
     const simulation = useSimulationStore(), store = useTelemetryStore()
     simulation.run = { ...fixtureSource.run, runId: 'RUN-WS', taskId: 'TASK-WS', scenarioId: 'SCN-WS', startedAt: '2026-11-07T01:00:00Z' } as SimulationRun
     const position = { kind: 'MISSION_POSITION', runId: 'RUN-WS', scenarioId: 'SCN-WS', revision: 1, sourceGeneration: 4, sourceRecordCount: 9, waitingForLine: false,
@@ -124,11 +188,11 @@ describe('P3-2 遥测 Store', () => {
     expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'position.update', taskId: 'TASK-WS', sequence: 1, payload: position })).toBe(true)
     expect(store.missionPositionUpdate).toEqual(position)
     expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'position.update', taskId: 'TASK-WS', sequence: 2, frameId: 'F-00001', payload: position })).toBe(false)
-    const jammer = { kind: 'ENGINE_JAMMER_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId: 12, simulationTime: 3, jammers: [], events: [] }
-    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-WS', sequence: 1, frameId: 'F-ENGINE-12', simulationTime: 3, payload: jammer })).toBe(true)
+    const jammer = { kind: 'ENGINE_JAMMER_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId, simulationTime: 3, jammers: [], events: [] }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'jammer.event', taskId: 'TASK-WS', sequence: 1, frameId: `F-ENGINE-${sourceFrameId}`, simulationTime: 3, payload: jammer })).toBe(true)
     expect(store.engineJammerUpdates).toEqual([jammer])
-    const switching = { kind: 'ENGINE_SWITCH_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId: 12, simulationTime: 3, switches: [] }
-    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-WS', sequence: 1, frameId: 'F-ENGINE-12', simulationTime: 3, payload: switching })).toBe(true)
+    const switching = { kind: 'ENGINE_SWITCH_FRAME', runId: 'RUN-WS', engineEpoch: 0, sourceFrameId, simulationTime: 3, switches: [] }
+    expect(store.acceptEnvelope({ type: 'event', schemaVersion: '1.0', topic: 'switch.event', taskId: 'TASK-WS', sequence: 1, frameId: `F-ENGINE-${sourceFrameId}`, simulationTime: 3, payload: switching })).toBe(true)
     expect(store.engineSwitchUpdates).toEqual([switching])
   })
 
@@ -407,7 +471,7 @@ describe('P3-2 遥测 Store', () => {
 
   it('执行 RF 干扰命令并在失败时清除旧成功结果', async () => {
     const store = useTelemetryStore()
-    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
       taskId: 'TASK-001',
       jammerId: 'JAM-WB-01-TX',
@@ -421,30 +485,50 @@ describe('P3-2 遥测 Store', () => {
     expect(store).toMatchObject({
       jammerControlState: 'SUCCESS',
       jammerResultCode: 'SUCCESS',
-      jammerState: { effectiveFrameId: 'F-00042', power: 72 },
+      jammerResultSource: 'LOCAL_PROJECTION',
+      jammerState: { effectiveFrameId: 'F-00042', power: 1 },
     })
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       json: vi.fn().mockResolvedValue({
         ok: false,
-        error: { code: 'OUT_OF_RANGE', message: '功率超出设备能力范围。', fieldPath: 'power' },
+        error: { code: 'OUT_OF_RANGE', message: '频率超出设备能力范围。', fieldPath: 'frequency' },
       }),
     } as unknown as Response))
-    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...command, power: 73 })).resolves.toBe(false)
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
     expect(store).toMatchObject({
       jammerControlState: 'ERROR',
       jammerResultCode: 'OUT_OF_RANGE',
-      jammerResultMessage: '功率超出设备能力范围。',
-      jammerResultFieldPath: 'power',
+      jammerResultMessage: '频率超出设备能力范围。',
+      jammerResultFieldPath: 'frequency',
       jammerState: null,
     })
+  })
+
+  it('RF 启扰功率按 -10～30 dBm 档位在请求前拒绝越档输入，停扰允许 0 W', async () => {
+    const store = useTelemetryStore()
+    const fetchSpy = vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', enabled: false, frequency: 2200, bandwidth: 40,
+      power: 0, direction: 360, duration: 1470, executionStatus: 'SUCCESS', effectiveFrameId: 'F-00042', reason: '任务手动停扰',
+    }))
+    vi.stubGlobal('fetch', fetchSpy)
+    const base = { enabled: true, frequency: 2200, bandwidth: 40, direction: 360, duration: 1470 }
+    for (const power of [10, 10 ** ((40 - 30) / 10), 10 ** ((-15 - 30) / 10), 2, 0.0005]) {
+      await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...base, power })).resolves.toBe(false)
+      expect(store).toMatchObject({ jammerControlState: 'ERROR', jammerResultCode: 'INVALID_REQUEST', jammerResultFieldPath: 'power' })
+    }
+    expect(fetchSpy).not.toHaveBeenCalled()
+    await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', { ...base, enabled: false, power: 0 })).resolves.toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    const sent = JSON.parse(vi.mocked(fetchSpy).mock.calls[0]![1]!.body as string) as { power: number; enabled: boolean }
+    expect(sent).toMatchObject({ enabled: false, power: 0 })
   })
 
   it('在 RF 干扰命令权限、输入和响应异常时安全失败', async () => {
     const auth = useAuthStore()
     const store = useTelemetryStore()
-    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 }
     auth.principal = { ...operator, permissions: ['BUSINESS_READ'] }
     auth.permissions = ['BUSINESS_READ']
     await expect(store.controlJammer('TASK-001', 'JAM-WB-01-TX', command)).resolves.toBe(false)
@@ -496,7 +580,7 @@ describe('P3-2 遥测 Store', () => {
       jammerId: 'JAM-WB-01-TX', action: 'START', linkStatus: 'DEGRADED', effectiveFrameId: 'F-00042', reason: 'AUTO_DETECTION_DET-042',
     })))
     await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(true)
-    expect(store).toMatchObject({ closedLoopState: 'SUCCESS', closedLoopDecision: { affectedLinkId: 'L-DL-03' } })
+    expect(store).toMatchObject({ closedLoopState: 'SUCCESS', closedLoopResultSource: 'LOCAL_PROJECTION', closedLoopDecision: { affectedLinkId: 'L-DL-03' } })
 
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
@@ -509,17 +593,37 @@ describe('P3-2 遥测 Store', () => {
   it('同步递增版本并校验四端版本一致', async () => {
     const store = useTelemetryStore()
     store.frame = structuredClone(frame)
-    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 }
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
       taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
-      configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
-      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'SYNCHRONIZED',
-      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 72, frequency: 2200, bandwidth: 40, active: true },
+      configParameterVersion: 5, nodeParameterVersion: 5, engineSync: 'NOT_CONNECTED', uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'LOCAL_ACCEPTED',
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 1, frequency: 2200, bandwidth: 40, active: true },
     })))
     await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', {
       version: 5, effectiveFrameId: 'F-00042', parameters,
     })).resolves.toBe(true)
-    expect(store).toMatchObject({ syncState: 'SUCCESS', syncResult: { parameterVersion: 5, effectiveFrameId: 'F-00042' } })
+    expect(store).toMatchObject({ syncState: 'SUCCESS', syncResultSource: 'LOCAL_PROJECTION', syncResult: { parameterVersion: 5, effectiveFrameId: 'F-00042' } })
+  })
+
+  it('非固定/远端运行接受本地帧记录，返回仅本地接受（不宣称引擎帧生效）', async () => {
+    const store = useTelemetryStore()
+    const engineFrame = { ...structuredClone(frame), frameId: 'F-ENGINE-7', simulationTime: 7 } as TelemetryFrame
+    store.frame = engineFrame
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1200 }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
+      configParameterVersion: 5, nodeParameterVersion: 5, uiParameterVersion: 5,
+      engineSync: 'NOT_CONNECTED', effectiveFrameId: 'F-LOCAL-9', effectiveSimulationTime: 7,
+      status: 'LOCAL_ACCEPTED', detectionRangeM: 25000,
+      jammerStatus: { time: 7, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', power: 1, frequency: 2200, bandwidth: 40, active: true },
+    })))
+    await expect(store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 5, effectiveFrameId: 'F-LOCAL-9', parameters, detectionRangeM: 25000,
+    })).resolves.toBe(true)
+    expect(store.syncResult).toMatchObject({
+      status: 'LOCAL_ACCEPTED', engineSync: 'NOT_CONNECTED', effectiveFrameId: 'F-LOCAL-9', detectionRangeM: 25000,
+    })
   })
 
   it('参数同步在请求前拒绝缺失帧、跨任务和跨帧输入', async () => {
@@ -528,7 +632,7 @@ describe('P3-2 遥测 Store', () => {
     const parameterSet = {
       version: 5,
       effectiveFrameId: 'F-00042',
-      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 },
     } as const
     vi.stubGlobal('fetch', fetchSpy)
 
@@ -553,7 +657,7 @@ describe('P3-2 遥测 Store', () => {
     const context = { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' } as const
     const parameterSet = {
       version: 5, effectiveFrameId: 'F-00042',
-      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 },
     } as const
     auth.$patch({ principal: { ...operator, permissions: ['BUSINESS_READ'] }, permissions: ['BUSINESS_READ'] })
     await expect(store.runClosedLoop('RUN-001', context)).resolves.toBe(false)
@@ -1183,13 +1287,13 @@ describe('P3-2 遥测 Store', () => {
     const parameterSet = {
       version: 5,
       effectiveFrameId: 'F-00042',
-      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1470 },
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1470 },
     } as const
     const syncResult = {
       taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
-      configParameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5,
-      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'SYNCHRONIZED',
-      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 72, frequency: 2200, bandwidth: 40, active: true },
+      configParameterVersion: 5, nodeParameterVersion: 5, engineSync: 'NOT_CONNECTED', uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'LOCAL_ACCEPTED',
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 1, frequency: 2200, bandwidth: 40, active: true },
     } as const
     for (const invalid of [
       { ...syncResult, effectiveSimulationTime: 41 },
@@ -1613,5 +1717,73 @@ describe('P3-2 遥测 Store', () => {
 
     await expect(store.loadFrame()).resolves.toBe(false)
     expect(store).toMatchObject({ frame: null, events: [], capabilityState: 'ERROR' })
+  })
+
+  it('同步成功把实际接受探测范围写入运行期读取层并在结果回显', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', parameterVersion: 5,
+      configParameterVersion: 5, nodeParameterVersion: 5, engineSync: 'NOT_CONNECTED', uiParameterVersion: 5,
+      effectiveFrameId: 'F-00042', effectiveSimulationTime: 42, status: 'LOCAL_ACCEPTED', detectionRangeM: 25000,
+      jammerStatus: { time: 42, jammerId: 'JAM-WB-01-TX', platformId: 'STN-01', targetPlatform: 'UAV-01', power: 1, frequency: 2200, bandwidth: 40, active: true },
+    })))
+    const ok = await store.synchronizeJammerParameters('TASK-001', 'JAM-WB-01-TX', {
+      version: 5, effectiveFrameId: 'F-00042',
+      parameters: { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 0, duration: 1 },
+      detectionRangeM: 25000,
+    })
+    expect(ok).toBe(true)
+    expect(store.syncResult?.detectionRangeM).toBe(25000)
+    expect(store.jammerRuntimeParameters['RUN-001|JAM-WB-01-TX']?.detectionRangeM).toBe(25000)
+  })
+
+  it('读取运行期本地参数走 GET 并缓存，运行切换后旧读取结果被丢弃', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    let resolveRead!: (value: Response) => void
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { resolveRead = resolve })))
+    const pending = store.loadJammerRuntimeParameters('TASK-001', 'JAM-WB-01-TX')
+    // 读取在途时切换运行；旧读取的归属应失效且不写入缓存。
+    store.frame = { ...structuredClone(frame), runId: 'RUN-002' }
+    resolveRead(successResponse({ taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', version: 4, detectionRangeM: 25000 }))
+    await expect(pending).resolves.toBeNull()
+    expect(store.jammerRuntimeParameters).toEqual({})
+  })
+
+  it('读取运行期本地参数校验并缓存接受值与计划', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(successResponse({
+      taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', version: 5, detectionRangeM: 25000,
+      style: 'SPOT', elevation: 12, plannedStartFrame: 300, plannedStopFrame: 900,
+    })))
+    await expect(store.loadJammerRuntimeParameters('TASK-001', 'JAM-WB-01-TX'))
+      .resolves.toMatchObject({ detectionRangeM: 25000, style: 'SPOT', plannedStartFrame: 300 })
+    expect(store.jammerRuntimeParameters['RUN-001|JAM-WB-01-TX']).toMatchObject({ detectionRangeM: 25000, style: 'SPOT' })
+  })
+
+  it('保存干扰计划先 PUT，成功后经 GET 刷新读取层；失败返回 null', async () => {
+    const store = useTelemetryStore()
+    store.frame = structuredClone(frame)
+    const methods: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      methods.push(method)
+      if (url.endsWith('/plan') && method === 'PUT') {
+        return successResponse({ taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', style: 'SPOT', elevation: 12, plannedStartFrame: 300, plannedStopFrame: 900, storage: 'LOCAL_RUN' })
+      }
+      return successResponse({ taskId: 'TASK-001', jammerId: 'JAM-WB-01-TX', version: 4, detectionRangeM: 44448, style: 'SPOT', elevation: 12, plannedStartFrame: 300, plannedStopFrame: 900 })
+    }))
+    const saved = await store.saveJammerPlan('TASK-001', 'JAM-WB-01-TX', { style: 'SPOT', elevation: 12, plannedStartFrame: 300, plannedStopFrame: 900 })
+    expect(saved).toMatchObject({ storage: 'LOCAL_RUN', plannedStartFrame: 300 })
+    expect(methods).toEqual(['PUT', 'GET'])
+    expect(store.jammerRuntimeParameters['RUN-001|JAM-WB-01-TX']).toMatchObject({ style: 'SPOT', plannedStartFrame: 300, detectionRangeM: 44448 })
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 422, json: vi.fn().mockResolvedValue({ ok: false, error: { code: 'OUT_OF_RANGE', message: '计划无效。' } }),
+    } as unknown as Response))
+    await expect(store.saveJammerPlan('TASK-001', 'JAM-WB-01-TX', { style: 'SPOT', elevation: 12 })).resolves.toBeNull()
   })
 })

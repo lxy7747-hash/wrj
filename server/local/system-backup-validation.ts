@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { inspectScenarioConfig, inspectScenarioUiExtensions, isRfc3339DateTime, normalizeStoredScenario } from '../../src/features/scenarios/scenario-validation.js'
 import { isEquipmentParameter, isEquipmentDetails } from '../../src/features/admin/equipment-contract.js'
+import { isEquipmentLifecycleEvent, isEquipmentPublishedReference, isEquipmentVerificationRecord } from '../../src/features/admin/equipment-history-contract.js'
 import { isAccessControlConfig } from '../../src/features/admin/access-control.js'
 import { isMasterData, isMasterDetails } from '../../src/features/admin/admin-contract.js'
 import { isLocalArchiveSnapshot } from '../../src/features/admin/local-archive.js'
@@ -9,7 +10,7 @@ import { isRuntimeFileConfig } from './runtime-config-sqlite.js'
 
 export const SYSTEM_TABLES = {
   main: ['scenarios', 'scenario_templates', 'users', 'audit_logs'],
-  equipment: ['equipment_parameters', 'equipment_history', 'equipment_references'],
+  equipment: ['equipment_parameters', 'equipment_history', 'equipment_references', 'equipment_published_references', 'equipment_lifecycle_events', 'equipment_verification', 'equipment_legacy_unverified'],
   access: ['access_control'],
   master: ['master_data', 'master_data_history', 'master_data_references'],
   archives: ['local_archives'],
@@ -32,7 +33,8 @@ export function validateSystemSnapshot(db: DatabaseSync): void {
   const users = db.prepare('SELECT * FROM main.users').all()
   if (!users.some(row => row.role === 'ADMIN' && row.status === 'ACTIVE')) throw new Error('缺少启用的管理员。')
   for (const row of users) {
-    if (typeof row.user_id !== 'string' || !row.user_id.trim() || !/^[a-f0-9]{32}$/i.test(String(row.password_salt))
+    if ((row.display_name !== null && (typeof row.display_name !== 'string' || !row.display_name.trim() || row.display_name.length > 64))
+      || typeof row.user_id !== 'string' || !row.user_id.trim() || !/^[a-f0-9]{32}$/i.test(String(row.password_salt))
       || !/^[a-f0-9]{64}$/i.test(String(row.password_hash)) || (row.last_login_at !== null && !isRfc3339DateTime(row.last_login_at))) throw new Error('账号内容无效。')
   }
   for (const table of ['scenarios', 'scenario_templates']) for (const row of db.prepare(`SELECT * FROM main.${table}`).all()) {
@@ -60,6 +62,27 @@ export function validateSystemSnapshot(db: DatabaseSync): void {
     if (!isEquipmentDetails({ history: equipmentHistory.filter(row => row.id === id).map(row => JSON.parse(String(row.parameters_json))), references: equipmentReferences.filter(row => row.equipmentId === id) })) throw new Error('装备历史引用无效。')
   }
   if (equipmentReferences.some(reference => !equipmentHistory.some(row => row.id === reference.equipmentId && row.version === reference.equipmentVersion))) throw new Error('装备引用版本缺失。')
+  const equipmentHistoryIds = new Set(equipmentHistory.map(row => String(row.id)))
+  const publishedReferences = db.prepare('SELECT * FROM equipment.equipment_published_references').all().map(row => ({
+    equipmentId: String(row.equipment_id), equipmentVersion: Number(row.equipment_version), targetType: String(row.target_type),
+    targetId: String(row.target_id), targetVersion: String(row.target_version), sourceSummary: String(row.source_summary),
+    ...(row.created_at === null || row.created_at === undefined ? {} : { createdAt: String(row.created_at) }),
+  }))
+  for (const reference of publishedReferences) {
+    if (!isEquipmentPublishedReference(reference)) throw new Error('装备发布引用内容无效。')
+    if (!equipmentHistoryIds.has(reference.equipmentId) || !equipmentHistory.some(row => String(row.id) === reference.equipmentId && Number(row.version) === reference.equipmentVersion)) throw new Error('装备发布引用版本缺失。')
+  }
+  for (const row of db.prepare('SELECT * FROM equipment.equipment_lifecycle_events').all()) {
+    if (!isEquipmentLifecycleEvent({ eventType: String(row.event_type), version: Number(row.version), occurredAt: String(row.occurred_at), operator: String(row.operator) })) throw new Error('装备生命周期事件无效。')
+    if (!equipmentHistoryIds.has(String(row.equipment_id))) throw new Error('装备生命周期事件指向未知设备。')
+  }
+  for (const row of db.prepare('SELECT * FROM equipment.equipment_verification').all()) {
+    if (!isEquipmentVerificationRecord({ equipmentId: String(row.equipment_id), coveredTargets: String(row.covered_targets),
+      evidenceSummary: String(row.evidence_summary), conclusion: String(row.conclusion), operator: String(row.operator), verifiedAt: String(row.verified_at) })) throw new Error('装备核验记录无效。')
+  }
+  for (const row of db.prepare('SELECT * FROM equipment.equipment_legacy_unverified').all()) {
+    if (typeof row.equipment_id !== 'string' || !row.equipment_id.trim()) throw new Error('装备待核验记录无效。')
+  }
   const master = db.prepare('SELECT * FROM master.master_data').all()
   const masterHistory = db.prepare('SELECT * FROM master.master_data_history ORDER BY version DESC').all()
   const references = db.prepare('SELECT * FROM master.master_data_references').all().map(row => ({ dataId: String(row.data_id), dataVersion: Number(row.data_version), targetType: String(row.target_type), targetId: String(row.target_id), targetVersion: String(row.target_version) }))

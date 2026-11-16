@@ -1,6 +1,6 @@
 import { toScenarioCsvRow } from './engine-name-mapping.js'
 import { randomUUID, createHash } from 'node:crypto'
-import { lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import {
   EVENTS_CSV_HEADER, LINK_QUALITY_CSV_HEADER, LINK_STATE_CSV_HEADER,
@@ -9,6 +9,7 @@ import {
 import type { AfsimEventLog } from '../../src/features/data-exchange/afsim-event-log.js'
 import { inspectCsvText, parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
 import { readLocalFileSnapshot } from './afsim-log-reader.js'
+import { renameWithRetry } from './file-publication.js'
 
 export const TIME_SERIES_CONTRACTS: readonly ContractDescriptor[] = [
   ['link_quality.csv', LINK_QUALITY_CSV_HEADER], ['events.csv', EVENTS_CSV_HEADER],
@@ -101,7 +102,7 @@ export async function writeTimeSeries(
     }
     await writeFile(join(owned, 'manifest.json'), JSON.stringify(manifest, null, 2), { encoding: 'utf8', flag: 'wx' })
     const published = join(root, `time-series-${randomUUID()}`)
-    await rename(owned, published)
+    await renameWithRetry(owned, published)
     return published
   } catch (error) {
     // owned 只可能是上方在 root 中独占创建的目录；不清理原始文件或既有发布目录。

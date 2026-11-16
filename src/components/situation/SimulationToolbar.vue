@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import MissionRecovery from './MissionRecovery.vue'
 import type { CapabilityState, EngineControlAction, EngineControlState, UiSimulationStatus } from '../../contracts/domain-models'
 import { canSendEngineControl, engineControlMessage, stoppedReceptionMessage } from '../../features/situation/engine-control'
 
@@ -30,12 +31,13 @@ const canControl = (action: EngineControlAction) => Boolean(wsControl.value
 const controlSummary = computed(() => {
   const state = wsControl.value
   if (!state) return ''
-  if (state.delivery === 'IDLE') return state.connected ? 'WebSocket 已连接' : 'WebSocket 未连接'
+  if (state.delivery === 'IDLE') return state.connected ? '已连接' : '未连接'
   const action = state.action ? { pause: '暂停', resume: '恢复', stop: '停止' }[state.action] : ''
   const delivery = { SENDING: '发送中', SENT: '已发送 · 待确认', UNKNOWN: '发送结果不确定' }[state.delivery]
   return `${action}${delivery}${state.connected ? '' : '（离线）'}`
 })
 defineEmits<{
+  recovered: []
   start: []
   pause: []
   stop: []
@@ -58,7 +60,7 @@ defineEmits<{
         data-testid="simulation-start"
         :loading="pending && (status === 'STOPPED' || status === 'IDLE' || status === 'PAUSED')"
         :disabled="readOnly || pending || (combined ? status === 'RUNNING' || engineControl?.delivery === 'SENDING' : (remoteEngine && receptionActive && !wsControl) || (wsControl ? !canControl('resume') : status === 'RUNNING' || ((realMission || runtimeUnknown) && status === 'PAUSED')))"
-        :title="wsControl ? '发送恢复命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '真实 mission 未接入继续控制。' : undefined"
+        :title="wsControl ? '发送恢复请求，执行结果待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放继续控制。' : realMission && status === 'PAUSED' ? '当前模式不支持继续。' : undefined"
         @click="$emit('start')"
       >
         <span aria-hidden="true">▶</span>
@@ -69,7 +71,7 @@ defineEmits<{
         size="small"
         data-testid="simulation-pause"
         :disabled="readOnly || pending || runtimeUnknown || (combined ? status !== 'RUNNING' || engineControl?.delivery === 'SENDING' : wsControl ? !canControl('pause') : realMission || remoteEngine || status !== 'RUNNING')"
-        :title="wsControl ? '发送暂停命令；引擎执行结果仍待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '真实 mission 未接入暂停控制。' : undefined"
+        :title="wsControl ? '发送暂停请求，执行结果待确认。' : runtimeUnknown ? '运行模式尚未确认，暂不开放暂停控制。' : realMission ? '当前模式不支持暂停。' : undefined"
         @click="$emit('pause')"
       ><span aria-hidden="true">⏸</span> 暂停</el-button>
       <el-button
@@ -86,7 +88,7 @@ defineEmits<{
           :value="speed"
           aria-label="仿真倍速"
           :disabled="readOnly || pending || realMission || remoteEngine || runtimeUnknown || (filePlayback && status === 'STOPPED')"
-          :title="runtimeUnknown ? '运行模式尚未确认，暂不开放倍速控制。' : realMission ? '真实 mission 未接入倍速控制。' : undefined"
+          :title="runtimeUnknown ? '运行模式尚未确认，暂不开放倍速控制。' : realMission ? '当前模式不支持调整倍速。' : undefined"
           @change="$emit('update:speed', Number(($event.target as HTMLSelectElement).value))"
         >
           <option :value="1">倍速 ×1</option>
@@ -118,6 +120,7 @@ defineEmits<{
     <div v-else-if="runtimeUnknown" class="simulation-toolbar__runtime" aria-live="polite">
       <small>运行模式尚未确认，暂不开放暂停、继续及倍速控制。</small>
     </div>
+    <MissionRecovery v-if="realMission" class="simulation-toolbar__recovery" :refresh-key="feedback" @resolved="$emit('recovered')" />
   </header>
 </template>
 
@@ -132,6 +135,8 @@ defineEmits<{
   border-bottom: 1px solid var(--console-border);
   background: #071725;
 }
+
+.simulation-toolbar__recovery { grid-column: 1 / -1; min-width: 0; }
 
 .simulation-toolbar__title {
   display: grid;

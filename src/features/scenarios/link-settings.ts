@@ -68,7 +68,7 @@ export function readLinkEnabled(link: Link, settings?: ScenarioLinkSettings): bo
  * 判断配置链路是否参与本次场景；不推断实时通信质量。
  * @param link 当前链路。
  * @param settings 当前场景启停设置。
- * @param platforms 当前场景实体，用于解析中继及端点卫星。
+ * @param platforms 当前节点，用于解析中继及端点卫星。
  * @returns 本条链路及涉及的卫星均未停用时返回 true。
  */
 export function isConfiguredLinkEnabled(link: Link, settings: ScenarioLinkSettings, platforms: readonly Platform[]): boolean {
@@ -79,7 +79,7 @@ export function isConfiguredLinkEnabled(link: Link, settings: ScenarioLinkSettin
  * 读取不参与场景的原因，供列表展示和脚本过滤共同使用，链路自身停用优先。
  * @param link 当前链路。
  * @param settings 已读取的场景设置。
- * @param platforms 场景实体，用于查找端点或历史中继关联的卫星。
+ * @param platforms 节点，用于查找端点或历史中继关联的卫星。
  * @returns null 表示参与，否则返回链路停用或未选中的卫星名称。
  */
 export function getLinkExclusionReason(link: Link, settings: ScenarioLinkSettings, platforms: readonly Platform[]): '链路停用' | '天通卫星' | '神通卫星' | null {

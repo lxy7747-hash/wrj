@@ -79,7 +79,7 @@ it('未发现推送和传感器状态可展示，未发现事件不成为闭环�
   const loop = mount(ClosedLoopStepper, { global: { plugins: [ElementPlus] } })
   try {
     await flushPromises()
-    expect(panel.get('[data-testid="esm-state"]').text()).toBe('未发现')
+    expect(panel.get('[data-testid="esm-state"]').text()).toBe('未检出')
     expect(panel.text()).toContain('100–200 MHz')
     expect(panel.get('[data-testid="sensor-runtime-status"]').text()).toContain('工作状态关闭')
     expect(panel.get('[data-testid="sensor-runtime-status"]').text()).toContain('扫描覆盖0%')

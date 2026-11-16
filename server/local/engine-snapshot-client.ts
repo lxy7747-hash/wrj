@@ -130,6 +130,8 @@ export class EngineSnapshotClient {
       // Preserve message boundaries and stop reading the socket while disk writes catch up.
       const incoming = this.incoming = createWebSocketStream(socket, { readableObjectMode: true, highWaterMark: 1 })
       let firstFrame = true
+      // shortcut: 当前插件两包连续发送，只缓存同连接的一帧；若跨帧交错发送，再扩为有界多帧缓存。
+      let pending: { frameId: number; input: Record<string, unknown> } | undefined
       socket.on('open', () => {
         if (!current()) return
         this.diagnostics.connected = true
@@ -140,12 +142,39 @@ export class EngineSnapshotClient {
         let reason = 'JSON 格式错误'
         try {
           if (typeof raw !== 'string') throw new Error('引擎帧必须为 JSON 文本。')
-          const input: unknown = JSON.parse(raw.toString())
+          let input: unknown = JSON.parse(raw.toString())
           reason = '消息类型错误'
           if (!input || typeof input !== 'object' || !('msg_type' in input) || input.msg_type !== 'frame_snapshot') throw new Error('引擎消息类型不是 frame_snapshot。')
           reason = '帧头无效'
-          const adapted = adaptEngineFrameSnapshot(input)
-          if (!adapted.data) throw new Error(adapted.errors.map(error => `${error.fieldPath}：${error.message}（${describeInvalidField(input, error.fieldPath)}）`).join('；'))
+          let adapted = adaptEngineFrameSnapshot(input)
+          const part = input as Record<string, unknown>
+          const calcPart = Object.hasOwn(part, 'link_calc') && Object.hasOwn(part, 'jammer_params')
+            && !Object.hasOwn(part, 'link_manager') && !Object.hasOwn(part, 'events')
+          const routePart = !Object.hasOwn(part, 'link_calc') && Object.hasOwn(part, 'link_manager') && Object.hasOwn(part, 'events')
+          const partFrame = routePart ? adaptEngineFrameSnapshot({ ...part, link_calc: { links: [] } }).data : adapted.data
+          if ((calcPart || routePart) && partFrame) {
+            if (pending && pending.frameId !== partFrame.frameId) {
+              if (partFrame.frameId < pending.frameId && partFrame.frameId !== 0) {
+                this.logDiscard('分包帧号倒退', `frameId=${partFrame.frameId}，等待帧=${pending.frameId}`)
+                return
+              }
+              this.reject(new Error(`frameId=${pending.frameId} 缺少配对分包，未发布不完整帧。`), '分包不完整')
+              pending = undefined
+            }
+            if (!pending) { pending = { frameId: partFrame.frameId, input: part }; return }
+            if (Object.hasOwn(pending.input, 'link_calc') === calcPart) {
+              this.logDiscard('重复分包', `frameId=${partFrame.frameId}`)
+              return
+            }
+            input = { ...pending.input, ...part }
+            pending = undefined
+            adapted = adaptEngineFrameSnapshot(input)
+          } else if (adapted.data) {
+            // 完整重发帧可替代尚未配对的同帧分包。
+            if (pending && pending.frameId !== adapted.data.frameId) this.reject(new Error(`frameId=${pending.frameId} 缺少配对分包。`), '分包不完整')
+            pending = undefined
+          }
+          if (!adapted.data) throw new Error(adapted.errors.map(error => `${error.fieldPath}：${error.message}（${describeInvalidField(input as object, error.fieldPath)}）`).join('；'))
           const frame = adapted.data
           // 初次连接 lastFrameId 为 -1；坏消息不消耗重连后的首个有效帧判断。
           const restarted = (frame.frameId === 0 && this.lastFrameId > 0) || (firstFrame && frame.frameId < this.lastFrameId)
@@ -202,6 +231,8 @@ export class EngineSnapshotClient {
         try { for await (const raw of incoming) { if (!current()) break; await receive(raw) } }
         catch { /* socket error handler publishes the connection diagnostic */ }
         finally {
+          if (current() && pending) this.reject(new Error(`frameId=${pending.frameId} 在断连前未收到配对分包。`), '分包不完整')
+          pending = undefined
           incoming.destroy()
           if (current()) this.timer = setTimeout(connect, BACKOFF_MS[Math.min(this.retry++, BACKOFF_MS.length - 1)])
         }

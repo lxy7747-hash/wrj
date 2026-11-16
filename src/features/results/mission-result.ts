@@ -2,6 +2,8 @@ import type { Report, ScenarioDraft, TaskPhase } from '../../contracts/domain-mo
 import { isLocalReplaySnapshot, type LocalReplaySnapshot } from '../replays/local-replay'
 import { isLocalReport } from '../reports/local-report'
 import { taskPhaseIssue } from '../scenarios/task-phases'
+import { withDerivedMessageDirections } from '../situation/file-message-links'
+import { fileReceptionScenarioId, playbackFileSource } from '../situation/file-reception'
 
 /** resultId 标识一次真实执行；相同场景、相同输出再次执行也产生新编号。 */
 export interface MissionResultRecord {
@@ -17,10 +19,12 @@ export interface MissionResultRecord {
 }
 
 /**
- * 完成时冻结的配置摘要，只用于比较实际已保存的输入；不包含或推导链路质量、BER、连通率等结果。
+ * 本次运行留存的配置摘要，只用于比较已保存的输入；不包含或推导链路质量、BER、连通率等结果。
  * 保留为快照的可选字段，使旧三字段结果文件仍可读取。
  */
 export interface MissionResultParameters {
+  /** 手动关联的项目参考配置，不代表引擎实际执行版本。 */
+  source?: 'PROJECT_REFERENCE'
   scenarioId: string
   revision: number
   platformCount: number
@@ -43,7 +47,20 @@ export interface MissionResultSnapshot {
   parameters?: MissionResultParameters
 }
 
-/** 从 capture 时的已保存草稿复制可比输入，绝不由事件/位置 CSV 反推参数。 */
+/** 历史对比的轻量响应；旧结果可能未留存参数。 */
+export type MissionResultParameterSnapshot = Pick<MissionResultSnapshot, 'record' | 'parameters'>
+
+export function isMissionResultParameterSnapshot(value: unknown): value is MissionResultParameterSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || !Object.keys(value).every(key => ['record', 'parameters'].includes(key))) return false
+  const { record, parameters } = value as MissionResultParameterSnapshot
+  if (!isMissionResultRecord(record)) return false
+  return parameters === undefined || isMissionResultParameters(parameters)
+    && (parameters.source === 'PROJECT_REFERENCE' ? record.executionSource === 'REMOTE_WS'
+      : parameters.scenarioId === record.scenarioId && parameters.revision === record.revision)
+}
+
+/** 从已保存草稿复制可比输入，绝不由事件/位置 CSV 反推参数。 */
 export function snapshotMissionResultParameters(draft: ScenarioDraft): MissionResultParameters {
   return {
     scenarioId: draft.config.scenario.id, revision: draft.revision,
@@ -76,7 +93,8 @@ function isFiniteNonNegative(value: unknown): value is number { return typeof va
 export function isMissionResultParameters(value: unknown): value is MissionResultParameters {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const parameters = value as MissionResultParameters
-  if (![7, 8].includes(Object.keys(parameters).length) || !Object.keys(parameters).every(key => ['scenarioId', 'revision', 'platformCount', 'linkCount', 'jammerCount', 'links', 'jammers', 'phases'].includes(key))
+  if (![7, 8, 9].includes(Object.keys(parameters).length) || !Object.keys(parameters).every(key => ['scenarioId', 'revision', 'platformCount', 'linkCount', 'jammerCount', 'links', 'jammers', 'phases', 'source'].includes(key))
+    || (parameters.source !== undefined && parameters.source !== 'PROJECT_REFERENCE')
     || taskPhaseIssue(parameters.phases) !== null || typeof parameters.scenarioId !== 'string' || !parameters.scenarioId.startsWith('SCN-')
     || !Number.isSafeInteger(parameters.revision) || parameters.revision < 1
     || ![parameters.platformCount, parameters.linkCount, parameters.jammerCount].every(Number.isSafeInteger)
@@ -97,12 +115,33 @@ export function isMissionResultParameters(value: unknown): value is MissionResul
   return true
 }
 
-export function isMissionResultSnapshot(value: unknown): value is MissionResultSnapshot {
-  if (!value || typeof value !== 'object' || Array.isArray(value)
+/**
+ * 兼容旧结果快照：读取磁盘上的历史快照时，为旧版消息链路补出可判定的业务方向。
+ * 只在 direction 缺失且承载类型可判定时补值；已存在的方向与无法归类的类型保持不变。
+ * 不修改调用方对象，返回新对象；无变化时原样返回。
+ */
+export function normalizeMissionResultSnapshot(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const snapshot = value as { replay?: unknown } & Record<string, unknown>
+  const replay = snapshot.replay
+  if (!replay || typeof replay !== 'object') return value
+  const initial = (replay as { initial?: unknown }).initial
+  if (!initial || typeof initial !== 'object') return value
+  const normalizedInitial = withDerivedMessageDirections(initial)
+  if (normalizedInitial === initial) return value
+  return { ...snapshot, replay: { ...(replay as object), initial: normalizedInitial } }
+}
+
+export function isMissionResultSnapshot(value: unknown): value is MissionResultSnapshot {  if (!value || typeof value !== 'object' || Array.isArray(value)
     || ![3, 4].includes(Object.keys(value).length) || !Object.keys(value).every(key => ['record', 'replay', 'report', 'parameters'].includes(key))) return false
   const { record, replay, report, parameters } = value as MissionResultSnapshot
   if (!isMissionResultRecord(record) || !isLocalReplaySnapshot(replay) || !isLocalReport(report)) return false
-  if (parameters !== undefined && (!isMissionResultParameters(parameters) || parameters.scenarioId !== record.scenarioId || parameters.revision !== record.revision)) return false
+  if (parameters !== undefined) {
+    if (!isMissionResultParameters(parameters)) return false
+    if (parameters.source === 'PROJECT_REFERENCE') {
+      if (record.executionSource !== 'REMOTE_WS' || record.scenarioId !== fileReceptionScenarioId(playbackFileSource(replay))) return false
+    } else if (parameters.scenarioId !== record.scenarioId || parameters.revision !== record.revision) return false
+  }
   const e = report.localEvidence
   return (e.simulationComplete || record.executionSource === 'REMOTE_WS') && !replay.waitingForLine && !e.waitingForPositionLine
     && e.eventFile.sha256 === replay.initial.sha256 && e.eventFile.fileName === replay.initial.fileName

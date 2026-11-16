@@ -2,10 +2,11 @@
 import { apiFetch } from '../../features/shared/api-fetch'
 import { canVisitMenu } from '../../features/admin/access-control'
 
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { MAP_CONFIG } from '../../config/map.config'
+import { APP_CONFIG } from '../../config/app.config'
 import type { DetectionEvent, Link, SwitchEvent, UiLinkStatus, UiSimulationStatus } from '../../contracts/domain-models'
 import LinkQualityDialog from '../../components/situation/LinkQualityDialog.vue'
 import LinkStateBadge from '../../components/situation/LinkStateBadge.vue'
@@ -25,22 +26,23 @@ import {
   formatSimulationTime,
   getJammerTypeLabel,
   getPlatformName,
-  selectSituationLinks,
+  selectSituationLinksWithPlatforms,
   selectSituationMetrics,
   type SituationLinkView,
 } from '../../features/situation/situation-model'
 import { useSimulationStore } from '../../stores/simulation'
+import { useScenarioStore } from '../../stores/scenario'
 import { useTelemetryStore } from '../../stores/telemetry'
 import { useRuntimeQualityStore, type RuntimeQualityScope } from '../../stores/runtime-quality'
 import { RUNTIME_STATUS_LABELS, runtimeDecisionReason, selectRuntimeQualityViews } from '../../features/situation/runtime-quality-view'
 import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
-import { isInitialNodeSnapshot, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
+import { isInitialNodeSnapshot, platformMapSide, type InitialNodeSnapshot } from '../../features/situation/initial-nodes'
 import { selectFileCommunicationLinks, FILE_COMMUNICATION_LABELS } from '../../features/situation/file-communication-links'
 import { fileLinkDeviceStatus, selectFileDeviceStates } from '../../features/situation/file-device-events'
 import { selectReplayNodes } from '../../features/replays/local-replay'
 import { useReplayStore } from '../../stores/replay'
-import { readLinkEnabled } from '../../features/scenarios/link-settings'
-import { isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
+import { isConfiguredLinkEnabled, readLinkEnabled, readLinkSettings } from '../../features/scenarios/link-settings'
+import { createMissionPositionTimeline, isMissionPositionSnapshot, type MissionPositionSnapshot } from '../../features/situation/mission-positions'
 import { unwrapSuccessData } from '../../stores/api-envelope'
 import { isQualityDataset } from '../../features/data-exchange/quality-records'
 import { saveDownload } from '../../features/shared/download'
@@ -66,6 +68,8 @@ const summaryTabs: ReadonlyArray<{ key: SummaryTab; label: string }> = [
 
 const activeTab = ref<SummaryTab>('nodes')
 const simulationStore = useSimulationStore()
+const referenceScenarios = useScenarioStore()
+const referenceScenarioId = ref('')
 const filePlayback = useReplayStore()
 const fileLoading = ref(false)
 const ownsFilePlayback = ref(false)
@@ -98,8 +102,6 @@ const selectedNodeId = ref('')
 const selectedLinkId = ref('')
 const linkDialogVisible = ref(false)
 const telemetryTab = ref('status')
-const qualityImportInput = ref<HTMLInputElement | null>(null)
-const qualityImporting = ref(false)
 const qualityLoadMessage = ref('')
 const sceneSummaryCollapsed = ref(false)
 const telemetryPanelCollapsed = ref(false)
@@ -157,6 +159,13 @@ let sourceEpoch = 0
 let sourceRequest: AbortController | null = null
 const initialSnapshot = ref<InitialNodeSnapshot | null>(null)
 const missionPositions = ref<MissionPositionSnapshot | null>(null)
+const missionPositionTimeline = createMissionPositionTimeline()
+watch(missionPositions, snapshot => missionPositionTimeline.accept(snapshot?.positions ?? null), { flush: 'sync' })
+const displayedMissionPositions = computed(() => {
+  const nodes = missionPositions.value?.positions?.nodes ?? []
+  const frame = runtimeQualityStore.engineFrame
+  return frame && frame.runId === simulationRun.value?.runId ? missionPositionTimeline.at(frame.simulationTime) : nodes
+})
 const missionPositionMessage = ref('')
 const missionPositionSource = computed(() => {
   const run = simulationRun.value
@@ -179,17 +188,37 @@ const runtimeQualityScope = computed<RuntimeQualityScope | null>(() => {
     : null
 })
 let qualityLoadRevision = 0
-watch([runtimeQualityScope, () => combinedPlayback.value && initialSnapshot.value
-  ? fileReceptionLinks(initialSnapshot.value).map(link => link.id) : selectedScene.value?.config.links.map(link => link.id) ?? []], ([scope, ids]) => {
+/** 当前质量上下文的语义身份：认证/会话 + 作用域五字段 + 顺序无关的链路集合；对象/数组实例刷新不算变化。 */
+const runtimeQualityIdentity = computed(() => {
+  const scope = runtimeQualityScope.value
+  const auth = useAuthStore()
+  const ids = combinedPlayback.value && initialSnapshot.value
+    ? fileReceptionLinks(initialSnapshot.value).map(link => link.id)
+    : selectedScene.value?.config.links.map(link => link.id) ?? []
+  const scopeKey = scope ? [scope.taskId, scope.runId, scope.scenarioId, scope.revision, scope.startedAt].join('\u0000') : ''
+  // 顺序无关但保留重复/非法身份：不去重，避免重复 ID 或空/非字符串被隐藏为“未变化”。
+  const linkKey = ids.map(id => `${typeof id}:${String(id)}`).sort().join('\u0000')
+  return [auth.principal?.userId ?? '', auth.requestEpoch, auth.runtimeMode, scopeKey, linkKey].join('\u0001')
+})
+watch(runtimeQualityIdentity, () => {
+  const scope = runtimeQualityScope.value
+  const ids = combinedPlayback.value && initialSnapshot.value
+    ? fileReceptionLinks(initialSnapshot.value).map(link => link.id)
+    : selectedScene.value?.config.links.map(link => link.id) ?? []
   const epoch = runtimeQualityStore.activate(scope, ids)
   if (scope) void loadRuntimeQuality(scope, epoch)
 }, { immediate: true, flush: 'sync' })
-// 数据源初始化会清理旧订阅，待其完成后按运行绑定连接；不依赖质量首帧。
-watch(() => ['FILE', 'SCENE'].includes(sourceState.value) && remoteEngineMode.value && simulationRun.value?.configLocked && simulationRun.value.startedAt
+// 本地位置和链路独立到达，展示只推进到两者都已收到的仿真时刻；结束时收齐全部尾帧。
+watch(() => [runtimeQualityStore.epoch, missionPositionSource.value, simulationRun.value?.configLocked, missionPositions.value] as const, () => {
+  runtimeQualityStore.setPresentationTimes(missionPositionSource.value && simulationRun.value?.configLocked && missionPositions.value?.positions?.nodes.length
+    ? missionPositionTimeline.times() : null)
+}, { immediate: true, flush: 'sync' })
+// 订阅跟随本次运行身份，结束后继续收完尾帧；离开页面或切换运行仍断开。
+watch(() => ['FILE', 'SCENE'].includes(sourceState.value) && (missionPositionSource.value || remoteEngineMode.value && simulationRun.value?.configLocked) && simulationRun.value?.startedAt
   ? `${useAuthStore().principal?.userId}:${simulationRun.value.runId}:${simulationRun.value.startedAt}` : null,
 key => {
   telemetryStore.disconnectAndReset()
-  if (key) telemetryStore.connect()
+  if (key) telemetryStore.connect(remoteEngineMode.value ? undefined : simulationRun.value?.runId)
 }, { flush: 'post', immediate: true })
 // 统一展示时钟连续推进；质量和告警保留真实帧时间，不随展示插值改变。
 const fileTime = computed(() => combinedPlayback.value && sharedRemoteTime.value !== null ? sharedRemoteTime.value
@@ -202,6 +231,23 @@ const fileMessageLinks = computed(() => initialSnapshot.value?.messageLinks ?? [
 const fileStatus = computed<UiSimulationStatus>(() => combinedActive.value ? combinedPaused.value ? 'PAUSED' : 'RUNNING'
   : combinedPlayback.value || !ownsFilePlayback.value || !filePlayback.localSnapshot ? 'STOPPED'
   : filePlayback.state === 'PLAYING' ? 'RUNNING' : filePlayback.state === 'COMPLETED' ? 'COMPLETED' : 'PAUSED')
+const disconnectedEngineFrame = shallowRef(runtimeQualityStore.engineFrame)
+watch([displayConnected, () => runtimeQualityStore.engineFrame], ([connected, frame]) => {
+  if (!connected) disconnectedEngineFrame.value = frame
+}, { immediate: true, flush: 'sync' })
+const activeEngineFrameRun = computed(() => {
+  const run = simulationRun.value
+  return run?.configLocked && runtimeQualityStore.engineFrame?.runId === run.runId ? run : null
+})
+const engineSourceLabel = computed(() => {
+  const run = activeEngineFrameRun.value, frame = runtimeQualityStore.engineFrame
+  if (!run) return '历史引擎数据（运行已结束）'
+  if (!displayConnected.value) return '最后收到的引擎数据（连接中断）'
+  if (runtimeQualityStore.presentationPaused || combinedPaused.value || simulationStatus.value === 'PAUSED'
+    || run.engineControl?.action === 'pause') return '暂停展示的引擎数据'
+  if (frame === disconnectedEngineFrame.value || displayTimedOut.value) return '最后收到的引擎数据（等待新帧）'
+  return '引擎实时数据'
+})
 const fileSliderTime = ref(0)
 const fileSliderDragging = ref(false)
 const fileSeekRevision = ref(0)
@@ -317,13 +363,40 @@ const frame = computed(() => !selectedScene.value && sourceState.value === 'MOCK
 const hasMapData = computed(() => Boolean(selectedScene.value || (frame.value && situationMetrics.value) || (sourceState.value === 'FILE' && initialSnapshot.value && !fileSourceMismatch.value)))
 const mapNodes = computed(() => selectedScene.value
   ? selectedScene.value.config.platforms.map(platform => ({
-    platformId: platform.id, name: platform.name, type: platform.type, satelliteType: platform.satelliteType, ...platform.initialPosition, speed: 0,
-    ...missionPositions.value?.positions?.nodes.find(node => node.platformId === platform.id),
+    platformId: platform.id, name: platform.name, type: platform.type, satelliteType: platform.satelliteType,
+    side: platformMapSide(platform), ...platform.initialPosition, speed: 0,
+    ...displayedMissionPositions.value.find(node => node.platformId === platform.id),
   }))
   : hasMapData.value && sourceState.value === 'FILE' ? fileNodes.value : [])
-const mapConfiguredLinks = computed(() => selectedScene.value?.config.links.map(link => ({ ...link, enabled: readLinkEnabled(link, selectedScene.value!.config.linkSettings) })))
-const missionPositionTime = computed(() => missionPositions.value?.positions?.nodes.length
-  ? Math.max(...missionPositions.value.positions.nodes.map(node => node.time)) : null)
+const mapConfiguredLinks = computed(() => {
+  const scene = selectedScene.value
+  if (!scene) return undefined
+  const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
+  const settings = readLinkSettings(scene.config)
+  return scene.config.links.filter(link => {
+    const status = runtimeMapStatuses.value.get(link.id)
+    return platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId)
+      && isConfiguredLinkEnabled(link, settings, scene.config.platforms)
+      && (status === 'UP' || status === 'DEGRADED')
+  })
+})
+const missionPositionTime = computed(() => displayedMissionPositions.value.length
+  ? Math.max(...displayedMissionPositions.value.map(node => node.time)) : null)
+/**
+ * 仿真运行中的进度数据；文件回放由时间轴滑块表达，不再叠加速度条。
+ * 本机收到引擎帧后与链路共用源仿真时刻；无链路帧时保留原位置/运行进度。
+ * @returns 运行中或暂停且已知总时长时返回进度百分比与时刻，否则为 null。
+ */
+const simulationRunProgress = computed(() => {
+  const run = simulationRun.value
+  if (!run || sourceState.value === 'FILE' || combinedPlayback.value) return null
+  if (simulationStatus.value !== 'RUNNING' && simulationStatus.value !== 'PAUSED') return null
+  const { totalDuration } = run.canonical
+  if (!(totalDuration > 0)) return null
+  const currentTime = Math.min(totalDuration, runtimeQualityStore.engineFrame?.runId === run.runId ? runtimeQualityStore.engineFrame.simulationTime : Math.max(run.canonical.currentTime, missionPositionTime.value ?? 0))
+  const percent = Math.min(100, Math.max(0, currentTime / totalDuration * 100))
+  return { percent, currentTime, totalDuration }
+})
 const latestEngineJammerTopic = computed(() => telemetryStore.engineJammerUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
 const latestEngineSwitchTopic = computed(() => telemetryStore.engineSwitchUpdates.findLast(update => !combinedPlayback.value || update.simulationTime <= fileTime.value) ?? null)
 
@@ -389,7 +462,7 @@ watch(missionPositionSource, (source, _, onCleanup) => {
   void read()
 }, { immediate: true, flush: 'sync' })
 
-/** 真实 mission 位置由独立 WS 源推送；不借用引擎帧号或与引擎时刻强行对齐。 */
+/** 真实位置独立接收，展示时按链路帧时间选择，不改写位置源记录。 */
 watch(() => telemetryStore.missionPositionUpdate, update => {
   const run = simulationRun.value
   const scene = selectedScene.value
@@ -406,7 +479,7 @@ watch(() => telemetryStore.missionPositionUpdate, update => {
     },
   }
   missionPositionMessage.value = update.nodes.length
-    ? `本次位置已由实时 WebSocket 更新（位置源记录 ${update.sourceRecordCount} 条）。`
+    ? `本次位置已更新，共 ${update.sourceRecordCount} 条记录。`
     : '本次位置源暂无可用节点记录。'
 }, { flush: 'sync' })
 
@@ -451,7 +524,7 @@ async function initializeSituation(): Promise<void> {
       return
     }
     sourceState.value = 'SCENE'
-    sourceMessage.value = '已保存场景配置预览；开始时执行服务端生成的脚本。'
+    sourceMessage.value = '已保存场景配置预览。'
     return
   }
   sourceState.value = 'LOADING'
@@ -591,7 +664,8 @@ watch(frame, (nextFrame) => {
   }
 }, { immediate: true })
 
-const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinks(frame.value))
+const situationLinks = computed(() => frame.value === null ? [] : selectSituationLinksWithPlatforms(frame.value))
+const mapLiveLinks = computed(() => situationLinks.value.filter(link => link.status === 'UP' || link.status === 'DEGRADED'))
 const fileLinksForSummary = computed(() => {
   if (sourceState.value !== 'FILE') return []
   return fileLinks.value.map(link => {
@@ -609,15 +683,22 @@ const fileLinksForSummary = computed(() => {
 })
 const displayedLinks = computed(() => {
   if (selectedScene.value) {
-    return selectedScene.value.config.links.map(link => ({
-      linkId: link.id,
-      type: link.type,
-      sourceName: selectedScene.value!.config.platforms.find(platform => platform.id === link.sourcePlatformId)!.name,
-      destinationName: selectedScene.value!.config.platforms.find(platform => platform.id === link.targetPlatformId)!.name,
-      live: null,
-      configured: link,
-      file: null,
-    }))
+    const scene = selectedScene.value
+    const platformIds = new Set(scene.config.platforms.map(platform => platform.id))
+    const platforms = new Map(scene.config.platforms.map(platform => [platform.id, platform]))
+    // 只展示两端节点都存在的链路，避免表格和地图出现缺少设备端点的链路。
+    return scene.config.links
+      .filter(link => platformIds.has(link.sourcePlatformId) && platformIds.has(link.targetPlatformId))
+      .map(link => ({
+        linkId: link.id,
+        type: link.type,
+        sourceName: platforms.get(link.sourcePlatformId)!.name,
+        relayName: link.relayPlatformId ? (platforms.get(link.relayPlatformId)?.name ?? link.relayPlatformId) : null,
+        destinationName: platforms.get(link.targetPlatformId)!.name,
+        live: null,
+        configured: link,
+        file: null,
+      }))
   }
   if (sourceState.value === 'FILE') {
     return fileLinks.value.map(link => {
@@ -627,6 +708,7 @@ const displayedLinks = computed(() => {
         linkId: link.id,
         type: link.type,
         sourceName: source?.name ?? link.sourcePlatformId,
+        relayName: null,
         destinationName: target?.name ?? link.targetPlatformId,
         live: null,
         configured: null,
@@ -641,6 +723,7 @@ const displayedLinks = computed(() => {
     linkId: link.linkId,
     type: link.type,
     sourceName: link.sourceName,
+    relayName: null,
     destinationName: link.destinationName,
     live: link,
     configured: null,
@@ -664,18 +747,16 @@ const runtimeQualityViews = computed(() => selectRuntimeQualityViews(runtimeQual
 const displayedStatusLinks = computed(() => displayedLinks.value.map(link => ({ ...link, runtimeStatus: runtimeStatusMap.value.get(link.linkId) ?? engineSingleSegmentStatusMap.value.get(link.linkId) })))
 const runtimeMapStatuses = computed(() => new Map<string, UiLinkStatus>([...runtimeStatusMap.value.entries(), ...engineSingleSegmentStatusMap.value.entries()]
   .flatMap(([id, value]) => value.status === 'UNKNOWN' ? [] : [[id, value.status] as const])))
-/** 仅高亮当前引擎帧中按相邻节点端口及唯一场景 linkId 解析出的切换段。 */
+/** 只高亮最近一次切换；历史证据保留供查看，不累计到地图上。 */
 const engineSwitchMap = computed(() => {
   const frame = runtimeQualityStore.engineFrame
-  if (!frame) return new Map<string, ConfiguredLinkSwitchState>()
-  const before = new Set<string>()
-  const after = new Set<string>()
-  for (const item of runtimeQualityStore.engineSwitches) {
-    if (item.frameId !== frame.frameId) continue
-    const resolved = resolveEngineSwitchHighlights(frame, item.route.oldNodes, item.route.nodes)
-    resolved.before.linkIds.forEach(id => before.add(id))
-    resolved.after.linkIds.forEach(id => after.add(id))
-  }
+  const item = runtimeQualityStore.engineSwitches.at(-1)
+  if (!frame || !item) return new Map<string, ConfiguredLinkSwitchState>()
+  // 无冻结证据时仅解析同帧，不能用当前帧猜测历史路径。
+  const resolved = item.resolution ?? (item.frameId === frame.frameId ? resolveEngineSwitchHighlights(frame, item.route.oldNodes, item.route.nodes) : undefined)
+  if (!resolved) return new Map<string, ConfiguredLinkSwitchState>()
+  const before = new Set(resolved.before.linkIds)
+  const after = new Set(resolved.after.linkIds)
   return new Map([...new Set([...before, ...after])].map(id => [id,
     before.has(id) && after.has(id) ? 'BOTH' : before.has(id) ? 'BEFORE' : 'AFTER'] as const))
 })
@@ -686,7 +767,7 @@ const selectedRuntimeQuality = computed(() => runtimeQualityViews.value.get(sele
 const selectedEngineSegments = computed(() => runtimeQualityStore.engineFrame?.links.filter(segment => segment.linkIds.includes(selectedLinkId.value)) ?? [])
 const qualitySourceKey = computed(() => `${sourceState.value}:${selectedScene.value?.config.scenario.id ?? frame.value?.runId ?? ''}:${runtimeQualityScope.value?.runId ?? ''}:${runtimeQualityScope.value?.startedAt ?? ''}:${selectedScene.value?.revision ?? ''}`)
 const qualitySourceLabel = computed(() => {
-  if (runtimeQualityStore.engineFrame) return '引擎实时推送'
+  if (runtimeQualityStore.engineFrame) return engineSourceLabel.value
   const source = runtimeQualityStore.importedDataset?.source
   if (!source) return null
   return `文件导入 · ${source.fileName} · ${source.frameIdKind === 'IMPORT_SEQUENCE' ? '采样序号（非引擎帧号）' : '来源帧号'} · ${source.sha256.slice(0, 12)}`
@@ -858,7 +939,7 @@ async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpo
     }
     const data = unwrapSuccessData(body)
     if (data === null) {
-      qualityLoadMessage.value = '当前运行尚未导入规范质量文件。'
+      qualityLoadMessage.value = '暂无当前运行质量数据。'
       return
     }
     if (!isQualityDataset(data) || !runtimeQualityStore.acceptDataset(requestEpoch, data)) {
@@ -869,60 +950,6 @@ async function loadRuntimeQuality(expectedScope: RuntimeQualityScope, requestEpo
   } catch {
     if (revision === qualityLoadRevision && sameQualityScope(expectedScope, runtimeQualityScope.value)
       && requestEpoch === runtimeQualityStore.epoch) qualityLoadMessage.value = '质量数据读取失败，请稍后重试。'
-  }
-}
-
-function openQualityImport(): void {
-  if (!runtimeQualityScope.value || combinedPlayback.value || qualityImporting.value) return
-  qualityImportInput.value?.click()
-}
-
-/**
- * Keep the exact UTF-8 text (including an optional BOM) that will be hashed and
- * archived by the server.  File.text() silently replaces malformed sequences,
- * which would make the server digest describe a different file.
- */
-async function readQualityFileText(file: File): Promise<string> {
-  try {
-    const bytes = await file.arrayBuffer()
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
-  } catch {
-    throw new Error('质量文件不是有效的 UTF-8 编码，未上传。')
-  }
-}
-
-async function importQualityFile(event: Event): Promise<void> {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  const scope = runtimeQualityScope.value
-  if (!file || !scope || qualityImporting.value) return
-  if (file.size > 4 * 1024 * 1024) { ElMessage.error('质量文件不能超过 4 MiB。'); return }
-  const match = file.name.match(/\.([A-Za-z0-9]+)$/u)
-  const extension = match?.[1]?.toUpperCase()
-  if (extension !== 'JSON' && extension !== 'CSV') { ElMessage.error('只支持 JSON 或 CSV 质量文件。'); return }
-  const requestEpoch = runtimeQualityStore.epoch
-  qualityImporting.value = true
-  try {
-    const text = await readQualityFileText(file)
-    if (!sameQualityScope(scope, runtimeQualityScope.value) || requestEpoch !== runtimeQualityStore.epoch) return
-    const response = await apiFetch(`${resolveMockOrigin()}/api/v1/simulations/${encodeURIComponent(scope.runId)}/quality`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Demo-Role': useAuthStore().role },
-      body: JSON.stringify({ scope, fileName: file.name, format: extension, text }),
-    })
-    const body = await response.json() as unknown
-    if (!response.ok) {
-      const error = typeof body === 'object' && body !== null ? (body as { error?: { message?: unknown } }).error : undefined
-      throw new Error(typeof error?.message === 'string' ? error.message : '质量文件导入失败。')
-    }
-    const data = unwrapSuccessData(body)
-    if (!isQualityDataset(data) || !runtimeQualityStore.acceptDataset(requestEpoch, data)) throw new Error('服务端返回质量数据与当前运行不一致。')
-    qualityLoadMessage.value = ''
-    ElMessage.success(`已导入 ${data.samples.length} 条质量采样；来源为文件导入。`)
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '质量文件导入失败。')
-  } finally {
-    qualityImporting.value = false
   }
 }
 
@@ -1017,7 +1044,7 @@ async function startSimulation(): Promise<void> {
         resetDisplayClock()
         filePlayback.followLocalTime(0, false)
         fileSeekRevision.value += 1
-        if (!await simulationStore.start(playbackFileSource(filePlayback.localSnapshot!))) return
+        if (!await simulationStore.start(playbackFileSource(filePlayback.localSnapshot!), referenceScenarioId.value || undefined)) return
       }
       if (unmounted || epoch !== sourceEpoch) return
       clearPausedPlayback()
@@ -1223,6 +1250,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 
     <div class="situation-page__toolbar">
     <SimulationToolbar
+      @recovered="simulationStore.resetProjection()"
       :read-only="sourceState !== 'MOCK' && sourceState !== 'SCENE' && sourceState !== 'FILE'"
       :file-playback="sourceState === 'FILE'"
       :real-mission="realMissionMode"
@@ -1234,7 +1262,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
       :speed="sourceState === 'FILE' ? ownsFilePlayback ? filePlayback.speed : 1 : simulationSpeed"
       :capability-state="simulationCapabilityState"
       :pending="fileLoading || stopPending || simulationPending || simulationStore.selectingScene"
-      :feedback="combinedPlayback ? combinedFeedback : sourceState === 'FILE' ? `文件播放 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}，不启动 mission` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
+      :feedback="combinedPlayback ? combinedFeedback : sourceState === 'FILE' ? `仅回放文件 · ${fileTimeLabel(fileTime)} / ${fileTimeLabel(filePlayback.replay?.durationS ?? 0)}` : sourceState === 'MOCK' || sourceState === 'SCENE' ? simulationFeedback : sourceMessage"
       @start="startSimulation"
       @pause="pauseSimulation"
       @stop="requestStop"
@@ -1251,19 +1279,42 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             :show-tooltip="false"
             :disabled="fileLoading || combinedActive || filePlayback.replay.durationS === 0"
             :aria-label="combinedPlayback ? '统一播放进度' : '文件播放进度'"
-            :title="combinedActive ? '实时接收期间跟随上游时间，暂不支持跳转。' : undefined"
+            :title="combinedActive ? '实时接收期间不能跳转。' : undefined"
             @input="fileSliderDragging = true"
             @change="seekFileTime"
           />
           <span class="toolbar-timeline__time">{{ fileTimeLabel(filePlayback.replay.durationS) }}</span>
         </div>
+        <div
+          v-if="simulationRunProgress"
+          class="toolbar-timeline toolbar-timeline--progress"
+          role="progressbar"
+          :aria-valuenow="Math.round(simulationRunProgress.percent)"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-label="仿真进度"
+          data-testid="simulation-progress"
+        >
+          <span class="toolbar-timeline__time">{{ fileTimeLabel(simulationRunProgress.currentTime) }} / {{ fileTimeLabel(simulationRunProgress.totalDuration) }}</span>
+          <el-progress class="simulation-progress-bar" :percentage="simulationRunProgress.percent" :show-text="false" :stroke-width="8" />
+          <span class="toolbar-timeline__time">{{ Math.round(simulationRunProgress.percent) }}%</span>
+        </div>
         <MissionConsoleLog
-          v-else-if="realMissionMode && sourceState === 'SCENE' && !otherSceneRun && simulationRun?.runId && (simulationRun.canonical.processId !== null || simulationRun.startedAt)"
+          v-if="APP_CONFIG.showMissionConsoleLog && realMissionMode && sourceState === 'SCENE' && !otherSceneRun && simulationRun?.runId && (simulationRun.canonical.processId !== null || simulationRun.startedAt)"
           :run-id="simulationRun.runId"
           :running="simulationStatus === 'RUNNING'"
         />
       </template>
     </SimulationToolbar>
+    <div v-if="combinedPlayback" class="parameter-reference" data-testid="file-parameter-reference">
+      <label>项目参考场景（可选）
+        <el-select v-model="referenceScenarioId" clearable filterable aria-label="项目参考场景" :placeholder="simulationRun?.configLocked ? '本次关联已固定，见结束后的报表' : '不关联项目场景'" style="width: 240px" :disabled="simulationPending || simulationRun?.configLocked" :loading="referenceScenarios.listState === 'LOADING'" @visible-change="visible => { if (visible) void referenceScenarios.loadScenes() }">
+          <el-option v-for="scene in referenceScenarios.scenes" :key="scene.config.scenario.id" :value="scene.config.scenario.id" :label="`${scene.config.scenario.name} · ${scene.config.scenario.id}`" />
+        </el-select>
+      </label>
+      <span>仅用于报表参考，不代表实际运行配置。</span>
+      <p v-if="referenceScenarios.listState === 'ERROR'" role="alert">{{ referenceScenarios.listMessage }}</p>
+    </div>
     <details v-if="latestEngineRejection" :key="latestEngineRejection.message" open class="engine-rejection-detail" data-testid="engine-rejection-detail">
       <summary>最近一次引擎数据拒收</summary>
       <pre tabindex="0" aria-label="引擎数据拒收详情">{{ latestEngineRejection.message }}</pre>
@@ -1471,6 +1522,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :data-testid="selectedScene ? 'saved-scene-preview' : undefined"
           :source-key="!hasMapData ? 'empty' : selectedScene ? `${selectedScene.config.scenario.id}:${selectedScene.revision}` : initialSnapshot?.sha256 ?? frame?.runId"
           :frame="hasMapData ? frame : null"
+          :engine-frame="hasMapData ? runtimeQualityStore.engineFrame : null"
+          :trail-source-key="`${simulationRun?.runId ?? ''}:${simulationRun?.startedAt ?? ''}:${missionPositions?.positions?.generation ?? ''}`"
+          :position-replay="sourceState === 'FILE' && ownsFilePlayback && !fileSourceMismatch ? filePlayback.localSnapshot : null"
           :initial-nodes="mapNodes"
           :configured-links="mapConfiguredLinks"
           :configured-link-statuses="runtimeMapStatuses"
@@ -1483,7 +1537,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
           :file-playing="sourceState === 'FILE' && (combinedPlayback ? displayMoving : fileStatus === 'RUNNING')"
           :file-speed="filePlayback.speed"
           :file-seek-revision="fileSeekRevision"
-          :links="hasMapData ? situationLinks : []"
+          :links="hasMapData ? mapLiveLinks : []"
           :selected-node-id="hasMapData ? selectedNodeId : ''"
           :focus-target="hasMapData ? mapFocusTarget : null"
           @select-node="selectedNodeId = $event"
@@ -1492,6 +1546,9 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
         >
           <template #topbar>
             <MetricPanel v-if="hasMapData && situationMetrics" :metrics="situationMetrics" />
+          </template>
+          <template #engine-source>
+            <span v-if="!activeEngineFrameRun" class="offline-map__engine-source" role="status" data-testid="engine-map-source">历史数据</span>
           </template>
         </OfflineSituationMap>
       </main>
@@ -1531,7 +1588,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
                   @click="handleLinkRowClick(link)"
                   @keydown.enter="handleLinkRowClick(link)"
                 >
-                  <td><strong>{{ link.sourceName }}→{{ link.destinationName }}</strong><small v-if="engineSwitchMap.get(link.linkId)">当前引擎帧：切换{{ engineSwitchMap.get(link.linkId) === 'BEFORE' ? '前' : engineSwitchMap.get(link.linkId) === 'AFTER' ? '后' : '前后' }}路径（端口及 linkId 已唯一关联）</small></td>
+                  <td><strong>{{ link.relayName ? `${link.sourceName}→${link.relayName}→${link.destinationName}` : `${link.sourceName}→${link.destinationName}` }}</strong><small v-if="engineSwitchMap.get(link.linkId)">最近一次切换：{{ engineSwitchMap.get(link.linkId) === 'BEFORE' ? '前' : engineSwitchMap.get(link.linkId) === 'AFTER' ? '后' : '前后' }}路径</small></td>
                   <td>{{ link.file ? (link.type === 'DATALINK' ? '数传' : (FILE_COMMUNICATION_LABELS[link.type as keyof typeof FILE_COMMUNICATION_LABELS] ?? link.type).replace('通信', '')) : (link.type === 'DATALINK' ? '数传' : LINK_TYPE_LABELS[link.type].replace('链路', '')) }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? link.live.snrDb.toFixed(2) : link.file ? '--' : '暂无数据' }}</td>
                   <td v-if="MAP_CONFIG.showLinkQualityColumns">{{ link.live ? formatBer(link.live.ber) : link.file ? '--' : '暂无数据' }}</td>
@@ -1558,7 +1615,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <span class="panel-heading__more">{{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineFrame.jammers.length} 台` : sourceState === 'FILE' ? (displayedJammers.length ? `${displayedJammers.length} 台` : '暂无数据') : `${displayedJammers.length} 台` }}</span>
           </div>
           <div class="telemetry-section__body">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="jammers" :source-label="engineSourceLabel" />
             <div v-else-if="displayedJammers.length" class="jammer-list">
               <p v-if="selectedScene" class="panel-caption">已保存配置；暂无当前运行数据</p>
               <p v-else-if="sourceState === 'FILE'" class="panel-caption">文件设备启停与干扰请求请在地图节点详情查看</p>
@@ -1574,7 +1631,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               </article>
             </div>
             <el-empty v-else class="telemetry-empty-state" :description="initialSnapshot?.deviceEvents?.length ? '文件设备启停与干扰请求请在地图节点详情查看' : '暂无数据'" :image-size="48" />
-            <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">引擎干扰主题：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
+            <p v-if="latestEngineJammerTopic" class="panel-caption" data-testid="engine-jammer-topic-status">干扰数据更新：帧 {{ latestEngineJammerTopic.sourceFrameId }} · {{ latestEngineJammerTopic.jammers.length }} 台设备 · {{ latestEngineJammerTopic.events.length }} 条事件</p>
             <p v-if="detectionEvent && !runtimeQualityStore.engineFrame" class="detection-state">
               {{ detectionEvent.sensorId }} {{ detectionEvent.detected === false ? '未发现' : '已发现' }} {{ detectionEvent.targetPlatformId }} · 发现概率 {{ (detectionEvent.detectionProbability * 100).toFixed(0) }}%
             </p>
@@ -1587,7 +1644,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             <span class="panel-heading__more">累计 {{ runtimeQualityStore.engineFrame ? `${runtimeQualityStore.engineEvents.length} 条` : allDisplayedEvents.length ? `${allDisplayedEvents.length} 条` : '暂无数据' }}</span>
           </div>
           <div class="telemetry-section__body">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="events" :source-label="engineSourceLabel" />
             <ol v-if="allDisplayedEvents.length && (combinedPlayback || !runtimeQualityStore.engineFrame)" class="event-list">
               <li v-for="event in allDisplayedEvents" :key="event.eventId">
                 <div><time>{{ formatSimulationTime(event.time) }}</time><strong>{{ event.displayType }}</strong></div>
@@ -1595,25 +1652,23 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
               </li>
             </ol>
             <el-empty v-if="!runtimeQualityStore.engineFrame && !allDisplayedEvents.length" class="telemetry-empty-state" description="暂无数据" :image-size="48" />
-            <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">引擎切换主题：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
+            <p v-if="latestEngineSwitchTopic" class="panel-caption" data-testid="engine-switch-topic-status">切换数据更新：帧 {{ latestEngineSwitchTopic.sourceFrameId }} · {{ latestEngineSwitchTopic.switches.length }} 条切换</p>
           </div>
         </section>
           </el-tab-pane>
           <el-tab-pane label="质量指标" name="quality" lazy class="telemetry-quality-pane">
-            <div class="quality-import-bar">
-              <input ref="qualityImportInput" type="file" accept=".json,.csv,application/json,text/csv" class="quality-import-input" data-testid="quality-import-input" @change="importQualityFile" />
-              <el-button size="small" type="primary" :loading="qualityImporting" :disabled="!runtimeQualityScope || combinedPlayback" data-testid="quality-import-button" @click="openQualityImport">导入 JSON / CSV</el-button>
+            <div v-if="qualityDownloadFiles.length || !runtimeQualityStore.engineFrame" class="quality-import-bar">
               <el-dropdown v-if="qualityDownloadFiles.length" trigger="click">
                 <el-button size="small" data-testid="quality-download-button">下载规范文件</el-button>
                 <template #dropdown><el-dropdown-menu><el-dropdown-item v-for="item in qualityDownloadFiles" :key="item.name" :disabled="!item.enabled" @click="downloadQualityFile(item.name)">{{ item.name }}{{ item.enabled ? '' : '（缺少源数据）' }}</el-dropdown-item></el-dropdown-menu></template>
               </el-dropdown>
-              <span v-if="qualitySourceLabel" data-testid="quality-source">{{ qualitySourceLabel }}</span>
-              <span v-else>{{ qualityLoadMessage || '选择当前运行的规范质量 JSON 或 CSV 文件（最大 4 MiB）。' }}</span>
+              <span v-if="!runtimeQualityStore.engineFrame && qualitySourceLabel" data-testid="quality-source">{{ qualitySourceLabel }}</span>
+              <span v-else-if="!runtimeQualityStore.engineFrame">{{ qualityLoadMessage || '暂无当前运行质量数据。' }}</span>
             </div>
             <div v-if="runtimeQualityStore.state === 'ERROR'" class="runtime-quality-feedback" role="alert" data-testid="runtime-quality-error">
               <p v-for="(issue, index) in runtimeQualityStore.errors" :key="index">{{ issue.code }} · {{ issue.fieldPath }}：{{ issue.message }}</p>
             </div>
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="quality" :source-label="engineSourceLabel" :selected-link-id="selectedLinkId" :links="combinedPlayback ? fileLinks : undefined" />
             <QualityMetricPanel v-else
               :links="qualityLinks"
               :nodes="[...new Set(displayedLinks.flatMap(link => [link.sourceName, link.destinationName]))]"
@@ -1628,7 +1683,7 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
             </section>
           </el-tab-pane>
           <el-tab-pane v-if="runtimeQualityStore.engineFrame || runtimeQualityStore.snapshot?.data.links.length || runtimeQualityStore.decisionEvents.length" label="选路判定" name="decisions" lazy class="telemetry-decisions-pane">
-            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" />
+            <EngineFramePanel v-if="runtimeQualityStore.engineFrame" section="decisions" :source-label="engineSourceLabel" />
             <RuntimeLinkDecisionPanel v-else :statuses="runtimeStatusMap" :candidates="runtimeQualityStore.routeCandidates"
               :decisions="runtimeQualityStore.routeDecisions" :events="runtimeQualityStore.decisionEvents" />
           </el-tab-pane>
@@ -1653,14 +1708,14 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     </footer>
     <footer v-else-if="remoteEngineMode" class="situation-footer" role="status">
       <span>{{ simulationRun?.configLocked ? '远端数据接收会话' : '远端接收未开启或已结束' }} · 发送方执行状态未确认</span>
-      <span>节点使用场景配置位置；当前远端协议未提供动态位置。</span>
+      <span>仅显示场景中的节点位置，暂无实时位置。</span>
     </footer>
     <footer v-else-if="missionPositionSource" class="situation-footer" role="status">
       <span>本次仿真位置</span>
       <span>{{ missionPositionMessage || '正在读取本次位置数据。' }}</span>
     </footer>
 
-    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" />
+    <LinkQualityDialog v-model="linkDialogVisible" :link="selectedLink" :configured-link="selectedConfiguredLink" :file-link="selectedFileLink" :runtime-quality="selectedRuntimeQuality" :engine-segments="selectedEngineSegments" :engine-frame="runtimeQualityStore.engineFrame" :engine-source-label="engineSourceLabel" />
   </section>
 </template>
 
@@ -1696,6 +1751,21 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
     max-width: 26rem;
     width: clamp(16rem, 22vw, 26rem);
   }
+}
+
+.toolbar-timeline--progress {
+  min-width: 16rem;
+  max-width: 30rem;
+  width: clamp(16rem, 22vw, 30rem);
+}
+
+.simulation-progress-bar {
+  flex: 1;
+  min-width: 8rem;
+}
+
+.simulation-progress-bar :deep(.el-progress-bar__outer) {
+  background: #16283c;
 }
 
 .situation-page {
@@ -1741,7 +1811,6 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .telemetry-decisions-pane > .engine-evidence { padding: .65rem; }
 .quality-import-bar { display: flex; flex-wrap: wrap; flex: 0 0 auto; align-items: center; gap: .5rem; margin-bottom: .5rem; min-width: 0; font-size: var(--console-font-size-min); color: var(--console-text-muted); overflow-wrap: anywhere; }
 .quality-import-bar > span { flex: 1 1 8rem; min-width: 0; }
-.quality-import-input { display: none; }
 .quality-source-events { flex: 0 1 auto; max-height: 7rem; overflow: auto; margin-top: .5rem; font-size: var(--console-font-size-min); color: var(--console-text-muted); }
 .quality-source-events strong, .quality-source-events span { display: block; }
 .quality-source-events ol { margin: .3rem 0 0; padding-left: 1.2rem; }
@@ -1783,6 +1852,8 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 .timing-list dt { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
 .timing-list dd { margin: 0; font-family: Consolas,monospace; font-size: var(--console-font-size-min); }
 .situation-center { position: relative; display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-rows: minmax(0,1fr); }
+.situation-center :deep(.offline-map__layer-status) { display: flex; flex: 0 0 100%; flex-wrap: wrap; justify-content: flex-end; gap: .25rem; }
+.offline-map__engine-source { color: var(--console-text-muted); font-size: var(--console-font-size-min); }
 .telemetry-section { min-height: 0; overflow: hidden; border-bottom: 1px solid #1e3448; }
 .telemetry-section:last-child { border-bottom: 0; }
 .telemetry-section--links, .telemetry-section--jammer, .telemetry-section--events { display: grid; grid-template-rows: auto minmax(0,1fr); }
@@ -1863,4 +1934,5 @@ function eventDescription(event: DetectionEvent | SwitchEvent): string {
 @media (max-width: 760px) {
   .situation-page { height: auto; min-height: 38rem; }
 }
+.parameter-reference { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; padding: 8px 12px; font-size: 12px; }
 </style>

@@ -59,7 +59,12 @@ export async function createLocalReportPdf(input: {
         document.x = document.page.margins.left
         document.moveDown(0.6).fontSize(14).text(`统计图表：${chart.title}`)
         document.fontSize(9).text(chart.scope ?? input.chartScope)
-        if (!chart.rows.length || (chart.kind === 'RADAR' && chart.rows.length < 3)) { document.fontSize(10).text('暂无数据'); continue }
+        if (!chart.rows.length) { document.fontSize(10).text('暂无数据'); continue }
+        if (chart.kind === 'RADAR' && chart.rows.length < 3) {
+          document.fontSize(10).text('有效链路不足三条，按数值展示连通率。')
+          for (const row of chart.rows) document.text(`${row.label}：${row.value} %`)
+          continue
+        }
         if (chart.kind === 'LINE') {
           const values = chart.rows.map(row => row.value), minimum = Math.min(...values), maximum = Math.max(...values), span = (maximum - minimum) || 1
           const times = chart.rows.map((row, index) => row.time ?? index), startTime = Math.min(...times), endTime = Math.max(...times), timeSpan = Math.max(1e-12, endTime - startTime)
@@ -67,13 +72,28 @@ export async function createLocalReportPdf(input: {
           const startX = document.page.margins.left, startY = document.y + 20
           document.fontSize(9).text(`横轴：${startTime}～${endTime} 秒；纵轴：${minimum}～${maximum} ${chart.unit ?? ''}`)
           document.moveTo(startX, startY).lineTo(startX, startY + 130).lineTo(startX + 400, startY + 130).stroke('#17212b')
+          const xy = (row: { value: number; time?: number }, index: number): [number, number] => [
+            chart.rows.length === 1 ? startX + 200 : startX + ((row.time ?? index) - startTime) / timeSpan * 400,
+            startY + 130 - (row.value - minimum) / span * 120,
+          ]
+          chart.rows.forEach((row, index) => { const [x, y] = xy(row, index); if (index === 0 || row.breakBefore) document.moveTo(x, y); else document.lineTo(x, y) })
+          document.stroke('#2f6b8f')
+          // 点标记：单点/断点/末点可见（含 0 与负值位置），超密时按步长抽稀但始终保留断点与末点。
+          const markerStep = chart.rows.length > 1000 ? Math.ceil(chart.rows.length / 1000) : 1
           chart.rows.forEach((row, index) => {
-            const x = chart.rows.length === 1 ? startX + 200 : startX + ((row.time ?? index) - startTime) / timeSpan * 400
-            const y = startY + 130 - (row.value - minimum) / span * 120
-            if (index === 0 || row.breakBefore) document.moveTo(x, y); else document.lineTo(x, y)
+            if (index % markerStep !== 0 && index !== chart.rows.length - 1 && !row.breakBefore) return
+            const [x, y] = xy(row, index)
+            document.circle(x, y, 1.5).fill('#2f6b8f')
           })
-          document.stroke('#2f6b8f').fillColor('#17212b'); document.y = startY + 145; document.x = startX
-          for (const row of chart.rows) document.fontSize(9).text(`${row.label}：${row.value} ${chart.unit ?? ''}`)
+          document.fillColor('#17212b'); document.y = startY + 145; document.x = startX
+          if (chart.rows.length <= 50) { for (const row of chart.rows) document.fontSize(9).text(`${row.label}：${row.value} ${chart.unit ?? ''}`) }
+          else {
+            // 有界预览：仅打印首尾各 20 点，精确数据以下载原文为准（不改渲染架构）。
+            const head = chart.rows.slice(0, 20), tail = chart.rows.slice(-20)
+            for (const row of head) document.fontSize(9).text(`${row.label}：${row.value} ${chart.unit ?? ''}`)
+            document.fontSize(9).text(`……（共 ${chart.rows.length} 点，仅预览首尾各 20 点；精确数据见原始来源下载）`)
+            for (const row of tail) document.fontSize(9).text(`${row.label}：${row.value} ${chart.unit ?? ''}`)
+          }
         } else if (chart.kind === 'RADAR') {
           document.fontSize(9).text('雷达图范围 0–100%；仅统计连续有效观测区间，缺口和末帧不计。')
           if (document.y + 180 > document.page.height - document.page.margins.bottom) document.addPage()

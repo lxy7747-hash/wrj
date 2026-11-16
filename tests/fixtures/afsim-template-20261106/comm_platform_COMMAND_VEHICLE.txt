@@ -124,6 +124,17 @@ platform_type COMMAND_VEHICLE_PLATFORM WSF_PLATFORM
     channels 4
     internal_link script_proc
   end_comm
+  processor forward_delay WSF_DELAY_PROCESSOR
+    queuing_method first_in_first_out
+    number_of_servers 10
+    time_distribution constant time 1.0 sec
+  end_processor
+  processor return_delay WSF_DELAY_PROCESSOR
+    queuing_method first_in_first_out
+    number_of_servers 10
+    time_distribution constant time 1.0 sec
+    internal_link script_proc
+  end_processor
   processor script_proc WSF_SCRIPT_PROCESSOR
     report_to commander via fiber_link
     //变量定义，根据热链配置生成

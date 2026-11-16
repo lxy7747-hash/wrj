@@ -1,0 +1,36 @@
+{
+  "sourceDirectory": "H:/Project/newWrj/场景配置参数对接/afsim_script_lcm_1112/afsim_script_lcm",
+  "copiedAt": "2026-11-13",
+  "files": [
+    "ad_hoc_comm.txt",
+    "comm_PerDefinition.txt",
+    "comm_platform_COMMAND_VEHICLE.txt",
+    "comm_platform_INS.txt",
+    "comm_platform_JAMMER.txt",
+    "comm_platform_MISSION_UAV.txt",
+    "comm_platform_REAR.txt",
+    "comm_platform_SAT.txt",
+    "comm_SimSetup.txt",
+    "observers.txt"
+  ],
+  "sha256": {
+    "ad_hoc_comm.txt": "A1307F01687C7A3A3B0BB2F0247005C47EE67EF43D505FFA14CCA134219B31BF",
+    "comm_PerDefinition.txt": "F3B81F0D6E3D462944F80D8B3C4229377C4DB92CA0E773FA200F8B6D313F5A6A",
+    "comm_platform_COMMAND_VEHICLE.txt": "9482E1205D80EA0A4EC9F5B2989ACE328B61B7052321CB8B55862ECB1E8EF897",
+    "comm_platform_INS.txt": "011EFB44EBE36E92C617B4F4598503D40AA1D4FF5E918F3C828F4413EDC8AFD1",
+    "comm_platform_JAMMER.txt": "E8F00BE68B05048D34C03EF3621FFAB924B5EBC6BAE10E8169EF342ACF008F90",
+    "comm_platform_MISSION_UAV.txt": "95F6ED17E2C1153F9FE98BF2D77D26778C1659FA92908464E9BADF209E9930E8",
+    "comm_platform_REAR.txt": "38B4F74B528959C1B5CD397552A4C623D702478F41E52320680DC0274B53A229",
+    "comm_platform_SAT.txt": "F3D82A9553EFDDE19F4DA7234EBE8653AC1FCA5549545A07A3AC582038827D4C",
+    "comm_SimSetup.txt": "DA73B3DE9F3250AAC721E7767E71F8F9FDA1D9374881922CF77278DE0F06CF21",
+    "observers.txt": "67C9235DE215BA0169888DCC649AAFF2683A48B8BD5776302CBD90794EC3F85D"
+  },
+  "patches": [
+    {
+      "id": "lazer-link-normalization",
+      "description": "激光端口统一为 lazer_link；1112 源模板已使用 lazer_link，仓库旧副本的 laser_link 已按源模板更正。",
+      "sourceOccurrences": 0
+    }
+  ],
+  "note": "原始模板目录只读；本清单用于核验仓库副本与源模板逐字节一致。"
+}

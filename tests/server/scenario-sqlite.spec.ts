@@ -540,12 +540,40 @@ it('旧库缺失必填运动字段读取补齐但不写库，再次保存完整�
   await second.api.put(endpoint).set(headers).send(update(restored, restored.revision)).expect(200)
   expect(second.storage.load('SCN-001').config).toEqual(restored.config)
   expect(second.storage.load('SCN-001').uiExtensions).toEqual(restored.uiExtensions)
-  // 文件导入兼容同样的缺省快照，而不是在普通 PUT 上补默认值。
+  // 只有旧版纯 ScenarioConfig 允许迁移补值；版本化快照缺字段必须被拒绝（GNZB 整改01）。
   legacy.config.scenario.id = 'SCN-LEGACY-IMPORT'
-  const imported = (await second.api.post('/api/v1/scenarios/import').set(headers)
-    .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: legacy.config, uiExtensions: legacy.uiExtensions }] }).expect(200)).body.data.drafts[0]
-  expect(imported.config.platforms[3].waypoints[0].arrivalTime).toBe(restored.config.platforms[3]!.waypoints[0]!.arrivalTime)
-  expect(imported.uiExtensions.jammers[0].direction).toBe(0)
+  const legacyImported = (await second.api.post('/api/v1/scenarios/import').set(headers)
+    .send({ items: [legacy.config] }).expect(200)).body.data.drafts[0]
+  expect(legacyImported.config.platforms[3].waypoints[0].arrivalTime).toBe(restored.config.platforms[3]!.waypoints[0]!.arrivalTime)
+  expect(legacyImported.uiExtensions.jammers[0].direction).toBe(0)
+  const versionedRejected = await second.api.post('/api/v1/scenarios/import').set(headers)
+    .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: legacy.config, uiExtensions: legacy.uiExtensions }] }).expect(422)
+  expect(versionedRejected.body.error.code).toBe('VALIDATION_FAILED')
+  expect(versionedRejected.body.error.fieldPath).toMatch(/^items\[0\]\.config\.platforms\[\d+\]\.waypoints\[0\]\.arrivalTime$/)
+})
+
+it.each(['arrivalTime', 'direction', 'both'] as const)('版本1快照缺 %s 原始必填字段导入返回422且不写入', async (field) => {
+  const { api, storage } = await start(await databasePath())
+  const source = draft()
+  if (field === 'arrivalTime' || field === 'both') for (const platform of source.config.platforms) for (const point of platform.waypoints) Reflect.deleteProperty(point, 'arrivalTime')
+  if (field === 'direction' || field === 'both') for (const extension of source.uiExtensions.jammers) Reflect.deleteProperty(extension, 'direction')
+  const result = await api.post('/api/v1/scenarios/import').set(headers)
+    .send({ items: [{ format: 'wrj.scenario.snapshot', version: 1, config: source.config, uiExtensions: source.uiExtensions }] }).expect(422)
+  expect(result.body.error.code).toBe('VALIDATION_FAILED')
+  if (field === 'direction') expect(result.body.error.fieldPath).toBe('items[0].uiExtensions.jammers[0].direction')
+  else expect(result.body.error.fieldPath).toMatch(/^items\[0\]\.config\.platforms\[\d+\]\.waypoints\[0\]\.arrivalTime$/)
+  expect(storage.load()).toBeUndefined()
+  expect(storage.load('SCN-001')).toBeUndefined()
+})
+
+it('合法版本1快照往返保持已设值时不被清空', async () => {
+  const { api } = await start(await databasePath())
+  const source = draft()
+  const imported = (await api.post('/api/v1/scenarios/import').set(headers).send({ items: [{
+    format: 'wrj.scenario.snapshot', version: 1, config: source.config, uiExtensions: source.uiExtensions,
+  }] }).expect(200)).body.data.drafts[0] as ScenarioDraft
+  expect(imported.config.platforms[3]!.waypoints[0]!.arrivalTime).toBe(source.config.platforms[3]!.waypoints[0]!.arrivalTime)
+  expect(imported.uiExtensions.jammers[0]!.direction).toBe(source.uiExtensions.jammers[0]!.direction)
 })
 
 it.each(['arrivalTime', 'direction'] as const)('PUT 缺失 %s 返回字段错误，不补默认值、不写入', async (field) => {
@@ -556,4 +584,31 @@ it.each(['arrivalTime', 'direction'] as const)('PUT 缺失 %s 返回字段错误
   const result = await api.put(endpoint).set(headers).send(update(value)).expect(422)
   expect(result.body.error.fieldPath).toBe(field === 'arrivalTime' ? 'platforms[3].waypoints[0].arrivalTime' : 'uiExtensions.jammers[0].direction')
   expect(storage.load('SCN-001')).toBeUndefined()
+})
+
+it('激光 EIRP/G-T/噪声经场景保存链路写入后关闭重建数据库仍一致，不被模板默认值覆盖', async () => {
+  const path = await databasePath()
+  let { api, stop } = await start(path)
+  const value = draft()
+  const laser = value.config.links.find(link => link.type === 'LASER')!
+  Object.assign(laser, {
+    frequency: 681_300_000, bandwidth: 1_000, txPower: 0.1, dataRate: 2_500,
+    antennaGain: { tx: 45, rx: 45 }, eirpDbw: 0, gtDbk: 17, noiseFigureDb: 7,
+  })
+  const saved = (await api.put(endpoint).set(headers).send(update(value)).expect(200)).body.data
+  const savedLaser = (saved.config.links as Array<Record<string, unknown> & { type: string }>).find(link => link.type === 'LASER')!
+  // 显式 0 不被默认（EIRP20 / G/T15 / 噪声5）覆盖。
+  expect(savedLaser).toMatchObject({
+    eirpDbw: 0, gtDbk: 17, noiseFigureDb: 7, frequency: 681_300_000, bandwidth: 1_000, txPower: 0.1, dataRate: 2_500,
+  })
+
+  // 关闭连接并重建 ScenarioSqliteStorage 与 ScenarioProjection 服务后重新读取。
+  await stop()
+  ;({ api } = await start(path))
+  const reloaded = (await api.get(endpoint).set(headers).expect(200)).body.data
+  const reloadedLaser = (reloaded.config.links as Array<Record<string, unknown> & { type: string }>).find(link => link.type === 'LASER')!
+  expect(reloadedLaser).toMatchObject({
+    eirpDbw: 0, gtDbk: 17, noiseFigureDb: 7, frequency: 681_300_000, bandwidth: 1_000, txPower: 0.1,
+    dataRate: 2_500, antennaGain: { tx: 45, rx: 45 },
+  })
 })

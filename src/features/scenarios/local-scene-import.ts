@@ -63,7 +63,7 @@ export function buildLocalSceneImport(base: ScenarioConfig, input: LocalSceneImp
     const existing = config.platforms.find(node => node.id === targetId)
     const type = existing?.type ?? choice.type
     if (!type || !Object.hasOwn(PLATFORM_TYPE_DOMAINS, type)) {
-      fail('请选择场景实体类型，文件类型不会自动映射。', `${path}.type`)
+      fail('请选择节点类型，文件类型不会自动映射。', `${path}.type`)
       continue
     }
     const latest = input.positions?.nodes.find(node => node.platformId === source.platformId)

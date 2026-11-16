@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { EquipmentParameter } from '../../contracts/domain-models'
+import type { EquipmentHistoryDetails, EquipmentRecreateParameters } from '../../features/admin/equipment-history-contract'
 import { EQUIPMENT_LINK_TYPES, equipmentDataRateOptions, equipmentLinkIssues, equipmentModulations } from '../../features/admin/equipment-link-rules'
 import { FIBER_DATA_RATE_MBPS, formatDataRate } from '../../features/scenarios/link-calc-defaults'
 import { useAdminStore } from '../../stores/admin'
@@ -20,6 +21,16 @@ const dataRateOptions = computed(() => equipmentDataRateOptions(editor.value?.ty
 const dataRateError = computed(() => parameterIssues.value.dataRateMbps ?? '')
 const parameterInvalid = computed(() => Object.keys(parameterIssues.value).length > 0)
 const confirming = ref(false)
+// 历史/核验/重建：按需加载，避免查看详情时额外请求影响既有流程。
+const history = ref<EquipmentHistoryDetails | null>(null)
+const historyPending = ref(false)
+const deletedQuery = ref('')
+const deletedDetails = ref<EquipmentHistoryDetails | null>(null)
+const deletedPending = ref(false)
+const verification = ref({ coveredTargets: '', evidenceSummary: '', conclusion: '' })
+const recreate = ref<(EquipmentRecreateParameters & { expectedHistoryVersion: number }) | null>(null)
+const recreateId = ref('')
+const recreating = ref(false)
 const query = ref('')
 const selectedType = ref('')
 const equipmentTypes = Object.keys(EQUIPMENT_LINK_TYPES)
@@ -82,6 +93,54 @@ function band(row: EquipmentParameter): string {
   return row.frequencyMinMHz === null ? '暂无数据' : `${row.frequencyMinMHz}～${row.frequencyMaxMHz} MHz`
 }
 
+async function loadHistory(id: string): Promise<void> {
+  historyPending.value = true
+  history.value = await store.loadEquipmentHistory(id)
+  historyPending.value = false
+}
+
+async function queryDeleted(): Promise<void> {
+  if (!deletedQuery.value.trim()) return
+  deletedPending.value = true
+  deletedDetails.value = await store.loadEquipmentHistory(deletedQuery.value.trim())
+  deletedPending.value = false
+}
+
+async function submitVerification(): Promise<void> {
+  if (!viewing.value) return
+  const saved = await store.recordEquipmentVerification(viewing.value.equipmentId, { ...verification.value })
+  if (saved) {
+    ElMessage.success('核验依据已保存。')
+    verification.value = { coveredTargets: '', evidenceSummary: '', conclusion: '' }
+    await loadHistory(viewing.value.equipmentId)
+  }
+}
+
+function openRecreate(details: EquipmentHistoryDetails): void {
+  const latest = details.history[0]
+  recreateId.value = details.equipmentId
+  recreate.value = {
+    expectedHistoryVersion: Math.max(0, ...details.history.map(row => row.version)),
+    type: latest?.type ?? '', frequencyMinMHz: latest?.frequencyMinMHz ?? null, frequencyMaxMHz: latest?.frequencyMaxMHz ?? null,
+    modulation: latest?.modulation ?? null, berThreshold: latest?.berThreshold ?? null,
+    bandwidthMHz: latest?.bandwidthMHz ?? null, txPowerW: latest?.txPowerW ?? null, dataRateMbps: latest?.dataRateMbps ?? null,
+  }
+}
+
+async function submitRecreate(): Promise<void> {
+  if (!recreate.value) return
+  const { expectedHistoryVersion, ...parameters } = recreate.value
+  recreating.value = true
+  const saved = await store.recreateEquipment(recreateId.value, { expectedHistoryVersion, parameters })
+  recreating.value = false
+  if (saved) {
+    ElMessage.success(`装备已重建为版本 ${saved.version}。`)
+    recreate.value = null
+    deletedDetails.value = null
+    await store.loadMaintenance('equipment')
+  }
+}
+
 onMounted(() => { void store.loadMaintenance('equipment') })
 onBeforeUnmount(() => store.resetMaintenance())
 </script>
@@ -118,7 +177,11 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-button link type="danger" :disabled="pending || confirming || row.readOnly" @click="remove(row)">删除</el-button>
       </template></el-table-column>
     </el-table>
-    <p class="equipment-note">保存时同步已登记引用的场景参数与版本；空值不覆盖、频率不自动选取。引用场景锁定、频率越界或校验失败时整次保存取消，历史归档不变。</p>
+    <p class="equipment-note">保存后会更新引用该装备的场景参数，留空不覆盖原值，也不会自动改选频率。场景锁定或参数不符合要求时不会保存，历史归档不受影响。</p>
+    <div class="equipment-history-query" data-testid="equipment-history-query">
+      <el-input v-model="deletedQuery" placeholder="输入装备编号查询历史/已删除记录" style="width: 280px" data-testid="equipment-deleted-query" />
+      <el-button :loading="deletedPending" data-testid="equipment-deleted-search" @click="queryDeleted">查询历史/已删除</el-button>
+    </div>
     <el-dialog :model-value="viewing !== null" title="查看参数详情" width="min(900px, calc(100vw - 32px))" @close="viewing = null">
       <el-descriptions v-if="viewing" :column="1" border>
         <el-descriptions-item label="编号">{{ viewing.equipmentId }}</el-descriptions-item>
@@ -134,6 +197,35 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-descriptions-item label="只读">{{ viewing.readOnly ? '是' : '否' }}</el-descriptions-item>
       </el-descriptions>
       <EquipmentRelations v-if="viewing" :equipment="viewing" />
+      <div v-if="viewing" class="equipment-history" data-testid="equipment-history">
+        <el-button :loading="historyPending" data-testid="equipment-history-load" @click="loadHistory(viewing.equipmentId)">加载历史与核验</el-button>
+        <template v-if="history">
+          <el-alert v-if="history.pendingVerification" type="warning" :closable="false" title="历史引用待核验：禁止删除、允许停用；需提交有效核验依据且最新引用复检为零后才解锁。" />
+          <el-descriptions v-if="history.verification" :column="1" border>
+            <el-descriptions-item label="核验覆盖">{{ history.verification.coveredTargets }}</el-descriptions-item>
+            <el-descriptions-item label="核验依据">{{ history.verification.evidenceSummary }}</el-descriptions-item>
+            <el-descriptions-item label="核验结论">{{ history.verification.conclusion }}</el-descriptions-item>
+            <el-descriptions-item label="核验人/时间">{{ history.verification.operator }} · {{ history.verification.verifiedAt }}</el-descriptions-item>
+          </el-descriptions>
+          <h4>发布引用（历史）</h4>
+          <el-table :data="history.publishedReferences" size="small" empty-text="暂无数据">
+            <el-table-column prop="targetType" label="目标类型" /><el-table-column prop="targetId" label="目标" />
+            <el-table-column prop="targetVersion" label="目标版本" /><el-table-column prop="equipmentVersion" label="设备版本" />
+            <el-table-column prop="sourceSummary" label="来源摘要" min-width="180" />
+          </el-table>
+          <h4>删除/重建事件</h4>
+          <el-table :data="history.lifecycle" size="small" empty-text="暂无数据">
+            <el-table-column prop="eventType" label="事件" /><el-table-column prop="version" label="版本" />
+            <el-table-column prop="operator" label="操作者" /><el-table-column prop="occurredAt" label="时间" min-width="180" />
+          </el-table>
+          <el-form v-if="history.pendingVerification" inline aria-label="提交核验依据">
+            <el-form-item label="覆盖目标"><el-input v-model="verification.coveredTargets" data-testid="equipment-verify-targets" /></el-form-item>
+            <el-form-item label="依据摘要"><el-input v-model="verification.evidenceSummary" data-testid="equipment-verify-evidence" /></el-form-item>
+            <el-form-item label="结论"><el-input v-model="verification.conclusion" data-testid="equipment-verify-conclusion" /></el-form-item>
+            <el-button data-testid="equipment-verify-submit" @click="submitVerification">提交核验</el-button>
+          </el-form>
+        </template>
+      </div>
       <template #footer><el-button @click="viewing = null">关闭</el-button></template>
     </el-dialog>
     <el-dialog :model-value="editor !== null" :title="creating ? '新增装备参数' : '编辑装备参数'" width="min(760px, calc(100vw - 32px))" top="5vh" :close-on-click-modal="false" :close-on-press-escape="!pending" :show-close="!pending" @close="editor = null">
@@ -187,6 +279,41 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-alert v-if="feedback.state === 'ERROR' && feedback.message" :title="`${feedback.message}${feedback.fieldPath ? `（${feedback.fieldPath}）` : ''}`" type="error" :closable="false" />
       </el-form>
       <template #footer><el-button :disabled="pending" @click="editor = null">取消</el-button><el-button type="primary" :loading="pending" :disabled="parameterInvalid" data-testid="equipment-save" @click="save">保存</el-button></template>
+    </el-dialog>
+    <el-dialog :model-value="deletedDetails !== null" title="装备历史与已删除查询" width="min(920px, calc(100vw - 32px))" @close="deletedDetails = null">
+      <template v-if="deletedDetails">
+        <el-alert v-if="deletedDetails.deleted" type="info" :closable="false" title="该装备当前记录已删除，以下为只读参数历史与生命周期事件；不会出现在可选设备列表。" />
+        <el-alert v-if="deletedDetails.pendingVerification" type="warning" :closable="false" title="历史引用待核验：禁止删除、允许停用。" />
+        <h4>参数历史</h4>
+        <el-table :data="deletedDetails.history" size="small" empty-text="暂无数据">
+          <el-table-column prop="version" label="版本" /><el-table-column prop="type" label="类型" />
+          <el-table-column label="频段（MHz）"><template #default="{ row }">{{ row.frequencyMinMHz === null ? '暂无数据' : `${row.frequencyMinMHz}～${row.frequencyMaxMHz}` }}</template></el-table-column>
+        </el-table>
+        <h4>发布引用（历史）</h4>
+        <el-table :data="deletedDetails.publishedReferences" size="small" empty-text="暂无数据">
+          <el-table-column prop="targetType" label="目标类型" /><el-table-column prop="targetId" label="目标" /><el-table-column prop="targetVersion" label="目标版本" />
+        </el-table>
+        <h4>删除/重建事件</h4>
+        <el-table :data="deletedDetails.lifecycle" size="small" empty-text="暂无数据">
+          <el-table-column prop="eventType" label="事件" /><el-table-column prop="version" label="版本" /><el-table-column prop="operator" label="操作者" />
+        </el-table>
+      </template>
+      <template #footer>
+        <el-button v-if="deletedDetails && deletedDetails.deleted && deletedDetails.history.length" data-testid="equipment-recreate-open" @click="openRecreate(deletedDetails)">重建为下一版本</el-button>
+        <el-button @click="deletedDetails = null">关闭</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog :model-value="recreate !== null" title="重建装备" width="min(760px, calc(100vw - 32px))" @close="recreate = null">
+      <el-form v-if="recreate" class="equipment-editor" label-position="top">
+        <p class="equipment-editor__hint">重建后生成新版本，不恢复旧引用，也不会解除待核验。</p>
+        <el-form-item label="最新历史版本"><el-input-number :model-value="recreate.expectedHistoryVersion" disabled data-testid="equipment-recreate-expected" /></el-form-item>
+        <el-form-item label="类型"><el-input v-model="recreate.type" data-testid="equipment-recreate-type" /></el-form-item>
+        <el-form-item label="频率下限（MHz）"><el-input-number :model-value="recreate.frequencyMinMHz ?? null" controls-position="right" @update:model-value="recreate.frequencyMinMHz = $event ?? null" /></el-form-item>
+        <el-form-item label="频率上限（MHz）"><el-input-number :model-value="recreate.frequencyMaxMHz ?? null" controls-position="right" @update:model-value="recreate.frequencyMaxMHz = $event ?? null" /></el-form-item>
+        <el-form-item label="调制方式"><el-input :model-value="recreate.modulation ?? ''" @update:model-value="recreate.modulation = $event || null" /></el-form-item>
+        <el-form-item label="BER 阈值"><el-input-number :model-value="recreate.berThreshold ?? null" :step="0.000001" controls-position="right" @update:model-value="recreate.berThreshold = $event ?? null" /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="recreate = null">取消</el-button><el-button type="primary" :loading="recreating" data-testid="equipment-recreate-submit" @click="submitRecreate">重建</el-button></template>
     </el-dialog>
   </section>
 </template>

@@ -1,9 +1,48 @@
 
 
 
+script_variables
+  string INFO_TYPE_FORWARD_SITUATION = "forward_situation";
+  string INFO_TYPE_FORWARD_TARGET = "forward_target";
+  string INFO_TYPE_BACK_RECON = "back_recon";
+  string INFO_TYPE_BACK_STATUS = "back_status";
+  double FORWARD_SITUATION_FREQ_SEC = 1.0;
+  double FORWARD_TARGET_FREQ_SEC = 1.0;
+  double BACK_RECON_FREQ_SEC = 10.0;
+  double BACK_STATUS_FREQ_SEC = 5.0;
+  double FORWARD_SITUATION_DELAY_SEC = 1.0;
+  double FORWARD_TARGET_DELAY_SEC = 1.0;
+  double BACK_RECON_DELAY_SEC = 2.0;
+  double BACK_STATUS_DELAY_SEC = 5.0;
+end_script_variables
+
 antenna_pattern OMNI_ANTENNA
     uniform_pattern
         peak_gain 30 dB
+        azimuth_beamwidth 360 deg
+        elevation_beamwidth 180 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern MICRO_UAV_OMNI_ANTENNA
+    uniform_pattern
+        peak_gain 3 dB
+        azimuth_beamwidth 360 deg
+        elevation_beamwidth 65 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern MICRO_REAR_PLATFORM_DIR_ANTENNA
+    uniform_pattern
+        peak_gain 18 dB
+        azimuth_beamwidth 12 deg
+        elevation_beamwidth 12 deg
+    end_uniform_pattern
+end_antenna_pattern
+
+antenna_pattern OMNI_ANTENNA_HIGHGAIN
+    uniform_pattern
+        peak_gain 25 dB
         azimuth_beamwidth 360 deg
         elevation_beamwidth 180 deg
     end_uniform_pattern

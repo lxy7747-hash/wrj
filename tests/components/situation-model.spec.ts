@@ -8,6 +8,7 @@ import {
   formatSimulationTime,
   getJammerTypeLabel,
   selectSituationLinks,
+  selectSituationLinksWithPlatforms,
   selectSituationMetrics,
 } from '../../src/features/situation/situation-model'
 
@@ -85,6 +86,16 @@ describe('态势固定帧模型', () => {
       ['L-DL-06', 'DATALINK', '地面无人集群指挥车', '空中无人作业节点 U01'],
       ['L-DL-07', 'DATALINK', '地面无人集群指挥车', '空中无人作业节点 U02'],
     ])
+  })
+
+  it('任一端的节点缺失时不进入态势展示链路，避免画出悬空连线', () => {
+    const frame = structuredClone(SITUATION_FRAME_F00042)
+    frame.platforms = frame.platforms.filter((platform) => platform.platformId !== 'SAT-01')
+    const links = selectSituationLinksWithPlatforms(frame)
+    expect(links.map((link) => link.linkId)).not.toContain('L-SAT-05')
+    expect(links).toHaveLength(SITUATION_LINKS_F00042.length - 1)
+    // 诊断视图仍需能拿到原链路以报告“端点不存在”。
+    expect(selectSituationLinks(frame).map((link) => link.linkId)).toContain('L-SAT-05')
   })
 
   it('提供稳定的单位格式', () => {

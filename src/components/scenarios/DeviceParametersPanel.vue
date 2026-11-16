@@ -95,6 +95,14 @@ function rateTiers(port: string): readonly number[] {
 const tierLabel = (mbps: number) => `${Number((mbps * 1_000_000).toPrecision(12))} bit/s（${formatDataRate(mbps)}）`
 const path = (type: TemplatePlatformType, port: string, key?: string) => `deviceParameters.ports.${type}.${port}${key ? `.${key}` : ''}`
 const sourceKey = (type: TemplatePlatformType, port: string) => `${type}/${port}`
+// 无效编辑项仅在旧值校验失败时开放修复，避免隐藏字段阻断保存。
+const visibleColumns = (type: TemplatePlatformType) => NUMBER_COLUMNS.filter(column =>
+  !['eirpDbw', 'gtDbk'].includes(column.key) || rows(type).some(row => props.fieldMessage(path(type, row.port, column.key))))
+function revealField(fieldPath: string): void {
+  const type = /^deviceParameters\.ports\.([^.]+)/.exec(fieldPath)?.[1]
+  if (TEMPLATE_PLATFORM_TYPES.includes(type as TemplatePlatformType)) activeType.value = type as TemplatePlatformType
+}
+defineExpose({ revealField })
 
 /** 已引用基础数据的字段只读；修改前须先取消引用，避免保存时与来源快照不一致。 */
 function sourceLocked(parameters: PortParameters, key: PortKey): boolean {
@@ -163,17 +171,16 @@ function clearSource(type: TemplatePlatformType, port: string): void {
 
 <template>
   <div class="device-parameters" data-testid="device-parameters-panel">
-    <p class="device-parameters__hint">按平台类型配置模板端口；同一平台类型的所有实例共用一组参数。未修改的端口按模板默认值生成。</p>
+    <p class="device-parameters__hint">同一平台类型的节点共用一组端口参数。</p>
     <el-tabs v-model="activeType" class="device-parameters__tabs" aria-label="通信平台类型">
       <el-tab-pane v-for="type in TEMPLATE_PLATFORM_TYPES" :key="type" :label="PLATFORM_LABELS[type]" :name="type">
         <el-table v-if="activeType === type" :data="rows(type)" row-key="port" :data-testid="`device-ports-${type}`">
           <el-table-column label="端口" min-width="150" fixed="left">
             <template #default="{ row }">
               <div>{{ PORT_LABELS[row.port] ?? row.port }}</div>
-              <small class="device-parameters__port">{{ row.port }}</small>
             </template>
           </el-table-column>
-          <el-table-column v-for="column in NUMBER_COLUMNS" :key="column.key" :label="column.label" min-width="130">
+          <el-table-column v-for="column in visibleColumns(type)" :key="column.key" :label="column.label" min-width="130">
             <template #default="{ row }">
               <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">—</span>
               <el-form-item v-else class="device-parameters__field" :error="fieldMessage(path(type, row.port, column.key))">
@@ -185,7 +192,7 @@ function clearSource(type: TemplatePlatformType, port: string): void {
           </el-table-column>
           <el-table-column label="传输速率" min-width="200">
             <template #default="{ row }">
-              <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed" :data-testid="`port-${type}-fiber_link-transferRate`">1000 mbits/sec（模板固定）</span>
+              <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed" :data-testid="`port-${type}-fiber_link-transferRate`">1000 Mbps（固定）</span>
               <el-form-item v-else class="device-parameters__field" :error="fieldMessage(path(type, row.port, 'transferRate'))">
                 <el-select v-if="rateTiers(row.port).length" :model-value="row.parameters.transferRate" :disabled="disabled || sourceLocked(row.parameters, 'transferRate')"
                   :aria-label="`${PORT_LABELS[row.port]}传输速率`" :data-testid="`port-${type}-${row.port}-transferRate`"
@@ -202,7 +209,7 @@ function clearSource(type: TemplatePlatformType, port: string): void {
           </el-table-column>
           <el-table-column label="应用设备参数" min-width="260">
             <template #default="{ row }">
-              <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">模板固定，只读</span>
+              <span v-if="row.port === 'fiber_link'" class="device-parameters__fixed">只读</span>
               <div v-else class="device-parameters__source">
                 <div v-if="row.parameters.parameterSource" :data-testid="`port-source-${type}-${row.port}`">
                   已引用 {{ row.parameters.parameterSource.sourceId }} · v{{ row.parameters.parameterSource.sourceVersion }}
@@ -230,11 +237,12 @@ function clearSource(type: TemplatePlatformType, port: string): void {
     <p v-if="referenceDisabled" class="device-parameters__hint">请先保存场景，再引用基础数据。</p>
     <p v-if="parameterCatalogState === 'ERROR'" role="alert" class="device-parameters__error">{{ parameterCatalogMessage }}</p>
 
-    <h4 class="device-parameters__title">天线增益</h4>
+    <details class="scenario-advanced" data-testid="antenna-advanced" :open="antennaRows.some(row => fieldMessage(`deviceParameters.antennaGains.${row.name}`))">
+    <summary>天线模型与增益</summary>
     <el-table :data="antennaRows" row-key="name" data-testid="antenna-gain-table">
       <el-table-column label="天线图名" prop="name" min-width="260" />
       <el-table-column label="用途说明" min-width="220"><template #default="{ row }">{{ ANTENNA_USAGE[row.name as TemplateAntennaName] }}</template></el-table-column>
-      <el-table-column label="peak_gain（dB）" min-width="160">
+      <el-table-column label="峰值增益（dB）" min-width="160">
         <template #default="{ row }">
           <el-form-item class="device-parameters__field" :error="fieldMessage(`deviceParameters.antennaGains.${row.name}`)">
             <el-input-number :model-value="Number.isNaN(row.gain) ? undefined : row.gain" :step="0.5" :disabled="disabled" controls-position="right"
@@ -243,14 +251,14 @@ function clearSource(type: TemplatePlatformType, port: string): void {
         </template>
       </el-table-column>
     </el-table>
+    </details>
   </div>
 </template>
 
 <style scoped>
 .device-parameters { display: grid; gap: 12px; }
 .device-parameters__hint { margin: 0; color: var(--el-text-color-secondary); font-size: 13px; }
-.device-parameters__title { margin: 8px 0 0; font-size: 14px; font-weight: 600; }
-.device-parameters__port, .device-parameters__unit { color: var(--el-text-color-secondary); font-size: 12px; }
+.device-parameters__unit { color: var(--el-text-color-secondary); font-size: 12px; }
 .device-parameters__fixed { color: var(--el-text-color-secondary); }
 .device-parameters__field { margin-bottom: 0; }
 .device-parameters__field :deep(.el-input-number), .device-parameters__field :deep(.el-select) { width: 100%; }

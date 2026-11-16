@@ -139,6 +139,13 @@ function setTriggerTime(value: number | undefined): void {
   if (editor.value) editor.value.triggerTimeS = value ?? Number.NaN
 }
 
+/** 写入计划帧序号；非负整数，清空视为未配置（省略键）。0 是合法显式值，不当作未配置。 */
+function setPlannedFrame(field: 'plannedStartFrame' | 'plannedStopFrame', value: number | null | undefined): void {
+  if (!editor.value) return
+  if (value === null || value === undefined || Number.isNaN(value)) delete editor.value[field]
+  else editor.value[field] = value
+}
+
 watch(() => props.modelValue, (visible) => {
   if (!visible) return
   editor.value = props.jammer === null ? null : readJammerParameters(structuredClone(toRaw(props.jammer)))
@@ -189,7 +196,7 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item required label="单干扰源发射功率（dBm）" :error="powerDbmError || fieldError('defaultPower')">
             <el-input-number :model-value="powerDbmInput" :min="validate ? undefined : JAMMER_POWER_DBM.min" :max="validate ? undefined : JAMMER_POWER_DBM.max" :step="JAMMER_POWER_DBM.step" controls-position="right" data-testid="jammer-power" @update:modelValue="setPowerDbm" />
             <small v-if="legacyPower" class="field-hint" data-testid="jammer-legacy-power">{{ legacyPower }}</small>
-            <small v-else class="field-hint">-10～30 dBm，步长 5 dB；保存时换算为 W。</small>
+            <small v-else class="field-hint">-10～30 dBm，步长 5 dB。</small>
           </el-form-item>
           <el-form-item required label="干扰中心频率（MHz）" :error="fieldError('frequency')"><el-input-number v-model="editor.frequency" :min="Number.MIN_VALUE" :step="minimumStep" controls-position="right" data-testid="jammer-frequency" @input="emit('frequency-input', $event)" /></el-form-item>
           <el-form-item v-if="editor.type === 'SPOT'" label="对准链路">
@@ -213,39 +220,45 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="干扰持续时长（秒）" :error="fieldError('jammingDurationS')">
             <el-input-number :model-value="editor.jammingDurationS" :min="validate ? undefined : 0" placeholder="未设置" controls-position="right" data-testid="jammer-jamming-duration" @update:model-value="setOptionalSeconds('jammingDurationS', $event)" />
           </el-form-item>
+          <el-form-item label="计划启动帧（帧序号）" :error="fieldError('plannedStartFrame')">
+            <el-input-number :model-value="editor.plannedStartFrame" :min="validate ? undefined : 0" :precision="0" placeholder="未设置" controls-position="right" data-testid="jammer-planned-start" @update:model-value="setPlannedFrame('plannedStartFrame', $event)" />
+          </el-form-item>
+          <el-form-item label="计划停止帧（帧序号）" :error="fieldError('plannedStopFrame')">
+            <el-input-number :model-value="editor.plannedStopFrame" :min="validate ? undefined : 0" :precision="0" placeholder="未设置" controls-position="right" data-testid="jammer-planned-stop" @update:model-value="setPlannedFrame('plannedStopFrame', $event)" />
+          </el-form-item>
           <el-form-item required label="方向（°）" :error="fieldError('direction')"><el-input-number v-model="uiEditor.direction" :min="validate ? undefined : 0" :max="validate ? undefined : 360" controls-position="right" data-testid="jammer-direction" /></el-form-item>
           <el-form-item label="俯仰角（°）" :error="fieldError('elevation')"><el-input-number v-model="uiEditor.elevation" :min="validate ? undefined : -10" :max="validate ? undefined : 60" controls-position="right" data-testid="jammer-elevation" /></el-form-item>
           <el-form-item label="启用" :error="fieldError('enabled')"><el-switch v-model="uiEditor.enabled" inline-prompt active-text="启用" inactive-text="停用" data-testid="jammer-enabled" /></el-form-item>
         </div>
+        <small class="field-hint" data-testid="jammer-planned-frames-hint">计划帧为非负整数，停止帧须大于启动帧。</small>
         <small class="field-hint" data-testid="jammer-retained-hint">同类干扰节点的频率、带宽、功率与探测距离须一致，每个干扰节点只能配置一台干扰设备。</small>
       </section>
-      <section class="link-editor-section" aria-labelledby="jammer-calc-title">
-        <h4 id="jammer-calc-title" class="link-editor-section__title">侦测与链路计算</h4>
+      <details class="link-editor-section scenario-advanced" data-testid="jammer-calc-advanced" :open="calcFields.some(field => fieldError(field.key))">
+        <summary>侦测与链路计算专业参数</summary>
         <div class="link-editor-grid">
-          <el-form-item v-for="field in calcFields" :key="field.key" :label="field.label" :error="fieldError(field.key)">
+          <el-form-item v-for="field in calcFields.filter(item => !['gtDbk', 'eirpDbw'].includes(item.key) || fieldError(item.key))" :key="field.key" :label="field.label" :error="fieldError(field.key)">
             <el-input-number :model-value="editor[field.key]" :step="0.1" controls-position="right" :data-testid="`jammer-${field.key}`"
               @update:model-value="editor[field.key] = $event ?? Number.NaN" />
           </el-form-item>
         </div>
-      </section>
+      </details>
       <section class="link-editor-section" aria-labelledby="jammer-detection-title">
         <h4 id="jammer-detection-title" class="link-editor-section__title">范围设置</h4>
         <div class="link-editor-grid">
           <el-form-item required label="探测范围（km，1～100）" :error="fieldError('detectionRange')">
             <el-input-number v-model="detectionRangeKm" controls-position="right" data-testid="jammer-range" />
-            <small class="field-hint">同时写入侦测雷达 maximum_range 与地面站 detection_range_nm（换算为海里）。</small>
           </el-form-item>
           <el-form-item required label="侦测最小距离（km）" :error="fieldError('detectionMinimumRange')">
             <el-input-number v-model="detectionMinimumRangeKm" :min="validate ? undefined : 0" :step="0.1" controls-position="right" data-testid="jammer-detection-minimum-range" />
-            <small class="field-hint">写入侦测雷达 minimum_range，须小于探测范围；默认 1 km。</small>
+            <small class="field-hint">须小于探测范围；默认 1 km。</small>
           </el-form-item>
           <el-form-item required label="干扰范围（km，0～100）" :error="fieldError('jammingRange')">
             <el-input-number v-model="jammingRangeKm" controls-position="right" data-testid="jammer-jamming-range" />
-            <small class="field-hint">干扰机进入此距离后开启，写入 jammer_param 的 trigger_radius_nm（海里）；0 表示不触发。</small>
+            <small class="field-hint">干扰机进入此距离后开启；0 表示不触发。</small>
           </el-form-item>
           <el-form-item required label="释放范围（km，0～100）" :error="fieldError('releaseRange')">
             <el-input-number v-model="releaseRangeKm" controls-position="right" data-testid="jammer-release-range" />
-            <small class="field-hint">干扰机离开此距离后释放；不小于干扰范围，写入时换算为海里。</small>
+            <small class="field-hint">干扰机离开此距离后释放；不小于干扰范围。</small>
           </el-form-item>
         </div>
       </section>

@@ -15,8 +15,10 @@ const validId = (id: string) => /^[A-Za-z0-9_-]{1,80}$/.test(id)
 const validName = (name: string) => typeof name === 'string' && name.trim().length > 0 && name.length <= 80
 const unavailable = (message = '备份存储不可用或被占用，操作未成功；请检查磁盘和数据库后重试。'): AdminResult<never> => ({ ok: false, status: 503, code: 'ATOMIC_REPLACE_FAILED', message })
 const schemaQuery = "SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name"
-/** 校验规则变化时递增，使登记结果重检；2 起不登记临时读取失败，3 起兼容旧场景运动字段。 */
-const VALIDATION_VERSION = 3
+/** 校验规则变化时递增，使登记结果重检；4 起纳入装备发布引用/生命周期/核验表并兼容旧格式设备库。 */
+const VALIDATION_VERSION = 4
+/** 旧版本设备库不含这些表；旧格式备份恢复时补空表并把设备标记为“历史引用待核验”。 */
+const LEGACY_OPTIONAL_EQUIPMENT_TABLES = ['equipment_published_references', 'equipment_lifecycle_events', 'equipment_verification', 'equipment_legacy_unverified'] as const
 
 /** 一个受控 SQLite 包保存所有业务库；恢复只复制表数据，不替换正在使用的数据库文件。 */
 export class SystemBackupSqliteStorage implements BackupStorage {
@@ -127,12 +129,38 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     }
   }
 
+  private normalize(tables: TableSnapshot[]): { tables: TableSnapshot[]; legacyFormat: boolean } {
+    if (!Array.isArray(tables) || new Set(tables.map(row => `${row.scope}.${row.table}`)).size !== tables.length) throw new Error('备份范围不完整。')
+    const optional = new Set<string>(LEGACY_OPTIONAL_EQUIPMENT_TABLES.map(table => `equipment.${table}`))
+    const provided = new Set<string>()
+    const compatible = tables.map(table => {
+      const key = `${table.scope}.${table.table}`
+      const sql = this.schema.get(key)
+      if (!sql || !Array.isArray(table.rows)) throw new Error('备份结构不兼容。')
+      provided.add(key)
+      if (table.sql === sql) return table
+      if (key !== 'main.users' || table.sql !== sql.replace(', display_name TEXT)', ')')) throw new Error('备份结构不兼容。')
+      // 只转换校验后的内存副本，旧备份文件及其校验和保持原样。
+      return { ...table, sql, rows: table.rows.map(row => {
+        if (typeof row !== 'object' || row === null || Array.isArray(row) || Object.hasOwn(row, 'display_name')) throw new Error('备份字段不完整。')
+        return { ...row, display_name: null }
+      }) }
+    })
+    const missing = [...this.schema.keys()].filter(key => !provided.has(key))
+    if (missing.some(key => !optional.has(key))) throw new Error('备份范围不完整。')
+    const filled: TableSnapshot[] = missing.map(key => {
+      const [scope, table] = key.split('.') as [BackupScope, string]
+      return { scope, table, sql: this.schema.get(key)!, rows: [] }
+    })
+    return { tables: [...compatible, ...filled], legacyFormat: missing.length > 0 }
+  }
+
   private validate(tables: TableSnapshot[], mode: 'restore' | 'raw' = 'restore'): void {
-    if (!Array.isArray(tables) || tables.length !== this.schema.size || new Set(tables.map(row => `${row.scope}.${row.table}`)).size !== this.schema.size) throw new Error('备份范围不完整。')
+    const normalized = this.normalize(tables).tables
     const scratch = new DatabaseSync(':memory:')
     try {
       for (const scope of SYSTEM_SCOPES.filter(scope => scope !== 'main')) scratch.exec(`ATTACH DATABASE ':memory:' AS ${scope}`)
-      for (const table of tables) {
+      for (const table of normalized) {
         const key = `${table.scope}.${table.table}`
         const sql = this.schema.get(key)
         if (!sql || table.sql !== sql || !Array.isArray(table.rows)) throw new Error('备份结构不兼容。')
@@ -195,16 +223,17 @@ export class SystemBackupSqliteStorage implements BackupStorage {
     return this.writeSnapshot(backupId, name, tables)
   }
 
-  private readSnapshot(path: string, mode: 'restore' | 'raw' = 'restore'): TableSnapshot[] {
+  private readSnapshot(path: string, mode: 'restore' | 'raw' = 'restore'): { tables: TableSnapshot[]; legacyFormat: boolean } {
     this.requireRegularFile(path)
     const snapshot = new DatabaseSync(path, { readOnly: true })
     try {
       const integrity = snapshot.prepare('PRAGMA integrity_check').all()
       const rows = snapshot.prepare('SELECT * FROM snapshot').all()
       if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok' || rows.length !== 1 || rows[0]?.id !== 1 || rows[0]?.format !== 'SYSTEM_SQLITE_V1') throw new Error('备份包不正确。')
-      const tables = JSON.parse(String(rows[0].payload)) as TableSnapshot[]
+      const raw = JSON.parse(String(rows[0].payload)) as TableSnapshot[]
+      const { tables, legacyFormat } = this.normalize(raw)
       this.validate(tables, mode)
-      return tables
+      return { tables, legacyFormat }
     } finally { snapshot.close() }
   }
 
@@ -220,10 +249,13 @@ export class SystemBackupSqliteStorage implements BackupStorage {
       if (!prebackup.ok) return prebackup
       const result: RestoreResult = { prebackupId: prebackup.data.backupId, integrityValid: false, progress: 0, result: 'FAILURE', rolledBack: false, generated: true }
       let tables: TableSnapshot[]
+      let legacyFormat = false
       try {
         const path = this.file(backupId)
         if (this.checksum(path) !== record.checksum) return { ok: true, data: result }
-        tables = this.readSnapshot(path)
+        const snapshot = this.readSnapshot(path)
+        tables = snapshot.tables
+        legacyFormat = snapshot.legacyFormat
         if (this.checksum(path) !== record.checksum) return { ok: true, data: result }
       } catch { return { ok: true, data: result } }
       result.integrityValid = true
@@ -239,6 +271,12 @@ export class SystemBackupSqliteStorage implements BackupStorage {
         }
         // 保留当前部署的环境基线，恢复值立即生效且不会在下次同配置启动时被覆盖。
         this.db.prepare('UPDATE settings.runtime_config SET environment=? WHERE id=1').run(environment as string)
+        // 旧格式备份不含来源覆盖记录：恢复后设备统一标为“历史引用待核验”，不伪造为已证实引用。
+        if (legacyFormat) {
+          const now = new Date().toISOString()
+          const insertLegacy = this.db.prepare('INSERT OR IGNORE INTO equipment.equipment_legacy_unverified (equipment_id, marked_at) VALUES (?, ?)')
+          for (const row of this.db.prepare('SELECT id FROM equipment.equipment_parameters').all()) insertLegacy.run(String(row.id), now)
+        }
         validateSystemSnapshot(this.db)
         this.db.exec('COMMIT'); transaction = false
         result.result = 'SUCCESS'; result.progress = 100

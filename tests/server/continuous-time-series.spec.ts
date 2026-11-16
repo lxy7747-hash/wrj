@@ -26,6 +26,45 @@ async function fixture() {
 afterEach(async () => { for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true }) })
 
 describe('连续时序 CSV 留存', () => {
+  const messageHeader = '! MESSAGE_RECEIVED,time<time>,event<string>,platform<string>,side<string>,comm<string>,message_serial_number<int>,data_tag<double>,message_type<string>,message_size<int>'
+  const message = '1,MESSAGE_RECEIVED,rear,blue,radio,1,0,Video,8'
+  it.each(['2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Ret', '2.6978', '2,MESSAGE_RECEIVED,"rear'])('明确停止时保留完整事件并记录残缺尾行：%s', async tail => {
+    const { root, output } = await fixture()
+    const source = `${messageHeader}\n${message}\n${tail}`
+    await writeFile(join(output, 'scenario_events.csv'), source)
+    const writer = await ContinuousTimeSeriesWriter.create(root, context, output)
+    await writer.poll()
+    const published = await writer.close('INCOMPLETE', { stopped: true })
+    const manifest = JSON.parse(await readFile(join(published, 'manifest.json'), 'utf8'))
+    expect(manifest).toMatchObject({ status: 'INCOMPLETE', completed: false, files: [{ fileName: 'events.csv', rowCount: 1 }], incompleteTails: [{ sourceFile: 'scenario_events.csv', bytes: tail.length }] })
+    expect(manifest).not.toHaveProperty('errorCode')
+    expect(await readFile(join(output, 'scenario_events.csv'), 'utf8')).toBe(source)
+    expect(inspectCsvText(TIME_SERIES_CONTRACTS.find(c => c.name === 'events.csv')!, await readFile(join(published, 'events.csv'), 'utf8')).valid).toBe(true)
+  })
+  it.each([
+    ['INCOMPLETE', true, '2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Video,\n'],
+    ['INCOMPLETE', true, '2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Video,'],
+    ['INCOMPLETE', true, '2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Video,invalid'],
+    ['COMPLETED', true, '2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Ret'],
+    ['INCOMPLETE', false, '2,MESSAGE_RECEIVED,rear,blue,radio,2,0,Ret'],
+  ] as const)('完整坏行/非法字段/非停止收尾仍失败：%s stopped=%s', async (completion, stopped, tail) => {
+    const { root, output } = await fixture()
+    await writeFile(join(output, 'scenario_events.csv'), `${messageHeader}\n${message}\n${tail}`)
+    const writer = await ContinuousTimeSeriesWriter.create(root, context, output)
+    await expect(writer.close(completion, { stopped })).rejects.toThrow()
+    const taskRoot = join(root, 'time-series', context.taskId)
+    const manifest = JSON.parse(await readFile(join(taskRoot, (await readdir(taskRoot))[0]!, 'manifest.json'), 'utf8'))
+    expect(manifest).toMatchObject({ status: 'FAILED', errorCode: 'CSV_STREAM_ERROR' })
+  })
+  it('停止时合法且无换行的最后记录仍保留', async () => {
+    const { root, output } = await fixture()
+    await writeFile(join(output, 'scenario_events.csv'), `${messageHeader}\n${message}`)
+    const writer = await ContinuousTimeSeriesWriter.create(root, context, output)
+    const published = await writer.close('INCOMPLETE', { stopped: true })
+    const manifest = JSON.parse(await readFile(join(published, 'manifest.json'), 'utf8'))
+    expect(manifest.files[0].rowCount).toBe(1)
+    expect(manifest).not.toHaveProperty('incompleteTails')
+  })
   it('连续归档将平台列映射为场景编号，保留原始文件摘要与设备编号', async () => {
     const { root, output } = await fixture()
     const events = REPORT_EVENT_CSV.replace(/\bA\b/g, 'rear_comm_vehicle').replace(/\bB\b/g, 'mission_uav_01') + '\n'

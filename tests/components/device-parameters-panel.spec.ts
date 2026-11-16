@@ -35,10 +35,11 @@ describe('通信设备参数面板', () => {
     expect(numberInput(wrapper, 'antenna-gain-C_BAND_DIRECTIONAL_UAV_ANTENNA').props('modelValue')).toBe(25)
     expect(wrapper.text()).toContain('激光通信')
     expect(wrapper.text()).not.toContain('激光链路不写入脚本')
+    expect(wrapper.text()).not.toMatch(/sat_link|microwave_link|peak_gain/)
 
     await wrapper.findAll('[role="tab"]')[1]!.trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-transferRate"]').text()).toContain('模板固定')
+    expect(wrapper.get('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-transferRate"]').text()).toBe('1000 Mbps（固定）')
     expect(wrapper.find('[data-testid="port-COMMAND_VEHICLE_PLATFORM-fiber_link-txFrequency"]').exists()).toBe(false)
 
     await wrapper.findAll('[role="tab"]')[3]!.trigger('click')
@@ -124,15 +125,31 @@ describe('通信设备参数面板', () => {
 })
 
 
-it('EIRP 与 G/T 可编辑有符号值，新增全向天线且保留三项旧天线', async () => {
-  const wrapper = await mountPanel()
-  for (const [field, value] of [['eirpDbw', -5], ['gtDbk', -10]] as const) {
-    const input = numberInput(wrapper, `port-MISSION_UAV_PLATFORM-microwave_link-${field}`)
-    expect(input.props('min')).toBeLessThan(-10)
-    input.vm.$emit('update:modelValue', value)
-    expect(lastValue(wrapper).ports!.MISSION_UAV_PLATFORM!.microwave_link![field]).toBe(value)
-    await wrapper.setProps({ modelValue: lastValue(wrapper) })
-  }
+it('隐藏 EIRP 与 G/T 编辑，修改有效字段仍保留原值与折叠的标定能力', async () => {
+  const modelValue = readDeviceParameters({})
+  Object.assign(modelValue.ports.MISSION_UAV_PLATFORM!.microwave_link!, { eirpDbw: -5, gtDbk: -10 })
+  const before = structuredClone(modelValue)
+  const wrapper = await mountPanel({ modelValue })
+  expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-microwave_link-eirpDbw')).toBeUndefined()
+  expect(numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-microwave_link-gtDbk')).toBeUndefined()
+  expect(wrapper.get('[data-testid="antenna-advanced"]').attributes('open')).toBeUndefined()
+  expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+  numberInput(wrapper, 'port-MISSION_UAV_PLATFORM-microwave_link-txPower').vm.$emit('update:modelValue', 25)
+  expect(lastValue(wrapper).ports!.MISSION_UAV_PLATFORM!.microwave_link!).toMatchObject({ eirpDbw: -5, gtDbk: -10, txPower: 25 })
+  expect(modelValue).toEqual(before)
   for (const name of ['OMNI_ANTENNA', 'MICRO_UAV_OMNI_ANTENNA', 'MICRO_REAR_PLATFORM_DIR_ANTENNA', 'OMNI_ANTENNA_HIGHGAIN']) expect(numberInput(wrapper, `antenna-gain-${name}`)).toBeDefined()
+  wrapper.unmount()
+})
+
+it('隐藏端口字段校验异常时可定位并修复，修复后重新隐藏', async () => {
+  const modelValue = readDeviceParameters({})
+  modelValue.ports.TIAN_TONG_SAT!.sat_link!.eirpDbw = Number.NaN
+  const wrapper = await mountPanel({ modelValue, fieldMessage: path => path === 'deviceParameters.ports.TIAN_TONG_SAT.sat_link.eirpDbw' ? '必须为有限数值' : '' })
+  wrapper.vm.revealField('deviceParameters.ports.TIAN_TONG_SAT.sat_link.eirpDbw')
+  await flushPromises()
+  numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-eirpDbw').vm.$emit('update:modelValue', -5)
+  expect(lastValue(wrapper).ports!.TIAN_TONG_SAT!.sat_link!.eirpDbw).toBe(-5)
+  await wrapper.setProps({ modelValue: lastValue(wrapper), fieldMessage: () => '' })
+  expect(numberInput(wrapper, 'port-TIAN_TONG_SAT-sat_link-eirpDbw')).toBeUndefined()
   wrapper.unmount()
 })

@@ -5,13 +5,18 @@ import alarmSample from '../fixtures/engine-frame/websocket-new/fream_chenge3.js
 import { adaptEngineFrameSnapshot } from '../../src/features/data-exchange/engine-frame-snapshot'
 const { EngineFrameSqliteStorage } = await import('../../server/local/' + 'engine-frame-sqlite.js')
 const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
-const { mkdtemp, rm, readFile, writeFile } = await import('node:fs/' + 'promises')
+const { mkdtemp, rm, readFile, writeFile, readdir } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
 const { DatabaseSync } = await import('node:' + 'sqlite')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { once } = await import('node:' + 'events')
 const { default: request } = await import('super' + 'test')
+const { readMockFrames } = await import('../../scripts/websocketData/' + 'read-frames.mjs')
+const { createHash } = await import('node:' + 'crypto')
+const { execFile } = await import('node:' + 'child_process')
+const { promisify } = await import('node:' + 'util')
+const { execPath } = await import('node:' + 'process')
 const roots: string[] = [], databases: InstanceType<typeof EngineFrameSqliteStorage>[] = []
 afterEach(async () => { vi.restoreAllMocks(); for (const db of databases.splice(0)) db.close(); for (const path of roots.splice(0)) await rm(path, { recursive: true, force: true }) })
 const scope = { taskId: 'TASK-001', runId: 'RUN-HISTORY', scenarioId: 'SCN-A', revision: 1, startedAt: '2026-11-10T00:00:00Z' }
@@ -22,6 +27,60 @@ async function setup() {
   const archive = createEngineFrameArchive(join(root, 'frames'), () => scope.startedAt, { database })
   return { root, path, database, archive }
 }
+
+it.each([false, true])('旧整数帧库升级保留载荷、摘要与事件并备份，外键异常时回滚=%s', async corrupt => {
+  const root = await mkdtemp(join(tmpdir(), 'wrj-engine-legacy-')); roots.push(root)
+  const path = join(root, 'engine-history.db'), old = new DatabaseSync(path)
+  old.exec(`CREATE TABLE engine_runs (
+    run_id TEXT PRIMARY KEY, scenario_id TEXT NOT NULL, scope_json TEXT NOT NULL,
+    bindings_json TEXT NOT NULL, source_sha256 TEXT, frame_count INTEGER
+  ) STRICT;
+  CREATE TABLE engine_frames (
+    sequence INTEGER PRIMARY KEY, run_id TEXT NOT NULL REFERENCES engine_runs(run_id),
+    engine_epoch INTEGER NOT NULL, frame_id INTEGER NOT NULL, simulation_time REAL NOT NULL,
+    payload TEXT NOT NULL, digest TEXT NOT NULL, UNIQUE(run_id, engine_epoch, frame_id)
+  ) STRICT;
+  CREATE TABLE engine_items (
+    frame_sequence INTEGER NOT NULL REFERENCES engine_frames(sequence), kind TEXT NOT NULL,
+    item_index INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(frame_sequence, kind, item_index)
+  ) STRICT;`)
+  const initial = frame(0)
+  initial.routing.alarms = [{ pathId: null, linkId: null, message: '保留旧告警' }]
+  const payload = JSON.stringify(initial), digest = createHash('sha256').update(payload).digest('hex')
+  old.prepare('INSERT INTO engine_runs VALUES(?,?,?,?,NULL,NULL)').run(scope.runId, scope.scenarioId,
+    JSON.stringify([scope.taskId, scope.runId, scope.scenarioId, scope.revision, scope.startedAt]), '{}')
+  old.prepare('INSERT INTO engine_frames VALUES(17,?,0,0,0,?,?)').run(scope.runId, payload, digest)
+  old.prepare('INSERT INTO engine_items VALUES(17,?,?,?)').run('alarm', 0, JSON.stringify(initial.routing.alarms[0]))
+  if (corrupt) old.exec("PRAGMA foreign_keys=OFF; INSERT INTO engine_items VALUES(999,'alarm',0,'{}')")
+  old.close()
+  if (corrupt) expect(() => new EngineFrameSqliteStorage(path)).toThrow('外键校验失败')
+  else {
+    const database = new EngineFrameSqliteStorage(path); databases.push(database)
+    const first = frame(0.25), second = frame(12.75)
+    first.routing.alarms = [{ pathId: null, linkId: null, message: '亚秒告警' }]
+    await database.append(scope, first); await database.append(scope, second); await database.append(scope, second)
+    const source = [initial, first, second].map(value => `${JSON.stringify(value)}\n`).join('')
+    await database.complete(scope, createHash('sha256').update(source).digest('hex'), 3)
+    expect(await database.replay(scope, 0.5)).toMatchObject({ frameCount: 3, nextFrameTime: 12.75,
+      engineFrame: { frameId: 0.25, simulationTime: 0.25 },
+      engineAlarms: [{ frameId: 0, alarm: { message: '保留旧告警' } }, { frameId: 0.25, alarm: { message: '亚秒告警' } }],
+    })
+    database.close(); databases.splice(databases.indexOf(database), 1)
+    const reopened = new EngineFrameSqliteStorage(path); databases.push(reopened)
+    expect(await reopened.replay(scope, 12.75)).toMatchObject({ frameCount: 3, engineFrame: { frameId: 12.75 } })
+  }
+  const backups = (await readdir(root)).filter((name: string) => name.includes('.before-fractional-frames-'))
+  expect(backups).toHaveLength(1)
+  for (const [file, type] of [[path, corrupt ? 'INTEGER' : 'REAL'], [join(root, backups[0]!), 'INTEGER']]) {
+    const inspect = new DatabaseSync(file!, { readOnly: true })
+    try {
+      expect(inspect.prepare('PRAGMA table_info(engine_frames)').all().find((row: { name: string }) => row.name === 'frame_id')!.type).toBe(type)
+      expect(inspect.prepare('SELECT sequence,payload,digest FROM engine_frames WHERE sequence=17').get()).toMatchObject({ sequence: 17, payload, digest })
+      expect(inspect.prepare('SELECT payload FROM engine_items WHERE frame_sequence=17').get()!.payload).toBe(JSON.stringify(initial.routing.alarms[0]))
+      expect(inspect.prepare('PRAGMA foreign_key_check').all()).toHaveLength(corrupt ? 1 : 0)
+    } finally { inspect.close() }
+  }
+})
 
 it('一个数据库隔离同场景多次运行、不同场景和引擎轮次，重开后按时间读取真实帧', async () => {
   const { archive, database, path } = await setup()
@@ -53,6 +112,31 @@ it.each(['append', 'complete'] as const)('数据库 %s 失败保留文件与待�
   expect(await archive.replay(scope.runId, scope, 5)).toMatchObject({ frameCount: 1, engineFrame: { frameId: 5 } })
   expect(await archive.load(scope.runId)).toMatchObject({ frameCount: 1 })
 })
+
+it('完整 TXT 的 1081 帧可停止保存、重复收尾并从数据库回放干扰和末帧', async () => {
+  const { archive, path } = await setup(), session = await archive.begin(scope), digest = createHash('sha256')
+  for (const raw of readMockFrames()) {
+    const value = { ...adaptEngineFrameSnapshot(raw).data!, runId: scope.runId }
+    await session.append(value); digest.update(`${JSON.stringify(value)}\n`)
+  }
+  // 独立进程强制 GC，重现 Node 22.14 在大归档遍历期间回收临时 Statement 的问题。
+  await promisify(execFile)(execPath, ['--expose-gc', '--import', 'tsx', '--input-type=module', '-e', `
+    import { Hash } from 'node:crypto';
+    import { EngineFrameSqliteStorage } from './server/local/engine-frame-sqlite.ts';
+    const database = new EngineFrameSqliteStorage(${JSON.stringify(path)});
+    const update = Hash.prototype.update; let calls = 0;
+    Hash.prototype.update = function(...args) { if (++calls % 50 === 0) global.gc(); return Reflect.apply(update, this, args); };
+    try { await database.complete(${JSON.stringify(scope)}, ${JSON.stringify(digest.digest('hex'))}, 1081); }
+    finally { database.close(); }
+  `])
+  await session.close(); await session.close()
+  const end = (await archive.replay(scope.runId, scope, 5400))!
+  expect(end).toMatchObject({ frameCount: 1081, engineFrame: { frameId: 5400 }, historyTruncated: false })
+  expect(end.engineEvents).toHaveLength(125)
+  expect(end.engineSwitches).toHaveLength(8)
+  expect((await archive.replay(scope.runId, scope, 1820))!.engineFrame!.jammers[0]).toMatchObject({ powerW: 200, rangeM: 18520 })
+  expect((await archive.load(scope.runId))!.segmentRows).toHaveLength(5730)
+}, 30000)
 
 it('数据库锁占用时写入失败可以重试，不把未保存帧标成已完成', async () => {
   const { archive, path } = await setup(), session = await archive.begin(scope)

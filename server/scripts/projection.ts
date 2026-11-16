@@ -82,7 +82,8 @@ function inspectNativeStructure(preview: string, addError: (code: string, messag
 
 /** 对与本机生成包同源的 scenario.txt 预览执行入口、依赖和输出路径预检。 */
 export function inspectScriptPreview(preview: string): ValidationResult {
-  const lines = preview.split('\n')
+  // 1112 模板混用 CRLF/LF；预览检查按行处理，不把行尾 \r 当作语法差异。
+  const lines = preview.split(/\r?\n/u)
   const errors: ValidationIssue[] = []
   const warnings: ValidationIssue[] = []
   const addError = (code: string, message: string, line: number, column = 1): void => {

@@ -27,6 +27,10 @@ const effectiveFrameLabel = computed(() => {
   if (telemetryStore.closedLoopDecision !== null) return telemetryStore.closedLoopDecision.effectiveFrameId
   return execution.value?.startTime === detection.value?.time ? detection.value?.frameId ?? '不一致' : '不一致'
 })
+/** 闭环结果来自本地固定证据校验，真实自动干扰闭环尚未接入。 */
+const sourceRunLabel = computed(() => (
+  telemetryStore.frame?.runId ? `当前运行 ${telemetryStore.frame.runId}` : '运行来源未确认'
+))
 const displayState = computed<CapabilityState>(() => {
   if (telemetryStore.capabilityState === 'LOADING' || telemetryStore.capabilityState === 'VALIDATING') {
     return telemetryStore.capabilityState
@@ -88,6 +92,8 @@ async function execute(): Promise<boolean> {
         <el-descriptions-item label="生效帧">{{ effectiveFrameLabel }}</el-descriptions-item>
         <el-descriptions-item label="迁移约束">同目标同帧一次</el-descriptions-item>
       </el-descriptions>
+
+      <p class="p4-panel__note" data-testid="closed-loop-source">来源：{{ sourceRunLabel }} 的本地证据校验；真实自动干扰闭环未接入/未确认。</p>
 
       <div class="p4-panel__actions">
         <el-button type="primary" :loading="pending" :disabled="!canExecute" @click="execute">执行闭环</el-button>

@@ -45,6 +45,7 @@ export interface StableTextSource {
  */
 export async function readStableUtf8Lines(
   inputPath: string, onLine: (line: string, lineNumber: number) => void | Promise<void>, maxBytes = STREAM_SOURCE_LIMIT_BYTES,
+  maxLineBytes = STREAM_LINE_LIMIT_BYTES,
 ): Promise<StableTextSource> {
   const sourcePath = resolve(inputPath)
   const handle = await open(sourcePath, 'r')
@@ -54,6 +55,7 @@ export async function readStableUtf8Lines(
     const before = await handle.stat({ bigint: true })
     if (!before.isFile()) throw new Error('输入路径必须为普通文件。')
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0 || maxBytes > STREAM_MAX_LIMIT_BYTES) throw new Error('流式读取上限无效。')
+    if (!Number.isSafeInteger(maxLineBytes) || maxLineBytes <= 0 || maxLineBytes > STREAM_METADATA_LIMIT_BYTES) throw new Error('单行读取上限无效。')
     if (before.size > BigInt(maxBytes)) throw new Error(`原始文件超过受保护流式读取上限 ${maxBytes / 1024 / 1024} MiB。`)
     const size = Number(before.size)
     const decoder = new TextDecoder('utf-8', { fatal: true })
@@ -72,12 +74,12 @@ export async function readStableUtf8Lines(
       while (breakAt >= 0) {
         const line = pending.slice(0, breakAt).replace(/\r$/, '')
         pending = pending.slice(breakAt + 1)
-        if (Buffer.byteLength(line, 'utf8') > STREAM_LINE_LIMIT_BYTES) throw new Error('文件含超过 128 KiB 的单行记录，拒绝不受控解析。')
+        if (Buffer.byteLength(line, 'utf8') > maxLineBytes) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的单行记录，拒绝不受控解析。`)
         lineNumber += 1
         await onLine(line, lineNumber)
         breakAt = pending.indexOf('\n')
       }
-      if (Buffer.byteLength(pending, 'utf8') > STREAM_LINE_LIMIT_BYTES) throw new Error('文件含超过 128 KiB 的未完成记录，拒绝不受控解析。')
+      if (Buffer.byteLength(pending, 'utf8') > maxLineBytes) throw new Error(`文件含超过 ${maxLineBytes / 1024} KiB 的未完成记录，拒绝不受控解析。`)
     }
     try { pending += decoder.decode() } catch { throw new Error('文件末尾不是完整 UTF-8 文本。') }
     waitingForLine = pending.length > 0

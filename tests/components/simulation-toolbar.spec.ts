@@ -1,7 +1,9 @@
 import { mount, type VueWrapper } from '@vue/test-utils'
 import ElementPlus from 'element-plus'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import SimulationToolbar from '../../src/components/situation/SimulationToolbar.vue'
+
+vi.mock('../../src/components/situation/MissionRecovery.vue', () => ({ default: { render: () => null } }))
 
 const baseProps = {
   status: 'RUNNING' as const,
@@ -20,8 +22,8 @@ describe('仿真工具栏', () => {
   })
 
   it.each([
-    [{ connected: false, action: null, delivery: 'IDLE' }, 'WebSocket 未连接', '控制回执尚未接入'],
-    [{ connected: true, action: null, delivery: 'IDLE' }, 'WebSocket 已连接', '控制回执尚未接入'],
+    [{ connected: false, action: null, delivery: 'IDLE' }, '未连接', '引擎未连接'],
+    [{ connected: true, action: null, delivery: 'IDLE' }, '已连接', '请核实引擎是否执行'],
     [{ connected: true, action: 'stop', delivery: 'SENDING' }, '停止发送中', '尚未确认引擎执行'],
     [{ connected: true, action: 'pause', delivery: 'SENT' }, '暂停已发送 · 待确认', '执行结果待确认'],
     [{ connected: false, action: 'resume', delivery: 'UNKNOWN' }, '恢复发送结果不确定（离线）', '不会自动重发'],
@@ -32,7 +34,7 @@ describe('仿真工具栏', () => {
     expect(status.text()).toBe(summary)
     expect(status.attributes('title')).toContain(detail)
     expect(wrapper.text()).toContain('播放中 · 等待数据')
-    expect(wrapper.text()).not.toContain('控制回执尚未接入')
+    expect(status.attributes('title')).not.toContain('WebSocket')
     await wrapper.setProps({ capabilityState: 'ERROR', feedback: '保存失败，请重试；数据尚未归档。' })
     expect(wrapper.get('.simulation-toolbar__error').text()).toBe('保存失败，请重试；数据尚未归档。')
   })
@@ -87,7 +89,7 @@ describe('仿真工具栏', () => {
       engineControl: { connected: true, action: 'pause', delivery } }, global: { plugins: [ElementPlus] } })
     for (const button of ['start', 'pause', 'stop']) expect(wrapper.get(`[data-testid="simulation-${button}"]`).attributes('disabled')).toBeDefined()
     await wrapper.setProps({ engineControl: { connected: false, action: null, delivery: 'IDLE' } })
-    expect(wrapper.text()).toContain('WebSocket 未连接')
+    expect(wrapper.get('[data-testid="engine-control-status"] small').text()).toBe('未连接')
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
   })
 
@@ -120,9 +122,9 @@ describe('仿真工具栏', () => {
       global: { plugins: [ElementPlus] },
     })
     expect(wrapper.get('[data-testid="simulation-pause"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('title')).toContain('未接入暂停')
+    expect(wrapper.get('[data-testid="simulation-pause"]').attributes('title')).toBe('当前模式不支持暂停。')
     expect(wrapper.get('[aria-label="仿真倍速"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('title')).toContain('未接入倍速')
+    expect(wrapper.get('[aria-label="仿真倍速"]').attributes('title')).toBe('当前模式不支持调整倍速。')
     expect(wrapper.text()).not.toContain('真实 mission 模式仅支持开始和停止')
     expect(wrapper.find('.simulation-toolbar__runtime').exists()).toBe(false)
 

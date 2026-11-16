@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
 import type { EngineFrameSnapshot } from '../../src/contracts/domain-models'
-import { includesEngineSimulationTime, resolveEngineRouteLinks, resolveEngineSwitchHighlights } from '../../src/features/situation/engine-route-highlights'
+import { includesEngineSimulationTime, resolveEngineRouteLinks, resolveEngineSwitchHighlights, buildFrameRouteEvidence, resolveEngineRouteLinksWithEvidence, resolveEngineSwitchHighlightsWithEvidence } from '../../src/features/situation/engine-route-highlights'
 
 const segment = (linkId: string, linkIds: string[], sourcePlatformId: string | null, sourcePort: string | null, targetPlatformId: string | null, targetPort: string | null) => ({
   linkId, linkIds, sourceName: sourcePlatformId, sourcePlatformId, sourcePort, targetName: targetPlatformId, targetPlatformId, targetPort,
@@ -52,5 +52,44 @@ describe('引擎切换路径高亮', () => {
     )
     expect(result.before).toMatchObject({ linkIds: ['L-OLD'], totalHops: 1, resolvedHops: 1 })
     expect(result.after).toMatchObject({ linkIds: ['L-NEW'], totalHops: 1, resolvedHops: 1 })
+  })
+})
+
+describe('引擎切换前历史路由证据', () => {
+  const oldRoute = [node('A', '', 'a-out'), node('B', 'b-in', '')]
+  const newRoute = [node('A', '', 'a-out'), node('C', 'c-in', '')]
+
+  it('旧段只在事件前帧出现时仍能用同 run/epoch 前证据解析切换前路线', () => {
+    // 事件帧只剩新段：旧段 A→B 已退出当前帧。
+    const eventFrame = frame([segment('new', ['L-NEW'], 'A', 'a-out', 'C', 'c-in')])
+    const priorEvidence = [{ runId: 'RUN-1', engineEpoch: 0, frameId: 6, hops: buildFrameRouteEvidence(frame([
+      segment('old', ['L-OLD'], 'A', 'a-out', 'B', 'b-in'),
+    ])) }]
+    const result = resolveEngineSwitchHighlightsWithEvidence(eventFrame, oldRoute, newRoute, priorEvidence)
+    expect(result.before).toMatchObject({ linkIds: ['L-OLD'], totalHops: 1, resolvedHops: 1 })
+    expect(result.after).toMatchObject({ linkIds: ['L-NEW'], totalHops: 1, resolvedHops: 1 })
+  })
+
+  it('较新的歧义证据使旧唯一映射失效，不跳过它回捞更早唯一映射', () => {
+    const eventFrame = frame([segment('new', ['L-NEW'], 'A', 'a-out', 'C', 'c-in')])
+    const olderUnique = { frameId: 5, hops: buildFrameRouteEvidence(frame([segment('old', ['L-OLD'], 'A', 'a-out', 'B', 'b-in')])) }
+    const newerAmbiguous = { frameId: 6, hops: buildFrameRouteEvidence(frame([
+      segment('x', ['L-A', 'L-B'], 'A', 'a-out', 'B', 'b-in'),
+      segment('y', ['L-C'], 'A', 'a-out', 'B', 'b-in'),
+    ])) }
+    const resolved = resolveEngineRouteLinksWithEvidence(eventFrame, oldRoute, [olderUnique, newerAmbiguous])
+    expect(resolved).toMatchObject({ linkIds: [], totalHops: 1, resolvedHops: 0 })
+  })
+
+  it('缺端口或无任何证据时明确保持未解析，不猜测', () => {
+    const eventFrame = frame([segment('new', ['L-NEW'], 'A', 'a-out', 'C', 'c-in')])
+    expect(resolveEngineRouteLinksWithEvidence(eventFrame, [node('A', '', ''), node('B', 'b-in', '')], [])).toMatchObject({ totalHops: 1, resolvedHops: 0 })
+    expect(resolveEngineRouteLinksWithEvidence(eventFrame, oldRoute, [])).toMatchObject({ linkIds: [], resolvedHops: 0 })
+  })
+
+  it('事件帧唯一映射优先于更早的历史证据', () => {
+    const eventFrame = frame([segment('old-current', ['L-CURRENT'], 'A', 'a-out', 'B', 'b-in')])
+    const prior = [{ frameId: 6, hops: buildFrameRouteEvidence(frame([segment('old', ['L-OLD'], 'A', 'a-out', 'B', 'b-in')])) }]
+    expect(resolveEngineRouteLinksWithEvidence(eventFrame, oldRoute, prior)).toMatchObject({ linkIds: ['L-CURRENT'], resolvedHops: 1 })
   })
 })

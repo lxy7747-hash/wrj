@@ -12,6 +12,7 @@ import { writeMissionPackage } from './script-file.js'
 import { MissionGenerationError } from '../scripts/mission-generator.js'
 import type { LocalMissionResults } from './mission-results.js'
 import { MissionGuard } from './mission-guard.js'
+import { readMissionProcesses } from './mission-process-inspection.js'
 import { MissionPositionReader } from './mission-position-reader.js'
 import { ContinuousTimeSeriesWriter } from './continuous-time-series.js'
 
@@ -141,12 +142,30 @@ export class LocalMissionRunner implements MissionExecution {
   constructor(private readonly executable: string, private readonly directory: string, private readonly results?: LocalMissionResults,
     private readonly probeLinkCalc: (executable: string) => Promise<boolean> = engineHasLinkCalc,
     /** 墙钟运行超时（毫秒），0 为不启用；超时后按停止流程终止本次进程树并记录原因。 */
-    private readonly runTimeoutMs = 0) {
+    private readonly runTimeoutMs = 0,
+    /** 运行包内事件/位置输出子目录（相对路径）；未配置时沿用场景 output.directory。 */
+    private readonly outputDirectory?: string,
+    /** 强制写入 local_link_stub，不探测外部 LinkCalc 插件。 */
+    private readonly forceLinkStub = false) {
     if (!isAbsolute(executable)) throw new Error('MISSION_EXECUTABLE_PATH 必须为绝对路径。')
     this.guard = new MissionGuard(directory)
   }
 
+  private ownsGuard = false
   safetyStatus() { return this.guard.status() }
+  async recover() {
+    if (this.ownsGuard || !this.guard.status()) return []
+    try {
+      const status = await this.guard.reconcile(this.executable, await readMissionProcesses())
+      return status ? [status] : []
+    } catch (error) { return [{ ...this.guard.status(), message: '无法核实遗留 Mission，已保留运行锁。', canStop: false }] }
+  }
+  async stopRecovered(runId: string) {
+    if (this.ownsGuard) throw new Error('当前运行应通过正常停止入口结束。')
+    const status = await this.guard.reconcile(this.executable, await readMissionProcesses(), runId)
+    if (status) throw new Error(status.message)
+  }
+  private async clearGuard() { await this.guard.clearAfterClose(); this.ownsGuard = false }
 
   private hasLinkCalc(): Promise<boolean> {
     this.linkCalcSupport ??= this.probeLinkCalc(this.executable).catch(() => { this.linkCalcSupport = undefined; return true })
@@ -155,27 +174,29 @@ export class LocalMissionRunner implements MissionExecution {
 
   async start(draft: ScenarioDraft, runId = 'RUN-LOCAL', taskId = 'TASK-LOCAL'): Promise<MissionProcess> {
     if (this.results && !configuredScenarioOutput(draft.config.scenario.timeStep).eventsEnabled) throw new MissionGenerationError('output.eventsEnabled', '请启用事件输出，以生成本次仿真的回放和报告。')
-    // 引擎有 WSF_LINK_CALC_PROCESSOR 时原样运行；找不到才在本次运行包中去掉 link_calc 段。
-    const linkCalcAvailable = await this.hasLinkCalc()
-    const entryPath = await writeMissionPackage(this.directory, draft, !linkCalcAvailable)
+    // 强制 stub 时不再探测外部插件；引擎有 WSF_LINK_CALC_PROCESSOR 时原样运行；找不到才在本次运行包中去掉 link_calc 段。
+    const linkCalcAvailable = this.forceLinkStub ? false : await this.hasLinkCalc()
+    const entryPath = await writeMissionPackage(this.directory, draft, !linkCalcAvailable, this.outputDirectory)
     this.positions.attach(runId, draft, entryPath)
     const cwd = dirname(entryPath)
     const logPath = join(cwd, 'mission-console.log')
     const log = await open(logPath, 'wx')
     const startedAt = new Date().toISOString()
-    const record = { runId, scenarioId: draft.config.scenario.id, revision: draft.revision }
-    try { await this.guard.claim(this.directory, record) }
+    const record = { runId, scenarioId: draft.config.scenario.id, revision: draft.revision, executable: this.executable, startedAt, runDirectory: cwd }
+    try { await this.guard.claim(this.directory, record); this.ownsGuard = true }
     catch (error) { await log.close(); throw error }
     let continuous: ContinuousTimeSeriesWriter | undefined
     let engineManifest: unknown
+    let outputDirectory: string
     try {
       // 运行中增量留存使用独立 task/run 目录；缺少质量源时不补造数据，close 仍会留下可追溯 manifest。
       engineManifest = JSON.parse(await readFile(join(cwd, 'mapping.json'), 'utf8'))
       const names = engineNameMap(engineManifest)
-      continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, await resolveMissionOutputDirectory(entryPath), names)
+      outputDirectory = await resolveMissionOutputDirectory(entryPath)
+      continuous = await ContinuousTimeSeriesWriter.create(this.directory, { taskId, runId }, outputDirectory, names)
     } catch (error) {
       await log.close()
-      await this.guard.clearAfterClose()
+      await this.clearGuard()
       throw error
     }
     // -es 为非实时事件推进：脚本中的 clock_rate / 前端倍速在此模式下不改变墙钟速度；改实时推进需另批确认。
@@ -187,7 +208,7 @@ export class LocalMissionRunner implements MissionExecution {
     } catch (error) {
       await log.close()
       try { await continuous.close('FAILED') } catch { /* 连续归档的失败清单已尝试发布；启动错误优先返回。 */ }
-      await this.guard.clearAfterClose()
+      await this.clearGuard()
       throw error
     }
     let exited = false
@@ -199,7 +220,7 @@ export class LocalMissionRunner implements MissionExecution {
     child.once('exit', () => { exited = true })
     const spawned = new Promise<void>((resolve, reject) => {
       child.once('spawn', () => {
-        void this.guard.spawned({ ...record, pid: child.pid, startedAt, runDirectory: cwd }).then(resolve, reject)
+        void this.guard.spawned({ ...record, pid: child.pid, startedAt, spawnedAt: new Date().toISOString(), runDirectory: cwd }).then(resolve, reject)
       })
       child.once('error', reject)
     })
@@ -222,7 +243,7 @@ export class LocalMissionRunner implements MissionExecution {
           }
           if (stopError) outcome.errorMessage = stopError
           try {
-            continuousArchiveDirectory = await continuous.close(code === 0 && !outcome.errorMessage && !stopped ? 'COMPLETED' : 'INCOMPLETE')
+            continuousArchiveDirectory = await continuous.close(code === 0 && !outcome.errorMessage && !stopped ? 'COMPLETED' : 'INCOMPLETE', { stopped })
           } catch (error) {
             outcome.errorMessage = `连续时序留存失败：${error instanceof Error ? error.message : '未知错误'}；运行目录保留未完成数据。`
           }
@@ -242,7 +263,7 @@ export class LocalMissionRunner implements MissionExecution {
         } catch {
           outcome.errorMessage = stopError ?? `mission 已结束，但运行记录写入失败，请检查 ${cwd}`
         }
-        try { await this.guard.clearAfterClose() }
+        try { await this.clearGuard() }
         catch { outcome.errorMessage = `${outcome.errorMessage ?? 'mission 已关闭'}；未结清记录清理失败，请管理员检查 ${cwd}` }
         resolve(outcome)
       }
@@ -266,7 +287,7 @@ export class LocalMissionRunner implements MissionExecution {
       throw new Error('mission 启动未确认；请检查本机进程与未结清记录。')
     }
     const process: MissionProcess = {
-      pid: child.pid!, startedAt, entryPath, engineManifest, readPositions: () => this.positions.read(runId), completed,
+      pid: child.pid!, startedAt, entryPath, outputDirectory, engineManifest, readPositions: () => this.positions.read(runId), completed,
       readConsoleLog: () => readConsoleLogTail(logPath),
       ...(this.runTimeoutMs > 0 ? { timeoutMs: this.runTimeoutMs } : {}),
       dataFailure: continuous.failed.then(error => `连续时序留存失败：${error.message}；已请求停止本任务。`),

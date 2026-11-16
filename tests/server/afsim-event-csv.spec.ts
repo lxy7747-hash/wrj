@@ -47,6 +47,22 @@ const MESSAGE_LINK_CSV = [
 ].join('\n')
 
 describe('AFSIM 多事件 CSV 兼容', () => {
+  it('WEAPON_TURNED_ON 声明缺列时允许扩展列，并保留 lat/lon/alt', () => {
+    const csv = [
+      '! WEAPON_TURNED_ON,time<time>,event<string>,platform<string>,side<string>,type<string>,system_platform<string>,system_type<string>,lat<lat>,lon<lon>,alt<double>,heading<angle>,pitch<angle>,roll<angle>,speed<double>,velocity_x<double>,velocity_y<double>,velocity_z<double>,acceleration<double>,acceleration_x<double>,acceleration_y<double>,acceleration_z<double>',
+      '0,WEAPON_TURNED_ON,jammer_airborne_01,red,Weapon,alq99_jammer,WSF_RF_JAMMER,25.0345,121.56,3000,-2.47850191e+06,5.22419911e+06,2.68982545e+06,0.000,0.000,0.000,83.333,1.000,0.000,0.000,430.009,-0.850,-0.495,0.178',
+    ].join('\n')
+    const result = parseAfsimEventLog(csv)
+    expect(result.valid).toBe(true)
+    const event = result.events.find(item => item.type === 'WEAPON_TURNED_ON')!
+    expect(event.unparsedText).toBeUndefined()
+    // 声明在 alt 之后缺了 x/y/z 三列；lat/lon/alt 之前的字段仍应按声明读取。
+    expect(event.fields).toMatchObject({ lat: '25.0345', lon: '121.56', alt: '3000' })
+    expect(event.fields.system_platform).toBe('alq99_jammer')
+    expect(event.fields.system_type).toBe('WSF_RF_JAMMER')
+    expect(event.fields.csvExtraColumns).toBeTruthy()
+  })
+
   it('按事件声明解析初始位置、设备与关联，保留消息精度及引用字段', () => {
     const result = parseAfsimEventLog(`\uFEFF${CSV.replaceAll('\n', '\r\n')}`)
     expect(result.valid).toBe(true)

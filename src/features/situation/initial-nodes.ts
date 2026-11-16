@@ -2,6 +2,24 @@ import { isFileCommunicationConnection, type FileCommunicationConnection } from 
 import { isFileDeviceEvent, type FileDeviceEvent } from './file-device-events'
 import { isFileMessageLink, type FileMessageLink } from './file-message-links'
 import { isFilePlatformDeletion, type FilePlatformDeletion } from './platform-lifecycle'
+import type { Faction, PlatformType } from '../../contracts/domain-models'
+
+/** 干扰类平台在旧场景里按类型推断为红方；其余平台推断为蓝方，与生成器既有 side 推断一致。 */
+const RED_FACTION_PLATFORM_TYPES: readonly PlatformType[] = ['GROUND_JAMMER_DETECTION_STATION', 'AIRBORNE_JAMMER_PLATFORM']
+
+/**
+ * 计算场景平台在地图上的阵营 side（小写 red/blue，供 situation-map-controller 消费）。
+ * 显式 faction 优先；缺失时按平台类型推断（干扰类红、其余蓝），与脚本 side 推断保持一致。
+ * 显式中立或无法判定时返回 undefined，地图保持默认色且不标注阵营，不臆造。
+ */
+export function platformMapSide(platform: { type?: PlatformType | string; faction?: Faction | string }): string | undefined {
+  if (platform.faction === 'BLUE') return 'blue'
+  if (platform.faction === 'RED') return 'red'
+  if (platform.faction === 'NEUTRAL') return undefined
+  if (typeof platform.type === 'string' && (RED_FACTION_PLATFORM_TYPES as readonly string[]).includes(platform.type)) return 'red'
+  if (typeof platform.type === 'string') return 'blue'
+  return undefined
+}
 
 /** 地图只需要位置与标识，不要求日志提供链路质量或干扰状态。 */
 export interface SituationMapNode {
@@ -16,6 +34,9 @@ export interface SituationMapNode {
   latitude: number
   altitude: number
   speed: number
+  /** 来源位置的仿真时刻；静态场景配置不提供该值。 */
+  time?: number
+  positionSource?: 'ENGINE'
 }
 
 export interface InitialNodeSnapshot {

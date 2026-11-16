@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it } from 'vitest'
 
 import fixtureSource from '../../frontend-technical-design-v1/contracts/deterministic-fixtures.json'
 import type { Link, ScenarioConfig } from '../../src/contracts/domain-models'
-import { readDeviceParameters, readPortParameters, resolveTemplateLinkPorts } from '../../src/features/scenarios/template-defaults'
+import { deriveCommPortsFromLinks, readDeviceParameters, readPortParameters, resolveTemplateLinkPorts } from '../../src/features/scenarios/template-defaults'
+import { applyLinkEdit } from '../../src/features/scenarios/link-edit'
 import { inspectScenarioConfig, laserOnlyBusinessPaths } from '../../src/features/scenarios/scenario-validation'
 import { createTemplateScenario } from '../fixtures/template-scenario'
 
@@ -97,7 +98,10 @@ describe('新模板通信参数', () => {
     const datalink = value.links.find(link => link.id === 'L-DL-03')!
     expect(resolveTemplateLinkPorts(value, datalink)).toMatchObject({ status: 'MAPPED', source: { portName: 'c_band_downlink' }, target: { portName: 'c_band_downlink' } })
     const laser = value.links.find(link => link.type === 'LASER')!
-    expect(resolveTemplateLinkPorts(value, laser)).toMatchObject({ status: 'WARNING' })
+    expect(resolveTemplateLinkPorts(value, laser)).toMatchObject({
+      status: 'WARNING',
+      message: expect.stringContaining('lazer_link'),
+    })
     const invalid = { ...datalink, type: 'MICROWAVE' as const }
     expect(resolveTemplateLinkPorts(value, invalid)).toMatchObject({ status: 'ERROR' })
     expect(inspectScenarioConfig({ ...value, links: [invalid] }, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'TEMPLATE_PORT_MAPPING_INVALID', fieldPath: 'links[0]' }))
@@ -128,6 +132,22 @@ describe('新模板通信参数', () => {
     expect(fields).toContain('deviceParameters.antennaGains.MICRO_UAV_OMNI_ANTENNA')
   })
 
+  it('commPorts 拒绝未知端口及设备类型/网络不匹配', () => {
+    const value = config() as ScenarioConfig & { deviceParameters: NonNullable<ScenarioConfig['deviceParameters']> }
+    value.deviceParameters = {
+      commPorts: {
+        MISSION_UAV_PLATFORM: {
+          unknown: { deviceType: 'WSF_RADIO_TRANSCEIVER', network: 'COM_MESH_NET' },
+          microwave_link: { deviceType: 'WSF_COMM_TRANSCEIVER', network: 'FIBER_NET' },
+        },
+      },
+    }
+    const fields = inspectScenarioConfig(value, 'read').result.errors.map(error => error.fieldPath)
+    expect(fields).toContain('deviceParameters.commPorts.MISSION_UAV_PLATFORM.unknown')
+    expect(fields).toContain('deviceParameters.commPorts.MISSION_UAV_PLATFORM.microwave_link.deviceType')
+    expect(fields).toContain('deviceParameters.commPorts.MISSION_UAV_PLATFORM.microwave_link.network')
+  })
+
   it('冻结 schema 拒绝未知端口、非法来源字段和非正端口值，返回计划只强制 timeS 大于 0', () => {
     const validate = templateSchema('DeviceParameters')
     const port = { txFrequency: 1, txBandwidth: 1, txPower: 1, rxFrequency: 1, rxBandwidth: 1, noiseFigureDb: 0, transferRate: 1 }
@@ -136,6 +156,8 @@ describe('新模板通信参数', () => {
     expect(validate({ ports: { MISSION_UAV_PLATFORM: { microwave_link: { ...port, txPower: 0 } } } })).toBe(false)
     expect(validate({ ports: { MISSION_UAV_PLATFORM: { microwave_link: { ...port, parameterSource: { kind: 'EQUIPMENT', sourceId: 'EQ-1', sourceVersion: 1, fields: ['modulation'] } } } } })).toBe(false)
     expect(validate({ ports: { MISSION_UAV_PLATFORM: { microwave_link: { ...port, parameterSource: { kind: 'MASTER_DATA', sourceId: 'MD-1', sourceVersion: 1, fields: ['frequency', 'noiseFigureDb'] } } } } })).toBe(true)
+    expect(validate({ commPorts: { MISSION_UAV_PLATFORM: { microwave_link: { deviceType: 'WSF_RADIO_TRANSCEIVER', network: 'COM_MESH_NET' } } } })).toBe(true)
+    expect(validate({ commPorts: { MISSION_UAV_PLATFORM: { unknown: { deviceType: 'WSF_RADIO_TRANSCEIVER', network: 'COM_MESH_NET' } } } })).toBe(false)
 
     const returnPlan = templateSchema('ReturnPlan')
     const waypoint = { longitude: 120, latitude: 24, altitude: 1000, speed: 1 }
@@ -309,4 +331,100 @@ it('11-06 扩展不放宽 V1.2 干扰写入档位，同类雷达差异不会静�
   draft.config.platforms.push(platform)
   draft.config.jammers.push({ ...draft.config.jammers[0]!, id: 'JAM-SECOND', platformId: platform.id, radarPower: 101 })
   expect(inspectScenarioConfig(draft.config, 'write').result.errors).toContainEqual(expect.objectContaining({ code: 'JAMMER_PLATFORM_PARAMETER_CONFLICT', fieldPath: 'jammers[2].radarPower' }))
+})
+
+it('deriveCommPortsFromLinks 自动推导激活端口，校验跳过已禁用链路并检查中继/LASER 端口，applyLinkEdit 自动同步显式清单', () => {
+  const draft = createTemplateScenario()
+  const config = draft.config
+  config.links.push({
+    id: 'sat_disabled',
+    type: 'SAT',
+    sourcePlatformId: 'rear_comm_vehicle',
+    targetPlatformId: 'mission_uav_02',
+    relayPlatformId: 'tiantong_sat',
+    direction: 'FORWARD',
+    dataRate: 16,
+    frequency: 14200,
+    bandwidth: 20,
+    txPower: 20,
+    rxFrequency: 11800,
+    rxBandwidth: 20,
+    antennaGain: { tx: 25, rx: 25 },
+    modulation: 'QPSK',
+    berThreshold: 1e-6,
+    enabled: false,
+  })
+  for (const id of ['rear_comm_vehicle', 'mission_uav_02', 'tiantong_sat']) {
+    config.platforms.find(platform => platform.id === id)!.linkIds.push('sat_disabled')
+  }
+  const derivedWithDisabled = deriveCommPortsFromLinks(config)
+  expect(Object.keys(derivedWithDisabled.TIAN_TONG_SAT ?? {})).toEqual([])
+  expect(Object.keys(derivedWithDisabled.MISSION_UAV_PLATFORM ?? {})).toEqual(['c_band_uplink', 'c_band_downlink'])
+
+  // 显式清单缺少已被禁用的卫星端口时不应报 COMM_PORT_NOT_CONFIGURED。
+  config.deviceParameters = {
+    commPorts: {
+      MISSION_UAV_PLATFORM: {
+        c_band_uplink: { deviceType: 'WSF_RADIO_TRANSCEIVER', network: 'COM_MESH_NET' },
+        c_band_downlink: { deviceType: 'WSF_RADIO_TRANSCEIVER', network: 'COM_MESH_NET' },
+      },
+      TIAN_TONG_SAT: {},
+    },
+  }
+  expect(inspectScenarioConfig(config, 'write').result.errors.some(e => e.code === 'COMM_PORT_NOT_CONFIGURED')).toBe(false)
+
+  // 启用卫星链路时必须校验中继平台 TIAN_TONG_SAT.sat_link。
+  config.links[config.links.length - 1]!.enabled = true
+  expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({
+    code: 'COMM_PORT_NOT_CONFIGURED',
+    fieldPath: `links[${config.links.length - 1}]`,
+  }))
+
+  // 启用 LASER 链路时必须校验 MISSION_UAV_PLATFORM.lazer_link。
+  config.links[config.links.length - 1]!.enabled = false
+  config.links.push({
+    id: 'laser_1',
+    type: 'LASER',
+    sourcePlatformId: 'mission_uav_02',
+    targetPlatformId: 'mission_uav_03',
+    direction: 'FORWARD',
+    dataRate: 2500,
+    frequency: 681300000,
+    bandwidth: 1000,
+    txPower: 0.1,
+    antennaGain: { tx: 45, rx: 45 },
+    modulation: 'BPSK',
+    berThreshold: 1e-6,
+    enabled: true,
+  })
+  expect(inspectScenarioConfig(config, 'write').result.errors).toContainEqual(expect.objectContaining({
+    code: 'COMM_PORT_NOT_CONFIGURED',
+    fieldPath: `links[${config.links.length - 1}]`,
+  }))
+
+  // applyLinkEdit 保存新增的微波链路时自动补齐显式 commPorts 中的 microwave_link。
+  config.links.pop()
+  applyLinkEdit(config, {
+    id: 'mw_1',
+    type: 'MICROWAVE',
+    sourcePlatformId: 'rear_comm_vehicle',
+    targetPlatformId: 'mission_uav_02',
+    direction: 'REVERSE',
+    dataRate: 80,
+    frequency: 8200,
+    bandwidth: 20,
+    txPower: 20,
+    antennaGain: { tx: 18, rx: 3 },
+    modulation: 'QPSK',
+    berThreshold: 1e-6,
+    enabled: true,
+  }, {
+    ...config.informationDemand[0]!,
+    id: 'DEMAND-MW-1',
+    linkId: 'mw_1',
+    sourcePlatformId: 'rear_comm_vehicle',
+    destinationPlatformIds: ['mission_uav_02'],
+    direction: 'REVERSE',
+  })
+  expect(Object.keys(config.deviceParameters.commPorts!.MISSION_UAV_PLATFORM!)).toContain('microwave_link')
 })

@@ -343,3 +343,24 @@ it.each(['platforms', 'speed'])('D1 兼容不放过真正的 %s 错误，拒绝�
   expect(backups.restore('INVALID-MOTION')).toMatchObject({ ok: true, data: { result: 'FAILURE', integrityValid: false } })
   expect(db.prepare('SELECT * FROM scenarios').all()).toEqual(before)
 })
+
+
+it('旧主库备份缺少显示名列时可校验恢复，账号密码和备份字节不变', async () => {
+  const { auth, backups, db } = setup()
+  const before = db.prepare('SELECT user_id,username,role,status,password_salt,password_hash FROM users').all()
+  expect(backups.backup('LEGACY-NAMES').ok).toBe(true)
+  const file = join(backups.directory, 'LEGACY-NAMES.db')
+  const old = new DatabaseSync(file)
+  old.exec('ALTER TABLE users DROP COLUMN display_name')
+  old.close()
+  const bytes = readFileSync(file)
+  const catalog = new DatabaseSync(join(backups.directory, 'catalog.db'))
+  try { catalog.prepare('UPDATE backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(bytes).digest('hex').toUpperCase(), 'LEGACY-NAMES') }
+  finally { catalog.close() }
+  auth.save({ ...auth.list()[0]!, displayName: '临时显示名' })
+  expect(backups.restore('LEGACY-NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(db.prepare('SELECT user_id,username,role,status,password_salt,password_hash FROM users').all()).toEqual(before)
+  expect(auth.list()[0]!.displayName).toBe('admin')
+  expect(await auth.verify('admin', password)).toBe(true)
+  expect(readFileSync(file)).toEqual(bytes)
+})

@@ -17,6 +17,16 @@ export function isControlledPowerDbm(value: unknown): value is number {
   const tier = min + Math.round((value - min) / step) * step
   return tier >= min && tier <= max && Math.abs(value - tier) <= 1e-6
 }
+/** -10～+30 dBm、步长 5 dB 的 9 个受控功率档位（dBm），供界面下拉与校验复用。 */
+export const JAMMER_POWER_DBM_TIERS: readonly number[] = Array.from(
+  { length: Math.round((JAMMER_POWER_DBM.max - JAMMER_POWER_DBM.min) / JAMMER_POWER_DBM.step) + 1 },
+  (_, index) => JAMMER_POWER_DBM.min + index * JAMMER_POWER_DBM.step,
+)
+/** 判定合同瓦数是否落在受控 dBm 档位上；控制命令前后端使用同一容差。 */
+export function isControlledPowerWatts(watts: unknown): watts is number {
+  if (typeof watts !== 'number' || !Number.isFinite(watts) || watts <= 0) return false
+  return isControlledPowerDbm(wattsToDbm(watts))
+}
 export const BARRAGE_BANDWIDTH_OPTIONS_MHZ = [100, 200, 400] as const
 export const SPOT_BANDWIDTH_MHZ = 5
 

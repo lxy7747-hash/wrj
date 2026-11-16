@@ -1,7 +1,7 @@
 import { apiFetch } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
-import { isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
+import { isEngineFrameId, isEngineFrameSnapshot } from '../features/data-exchange/engine-frame-snapshot'
 import { useRuntimeQualityStore } from './runtime-quality'
 import type {
   CapabilityState,
@@ -10,6 +10,9 @@ import type {
   JammingDecision,
   JammingCommand,
   JammingParameterSet,
+  JammerPlanSaveRequest,
+  JammerPlanSaved,
+  JammerRuntimeParameters,
   JammerStatusData,
   JammerState,
   LinkStatusSummary,
@@ -32,10 +35,15 @@ import type {
 import { resolveLinkId, validateCandidateSnapshot, type CandidateSnapshotIssue } from '../features/situation/situation-model'
 import { ERROR_GUIDANCE } from '../features/diagnostics'
 import { frameJammerExecutions } from '../features/situation/frame-evidence'
+import { isControlledPowerWatts } from '../features/scenarios/jammer-settings'
 import { resolveMockOrigin, useAuthStore } from './auth'
+import { useScenarioStore } from './scenario'
 import { useSimulationStore } from './simulation'
 
 type SituationEvent = DetectionEvent | SwitchEvent
+
+/** 能力结果的证据来源：本地固定投影/校验通过，或尚未确认（真实引擎未接入）。 */
+export type CapabilityEvidenceSource = 'LOCAL_PROJECTION' | 'UNCONFIRMED'
 
 const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event', 'mission.log', 'position.update']
 const RETRY_DELAYS = [250, 500, 1_000, 2_000] as const
@@ -54,6 +62,9 @@ interface TelemetryRuntime {
   retryTimer: ReturnType<typeof setTimeout> | null
   retryAttempt: number
   manuallyClosed: boolean
+  closeWithPageRunId?: string
+  incoming: unknown[]
+  incomingTimer: ReturnType<typeof setTimeout> | null
 }
 
 const runtimes = new WeakMap<object, TelemetryRuntime>()
@@ -64,7 +75,7 @@ function runtimeFor(store: object): TelemetryRuntime {
   store = toRaw(store)
   const existing = runtimes.get(store)
   if (existing !== undefined) return existing
-  const runtime: TelemetryRuntime = { socket: null, retryTimer: null, retryAttempt: 0, manuallyClosed: false }
+  const runtime: TelemetryRuntime = { socket: null, retryTimer: null, retryAttempt: 0, manuallyClosed: false, incoming: [], incomingTimer: null }
   runtimes.set(store, runtime)
   return runtime
 }
@@ -106,7 +117,7 @@ function isEngineConnectionDiagnostic(value: unknown): value is EngineConnection
     || typeof value.message !== 'string' || value.message.length === 0) return false
   const allowed = new Set(['kind', 'runId', 'state', 'message', 'previousFrameId', 'observedFrameId'])
   return Object.keys(value).every(key => allowed.has(key))
-    && ['previousFrameId', 'observedFrameId'].every(key => value[key] === undefined || (Number.isSafeInteger(value[key]) && Number(value[key]) >= 0))
+    && ['previousFrameId', 'observedFrameId'].every(key => value[key] === undefined || (isEngineFrameId(value[key])))
 }
 
 function isMissionPositionUpdate(value: unknown): value is MissionPositionUpdate {
@@ -123,7 +134,7 @@ function isMissionPositionUpdate(value: unknown): value is MissionPositionUpdate
 function isEngineJammerFrameUpdate(value: unknown): value is EngineJammerFrameUpdate {
   return isRecord(value) && Object.keys(value).length === 7 && value.kind === 'ENGINE_JAMMER_FRAME'
     && typeof value.runId === 'string' && Number.isSafeInteger(value.engineEpoch) && Number(value.engineEpoch) >= 0
-    && Number.isSafeInteger(value.sourceFrameId) && Number(value.sourceFrameId) >= 0
+    && isEngineFrameId(value.sourceFrameId)
     && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && Number(value.simulationTime) >= 0
     && Array.isArray(value.jammers) && Array.isArray(value.events)
 }
@@ -131,7 +142,7 @@ function isEngineJammerFrameUpdate(value: unknown): value is EngineJammerFrameUp
 function isEngineSwitchFrameUpdate(value: unknown): value is EngineSwitchFrameUpdate {
   return isRecord(value) && Object.keys(value).length === 6 && value.kind === 'ENGINE_SWITCH_FRAME'
     && typeof value.runId === 'string' && Number.isSafeInteger(value.engineEpoch) && Number(value.engineEpoch) >= 0
-    && Number.isSafeInteger(value.sourceFrameId) && Number(value.sourceFrameId) >= 0
+    && isEngineFrameId(value.sourceFrameId)
     && typeof value.simulationTime === 'number' && Number.isFinite(value.simulationTime) && Number(value.simulationTime) >= 0
     && Array.isArray(value.switches)
 }
@@ -504,12 +515,27 @@ export function isSituationEvent(value: unknown): value is SituationEvent {
       && Number.isFinite(value.sourceRegistryTime) && value.sourceRegistryTime >= 0))
   if (!common) return false
   if (value.type === 'DETECTION') {
-    const optional = ['frequencyMinMHz', 'frequencyMaxMHz', 'detected'].filter(key => Object.hasOwn(value, key))
-    return Object.keys(value).length === (hasRegistryTime ? 9 : 8) + optional.length
+    // 可选：侦测频段/是否检出，以及 ESM 实测位置、实际工作频率、接收强度（A 落地，缺省即缺测）。
+    const optionalKeys = [
+      'frequencyMinMHz', 'frequencyMaxMHz', 'detected',
+      'measuredLongitude', 'measuredLatitude', 'measuredAltitude',
+      'actualFrequencyMHz', 'receivedSignalStrengthDbm',
+    ] as const
+    const present = optionalKeys.filter(key => Object.hasOwn(value, key))
+    return Object.keys(value).length === (hasRegistryTime ? 9 : 8) + present.length
       && Object.hasOwn(value, 'frequencyMinMHz') === Object.hasOwn(value, 'frequencyMaxMHz')
       && (!Object.hasOwn(value, 'frequencyMinMHz') || (hasFiniteNumbers(value, ['frequencyMinMHz', 'frequencyMaxMHz'])
         && Number(value.frequencyMinMHz) > 0 && Number(value.frequencyMaxMHz) >= Number(value.frequencyMinMHz)))
       && (!Object.hasOwn(value, 'detected') || typeof value.detected === 'boolean')
+      && Object.hasOwn(value, 'measuredLongitude') === Object.hasOwn(value, 'measuredLatitude')
+      && (!Object.hasOwn(value, 'measuredLongitude') || (hasFiniteNumbers(value, ['measuredLongitude', 'measuredLatitude'])
+        && Math.abs(Number(value.measuredLongitude)) <= 180 && Math.abs(Number(value.measuredLatitude)) <= 90))
+      && (!Object.hasOwn(value, 'measuredAltitude')
+        || (typeof value.measuredAltitude === 'number' && Number.isFinite(value.measuredAltitude) && Number(value.measuredAltitude) >= 0))
+      && (!Object.hasOwn(value, 'actualFrequencyMHz')
+        || (typeof value.actualFrequencyMHz === 'number' && Number.isFinite(value.actualFrequencyMHz) && Number(value.actualFrequencyMHz) > 0))
+      && (!Object.hasOwn(value, 'receivedSignalStrengthDbm')
+        || (typeof value.receivedSignalStrengthDbm === 'number' && Number.isFinite(value.receivedSignalStrengthDbm)))
       && typeof value.sensorId === 'string' && value.sensorId.length > 0
       && typeof value.targetPlatformId === 'string' && value.targetPlatformId.length > 0
       && typeof value.detectionProbability === 'number'
@@ -701,12 +727,15 @@ function isSensorStatus(value: unknown): value is SensorStatusData {
       && Number.isFinite(value.scanCoveragePercent) && value.scanCoveragePercent >= 0 && value.scanCoveragePercent <= 100))
 }
 
-/** 校验带版本和生效帧的干扰参数集。 */
+/** 校验带版本和生效帧的干扰参数集；探测范围为本项目扩展的可选顶层字段，旧请求缺省兼容。 */
 function isJammingParameterSet(value: unknown): value is JammingParameterSet {
-  return isRecord(value)
-    && Object.keys(value).length === 3
+  if (!isRecord(value)) return false
+  const hasDetectionRange = Object.hasOwn(value, 'detectionRangeM')
+  return Object.keys(value).length === 3 + Number(hasDetectionRange)
     && Number.isSafeInteger(value.version) && Number(value.version) > 0
     && typeof value.effectiveFrameId === 'string' && value.effectiveFrameId.startsWith('F-')
+    && (!hasDetectionRange
+      || (typeof value.detectionRangeM === 'number' && Number.isFinite(value.detectionRangeM) && value.detectionRangeM > 0))
     && isJammingCommand(value.parameters)
 }
 
@@ -718,34 +747,72 @@ function isSyncResult(
   parameterSet: JammingParameterSet,
   frame: TelemetryFrame,
 ): value is SyncResult {
-  if (!isRecord(value) || Object.keys(value).length !== 11) return false
+  if (!isRecord(value)) return false
+  const hasDetectionRange = Object.hasOwn(value, 'detectionRangeM')
+  if (Object.keys(value).length !== 11 + Number(hasDetectionRange)) return false
+  if (hasDetectionRange && !(typeof value.detectionRangeM === 'number' && Number.isFinite(value.detectionRangeM) && value.detectionRangeM > 0)) return false
+  if (hasDetectionRange && parameterSet.detectionRangeM !== undefined && value.detectionRangeM !== parameterSet.detectionRangeM) return false
   const versions = [
     value.parameterVersion, value.configParameterVersion, value.nodeParameterVersion,
-    value.engineParameterVersion, value.uiParameterVersion,
+    value.uiParameterVersion,
   ]
   const jammerStatus = value.jammerStatus
-  return hasNonEmptyStrings(value, ['taskId', 'jammerId', 'effectiveFrameId'])
+  const baseValid = hasNonEmptyStrings(value, ['taskId', 'jammerId', 'effectiveFrameId'])
     && versions.every((version) => Number.isSafeInteger(version) && Number(version) > 0)
     && new Set(versions).size === 1
     && typeof value.effectiveSimulationTime === 'number' && Number.isFinite(value.effectiveSimulationTime)
     && value.effectiveSimulationTime >= 0
-    && value.status === 'SYNCHRONIZED'
+    && value.status === 'LOCAL_ACCEPTED'
+    && value.engineSync === 'NOT_CONNECTED'
     && isJammerStatus(jammerStatus)
     && value.taskId === taskId
-    && value.taskId === frame.taskId
     && value.jammerId === jammerId
     && value.parameterVersion === parameterSet.version
     && value.effectiveFrameId === parameterSet.effectiveFrameId
-    && value.effectiveFrameId === frame.frameId
-    && value.effectiveSimulationTime === frame.simulationTime
-    && jammerStatus.time === frame.simulationTime
     && jammerStatus.jammerId === jammerId
     && jammerStatus.active === parameterSet.parameters.enabled
     && jammerStatus.frequency === parameterSet.parameters.frequency
     && jammerStatus.bandwidth === parameterSet.parameters.bandwidth
     && jammerStatus.power === parameterSet.parameters.power
+  if (!baseValid) return false
+  // 非固定/远端运行的本地接受：帧号为本地记录，不宣称引擎帧生效，也不要求与当前帧时刻/平台一致。
+  if (frame.frameId.startsWith('F-ENGINE-')) {
+    return value.taskId === frame.taskId
+      && value.effectiveSimulationTime === jammerStatus.time
+  }
+  return value.taskId === frame.taskId
+    && value.effectiveFrameId === frame.frameId
+    && value.effectiveSimulationTime === frame.simulationTime
+    && jammerStatus.time === frame.simulationTime
     && frame.platforms.some((platform) => platform.platformId === jammerStatus.platformId
       && platform.jammers.some((jammer) => jammer.jammerId === jammerId))
+}
+
+/** 校验运行期本地参数读取结果（版本 + 已接受探测范围 + 可选计划字段）。 */
+function isJammerRuntimeParameters(value: unknown): value is JammerRuntimeParameters {
+  if (!isRecord(value)) return false
+  const optional = ['style', 'elevation', 'plannedStartFrame', 'plannedStopFrame'].filter(key => Object.hasOwn(value, key))
+  return Object.keys(value).length === 4 + optional.length
+    && hasNonEmptyStrings(value, ['taskId', 'jammerId'])
+    && Number.isSafeInteger(value.version) && Number(value.version) >= 0
+    && typeof value.detectionRangeM === 'number' && Number.isFinite(value.detectionRangeM) && value.detectionRangeM >= 0
+    && (!Object.hasOwn(value, 'style') || value.style === 'BARRAGE' || value.style === 'SPOT')
+    && (!Object.hasOwn(value, 'elevation') || (typeof value.elevation === 'number' && Number.isFinite(value.elevation)))
+    && (!Object.hasOwn(value, 'plannedStartFrame') || (Number.isInteger(value.plannedStartFrame) && Number(value.plannedStartFrame) >= 0))
+    && (!Object.hasOwn(value, 'plannedStopFrame') || (Number.isInteger(value.plannedStopFrame) && Number(value.plannedStopFrame) >= 0))
+}
+
+/** 校验运行期干扰计划保存结果（storage 仅本地留存）。 */
+function isJammerPlanSaved(value: unknown): value is JammerPlanSaved {
+  if (!isRecord(value)) return false
+  const optional = ['plannedStartFrame', 'plannedStopFrame'].filter(key => Object.hasOwn(value, key))
+  return Object.keys(value).length === 5 + optional.length
+    && hasNonEmptyStrings(value, ['taskId', 'jammerId'])
+    && (value.style === 'BARRAGE' || value.style === 'SPOT')
+    && typeof value.elevation === 'number' && Number.isFinite(value.elevation)
+    && value.storage === 'LOCAL_RUN'
+    && (!Object.hasOwn(value, 'plannedStartFrame') || (Number.isInteger(value.plannedStartFrame) && Number(value.plannedStartFrame) >= 0))
+    && (!Object.hasOwn(value, 'plannedStopFrame') || (Number.isInteger(value.plannedStopFrame) && Number(value.plannedStopFrame) >= 0))
 }
 
 /** 返回事件集合相对当前遥测帧的首个可定位错误。 */
@@ -903,17 +970,23 @@ export const useTelemetryStore = defineStore('telemetry', {
     jammerResultCode: 'EMPTY',
     jammerResultMessage: '尚未执行干扰控制命令。',
     jammerResultFieldPath: null as string | null,
+    /** 本地投影/校验来源，不代表真实设备执行回执。 */
+    jammerResultSource: null as CapabilityEvidenceSource | null,
     closedLoopDecision: null as JammingDecision | null,
     closedLoopState: 'EMPTY' as CapabilityState,
     closedLoopResultCode: 'EMPTY',
     closedLoopResultMessage: '尚未执行逐帧干扰闭环。',
     closedLoopResultFieldPath: null as string | null,
+    closedLoopResultSource: null as CapabilityEvidenceSource | null,
     syncResult: null as SyncResult | null,
     syncVersions: {} as Record<string, number>,
+    /** 运行期本地参数读取缓存：key=`${runId}|${jammerId}`，由 GET 读取层与同步/计划结果填充。 */
+    jammerRuntimeParameters: {} as Record<string, JammerRuntimeParameters>,
     syncState: 'EMPTY' as CapabilityState,
     syncResultCode: 'EMPTY',
     syncResultMessage: '尚未同步干扰参数。',
     syncResultFieldPath: null as string | null,
+    syncResultSource: null as CapabilityEvidenceSource | null,
     requestEpoch: 0,
   }),
 
@@ -928,8 +1001,11 @@ export const useTelemetryStore = defineStore('telemetry', {
      */
     async controlJammer(taskId: TaskId, jammerId: string, command: JammingCommand): Promise<boolean> {
       const auth = useAuthStore()
+      const epoch = this.requestEpoch
+      const frameRunId = this.frame?.runId
       this.jammerState = null
       this.jammerResultFieldPath = null
+      this.jammerResultSource = null
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
         this.jammerControlState = 'ERROR'
         this.jammerResultCode = 'PERMISSION_DENIED'
@@ -944,6 +1020,14 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.jammerResultMessage = '干扰控制参数格式不正确。'
         return false
       }
+      // GNZB-15：启扰功率必须落在 -10～30 dBm、5 dB 档位；停扰只要求有限非负，允许 0 W 安全停止。
+      if (command.enabled && !isControlledPowerWatts(command.power)) {
+        this.jammerControlState = 'ERROR'
+        this.jammerResultCode = 'INVALID_REQUEST'
+        this.jammerResultMessage = '启扰功率必须为 -10～30 dBm 且按 5 dB 档位设置。'
+        this.jammerResultFieldPath = 'power'
+        return false
+      }
 
       this.jammerControlState = 'EXECUTING'
       try {
@@ -956,12 +1040,22 @@ export const useTelemetryStore = defineStore('telemetry', {
           },
         )
         const state = await readJammerState(response, taskId, jammerId)
+        // 运行切换或重置后，晚返回的旧请求不得污染当前结果，也不让界面停留在“执行中”。
+        if (epoch !== this.requestEpoch || this.frame?.runId !== frameRunId) {
+          this.jammerControlState = 'EMPTY'
+          this.jammerResultCode = 'EMPTY'
+          this.jammerResultMessage = '尚未执行干扰控制命令。'
+          this.jammerResultFieldPath = null
+          return false
+        }
         this.jammerState = structuredClone(state)
         this.jammerControlState = 'SUCCESS'
         this.jammerResultCode = 'SUCCESS'
+        this.jammerResultSource = 'LOCAL_PROJECTION'
         this.jammerResultMessage = `${state.reason}，生效帧 ${state.effectiveFrameId}。`
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         const failure = error instanceof CapabilityRequestError ? error : null
         this.jammerControlState = 'ERROR'
         this.jammerResultCode = failure?.code ?? 'NETWORK_ERROR'
@@ -984,6 +1078,7 @@ export const useTelemetryStore = defineStore('telemetry', {
       const frame = this.frame
       this.closedLoopDecision = null
       this.closedLoopResultFieldPath = null
+      this.closedLoopResultSource = null
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
         this.closedLoopState = 'ERROR'
         this.closedLoopResultCode = 'PERMISSION_DENIED'
@@ -1025,6 +1120,7 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.closedLoopDecision = structuredClone(decision)
         this.closedLoopState = 'SUCCESS'
         this.closedLoopResultCode = 'SUCCESS'
+        this.closedLoopResultSource = 'LOCAL_PROJECTION'
         this.closedLoopResultMessage = `闭环已在 ${decision.effectiveFrameId} 完成一次状态迁移。`
         return true
       } catch (error) {
@@ -1053,8 +1149,11 @@ export const useTelemetryStore = defineStore('telemetry', {
     ): Promise<boolean> {
       const auth = useAuthStore()
       const frame = this.frame
+      const epoch = this.requestEpoch
+      const frameRunId = this.frame?.runId
       this.syncResult = null
       this.syncResultFieldPath = null
+      this.syncResultSource = null
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
         this.syncState = 'ERROR'
         this.syncResultCode = 'PERMISSION_DENIED'
@@ -1082,7 +1181,8 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.syncResultFieldPath = 'taskId'
         return false
       }
-      if (parameterSet.effectiveFrameId !== frame.frameId) {
+      // 固定演示帧要求严格同帧；非固定/远端运行（引擎帧）允许把请求帧号作为本地记录。
+      if (!frame.frameId.startsWith('F-ENGINE-') && parameterSet.effectiveFrameId !== frame.frameId) {
         this.syncState = 'ERROR'
         this.syncResultCode = 'FRAME_MISMATCH'
         this.syncResultMessage = '参数只能在当前遥测帧边界生效。'
@@ -1108,12 +1208,39 @@ export const useTelemetryStore = defineStore('telemetry', {
           '干扰参数同步请求失败。',
         )
         this.syncResult = structuredClone(result)
+        if (epoch !== this.requestEpoch || this.frame?.runId !== frameRunId) {
+          // 晚返回的旧请求不污染当前设备/运行，也不让界面停留在“同步中”。
+          this.syncResult = null
+          this.syncState = 'EMPTY'
+          this.syncResultCode = 'EMPTY'
+          this.syncResultMessage = '尚未同步干扰参数。'
+          this.syncResultFieldPath = null
+          return false
+        }
         this.syncVersions[jammerId] = result.parameterVersion
+        // 同步成功且响应回显了实际接受的探测范围时，写入运行期本地参数读取层；旧响应缺省不改既有值。
+        if (result.detectionRangeM !== undefined) {
+          const runtimeKey = `${frameRunId ?? ''}|${jammerId}`
+          const previousRuntime = this.jammerRuntimeParameters[runtimeKey]
+          const runtime: JammerRuntimeParameters = {
+            taskId,
+            jammerId,
+            version: result.parameterVersion,
+            detectionRangeM: result.detectionRangeM,
+          }
+          if (previousRuntime?.style !== undefined) runtime.style = previousRuntime.style
+          if (previousRuntime?.elevation !== undefined) runtime.elevation = previousRuntime.elevation
+          if (previousRuntime?.plannedStartFrame !== undefined) runtime.plannedStartFrame = previousRuntime.plannedStartFrame
+          if (previousRuntime?.plannedStopFrame !== undefined) runtime.plannedStopFrame = previousRuntime.plannedStopFrame
+          this.jammerRuntimeParameters[runtimeKey] = runtime
+        }
         this.syncState = 'SUCCESS'
         this.syncResultCode = 'SUCCESS'
+        this.syncResultSource = 'LOCAL_PROJECTION'
         this.syncResultMessage = `参数版本 ${result.parameterVersion} 已在 ${result.effectiveFrameId} 同步。`
         return true
       } catch (error) {
+        if (epoch !== this.requestEpoch) return false
         const failure = error instanceof CapabilityRequestError ? error : null
         this.syncState = 'ERROR'
         this.syncResultCode = failure?.code ?? 'NETWORK_ERROR'
@@ -1130,6 +1257,79 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.syncResultCode = 'EMPTY'
       this.syncResultMessage = '尚未同步干扰参数。'
       this.syncResultFieldPath = null
+    },
+
+    /**
+     * 读取运行期本地参数（版本 + 本地已接受探测范围 + 计划）；仅本地投影，不代表引擎确认。
+     * @param taskId 参数所属任务编号。
+     * @param jammerId 目标干扰设备编号。
+     * @param options.force 为 true 时强制重读，忽略缓存。
+     * @returns 读取到的运行期参数，失败时返回已有缓存或 null。
+     */
+    async loadJammerRuntimeParameters(
+      taskId: TaskId,
+      jammerId: string,
+      options: { force?: boolean } = {},
+    ): Promise<JammerRuntimeParameters | null> {
+      const auth = useAuthStore()
+      const runId = this.frame?.runId ?? ''
+      const key = `${runId}|${jammerId}`
+      const cached = this.jammerRuntimeParameters[key]
+      if (cached !== undefined && options.force !== true) return cached
+      try {
+        const response = await apiFetch(
+          `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/parameters`,
+          { headers: { 'X-Demo-Role': auth.role } },
+        )
+        const payload = await response.json() as unknown
+        if (!response.ok || !isRecord(payload) || payload.ok !== true
+          || !isJammerRuntimeParameters(payload.data)
+          || payload.data.taskId !== taskId || payload.data.jammerId !== jammerId) return cached ?? null
+        // 归属：读取期间运行已切换则丢弃本次结果，避免污染当前设备/运行。
+        if ((this.frame?.runId ?? '') !== runId) return cached ?? null
+        const value = structuredClone(payload.data)
+        this.jammerRuntimeParameters[key] = value
+        return value
+      } catch {
+        return cached ?? null
+      }
+    },
+
+    /**
+     * 保存运行期干扰计划与新增控制字段（仅本地留存，storage=LOCAL_RUN，不改场景、不代表引擎执行）。
+     * @param taskId 计划所属任务编号。
+     * @param jammerId 目标干扰设备编号。
+     * @param request 样式、俯仰角与计划启停帧（原值，不乘 5）。
+     * @returns 保存成功结果；失败返回 null 以便面板保留输入重试。
+     */
+    async saveJammerPlan(
+      taskId: TaskId,
+      jammerId: string,
+      request: JammerPlanSaveRequest,
+    ): Promise<JammerPlanSaved | null> {
+      const auth = useAuthStore()
+      const runId = this.frame?.runId ?? ''
+      try {
+        const response = await apiFetch(
+          `${resolveMockOrigin()}/api/v1/tasks/${encodeURIComponent(taskId)}/jammers/${encodeURIComponent(jammerId)}/plan`,
+          {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
+            body: JSON.stringify(request),
+          },
+        )
+        const payload = await response.json() as unknown
+        if (!response.ok || !isRecord(payload) || payload.ok !== true
+          || !isJammerPlanSaved(payload.data)
+          || payload.data.taskId !== taskId || payload.data.jammerId !== jammerId) return null
+        // 归属：保存期间运行/设备已切换则丢弃结果。
+        if ((this.frame?.runId ?? '') !== runId) return null
+        // 以服务端读取层为准刷新运行期参数（含计划与本地接受探测范围）。
+        await this.loadJammerRuntimeParameters(taskId, jammerId, { force: true })
+        return structuredClone(payload.data)
+      } catch {
+        return null
+      }
     },
 
     /**
@@ -1176,6 +1376,11 @@ export const useTelemetryStore = defineStore('telemetry', {
         this.resultCode = 'SUCCESS'
         this.resultMessage = '同帧态势遥测已加载。'
         this.resultFieldPath = null
+        // 重新加载/首帧后按归属预取运行期本地参数，供面板读取已接受探测范围与计划（失败不影响帧加载）。
+        const jammerIds = useScenarioStore().draft?.config.jammers.map((item) => item.id) ?? []
+        if (jammerIds.length > 0) {
+          await Promise.all(jammerIds.map((id) => this.loadJammerRuntimeParameters(frame.taskId, id)))
+        }
         return true
       } catch (error) {
         if (epoch !== this.requestEpoch) return false
@@ -1298,7 +1503,15 @@ export const useTelemetryStore = defineStore('telemetry', {
           this.missionLogUpdate = update
           this.missionLogUpdates = [...this.missionLogUpdates, update].slice(-128)
         }
-        else if (isEngineConnectionDiagnostic(envelope.payload)) this.engineDiagnostics = [...this.engineDiagnostics, structuredClone(envelope.payload)].slice(-20)
+        else if (isEngineConnectionDiagnostic(envelope.payload)) {
+          const diagnostics = [...this.engineDiagnostics, structuredClone(envelope.payload)]
+          const connection = diagnostics.slice().reverse().find(item => ['CONNECTED', 'CONNECTING', 'DISCONNECTED'].includes(item.state))
+          this.engineDiagnostics = diagnostics.slice(-20)
+          // 连接状态不能被高频帧诊断挤掉，否则仍在收帧的页面会误报断线。
+          if (connection && !this.engineDiagnostics.includes(connection)) {
+            this.engineDiagnostics = [connection, ...this.engineDiagnostics.slice(-19)]
+          }
+        }
         else return false
       } else if (envelope.topic === 'position.update') {
         if (!isMissionPositionUpdate(envelope.payload)) return false
@@ -1405,7 +1618,7 @@ export const useTelemetryStore = defineStore('telemetry', {
      * @returns 无返回值。
      * @sideEffects 创建 WebSocket，更新连接状态，并在断线时按固定退避重试。
      */
-    connect(): void {
+    connect(closeWithPageRunId?: string): void {
       if (this.connectionBlocked || typeof WebSocket === 'undefined') return
       const runtime = runtimeFor(this)
       if (runtime.socket?.readyState === WebSocket.OPEN || runtime.socket?.readyState === WebSocket.CONNECTING) return
@@ -1413,7 +1626,10 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.connectionState = runtime.retryAttempt === 0 ? 'CONNECTING' : 'RETRYING'
       const taskId = useSimulationStore().run?.taskId ?? this.frame?.taskId ?? this.realtimeTaskId ?? 'TASK-001'
       this.realtimeTaskId = taskId
-      const socket = new WebSocket(resolveRealtimeUrl(useAuthStore().role))
+      if (closeWithPageRunId) runtime.closeWithPageRunId = closeWithPageRunId
+      const url = new URL(resolveRealtimeUrl(useAuthStore().role))
+      if (runtime.closeWithPageRunId) url.searchParams.set('missionRunId', runtime.closeWithPageRunId)
+      const socket = new WebSocket(url.toString())
       runtime.socket = socket
 
       socket.addEventListener('open', () => {
@@ -1452,9 +1668,14 @@ export const useTelemetryStore = defineStore('telemetry', {
           void this.recoverFromGap()
           return
         }
-        this.acceptEnvelope(message)
+        // 顺序消费全部消息，只合并 Vue 渲染，避免加速运行时逐帧重绘阻塞接收。
+        runtime.incoming.push(message)
+        if (runtime.incoming.length >= 128) this.flushIncoming()
+        else if (runtime.incomingTimer === null) runtime.incomingTimer = setTimeout(() => this.flushIncoming(), 100)
       })
       socket.addEventListener('close', () => {
+        if (runtime.socket !== socket) return
+        this.flushIncoming()
         if (runtime.socket !== socket) return
         runtime.socket = null
         if (!runtime.manuallyClosed) this.scheduleReconnect()
@@ -1474,6 +1695,9 @@ export const useTelemetryStore = defineStore('telemetry', {
      */
     async recoverFromGap(): Promise<void> {
       const runtime = runtimeFor(this)
+      if (runtime.incomingTimer !== null) clearTimeout(runtime.incomingTimer)
+      runtime.incomingTimer = null
+      runtime.incoming = []
       const recoveryEpoch = this.requestEpoch
       const simulation = useSimulationStore()
       runtime.manuallyClosed = true
@@ -1537,9 +1761,24 @@ export const useTelemetryStore = defineStore('telemetry', {
       if (runtime.retryTimer !== null) clearTimeout(runtime.retryTimer)
       runtime.retryTimer = null
       runtime.retryAttempt = 0
+      delete runtime.closeWithPageRunId
       runtime.socket?.close()
       runtime.socket = null
       this.resetToSafeEmpty()
+    },
+
+    flushIncoming(): void {
+      const runtime = runtimeFor(this)
+      if (runtime.incomingTimer !== null) clearTimeout(runtime.incomingTimer)
+      runtime.incomingTimer = null
+      const messages = runtime.incoming
+      runtime.incoming = []
+      const socket = runtime.socket
+      const epoch = this.requestEpoch
+      for (const message of messages) {
+        if (runtime.socket !== socket || this.requestEpoch !== epoch) break
+        this.acceptEnvelope(message)
+      }
     },
 
     rememberJammingDecision(decision: JammingDecision): void {
@@ -1552,6 +1791,10 @@ export const useTelemetryStore = defineStore('telemetry', {
      * @sideEffects 使在途加载失效并清空帧、事件、主题序号和连接反馈。
      */
     resetToSafeEmpty(): void {
+      const runtime = runtimeFor(this)
+      if (runtime.incomingTimer !== null) clearTimeout(runtime.incomingTimer)
+      runtime.incomingTimer = null
+      runtime.incoming = []
       this.requestEpoch += 1
       this.realtimeTaskId = null
       this.frame = null
@@ -1576,17 +1819,21 @@ export const useTelemetryStore = defineStore('telemetry', {
       this.jammerResultCode = 'EMPTY'
       this.jammerResultMessage = '尚未执行干扰控制命令。'
       this.jammerResultFieldPath = null
+      this.jammerResultSource = null
       this.closedLoopDecision = null
       this.closedLoopState = 'EMPTY'
       this.closedLoopResultCode = 'EMPTY'
       this.closedLoopResultMessage = '尚未执行逐帧干扰闭环。'
       this.closedLoopResultFieldPath = null
+      this.closedLoopResultSource = null
       this.syncResult = null
       this.syncVersions = {}
+      this.jammerRuntimeParameters = {}
       this.syncState = 'EMPTY'
       this.syncResultCode = 'EMPTY'
       this.syncResultMessage = '尚未同步干扰参数。'
       this.syncResultFieldPath = null
+      this.syncResultSource = null
     },
   },
 })

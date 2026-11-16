@@ -2,17 +2,36 @@ import type { ApiErrorCode, BackupRecord, BackupPlan, BackupPlanStatus, DeleteRe
 import { isAdminObject, isAdminText, isMasterData, isMasterReference, isMasterWrite, masterDataEquipmentFieldIssue } from '../../src/features/admin/admin-contract.js'
 import { loadFixtureProjection } from '../fixtures/source.js'
 import { portParameterTargets } from '../../src/features/scenarios/port-parameter-source.js'
-import type { EquipmentDetails, EquipmentParameter, EquipmentReference } from '../../src/contracts/domain-models.js'
+import type { EquipmentDetails, EquipmentParameter, EquipmentReference, ScenarioConfig } from '../../src/contracts/domain-models.js'
 import { equipmentIssue, isEquipmentActive } from '../../src/features/admin/equipment-contract.js'
+import {
+  type EquipmentHistoryDetails, type EquipmentLifecycleEvent, type EquipmentPublishedReference,
+  type EquipmentRecreateParameters, type EquipmentRecreateRequest, type EquipmentRecreateResult,
+  type EquipmentTargetType, type EquipmentVerificationRecord,
+} from '../../src/features/admin/equipment-history-contract.js'
 import { prepareEquipmentScenes, type EquipmentSceneUpdate } from './equipment-sync.js'
+import { registerPublishedParameterSources, samePublishedReference } from '../local/equipment-publish.js'
 import type { ScenarioProjection } from '../scenarios/projection.js'
+
+export type EquipmentRecreateOutcome =
+  | { ok: true; equipment: EquipmentParameter; event: EquipmentLifecycleEvent }
+  | { ok: false; code: 'CONFLICT' | 'NOT_FOUND' | 'VALIDATION_FAILED' }
 
 export interface EquipmentStorage {
   load(): EquipmentParameter[]
   save(record: EquipmentParameter, expectedVersion?: number, updates?: EquipmentSceneUpdate[], references?: EquipmentReference[]): boolean
-  delete(equipmentId: string, expectedVersion: number): boolean
+  delete(equipmentId: string, expectedVersion: number, operator?: string): boolean
   details(equipmentId: string): EquipmentDetails
   setReference(reference: EquipmentReference, remove: boolean): void
+  historyDetails(equipmentId: string): EquipmentHistoryDetails
+  publishedReferences(equipmentId: string): EquipmentPublishedReference[]
+  lifecycleEvents(equipmentId: string): EquipmentLifecycleEvent[]
+  verification(equipmentId: string): EquipmentVerificationRecord | null
+  pendingVerification(equipmentId: string): boolean
+  addPublishedReference(reference: EquipmentPublishedReference): boolean
+  removePublishedReference(reference: EquipmentPublishedReference): void
+  recordVerification(record: EquipmentVerificationRecord): void
+  recreate(equipmentId: string, expectedHistoryVersion: number, parameters: EquipmentRecreateParameters, operator: string): EquipmentRecreateOutcome
 }
 
 /** 独立通用数据存储只保存真实写入内容；夹具模式仍由内存投影提供旧只读记录。 */
@@ -25,6 +44,18 @@ export interface MasterDataStorage {
 }
 
 export type AdminResult<T> = { ok: true; data: T } | { ok: false; code: ApiErrorCode; status: number; message: string; fieldPath?: string }
+
+/**
+ * 管理投影的确定性时钟。生产入口使用真实账号库的 time()，纯 Mock / 单元测试使用固定时刻，
+ * 保证管理投影不直接读取系统时钟，也不让同一请求内的多个时间字段来自不同时钟。
+ */
+export interface AdminClock {
+  now(): string
+}
+
+/** 纯 Mock 与测试的固定时间；与确认投影默认时间保持同一基准。 */
+export const DEFAULT_ADMIN_NOW = '2026-08-06T08:00:00Z'
+const DEFAULT_ADMIN_CLOCK: AdminClock = { now: () => DEFAULT_ADMIN_NOW }
 
 export interface BackupStorage {
   listBackups(): BackupRecord[]
@@ -45,9 +76,19 @@ export class AdminProjection {
   private equipment: EquipmentParameter[] = []
   private equipmentHistory: EquipmentParameter[] = []
   private equipmentReferences: EquipmentReference[] = []
+  private equipmentPublished: EquipmentPublishedReference[] = []
+  private equipmentLifecycle: Array<EquipmentLifecycleEvent & { equipmentId: string }> = []
+  private equipmentVerifications: EquipmentVerificationRecord[] = []
+  private equipmentLegacyUnverified = new Set<string>()
 
   constructor(private readonly backupStorage?: BackupStorage, private readonly equipmentStorage?: EquipmentStorage,
-    private readonly masterDataStorage?: MasterDataStorage, private readonly scenarios?: ScenarioProjection) {}
+    private readonly masterDataStorage?: MasterDataStorage, private readonly scenarios?: ScenarioProjection,
+    private readonly clock: AdminClock = DEFAULT_ADMIN_CLOCK) {}
+
+  /** 管理事件与发布引用统一取注入时钟，避免同一操作内出现多个系统时间。 */
+  private now(): string {
+    return this.clock.now()
+  }
 
   listEquipment(): EquipmentParameter[] {
     return this.equipmentStorage ? this.equipmentStorage.load() : structuredClone(this.equipment)
@@ -55,9 +96,129 @@ export class AdminProjection {
 
   equipmentDetails(equipmentId: string): EquipmentDetails {
     return this.equipmentStorage ? this.equipmentStorage.details(equipmentId) : structuredClone({
-      history: this.equipmentHistory.filter(row => row.equipmentId === equipmentId),
+      history: this.equipmentHistory.filter(row => row.equipmentId === equipmentId).sort((a, b) => b.version - a.version),
       references: this.equipmentReferences.filter(row => row.equipmentId === equipmentId),
     })
+  }
+
+  private publishedReferences(equipmentId: string): EquipmentPublishedReference[] {
+    return this.equipmentStorage
+      ? this.equipmentStorage.publishedReferences(equipmentId)
+      : structuredClone(this.equipmentPublished.filter(row => row.equipmentId === equipmentId))
+  }
+
+  private lifecycleEvents(equipmentId: string): EquipmentLifecycleEvent[] {
+    return this.equipmentStorage
+      ? this.equipmentStorage.lifecycleEvents(equipmentId)
+      : structuredClone(this.equipmentLifecycle.filter(row => row.equipmentId === equipmentId))
+  }
+
+  private verificationRecord(equipmentId: string): EquipmentVerificationRecord | null {
+    return this.equipmentStorage
+      ? this.equipmentStorage.verification(equipmentId)
+      : structuredClone(this.equipmentVerifications.find(row => row.equipmentId === equipmentId) ?? null)
+  }
+
+  private pendingVerification(equipmentId: string): boolean {
+    return this.equipmentStorage
+      ? this.equipmentStorage.pendingVerification(equipmentId)
+      : !this.equipmentVerifications.some(row => row.equipmentId === equipmentId) && this.equipmentLegacyUnverified.has(equipmentId)
+  }
+
+  /** 登记一条已证实历史引用；同一引用已存在时返回 `false`，不重复写入。 */
+  addPublishedReference(reference: EquipmentPublishedReference): boolean {
+    if (this.equipmentStorage) return this.equipmentStorage.addPublishedReference(reference)
+    // 内存模式没有外键约束，按当前或历史存在的装备版本校验，避免登记悬空来源。
+    const known = [...this.equipment, ...this.equipmentHistory].some(row =>
+      row.equipmentId === reference.equipmentId && String(row.version) === String(reference.equipmentVersion))
+    if (!known) throw new Error('发布引用的装备版本不存在。')
+    if (this.equipmentPublished.some(row => samePublishedReference(row, reference))) return false
+    this.equipmentPublished.push(structuredClone(reference))
+    return true
+  }
+
+  /** 撤销一条发布引用；仅用于回滚本次发布新增项，缺失时静默。 */
+  removePublishedReference(reference: EquipmentPublishedReference): void {
+    if (this.equipmentStorage) this.equipmentStorage.removePublishedReference(reference)
+    else this.equipmentPublished = this.equipmentPublished.filter(row => !samePublishedReference(row, reference))
+  }
+
+  /**
+   * 发布冻结时捕获装备参数来源（链路与平台端口），固定设备版本与目标身份。
+   * 返回本次真正新增的引用；登记失败时先撤销本次新增项再抛出，由调用方回滚发布。
+   */
+  capturePublishedParameterSources(config: ScenarioConfig, target: { targetType: EquipmentTargetType; targetId: string; targetVersion: string }, _operator: string): EquipmentPublishedReference[] {
+    return registerPublishedParameterSources(config, target, this.now(),
+      reference => this.addPublishedReference(reference), reference => this.removePublishedReference(reference))
+  }
+
+  /** 提交失败时撤销本次发布登记的全部引用；用于无法回滚发布目标的路径。 */
+  discardPublishedReferences(references: EquipmentPublishedReference[]): void {
+    for (const reference of references) this.removePublishedReference(reference)
+  }
+
+  /** 扩展本地详情：兼容冻结 EquipmentDetails，并补充发布引用、生命周期与核验状态。 */
+  equipmentHistoryDetails(equipmentId: string): EquipmentHistoryDetails {
+    if (this.equipmentStorage) return this.equipmentStorage.historyDetails(equipmentId)
+    const history = this.equipmentHistory.filter(row => row.equipmentId === equipmentId).sort((a, b) => b.version - a.version)
+    const current = this.equipment.find(row => row.equipmentId === equipmentId) ?? null
+    return structuredClone({
+      equipmentId, deleted: current === null, current, history,
+      references: this.equipmentReferences.filter(row => row.equipmentId === equipmentId),
+      publishedReferences: this.equipmentPublished.filter(row => row.equipmentId === equipmentId),
+      lifecycle: this.equipmentLifecycle.filter(row => row.equipmentId === equipmentId),
+      verification: this.equipmentVerifications.find(row => row.equipmentId === equipmentId) ?? null,
+      pendingVerification: this.pendingVerification(equipmentId),
+    })
+  }
+
+  /** 记录人工核验依据；无依据（空摘要/结论）不接受，不能只点确认清除待核验。 */
+  recordEquipmentVerification(equipmentId: string, value: { coveredTargets: string; evidenceSummary: string; conclusion: string }, operator: string): AdminResult<EquipmentVerificationRecord> {
+    const text = (item: unknown) => typeof item === 'string' && item.trim().length > 0
+    if (!text(value?.coveredTargets) || !text(value?.evidenceSummary) || !text(value?.conclusion)) {
+      return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'evidenceSummary', message: '核验须提供覆盖目标、依据摘要与结论，不能只靠确认。' }
+    }
+    if (!this.listEquipment().some(row => row.equipmentId === equipmentId) && this.equipmentDetails(equipmentId).history.length === 0) {
+      return { ok: false, code: 'NOT_FOUND', status: 404, message: '装备不存在或无历史记录，无法核验。' }
+    }
+    const record: EquipmentVerificationRecord = {
+      equipmentId, coveredTargets: value.coveredTargets.trim(), evidenceSummary: value.evidenceSummary.trim(),
+      conclusion: value.conclusion.trim(), operator, verifiedAt: this.now(),
+    }
+    if (this.equipmentStorage) this.equipmentStorage.recordVerification(record)
+    else this.equipmentVerifications = [...this.equipmentVerifications.filter(row => row.equipmentId !== equipmentId), record]
+    return { ok: true, data: record }
+  }
+
+  /** 显式重建：编号取路径、版本由服务端连续分配，旧引用与核验状态不被复活或清除。 */
+  recreateEquipment(equipmentId: string, request: EquipmentRecreateRequest, operator: string): AdminResult<EquipmentRecreateResult> {
+    let equipment: EquipmentParameter
+    let event: EquipmentLifecycleEvent
+    if (this.equipmentStorage) {
+      const outcome = this.equipmentStorage.recreate(equipmentId, request.expectedHistoryVersion, request.parameters, operator)
+      if (!outcome.ok) {
+        if (outcome.code === 'NOT_FOUND') return { ok: false, code: 'NOT_FOUND', status: 404, message: '该编号没有可重建的历史记录。' }
+        if (outcome.code === 'VALIDATION_FAILED') return { ok: false, code: 'VALIDATION_FAILED', status: 422, fieldPath: 'parameters', message: '重建参数不正确。' }
+        return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'expectedHistoryVersion', message: '当前记录已存在或历史版本已变化，请重新加载后重试。' }
+      }
+      equipment = outcome.equipment
+      event = outcome.event
+    } else {
+      const history = this.equipmentHistory.filter(row => row.equipmentId === equipmentId)
+      const maxVersion = history.reduce((max, row) => Math.max(max, row.version), 0)
+      if (this.equipment.some(row => row.equipmentId === equipmentId)) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'expectedHistoryVersion', message: '当前记录仍存在，不能重建。' }
+      if (maxVersion === 0) return { ok: false, code: 'NOT_FOUND', status: 404, message: '该编号没有可重建的历史记录。' }
+      if (maxVersion !== request.expectedHistoryVersion) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'expectedHistoryVersion', message: '历史版本已变化，请重新加载后重试。' }
+      const record = { equipmentId, ...request.parameters, active: request.parameters.active ?? true, readOnly: false, version: maxVersion + 1 } as EquipmentParameter
+      const issue = equipmentIssue(record, 'write')
+      if (issue) return { ok: false, code: 'VALIDATION_FAILED', status: 422, ...issue }
+      this.equipment = [...this.equipment.filter(row => row.equipmentId !== equipmentId), structuredClone(record)]
+      this.equipmentHistory.push(structuredClone(record))
+      event = { eventType: 'RECREATE', version: record.version, occurredAt: this.now(), operator }
+      this.equipmentLifecycle.push({ equipmentId, ...structuredClone(event) })
+      equipment = record
+    }
+    return { ok: true, data: { equipment, event } }
   }
 
   private hasScenarioParameterSource(kind: 'EQUIPMENT' | 'MASTER_DATA', sourceId: string): boolean {
@@ -84,6 +245,10 @@ export class AdminProjection {
     // 旧客户端更新未携带 active 时不改变已保存状态；新建默认启用。
     const record = { ...input, active: input.active ?? (existing ? isEquipmentActive(existing) : true) }
     if (equipmentId === undefined && existing) return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'equipmentId', message: '装备编号已存在。' }
+    // 编号已有删除历史时普通新建不再清空历史，必须改走显式重建入口。
+    if (equipmentId === undefined && this.equipmentDetails(input.equipmentId).history.length > 0) {
+      return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'equipmentId', message: '该编号已有历史记录，请使用重建入口创建新版本。' }
+    }
     if (equipmentId !== undefined && !existing) return { ok: false, code: 'NOT_FOUND', status: 404, message: '装备参数不存在。' }
     if (record.readOnly || existing?.readOnly) return { ok: false, code: 'PERMISSION_DENIED', status: 403, fieldPath: 'readOnly', message: '只读装备不可编辑，只读标记不可由表单修改。' }
     if (record.version !== (existing?.version ?? 1)) return { ok: false, code: 'VERSION_CONFLICT', status: 409, fieldPath: 'version', message: '版本不一致，请刷新后重新编辑；新增版本须为 1。' }
@@ -106,17 +271,35 @@ export class AdminProjection {
     return { ok: true, data: saved }
   }
 
-  deleteEquipment(equipmentId: string, expectedVersion: number): AdminResult<DeleteResult> {
+  deleteEquipment(equipmentId: string, expectedVersion: number, operator = 'system'): AdminResult<DeleteResult> {
     const existing = this.listEquipment().find(item => item.equipmentId === equipmentId)
     if (!existing) return { ok: false, code: 'NOT_FOUND', status: 404, message: '装备参数不存在。' }
-    if (this.equipmentDetails(equipmentId).references.length || this.hasScenarioParameterSource('EQUIPMENT', equipmentId)) {
-      return { ok: false, code: 'CONFLICT', status: 409, message: '装备仍有场景引用，请先在链路中取消引用并保存场景后再删除。' }
-    }
     if (existing.readOnly) return { ok: false, code: 'PERMISSION_DENIED', status: 403, message: '只读装备不可删除。' }
-    if (existing.version !== expectedVersion || (this.equipmentStorage && !this.equipmentStorage.delete(equipmentId, expectedVersion))) {
+    const currentReferences = this.equipmentDetails(equipmentId).references
+    const publishedReferences = this.publishedReferences(equipmentId)
+    if (currentReferences.length || publishedReferences.length || this.hasScenarioParameterSource('EQUIPMENT', equipmentId)) {
+      const label: Record<EquipmentTargetType, string> = { RUN: '运行', TEMPLATE: '模板', ARCHIVE: '归档', SCENARIO: '场景' }
+      const targets = [
+        ...currentReferences.map(row => `场景 ${row.scenarioId} 链路 ${row.linkId} v${row.equipmentVersion}`),
+        ...publishedReferences.map(row => `${label[row.targetType]} ${row.targetId} v${row.targetVersion}`),
+        ...(this.hasScenarioParameterSource('EQUIPMENT', equipmentId) && currentReferences.length === 0 && publishedReferences.length === 0 ? ['已保存场景参数来源'] : []),
+      ]
+      return { ok: false, code: 'CONFLICT', status: 409, message: `装备仍有引用，不能删除：${[...new Set(targets)].join('；')}。解除当前引用不删除已发布目标的历史引用。` }
+    }
+    if (this.pendingVerification(equipmentId)) {
+      return { ok: false, code: 'CONFLICT', status: 409, fieldPath: 'verification', message: '该装备为“历史引用待核验”，禁止删除；请先停用并提交有效核验依据，且最新引用复检为零后解锁。' }
+    }
+    if (existing.version !== expectedVersion) {
       return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '装备参数已变更，请刷新后重新确认删除。', fieldPath: 'expectedVersion' }
     }
-    this.equipment = this.equipment.filter(item => item.equipmentId !== equipmentId)
+    if (this.equipmentStorage) {
+      if (!this.equipmentStorage.delete(equipmentId, expectedVersion, operator)) {
+        return { ok: false, code: 'VERSION_CONFLICT', status: 409, message: '装备参数已变更或有新增引用，请刷新后重新确认删除。', fieldPath: 'expectedVersion' }
+      }
+    } else {
+      this.equipment = this.equipment.filter(item => item.equipmentId !== equipmentId)
+      this.equipmentLifecycle.push({ equipmentId, eventType: 'DELETE', version: expectedVersion, occurredAt: this.now(), operator })
+    }
     return { ok: true, data: { objectId: equipmentId, deleted: true } }
   }
 
@@ -258,6 +441,10 @@ export class AdminProjection {
     this.equipment = []
     this.equipmentHistory = []
     this.equipmentReferences = []
+    this.equipmentPublished = []
+    this.equipmentLifecycle = []
+    this.equipmentVerifications = []
+    this.equipmentLegacyUnverified = new Set<string>()
     this.masterData = loadFixtureProjection().masterData
     this.masterHistory = this.masterData.map(item => structuredClone(item))
     this.masterReferences = []

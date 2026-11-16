@@ -344,7 +344,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @returns 创建成功时返回 `true`，否则返回 `false`。
      * @sideEffects 更新能力状态、当前运行和场景配置锁投影。
      */
-    async create(fileSource?: PlaybackFileSource): Promise<boolean> {
+    async create(fileSource?: PlaybackFileSource, referenceScenarioId?: string): Promise<boolean> {
       this.invalidateRuntimeSync()
       const auth = useAuthStore()
       if (!auth.authorize('SIMULATION_CONTROL').allowed) {
@@ -360,7 +360,7 @@ export const useSimulationStore = defineStore('simulation', {
         const response = await fetchSimulation(this, `${resolveMockOrigin()}/api/v1/simulations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', 'X-Demo-Role': auth.role },
-          body: JSON.stringify({ taskId: 'TASK-001', scenarioId, ...(fileSource ? { fileSource } : {}) }),
+          body: JSON.stringify({ taskId: 'TASK-001', scenarioId, ...(fileSource ? { fileSource, ...(referenceScenarioId ? { referenceScenarioId } : {}) } : {}) }),
         })
         if (requestEpoch !== this.requestEpoch) return false
         this.capabilityState = 'VALIDATING'
@@ -457,7 +457,7 @@ export const useSimulationStore = defineStore('simulation', {
      * @returns 操作成功时返回 `true`，否则返回 `false`。
      * @sideEffects 可能依次创建运行、锁定场景并发送 START/RESUME 命令。
      */
-    async start(fileSource?: PlaybackFileSource): Promise<boolean> {
+    async start(fileSource?: PlaybackFileSource, referenceScenarioId?: string): Promise<boolean> {
       if (this.selectingScene || this.pending || this.runtimeSyncRequired) return false
       if (this.run?.configLocked && (fileSource ? this.run.scenarioId !== fileReceptionScenarioId(fileSource)
         : this.selectedScene && this.run.scenarioId !== this.selectedScene.config.scenario.id)) {
@@ -467,7 +467,7 @@ export const useSimulationStore = defineStore('simulation', {
       if (this.run?.uiStatus === 'PAUSED' || (this.run?.configLocked && this.run.engineControl?.action === 'pause')) return this.resume()
       if (this.run === null || ['STOPPED', 'COMPLETED', 'ERROR'].includes(this.run.uiStatus)) {
         if (!fileSource && this.selectedScene && !await this.selectScene(this.selectedScene.config.scenario.id)) return false
-        if (!await this.create(fileSource)) return false
+        if (!await this.create(fileSource, referenceScenarioId)) return false
       }
       return this.sendCommand({ command: 'START', mode: this.mode })
     },

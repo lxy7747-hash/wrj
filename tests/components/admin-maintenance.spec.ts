@@ -577,9 +577,10 @@ describe('P7 系统管理面板', () => {
     expect((wrapper.get('[data-testid="backup-plan"] form').element as HTMLFormElement).style.marginBottom).toBe('16px')
     const copy = confirm.mock.calls[0]![0]
     expect(copy).not.toMatch(/Mock|不生成文件/i)
-    expect(copy).toContain('不包含源 CSV、密码环境变量或密钥')
-    expect(copy).toContain('账号库内的密码散列属于恢复所需数据')
+    expect(copy).toContain('不包含原始数据文件、密码配置或密钥')
+    expect(copy).toContain('账号验证信息')
     expect(copy).toContain('备份未加密，请妥善保管')
+    expect(wrapper.text()).not.toContain('列表沿用已登记的校验结果')
     expect(wrapper.get('[data-testid="backup-table"]').text()).toContain('2026-08-06 18:08:00')
     expect(run).not.toHaveBeenCalled()
     await click('创建备份')

@@ -1,4 +1,5 @@
 import { createServer, type Server as HttpServer } from 'node:http'
+import type { Duplex } from 'node:stream'
 import express, { type NextFunction, type Request, type Response, type RequestHandler } from 'express'
 import { portParameterTargets } from '../src/features/scenarios/port-parameter-source.js'
 import type {
@@ -41,12 +42,14 @@ import {
   type ProjectionResult,
 } from './auth/projection.js'
 import { failure, success } from './http/envelope.js'
-import { assertLoopbackRequest, assertLanRequest, validatePublicOrigin } from './http/loopback.js'
+import type { AccessControlSqliteStorage } from './local/access-control-sqlite.js'
+import { assertLoopbackRequest, assertLanRequest, validatePublicOrigin, type DeploymentAccess } from './http/loopback.js'
 import { ScenarioProjection, type ScenarioStorage } from './scenarios/projection.js'
 import { createMemoryParameterSourceCoordinator, parameterCatalog } from './scenarios/parameter-sources.js'
 import { type SimulationProjectionResult } from './simulations/projection.js'
 import { SimulationRegistry } from './simulations/registry.js'
-import type { MissionExecution, MissionOutcome, MissionProcess, MissionRuntimeControl } from './simulations/mission-execution.js'
+import { InMemoryJammerPlanStorage, type JammerPlanStorage } from './simulations/jammer-plan-storage.js'
+import type { MissionExecution, MissionOutcome, MissionProcess, MissionRuntimeControl, MissionSafetyStatus } from './simulations/mission-execution.js'
 import { ScriptProjection } from './scripts/projection.js'
 import { buildEngineFrameMapping, MissionGenerationError } from './scripts/mission-generator.js'
 import { MockProjection } from './state/projection.js'
@@ -57,10 +60,11 @@ import type { RealtimeJournalStore } from './ws/realtime-journal.js'
 import { inspectScenarioConfig } from '../src/features/scenarios/scenario-validation.js'
 import { scenarioSnapshotId } from '../src/features/scenarios/scenario-snapshot.js'
 import { ReplayProjection, type ReplayResult } from './replays/projection.js'
-import { AdminProjection, type AdminResult, type BackupStorage, type EquipmentStorage, type MasterDataStorage } from './admin/projection.js'
+import { AdminProjection, type AdminClock, type AdminResult, type BackupStorage, type EquipmentStorage, type MasterDataStorage } from './admin/projection.js'
 import { isBackupPlan } from '../src/features/admin/backup-plan.js'
 import { isAdminText, isMasterReference } from '../src/features/admin/admin-contract.js'
 import { isEquipmentReference } from '../src/features/admin/equipment-contract.js'
+import { isEquipmentRecreateRequest, type EquipmentPublishedReference } from '../src/features/admin/equipment-history-contract.js'
 import { equipmentTypeIssue } from '../src/features/admin/equipment-link-rules.js'
 import { isAccessControlConfig } from '../src/features/admin/access-control.js'
 import type { InitialNodeSnapshot } from '../src/features/situation/initial-nodes.js'
@@ -69,30 +73,41 @@ import type { PositionSnapshot } from '../src/features/situation/position-update
 import type { LocalReplaySnapshot } from '../src/features/replays/local-replay.js'
 import { fileReceptionMapping, isPlaybackFileSource } from '../src/features/situation/file-reception.js'
 import type { LocalReportExportResult } from '../src/contracts/domain-models.js'
-import { isLocalReport, isLocalReportExport, parseLocalReportFilter } from '../src/features/reports/local-report.js'
+import { isLocalReport, isLocalReportExport, parseLocalReportFilter, reportTime, resolvePhaseRange } from '../src/features/reports/local-report.js'
 import type { AuthSqliteStorage } from './local/auth-sqlite.js'
 import { buildAuditExport } from './auth/audit-export.js'
 import type { LocalArchiveStorage } from './local/archive-sqlite.js'
 import { isLocalArchiveId } from '../src/features/admin/local-archive.js'
-import { isMissionResultId, type MissionResultParameterComparison, type MissionResultRecord, type MissionResultSnapshot } from '../src/features/results/mission-result.js'
+import { isMissionResultId, snapshotMissionResultParameters, type MissionResultParameters, type MissionResultParameterComparison, type MissionResultRecord, type MissionResultSnapshot } from '../src/features/results/mission-result.js'
 import type { MissionResults } from './local/mission-results.js'
 import type { RunQualityStore } from './local/run-quality.js'
+import type { RunEvidenceStore } from './local/run-evidence.js'
 import type { EngineSnapshotClient } from './local/engine-snapshot-client.js'
 import { canSendEngineControl, engineControlAction } from '../src/features/situation/engine-control.js'
 import type { EngineFrameArchive, EngineFrameArchiveScope, EngineFrameArchiveSession } from './local/engine-frame-archive.js'
 import type { MissionLogStreamer } from './local/mission-log-stream.js'
 import type { MissionPositionStreamer } from './local/mission-position-stream.js'
 import { QualityImportError } from '../src/features/data-exchange/quality-records.js'
+import { EvidenceImportError } from '../src/features/data-exchange/evidence-contract.js'
 import { attachQualityReport, baseQualityReportId, qualityReportSha256 } from '../src/features/reports/quality-report.js'
 import { attachEngineFrameArchive } from '../src/features/reports/engine-frame-report.js'
+import {
+  EVIDENCE_KINDS, EVIDENCE_ROWS_DEFAULT, EVIDENCE_ROWS_MAX, EVIDENCE_SERIES_DEFAULT, EVIDENCE_SERIES_MAX,
+  buildFileSetSource, buildNativeArchiveSource, collectSeriesPages, decodeEvidenceCursor, encodeEvidenceCursor, evidenceFilterKey, evidenceWindow, filteredRows, normalizeEvidenceFilter, paginateRows, sampleSeries, seriesContinuityReliable, seriesRawPoints, sourceInfo,
+  type EvidenceKind, type EvidenceSeriesMeta, type EvidenceSource,
+} from '../src/features/reports/report-evidence.js'
 
 export interface MockServerOptions {
   port?: number
   /** 只有真实账号库入口可以启用内网部署；未配置时保持本机 Mock 边界。 */
   publicOrigin?: string
   host?: string
+  /** 分端口部署（deployment.env）的来源与监听范围；未配置时保持仅 127.0.0.1。 */
+  access?: DeploymentAccess
   site?: RequestHandler
   confirmationClock?: ConfirmationClock
+  /** 管理投影时钟；真实账号库入口默认复用 authStorage.time()，纯 Mock 使用固定时刻。 */
+  adminClock?: AdminClock
   /** 仅由本机启动入口注入；纯 Mock 默认不访问文件系统。 */
   loadInitialNodes?: () => Promise<InitialNodeSnapshot>
   /** 本机追加位置读取器；纯 Mock 不配置、不访问真实文件。 */
@@ -102,12 +117,22 @@ export interface MockServerOptions {
   /** 存在此入口即为真实报告模式；无文件或失败不能回退 Mock。 */
   loadLocalReport?: () => Promise<Report | null>
   exportLocalReport?: (report: Report, format: 'HTML' | 'PDF' | 'CSV', actor: string, source?: MissionResultRecord, comparisons?: MissionResultParameterComparison[], filter?: LocalReportFilter) => Promise<LocalReportExportResult>
+  /** D3 报告证据导出：复用既有 HTML/PDF 渲染器，导出全部筛选时段。 */
+  exportReportEvidence?: (input: {
+    reportId: string; format: 'HTML' | 'PDF'; sourceLabel: string; sourceSha256: string; filterLabel: string; generatedTime: string
+    charts: Array<{ title: string; kind: 'LINE' | 'BAR'; unit: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; sourceRange: string }>
+    sections: Array<{ title: string; columns: string[]; rows: string[][] }>
+  }) => Promise<LocalReportExportResult>
   missionResults?: MissionResults
-  saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number) => Promise<void>
+  saveFileReception?: (run: SimulationRun, completedAt: string, lastFrameTime: number, parameters?: MissionResultParameters) => Promise<void>
   /** 规范质量文件的持久接入，缺省不访问文件系统。 */
   runQualityStore?: RunQualityStore
+  /** 06 独立文件集导入的持久接入，缺省不访问文件系统；旧 quality 端点保持兼容。 */
+  runEvidenceStore?: RunEvidenceStore
   /** 可选本机场景存储；纯 Mock 不导入 SQLite，也不触碰磁盘。连接由调用方管理。 */
   scenarioStorage?: ScenarioStorage
+  /** 可选运行期干扰计划持久化存储；纯 Mock 缺省使用有界内存实现，不触碰磁盘。 */
+  jammerPlanStorage?: JammerPlanStorage
   templateStorage?: TemplateStorage
   authStorage?: AuthSqliteStorage
   backupStorage?: BackupStorage
@@ -115,12 +140,14 @@ export interface MockServerOptions {
   /** 本机独立通用数据存储；纯 Mock 继续使用冻结只读夹具。 */
   masterDataStorage?: MasterDataStorage
   archiveStorage?: LocalArchiveStorage
-  accessControlStorage?: { load(): AccessControlConfig; save(config: AccessControlConfig, expected: number): boolean }
+  accessControlStorage?: AccessControlSqliteStorage | { load(): AccessControlConfig; save(config: AccessControlConfig, expected: number): boolean }
   loadExchangeMonitor?: () => LocalMonitorSnapshot
   /** 本机 TXT 落盘；纯 Mock 不写入文件，也不返回虚构路径。 */
   writeScriptText?: (script: ScriptContract, revision: number, draft: ScenarioDraft) => Promise<string>
   /** 仅本机入口执行生成包；纯 Mock 继续使用确定性控制投影。 */
   missionExecution?: MissionExecution
+  /** 本机执行器的墙钟和可取消计时，缺省不读取系统时钟或建立任务计时器。 */
+  missionClock?: { now(): number; schedule(delayMs: number, callback: () => void): () => void }
   /** 本机入口注入轮询器，纯 Mock 不引入文件轮询计时器。 */
   createMissionLogStreamer?: (...args: ConstructorParameters<typeof MissionLogStreamer>) => MissionLogStreamer
   createMissionPositionStreamer?: (...args: ConstructorParameters<typeof MissionPositionStreamer>) => MissionPositionStreamer
@@ -158,6 +185,8 @@ export interface MockServer {
 }
 
 const P1_GENERATED_AT = '2026-08-06T08:00:00Z' as const
+// 覆盖页面 250/500/1000/2000ms 的断线重试，避免把短暂断线当作关闭页面。
+const MISSION_PAGE_RECONNECT_MS = 5_000
 const RFC3339_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/
 
 const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const
@@ -459,10 +488,11 @@ function isLoginShape(value: unknown): value is Record<'username' | 'passwordFix
  * @remarks This pure boundary validator performs no audit, response write, or state mutation.
  */
 function isUser(value: unknown): value is User {
-  return isStrictObject(value, ['userId', 'username', 'role', 'status'], ['lastLoginAt'])
+  return isStrictObject(value, ['userId', 'username', 'role', 'status'], ['lastLoginAt', 'displayName'])
     && typeof value.userId === 'string'
     && value.userId.length > 0
     && typeof value.username === 'string'
+    && (value.displayName === undefined || (typeof value.displayName === 'string' && value.displayName.trim().length > 0 && value.displayName.length <= 64))
     && (value.role === 'ADMIN' || value.role === 'OPERATOR')
     && (value.status === 'ACTIVE' || value.status === 'DISABLED' || value.status === 'LOCKED')
     && (value.lastLoginAt === undefined
@@ -662,7 +692,11 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
 
   const publicOrigin = options.publicOrigin === undefined ? undefined : validatePublicOrigin(options.publicOrigin)
   if (publicOrigin && !options.authStorage) throw new Error('内网部署必须使用真实账号数据库。')
+  if (options.access && (publicOrigin || !options.authStorage)) throw new Error('分端口部署必须使用真实账号数据库，且不能与单入口内网部署同时启用。')
   const projection = new MockProjection()
+  if (options.authStorage && options.accessControlStorage && 'attachAccountDatabase' in options.accessControlStorage) {
+    options.authStorage.connectAccessControl(options.accessControlStorage)
+  }
   const auth = new AuthProjection(options.authStorage)
   let admin!: AdminProjection
   const memoryParameterSources = !options.scenarioStorage && !options.equipmentStorage && !options.masterDataStorage
@@ -677,12 +711,39 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       if (!result.ok) throw new Error(result.message)
     },
   }) : undefined)
-  const remoteEngine = Boolean(options.linkEngineWsUrl)
+  const remoteEngine = Boolean(options.linkEngineWsUrl) && !options.missionExecution
   const remoteEngineNow = options.remoteEngineNow ?? (() => P1_GENERATED_AT)
-  const simulations = new SimulationRegistry(scenarios, remoteEngine ? 1 : options.missionExecution?.maxParallelTasks ?? 1, options.createRunId, remoteEngine)
+  const missionClock = options.missionClock
+  const simulations = new SimulationRegistry(scenarios, remoteEngine ? 1 : options.missionExecution?.maxParallelTasks ?? 1, options.createRunId, remoteEngine,
+    options.jammerPlanStorage ?? new InMemoryJammerPlanStorage())
   const missionSafety = (taskId?: string) => remoteEngine ? null : options.missionExecution?.safetyStatus?.(taskId) ?? null
   const unresolvedMission = missionSafety()
   if (unresolvedMission?.scenarioId) scenarios.setLocked(unresolvedMission.scenarioId, true)
+  let recoveredLocks = new Set(unresolvedMission?.scenarioId ? [unresolvedMission.scenarioId] : [])
+  let recoveryStatus: MissionSafetyStatus[] = []
+  let recoveryCheckedAt: number | undefined
+  let recovering: Promise<MissionSafetyStatus[]> | undefined
+  function refreshMissionRecovery(force = false): Promise<MissionSafetyStatus[]> {
+    if (!options.missionExecution?.recover || remoteEngine) return Promise.resolve([])
+    if (recovering) return recovering
+    if (!force && missionClock && recoveryCheckedAt !== undefined && missionClock.now() - recoveryCheckedAt < 2000) return Promise.resolve(recoveryStatus)
+    recovering = (async () => {
+      recoveryStatus = await options.missionExecution!.recover!()
+      const next = new Set(recoveryStatus.flatMap(status => status.scenarioId ? [status.scenarioId] : []))
+      if (recoveryStatus.some(status => !status.scenarioId)) for (const id of recoveredLocks) next.add(id)
+      for (const id of recoveredLocks) {
+        if (!next.has(id) && !simulations.list().some(run => run.scenarioId === id && run.configLocked)) {
+          scenarios.setLocked(id, false)
+          auth.recordSuccess('system', 'ADMIN', 'MISSION_RECOVERY_UNLOCK', id)
+        }
+      }
+      for (const id of next) scenarios.setLocked(id, true)
+      recoveredLocks = next
+      recoveryCheckedAt = missionClock?.now()
+      return recoveryStatus
+    })().finally(() => { recovering = undefined })
+    return recovering
+  }
   interface MissionSlot {
     taskId: string
     qualityDraft?: ScenarioDraft
@@ -692,21 +753,73 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     consoleLog?: { runId: string; read: NonNullable<MissionProcess['readConsoleLog']>; timeoutMs?: number }
     starting?: Promise<unknown>
     stopping: boolean
+    pageSubscribers?: number
+    cancelPageDisconnect?: () => void
+    stopAfterStart?: boolean
     controlling?: boolean
     connecting?: boolean
     receiving?: boolean
     fileInitial?: InitialNodeSnapshot
+    referenceParameters?: MissionResultParameters
     completedWhileStopping?: MissionOutcome
     engineArchive?: EngineFrameArchiveSession
     engineArchiveScope?: EngineFrameArchiveScope
+    csvOutputDirectory?: string
     logStreamer?: MissionLogStreamer
     positionStreamer?: MissionPositionStreamer
   }
   const missions = new Map<string, MissionSlot>()
   const closeEngineArchive = async (runId: string, slot: MissionSlot): Promise<void> => {
     await slot.engineArchive?.close()
-    if (options.engineFrameArchive && slot.engineArchiveScope) await options.engineFrameArchive.finalizeCsv(runId, slot.engineArchiveScope, {})
+    if (options.engineFrameArchive && slot.engineArchiveScope) {
+      const archive = options.engineFrameArchive
+      const csv = await archive.finalizeCsv(runId, slot.engineArchiveScope, {})
+      if (csv && slot.csvOutputDirectory) await archive.publishTaskCsv(runId, slot.csvOutputDirectory, csv)
+    }
   }
+  async function stopLocalMission(runId: string, slot: MissionSlot, actor: string, role: Role): Promise<void> {
+    slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
+    slot.stopping = true
+    engineSnapshots?.stop(runId)
+    slot.receiving = false
+    slot.logStreamer?.stop(); slot.logStreamer = undefined
+    slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+    try {
+      await slot.mission!.stop()
+      slot.mission = undefined
+      await closeEngineArchive(runId, slot)
+      slot.engineArchive = undefined; slot.engineArchiveScope = undefined
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'mission 停止失败。'
+      if (slot.completedWhileStopping && !missionSafety(slot.taskId)) {
+        slot.mission = undefined
+        realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
+      } else {
+        realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
+      }
+      auth.recordError(actor, role, 'SIMULATION_COMMAND', runId)
+      throw new Error(message)
+    } finally {
+      if (slot.engineArchive?.failure()) auth.recordError(actor, role, 'SIMULATION_COMMAND', runId)
+      slot.stopping = false
+      if (slot.mission && slot.completedWhileStopping && !missionSafety(slot.taskId)) {
+        slot.mission = undefined
+        realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
+      }
+      slot.completedWhileStopping = undefined
+    }
+  }
+
+  async function stopAbandonedMission(runId: string, slot: MissionSlot, actor: string, role: Role): Promise<void> {
+    if (closing || slot.stopping || !slot.mission) return
+    try {
+      await stopLocalMission(runId, slot, actor, role)
+      const completedAt = missionClock ? new Date(missionClock.now()).toISOString() : P1_GENERATED_AT
+      realtime.publishRuntimeState(simulations.finishMission(runId, { code: 0, completedAt }, true))
+      auth.recordSuccess(actor, role, 'SIMULATION_COMMAND', runId)
+    } catch { /* 停止失败已记录并保留锁定，不能跳过进程退出确认。 */ }
+  }
+
   const sameQualityScope = (left: QualityScope, right: QualityScope) => ['taskId', 'runId', 'scenarioId', 'revision', 'startedAt']
     .every(key => left[key as keyof QualityScope] === right[key as keyof QualityScope])
   const qualityContext = (runId: string) => {
@@ -736,13 +849,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }])))
     slot.engineArchiveScope = context.scope
   }
-  const reportWithQuality = async (base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string): Promise<Report> => {
+  const reportWithQuality = async (base: Report, record?: MissionResultRecord, phases?: TaskPhase[], filter?: LocalReportFilter, requestedReportId?: string, reportEndTimeS?: number): Promise<Report> => {
     let report = base
     if (options.engineFrameArchive && record?.runId && record.taskId) {
-      const phase = filter?.stage === undefined ? undefined : phases?.find(item => item.id === filter.stage)
       const evidence = report.localEvidence
-      const range = evidence === undefined ? undefined : { start: Math.max(evidence.startTimeS, filter?.from ?? evidence.startTimeS, phase?.startTimeS ?? evidence.startTimeS),
-        end: Math.min(evidence.endTimeS, filter?.to ?? evidence.endTimeS, phase?.endTimeS ?? evidence.endTimeS), ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter?.linkId ? { linkId: filter.linkId } : {}) }
+      const selection = evidence === undefined ? undefined : resolvePhaseRange(evidence, filter, phases, reportEndTimeS ?? evidence.endTimeS)
+      const range = selection === undefined ? undefined : { start: selection.start, end: selection.end, includeEnd: selection.includeEnd,
+        ...(filter?.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter?.linkId ? { linkId: filter.linkId } : {}) }
       const scope = { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId, revision: record.revision, startedAt: record.startedAt }
       const archive = await options.engineFrameArchive.load(record.runId, scope, range)
       // Archive projection already applied the exact time/node/link predicates while streaming the complete JSONL.
@@ -768,7 +881,43 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     if (!sameQualityScope(dataset.scope, { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId,
       revision: record.revision, startedAt: record.startedAt })) throw new Error('质量来源与运行结果版本不一致。')
-    return attachQualityReport(report, dataset, filter, phases)
+    return attachQualityReport(report, dataset, filter, phases, reportEndTimeS)
+  }
+  /** D3：从已发布文件集与原生帧归档分别构建证据来源；可按固定 sourceSha256 精确读取不可变批次。 */
+  const buildEvidenceSources = async (snapshot: MissionResultSnapshot, sourceSha256?: string): Promise<EvidenceSource[]> => {
+    const record = snapshot.record, sources: EvidenceSource[] = []
+    const expectedScope = record.runId && record.taskId ? { taskId: record.taskId, runId: record.runId, scenarioId: record.scenarioId, revision: record.revision, startedAt: record.startedAt } : undefined
+    if (options.runEvidenceStore && record.runId) {
+      try {
+        const bundle = await options.runEvidenceStore.load(record.runId, sourceSha256, expectedScope)
+        if (bundle) sources.push(buildFileSetSource({ ...(bundle.quality ? { quality: bundle.quality } : {}), state: bundle.state, loss: bundle.loss, switch: bundle.switch, bundleSha256: bundle.result.bundleSha256, capabilities: bundle.result.capabilities as EvidenceKind[], ...(bundle.expectedStepS ? { expectedStepS: bundle.expectedStepS } : {}) }))
+      } catch (error) { if (sourceSha256 !== undefined) throw error /* 精确来源损坏/作用域不符时明确失败，不回退 current */ }
+    }
+    if (options.engineFrameArchive && record.runId && record.taskId) {
+      if (sourceSha256 && sources.some(source => source.sourceSha256 === sourceSha256)) return sources
+      let csvFailure: unknown
+      try {
+        const csvSource = await options.engineFrameArchive.loadCsvSource?.(record.runId, expectedScope!, sourceSha256)
+        if (csvSource && !sources.some(source => source.sourceSha256 === csvSource.sourceSha256)) sources.push(csvSource)
+      } catch (error) { csvFailure = error }
+      if (sourceSha256 && sources.some(source => source.sourceSha256 === sourceSha256)) return sources
+      try {
+        const scope = expectedScope!
+        // 有界：只取各 kind 全量计数与曲线身份目录，不积累完整原生明细数组。
+        const counts = await options.engineFrameArchive.queryCounts(record.runId, scope, undefined, sourceSha256)
+        if (counts) {
+          const catalog = await options.engineFrameArchive.querySeriesCatalog(record.runId, scope, undefined, sourceSha256) ?? []
+          const series: EvidenceSeriesMeta[] = catalog.map(meta => ({ seriesId: meta.seriesId, kind: 'segments' as EvidenceKind, unit: meta.unit, ...meta.identity }) as EvidenceSeriesMeta)
+          const totals: Record<string, number> = { segments: counts.segments, switches: counts.switches, events: counts.events }
+          const capabilities = (['segments', 'switches', 'events'] as EvidenceKind[]).filter(kind => (totals[kind] ?? 0) > 0)
+          sources.push({ sourceSha256: counts.sourceSha256, sourceKind: 'NATIVE_ARCHIVE', capabilities, totals, series, label: `原生帧归档 ${counts.sourceSha256.slice(0, 12)}…`,
+            rowsByKind: { quality: [], state: [], loss: [], switch: [], segments: [], switches: [], events: [] } })
+        }
+      } catch (error) { if (sourceSha256 !== undefined) throw csvFailure ?? error }
+      // 列表隔离坏 CSV，精确查询只有找到同一摘要时才能忽略其他来源的错误。
+      if (sourceSha256 !== undefined && csvFailure !== undefined && !sources.some(source => source.sourceSha256 === sourceSha256)) throw csvFailure
+    }
+    return sources
   }
   const hasMissions = () => [...missions.values()].some(slot => slot.mission || slot.starting || slot.connecting || slot.receiving)
   let closing = false
@@ -779,15 +928,32 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   const templates = new TemplateProjection(options.templateStorage)
   const scripts = new ScriptProjection()
   const replays = new ReplayProjection()
-  admin = new AdminProjection(options.backupStorage, options.equipmentStorage, options.masterDataStorage, scenarios)
+  admin = new AdminProjection(options.backupStorage, options.equipmentStorage, options.masterDataStorage, scenarios,
+    options.adminClock ?? (options.authStorage ? { now: () => options.authStorage!.time() } : undefined))
   let accessControl: AccessControlConfig = { version: 1, profiles: [], assignments: [] }
   const readAccessControl = () => options.accessControlStorage?.load() ?? structuredClone(accessControl)
+  const mutateAccount = <T>(userId: string, change: () => ProjectionResult<T>): ProjectionResult<T> => {
+    if (options.accessControlStorage && (!options.authStorage || !('attachAccountDatabase' in options.accessControlStorage))) {
+      throw new Error('账号变更需要支持原子关联更新的账号库和角色配置库。')
+    }
+    if (options.accessControlStorage) return change()
+    const previous = auth.usersSnapshot().find(user => user.userId === userId)
+    const result = change()
+    const next = auth.usersSnapshot().find(user => user.userId === userId)
+    if (result.ok && (!previous || !next || previous.role !== next.role)) {
+      const assignments = accessControl.assignments.filter(item => item.userId !== userId)
+      if (assignments.length !== accessControl.assignments.length) {
+        accessControl = { ...accessControl, version: accessControl.version + 1, assignments }
+      }
+    }
+    return result
+  }
   class RetiredBatchProfileError extends Error {}
-  const principalForUser = (user: Pick<User, 'userId' | 'username' | 'role'>): Principal => {
+  const principalForUser = (user: Pick<User, 'userId' | 'username' | 'displayName' | 'role'>): Principal => {
     const config = readAccessControl()
     const assignment = config.assignments.find(row => row.userId === user.userId)
     const profile = config.profiles.find(row => row.profileId === assignment?.profileId)
-    const base = { userId: user.userId, username: user.username, role: user.role, permissions: auth.permissionSet(user.role).permissions }
+    const base = { userId: user.userId, username: user.username, displayName: user.displayName ?? user.username, role: user.role, permissions: auth.permissionSet(user.role).permissions }
     if (!assignment) return base
     if (!profile || profile.baseRole !== user.role) throw new Error('角色配置与账号身份不一致，请管理员重新分配。')
     if (profile.menuPaths.length === 0) throw new RetiredBatchProfileError('该角色仅保留已下线的批次权限，请管理员重新分配。')
@@ -800,6 +966,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   let realtime: RealtimeController
   let engineSnapshots: Pick<EngineSnapshotClient, 'start' | 'stop'> & Partial<Pick<EngineSnapshotClient, 'sendControl' | 'controlState'>> | undefined
   const syncEngineControl = (runId: string): void => {
+    // 本机 mission 运行时 WS 只用于接收展示，不成为控制通道；否则 STOP 会被引擎控制状态拦截。
+    if (options.missionExecution && missions.get(runId)?.mission) return
     const state = engineSnapshots?.controlState?.(runId), run = simulations.get(runId)
     if (state && run.ok && ['RUNNING', 'PAUSED'].includes(run.data.uiStatus)) {
       const previous = run.data.engineControl
@@ -841,7 +1009,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
    * @remarks May send a 403 response; otherwise mutates response headers and continues routing.
    */
   app.use((req, res, next) => {
-    const decision = publicOrigin ? assertLanRequest(req, publicOrigin) : assertLoopbackRequest(req)
+    const decision = publicOrigin ? assertLanRequest(req, publicOrigin) : assertLoopbackRequest(req, options.access)
     if (!decision.allowed) {
       if (options.authStorage) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_LOOPBACK_DENIED')
       res.status(403).json(failure('LOOPBACK_ONLY', 403, { message: decision.message }))
@@ -915,11 +1083,16 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   })
 
-  // A 50-node full-scale scenario is approximately 17KB, exceeding 16KB but within this P0 local bound.
   const normalJson = express.json({ strict: true, limit: '256kb' })
-  const qualityJson = express.json({ strict: true, limit: '8mb' })
-  app.use((req, res, next) => (req.method === 'POST' && /^\/api\/v1\/simulations\/[^/]+\/quality$/.test(req.path)
-    ? qualityJson : normalJson)(req, res, next))
+  const largeJson = express.json({ strict: true, limit: '8mb' })
+  app.use((req, res, next) => {
+    // 场景文件允许 4 MiB；完整配置的导入、校验和保存预留请求外壳空间，普通操作维持小请求限制。
+    const scenarioJson = req.method === 'POST'
+      ? /^\/api\/v1\/(?:scenarios(?:\/import|\/[^/]+\/validate)?|templates)\/?$/i.test(req.path)
+      : req.method === 'PUT' && /^\/api\/v1\/(?:scenarios|templates)\/[^/]+\/?$/i.test(req.path)
+    const qualityJson = req.method === 'POST' && /^\/api\/v1\/simulations\/[^/]+\/(?:quality|evidence-import)$/.test(req.path)
+    ;(scenarioJson || qualityJson ? largeJson : normalJson)(req, res, next)
+  })
 
   // 自定义角色只能收窄基础角色；服务端逐请求重新读取，不依赖前端隐藏按钮授权。
   app.use('/api/v1', (req, res, next) => {
@@ -994,8 +1167,12 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   })
 
-  // 重启后的未结清真实运行不能依赖内存锁；损坏记录无法确定场景时保守阻断全部场景写入。
-  app.use('/api/v1', (req, res, next) => {
+  // 先核实遗留进程，再同步场景锁；正常运行仍由当前运行器完成收尾。
+  app.use('/api/v1', async (req, res, next) => {
+    if (/^\/(?:scenarios|simulations|tasks|admin)(?:\/|$)/.test(req.path)) {
+      try { await refreshMissionRecovery(req.method !== 'GET') }
+      catch { res.status(503).json(failure('START_FAILED', 503, { message: '遗留运行核实失败，请稍后重试。' })); return }
+    }
     const safety = missionSafety()
     if (!safety || req.method === 'GET') { next(); return }
     const path = req.path
@@ -1232,6 +1409,31 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
   })
 
+  app.get('/api/v1/simulations/recovery', (req, res) => {
+    if (requireDemoRole(req, res, auth, 'MISSION_RECOVERY_READ') === undefined) return
+    res.status(200).json(success(recoveryStatus.map(status => ({ ...status, canStop: status.canStop === true })), pageMeta('REQ-MISSION-RECOVERY')))
+  })
+
+  app.post('/api/v1/simulations/recovery/stop', async (req, res) => {
+    if (!requireAdmin(req, res, auth, 'MISSION_RECOVERY_STOP')) return
+    if (!isStrictObject(req.body, ['runId']) || typeof req.body.runId !== 'string' || !/^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(req.body.runId)) {
+      res.status(422).json(failure('VALIDATION_FAILED', 422, { fieldPath: 'runId', message: '请选择有效的遗留运行。' })); return
+    }
+    const target = recoveryStatus.find(entry => entry.runId === req.body.runId)
+    if (!target?.canStop || !options.missionExecution?.stopRecovered) {
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: target?.message ?? '该遗留运行已结束或已变化，请刷新。' })); return
+    }
+    try {
+      await options.missionExecution.stopRecovered(req.body.runId)
+      await refreshMissionRecovery(true)
+      auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'MISSION_RECOVERY_STOP', req.body.runId)
+      res.status(200).json(success(recoveryStatus.map(status => ({ ...status, canStop: status.canStop === true })), pageMeta('REQ-MISSION-RECOVERY-STOP')))
+    } catch (error) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'MISSION_RECOVERY_STOP', req.body.runId)
+      res.status(409).json(failure('INVALID_TRANSITION', 409, { message: error instanceof Error ? error.message : '停止失败，已保留运行锁。' }))
+    }
+  })
+
   /** 返回每个已登记任务的当前运行。 */
   app.get('/api/v1/simulations', (req, res) => {
     const requestId = 'REQ-P3-SIMULATION-LIST'
@@ -1257,15 +1459,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }
       if (closing) { res.status(503).json(failure('START_FAILED', 503)); return }
     }
-    const result = simulations.create(req.body, file)
+    // 先在登记边界预留编号并登记装备来源，再提交运行；任一步失败都只丢弃本次尝试。
+    const prepared = simulations.prepare(req.body, file)
+    if (!prepared.ok) {
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE')
+      sendSimulationFailure(res, prepared, requestId)
+      return
+    }
+    const runScene = scenarios.get(prepared.data.scenarioId)
+    let published: EquipmentPublishedReference[] = []
+    try {
+      if (runScene.ok) published = admin.capturePublishedParameterSources(runScene.data.config, { targetType: 'RUN', targetId: prepared.data.runId, targetVersion: String(runScene.data.revision) }, actorForRequest(req, role))
+    } catch {
+      simulations.discardUnconfirmed(prepared.data.runId)
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE', prepared.data.runId)
+      res.status(503).json(failure('START_FAILED', 503, { message: '运行冻结时装备参数来源登记失败，未确认本次运行。' }))
+      return
+    }
+    // 提交失败时只撤销本次新增引用并回滚本次运行，保留此前已存在的登记。
+    const discardAttempt = () => {
+      try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
+      simulations.discardUnconfirmed(prepared.data.runId)
+    }
+    let result: ReturnType<typeof simulations.create>
+    try { result = simulations.create(req.body, file, prepared.data.runId) } catch {
+      discardAttempt()
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE', prepared.data.runId)
+      res.status(503).json(failure('START_FAILED', 503, { message: '运行冻结时装备参数来源登记失败，未确认本次运行。' }))
+      return
+    }
     if (!result.ok) {
+      discardAttempt()
       auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CREATE')
       sendSimulationFailure(res, result, requestId)
       return
     }
     auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_CREATE', result.data.runId)
     for (const [id, slot] of missions) if (slot.taskId === result.data.taskId) missions.delete(id)
-    if (file) missions.set(result.data.runId, { taskId: result.data.taskId, stopping: false, fileInitial: file.initial })
+    if (file) {
+      const reference = req.body.referenceScenarioId ? scenarios.get(req.body.referenceScenarioId) : undefined
+      missions.set(result.data.runId, { taskId: result.data.taskId, stopping: false, fileInitial: file.initial,
+        ...(reference?.ok ? { referenceParameters: { ...snapshotMissionResultParameters(reference.data), source: 'PROJECT_REFERENCE' } } : {}),
+      })
+    }
     realtime.publishRuntimeState(result.data)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
@@ -1330,6 +1566,43 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         const issue = error.issues[0]
         res.status(422).json(failure('VALIDATION_FAILED', 422, { message: issue?.message ?? '质量文件不符合合同。', fieldPath: issue?.fieldPath ?? 'request' }))
       } else res.status(503).json(failure('START_FAILED', 503, { message: '质量文件接收或写盘失败，未替换已发布数据。', retryable: true }))
+    }
+  })
+
+  /** 06 独立文件集导入：整批校验后原子发布，保留旧 quality 端点与 QualityDataset 合同。 */
+  app.post('/api/v1/simulations/:runId/evidence-import', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    const role = requireDemoRole(req, res, auth, 'QUALITY_IMPORT', req.params.runId)
+    if (role === undefined) return
+    if (Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+    if (!options.runEvidenceStore) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前入口未配置文件集证据接入。' })); return }
+    const run = simulations.get(req.params.runId)
+    if (sendSimulationFailure(res, run, 'REQ-EVIDENCE-IMPORT')) return
+    const context = qualityContext(req.params.runId)
+    if (!context) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前运行没有可核对的启动时间或场景版本，拒绝无法归属的文件集。' })); return }
+    const userId = authenticatedUsers.get(req)?.userId
+    const canPublish = () => {
+      const current = qualityContext(req.params.runId)
+      if (closing || !current || !sameQualityScope(current.scope, context.scope)) return false
+      if (!options.authStorage) return true
+      const user = options.authStorage.currentUser(req.headers.cookie)
+      if (!user || user.userId !== userId) return false
+      try {
+        const principal = principalForUser(user)
+        return principal.permissions.includes('SIMULATION_CONTROL') && (!principal.menuPaths || principal.menuPaths.includes('/situation'))
+      } catch { return false }
+    }
+    try {
+      const result = await options.runEvidenceStore.import(req.body, context.scope, context.draft.config, canPublish)
+      auth.recordSuccess(actorForRequest(req, role), role, 'QUALITY_IMPORT', req.params.runId)
+      res.json(success(result, pageMeta('REQ-EVIDENCE-IMPORT')))
+    } catch (error) {
+      auth.recordError(actorForRequest(req, role), role, 'QUALITY_IMPORT', req.params.runId)
+      if (!canPublish()) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '接收期间运行或登录状态已改变，请重新加载。' })); return }
+      if (error instanceof EvidenceImportError) {
+        const issue = error.issues[0]
+        res.status(422).json(failure('VALIDATION_FAILED', 422, { message: issue?.message ?? '文件集不符合证据导入合同。', fieldPath: issue?.fieldPath ?? 'request', details: { file: issue?.file, row: issue?.row, issues: error.issues } }))
+      } else res.status(503).json(failure('START_FAILED', 503, { message: '文件集接收或写盘失败，未替换已发布数据。', retryable: true }))
     }
   })
 
@@ -1489,7 +1762,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
     const command = inspected.data
-    const wsAction = engineSnapshots?.sendControl && slot.receiving ? engineControlAction(command.command) : undefined
+    // 只有纯接收模式才把控制命令转发给外部 WS；本机 mission 运行时 STOP/暂停必须作用于本机进程。
+    const wsAction = !options.missionExecution && engineSnapshots?.sendControl && slot.receiving ? engineControlAction(command.command) : undefined
     if (remoteEngine && command.command === 'START') {
       if (command.mode !== 'INTERACTIVE_SINGLE') {
         res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '远端数据连接仅支持当前所选场景。' }))
@@ -1569,12 +1843,18 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       try {
         missions.set(runId, slot)
         slot.qualityDraft = structuredClone(draft.data)
+        // 关闭浏览器发生在 START 响应前时，也要等启动收尾后停止已创建的进程。
+        slot.stopAfterStart = res.destroyed
+        res.once('close', () => {
+          if (!res.writableEnded) slot.stopAfterStart = true
+        })
         const starting = options.missionExecution.start(draft.data, runId, run.ok ? run.data.taskId : undefined)
         slot.starting = starting
         const process = await starting
         slot.positions = process.readPositions ? { runId, read: process.readPositions.bind(process) } : undefined
         slot.consoleLog = process.readConsoleLog ? { runId, read: process.readConsoleLog.bind(process), timeoutMs: process.timeoutMs } : undefined
         slot.mission = process
+        slot.csvOutputDirectory = process.outputDirectory
         slot.completedWhileStopping = undefined
         const started = simulations.startMission(runId, process.pid, process.startedAt)
         if (process.readPositions && options.createMissionPositionStreamer) {
@@ -1589,12 +1869,27 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           try { await streamer.start() } catch { streamer.stop(); slot.logStreamer = undefined }
         }
         await beginEngineArchive(runId, slot)
+        // useRealEngine=true 时同时接收外部 WS 数据；该连接仅用于展示/留存，失败不影响本机 mission 执行。
+        if (options.linkEngineWsUrl && engineSnapshots) {
+          try {
+            const manifest = buildEngineFrameMapping(draft.data.config)
+            slot.receiving = true
+            if (!engineSnapshots.start(started, manifest)) {
+              engineSnapshots.stop(runId)
+              slot.receiving = false
+            }
+          } catch {
+            engineSnapshots.stop(runId)
+            slot.receiving = false
+          }
+        }
         void process.dataFailure?.then(message => {
           if (slot.mission !== process || closing) return
           realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
           auth.recordError(actorForRequest(req, role), role, 'SIMULATION_CSV_WRITE', runId)
         })
         void process.completed.then(async outcome => {
+          slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
           engineSnapshots?.stop(runId)
           slot.logStreamer?.stop(); slot.logStreamer = undefined
           slot.positionStreamer?.stop(); slot.positionStreamer = undefined
@@ -1622,6 +1917,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       } catch (error) {
         slot.logStreamer?.stop(); slot.logStreamer = undefined
         slot.positionStreamer?.stop(); slot.positionStreamer = undefined
+        engineSnapshots?.stop(runId); slot.receiving = false
         await slot.mission?.stop().catch(() => undefined); slot.mission = undefined
         await closeEngineArchive(runId, slot).catch(() => undefined); slot.engineArchive = undefined; slot.engineArchiveScope = undefined
         const message = error instanceof Error ? error.message : 'mission 启动失败，请检查本机配置。'
@@ -1635,7 +1931,13 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           error instanceof MissionGenerationError ? 422 : 503,
           { message, ...(error instanceof MissionGenerationError ? { fieldPath: error.fieldPath } : {}) },
         ))
-      } finally { slot.starting = undefined }
+      } finally {
+        slot.starting = undefined
+        if (slot.stopAfterStart) {
+          slot.stopAfterStart = false
+          void stopAbandonedMission(runId, slot, actorForRequest(req, role), role)
+        }
+      }
       return
     }
     let stopConfirmed = false
@@ -1679,7 +1981,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         const finalRun = simulations.get(runId)
         if (finalRun.ok && finalRun.data.fileSource && options.saveFileReception) {
           const archive = await options.engineFrameArchive?.load(runId, slot.engineArchiveScope)
-          await options.saveFileReception(finalRun.data, completedAt, archive?.lastSimulationTime ?? finalRun.data.canonical.currentTime)
+          await options.saveFileReception(finalRun.data, completedAt, archive?.lastSimulationTime ?? finalRun.data.canonical.currentTime, slot.referenceParameters)
         }
         slot.engineArchive = undefined; slot.engineArchiveScope = undefined; slot.receiving = false
         const finished = simulations.finishRemote(runId, completedAt)
@@ -1716,34 +2018,10 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
 
     if (slot.mission && command.command === 'STOP') {
-      slot.stopping = true
-      engineSnapshots?.stop(runId)
-      slot.logStreamer?.stop(); slot.logStreamer = undefined
-      slot.positionStreamer?.stop(); slot.positionStreamer = undefined
-      try {
-        await slot.mission.stop()
-        slot.mission = undefined
-        await closeEngineArchive(runId, slot)
-        slot.engineArchive = undefined; slot.engineArchiveScope = undefined
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'mission 停止失败。'
-        if (slot.completedWhileStopping && !missionSafety(slot.taskId)) {
-          slot.mission = undefined
-          realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
-        } else {
-          realtime.publishRuntimeState(simulations.markMissionStopUncertain(runId, message))
-        }
-        auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-        res.status(503).json(failure('START_FAILED', 503, { message }))
+      try { await stopLocalMission(runId, slot, actorForRequest(req, role), role) }
+      catch (error) {
+        res.status(503).json(failure('START_FAILED', 503, { message: error instanceof Error ? error.message : 'mission 停止失败。' }))
         return
-      } finally {
-        if (slot.engineArchive?.failure()) auth.recordError(actorForRequest(req, role), role, 'SIMULATION_COMMAND', runId)
-        slot.stopping = false
-        if (slot.mission && slot.completedWhileStopping && !missionSafety(slot.taskId)) {
-          slot.mission = undefined
-          realtime.publishRuntimeState(simulations.finishMission(runId, slot.completedWhileStopping))
-        }
-        slot.completedWhileStopping = undefined
       }
     }
 
@@ -1807,6 +2085,44 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
     realtime.publishJammerStatus(result.data.jammerStatus, result.data.effectiveFrameId)
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 读取当前运行的干扰机运行期本地参数（版本 + 本地已接受值与计划）；仅本地投影，不代表引擎确认。 */
+  app.get('/api/v1/tasks/:taskId/jammers/:jammerId/parameters', (req, res) => {
+    const { taskId, jammerId } = req.params
+    const requestId = 'REQ-P4-JAMMER-RUNTIME-GET'
+    if (requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_SYNC', jammerId) === undefined) return
+    const result = simulations.getJammerRuntimeParameters(taskId, jammerId)
+    if (!result.ok) {
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    res.status(200).json(success(result.data, pageMeta(requestId)))
+  })
+
+  /** 保存干扰计划与新增控制字段（仅本地留存，storage=LOCAL_RUN），需干扰控制权限且不修改场景原配置。 */
+  app.put('/api/v1/tasks/:taskId/jammers/:jammerId/plan', (req, res) => {
+    const { taskId, jammerId } = req.params
+    const requestId = 'REQ-P4-JAMMER-PLAN'
+    const role = requireDemoRole(req, res, auth, 'SIMULATION_JAMMER_SYNC', jammerId)
+    if (role === undefined) return
+    if (!auth.permissionSet(role).permissions.includes('SIMULATION_CONTROL')) {
+      auth.recordDenied(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      res.status(403).json(failure('PERMISSION_DENIED', 403, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: '当前账号没有干扰控制权限。',
+      }))
+      return
+    }
+    const result = simulations.saveJammerPlan(taskId, jammerId, req.body)
+    if (!result.ok) {
+      auth.recordError(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
+      sendSimulationFailure(res, result, requestId)
+      return
+    }
+    auth.recordSuccess(actorForRequest(req, role), role, 'SIMULATION_JAMMER_SYNC', jammerId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -2027,15 +2343,44 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.post('/api/v1/templates', (req, res) => {
     const requestId = 'REQ-P2-TEMPLATE-CREATE'
     if (!requireAdmin(req, res, auth, 'TEMPLATE_CREATE')) return
+    const preview = templates.previewCreate(req.body)
+    if (!preview.ok) {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE')
+      res.status(preview.status).json(failure(preview.code, preview.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: preview.message,
+        ...(preview.fieldPath === undefined ? {} : { fieldPath: preview.fieldPath }),
+      }))
+      return
+    }
+    // 新建前先登记来源；登记失败时不创建模板，避免留下无来源的发布目标。
+    let published: EquipmentPublishedReference[]
+    try {
+      published = admin.capturePublishedParameterSources(preview.data.config, { targetType: 'TEMPLATE', targetId: preview.data.templateId, targetVersion: preview.data.version }, actorForRequest(req, 'ADMIN'))
+    } catch {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', preview.data.templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，已撤销本次新建。' }))
+      return
+    }
     const result = templates.create(req.body)
     if (!result.ok) {
-      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE')
+      try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', preview.data.templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
         message: result.message,
         ...(result.fieldPath === undefined ? {} : { fieldPath: result.fieldPath }),
       }))
+      return
+    }
+    // 预览与实际提交不一致时只回滚本次：撤销引用，并仅在首个版本且未被引用时删除本次新建。
+    if (result.data.templateId !== preview.data.templateId || result.data.version !== preview.data.version) {
+      try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
+      if (result.data.version === '1' && result.data.referenceCount === 0) templates.delete(result.data.templateId)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，已撤销本次新建。' }))
       return
     }
     auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_CREATE', result.data.templateId)
@@ -2085,6 +2430,14 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    // 先登记本次版本的来源；登记失败只记录错误，已写入的版本保持可重新加载核实。
+    try {
+      admin.capturePublishedParameterSources(result.data.config, { targetType: 'TEMPLATE', targetId: result.data.templateId, targetVersion: String(result.data.version) }, actorForRequest(req, 'ADMIN'))
+    } catch {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板来源登记失败，请重新加载后核实。' }))
+      return
+    }
     auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_UPDATE', templateId)
     res.status(200).json(success(result.data, pageMeta(requestId)))
   })
@@ -2118,8 +2471,50 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
-    const result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions, req.body.scenarioId)
+    // 复制前先按当前场景修订号预测新草稿编号与版本，并在提交前登记来源。
+    const scenarioId = req.body.scenarioId ?? 'SCN-001'
+    const existing = scenarios.get(scenarioId)
+    if (!existing.ok && existing.status !== 404) {
+      res.status(existing.status).json(failure(existing.code, existing.status, {
+        requestId,
+        generatedAt: P1_GENERATED_AT,
+        message: existing.message,
+        ...(existing.fieldPath === undefined ? {} : { fieldPath: existing.fieldPath }),
+      }))
+      return
+    }
+    const predictedRevision = existing.ok ? existing.data.revision + 1 : 1
+    const hadDraft = existing.ok
+    let published: EquipmentPublishedReference[]
+    try {
+      published = admin.capturePublishedParameterSources(template.data.config, { targetType: 'SCENARIO', targetId: scenarioId, targetVersion: String(predictedRevision) }, actorForRequest(req, 'ADMIN'))
+    } catch {
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_COPY', templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板复制时装备来源登记失败，未确认本次复制。' }))
+      return
+    }
+    // 提交失败只撤销本次新增引用，并回滚本次复制：有历史时撤销，否则删除本次新建场景。
+    const compensateCopy = (revision: number) => {
+      try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
+      try {
+        if (hadDraft) {
+          const undone = scenarios.undo(scenarioId, { expectedRevision: revision })
+          if (!undone.ok && undone.message === '没有可撤销的场景操作。') scenarios.delete(scenarioId, { expectedRevision: revision })
+        } else scenarios.delete(scenarioId, { expectedRevision: revision })
+      } catch { /* 保留原始失败语义 */ }
+    }
+    let result: ReturnType<typeof scenarios.copyTemplate>
+    try { result = scenarios.copyTemplate(template.data.config, req.body.name, template.data.uiExtensions, req.body.scenarioId) } catch {
+      // 补偿过程中的失败被吞掉，保持本次复制未确认的 503 语义。
+      compensateCopy(predictedRevision)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_COPY', templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板复制时装备来源登记失败，未确认本次复制。' }))
+      return
+    }
     if (!result.ok) {
+      try { admin.discardPublishedReferences(published) } catch { /* 保留原始失败语义 */ }
+      // copyTemplate 目标持久化/校验失败：撤销本次新增引用并按源模板记录一次 ERROR。
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_COPY', templateId)
       res.status(result.status).json(failure(result.code, result.status, {
         requestId,
         generatedAt: P1_GENERATED_AT,
@@ -2128,6 +2523,15 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       }))
       return
     }
+    // 预测与提交不一致时只回滚本次复制，不留登记到错误目标来源的孤立引用。
+    if (result.data.config.scenario.id !== scenarioId || result.data.revision !== predictedRevision) {
+      compensateCopy(result.data.revision)
+      auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_COPY', templateId)
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { requestId, generatedAt: P1_GENERATED_AT, message: '模板复制时装备来源登记失败，未确认本次复制。' }))
+      return
+    }
+    // 复制成功沿用 TEMPLATE_COPY 动作与源模板审计对象；补偿路径已在上方单独记 ERROR，不冒充用户删除。
+    auth.recordSuccess(actorForRequest(req, 'ADMIN'), 'ADMIN', 'TEMPLATE_COPY', templateId)
     res.status(201).json(success(result.data, pageMeta(requestId)))
   })
 
@@ -2217,7 +2621,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
         res.status(422).json(failure('VALIDATION_FAILED', 422, { message: error.message, fieldPath: error.fieldPath }))
         return
       }
-      res.status(503).json(failure('START_FAILED', 503, { message: 'TXT 写入失败，请检查 output/scripts 目录权限及磁盘空间后重试。', retryable: true }))
+      res.status(503).json(failure('START_FAILED', 503, { message: 'TXT 写入失败，请检查脚本输出目录权限及磁盘空间后重试。', retryable: true }))
     }
   })
 
@@ -2255,6 +2659,19 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const records = await options.missionResults?.list() ?? []
       res.json(success(records, pageMeta('REQ-MISSION-RESULT-LIST', records.length, Math.max(1, records.length))))
     } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行结果读取失败，请检查结果快照。' })) }
+  })
+
+  /** 参数比较只读取不可变结果快照，不能触发质量聚合或 CSV 重建。 */
+  app.get('/api/v1/mission-results/:resultId/parameters', async (req, res) => {
+    if (requireDemoRole(req, res, auth, 'REPORT_RESULT_READ', req.params.resultId) === undefined) return
+    try {
+      if (!isMissionResultId(req.params.resultId) || Object.keys(req.query).length) { res.status(400).json(failure('INVALID_REQUEST', 400)); return }
+      const snapshot = await options.missionResults?.get(req.params.resultId)
+      if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '未找到指定运行结果，未切换到其他文件。' })); return }
+      if (snapshot.record.resultId !== req.params.resultId) throw new Error('运行结果与请求不一致。')
+      const { record, parameters } = snapshot
+      res.json(success({ record, ...(parameters === undefined ? {} : { parameters }) }, pageMeta('REQ-MISSION-RESULT-PARAMETERS')))
+    } catch { res.status(503).json(failure('START_FAILED', 503, { message: '运行参数快照损坏或不可读，未切换到其他文件。' })) }
   })
 
   app.get('/api/v1/mission-results/:resultId', async (req, res) => {
@@ -2432,7 +2849,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       const result = await options.missionResults.filter(resultId, baseQualityReportId(reportId), filter)
       const snapshot = await options.missionResults.get(resultId)
       if (!snapshot) throw new Error('FILTER_NOT_FOUND')
-      const report = await reportWithQuality(result.report, snapshot.record, snapshot.parameters?.phases, filter, reportId)
+      const report = await reportWithQuality(result.report, snapshot.record, snapshot.parameters?.phases, filter, reportId, snapshot.report.localEvidence?.endTimeS)
       res.status(200).json(success({ ...result, report }, pageMeta('REQ-REPORT-FILTER')))
     } catch (error) {
       const code = error instanceof Error ? error.message : ''
@@ -2440,6 +2857,237 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       else if (code === 'QUALITY_VERSION_NOT_FOUND') res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定质量报告版本不可用，请重新加载。' }))
       else if (code === 'FILTER_INVALID') res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选值不属于本次结果。' }))
       else res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '该历史结果没有完整筛选索引，请重新生成结果。' }))
+    }
+  })
+
+  /** 校验 resultId 属于报告并返回快照；不静默切换到其他结果/来源。 */
+  const evidenceSnapshotFor = async (reportId: string, resultId: unknown): Promise<MissionResultSnapshot | null> => {
+    if (typeof resultId !== 'string' || !isMissionResultId(resultId)) return null
+    const snapshot = await options.missionResults?.get(resultId)
+    if (!snapshot) return null
+    if (baseQualityReportId(snapshot.report.reportId) !== baseQualityReportId(reportId)) return null
+    if (!snapshot.record.runId || !snapshot.report.localEvidence) return null
+    return snapshot
+  }
+  const evidenceFilterFromQuery = (query: Record<string, unknown>): LocalReportFilter | null => {
+    const raw: Record<string, unknown> = {}
+    for (const key of ['nodeId', 'linkId', 'stage']) if (typeof query[key] === 'string') raw[key] = query[key]
+    for (const key of ['from', 'to']) if (typeof query[key] === 'string' && query[key] !== '') raw[key] = Number(query[key])
+    return parseLocalReportFilter(raw as LocalReportFilter)
+  }
+  const evidenceMissing = (source: EvidenceSource): EvidenceKind[] =>
+    (source.sourceKind === 'FILE_SET' ? ['quality', 'state', 'loss', 'switch'] : ['segments', 'switches', 'events']).filter(kind => !source.capabilities.includes(kind as EvidenceKind)) as EvidenceKind[]
+  /** 精确来源损坏/作用域不符/摘要不一致时明确失败（409），不回退 current。 */
+  const isEvidenceSourceFailure = (error: unknown): boolean => error instanceof Error
+    && /EVIDENCE_(SCOPE_MISMATCH|ARCHIVE_CORRUPT|ARCHIVE_EVIDENCE_INSUFFICIENT)|证据归档|原文摘要|来源摘要不一致|作用域|清单/u.test(error.message)
+
+  app.get('/api/v1/reports/:reportId/evidence', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'REPORT_READ', req.params.reportId) === undefined) return
+    if (Object.keys(req.query).some(key => !['resultId', 'sourceSha256'].includes(key))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '查询参数无效。' })); return }
+    if (typeof req.query.resultId !== 'string' || !isMissionResultId(req.query.resultId)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: 'resultId 无效。' })); return }
+    const sourceSha256 = req.query.sourceSha256
+    if (sourceSha256 !== undefined && (typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(sourceSha256))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '来源摘要无效。' })); return }
+    const snapshot = await evidenceSnapshotFor(req.params.reportId, req.query.resultId)
+    if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '运行结果不存在或不属于该报告。' })); return }
+    try {
+      const sources = await buildEvidenceSources(snapshot, sourceSha256)
+      const base = { reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId, generatedTime: snapshot.report.generatedTime, effectiveFilter: normalizeEvidenceFilter({}), sources: sources.map(sourceInfo) }
+      if (sourceSha256 === undefined) { res.json(success({ ...base, selectedSourceSha256: null }, pageMeta('REQ-REPORT-EVIDENCE'))); return }
+      const selected = sources.find(source => source.sourceSha256 === sourceSha256)
+      if (!selected) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+      res.json(success({ ...base, selectedSourceSha256: selected.sourceSha256, sourceKind: selected.sourceKind, capabilities: selected.capabilities, totals: selected.totals, series: selected.series, missing: evidenceMissing(selected) }, pageMeta('REQ-REPORT-EVIDENCE')))
+    } catch (error) {
+      if (isEvidenceSourceFailure(error)) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定来源摘要不可用、已损坏或作用域不符，未切换到其他来源。' })); return }
+      res.status(503).json(failure('START_FAILED', 503, { message: '报告证据读取失败，未切换到其他来源。', retryable: true }))
+    }
+  })
+
+  app.get('/api/v1/reports/:reportId/evidence/rows', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'REPORT_READ', req.params.reportId) === undefined) return
+    const allowed = ['resultId', 'sourceSha256', 'kind', 'nodeId', 'linkId', 'stage', 'from', 'to', 'limit', 'cursor']
+    if (Object.keys(req.query).some(key => !allowed.includes(key))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '查询参数无效。' })); return }
+    if (typeof req.query.resultId !== 'string' || !isMissionResultId(req.query.resultId)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: 'resultId 无效。' })); return }
+    const kind = req.query.kind
+    if (typeof kind !== 'string' || !(EVIDENCE_KINDS as readonly string[]).includes(kind)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: 'kind 无效。' })); return }
+    const sourceSha256 = req.query.sourceSha256
+    if (typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(sourceSha256)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '来源摘要无效。' })); return }
+    const filter = evidenceFilterFromQuery(req.query as Record<string, unknown>)
+    if (!filter) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选条件无效。' })); return }
+    const limit = req.query.limit === undefined ? EVIDENCE_ROWS_DEFAULT : Number(req.query.limit)
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > EVIDENCE_ROWS_MAX) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: `limit 必须为 1 至 ${EVIDENCE_ROWS_MAX} 的整数。` })); return }
+    const cursor = req.query.cursor === undefined ? undefined : String(req.query.cursor)
+    const snapshot = await evidenceSnapshotFor(req.params.reportId, req.query.resultId)
+    if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '运行结果不存在或不属于该报告。' })); return }
+    try {
+      const sources = await buildEvidenceSources(snapshot, sourceSha256)
+      const source = sources.find(item => item.sourceSha256 === sourceSha256)
+      if (!source) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+      if (!source.capabilities.includes(kind as EvidenceKind)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '该来源不包含此 kind。' })); return }
+      const window = evidenceWindow(snapshot.report.localEvidence!, filter, snapshot.parameters?.phases, snapshot.report.localEvidence!.endTimeS)
+      const identity = { reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId!, sourceSha256, filterKey: evidenceFilterKey(filter), kind }
+      if (source.sourceKind === 'NATIVE_ARCHIVE') {
+        const offset = cursor === undefined ? 0 : decodeEvidenceCursor(cursor, identity, 'ROW')
+        const selection = { start: window.start, end: window.end, includeEnd: window.includeEnd, ...(filter.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter.linkId ? { linkId: filter.linkId } : {}) }
+        const result = await options.engineFrameArchive!.queryRows(snapshot.record.runId!, { taskId: snapshot.record.taskId!, runId: snapshot.record.runId!, scenarioId: snapshot.record.scenarioId, revision: snapshot.record.revision, startedAt: snapshot.record.startedAt }, { selection, kind: kind as 'segments' | 'switches' | 'events', offset, limit }, sourceSha256)
+        if (!result) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+        if (offset > 0 && offset >= result.total) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '游标位置越界。' })); return }
+        const next = offset + result.rows.length < result.total ? encodeEvidenceCursor(identity, offset + result.rows.length, 'ROW') : null
+        res.json(success({ reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId, sourceSha256, kind, effectiveFilter: normalizeEvidenceFilter(filter), total: result.total, rows: result.rows, nextCursor: next }, pageMeta('REQ-REPORT-EVIDENCE-ROWS')))
+        return
+      }
+      const rows = filteredRows(source.rowsByKind[kind as EvidenceKind] ?? [], filter, window)
+      const page = paginateRows(rows, limit, identity, cursor)
+      res.json(success({ reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId, sourceSha256, kind, effectiveFilter: normalizeEvidenceFilter(filter), total: page.total, rows: page.rows, nextCursor: page.nextCursor }, pageMeta('REQ-REPORT-EVIDENCE-ROWS')))
+    } catch (error) {
+      if (isEvidenceSourceFailure(error)) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定来源摘要不可用、已损坏或作用域不符，未切换到其他来源。' })); return }
+      if (error instanceof Error && (error.message === 'EVIDENCE_CURSOR_INVALID' || error.message.includes('时间范围无效') || error.message.includes('任务阶段'))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选条件或游标无效。' })); return }
+      res.status(503).json(failure('START_FAILED', 503, { message: '报告证据明细读取失败。', retryable: true }))
+    }
+  })
+
+  app.get('/api/v1/reports/:reportId/evidence/series', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    if (requireDemoRole(req, res, auth, 'REPORT_READ', req.params.reportId) === undefined) return
+    const allowed = ['resultId', 'sourceSha256', 'seriesId', 'nodeId', 'linkId', 'stage', 'from', 'to', 'maxPoints', 'cursor']
+    if (Object.keys(req.query).some(key => !allowed.includes(key))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '查询参数无效。' })); return }
+    if (typeof req.query.resultId !== 'string' || !isMissionResultId(req.query.resultId)) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: 'resultId 无效。' })); return }
+    const sourceSha256 = req.query.sourceSha256, seriesId = req.query.seriesId
+    if (typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(sourceSha256) || typeof seriesId !== 'string') { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '来源摘要或 seriesId 无效。' })); return }
+    const filter = evidenceFilterFromQuery(req.query as Record<string, unknown>)
+    if (!filter) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选条件无效。' })); return }
+    const maxPoints = req.query.maxPoints === undefined ? EVIDENCE_SERIES_DEFAULT : Number(req.query.maxPoints)
+    if (!Number.isSafeInteger(maxPoints) || maxPoints < 1 || maxPoints > EVIDENCE_SERIES_MAX) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: `maxPoints 必须为 1 至 ${EVIDENCE_SERIES_MAX} 的整数。` })); return }
+    const cursor = req.query.cursor === undefined ? undefined : String(req.query.cursor)
+    const snapshot = await evidenceSnapshotFor(req.params.reportId, req.query.resultId)
+    if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '运行结果不存在或不属于该报告。' })); return }
+    try {
+      const sources = await buildEvidenceSources(snapshot, sourceSha256)
+      const source = sources.find(item => item.sourceSha256 === sourceSha256)
+      if (!source) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+      const meta = source.series.find(item => item.seriesId === seriesId) as EvidenceSeriesMeta | undefined
+      if (!meta) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: 'seriesId 不属于该来源。' })); return }
+      const window = evidenceWindow(snapshot.report.localEvidence!, filter, snapshot.parameters?.phases, snapshot.report.localEvidence!.endTimeS)
+      const identity = { reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId!, sourceSha256, filterKey: evidenceFilterKey(filter), kind: meta.kind, seriesId: meta.seriesId, seriesMaxPoints: maxPoints }
+      if (source.sourceKind === 'NATIVE_ARCHIVE') {
+        // 有界：单条原生命中曲线多遍流式，按强制点稳定顺序分页续取（只保留当前页）。
+        const selection = { start: window.start, end: window.end, includeEnd: window.includeEnd, ...(filter.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter.linkId ? { linkId: filter.linkId } : {}) }
+        const offset = cursor === undefined ? 0 : decodeEvidenceCursor(cursor, identity, 'SERIES')
+        const result = await options.engineFrameArchive!.querySeriesPoints(snapshot.record.runId!, { taskId: snapshot.record.taskId!, runId: snapshot.record.runId!, scenarioId: snapshot.record.scenarioId, revision: snapshot.record.revision, startedAt: snapshot.record.startedAt }, seriesId, selection, maxPoints, sourceSha256, offset)
+        if (!result) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+        const nextCursor = result.nextOffset === null ? null : encodeEvidenceCursor(identity, result.nextOffset, 'SERIES')
+        res.json(success({ reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId, sourceSha256, seriesId, kind: meta.kind, unit: meta.unit, continuityReliable: true, effectiveFilter: normalizeEvidenceFilter(filter), rawCount: result.rawCount, pointCount: result.points.length, sampling: result.sampling, points: result.points, nextCursor }, pageMeta('REQ-REPORT-EVIDENCE-SERIES')))
+        return
+      }
+      const raw = seriesRawPoints(source, meta, filter, window)
+      const page = sampleSeries(raw, maxPoints, identity, cursor)
+      res.json(success({ reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId, sourceSha256, seriesId, kind: meta.kind, unit: meta.unit, continuityReliable: seriesContinuityReliable(meta), effectiveFilter: normalizeEvidenceFilter(filter), rawCount: page.rawCount, pointCount: page.pointCount, sampling: page.sampling, points: page.points, nextCursor: page.nextCursor }, pageMeta('REQ-REPORT-EVIDENCE-SERIES')))
+    } catch (error) {
+      if (isEvidenceSourceFailure(error)) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定来源摘要不可用、已损坏或作用域不符，未切换到其他来源。' })); return }
+      if (error instanceof Error && (error.message === 'EVIDENCE_CURSOR_INVALID' || error.message.includes('时间范围无效') || error.message.includes('任务阶段'))) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选条件或游标无效。' })); return }
+      res.status(503).json(failure('START_FAILED', 503, { message: '报告证据曲线读取失败。', retryable: true }))
+    }
+  })
+
+  app.post('/api/v1/reports/:reportId/evidence/export', async (req, res) => {
+    const role = requireDemoRole(req, res, auth, 'REPORT_EXPORT', req.params.reportId)
+    if (role === undefined) return
+    if (!auth.permissionSet(role).permissions.includes('ORDINARY_REPORT_EXPORT')) { res.status(403).json(failure('PERMISSION_DENIED', 403)); return }
+    if (!options.exportReportEvidence) { res.status(409).json(failure('INVALID_TRANSITION', 409, { message: '当前入口未配置报告证据导出。' })); return }
+    if (Object.keys(req.query).some(key => key !== 'download') || (req.query.download !== undefined && req.query.download !== '1')) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '下载参数无效。' })); return }
+    const body = req.body as { resultId?: unknown; sourceSha256?: unknown; format?: unknown; filter?: unknown } | undefined
+    const resultId = body?.resultId, sourceSha256 = body?.sourceSha256, format = body?.format
+    if (typeof resultId !== 'string' || !isMissionResultId(resultId) || typeof sourceSha256 !== 'string' || !/^[a-f0-9]{64}$/u.test(sourceSha256) || (format !== 'HTML' && format !== 'PDF')) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '导出请求参数无效。' })); return }
+    const filter = body?.filter === undefined ? {} : parseLocalReportFilter(body.filter)
+    if (!filter) { res.status(422).json(failure('VALIDATION_FAILED', 422, { message: '筛选条件无效。' })); return }
+    const snapshot = await evidenceSnapshotFor(req.params.reportId, resultId)
+    if (!snapshot) { res.status(404).json(failure('NOT_FOUND', 404, { message: '运行结果不存在或不属于该报告。' })); return }
+    try {
+      const sources = await buildEvidenceSources(snapshot, sourceSha256)
+      const source = sources.find(item => item.sourceSha256 === sourceSha256)
+      if (!source) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '来源摘要不属于该结果或已变化。' })); return }
+      const window = evidenceWindow(snapshot.report.localEvidence!, filter, snapshot.parameters?.phases, snapshot.report.localEvidence!.endTimeS)
+      const selection = { start: window.start, end: window.end, includeEnd: window.includeEnd, ...(filter.nodeId ? { nodeId: filter.nodeId } : {}), ...(filter.linkId ? { linkId: filter.linkId } : {}) }
+      const nativeScope = { taskId: snapshot.record.taskId!, runId: snapshot.record.runId!, scenarioId: snapshot.record.scenarioId, revision: snapshot.record.revision, startedAt: snapshot.record.startedAt }
+      let charts: Array<{ title: string; kind: 'LINE' | 'BAR'; unit: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; sourceRange: string }>
+      let sections: Array<{ title: string; columns: string[]; rows: string[][] }>
+      if (source.sourceKind === 'NATIVE_ARCHIVE') {
+        // 有界：按目录逐条曲线两遍流式采样、按 kind 分页取前 200 行，均不积累完整明细数组。
+        charts = []
+        for (const meta of source.series) {
+          const collected: Array<{ time: number; value: number; breakBefore?: boolean }> = []
+          let offset = 0, rawCount = 0, complete = false
+          for (let guard = 0; guard < 10000; guard += 1) {
+            const points = await options.engineFrameArchive!.querySeriesPoints(snapshot.record.runId!, nativeScope, meta.seriesId, selection, EVIDENCE_SERIES_MAX, sourceSha256, offset)
+            if (!points) throw new Error('EVIDENCE_SERIES_PAGE_FAILED')
+            if (guard === 0) rawCount = points.rawCount
+            collected.push(...points.points)
+            if (points.nextOffset === null) { complete = true; break }
+            if (points.points.length === 0) throw new Error('EVIDENCE_SERIES_PAGE_STALLED')
+            offset = points.nextOffset
+          }
+          if (!complete) throw new Error('EVIDENCE_SERIES_PAGE_LIMIT')
+          if (!collected.length) continue
+          const sampling = rawCount <= collected.length ? 'FULL' : 'DOWNSAMPLED'
+          for (let start = 0; start < collected.length; start += EVIDENCE_SERIES_MAX) {
+            const chunk = collected.slice(start, start + EVIDENCE_SERIES_MAX)
+            const chunkIndex = start / EVIDENCE_SERIES_MAX
+            charts.push({ title: `${meta.seriesId}（第${chunkIndex + 1}段 · 展示 ${chunk.length} 点 · 原始 ${rawCount} · ${sampling}）`, kind: 'LINE' as const, unit: meta.unit,
+              sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · 按冻结帧步长判连续`, rows: chunk.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) })
+          }
+        }
+        sections = []
+        for (const kind of source.capabilities) {
+          const page = await options.engineFrameArchive!.queryRows(snapshot.record.runId!, nativeScope, { selection, kind: kind as 'segments' | 'switches' | 'events', offset: 0, limit: 200 }, sourceSha256)
+          if (!page) continue
+          const rows = page.rows.slice(0, 200)
+          const columns = rows.length ? ['id', 'time', ...Object.keys(rows[0]!).filter(key => key !== 'id' && key !== 'time')] : ['id', 'time']
+          sections.push({ title: `${source.label} · ${kind}（总 ${page.total} 行，表内前 ${rows.length} 行；曲线导出覆盖全部筛选时段）`, columns, rows: rows.map(row => columns.map(column => column === 'id' ? String(row.id) : String(row[column] ?? '暂无数据'))) })
+        }
+      } else {
+        charts = source.series.flatMap(meta => {
+          const raw = seriesRawPoints(source, meta, filter, window)
+          if (!raw.length) return []
+          const identity = { reportId: snapshot.report.reportId, resultId: snapshot.record.resultId, runId: snapshot.record.runId!, sourceSha256, filterKey: evidenceFilterKey(filter), kind: meta.kind, seriesId: meta.seriesId, seriesMaxPoints: EVIDENCE_SERIES_MAX }
+          // 导出必须循环消费全部必要续页，覆盖完整筛选时段；每图点数上限，不把无穷点塞入一张图。
+          const all = collectSeriesPages(raw, EVIDENCE_SERIES_MAX, identity)
+          const continuity = seriesContinuityReliable(meta) ? '按冻结步长判连续' : '连续性不可确定（缺可靠步长）'
+          const chunks: typeof all[] = []
+          for (let index = 0; index < all.length; index += EVIDENCE_SERIES_MAX) chunks.push(all.slice(index, index + EVIDENCE_SERIES_MAX))
+          return chunks.map((points, chunkIndex) => ({
+            title: `${meta.seriesId}（第${chunkIndex + 1}/${chunks.length}段 · 展示 ${points.length} 点 · 原始 ${raw.length} · ${raw.length > all.length ? 'DOWNSAMPLED' : 'FULL'}）`,
+            kind: 'LINE' as const, unit: meta.unit,
+            sourceRange: `${source.label} · SHA-256 ${source.sourceSha256} · ${continuity}`,
+            rows: points.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })),
+          }))
+        })
+        sections = source.capabilities.map(kind => {
+          const all = filteredRows(source.rowsByKind[kind] ?? [], filter, window)
+          const rows = all.slice(0, 200)
+          const columns = rows.length ? ['id', 'time', ...Object.keys(rows[0]!).filter(key => key !== 'id' && key !== 'time')] : ['id', 'time']
+          return { title: `${source.label} · ${kind}（总 ${all.length} 行，表内前 ${rows.length} 行；曲线导出覆盖全部筛选时段）`, columns, rows: rows.map(row => columns.map(column => column === 'id' ? String(row.id) : String(row[column] ?? '暂无数据'))) }
+        })
+      }
+      const filterLabel = [filter.nodeId && `节点 ${filter.nodeId}`, filter.linkId && `链路 ${filter.linkId}`, filter.stage && `阶段 ${filter.stage}`, (filter.from !== undefined || filter.to !== undefined) && `${filter.from ?? window.start}～${filter.to ?? window.end} 秒`,
+        filter.stage && snapshot.parameters?.source === 'PROJECT_REFERENCE' && '阶段来自项目参考配置，未确认引擎实际执行版本'].filter(Boolean).join('；') || '全部'
+      const result = await options.exportReportEvidence({ reportId: snapshot.report.reportId, format, sourceLabel: source.label, sourceSha256: source.sourceSha256, filterLabel, generatedTime: snapshot.report.generatedTime, charts, sections })
+      if (!isLocalReportExport(result) || result.format !== format) throw new Error('invalid export')
+      auth.recordSuccess(actorForRequest(req, role), role, 'REPORT_EXPORT', req.params.reportId)
+      if (req.query.download === '1') {
+        res.setHeader('Cache-Control', 'no-store')
+        res.setHeader('X-Content-Type-Options', 'nosniff')
+        res.setHeader('Content-Security-Policy', 'sandbox')
+        res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition')
+        res.download(result.filePath, `${snapshot.record.resultId}.${format.toLowerCase()}`, error => {
+          if (error && !res.headersSent) res.status(503).json(failure('START_FAILED', 503, { message: '报告证据下载失败，请重试。' }))
+        })
+        return
+      }
+      res.json(success(result, pageMeta('REQ-REPORT-EVIDENCE-EXPORT')))
+    } catch (error) {
+      if (isEvidenceSourceFailure(error)) { res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '指定来源摘要不可用、已损坏或作用域不符，未切换到其他来源。' })); return }
+      res.status(503).json(failure('ATOMIC_REPLACE_FAILED', 503, { message: '报告证据导出失败，未返回成功文件。', retryable: true }))
     }
   })
 
@@ -2497,7 +3145,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           catch { res.status(409).json(failure('FILTER_UNSUPPORTED', 409, { message: '筛选索引不可用或条件无效，请重新生成结果。' })); return }
         }
         if (!options.exportLocalReport) throw new Error('export unavailable')
-        let comparisons: MissionResultParameterComparison[] = []
+        let comparisons: MissionResultParameterComparison[] = snapshot?.parameters ? [{ record: snapshot.record, parameters: snapshot.parameters }] : []
         if (snapshot) {
           // 同一场景最多读取 12 次完成结果；无参数快照的旧结果保留可导出性，但不伪造比较值。
           try {
@@ -2505,9 +3153,9 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
             const candidateIds = [snapshot.record.resultId, ...records.filter(record => record.scenarioId === snapshot.record.scenarioId).map(record => record.resultId)]
             const resolved = await Promise.all([...new Set(candidateIds)].slice(0, 12).map(id => options.missionResults!.get(id)))
             comparisons = resolved.flatMap(candidate => candidate?.parameters === undefined ? [] : [{ record: candidate.record, parameters: candidate.parameters }])
-          } catch { comparisons = [] }
+          } catch { /* 其他历史结果不可读时，仍保留当前已校验快照及其参考配置标记。 */ }
         }
-        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId)
+        report = await reportWithQuality(report, snapshot?.record, snapshot?.parameters?.phases, req.body.filter, reportId, snapshot?.report.localEvidence?.endTimeS)
         if (report.reportId !== reportId || report.localEvidence?.quality?.source.sha256 !== req.body.qualitySha256) {
           res.status(409).json(failure('VERSION_CONFLICT', 409, { message: '质量来源已变化，请重新加载报告后导出。' }))
           return
@@ -2818,8 +3466,46 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     }
     // 使用独立对象命名空间，通用数据删除确认不能用于装备删除。
     if (!confirmAdmin(res, req.get('X-Confirmation-Id'), 'MASTER_DATA_DELETE', `EQUIPMENT:${id}:${version}`)) return
-    try { finishAdmin(res, action, admin.deleteEquipment(id, Number(version)), id) }
+    try { finishAdmin(res, action, admin.deleteEquipment(id, Number(version), actorForRequest(req, 'ADMIN')), id) }
     catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备参数删除失败，请刷新后核实。' }, id) }
+  })
+
+  /** 只读查询设备完整历史：已删除设备仍可读取参数、发布引用、DELETE/RECREATE 事件与核验状态。 */
+  app.get('/api/v1/admin/equipment/:equipmentId/history', (req, res) => {
+    const action = 'MASTER_DATA_EQUIPMENT_DETAILS'
+    if (!requireAdmin(req, res, auth, action)) return
+    try { finishAdmin(res, action, { ok: true, data: admin.equipmentHistoryDetails(req.params.equipmentId) }, req.params.equipmentId) }
+    catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备历史读取失败。' }, req.params.equipmentId) }
+  })
+
+  /** 显式重建：编号取路径、版本由服务端连续分配（max+1），拒绝客户端覆盖只读属性。 */
+  app.post('/api/v1/admin/equipment/:equipmentId/recreate', (req, res) => {
+    const id = req.params.equipmentId
+    const action = 'MASTER_DATA_EQUIPMENT_RECREATE'
+    if (!requireAdmin(req, res, auth, action, id)) return
+    if (!isEquipmentRecreateRequest(req.body)) {
+      finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '重建请求须提供 expectedHistoryVersion 与可编辑参数，且不接受编号、版本或只读字段。', fieldPath: 'request' }, id)
+      return
+    }
+    try { finishAdmin(res, action, admin.recreateEquipment(id, req.body, actorForRequest(req, 'ADMIN')), id, 201) }
+    catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '装备重建失败，请刷新后核实。' }, id) }
+  })
+
+  /** 记录人工核验依据；无依据不能解锁“历史引用待核验”，实际删除仍复检最新引用。 */
+  app.post('/api/v1/admin/equipment/:equipmentId/verification', (req, res) => {
+    const id = req.params.equipmentId
+    const action = 'MASTER_DATA_EQUIPMENT_VERIFY'
+    if (!requireAdmin(req, res, auth, action, id)) return
+    if (!isStrictObject(req.body, ['coveredTargets', 'evidenceSummary', 'conclusion'])
+      || typeof req.body.coveredTargets !== 'string' || typeof req.body.evidenceSummary !== 'string' || typeof req.body.conclusion !== 'string') {
+      finishAdmin(res, action, { ok: false, code: 'VALIDATION_FAILED', status: 422, message: '核验须提供覆盖目标、依据摘要与结论。', fieldPath: 'verification' }, id)
+      return
+    }
+    try {
+      finishAdmin(res, action, admin.recordEquipmentVerification(id,
+        { coveredTargets: req.body.coveredTargets, evidenceSummary: req.body.evidenceSummary, conclusion: req.body.conclusion },
+        actorForRequest(req, 'ADMIN')), id)
+    } catch { finishAdmin(res, action, { ok: false, code: 'ATOMIC_REPLACE_FAILED', status: 503, message: '核验记录保存失败，请刷新后核实。' }, id) }
   })
 
   /** 读取通用数据；权限由服务端独立校验。 */
@@ -3173,7 +3859,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (!isManagedUsername(req.body?.user?.username)) {
       auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_CREATE')
       res.status(400).json(failure('INVALID_REQUEST', 400, {
-        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '用户名须为 1–64 位，且不能包含首尾空格。',
+        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '登录账号须为 1–64 位，且不能包含首尾空格。',
       }))
       return
     }
@@ -3194,7 +3880,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    const result = auth.create(req.body, actorForRequest(req, 'ADMIN'))
+    const result = mutateAccount(req.body.user.userId, () => auth.create(req.body, actorForRequest(req, 'ADMIN')))
     if (sendProjectionFailure(res, result, requestId)) {
       return
     }
@@ -3215,7 +3901,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
     if (req.body?.operation === 'UPDATE' && !isManagedUsername(req.body?.user?.username)) {
       auth.recordError(actorForRequest(req, 'ADMIN'), 'ADMIN', 'USER_UPDATE', userId)
       res.status(400).json(failure('INVALID_REQUEST', 400, {
-        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '用户名须为 1–64 位，且不能包含首尾空格。',
+        requestId, generatedAt: P1_GENERATED_AT, fieldPath: 'user.username', message: '登录账号须为 1–64 位，且不能包含首尾空格。',
       }))
       return
     }
@@ -3237,7 +3923,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       return
     }
 
-    const result = auth.update(userId, req.body, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id)
+    const result = mutateAccount(userId, () => auth.update(userId, req.body, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id))
     realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
@@ -3256,7 +3942,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   app.delete('/api/v1/admin/users/:userId', (req, res) => {
     const userId = req.params.userId
     const requestId = 'REQ-P1-USERS-DELETE'
-    const result = auth.delete(userId, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id)
+    const result = mutateAccount(userId, () => auth.delete(userId, actorForRequest(req, 'ADMIN'), confirmationOwner(req)?.id))
     realtime?.revalidateSessions()
     if (sendProjectionFailure(res, result, requestId)) {
       return
@@ -3336,7 +4022,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       auth.recordError(user?.username ?? 'anonymous', user?.role ?? 'OPERATOR', req.path.endsWith('/login') ? 'AUTH_LOGIN' : 'AUTH_LOGOUT', user?.userId)
     }
     if (parserClientError) {
-      const message = parserErrorType === 'entity.too.large' ? '请求体超过 256 KB 限制。'
+      const largeBodyLimit = typeof error === 'object' && error !== null && 'limit' in error && error.limit === 8 * 1024 * 1024
+      const message = parserErrorType === 'entity.too.large' ? `请求体超过 ${largeBodyLimit ? '8 MB' : '256 KB'} 限制。`
         : parserErrorType === 'entity.parse.failed' ? '请求 JSON 格式不正确。' : '请求体无法解析。'
       res.status(400).json(failure('INVALID_REQUEST', 400, { message }))
       return
@@ -3345,13 +4032,49 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
   })
 
   const httpServer = createServer(app)
+  // Node 的 close 不回收尚未发送 HTTP 请求的预连接；单独跟踪，避免强行中断在途请求。
+  const unrequestedSockets = new Set<Duplex>()
+  httpServer.on('connection', socket => {
+    if (closing) { socket.destroy(); return }
+    unrequestedSockets.add(socket)
+    socket.once('close', () => unrequestedSockets.delete(socket))
+  })
+  httpServer.on('request', req => unrequestedSockets.delete(req.socket))
+  httpServer.on('upgrade', (_req, socket) => unrequestedSockets.delete(socket))
   realtime = attachRealtimeServer(httpServer, projection, (taskId?: TaskId) => simulations.current(taskId), options.authStorage
     ? request => {
       const allowed = options.authStorage!.currentUser(request.headers.cookie) !== undefined
       if (!allowed) auth.recordDenied('anonymous', 'OPERATOR', 'AUTH_WS_DENIED')
       return allowed
-    } : undefined, publicOrigin, undefined, { journal: options.realtimeJournal })
-  httpServer.listen(port, publicOrigin ? options.host ?? '0.0.0.0' : '127.0.0.1')
+    } : undefined, publicOrigin ?? options.access, undefined, { journal: options.realtimeJournal }, (run, request) => {
+      if (!options.missionExecution || !missionClock || closing || run.executionSource === 'REMOTE_WS' || run.fileSource) return
+      const url = new URL(request.url ?? '/', 'http://127.0.0.1')
+      if (url.searchParams.get('missionRunId') !== run.runId) return
+      const user = options.authStorage?.currentUser(request.headers.cookie)
+      if (options.authStorage && !user) return
+      const role = user?.role ?? url.searchParams.get('role') as Role
+      let principal: Principal | undefined
+      try { if (user) principal = principalForUser(user) } catch { return }
+      if (!(principal?.permissions ?? auth.permissionSet(role).permissions).includes('SIMULATION_CONTROL')
+        || (principal?.menuPaths && !principal.menuPaths.includes('/situation'))) return
+      const actor = user?.username ?? (role === 'ADMIN' ? 'admin' : 'operator')
+      const slot = missions.get(run.runId) ?? { taskId: run.taskId, stopping: false } as MissionSlot
+      missions.set(run.runId, slot)
+      slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
+      slot.stopAfterStart = false
+      slot.pageSubscribers = (slot.pageSubscribers ?? 0) + 1
+      return () => {
+        slot.pageSubscribers = (slot.pageSubscribers ?? 1) - 1
+        if (slot.pageSubscribers > 0 || closing) return
+        slot.cancelPageDisconnect = missionClock.schedule(MISSION_PAGE_RECONNECT_MS, () => {
+          slot.cancelPageDisconnect = undefined
+          if ((slot.pageSubscribers ?? 0) > 0 || closing) return
+          if (slot.starting) { slot.stopAfterStart = true; return }
+          void stopAbandonedMission(run.runId, slot, actor, role)
+        })
+      }
+    })
+  httpServer.listen(port, publicOrigin ? options.host ?? '0.0.0.0' : options.access?.listenHost ?? '127.0.0.1')
   if (options.authStorage) httpServer.once('close', options.authStorage.watchSessions(() => realtime?.revalidateSessions()))
 
   let closePromise: Promise<void> | undefined
@@ -3379,6 +4102,7 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
       closePromise ??= (async () => {
         const errors: unknown[] = []
         const stopped = await Promise.allSettled([...missions.values()].map(async slot => {
+          slot.cancelPageDisconnect?.(); slot.cancelPageDisconnect = undefined
           await slot.starting?.catch(() => undefined)
           slot.logStreamer?.stop(); slot.logStreamer = undefined
           slot.positionStreamer?.stop(); slot.positionStreamer = undefined
@@ -3396,6 +4120,8 @@ export function createMockServer(options: MockServerOptions = {}): MockServer {
           try {
             await new Promise<void>((resolve, rejectClose) => {
               httpServer.close(error => error === undefined ? resolve() : rejectClose(error))
+              for (const socket of unrequestedSockets) socket.destroy()
+              unrequestedSockets.clear()
             })
             httpClosed = true
           } catch (error) { errors.push(error) }

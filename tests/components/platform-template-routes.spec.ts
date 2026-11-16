@@ -178,11 +178,14 @@ describe('PlatformEditorDialog 盘旋航点与返航', () => {
     expect(platform).toEqual(original)
     draft.config.platforms[index] = result
     const { buildMissionPackage } = await import('../../server/scripts/' + 'mission-generator')
+    const baseline = buildMissionPackage(createTemplateScenario()).files['comm_platform_INS.txt']!
     const script = buildMissionPackage(draft).files['comm_platform_INS.txt']!
+    // 1112 固定模板：编辑平台航线不改写 INS，实例与航线保持模板原文。
+    expect(script).toBe(baseline)
     const route = script.split('platform mission_uav_01 MISSION_UAV_PLATFORM')[1]!.split('end_platform')[0]!
-    const steps = ['position 24.66n 119.55e altitude 3200 m', 'position 25n 120.8e altitude 8000 m',
-      'label LOITER', 'position 25.02n 120.82e altitude 8000 m', 'position 25.04n 120.8e altitude 8000 m',
-      'position 25.02n 120.78e altitude 8000 m', 'goto LOITER']
+    const steps = ['position 24.66n 119.55e altitude 3200 m speed 102.8888888888889 m/s', 'position 25n 120.8e altitude 8000 m speed 102.8888888888889 m/s',
+      'label LOITER', 'position 25.02n 120.82e altitude 8000 m speed 77.16666666666667 m/s', 'position 25.04n 120.8e altitude 8000 m speed 77.16666666666667 m/s',
+      'position 25.02n 120.78e altitude 8000 m speed 77.16666666666667 m/s', 'goto LOITER']
     let previous = -1
     for (const step of steps) {
       const position = route.indexOf(step)

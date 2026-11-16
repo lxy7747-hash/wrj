@@ -279,6 +279,20 @@ export function selectSituationLinks(frame = SITUATION_FRAME_F00042): SituationL
 }
 
 /**
+ * 只保留两端节点都存在于当前帧的链路，供态势页地图和链路表使用。
+ * 与 `selectSituationLinks` 分开，避免影响需要报告“端点不存在”的诊断视图。
+ * @param frame 当前遥测帧。
+ * @returns 两端都有节点的链路视图。
+ */
+export function selectSituationLinksWithPlatforms(frame = SITUATION_FRAME_F00042): SituationLinkView[] {
+  const platformIds = new Set(frame.platforms.map((platform) => platform.platformId))
+  const linkSummaries = frame.linkSummaries.filter((summary) => (
+    platformIds.has(summary.sourcePlatform) && platformIds.has(summary.destPlatform)
+  ))
+  return selectSituationLinks({ ...frame, linkSummaries })
+}
+
+/**
  * 汇总固定帧态势指标。
  * @returns 带帧标识的节点、链路、干扰和切换指标。
  * @sideeffect 无副作用，只读取固定帧和同帧事件。

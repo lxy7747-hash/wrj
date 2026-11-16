@@ -32,8 +32,165 @@ async function start() {
     const result = await api.post('/api/v1/auth/login').set(headers).send({ username, passwordFixture: password }).expect(200)
     return { cookie: result.headers['set-cookie'][0].split(';')[0], principal: result.body.data.principal }
   }
-  return { api, login, access, auth, file, server }
+  return { api, login, access, auth, file, server, directory }
 }
+
+describe('账号与自定义角色关联的原子变更', () => {
+  it('无持久化库的演示模式同样解除切换和删除后的绑定', async () => {
+    const server = createMockServer({ port: 0 })
+    cleanups.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(server.httpServer)
+    const adminHeaders = { ...headers, 'X-Demo-Role': 'ADMIN' }
+    const user = { userId: 'USR-MOCK-BOUND', username: 'mock-bound', role: 'OPERATOR', status: 'ACTIVE' }
+    await api.post('/api/v1/admin/users').set(adminHeaders).send({ operation: 'CREATE', user, password }).expect(201)
+    await api.put('/api/v1/admin/access-control').set(adminHeaders).send({ version: 1, profiles: [profile], assignments: [{ userId: user.userId, profileId: 'READ' }] }).expect(200)
+    await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation: 'UPDATE', user: { ...user, role: 'ADMIN' } }).expect(200)
+    expect((await api.get('/api/v1/admin/access-control').set(adminHeaders)).body.data).toMatchObject({ version: 3, assignments: [] })
+    await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation: 'UPDATE', user }).expect(200)
+    await api.put('/api/v1/admin/access-control').set(adminHeaders).send({ version: 3, profiles: [profile], assignments: [{ userId: user.userId, profileId: 'READ' }] }).expect(200)
+    await api.delete(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).expect(200)
+    expect((await api.get('/api/v1/admin/access-control').set(adminHeaders)).body.data).toMatchObject({ version: 5, assignments: [] })
+  })
+
+  it.each(['OPERATOR', 'ADMIN'] as const)('从 %s 切换基础角色仅解除目标绑定，保留密码、其他账号和配置版本保护', async role => {
+    const { api, login, access, auth, file, directory } = await start()
+    const user = { userId: 'USR-CHANGE', username: 'change-role', role, status: 'ACTIVE' as const }
+    const other = { ...user, userId: 'USR-OTHER', username: 'other' }
+    auth.save(user, password)
+    auth.save(other, password)
+    const scoped = role === 'ADMIN'
+      ? { ...profile, baseRole: role, permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin'] }
+      : profile
+    access.save({ version: 2, profiles: [scoped], assignments: [user, other].map(item => ({ userId: item.userId, profileId: 'READ' })) }, 1)
+    const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+    const session = await login(user.username)
+    const db = new DatabaseSync(join(directory, 'auth.db'))
+    const credentials = () => db.prepare('SELECT user_id, password_salt, password_hash, last_login_at FROM users ORDER BY user_id').all()
+    try {
+      const before = credentials()
+      const next = { ...user, role: role === 'ADMIN' ? 'OPERATOR' : 'ADMIN' }
+      await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation: 'UPDATE', user: next }).expect(200)
+      expect(credentials()).toEqual(before)
+      expect(access.load()).toMatchObject({ version: 3, assignments: [{ userId: other.userId, profileId: 'READ' }] })
+      expect(auth.list().find((item: { userId: string }) => item.userId === other.userId)).toEqual({ ...other, displayName: other.username })
+      expect((await api.get('/api/v1/auth/session').set({ ...headers, Cookie: session.cookie })).body.data.authenticated).toBe(false)
+      const changed = await login(user.username)
+      expect(changed.principal.role).toBe(next.role)
+      expect(changed.principal.menuPaths).toBeUndefined()
+      await api.put('/api/v1/admin/access-control').set(adminHeaders).send({ ...access.load(), version: 2 }).expect(409)
+      const reopened = new AccessControlSqliteStorage(file)
+      const reopenedAuth = new AuthSqliteStorage(join(directory, 'auth.db'))
+      try {
+        expect(reopened.load()).toEqual(access.load())
+        expect(reopenedAuth.list()).toEqual(auth.list())
+        expect(await reopenedAuth.verify(user.username, password)).toBe(true)
+      } finally { reopened.close(); reopenedAuth.close() }
+    } finally { db.close() }
+  })
+
+  it('改名、禁用、启用保持绑定；拒绝重复名称和自身降权时不改绑定', async () => {
+    const { api, login, access, auth } = await start()
+    const user = { userId: 'USR-BOUND', username: 'bound', role: 'OPERATOR', status: 'ACTIVE' }
+    auth.save(user, password)
+    const adminProfile = { ...profile, profileId: 'ADMIN-SCOPE', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/admin'] }
+    access.save({ version: 2, profiles: [profile, adminProfile], assignments: [{ userId: user.userId, profileId: 'READ' }, { userId: 'USR-ADMIN', profileId: 'ADMIN-SCOPE' }] }, 1)
+    const before = access.load()
+    const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+    const renamed = { ...user, username: 'renamed' }
+    for (const operation of ['UPDATE', 'DISABLE', 'ENABLE']) {
+      await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation, user: renamed }).expect(200)
+      expect(access.load()).toEqual(before)
+    }
+    for (const status of ['DISABLED', 'ACTIVE']) {
+      await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders)
+        .send({ operation: 'UPDATE', user: { ...renamed, status } }).expect(200)
+      expect(access.load()).toEqual(before)
+      expect(auth.list().find((item: { userId: string }) => item.userId === user.userId)?.status).toBe(status)
+    }
+    expect((await login(renamed.username)).principal.menuPaths).toEqual(['/situation'])
+    await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation: 'UPDATE', user: { ...renamed, username: 'admin', role: 'ADMIN' } }).expect(409)
+    await api.put('/api/v1/admin/users/USR-ADMIN').set(adminHeaders).send({ operation: 'UPDATE', user: { userId: 'USR-ADMIN', username: 'admin', role: 'OPERATOR', status: 'ACTIVE' } }).expect(409)
+    await api.delete('/api/v1/admin/users/USR-ADMIN').set(adminHeaders).expect(409)
+    expect(access.load()).toEqual(before)
+  })
+
+  it.each([false, true])('删除与同 ID 重建不继承绑定，兼容历史孤立关联=%s', async legacyOrphan => {
+    const { api, login, access, auth } = await start()
+    const user = { userId: 'USR-RECREATE', username: 'recreate', role: 'OPERATOR', status: 'ACTIVE' }
+    if (!legacyOrphan) auth.save(user, password)
+    access.save({ version: 2, profiles: [profile], assignments: [{ userId: user.userId, profileId: 'READ' }] }, 1)
+    const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+    if (!legacyOrphan) {
+      const session = await login(user.username)
+      await api.delete(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).expect(200)
+      expect((await api.get('/api/v1/auth/session').set({ ...headers, Cookie: session.cookie })).body.data.authenticated).toBe(false)
+      expect(access.load().assignments).toEqual([])
+      await api.put('/api/v1/admin/access-control').set(adminHeaders).send(access.load()).expect(200)
+    }
+    await api.post('/api/v1/admin/users').set(adminHeaders).send({ operation: 'CREATE', user, password }).expect(201)
+    expect(access.load().assignments).toEqual([])
+    expect(access.load().profiles).toEqual([profile])
+    expect((await login(user.username)).principal.menuPaths).toBeUndefined()
+  })
+
+  it.each(['CREATE', 'UPDATE', 'DELETE'])('关联写入失败时 %s 回滚，账号原记录和密码不变', async operation => {
+    const { api, login, access, auth, file, directory } = await start()
+    const user = { userId: 'USR-ROLLBACK', username: 'rollback', role: 'OPERATOR', status: 'ACTIVE' }
+    if (operation !== 'CREATE') auth.save(user, password)
+    access.save({ version: 2, profiles: [profile], assignments: [{ userId: user.userId, profileId: 'READ' }] }, 1)
+    const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+    const roleDb = new DatabaseSync(file)
+    const userDb = new DatabaseSync(join(directory, 'auth.db'))
+    try {
+      roleDb.exec("CREATE TRIGGER reject_role_write BEFORE UPDATE ON access_control BEGIN SELECT RAISE(ABORT, 'test role write failed'); END")
+      const before = userDb.prepare('SELECT * FROM users ORDER BY user_id').all()
+      const rolesBefore = access.load()
+      const command = { operation, user: { ...user, role: 'ADMIN' }, ...(operation === 'CREATE' ? { password } : {}) }
+      const result = operation === 'CREATE'
+        ? await api.post('/api/v1/admin/users').set(adminHeaders).send(command)
+        : operation === 'DELETE' ? await api.delete(`/api/v1/admin/users/${user.userId}`).set(adminHeaders)
+          : await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send(command)
+      expect(result.status).toBe(500)
+      expect(userDb.prepare('SELECT * FROM users ORDER BY user_id').all()).toEqual(before)
+      expect(access.load()).toEqual(rolesBefore)
+      roleDb.exec('DROP TRIGGER reject_role_write')
+      if (operation !== 'CREATE') expect((await login(user.username)).principal.menuPaths).toEqual(['/situation'])
+    } finally { roleDb.close(); userDb.close() }
+  })
+
+  it('关联清理保留历史角色的原始内容，不因退役菜单改写其他角色', async () => {
+    const { api, login, access, auth, file } = await start()
+    const user = { userId: 'USR-LEGACY', username: 'legacy', role: 'OPERATOR', status: 'ACTIVE' }
+    auth.save(user, password)
+    const oldProfile = { ...profile, profileId: 'RETIRED', menuPaths: ['/batches'] }
+    const roleDb = new DatabaseSync(file)
+    try {
+      roleDb.prepare('UPDATE access_control SET version=2, config=? WHERE id=1').run(JSON.stringify({ version: 2, profiles: [profile, oldProfile], assignments: [{ userId: user.userId, profileId: 'READ' }] }))
+      const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+      await api.delete(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).expect(200)
+      expect(access.load().assignments).toEqual([])
+      expect(JSON.parse(roleDb.prepare('SELECT config FROM access_control').get().config).profiles).toEqual([profile, oldProfile])
+    } finally { roleDb.close() }
+  })
+
+  it('跨库原子性不成立时拒绝变更，不暗改 WAL 模式或账号数据', async () => {
+    const { api, login, access, auth, file } = await start()
+    const user = { userId: 'USR-WAL', username: 'wal-user', role: 'OPERATOR', status: 'ACTIVE' }
+    auth.save(user, password)
+    access.save({ version: 2, profiles: [profile], assignments: [{ userId: user.userId, profileId: 'READ' }] }, 1)
+    const adminHeaders = { ...headers, Cookie: (await login('admin')).cookie }
+    const rolesBefore = access.load()
+    const roleDb = new DatabaseSync(file)
+    try {
+      roleDb.exec('PRAGMA journal_mode=WAL')
+      await api.put(`/api/v1/admin/users/${user.userId}`).set(adminHeaders).send({ operation: 'UPDATE', user: { ...user, role: 'ADMIN' } }).expect(500)
+      expect(auth.list()).toContainEqual({ ...user, displayName: user.username })
+      expect(access.load()).toEqual(rolesBefore)
+      expect(roleDb.prepare('PRAGMA journal_mode').get().journal_mode).toBe('wal')
+    } finally { roleDb.close() }
+  })
+})
 
 describe('兼容角色配置与服务端权限', () => {
   it('已注册接口按角色、操作权限和页面菜单共同收窄', async () => {

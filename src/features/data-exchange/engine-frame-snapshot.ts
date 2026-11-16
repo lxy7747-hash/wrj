@@ -3,6 +3,11 @@ import type { EngineFrameSnapshot, EngineJammer, EngineLinkSegment, EnginePathNo
 /** websocketNew 正常帧号每次递增 5，对应仿真推进 5 秒；与 WS 信封 sequence 独立。 */
 export const ENGINE_FRAME_ID_STEP = 5
 
+/** 引擎以仿真秒数标识帧，亚秒推送保留小数，不取整或另造帧号。 */
+export function isEngineFrameId(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER
+}
+
 const record = (value: unknown): Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const list = (value: unknown): unknown[] => Array.isArray(value) ? value : []
 const text = (value: unknown): string | null => typeof value === 'string' && value.trim() ? value : null
@@ -35,7 +40,7 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
   const frameId = number(input.frame_id)
   const errors: ValidationIssue[] = []
   const error = (fieldPath: string, message: string) => errors.push({ severity: 'ERROR', code: 'ENGINE_FRAME_INVALID', fieldPath, message })
-  if (frameId === null || !Number.isSafeInteger(frameId) || frameId < 0) error('frame_id', '引擎帧号必须为非负整数。')
+  if (!isEngineFrameId(frameId)) error('frame_id', '引擎帧号必须为非负有限数，且不超过安全数值范围。')
   if (!Array.isArray(calc.links)) error('link_calc.links', '引擎链路段必须为数组。')
   if (errors.length) return { data: null, errors }
   const links = list(calc.links).map((value): EngineLinkSegment => {
@@ -99,7 +104,10 @@ export function adaptEngineFrameSnapshot(value: unknown): { data: EngineFrameSna
       pathId: text(item.path_id) ?? text(item.pathid), linkId: text(item.link_id) ?? text(item.linkid), message: text(item.message),
     } }) },
     events: list(input.events).map(value => { const item = record(value), uavNames = texts(item.events_uav), jammerNames = texts(item.events_jammer); return {
-      type: text(item.events_type), pathId: text(item.events_pathid), uavNames, jammerNames, uavIds: [...uavNames], jammerIds: [...jammerNames],
+      type: text(item.events_type), pathId: text(item.events_pathid) ?? text(item.events_new_pathid) ?? text(item.events_old_pathid),
+      ...(Object.hasOwn(item, 'events_new_pathid') ? { newPathId: text(item.events_new_pathid) } : {}),
+      ...(Object.hasOwn(item, 'events_old_pathid') ? { oldPathId: text(item.events_old_pathid) } : {}),
+      uavNames, jammerNames, uavIds: [...uavNames], jammerIds: [...jammerNames],
     } }),
   } }
 }
@@ -119,7 +127,7 @@ export function isEngineFrameSnapshot(value: unknown): value is EngineFrameSnaps
     && optional(v, 'parameters', p => fields(p, ['delay', 'transFrequency', 'dataContent'], num))
   if (!obj(value) || value.kind !== 'ENGINE_FRAME' || typeof value.runId !== 'string' || !value.runId.trim()
     || typeof value.engineEpoch !== 'number' || !Number.isSafeInteger(value.engineEpoch) || value.engineEpoch < 0
-    || typeof value.frameId !== 'number' || !Number.isSafeInteger(value.frameId) || value.frameId < 0
+    || !isEngineFrameId(value.frameId)
     || typeof value.simulationTime !== 'number' || !Number.isFinite(value.simulationTime) || value.simulationTime < 0
     || !str(value.modelVersion) || !str(value.modulation) || !optional(value, 'wallTimeMs', num)) return false
   return array(value.links, v => obj(v) && typeof v.linkId === 'string' && v.linkId.length > 0 && strings(v.linkIds)
@@ -141,5 +149,7 @@ export function isEngineFrameSnapshot(value: unknown): value is EngineFrameSnaps
     && obj(value.routing) && array(value.routing.switches, s => obj(s) && path(s) && str(s.oldPathId) && pathNodes(s.oldNodes)
       && array(s.reasons, r => obj(r) && str(r.linkId) && strings(r.reasons)))
     && array(value.routing.alarms, a => fields(a, ['pathId', 'linkId', 'message'], str))
-    && array(value.events, e => obj(e) && fields(e, ['type', 'pathId'], str) && ['uavNames', 'jammerNames', 'uavIds', 'jammerIds'].every(k => strings(e[k])))
+    && array(value.events, e => obj(e) && fields(e, ['type', 'pathId'], str)
+      && optional(e, 'newPathId', str) && optional(e, 'oldPathId', str)
+      && ['uavNames', 'jammerNames', 'uavIds', 'jammerIds'].every(k => strings(e[k])))
 }

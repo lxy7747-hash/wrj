@@ -91,7 +91,7 @@ async function logout(): Promise<void> {
       <section class="identity" aria-label="当前身份" data-testid="identity-panel">
         <div class="identity__details">
           <p class="identity__username" data-testid="identity-username">
-            用户：{{ auth.principal?.username }}
+            用户：{{ auth.principal?.displayName ?? auth.principal?.username }}
           </p>
           <p class="identity__role" data-testid="identity-role">
             角色：{{ roleLabel }}

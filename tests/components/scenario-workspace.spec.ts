@@ -136,6 +136,59 @@ it('列表选用入口保留已有请求和运行锁禁用条件', async () => {
   expect(select).not.toHaveBeenCalled()
 })
 
+it.each(['刷新', '重新进入'])('本机运行结束后%s列表同步运行锁，恢复选用场景', async action => {
+  const { wrapper, router, store, scenes, fetchSpy } = await setup()
+  const simulation = useSimulationStore()
+  useAuthStore().runtimeMode = 'LOCAL'
+  const { run } = await import('../../frontend-technical-design-v1/contracts/deterministic-fixtures.json')
+  const running = { ...structuredClone(run), uiStatus: 'RUNNING', configLocked: true,
+    canonical: { ...run.canonical, status: 'RUNNING' } } as NonNullable<typeof simulation.run>
+  simulation.applyRun(running)
+  scenes.setLocked('SCN-001', true)
+  await store.loadScenes()
+  await flushPromises()
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeDefined()
+
+  scenes.setLocked('SCN-001', false)
+  const stopped = { ...running, uiStatus: 'COMPLETED', configLocked: false,
+    canonical: { ...running.canonical, status: 'COMPLETED', processId: null } }
+  const originalFetch = fetchSpy.getMockImplementation()!
+  fetchSpy.mockImplementation(async (url: string, init?: RequestInit) => new URL(url).pathname === '/api/v1/simulations'
+    ? new Response(JSON.stringify({ ok: true, data: [stopped] })) : originalFetch(url, init))
+  if (action === '刷新') await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+  else { await router.push('/other'); await router.push('/scenarios') }
+  await flushPromises()
+  expect(wrapper.get('[data-testid="scene-table"]').text()).not.toContain('运行中 · 已锁定')
+  expect(simulation.run).toMatchObject({ uiStatus: 'COMPLETED', configLocked: false })
+  expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeUndefined()
+})
+
+it('返回列表时等待本机进程收尾，解锁后自动更新且不再轮询', async () => {
+  const { wrapper, scenes, fetchSpy } = await setup()
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+  try {
+    useAuthStore().runtimeMode = 'LOCAL'
+    const { run } = await import('../../frontend-technical-design-v1/contracts/deterministic-fixtures.json')
+    const state = { ...structuredClone(run), uiStatus: 'RUNNING', configLocked: true, canonical: { ...run.canonical, status: 'RUNNING' } }
+    scenes.setLocked('SCN-001', true)
+    const originalFetch = fetchSpy.getMockImplementation()!
+    fetchSpy.mockImplementation(async (url: string, init?: RequestInit) => new URL(url).pathname === '/api/v1/simulations'
+      ? new Response(JSON.stringify({ ok: true, data: [state] })) : originalFetch(url, init))
+    await wrapper.findAll('button').find(button => button.text() === '刷新')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeDefined()
+    state.uiStatus = 'STOPPED'; state.configLocked = false; state.canonical.status = 'IDLE'
+    scenes.setLocked('SCN-001', false)
+    await vi.advanceTimersByTimeAsync(1000)
+    await flushPromises()
+    expect(wrapper.get('[data-testid="scene-select-SCN-001"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.get('[data-testid="scene-table"]').text()).not.toContain('运行中 · 已锁定')
+    const count = fetchSpy.mock.calls.length
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(fetchSpy.mock.calls.length).toBe(count)
+  } finally { vi.useRealTimers() }
+})
+
 it('从列表按编号编辑、保存返回、刷新；复制使用独立草稿且不改来源', async () => {
   const { wrapper, store, scenes } = await setup()
   const original = scenes.get('SCN-001')
@@ -329,7 +382,7 @@ async function importFile(wrapper: VueWrapper, draft: ScenarioDraft): Promise<vo
   await flushPromises()
 }
 
-it('JSON 导入保存后依次预览并写 TXT，提示路径、刷新列表且不创建或启动仿真', async () => {
+it('JSON 导入保存后依次预览并写 TXT，仅提示导入成功、刷新列表且不创建或启动仿真', async () => {
   const { wrapper, store, draft, paths } = await setupImport()
   const success = vi.spyOn(ElMessage, 'success')
   const warning = vi.spyOn(ElMessage, 'warning')
@@ -338,7 +391,7 @@ it('JSON 导入保存后依次预览并写 TXT，提示路径、刷新列表且�
     '/api/v1/scenarios/import', '/api/v1/scenarios/SCN-IMPORT/validate', '/api/v1/scripts/preview',
     expect.stringMatching(/^\/api\/v1\/scripts\/[^/]+\/local-file$/u), '/api/v1/scenarios',
   ])
-  expect(success).toHaveBeenCalledExactlyOnceWith(`已导入场景“导入生成验证”，TXT 已生成：${scriptPath}`)
+  expect(success).toHaveBeenCalledExactlyOnceWith('已导入场景“导入生成验证”。')
   expect(warning).not.toHaveBeenCalled()
   expect(wrapper.text()).toContain('导入生成验证')
   expect(store.draft).toBeNull()

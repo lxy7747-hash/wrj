@@ -1,0 +1,7 @@
+# Filled from the deployment machine configuration. Existing values are preserved.
+wsip={{WSIP}}
+wsport={{WSPORT}}
+wspath={{WSPATH}}
+
+# Used only when frame_rate is absent; existing calibration is preserved.
+frame_rate=5

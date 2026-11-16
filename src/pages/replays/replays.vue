@@ -112,9 +112,8 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="replays-page" aria-label="历史回放">
-    <div>
-    <MissionResults view="replay" />
     <header class="replays-page__header">
+      <MissionResults view="replay" />
 <!--      <div>-->
 <!--        <p class="eyebrow">运行快照与事件复盘</p>-->
 <!--        <h2 id="replays-title">历史回放</h2>-->
@@ -125,9 +124,8 @@ onBeforeUnmount(() => {
         <span v-else>本地文件回放</span>
         <el-tag :type="replayStateType(state)" effect="plain">{{ replayStateLabel(state) }}</el-tag>
       </div>
-      <el-button :loading="loading" :disabled="loading" @click="reload">重新加载</el-button>
+      <el-button class="replays-page__reload" :loading="loading" :disabled="loading" @click="reload">重新加载</el-button>
     </header>
-    </div>
 
     <el-skeleton v-if="loading" class="replays-page__loading" :rows="10" animated />
     <el-result
@@ -145,6 +143,9 @@ onBeforeUnmount(() => {
         <OfflineSituationMap
           :key="`${localSnapshot.initial.sha256}:${localSnapshot.sha256}`"
           :frame="null"
+          :engine-frame="engineHistory?.engineFrame"
+          engine-source-label="历史引擎数据"
+          :position-replay="localSnapshot"
           :initial-nodes="fileNodes"
           :file-links="fileLinks"
           :file-message-links="localSnapshot.initial.messageLinks"
@@ -177,10 +178,10 @@ onBeforeUnmount(() => {
               <el-button :disabled="!selectedNodeId" @click="locateFileNode(selectedNodeId)">定位</el-button>
             </div>
           </div>
-          <p v-if="archiveId" data-testid="replay-archive-source">归档：{{ archiveId }}；重新加载仍读取此快照，不切换到最新文件。</p>
-          <p v-else-if="resultId">当前为指定运行的完成快照；重新加载不会读取其他运行或配置文件。</p>
-          <p v-else>按时间读取最后一条位置；暂无更新的节点保留初始化位置。重新加载可读取新增记录。</p>
-          <p>按回放时刻展示位置及已登记的通信关联；关联不代表链路已接通，不展示模拟链路或模拟事件。</p>
+          <p v-if="archiveId" data-testid="replay-archive-source">归档：{{ archiveId }}。重新加载仍查看此归档。</p>
+          <p v-else-if="resultId">正在回放所选运行。</p>
+          <p v-else>点击「重新加载」可读取新增记录。</p>
+          <p>图中通信关联不代表链路已接通。</p>
           <el-alert v-if="localSnapshot.waitingForLine" title="文件尾部尚有未写完的记录，写入完成后可重新加载。" type="info" :closable="false" />
           <el-alert v-if="localSnapshot.issueCount" :title="`已跳过 ${localSnapshot.issueCount} 条异常记录`"
             :description="localSnapshot.issues.map((issue) => `第 ${issue.line} 行：${issue.message}`).join('；')" type="warning" :closable="false" />
@@ -192,10 +193,10 @@ onBeforeUnmount(() => {
             <p v-if="engineLoading" role="status">正在读取对应时刻的历史数据…</p>
             <p v-if="!engineHistory.engineFrame">{{ engineHistory.frameCount ? '当前时刻尚未收到引擎帧。' : '本次运行没有收到引擎帧。' }}</p>
             <template v-else>
-              <p>显示不晚于游标的最近一帧；暂停与回退同步冻结或还原历史记录。</p>
               <p v-if="engineHistory.historyTruncated">事件、切换和告警分别显示游标前最近 200 条；完整数据仍保存在历史归档中。</p>
               <el-tabs v-model="historyTab" class="replay-history__tabs">
                 <el-tab-pane label="质量指标" name="quality"><EngineFramePanel section="quality" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
+                <el-tab-pane label="干扰与探测" name="jammers"><EngineFramePanel section="jammers" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
                 <el-tab-pane label="选路与告警" name="decisions"><EngineFramePanel section="decisions" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
                 <el-tab-pane label="事件" name="events"><EngineFramePanel section="events" :evidence="engineHistory" :links="engineHistory.links" :node-names="nodeNames" /></el-tab-pane>
               </el-tabs>
@@ -258,8 +259,8 @@ onBeforeUnmount(() => {
 
 .replays-page__header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
   padding: 0.85rem 1rem;
   border-bottom: 1px solid var(--console-border);
@@ -287,6 +288,16 @@ onBeforeUnmount(() => {
 
 .replays-page__source :deep(.el-select) {
   width: 15rem;
+}
+
+.replays-page__source {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.replays-page__reload {
+  margin-inline-start: auto;
 }
 
 .replays-page__body {
@@ -440,11 +451,6 @@ onBeforeUnmount(() => {
   .replays-page {
     height: auto;
     min-height: 100%;
-  }
-
-  .replays-page__header {
-    align-items: flex-start;
-    flex-direction: column;
   }
 
   .replays-page__body,

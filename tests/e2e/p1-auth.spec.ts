@@ -6,9 +6,23 @@ import type { ApiSuccess, ConfirmationContext, DetectionEvent, ScenarioConfig, S
 
 const DEFAULT_LOGIN_PASSWORD = '123456'
 const AUTH_SESSION_KEY = 'wrj.auth.principal'
-const MOCK_ORIGIN = 'http://127.0.0.1:4173'
-const UI_ORIGIN = 'http://127.0.0.1:5173'
+const E2E_ENV = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {}
+const MOCK_ORIGIN = E2E_ENV.E2E_MOCK_ORIGIN ?? 'http://127.0.0.1:4173'
+const UI_ORIGIN = E2E_ENV.E2E_UI_ORIGIN ?? 'http://127.0.0.1:5173'
 const SCENARIO_PATH = '/api/v1/scenarios/SCN-001'
+
+// 隔离 E2E：浏览器 UI 跑在独立端口，但后端 loopback 策略只接受 5173 Origin。
+// 仅在设置了 E2E_MOCK_ORIGIN 时，把 /api 请求转发到隔离 mock 并改写 Origin=5173（与 report-filter 用例一致）。
+const ISOLATED_E2E = E2E_ENV.E2E_MOCK_ORIGIN !== undefined
+test.beforeEach(async ({ page }) => {
+  if (!ISOLATED_E2E) return
+  await page.route('**/api/v1/**', async route => {
+    const url = new URL(route.request().url())
+    const response = await route.fetch({ url: `${MOCK_ORIGIN}${url.pathname}${url.search}`, headers: { ...route.request().headers(), origin: 'http://127.0.0.1:5173' } })
+    await route.fulfill({ response, headers: { ...response.headers(), 'access-control-allow-origin': new URL(page.url()).origin } })
+  })
+  await page.routeWebSocket('**/ws/v1', ws => { ws.onMessage(() => {}) })
+})
 
 interface ConsoleAudit {
   errors: string[]
@@ -60,12 +74,17 @@ function auditConsole(page: Page): ConsoleAudit {
 
   page.on('console', (message) => {
     if (message.type() === 'error') {
-      audit.errors.push(message.text())
+      const text = message.text()
+      // 隔离 E2E 用 stub WebSocket，页面卸载时的良性发送告警不作为产品错误计入。
+      if (ISOLATED_E2E && text.includes('WebSocket is already in CLOSING or CLOSED state')) return
+      audit.errors.push(text)
       audit.errorUrls.push(message.location().url)
     }
   })
   page.on('pageerror', (error) => {
-    audit.errors.push(String(error))
+    const text = String(error)
+    if (ISOLATED_E2E && text.includes('WebSocket is already in CLOSING or CLOSED state')) return
+    audit.errors.push(text)
   })
   page.on('response', (response) => {
     if (response.status() === 404) {
@@ -714,14 +733,15 @@ test('P4-1 OPERATOR reads ESM configuration and one deduplicated detection', asy
 
   const panel = page.getByTestId('esm-sensor-panel')
   await expect(panel).toBeVisible()
-  await expect(panel.getByTestId('esm-state')).toContainText('已检出')
+  await expect(panel.getByTestId('esm-state')).toContainText('已发现')
   await expect(panel).toContainText('ESM-01')
   await expect(panel).toContainText('2000–5000 MHz')
   await expect(panel).toContainText('150 km')
   await expect(panel).toContainText('高空前出中继节点（UAV-01）')
   await expect(panel).toContainText('95%')
   await expect(panel).toContainText('42 s')
-  await expect(panel).toContainText('重复侦测事件已忽略')
+  // 整改11 后去重以“去重键”呈现，不再使用旧文案“重复侦测事件已忽略”。
+  await expect(panel).toContainText('去重键DET-042')
 
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
@@ -737,7 +757,11 @@ test('P4-2 OPERATOR executes RF jammer control and sees the effective frame', as
   const panel = page.getByTestId('rf-jammer-panel')
   await expect(panel).toBeVisible()
   await expect(panel).toContainText('2180–2220 MHz')
+  // 默认功率 72 W 作为“默认值非上限”的历史回显仍可见。
   await expect(panel).toContainText('72 W')
+  // 整改07：72 W 超出 -10～30 dBm 受控档位，先选择合法档位 +30 dBm（1 W）再执行。
+  await panel.getByTestId('rf-power-dbm').click()
+  await page.getByRole('option', { name: /30 dBm/ }).first().click()
   const commandResponse = page.waitForResponse((response) => (
     response.request().method() === 'POST'
       && new URL(response.url()).pathname === '/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands'
@@ -745,11 +769,13 @@ test('P4-2 OPERATOR executes RF jammer control and sees the effective frame', as
   await panel.getByRole('button', { name: '执行命令' }).click()
   const command = await commandResponse
   expect(command.status()).toBe(200)
-  expect(command.request().postDataJSON()).toMatchObject({ direction: 0, duration: 1 })
+  expect(command.request().postDataJSON()).toMatchObject({ direction: 0, duration: 1, power: 1 })
 
-  await expect(panel.getByTestId('rf-state')).toContainText('执行成功')
-  await expect(panel).toContainText('任务手动启扰，生效帧 F-00042。')
-  await expect(panel).toContainText('72 W / 2200 MHz / 1 s')
+  await expect(panel.getByTestId('rf-state')).toContainText('命令已发送')
+  // 整改08：本地投影/校验来源明示，真实设备执行未接入。
+  await expect(panel).toContainText('本地校验通过（未接入真实执行）')
+  await expect(panel.getByTestId('rf-result-source')).toContainText('真实设备执行未接入')
+  await expect(panel).toContainText('1 W / 2200 MHz / 1 s')
   expect(audit.errors).toEqual([])
   expect(audit.http404s).toEqual([])
   expect([...audit.nonLoopbackHosts]).toEqual([])
@@ -776,13 +802,16 @@ test('P4-3～P4-7 OPERATOR completes closed-loop, synchronization, routing and s
   await expect(closedLoop).toContainText('同一目标同一帧已完成闭环处理。')
 
   const synchronization = page.getByTestId('jammer-sync-panel')
+  // 整改07：默认 72 W 超出受控档位，先选合法 +30 dBm（1 W）再同步。
+  await synchronization.getByTestId('jammer-sync-power-dbm').click()
+  await page.getByRole('option', { name: /30 dBm/ }).first().click()
   const syncResponse = page.waitForResponse((response) => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
   await synchronization.getByRole('button', { name: '同步参数' }).click()
   const synchronized = await syncResponse
   expect(synchronized.status()).toBe(200)
-  expect(synchronized.request().postDataJSON()).toMatchObject({ parameters: { direction: 0, duration: 1 } })
-  await expect(synchronization.getByTestId('jammer-sync-state')).toContainText('同步完成')
+  expect(synchronized.request().postDataJSON()).toMatchObject({ parameters: { direction: 0, duration: 1, power: 1 } })
+  await expect(synchronization.getByTestId('jammer-sync-state')).toContainText('本地已接受')
   await expect(synchronization).toContainText('v5')
   await expect(synchronization).toContainText('F-00042')
 

@@ -86,7 +86,8 @@ export function reportCurveSvg(chart: { title: string; rows: Array<{ label: stri
 }
 
 export function reportRadarSvg(chart: { title: string; rows: Array<{ label: string; value: number }> }, scope: string): string {
-  if (chart.rows.length < 3) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>暂无数据</p>`
+  if (!chart.rows.length) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>暂无数据</p>`
+  if (chart.rows.length < 3) return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}</p><p>有效链路不足三条，按数值展示连通率。</p><ol>${chart.rows.map(row => `<li>${escapeHtml(row.label)}：${row.value} %</li>`).join('')}</ol>`
   const point = (index: number, value: number) => { const angle = index * Math.PI * 2 / chart.rows.length - Math.PI / 2; return `${150 + 90 * value / 100 * Math.cos(angle)},${120 + 90 * value / 100 * Math.sin(angle)}` }
   return `<h2>${escapeHtml(chart.title)}</h2><p>${escapeHtml(scope)}；仅统计连续有效观测区间，缺口和末帧不计。</p><svg viewBox="0 0 300 240" role="img" aria-label="${escapeHtml(chart.title)}雷达图"><circle cx="150" cy="120" r="90" fill="none" stroke="#17212b"/><polygon points="${chart.rows.map((row, index) => point(index, row.value)).join(' ')}" fill="#2f6b8f" fill-opacity=".2" stroke="#2f6b8f"/>${chart.rows.map((row, index) => `<text x="${point(index, 1).split(',')[0]}" y="${point(index, 1).split(',')[1]}">${escapeHtml(row.label)}</text>`).join('')}</svg>`
 }
@@ -114,61 +115,64 @@ export async function exportLocalReport(directory: string, report: Report, forma
     (filter.from !== undefined || filter.to !== undefined) && `时间=${filter.from ?? report.localEvidence.startTimeS}～${filter.to ?? report.localEvidence.endTimeS} 秒`].filter(Boolean).join('； ') || '全部'])
   if (source) metadata.unshift(['执行结果编号', source.resultId], ['场景编号', source.scenarioId], ['场景名称', source.scenarioName], ['场景修订', String(source.revision)], ['运行开始', source.startedAt], ['运行完成', source.completedAt])
   if (source?.executionSource === 'REMOTE_WS') metadata.push(['接收结果说明', '本次 WebSocket 接收已结束；引擎指标来自本次归档，文件事件与轨迹来自所播放的文件，不表示引擎已确认停止。'])
+  if (comparisons.some(item => item.record.resultId === source?.resultId && item.parameters.source === 'PROJECT_REFERENCE')) notes.push('参数及任务阶段来自播放前冻结的项目参考配置，未确认引擎实际执行版本；阶段筛选按该参考计划的时间范围统计。')
   if (quality) metadata.push(['质量来源文件', quality.dataset.source.fileName], ['质量来源 SHA-256', quality.dataset.source.sha256])
-  if (engine) metadata.push(['引擎帧归档 SHA-256', engine.sourceSha256], ['引擎帧数', String(engine.frameCount)], ['引擎帧时刻范围', `${engine.firstSimulationTime ?? '暂无'}～${engine.lastSimulationTime ?? '暂无'} 秒`])
+  if (engine) metadata.push(['引擎帧归档 SHA-256', engine.sourceSha256], ['引擎帧数', String(engine.frameCount)], ['引擎帧时刻范围', `${engine.firstSimulationTime ?? '暂无数据'}～${engine.lastSimulationTime ?? '暂无数据'} 秒`])
   if (engineCsv) metadata.push(['引擎规范CSV来源 SHA-256', engineCsv.sourceSha256], ['已生成规范CSV', engineCsv.files.map(file => `${file.fileName}（${file.rowCount}行）`).join('；') || '无'])
   const parameterRows = comparisons.map(({ record, parameters }) => [
-    record.resultId, record.completedAt, String(parameters.revision), String(parameters.platformCount), String(parameters.linkCount), String(parameters.jammerCount),
+    record.resultId, record.completedAt, `${parameters.scenarioId} · ${parameters.source === 'PROJECT_REFERENCE' ? '项目参考配置，未确认引擎实际执行版本' : '运行配置快照'}`, String(parameters.revision), String(parameters.platformCount), String(parameters.linkCount), String(parameters.jammerCount),
     parameters.links.map(link => `${link.id} ${link.type} ${link.frequencyMHz}MHz/${link.bandwidthMHz}MHz/${link.txPowerW}W`).join('； ') || '无',
     parameters.jammers.map(jammer => `${jammer.id} ${jammer.frequencyMHz}MHz/${jammer.bandwidthMHz}MHz/${jammer.defaultPowerW}W`).join('； ') || '无',
   ])
   const parameterSection = source === undefined ? [] : [{ title: '同场景已完成运行参数对比',
-    columns: ['运行结果', '完成时刻', '修订', '节点数', '链路数', '干扰机数', '链路参数（频率/带宽/功率）', '干扰机参数（频率/带宽/默认功率）'],
-    rows: parameterRows.length ? parameterRows : [['当前结果未保存参数快照', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据']],
+    columns: ['运行结果', '完成时刻', '配置来源', '修订', '节点数', '链路数', '干扰机数', '链路参数（频率/带宽/功率）', '干扰机参数（频率/带宽/默认功率）'],
+    rows: parameterRows.length ? parameterRows : [['当前结果未保存参数快照', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据', '暂无数据']],
   }]
   const engineSections = engine === undefined ? [] : [{ title: '引擎链路段实测（仅已接收帧）',
     columns: ['轮次', '帧', '时刻（秒）', '段标识', '源端', '目标端', 'GXB（dB）', 'BER', '接收功率（dBm）', '接收功率（dBW）', '总复合损耗（dB，原值）'],
     rows: engine.segmentRows.length ? engine.segmentRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.segment.linkId,
-      `${row.segment.sourceName ?? '暂无'}:${row.segment.sourcePort ?? '暂无'}`, `${row.segment.targetName ?? '暂无'}:${row.segment.targetPort ?? '暂无'}`,
-      String(row.segment.quality.gxbDb ?? '暂无'), String(row.segment.quality.ber ?? '暂无'), String(row.segment.quality.rxPowerDbm ?? '暂无'), String(row.segment.quality.rxPowerDbw ?? '暂无'), String(row.segment.losses.totalDb ?? '暂无')])
-      : [['暂无接收到的链路段', '', '', '', '', '', '', '', '', '', '']],
+      `${row.segment.sourceName ?? '暂无数据'}:${row.segment.sourcePort ?? '暂无数据'}`, `${row.segment.targetName ?? '暂无数据'}:${row.segment.targetPort ?? '暂无数据'}`,
+      String(row.segment.quality.gxbDb ?? '暂无数据'), String(row.segment.quality.ber ?? '暂无数据'), String(row.segment.quality.rxPowerDbm ?? '暂无数据'), String(row.segment.quality.rxPowerDbw ?? '暂无数据'), String(row.segment.losses.totalDb ?? '暂无数据')])
+      : [['暂无数据', '', '', '', '', '', '', '', '', '', '']],
   }, { title: '引擎链路段完整参数（源值）', columns: ['轮次/帧/时刻（秒）/段标识', '链路信息', '损耗明细', '通信参数', '干扰来源（计算输入）'],
     rows: engine.segmentRows.map(row => [`${row.engineEpoch}/${row.frameId}/${row.simulationTime}/${row.segment.linkId}`,
       ...engineSegmentDetails(row.segment).map(group => group.rows.map(([label, value]) => `${label}：${value}`).join('；'))]),
   }, { title: '引擎路由切换（仅已接收帧）', columns: ['轮次', '帧', '时刻（秒）', '方向', '旧路径', '新路径', '原因（段/原始原因）'],
     rows: engine.switchRows.length ? engine.switchRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.value.direction,
-      row.value.oldPathId ?? '暂无', row.value.pathId, row.value.reasons.map(reason => `${reason.linkId ?? '暂无'}:${reason.reasons.join('|') || '暂无'}`).join('；') || '暂无'])
-      : [['暂无接收到的路由切换', '', '', '', '', '', '']],
+      row.value.oldPathId ?? '暂无数据', row.value.pathId, row.value.reasons.map(reason => `${reason.linkId ?? '暂无数据'}:${reason.reasons.join('|') || '暂无数据'}`).join('；') || '暂无数据'])
+      : [['暂无数据', '', '', '', '', '', '']],
   }, { title: '引擎事件（仅已接收帧）', columns: ['轮次', '帧', '时刻（秒）', '类型', '路径', '无人机', '干扰设备'],
-    rows: engine.eventRows.length ? engine.eventRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.value.type ?? '暂无', row.value.pathId ?? '暂无', row.value.uavNames.join('；') || '暂无', row.value.jammerNames.join('；') || '暂无'])
-      : [['暂无接收到的引擎事件', '', '', '', '', '', '']],
-  }, { title: '引擎归档缺源字段', columns: ['字段'], rows: engine.missingFieldNames.length ? engine.missingFieldNames.map(field => [field]) : [['无']] }]
+    rows: engine.eventRows.length ? engine.eventRows.map(row => [String(row.engineEpoch), String(row.frameId), String(row.simulationTime), row.value.type ?? '暂无数据', row.value.pathId ?? '暂无数据', row.value.uavNames.join('；') || '暂无数据', row.value.jammerNames.join('；') || '暂无数据'])
+      : [['暂无数据', '', '', '', '', '', '']],
+  }, { title: '引擎暂无数据字段', columns: ['字段', '数据'], rows: engine.missingFieldNames.length ? engine.missingFieldNames.map(field => [field, '暂无数据']) : [['无', '']] }]
   const engineCsvSections = engineCsv === undefined ? [] : [{ title: '引擎规范 CSV 生成状态', columns: ['文件', '状态', '已写入行数', '跳过行数', '原因'], rows: [
     ...engineCsv.files.map(file => [file.fileName, file.status, String(file.rowCount), String(file.skippedCount), file.reason ?? '无']),
-    ...engineCsv.missing.map(file => [file.fileName, file.status, '0', '0', file.reason]),
+    ...engineCsv.missing.map(file => [file.fileName, '暂无数据', '暂无数据', '暂无数据', file.reason]),
   ] }]
   const sections = [{ title: '来源与范围', columns: ['项目', '值'], rows: metadata }, ...parameterSection, ...tables, ...engineSections, ...engineCsvSections]
-  const eventRange = localReportChartRange(report.localEvidence, report.localEvidence.eventFile.fileName, filter)
-  const positionRange = localReportChartRange(report.localEvidence, report.localEvidence.positionFile.fileName, filter)
-  const qualityRange = localReportChartRange(report.localEvidence, quality?.dataset.source.fileName ?? '未导入质量数据', filter)
+  const chartContext = (sourceSha256: string) => ({ reportId: report.reportId, ...(report.runId ? { runId: report.runId } : {}), ...(source?.resultId ? { resultId: source.resultId } : {}), sourceSha256 })
+  const eventRange = localReportChartRange(report.localEvidence, report.localEvidence.eventFile.fileName, filter, chartContext(report.localEvidence.eventFile.sha256))
+  const positionRange = localReportChartRange(report.localEvidence, report.localEvidence.positionFile.fileName, filter, chartContext(report.localEvidence.positionFile.sha256))
+  const qualityRange = localReportChartRange(report.localEvidence, quality?.dataset.source.fileName ?? '未导入质量数据', filter, quality === undefined ? undefined : chartContext(quality.dataset.source.sha256))
   const charts: Array<{ title: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; kind?: 'BAR' | 'LINE' | 'RADAR'; unit: string; sourceRange: string }> = [
     { title: '事件分类统计', unit: '条', sourceRange: eventRange, rows: report.localEvidence.eventCounts.map(row => ({ label: EVENT_LABELS[row.type] ?? row.type, value: row.count })) },
     { title: '节点位置记录数', unit: '条', sourceRange: positionRange, rows: report.localEvidence.nodes.map(node => ({ label: node.name, value: node.positionCount })) },
     ...(quality === undefined ? [] : quality.series.flatMap(series => [
       { title: `GXB 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'dB', rows: series.gxbCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
+      { title: `SNR 随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'dB', rows: series.snrCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
       { title: `误码率随时间变化 · ${series.linkId}`, kind: 'LINE' as const, sourceRange: qualityRange, unit: 'BER', rows: series.berCurve.map(point => ({ label: reportTime(point.time), time: point.time, value: point.value, breakBefore: point.breakBefore })) },
     ])),
     ...(engine === undefined ? [] : (() => {
       const groups = new Map<string, typeof engine.segmentRows>()
       for (const row of engine.segmentRows) {
-        const identity = `${row.engineEpoch}:${row.segment.linkId}:${row.segment.sourceName ?? '暂无'}:${row.segment.sourcePort ?? '暂无'}→${row.segment.targetName ?? '暂无'}:${row.segment.targetPort ?? '暂无'}`
+        const identity = `${row.engineEpoch}:${row.segment.linkId}:${row.segment.sourceName ?? '暂无数据'}:${row.segment.sourcePort ?? '暂无数据'}→${row.segment.targetName ?? '暂无数据'}:${row.segment.targetPort ?? '暂无数据'}`
         const rows = groups.get(identity)
         if (rows) rows.push(row)
         else groups.set(identity, [row])
       }
       return [...groups.entries()].flatMap(([identity, rows]) => [
-      ...(rows.some(row => row.segment.quality.gxbDb !== null) ? [{ title: `引擎段 GXB 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256}`, unit: 'dB', rows: rows.filter(row => row.segment.quality.gxbDb !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.gxbDb!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
-      ...(rows.some(row => row.segment.quality.ber !== null) ? [{ title: `引擎段 BER 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256}`, unit: 'BER', rows: rows.filter(row => row.segment.quality.ber !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.ber!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
+      ...(rows.some(row => row.segment.quality.gxbDb !== null) ? [{ title: `引擎段 GXB 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256} · 结果 ${source?.resultId ?? report.reportId}`, unit: 'dB', rows: rows.filter(row => row.segment.quality.gxbDb !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.gxbDb!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
+      ...(rows.some(row => row.segment.quality.ber !== null) ? [{ title: `引擎段 BER 随时间变化 · ${identity}`, kind: 'LINE' as const, sourceRange: `引擎帧归档 · SHA-256 ${engine.sourceSha256} · 结果 ${source?.resultId ?? report.reportId}`, unit: 'BER', rows: rows.filter(row => row.segment.quality.ber !== null).map((row, index, values) => ({ label: reportTime(row.simulationTime), time: row.simulationTime, value: row.segment.quality.ber!, breakBefore: index > 0 && row.frameId !== values[index - 1]!.frameId + ENGINE_FRAME_ID_STEP })) }] : []),
       ])
     })()),
     { title: '各链路有效观测区间连通率', kind: 'RADAR', unit: '%', sourceRange: qualityRange, rows: qualityConnectivityRates.map(row => ({ label: row.linkId, value: row.value })) },
@@ -196,6 +200,40 @@ export async function exportLocalReport(directory: string, report: Report, forma
   try {
     await writeFile(filePath, content, { ...(typeof content === 'string' ? { encoding: 'utf8' as const } : {}), flag: 'wx' })
     return { reportId: report.reportId, generated: true, status: 'SUCCESS', format, watermark, verifiedAt, filePath, sha256: createHash('sha256').update(content).digest('hex') }
+  } catch (error) {
+    await rm(owned, { recursive: true, force: true })
+    throw error
+  }
+}
+
+/** D3 报告证据导出：复用既有 HTML/PDF 渲染器与图表组件格式，导出全部筛选时段而非当前明细页。 */
+export async function exportEvidenceReport(directory: string, input: {
+  reportId: string
+  format: 'HTML' | 'PDF'
+  sourceLabel: string
+  sourceSha256: string
+  filterLabel: string
+  generatedTime: string
+  charts: Array<{ title: string; kind: 'LINE' | 'BAR'; unit: string; rows: Array<{ label: string; value: number; time?: number; breakBefore?: boolean }>; sourceRange: string }>
+  sections: Array<{ title: string; columns: string[]; rows: string[][] }>
+}): Promise<LocalReportExportResult> {
+  const verifiedAt = new Date().toISOString()
+  const watermark = `本地报告证据 · ${input.sourceLabel} · 导出人证据 · ${verifiedAt}`
+  const notes = [`来源：${input.sourceLabel}（SHA-256 ${input.sourceSha256}）`, `筛选范围：${input.filterLabel}`, '曲线与明细均来自同一已固定来源摘要；抽样点已标注，不代表完整逐帧实测。']
+  const scopedCharts = input.charts.map(chart => ({ ...chart, scope: `${chart.sourceRange}；单位：${chart.unit}；生成时刻：${input.generatedTime}` }))
+  const content = input.format === 'PDF'
+    ? await createLocalReportPdf({ title: '报告证据导出', notes, sections: input.sections, charts: scopedCharts, chartScope: input.filterLabel })
+    : '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>报告证据导出</title>' +
+      notes.map(note => `<p>${escapeHtml(note)}</p>`).join('') +
+      scopedCharts.map(chart => chart.kind === 'LINE' ? reportCurveSvg(chart, chart.scope) : reportChartSvg(chart, chart.scope)).join('') +
+      input.sections.map(section => `<h2>${escapeHtml(section.title)}</h2><table><thead><tr>${section.columns.map(text => `<th>${escapeHtml(text)}</th>`).join('')}</tr></thead><tbody>${section.rows.map(row => `<tr>${row.map(text => `<td>${escapeHtml(text)}</td>`).join('')}</tr>`).join('')}</tbody></table>`).join('') + '</html>'
+  const root = resolve(directory)
+  await mkdir(root, { recursive: true })
+  const owned = await mkdtemp(join(root, 'evidence-'))
+  const filePath = join(owned, `${input.reportId}.${input.format.toLowerCase()}`)
+  try {
+    await writeFile(filePath, content, { ...(typeof content === 'string' ? { encoding: 'utf8' as const } : {}), flag: 'wx' })
+    return { reportId: input.reportId as LocalReportExportResult['reportId'], generated: true, status: 'SUCCESS', format: input.format, watermark, verifiedAt, filePath, sha256: createHash('sha256').update(content).digest('hex') }
   } catch (error) {
     await rm(owned, { recursive: true, force: true })
     throw error

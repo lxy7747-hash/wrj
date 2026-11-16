@@ -113,6 +113,7 @@ function principalFor(user: User): Principal {
   return {
     userId: user.userId,
     username: user.username,
+    displayName: user.displayName ?? user.username,
     role: user.role,
     permissions: permissionsForRole(user.role),
   }
@@ -290,8 +291,9 @@ export class AuthProjection {
       && (typeof command.password !== 'string' || !command.password.trim() || command.password.length < 6 || command.password.length > 32)) {
       return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'password' }
     }
-    const user = structuredClone(command.user)
+    const user = { ...structuredClone(command.user), displayName: command.user.displayName ?? command.user.username }
     if (!isManagedUsername(user.username)) return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
+    if (typeof user.displayName !== 'string' || !user.displayName.trim() || user.displayName.length > 64) return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName' }
     delete user.lastLoginAt
     const duplicate = this.runtimeState.users.some(
       (candidate) => candidate.userId === user.userId || candidate.username === user.username,
@@ -332,7 +334,7 @@ export class AuthProjection {
     let next: User
     switch (command.operation) {
       case 'UPDATE':
-        next = structuredClone(command.user)
+        next = { ...structuredClone(command.user), displayName: command.user.displayName ?? current.displayName ?? current.username }
         if (current.lastLoginAt === undefined) delete next.lastLoginAt
         else next.lastLoginAt = current.lastLoginAt
         break
@@ -347,6 +349,9 @@ export class AuthProjection {
         return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'operation' }
     }
 
+    if (next.displayName !== undefined && (typeof next.displayName !== 'string' || !next.displayName.trim() || next.displayName.length > 64)) {
+      return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.displayName' }
+    }
     if (command.operation === 'UPDATE' && !isManagedUsername(next.username)) {
       return { ok: false, code: 'INVALID_REQUEST', status: 400, fieldPath: 'user.username' }
     }

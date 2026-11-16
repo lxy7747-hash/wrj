@@ -19,6 +19,13 @@ export interface CsvValidationResult {
   issues: CsvValidationIssue[]
 }
 
+export const CSV_NO_DATA = '暂无数据'
+const nullableLinkFiles = new Set(['link_state.csv', 'link_loss.csv', 'link_switch.csv'])
+/** 缺测标记只用于链路数据单元格，任务、版本与时刻仍须真实有效。 */
+export function isCsvNoData(contractName: string, field: string, value: string): boolean {
+  return nullableLinkFiles.has(contractName) && !['task_id', 'SchemaVersion', 'Time', 'Direction'].includes(field) && value === CSV_NO_DATA
+}
+
 const NUMERIC_FIELDS = new Set([
   'Time', 'Frequency', 'Bandwidth', 'Distance', 'TxPower', 'TxAntennaGain', 'RxAntennaGain',
   'PathLoss', 'JammingPower', 'ReceivedPower', 'SNR', 'BER', 'BERThreshold', 'DataRate', 'Power',
@@ -101,6 +108,8 @@ export function inspectCsvRecord(contract: ContractDescriptor, line: string, row
   cells.forEach((value, columnIndex) => {
     const field = contract.fields[columnIndex] ?? `column${columnIndex + 1}`
     if (value.trim() === '' && isOptionalField(contract.name, field, cells[contract.fields.indexOf('EventType')] ?? '')) return
+    if (isCsvNoData(contract.name, field, value)) return
+    if (contract.name === 'link_state.csv' && field === 'LinkStatus' && value === 'DEGRADED') return
     if (!isValidField(field, value)) {
       issues.push({ code: 'TYPE_INVALID', row, fieldPath: `rows[${row - 2}].${field}`, message: `第 ${row} 行字段 ${field} 的类型或取值不正确。` })
     }

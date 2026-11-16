@@ -96,6 +96,8 @@ const SCHEMA_BEARING_KEYS = Object.freeze([
   'allOf',
 ] as const)
 const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
+  { method: 'get', path: '/api/v1/simulations/recovery', operationId: 'getMissionRecovery' },
+  { method: 'post', path: '/api/v1/simulations/recovery/stop', operationId: 'stopMissionRecovery' },
   { method: 'get', path: '/api/v1/admin/local-archives', operationId: 'getapiV1AdminLocalArchives' },
   { method: 'post', path: '/api/v1/admin/local-archives', operationId: 'postapiV1AdminLocalArchives' },
   { method: 'get', path: '/api/v1/archives/{archiveId}', operationId: 'getapiV1ArchivesArchiveId' },
@@ -137,6 +139,8 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'post', path: '/api/v1/simulations/{runId}/commands', operationId: 'postapiV1SimulationsRunIdCommands' },
   { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/commands', operationId: 'postapiV1TasksTaskIdJammersJammerIdCommands' },
   { method: 'post', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', operationId: 'postapiV1TasksTaskIdJammersJammerIdParameters' },
+  { method: 'get', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/parameters', operationId: 'getapiV1TasksTaskIdJammersJammerIdParameters' },
+  { method: 'put', path: '/api/v1/tasks/{taskId}/jammers/{jammerId}/plan', operationId: 'putapiV1TasksTaskIdJammersJammerIdPlan' },
   { method: 'get', path: '/api/v1/simulations/{runId}/frames/{frameId}', operationId: 'getapiV1SimulationsRunIdFramesFrameId' },
   { method: 'get', path: '/api/v1/simulations/{runId}/events', operationId: 'getapiV1SimulationsRunIdEvents' },
   { method: 'post', path: '/api/v1/simulations/{runId}/events', operationId: 'postapiV1SimulationsRunIdEvents' },
@@ -182,6 +186,8 @@ const EXPECTED_OPENAPI_OPERATIONS = Object.freeze([
   { method: 'put', path: '/api/v1/admin/master-data/{dataId}/reference', operationId: 'putapiV1AdminMasterDataDataIdReference' },
 ] as const satisfies readonly OperationContract[])
 const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
+  getMissionRecovery: operationSchemaBinding(null, '200', '#/components/schemas/MissionRecoveryList'),
+  stopMissionRecovery: operationSchemaBinding('#/components/schemas/MissionRecoveryStopRequest', '200', '#/components/schemas/MissionRecoveryList'),
   getScenarioParameterCatalog: operationSchemaBinding(null, '200', '#/components/schemas/ScenarioParameterCatalog'),
   getapiV1AdminMasterDataTargets: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataTargetList'),
   getapiV1AdminMasterDataDataIdDetails: operationSchemaBinding(null, '200', '#/components/schemas/MasterDataDetails'),
@@ -234,6 +240,8 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1SimulationsRunIdCommands: { ...operationSchemaBinding('#/components/schemas/SimulationCommand', '200', '#/components/schemas/SimulationRun'), additionalSuccessStatuses: ['202'] },
   postapiV1TasksTaskIdJammersJammerIdCommands: operationSchemaBinding('#/components/schemas/JammingCommand', '200', '#/components/schemas/JammerState'),
   postapiV1TasksTaskIdJammersJammerIdParameters: operationSchemaBinding('#/components/schemas/JammingParameterSet', '200', '#/components/schemas/SyncResult'),
+  getapiV1TasksTaskIdJammersJammerIdParameters: operationSchemaBinding(null, '200', '#/components/schemas/JammerRuntimeParameters'),
+  putapiV1TasksTaskIdJammersJammerIdPlan: operationSchemaBinding('#/components/schemas/JammerPlanSaveRequest', '200', '#/components/schemas/JammerPlanSaved'),
   getapiV1SimulationsRunIdFramesFrameId: operationSchemaBinding(null, '200', '#/components/schemas/TelemetryFrame'),
   getapiV1SimulationsRunIdEvents: operationSchemaBinding(null, '200', '#/components/schemas/EventList'),
   postapiV1SimulationsRunIdEvents: operationSchemaBinding('#/components/schemas/ClosedLoopContext', '200', '#/components/schemas/JammingDecision'),
@@ -268,6 +276,8 @@ const EXPECTED_OPENAPI_SCHEMA_BINDINGS = Object.freeze({
   postapiV1AdminConfigExport: operationSchemaBinding('#/components/schemas/FullConfigExportRequest', '200', '#/components/schemas/ExportStatus'),
 } satisfies Record<(typeof EXPECTED_OPENAPI_OPERATIONS)[number]['operationId'], OperationSchemaBinding>)
 const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
+  getMissionRecovery: ['401', '403', '409', '422', '503'],
+  stopMissionRecovery: ['401', '403', '409', '422', '503'],
   getScenarioParameterCatalog: ['401', '403', '503'],
   getapiV1AdminMasterDataTargets: ['401','403','503'],
   getapiV1AdminMasterDataDataIdDetails: ['401','403','404','503'],
@@ -320,6 +330,8 @@ const EXPECTED_OPENAPI_ERROR_STATUSES = Object.freeze({
   postapiV1SimulationsRunIdCommands: ['401', '409', '422', '428', '503'],
   postapiV1TasksTaskIdJammersJammerIdCommands: ['401', '403', '404', '409', '422'],
   postapiV1TasksTaskIdJammersJammerIdParameters: ['401', '403', '404', '409', '422'],
+  getapiV1TasksTaskIdJammersJammerIdParameters: ['401', '403', '404'],
+  putapiV1TasksTaskIdJammersJammerIdPlan: ['401', '403', '404', '409', '422'],
   getapiV1SimulationsRunIdFramesFrameId: ['401', '404'],
   getapiV1SimulationsRunIdEvents: ['401'],
   postapiV1SimulationsRunIdEvents: ['401', '403', '404', '409', '422'],
@@ -384,6 +396,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/PortParameterSource/oneOf/1/properties/kind/const', 'MASTER_DATA'],
   ['#/components/schemas/PortParameterSource/oneOf/1/properties/fields/items/enum', ['frequency','bandwidth','txPower','rxFrequency','rxBandwidth','dataRate','noiseFigureDb']],
   ['#/components/schemas/GetScenarioParameterCatalogResponse/properties/ok/const', true],
+  ['#/components/schemas/GetMissionRecoveryResponse/properties/ok/const', true],
+  ['#/components/schemas/StopMissionRecoveryResponse/properties/ok/const', true],
   ['#/components/schemas/BackupRecord/properties/format/enum', ['SYSTEM_SQLITE_V1', 'MAIN_SQLITE_V1']],
   ['#/components/schemas/BackupExecution/properties/result/enum', ['SUCCESS', 'FAILURE']],
   ['#/components/schemas/BackupExecution/allOf/0/if/properties/result/const', 'SUCCESS'],
@@ -477,6 +491,13 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/ScenarioLinkSettings/properties/hotLinks/properties/endPlatformType/enum', ['REAR_COMMAND_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER']],
   ['#/components/schemas/Platform/properties/type/enum', ['REAR_COMMAND_NODE','FORWARD_RELAY_NODE','GROUND_CLUSTER_COMMAND_NODE','AIRBORNE_MISSION_CLUSTER','COMMUNICATION_SATELLITE','GROUND_JAMMER_DETECTION_STATION','AIRBORNE_JAMMER_PLATFORM']],
   ['#/components/schemas/Platform/properties/satelliteType/enum', ['TIANTONG','SHENTONG']],
+  ['#/components/schemas/Platform/properties/faction/enum', ['BLUE','RED','NEUTRAL']],
+  ['#/components/schemas/JammerRuntimeParameters/properties/style/enum', ['BARRAGE','SPOT']],
+  ['#/components/schemas/JammerPlanSaveRequest/properties/style/enum', ['BARRAGE','SPOT']],
+  ['#/components/schemas/JammerPlanSaved/properties/style/enum', ['BARRAGE','SPOT']],
+  ['#/components/schemas/JammerPlanSaved/properties/storage/const', 'LOCAL_RUN'],
+  ['#/components/schemas/GetapiV1TasksTaskIdJammersJammerIdParametersResponse/properties/ok/const', true],
+  ['#/components/schemas/PutapiV1TasksTaskIdJammersJammerIdPlanResponse/properties/ok/const', true],
   ['#/components/schemas/Platform/properties/category/enum', ['ground','air','space']],
   ['#/components/schemas/Link/properties/type/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
   ['#/components/schemas/Link/properties/band/enum', ['C','L']],
@@ -579,7 +600,8 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/RouteDecision/properties/strategy/enum', ['MIN_JAM_IMPACT','MIN_BER_WITH_HYSTERESIS']],
   ['#/components/schemas/JammingDecision/properties/action/enum', ['START','STOP']],
   ['#/components/schemas/JammingDecision/properties/linkStatus/enum', ['UP','DEGRADED','DOWN']],
-  ['#/components/schemas/SyncResult/properties/status/const', 'SYNCHRONIZED'],
+  ['#/components/schemas/SyncResult/properties/status/const', 'LOCAL_ACCEPTED'],
+  ['#/components/schemas/SyncResult/properties/engineSync/const', 'NOT_CONNECTED'],
   ['#/components/schemas/ReportExportRequest/properties/format/enum', ['HTML','PDF','CSV']],
   ['#/components/schemas/ConfirmationRequest/properties/action/enum', ['SCENARIO_WARNING_CONTINUE','OFFICIAL_TEMPLATE_DELETE','SIMULATION_STOP','BACKUP_RESTORE','FULL_CONFIG_EXPORT','AUDIT_EXPORT','MASTER_DATA_DELETE']],
   ['#/components/schemas/ConfirmRequest/properties/confirm/const', true],
@@ -682,6 +704,7 @@ const EXPECTED_COMPONENT_SCHEMA_LITERALS = Object.freeze([
   ['#/components/schemas/AuditExportResult/properties/classification/const', 'INTERNAL'],
   ['#/components/schemas/LinkStatusSummary/properties/linkType/enum', ['SAT','MICROWAVE','DATALINK','LASER','FIBER']],
   ['#/components/schemas/LinkStatusSummary/properties/status/enum', ['UP','DOWN']],
+  ['#/components/schemas/CommPortDefinition/properties/deviceType/enum', ['WSF_RADIO_TRANSCEIVER','WSF_COMM_TRANSCEIVER']],
 ] as const satisfies readonly (readonly [string, unknown])[])
 const EXPECTED_CAPABILITY_IDS = Object.freeze([
   'DSDWRJQTLJS-XQ-QDZS-STXR',
@@ -1684,12 +1707,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
     }
   }
 
-  if (operationCount !== 84) {
+  if (operationCount !== 88) {
     addFinding(
       findings,
       'OPENAPI_OPERATION_COUNT',
       '$.paths',
-      `Expected exactly 84 operations, found ${operationCount}`,
+      `Expected exactly 88 operations, found ${operationCount}`,
     )
   }
   const expectedOperationKeys = new Set(EXPECTED_OPENAPI_OPERATIONS.map(operationKey))
@@ -1708,12 +1731,12 @@ export function auditOpenApi(openApi: unknown): ValidationFinding[] {
       `Operation manifest mismatch; missing [${missingOperations.map(formatOperation).join(', ')}], extra [${extraOperations.map(formatOperation).join(', ')}]`,
     )
   }
-  if (writeCount !== 40 || requestSchemaOwners.size !== 40) {
+  if (writeCount !== 42 || requestSchemaOwners.size !== 42) {
     addFinding(
       findings,
       'OPENAPI_WRITE_COUNT',
       '$.paths',
-      `Expected exactly 40 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
+      `Expected exactly 42 independently typed POST/PUT/PATCH writes, found ${writeCount} writes and ${requestSchemaOwners.size} unique request schemas`,
     )
   }
 

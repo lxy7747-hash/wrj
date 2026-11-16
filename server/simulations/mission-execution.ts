@@ -16,6 +16,8 @@ export interface MissionProcess {
   pid: number
   startedAt: string
   entryPath: string
+  /** 服务端解析并验证的本次独占输出目录，供收尾发布规范 CSV。 */
+  outputDirectory?: string
   /** 本次运行包已读取的实例/端口映射，供外部引擎帧绑定使用。 */
   engineManifest?: unknown
   /** 本地运行器登记的本次独占位置输出；未接入本地引擎的实现不提供此入口。 */
@@ -34,6 +36,9 @@ export interface MissionProcess {
 
 export interface MissionSafetyStatus {
   scenarioId?: string
+  runId?: string
+  pid?: number
+  canStop?: boolean
   message: string
 }
 
@@ -41,4 +46,6 @@ export interface MissionExecution {
   readonly maxParallelTasks?: number
   start(draft: ScenarioDraft, runId: string, taskId?: string): Promise<MissionProcess>
   safetyStatus?(taskId?: string): MissionSafetyStatus | null
+  recover?(): Promise<MissionSafetyStatus[]>
+  stopRecovered?(runId: string): Promise<void>
 }

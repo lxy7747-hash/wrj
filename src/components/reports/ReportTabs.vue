@@ -118,7 +118,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-form-item label="起始时刻（秒）"><el-input-number v-model="from" :min="0" /></el-form-item><el-form-item label="结束时刻（秒）"><el-input-number v-model="to" :min="0" /></el-form-item>
       <el-form-item label="任务阶段"><el-select disabled placeholder="暂无数据" style="width: 140px" /></el-form-item><el-form-item><el-button @click="clearFilters">重置筛选</el-button></el-form-item>
     </el-form>
-    <p v-if="hasFilters">汇总按筛选后的采样值统计；汇总连通率和持续时长缺少区间证据，显示暂无数据。任务阶段尚无来源字段。</p>
+    <p v-if="hasFilters">汇总仅包含筛选后的数据；连通率和持续时长暂无筛选结果。</p>
     <el-alert v-if="rangeError" title="开始时刻不得晚于结束时刻。" type="error" :closable="false" />
     <el-tabs v-model="activeTab" class="report-tabs__body" data-testid="report-content-tabs">
       <el-tab-pane label="汇总" name="summary">
@@ -212,7 +212,7 @@ function curvePoints(points: ReportTimeSeriesPoint[], metric: CurveMetric): stri
       <el-tab-pane label="雷达图" name="radar" lazy>
         <div data-testid="report-radar-chart">
           <template v-if="series.length">
-            <p>报告未提供场景 BER 门限，采用组织运用约束 1E-5；连通率按 BER ≤ 门限的样本占比计算。</p>
+            <p>样本连通率使用默认 BER 门限（1E-5）。</p>
             <ReportChart title="各链路样本连通率" unit="%" :rows="connectivityRates" radar :source-range="chartSourceRange" :generated-time="report.generatedTime" />
           </template>
           <el-empty v-else description="暂无数据" />

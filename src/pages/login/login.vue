@@ -16,7 +16,7 @@ const pending = computed(() => ['LOADING', 'VALIDATING', 'EXECUTING'].includes(a
 const failureDescription = computed(() => {
   switch (auth.lastCode) {
     case 'INVALID_CREDENTIALS':
-      return '用户名或密码错误，请重新输入。'
+      return '登录账号或密码错误，请重新输入。'
     case 'ACCOUNT_LOCKED':
       return '账号已锁定，请联系管理员。'
     case 'NETWORK_ERROR':
@@ -78,16 +78,16 @@ async function submitLogin(): Promise<void> {
       <div class="login-card__heading">
         <p class="login-card__eyebrow">ACCOUNT ACCESS</p>
         <h2 id="login-title">系统登录</h2>
-        <p>请输入用户名和密码以继续使用系统。</p>
+        <p>请输入登录账号和密码以继续使用系统。</p>
       </div>
 
       <el-form class="login-form" label-position="top" :model="form" @submit.prevent="submitLogin">
-        <el-form-item label="用户名">
+        <el-form-item label="登录账号">
           <el-input
             v-model="form.username"
             data-testid="login-username"
             autocomplete="username"
-            aria-label="用户名"
+            aria-label="登录账号"
           />
         </el-form-item>
         <el-form-item label="密码">

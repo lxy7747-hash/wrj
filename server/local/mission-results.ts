@@ -4,12 +4,13 @@ import { mkdir, readFile, writeFile, readdir, lstat, realpath, rename, unlink } 
 import { join, resolve, relative, isAbsolute } from 'node:path'
 import { EVENTS_CSV_HEADER, type ScenarioDraft, type SimulationRun } from '../../src/contracts/domain-models.js'
 import { fileReceptionMapping } from '../../src/features/situation/file-reception.js'
-import { isMissionResultId, isMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../../src/features/results/mission-result.js'
+import { isMissionResultId, isMissionResultSnapshot, normalizeMissionResultSnapshot, snapshotMissionResultParameters, type MissionResultParameters, type MissionResultRecord, type MissionResultSnapshot } from '../../src/features/results/mission-result.js'
 import { readLocalReplay } from './afsim-replay-reader.js'
 import { readLocalReport } from './report-file.js'
 import { readAfsimLogFile, readStableUtf8Lines, resolveManifestConnections } from './afsim-log-reader.js'
 import { writeTimeSeries, type TimeSeriesContext } from './time-series.js'
 import { parseCsvLine } from '../../src/features/data-exchange/csv-contract.js'
+import type { EquipmentPublishedReference } from '../../src/features/admin/equipment-history-contract.js'
 import { filterMissionReport, publishReportFilterIndex } from './report-filter.js'
 import type { LocalReportFilter, LocalReportFilterResult } from '../../src/contracts/domain-models.js'
 
@@ -73,11 +74,13 @@ async function validateContinuousEventArchive(
 /** 完成后的快照原子发布，与可变的配置文件路径隔离。目录可随部署包迁移。 */
 export class LocalMissionResults implements MissionResults {
   private readonly directory: string
-  constructor(directory: string) { this.directory = resolve(directory) }
+  constructor(directory: string, private readonly onPublished?: (draft: ScenarioDraft, record: MissionResultRecord) => EquipmentPublishedReference[] | void,
+    private readonly onDiscarded?: (references: EquipmentPublishedReference[]) => void) { this.directory = resolve(directory) }
 
   /** 文件与 WS 并行接收结束后发布结果；文件统计仍属于所播放的源文件。 */
-  async captureFileReception(eventPath: string, positionPath: string, run: Pick<SimulationRun, 'fileSource' | 'startedAt' | 'scenarioId' | 'runId' | 'taskId'>, completedAt: string, lastFrameTime: number): Promise<void> {
+  async captureFileReception(eventPath: string, positionPath: string, run: Pick<SimulationRun, 'fileSource' | 'startedAt' | 'scenarioId' | 'runId' | 'taskId'>, completedAt: string, lastFrameTime: number, parameters?: MissionResultParameters): Promise<void> {
     if (!run.fileSource || !run.startedAt) throw new Error('文件接收运行缺少来源或开始时刻。')
+    const frozenParameters = parameters === undefined ? undefined : structuredClone(parameters)
     const [replay, report, log] = await Promise.all([
       readLocalReplay(eventPath, positionPath), readLocalReport(eventPath, positionPath), readAfsimLogFile(eventPath),
     ])
@@ -89,7 +92,7 @@ export class LocalMissionResults implements MissionResults {
       resultId: `RESULT-${randomUUID()}`, scenarioId: run.scenarioId, scenarioName: `文件与 WebSocket · ${replay.initial.fileName}`,
       revision: 1, startedAt: run.startedAt, completedAt, runId: run.runId, taskId: run.taskId, executionSource: 'REMOTE_WS',
     }
-    const snapshot = { record, replay, report }
+    const snapshot = { record, replay, report, ...(frozenParameters === undefined ? {} : { parameters: frozenParameters }) }
     if (!isMissionResultSnapshot(snapshot)) throw new Error('播放文件快照或报告来源不一致，无法发布接收结果。')
     await mkdir(this.directory, { recursive: true })
     await publishReportFilterIndex(this.directory, record, report, replay, log, { devices: fileReceptionMapping(replay.initial).manifest.devices })
@@ -151,8 +154,16 @@ export class LocalMissionResults implements MissionResults {
     const pending = join(this.directory, `${record.resultId}.pending`)
     await writeFile(pending, JSON.stringify({ sha256: hash(payload), payload }), { flag: 'wx' })
     if (!canPublish()) { await unlink(pending); return }
+    // 归档发布时冻结装备参数来源；登记失败则不发布本次结果（与发布目标一致）。
+    let inserted: EquipmentPublishedReference[] | void
+    try { inserted = this.onPublished?.(draft, record) } catch (error) { await unlink(pending); throw error }
     // 只有快照写入完成后才出现在目录中；不会暴露半份报告。
-    await rename(pending, join(this.directory, `${record.resultId}.json`))
+    try { await rename(pending, join(this.directory, `${record.resultId}.json`)) } catch (error) {
+      // 提交失败只撤销本次登记并丢弃待发布文件，不删除已重命名的不可变结果。
+      if (inserted) this.onDiscarded?.(inserted)
+      await unlink(pending)
+      throw error
+    }
   }
 
   async get(id: string): Promise<MissionResultSnapshot | null> {
@@ -163,7 +174,8 @@ export class LocalMissionResults implements MissionResults {
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('结果快照必须为普通文件。')
       const stored = JSON.parse(await readFile(path, 'utf8'))
       if (typeof stored.payload !== 'string' || hash(stored.payload) !== stored.sha256) throw new Error('结果快照完整性校验失败。')
-      const snapshot: unknown = JSON.parse(stored.payload)
+      // 历史快照可能缺少新版消息类型的方向字段；读取时补出可判定方向后再按严格规则校验。
+      const snapshot = normalizeMissionResultSnapshot(JSON.parse(stored.payload))
       if (!isMissionResultSnapshot(snapshot) || snapshot.record.resultId !== id) throw new Error('结果快照关联校验失败。')
       return snapshot
     } catch (error) {

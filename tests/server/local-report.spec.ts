@@ -13,6 +13,8 @@ const { createHash } = await import('node:' + 'crypto')
 const { existsSync } = await import('node:' + 'fs')
 const { env } = await import('node:' + 'process')
 const { readLocalReport, exportLocalReport } = await import('../../server/local/' + 'report-file.js')
+const { reportRadarSvg } = await import('../../server/local/' + 'report-file.js')
+const { createLocalReportPdf } = await import('../../server/local/' + 'pdf-report.js')
 const { readAfsimLogFile } = await import('../../server/local/' + 'afsim-log-reader.js')
 const { createMockServer } = await import('../../server/' + 'app.js')
 const { default: request } = await import('super' + 'test')
@@ -23,6 +25,23 @@ const headers = { Origin: 'http://127.0.0.1:5173', 'X-Demo-Role': 'OPERATOR' }
 const pdfFont = [env.WRJ_PDF_FONT_PATH, 'C:\\Windows\\Fonts\\Deng.ttf', 'C:\\Windows\\Fonts\\simhei.ttf'].find(path => !!path && existsSync(path) && !/\.ttc$/i.test(path))
 async function directory() { const dir = await mkdtemp(join(tmpdir(), 'wrj-report-test-')); dirs.push(dir); return dir }
 afterEach(async () => { for (const server of servers.splice(0)) await server.close(); for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true }) })
+
+it.each([0, 1, 2, 3])('HTML/PDF 雷达 %i 条链路空态与页面一致', async count => {
+  const rows = [{ label: 'L-1', value: 100 }, { label: 'L-2', value: 0 }, { label: 'L-3', value: 50 }].slice(0, count)
+  const html = reportRadarSvg({ title: '连通率', rows }, '当前范围')
+  expect(html.includes('暂无数据')).toBe(count === 0)
+  expect(html.includes('<polygon')).toBe(count >= 3)
+  if (count > 0 && count < 3) for (const row of rows) expect(html).toContain(`${row.label}：${row.value} %`)
+  if (!pdfFont) return
+  const text = vi.spyOn(PDFDocument.prototype, 'text')
+  try {
+    const pdf = await createLocalReportPdf({ title: '连通率', notes: [], chartScope: '当前范围', charts: [{ title: '连通率', kind: 'RADAR', unit: '%', rows }], sections: [] })
+    expect(pdf.subarray(0, 5).toString()).toBe('%PDF-')
+    const rendered = text.mock.calls.map(call => String(call[0])).join('\n')
+    expect(rendered.includes('暂无数据')).toBe(count === 0)
+    if (count > 0 && count < 3) for (const row of rows) expect(rendered).toContain(`${row.label}：${row.value} %`)
+  } finally { text.mockRestore() }
+})
 
 for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`最新报文 ${format} 导出保留分项损耗、通信参数、干扰源及待确认标记`, async () => {
   const textCalls = format === 'PDF' ? vi.spyOn(PDFDocument.prototype, 'text') : undefined
@@ -149,16 +168,28 @@ describe('本地报告读取和真实文件导出', () => {
     expect(second.filePath).not.toBe(first.filePath)
     expect(await readFile(first.filePath, 'utf8')).toBe(content)
   })
-  it('导出逐文件说明规范 CSV 的完整、部分和缺源状态，不把缺源写成零值', async () => {
+  for (const format of ['HTML', 'CSV', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 缺失指标和文件显示暂无数据，保留部分覆盖、原因及真实零值`, async () => {
     const dir = await directory()
-    const report = structuredClone(LOCAL_REPORT)
+    const report = structuredClone(LATEST_FRAME_REPORT)
+    const segment = report.localEvidence.engineFrameArchive!.segmentRows[0]!.segment
+    Object.assign(segment.quality, { gxbDb: 0, ber: 0, rxPowerDbm: null, rxPowerDbw: null })
     report.localEvidence.engineCsv = { sourceSha256: 'a'.repeat(64), files: [{ fileName: 'link_state.csv', rowCount: 3, sha256: 'b'.repeat(64), status: 'PARTIAL', skippedCount: 2, reason: '存在多段。' }], missing: [{ fileName: 'link_quality.csv', status: 'SOURCE_MISSING', reason: '缺少 SNR。' }] } as never
-    const exported = await exportLocalReport(dir, report, 'HTML', 'operator')
-    const content = await readFile(exported.filePath, 'utf8')
-    expect(content).toContain('引擎规范 CSV 生成状态')
-    expect(content).toContain('PARTIAL')
-    expect(content).toContain('SOURCE_MISSING')
-    expect(content).toContain('缺少 SNR。')
+    const before = structuredClone(report)
+    const textCalls = format === 'PDF' ? vi.spyOn(PDFDocument.prototype, 'text') : undefined
+    try {
+      const exported = await exportLocalReport(dir, report, format, 'operator')
+      const content = format === 'PDF' ? textCalls!.mock.calls.map(call => String(call[0])).join('\n') : await readFile(exported.filePath, 'utf8')
+      for (const value of ['引擎规范 CSV 生成状态', 'PARTIAL', '暂无数据', '缺少 SNR。']) expect(content).toContain(value)
+      expect(content).not.toContain('SOURCE_MISSING')
+      expect(content).not.toContain('undefined')
+      if (format === 'HTML') expect(content).toContain('<td>0</td><td>0</td><td>暂无数据</td><td>暂无数据</td>')
+      if (format === 'CSV') expect(content).toContain('"link_quality.csv","暂无数据","暂无数据","暂无数据","缺少 SNR。"')
+      if (format === 'PDF') {
+        expect(content).toContain('接收功率（dBm）：暂无数据')
+        expect((await readFile(exported.filePath)).subarray(0, 5).toString()).toBe('%PDF-')
+      }
+      expect(report).toEqual(before)
+    } finally { textCalls?.mockRestore() }
   })
   for (const format of ['HTML', 'PDF'] as const) it.skipIf(format === 'PDF' && !pdfFont)(`${format} 导出包含柱状图、雷达图数据表及真实单位、来源和生成时刻`, async () => {
     const dir = await directory()

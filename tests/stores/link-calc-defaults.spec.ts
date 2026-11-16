@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Environment, Platform } from '../../src/contracts/domain-models'
 import {
-  datalinkRateTiers, fixedLinkDataRate, linkTypeDefaults, readLinkCalcSettings, readNaturalEnvironment,
+  datalinkRateTiers, fixedLinkDataRate, LASER_LINK_DEFAULTS, linkTypeDefaults, readLinkCalcSettings, readNaturalEnvironment,
 } from '../../src/features/scenarios/link-calc-defaults'
 
 describe('《与前端字段确认说明》默认值', () => {
@@ -40,6 +40,22 @@ describe('《与前端字段确认说明》默认值', () => {
     expect(fixedLinkDataRate(link, [{ ...satellite, satelliteType: 'SHENTONG' }])).toBe(16)
     expect(fixedLinkDataRate({ ...link, type: 'MICROWAVE' }, [])).toBe(80)
     expect(fixedLinkDataRate({ ...link, type: 'DATALINK' }, [])).toBeNull()
+  })
+
+  it('激光缺省采用 1112 lazer_link 参数集：681300 GHz→681300000 MHz、带宽 1000、功率 0.1、速率 2500、收发增益 45', () => {
+    expect(LASER_LINK_DEFAULTS.frequency).toBe(681_300_000)
+    // 681300 GHz 换算为前端 MHz 口径：681300 × 1000 = 681300000 MHz。
+    expect(LASER_LINK_DEFAULTS.frequency / 1000).toBe(681_300)
+    expect(LASER_LINK_DEFAULTS.bandwidth).toBe(1_000)
+    expect(LASER_LINK_DEFAULTS.txPower).toBe(0.1)
+    expect(LASER_LINK_DEFAULTS.dataRate).toBe(2_500)
+    expect(LASER_LINK_DEFAULTS.eirpDbw).toBe(20)
+    expect(LASER_LINK_DEFAULTS.gtDbk).toBe(15)
+    expect(LASER_LINK_DEFAULTS.noiseFigureDb).toBe(5)
+    expect(linkTypeDefaults('LASER')).toMatchObject({
+      frequency: 681_300_000, rxFrequency: 681_300_000, bandwidth: 1_000, rxBandwidth: 1_000,
+      txPower: 0.1, dataRate: 2_500, antennaGain: { tx: 45, rx: 45 }, eirpDbw: 20, gtDbk: 15, noiseFigureDb: 5,
+    })
   })
 
   it('卫星可覆盖历史固定速率，按方向读取独立速率', () => {

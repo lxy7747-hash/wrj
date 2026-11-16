@@ -37,7 +37,7 @@ function laserLink(): JsonObject {
 }
 
 describe('laser link contract', () => {
-  it('keeps legacy laser reads compatible while requiring complete optical parameters for enabled writes', () => {
+  it('keeps legacy laser reads and now allows enabled laser writes without an optical block', () => {
     const { openApi } = loadContractDocuments()
     const ajv = new Ajv2020({ strict: false, allErrors: true })
     ajv.addSchema({ $id: 'laser-contract', components: asObject(openApi).components })
@@ -55,7 +55,8 @@ describe('laser link contract', () => {
     }
 
     expect(read(legacy)).toBe(true)
-    expect(write(legacy)).toBe(false)
+    // 采用 lazer_link 参数集后，激光写入不再强制光学块；光学块为可选扩展。
+    expect(write(legacy)).toBe(true)
     expect(write(complete)).toBe(true)
     expect(write({ ...legacy, enabled: false })).toBe(true)
   })
@@ -77,6 +78,8 @@ describe('laser link contract', () => {
     }
 
     expect(read({ ...laserLink(), type: 'MICROWAVE', laser: complete.laser })).toBe(false)
+    // 光学块若存在仍按形状/范围/OOK 严格校验，非激光载体仍拒绝携带光学块。
+    expect(write({ ...laserLink(), type: 'MICROWAVE', laser: complete.laser })).toBe(false)
     expect(write({ ...complete, laser: [] })).toBe(false)
     expect(write({ ...complete, laser: {} })).toBe(false)
     for (const field of ['txApertureDiameterM', 'rxApertureDiameterM', 'pulseWidthS'] as const) {

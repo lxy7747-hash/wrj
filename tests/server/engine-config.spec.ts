@@ -5,7 +5,8 @@ const { readEngineConfig } = await import('../../server/local/' + 'engine-config
 afterEach(() => vi.unstubAllEnvs())
 
 it('未配置时默认使用真实引擎，不意外启用模拟数据', () => {
-  expect(readEngineConfig({})).toEqual({ useRealEngine: true, realUrl: 'ws://192.168.1.48:8080/ws/v1', mockIntervalMs: 5000 })
+  expect(readEngineConfig({})).toEqual({ useRealEngine: true, realUrl: 'ws://127.0.0.1:8080/ws/v1', mockIntervalMs: 5000 })
+  expect(readEngineConfig({ realUrl: ' ' }).realUrl).toBe('ws://127.0.0.1:8080/ws/v1')
 })
 
 it('从已加载的环境变量读取原三个字段，false 字符串不被当成 true', () => {

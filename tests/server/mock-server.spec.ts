@@ -1,6 +1,9 @@
+// @vitest-environment node
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ApiSuccess, AuditExportResult, AuditRecord, ConfirmationAction, ConfirmationContext, MasterData, Report, ScenarioDraft, ScenarioTemplate, ScriptContract, ValidationResult } from '../../src/contracts/domain-models'
 import { readLinkSettings } from '../../src/features/scenarios/link-settings'
+import { createTemplateScenario } from '../fixtures/template-scenario'
+import { createScenarioSnapshot } from '../../src/features/scenarios/scenario-snapshot'
 
 const ORIGIN = 'http://127.0.0.1:5173'
 
@@ -1222,10 +1225,13 @@ describe('P0 deterministic mock server', () => {
     const { server, baseUrl } = await startServer()
     const roleHeaders = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
     const original = ((await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(roleHeaders).expect(200)).body as ApiSuccess<ScenarioDraft>).data
-    original.config.scenario.environment.rainRateMmPerHour = 101
-    Object.assign(original.config.jammers[0]!, { defaultPower: 1, bandwidth: 200 })
+    // 1112 固定模板只接受模板实例范围内的场景；本用例关注确认与预检流程，使用模板兼容配置。
+    const template = createTemplateScenario()
+    template.config.scenario.id = 'SCN-001'
+    template.config.scenario.environment.rainRateMmPerHour = 101
+    template.config.jammers.forEach(jammer => { jammer.frequency = 4500 })
     const saved = ((await request(baseUrl).put('/api/v1/scenarios/SCN-001').set(roleHeaders)
-      .send({ config: original.config, uiExtensions: original.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
+      .send({ config: template.config, uiExtensions: template.uiExtensions, expectedRevision: original.revision }).expect(200)).body as ApiSuccess<ScenarioDraft>).data
 
     const blocked = await request(baseUrl)
       .post('/api/v1/scripts/preview')
@@ -1265,9 +1271,10 @@ describe('P0 deterministic mock server', () => {
     const warnings = (preflight.body as { data: { warnings: Array<{ code: string }> } }).data.warnings
     expect(warnings.map(item => item.code)).toEqual(expect.arrayContaining([
       'LINK_CALC_PROVIDER_UNCONFIRMED',
-      'TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED',
       'GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED',
     ]))
+    // F09/#4：1112 已提供三种天线定义并随交付包输出，不再产生未定义引用告警。
+    expect(warnings.map(item => item.code)).not.toContain('TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED')
     await request(baseUrl)
       .post(`/api/v1/scripts/${script.scriptId}/preflight`)
       .set(roleHeaders)
@@ -1750,6 +1757,60 @@ describe('P0 deterministic mock server', () => {
       error: { code: 'INVALID_REQUEST', message: '请求体超过 256 KB 限制。' },
     })
     expect((response.body as { error: { details?: string } }).error.details).toBeUndefined()
+  })
+
+  it('超过 256 KB 的完整场景能导入、校验、保存并复用为模板', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const draft = createTemplateScenario()
+    const platform = draft.config.platforms.find(item => item.type === 'AIRBORNE_MISSION_CLUSTER')!
+    const waypoint = platform.waypoints[0]!
+    platform.waypoints = Array.from({ length: 3_000 }, (_, index) => ({ ...waypoint, arrivalTime: index / 10 }))
+    const snapshot = createScenarioSnapshot(draft)
+    const size = new TextEncoder().encode(JSON.stringify({ items: [snapshot] })).length
+    expect(size).toBeGreaterThan(256 * 1024)
+    expect(size).toBeLessThan(4 * 1024 * 1024)
+
+    const imported = await request(baseUrl).post('/api/v1/scenarios/import').set(headers).send({ items: [snapshot] }).expect(200)
+    const saved = (imported.body as ApiSuccess<{ drafts: ScenarioDraft[] }>).data.drafts[0]!
+    const path = `/api/v1/scenarios/${saved.config.scenario.id}`
+    expect(saved.config).toEqual(draft.config)
+    expect(saved.uiExtensions).toEqual(draft.uiExtensions)
+    expect(((await request(baseUrl).get(path).set(headers).expect(200)).body as ApiSuccess<ScenarioDraft>).data).toMatchObject(saved)
+    const validation = await request(baseUrl).post(`${path}/validate`).set(headers).send({ config: saved.config }).expect(200)
+    expect(validation.body).toMatchObject({ data: { valid: true, errors: [] } })
+    const updated = await request(baseUrl).put(path).set(headers)
+      .send({ config: saved.config, uiExtensions: saved.uiExtensions, expectedRevision: saved.revision }).expect(200)
+    expect(updated.body).toMatchObject({ data: { config: saved.config, revision: saved.revision + 1 } })
+
+    const template = await request(baseUrl).post('/api/v1/templates').set(headers)
+      .send({ name: '大场景模板', config: saved.config, uiExtensions: saved.uiExtensions }).expect(201)
+    const templateData = (template.body as ApiSuccess<ScenarioTemplate>).data
+    const editedTemplate = await request(baseUrl).put(`/api/v1/templates/${templateData.templateId}`).set(headers)
+      .send({ name: '大场景模板更新', config: saved.config, uiExtensions: saved.uiExtensions }).expect(200)
+    expect(editedTemplate.body).toMatchObject({ data: { config: saved.config } })
+
+    const copiedConfig = structuredClone(saved.config)
+    copiedConfig.scenario.id = 'SCN-LARGE-JSON-COPY'
+    const created = await request(baseUrl).post('/api/v1/scenarios').set(headers)
+      .send({ config: copiedConfig, uiExtensions: saved.uiExtensions, expectedRevision: 0 }).expect(201)
+    expect(created.body).toMatchObject({ data: { config: copiedConfig } })
+  })
+
+  it('场景请求允许 8 MiB 边界并拒绝超限请求，失败不修改场景', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'ADMIN' }
+    const original = (await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body
+    const envelope = JSON.stringify({ items: [], padding: '' })
+    const body = JSON.stringify({ items: [], padding: 'x'.repeat(8 * 1024 * 1024 - envelope.length) })
+    expect(body.length).toBe(8 * 1024 * 1024)
+    // 合法 JSON 达到边界时交给业务校验；额外一个字节才触发请求大小限制。
+    await request(baseUrl).post('/api/v1/scenarios/import').set(headers).set('Content-Type', 'application/json').send(body).expect(422)
+    const rejected = await request(baseUrl).post('/api/v1/scenarios/import').set(headers)
+      .set('Content-Type', 'application/json').send(`${body} `).expect(400)
+    expect(rejected.body).toMatchObject({ error: { code: 'INVALID_REQUEST', message: '请求体超过 8 MB 限制。' } })
+    expect((rejected.body as { error: { details?: string } }).error.details).toBeUndefined()
+    expect((await request(baseUrl).get('/api/v1/scenarios/SCN-001').set(headers).expect(200)).body).toEqual(original)
   })
 
   it('accepts JSON bodies above 16KB and reaches reset validation', async () => {
@@ -2325,7 +2386,7 @@ describe('P0 deterministic mock server', () => {
   it('执行 P4 RF 干扰控制并返回参数拒绝原因', async () => {
     const { server, baseUrl } = await startServer()
     const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
-    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
+    const command = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1200 }
     const successResponse = await request(baseUrl)
       .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands')
       .set(headers)
@@ -2357,6 +2418,35 @@ describe('P0 deterministic mock server', () => {
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'SUCCESS' }),
       expect.objectContaining({ module: 'SIMULATION_CONTROL', action: 'SIMULATION_JAMMER_COMMAND', result: 'ERROR' }),
     ]))
+  })
+
+  it('RF 控制命令按 -10～30 dBm 档位统一校验并支持 0 W 停扰', async () => {
+    const { baseUrl } = await startServer()
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const base = { enabled: true, frequency: 2200, bandwidth: 40, direction: 360, duration: 1200 }
+    for (const dbm of [-10, 0, 20, 30]) {
+      const power = 10 ** ((dbm - 30) / 10)
+      const ok = await request(baseUrl).post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands').set(headers)
+        .send({ ...base, power }).expect(200)
+      expect((ok.body as ApiSuccess<{ power: number }>).data.power).toBeCloseTo(power, 10)
+    }
+    for (const power of [10, 10 ** ((40 - 30) / 10), 10 ** ((-15 - 30) / 10), 2, 0.0005]) {
+      const rejected = await request(baseUrl).post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands').set(headers)
+        .send({ ...base, power }).expect(422)
+      expect(rejected.body).toMatchObject({ error: { code: 'OUT_OF_RANGE', fieldPath: 'power' } })
+    }
+    for (const power of [null, '1']) {
+      await request(baseUrl).post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands').set(headers)
+        .send({ ...base, power }).expect(422)
+    }
+    for (const power of [0, 72]) {
+      const stopped = await request(baseUrl).post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands').set(headers)
+        .send({ ...base, enabled: false, power }).expect(200)
+      expect((stopped.body as ApiSuccess<{ enabled: boolean }>).data.enabled).toBe(false)
+    }
+    const negativeStop = await request(baseUrl).post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands').set(headers)
+      .send({ ...base, enabled: false, power: -1 }).expect(422)
+    expect(negativeStop.body).toMatchObject({ error: { code: 'OUT_OF_RANGE', fieldPath: 'power' } })
   })
 
   it('新运行不复用编号，旧运行的停止确认不能停止新运行', async () => {
@@ -2412,13 +2502,13 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set(headers).send({}).expect(422)
     await request(baseUrl).post('/api/v1/simulations/RUN-001/events').set('Origin', ORIGIN).send(context).expect(403)
 
-    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
+    const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 1, direction: 360, duration: 1200 }
     const synchronized = await request(baseUrl)
       .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
       .set(headers)
       .send({ version: 5, effectiveFrameId: 'F-00042', parameters })
       .expect(200)
-    expect(synchronized.body).toMatchObject({ data: { parameterVersion: 5, nodeParameterVersion: 5, engineParameterVersion: 5, uiParameterVersion: 5 } })
+    expect(synchronized.body).toMatchObject({ data: { parameterVersion: 5, nodeParameterVersion: 5, engineSync: 'NOT_CONNECTED', uiParameterVersion: 5 } })
     await request(baseUrl)
       .post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters')
       .set(headers)
@@ -2636,5 +2726,121 @@ describe('P0 deterministic mock server', () => {
     await request(baseUrl).post('/api/v1/replays/REPLAY-MISSING/commands').set(headers).send({ command: 'PLAY' }).expect(404)
     await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'BAD' }).expect(422)
     await request(baseUrl).post('/api/v1/replays/REPLAY-001/commands').set(headers).send({ command: 'PAUSE' }).expect(409)
+  })
+})
+
+describe('干扰计划 HTTP 持久化反例（非演示场景/远端运行）', () => {
+  it('写盘失败回滚、同版本重试、版本冲突、6 类拒绝不写入、隔离、重开库一致、控制仍 404', async () => {
+    // 与既有 Node 专用测试一致，用字符串拼接动态导入，避免浏览器类型工程解析 node:/server 模块。
+    const fsModule = 'node:fs/' + 'promises'
+    const osModule = 'node:' + 'os'
+    const pathModule = 'node:' + 'path'
+    const eventsModule = 'node:' + 'events'
+    const appModule = '../../server/' + 'app.js'
+    const storageModule = '../../server/local/' + 'jammer-plan-sqlite.js'
+    const fixtureModule = '../fixtures/' + 'template-scenario.js'
+    const requestModule = 'super' + 'test'
+    const { mkdtemp, rm } = await import(fsModule)
+    const { tmpdir } = await import(osModule)
+    const { join } = await import(pathModule)
+    const { once } = await import(eventsModule)
+    const { createMockServer: createServer } = await import(appModule) as any
+    const { JammerPlanSqliteStorage } = await import(storageModule) as any
+    const { createTemplateScenario } = await import(fixtureModule) as any
+    const { default: requestClient } = await import(requestModule) as any
+    const dir = await mkdtemp(join(tmpdir(), 'wrj-audit-jammer-'))
+    const dbPath = join(dir, 'jammer-plans.db')
+    const headers = { Origin: ORIGIN, 'X-Demo-Role': 'OPERATOR' }
+    const inner = new JammerPlanSqliteStorage(dbPath)
+    let failNext = false
+    let saves = 0
+    const flaky = {
+      load: (t: string, r: string, j: string) => inner.load(t, r, j),
+      save: (t: string, r: string, j: string, rec: Parameters<typeof inner.save>[3]) => {
+        if (failNext) { failNext = false; throw new Error('disk full') }
+        saves += 1
+        inner.save(t, r, j, rec)
+      },
+      deleteRun: (r: string) => inner.deleteRun(r),
+      close: () => inner.close(),
+    }
+    const app = createServer({ port: 0, linkEngineWsUrl: 'ws://127.0.0.1:9/ws/v1', jammerPlanStorage: flaky })
+    try {
+      if (!app.httpServer.listening) await once(app.httpServer, 'listening')
+      const address = app.httpServer.address()
+      if (address === null || typeof address === 'string') throw new Error('缺少监听地址')
+      const api = requestClient(`http://127.0.0.1:${address.port}`)
+
+      // 非演示场景 SCN-777 + 远端运行。
+      const base = createTemplateScenario()
+      const config = structuredClone(base.config)
+      config.scenario.id = 'SCN-777'
+      config.scenario.name = '复审非演示场景'
+      await api.post('/api/v1/scenarios').set(headers).send({ config, uiExtensions: base.uiExtensions, expectedRevision: 0 }).expect(201)
+      const created = await api.post('/api/v1/simulations').set(headers).send({ taskId: 'TASK-001', scenarioId: 'SCN-777' }).expect(201)
+      const runId = String((created.body as { data: { runId: string; executionSource?: string } }).data.runId)
+      expect((created.body as { data: { executionSource?: string } }).data.executionSource).toBe('REMOTE_WS')
+      expect(runId).not.toBe('RUN-001')
+
+      const jammerIds = config.jammers.map((item: any) => item.id)
+      const jammerId = jammerIds[0]!
+      const url = (jammer = jammerId, task = 'TASK-001') => `/api/v1/tasks/${task}/jammers/${jammer}/parameters`
+      const read = async (jammer = jammerId) => (await api.get(url(jammer)).set(headers).expect(200)).body.data as Record<string, unknown>
+      const parameters = { enabled: true, frequency: config.jammers[0]!.frequency, bandwidth: Math.min(40, config.jammers[0]!.bandwidth), power: 1, direction: 90, duration: 10 }
+      const body = (version: number, detectionRangeM?: number) => ({ version, effectiveFrameId: 'F-LOCAL-9', parameters, ...(detectionRangeM === undefined ? {} : { detectionRangeM }) })
+
+      const initial = await read()
+      expect(initial.version).toBe(4)
+
+      // 1) 首次版本 5 写盘失败：503，读取层不变，库无新记录。
+      failNext = true
+      const fail = await api.post(url()).set(headers).send(body(5, 25000))
+      expect(fail.status).toBe(503)
+      expect(await read()).toEqual(initial)
+      expect(inner.load('TASK-001', runId, jammerId)).toBeUndefined()
+      // 2) 恢复后同版本重试成功：仅本地接受。
+      const accepted = await api.post(url()).set(headers).send(body(5, 25000)).expect(200)
+      expect(accepted.body.data).toMatchObject({ status: 'LOCAL_ACCEPTED', engineSync: 'NOT_CONNECTED', parameterVersion: 5, detectionRangeM: 25000 })
+      expect(accepted.body.data).not.toHaveProperty('engineParameterVersion')
+      expect(JSON.stringify(accepted.body.data)).not.toContain('SYNCHRONIZED')
+      expect(await read()).toMatchObject({ version: 5, detectionRangeM: 25000 })
+      // 3) 成功后重复版本 5 → 409。
+      const duplicate = await api.post(url()).set(headers).send(body(5, 30000))
+      expect([duplicate.status, duplicate.body?.error?.code]).toEqual([409, 'VERSION_CONFLICT'])
+
+      const savesBefore = saves
+      const snapshot = inner.load('TASK-001', runId, jammerId)
+      // 4) 6 类拒绝路径：非法范围/未知设备/旧版本/无角色/非法角色/他任务，均不写入。
+      const rejects = [
+        await api.post(url()).set(headers).send(body(6, 200000)),
+        await api.post(url('JAM-NOPE')).set(headers).send(body(6, 25000)),
+        await api.post(url()).set(headers).send(body(4, 25000)),
+        await api.post(url()).set({ Origin: ORIGIN }).send(body(6, 26000)),
+        await api.post(url()).set({ ...headers, 'X-Demo-Role': 'VIEWER' }).send(body(6, 26000)),
+        await api.post(url(jammerId, 'TASK-002')).set(headers).send(body(6, 26000)),
+      ]
+      for (const rejected of rejects) expect(rejected.status).toBeGreaterThanOrEqual(400)
+      expect(saves).toBe(savesBefore)
+      expect(inner.load('TASK-001', runId, jammerId)).toEqual(snapshot)
+      // 5) 隔离：其他设备仍初值，RUN-001 无记录。
+      for (const other of jammerIds.slice(1)) expect((await read(other)).version).toBe(4)
+      expect(inner.load('TASK-001', 'RUN-001', jammerId)).toBeUndefined()
+      // 6) 真实控制保护仍在：远端运行命令 404。
+      await api.post(`/api/v1/tasks/TASK-001/jammers/${jammerId}/commands`).set(headers).send(parameters).expect(404)
+
+      // 7) 关闭服务与数据库，重开 SQLite 读回。
+      await app.close()
+      inner.close()
+      const reopened = new JammerPlanSqliteStorage(dbPath)
+      try {
+        expect(reopened.load('TASK-001', runId, jammerId)).toMatchObject({ version: 5, detectionRangeM: 25000 })
+      } finally {
+        reopened.close()
+      }
+    } finally {
+      try { await app.close() } catch { /* already closed */ }
+      try { inner.close() } catch { /* already closed */ }
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 })

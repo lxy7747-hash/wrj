@@ -64,6 +64,7 @@ describe('部署地址下的角色权限配置', () => {
     await button(wrapper, '保存权限配置').trigger('click')
     await flushPromises()
     expect(ElMessageBox.confirm).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('saved')).toHaveLength(1)
     expect(fetch.mock.calls[1]?.[0]).toBe(`${window.location.origin}/api/v1/admin/access-control`)
     expect(fetch.mock.calls[1]?.[1]).toMatchObject({ method: 'PUT' })
     expect(JSON.parse(String(fetch.mock.calls[1]?.[1]?.body))).toMatchObject({

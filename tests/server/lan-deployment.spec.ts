@@ -136,9 +136,14 @@ describe('内网配置校验', () => {
   })
   it('允许完整发布目录，拒绝端口冲突、缺少配置和公开目录中的私有数据', async () => {
     expect((await readLanConfig(env())).port).toBe(8080)
+    // 未配置脚本包目录时与开发模式一致，落在输出根目录的 scripts 子目录。
+    expect((await readLanConfig(env())).scriptOutputRoot).toBe(join(root, 'output', 'scripts'))
+    expect((await readLanConfig({ ...env(), WRJ_SCRIPT_OUTPUT_ROOT: join(root, 'scripts') })).scriptOutputRoot).toBe(join(root, 'scripts'))
     await expect(readLanConfig({ ...env(), WRJ_MAP_PORT: '8080' })).rejects.toThrow('相同端口')
     await expect(readLanConfig({ ...env(), WRJ_PUBLIC_ORIGIN: '' })).rejects.toThrow('必须配置')
     await expect(readLanConfig({ ...env(), WRJ_OUTPUT_ROOT: join(webRoot, 'output') })).rejects.toThrow('公开目录')
+    await expect(readLanConfig({ ...env(), WRJ_SCRIPT_OUTPUT_ROOT: join(webRoot, 'scripts') })).rejects.toThrow('公开目录')
+    await expect(readLanConfig({ ...env(), WRJ_SCRIPT_OUTPUT_ROOT: 'relative/scripts' })).rejects.toThrow('绝对路径')
     await expect(readLanConfig({ ...env(), SCENARIO_DB_PATH: join(webRoot, 'private.db') })).rejects.toThrow('公开目录')
     await expect(readLanConfig({ ...env(), WRJ_WEB_ROOT: 'relative' })).rejects.toThrow('绝对路径')
   })

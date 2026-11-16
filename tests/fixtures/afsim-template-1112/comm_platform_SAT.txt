@@ -1,0 +1,283 @@
+include_once comm_PerDefinition.txt
+
+// -------------------------------------------------------
+// 4.6 天通卫星（GEO轨道，通信中继）
+// 仅承载卫星通信链路
+// -------------------------------------------------------
+platform_type TIAN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time sep 15 2025 00:00:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+
+  // 天通链路A
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+        channels 4
+        mode "default"
+          transfer_rate 16 kbits/sec
+          //bit_error_probability 0.00001
+      end_mode
+    end_medium
+    //channels 4
+    //retransmit_attempts 3
+    
+    transmitter
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      power 40 W
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      //heck_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB
+      //heck_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+  
+  processor script_proc WSF_SCRIPT_PROCESSOR
+
+    on_message
+      type kForwardSituation
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string fw_sit_nexts_Change = nxts;
+            string fw_sit_outs_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name");
+            string fw_sit_ins_Change   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name");
+            string fw_sit_dsts_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_dst_platform_name");
+
+            if (fw_sit_dsts_Change == dest) {
+              PLATFORM.Comm(fw_sit_outs_Change).SendMessage(MESSAGE, nxts, fw_sit_ins_Change);
+              writeln(PLATFORM.Name() + "kForwardSituation Forward Out Port:[" + fw_sit_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + fw_sit_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kForwardTarget
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
+
+          if (nxts != "") {
+            string fw_tgt_nexts_Change = nxts;
+            string fw_tgt_outs_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name");
+            string fw_tgt_ins_Change   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name");
+            string fw_tgt_dsts_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kForwardTarget Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name"));
+
+            if (fw_tgt_dsts_Change == dest) {
+              PLATFORM.Comm(fw_tgt_outs_Change).SendMessage(MESSAGE, nxts, fw_tgt_ins_Change);
+              writeln(PLATFORM.Name() + "kForwardTarget Forward Out Port:[" + fw_tgt_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + fw_tgt_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kReturnReconVideo
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string rt_video_nexts_Change = nxts;
+            string rt_video_outs_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name");
+            string rt_video_ins_Change   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name");
+            string rt_video_dsts_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kReturnReconVideo Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name"));
+            if (rt_video_dsts_Change == dest) {
+              PLATFORM.Comm(rt_video_outs_Change).SendMessage(MESSAGE, nxts, rt_video_ins_Change);
+              writeln(PLATFORM.Name() + "kReturnReconVideo Forward Out Port:[" + rt_video_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + rt_video_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kReturnReconStatus
+        script
+         writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string rt_status_nexts_Change = nxts;
+            string rt_status_outs_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name");
+            string rt_status_ins_Change   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name");
+            string rt_status_dsts_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kReturnReconStatus Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name"));
+            if (rt_status_dsts_Change == dest) {
+              PLATFORM.Comm(rt_status_outs_Change).SendMessage(MESSAGE, nxts, rt_status_ins_Change);
+              writeln(PLATFORM.Name() + "kReturnReconStatus Forward Out Port:[" + rt_status_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + rt_status_ins_Change + "]");
+            }
+          }
+        end_script
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+
+    end_on_message
+
+  end_processor
+end_platform_type
+
+// -------------------------------------------------------
+// 4.7 神通卫星（LEO轨道，通信中继）
+// 仅承载卫星通信链路
+// -------------------------------------------------------
+platform_type SHEN_TONG_SAT WSF_PLATFORM
+  radar_signature SAT_SIG
+
+  mover WSF_SPACE_MOVER
+    update_interval 1 sec
+    oblate_earth true
+    orbital_state
+      epoch_date_time sep 15 2025 00:00:00
+      semi_major_axis 42164 km
+      eccentricity 0.0
+      inclination 0 deg
+      raan 120 deg
+      argument_of_periapsis 0 deg
+      mean_anomaly 0 deg
+    end_orbital_state
+  end_mover
+
+  comm sat_link WSF_RADIO_TRANSCEIVER
+    on
+    network_name COM_MESH_NET
+    add medium UAV_MESH_MEDIUM
+      channels 4
+      mode "default"
+        transfer_rate 16 mbits/sec
+        //bit_error_probability 0.00001
+      end_mode
+    end_medium
+
+    transmitter
+      frequency 11.8 GHz
+      bandwidth 54 MHz
+      power 40 W
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      attenuation_model none
+      end_attenuation_model
+      //heck_terrain_masking off
+    end_transmitter
+    receiver
+      frequency 14.2 GHz
+      bandwidth 54 MHz
+      polarization vertical
+      antenna_pattern SAT_SPACE_BEAM_ANTENNA
+      noise_figure 3 dB
+      //heck_terrain_masking off
+      detection_threshold -1000 dB
+    end_receiver
+    internal_link script_proc
+  end_comm
+
+  processor script_proc WSF_SCRIPT_PROCESSOR
+        on_message
+      type kForwardSituation
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string fw_sit_nexts_Change = nxts;
+            string fw_sit_outs_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_out_port_name");
+            string fw_sit_ins_Change   = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_next_in_port_name");
+            string fw_sit_dsts_Change  = PLATFORM.AuxDataString("kForwardSituation_" + dest + "_dst_platform_name");
+
+            if (fw_sit_dsts_Change == dest) {
+              PLATFORM.Comm(fw_sit_outs_Change).SendMessage(MESSAGE, nxts, fw_sit_ins_Change);
+              writeln(PLATFORM.Name() + "kForwardSituation Forward Out Port:[" + fw_sit_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + fw_sit_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kForwardTarget
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_platform_name");
+
+          if (nxts != "") {
+            string fw_tgt_nexts_Change = nxts;
+            string fw_tgt_outs_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_out_port_name");
+            string fw_tgt_ins_Change   = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name");
+            string fw_tgt_dsts_Change  = PLATFORM.AuxDataString("kForwardTarget_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kForwardTarget Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kForwardTarget_" + dest + "_next_in_port_name"));
+
+            if (fw_tgt_dsts_Change == dest) {
+              PLATFORM.Comm(fw_tgt_outs_Change).SendMessage(MESSAGE, nxts, fw_tgt_ins_Change);
+              writeln(PLATFORM.Name() + "kForwardTarget Forward Out Port:[" + fw_tgt_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + fw_tgt_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kReturnReconVideo
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string rt_video_nexts_Change = nxts;
+            string rt_video_outs_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_out_port_name");
+            string rt_video_ins_Change   = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name");
+            string rt_video_dsts_Change  = PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kReturnReconVideo Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kReturnReconVideo_" + dest + "_next_in_port_name"));
+            if (rt_video_dsts_Change == dest) {
+              PLATFORM.Comm(rt_video_outs_Change).SendMessage(MESSAGE, nxts, rt_video_ins_Change);
+              writeln(PLATFORM.Name() + "kReturnReconVideo Forward Out Port:[" + rt_video_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + rt_video_ins_Change + "]");
+            }
+          }
+        end_script
+
+      type kReturnReconStatus
+        script
+         writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+          string dest = MESSAGE.AuxDataString("destination");
+          string nxts = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_platform_name");
+          if (nxts != "") {
+            string rt_status_nexts_Change = nxts;
+            string rt_status_outs_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_out_port_name");
+            string rt_status_ins_Change   = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name");
+            string rt_status_dsts_Change  = PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_dst_platform_name");
+            //writeln(PLATFORM.Name() + "kReturnReconStatus Change Path Plats:" + nxts + " Ports: " + PLATFORM.AuxDataString("kReturnReconStatus_" + dest + "_next_in_port_name"));
+            if (rt_status_dsts_Change == dest) {
+              PLATFORM.Comm(rt_status_outs_Change).SendMessage(MESSAGE, nxts, rt_status_ins_Change);
+              writeln(PLATFORM.Name() + "kReturnReconStatus Forward Out Port:[" + rt_status_outs_Change + "] Destination:[" + dest + "] Next Plat:[" + nxts + "] Next Port:[" + rt_status_ins_Change + "]");
+            }
+          }
+        end_script
+      default
+        script
+          writeln(PLATFORM.Name() + " RECV " + MESSAGE.Type() + " from " + MESSAGE.Originator());
+        end_script
+
+    end_on_message
+  end_processor
+
+end_platform_type

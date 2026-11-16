@@ -15,6 +15,13 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
     if (!isAbsolute(value)) throw new Error(`${key} 必须为绝对路径。`)
     return value
   }
+  /** 可选绝对路径：留空返回 undefined，由调用方按默认目录处理。 */
+  const optionalPath = (key: string): string | undefined => {
+    const value = env[key]?.trim()
+    if (!value) return undefined
+    if (!isAbsolute(value)) throw new Error(`${key} 必须为绝对路径。`)
+    return value
+  }
   const portNumber = (key: string, fallback: string): number => {
     const value = Number(env[key] ?? fallback)
     if (!Number.isInteger(value) || value < 1 || value > 65535) throw new Error(`${key} 必须为有效端口号。`)
@@ -29,9 +36,11 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
   if (port === tilePort) throw new Error('Web 入口和地图服务不能使用相同端口。')
   const webRoot = path('WRJ_WEB_ROOT')
   const outputRoot = path('WRJ_OUTPUT_ROOT')
+  // 生成脚本包目录可选；留空保持 <输出根>/scripts，与开发模式一致。
+  const scriptOutputRoot = optionalPath('WRJ_SCRIPT_OUTPUT_ROOT') ?? join(outputRoot, 'scripts')
   const executable = webOnly || linkEngineWsUrl ? undefined : path('MISSION_EXECUTABLE_PATH')
   const database = path('SCENARIO_DB_PATH')
-  for (const target of [outputRoot, database, executable].filter((value): value is string => value !== undefined)) {
+  for (const target of [outputRoot, scriptOutputRoot, database, executable].filter((value): value is string => value !== undefined)) {
     const within = relative(webRoot, target)
     if (!isAbsolute(within) && within !== '..' && !within.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)) {
       throw new Error('数据库、仿真程序和输出目录不能放在前端公开目录中。')
@@ -44,5 +53,7 @@ export async function readLanConfig(env: NodeJS.ProcessEnv) {
   await access(dirname(database), constants.W_OK)
   await mkdir(outputRoot, { recursive: true })
   await access(outputRoot, constants.W_OK)
-  return { publicOrigin, port, tilePort, webRoot, outputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0', linkEngineWsUrl }
+  await mkdir(scriptOutputRoot, { recursive: true })
+  await access(scriptOutputRoot, constants.W_OK)
+  return { publicOrigin, port, tilePort, webRoot, outputRoot, scriptOutputRoot, executable, webOnly, host: env.WRJ_HOST?.trim() || '0.0.0.0', linkEngineWsUrl }
 }

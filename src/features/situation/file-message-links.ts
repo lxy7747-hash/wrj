@@ -77,11 +77,18 @@ export interface FileMessageLink {
 /** 业务方向取值。 */
 export type FileMessageDirection = 'FORWARD' | 'REVERSE'
 
-/** 指令下发类业务类型；其余已识别类型均为回传类。 */
-export const FORWARD_MESSAGE_TYPES: ReadonlySet<string> = new Set(['CMD_ORDER'])
+/**
+ * 指令下发类业务类型；其余已识别类型均为回传类。
+ * 1112 模板的 script_proc 直接使用 kForwardSituation / kForwardTarget，
+ * 需要与旧数据中的 CMD_ORDER 一样参与方向判定，不能因为类型名变化而丢失方向。
+ */
+export const FORWARD_MESSAGE_TYPES: ReadonlySet<string> = new Set([
+  'CMD_ORDER', 'kForwardSituation', 'kForwardTarget',
+])
 /** 状态与侦察回传类业务类型。 */
 export const REVERSE_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'STATUS_REPORT', 'RECON_DATA', 'FORWARD_STATUS_REPORT', 'FORWARD_RECON_DATA',
+  'kReturnReconVideo', 'kReturnReconStatus',
 ])
 export const FILE_MESSAGE_DIRECTION_LABELS: Record<FileMessageDirection, string> = {
   FORWARD: '前向', REVERSE: '返向',
@@ -286,6 +293,29 @@ export function isFileMessageLink(value: unknown, platformIds: ReadonlySet<strin
 }
 
 /**
+ * 兼容旧结果快照：历史上 1112 模板的消息类型尚未被识别时，direction 为空；
+ * 类型集合扩充后直接校验会把旧快照误判为“方向与证据矛盾”。读取快照时按承载类型补出可判定方向，
+ * 不覆盖已存在的方向，也不猜测无法归类的类型。只用于读取旧快照，不改变生成新链路时的“方向必须自洽”约束。
+ */
+export function withDerivedMessageDirections<T>(snapshot: T): T {
+  if (!snapshot || typeof snapshot !== 'object') return snapshot
+  const record = snapshot as { messageLinks?: unknown }
+  if (!Array.isArray(record.messageLinks)) return snapshot
+  let changed = false
+  const messageLinks = record.messageLinks.map(link => {
+    if (!link || typeof link !== 'object') return link
+    const candidate = link as { direction?: FileMessageDirection; messageTypes?: unknown }
+    if (candidate.direction !== undefined) return link
+    const messageTypes = Array.isArray(candidate.messageTypes) ? candidate.messageTypes.filter((type): type is string => typeof type === 'string') : []
+    const direction = readFileMessageDirection(messageTypes)
+    if (direction === undefined) return link
+    changed = true
+    return { ...candidate, direction }
+  })
+  return changed ? { ...(snapshot as object), messageLinks } as T : snapshot
+}
+
+/**
  * 按消息序号配对收发记录，推导真实业务链路。
  * @param events 已解析的事件日志事件；只读取 MESSAGE_TRANSMITTED 与 MESSAGE_RECEIVED。
  * @param platformIds 允许出现在链路中的平台集合；不在其中的记录计入 unclassified。
@@ -339,12 +369,24 @@ export function buildFileMessageLinks(
     ))
     if (candidates.length === 0) { issues.undelivered += 1; continue }
 
+    /*
+     * 只有两端设备能构成已知链路制式的发送候选才是有效来源。
+     * 同一消息经中继转发时，接收记录附近可能同时出现上一跳和下一跳的发送记录；
+     * 下一跳的发送设备与接收设备常常无法构成同一制式。若不先排除这些不兼容候选，
+     * 它们会把唯一有效来源淹没成“歧义”。没有兼容候选时保留原候选集合，
+     * 继续按原有路径计入 unclassified，避免把证据缺口误判为未投递。
+     */
+    const compatible = candidates.filter((candidate) => fileMessageLinkType(deviceTypes,
+      { platformName: candidate.platformName, communicationName: candidate.communicationName },
+      { platformName: receive.platformName, communicationName: receive.communicationName }) !== null)
+    const eligible = compatible.length > 0 ? compatible : candidates
+
     // 候选设备集合唯一才认定来源；分散时如实记为无法确定。
-    const sources = new Set(candidates.map((candidate) => (
+    const sources = new Set(eligible.map((candidate) => (
       fileMessageDeviceKey(candidate.platformName, candidate.communicationName)
     )))
     if (sources.size > 1) { issues.ambiguous += 1; continue }
-    const transmit = candidates[candidates.length - 1]!
+    const transmit = eligible[eligible.length - 1]!
 
     if (!platformIds.has(transmit.platformName) || !platformIds.has(receive.platformName)) {
       issues.unclassified += 1

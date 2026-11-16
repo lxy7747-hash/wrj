@@ -57,7 +57,7 @@ async function execute(operation: 'BACKUP' | 'RESTORE'): Promise<void> {
   try {
     await ElMessageBox.confirm(operation === 'RESTORE'
       ? `确认从“${targetId}”恢复备份范围内的场景、模板、账号、装备、角色权限、通用数据、历史归档和白名单配置？审计与文件读取记录保留。账号及密码将恢复到备份时的状态，之后新增的账号可能消失。请确认掌握备份中的管理员账号和密码。系统先创建恢复前备份，校验失败不恢复，写入失败整体回滚。成功后需重新登录。`
-      : `确认创建“${name}”备份？包含全部业务数据库及事件／位置文件路径，不包含源 CSV、密码环境变量或密钥。账号库内的密码散列属于恢复所需数据，备份未加密，请妥善保管。`, labels[operation], { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
+      : `确认创建“${name}”备份？备份包含业务数据、账号验证信息及事件／位置文件路径，不包含原始数据文件、密码配置或密钥。备份未加密，请妥善保管。`, labels[operation], { confirmButtonText: '确认执行', cancelButtonText: '取消', type: 'warning' })
     if (epoch !== store.maintenanceEpoch) return
     if (operation === 'RESTORE' && (selectedBackupId.value !== targetId || !canRestore.value)) return
     const succeeded = await store.runMaintenanceAction(operation, targetId, operation === 'BACKUP' ? name : undefined)
@@ -77,8 +77,8 @@ onBeforeUnmount(() => store.resetMaintenance())
 <template>
   <section id="cap-bfhf" class="maintenance-card" aria-label="数据库备份与恢复" data-testid="backup-panel">
     <header class="maintenance-toolbar"><h3>数据库备份 / 恢复</h3><DataExchangeStateTag :state="feedback.state" /><el-input v-model="backupName" aria-label="备份名称" maxlength="80" style="width: 220px" :disabled="pending" /><el-button :disabled="pending || store.backupPlanPending" @click="reload">刷新记录</el-button><el-button type="primary" :disabled="pending" data-testid="backup-create" @click="execute('BACKUP')">创建备份</el-button></header>
-    <p class="maintenance-note">系统备份包含场景、模板、账号、装备、角色权限、通用数据、历史归档，以及事件／位置文件路径白名单；不备份源 CSV、凭据环境变量或密钥，不回退审计和文件读取记录。旧主库备份保留查看，不作为完整系统恢复来源。备份未加密，仅限非敏感开发数据。</p>
-    <p class="maintenance-note">列表沿用已登记的校验结果，备份文件或校验规则变化时重新完整检查；恢复时始终重新完整校验。不合规的恢复前原始备份显示“校验失败”，仅用于保留原数据，不能直接恢复。</p>
+    <p class="maintenance-note">系统备份包含场景、模板、账号、装备、角色权限、通用数据、历史归档和允许读取的事件／位置文件路径。不包含原始数据文件、凭据配置或密钥；恢复不会回退审计和文件读取记录。备份未加密，仅限非敏感开发数据。</p>
+    <p class="maintenance-note">旧主库备份或校验失败的备份不能用于系统恢复。恢复前会重新校验所选备份。</p>
     <el-alert v-if="feedback.message && feedback.state !== 'SUCCESS'" :title="feedback.message" :type="feedback.state === 'ERROR' ? 'error' : 'info'" :closable="false" data-testid="backup-feedback" />
     <el-table v-loading="pending" :data="sortedBackups"row-key="backupId" stripe empty-text="暂无备份记录" data-testid="backup-table">
       <el-table-column prop="backupId" label="备份编号" min-width="190" />
@@ -109,7 +109,7 @@ onBeforeUnmount(() => store.resetMaintenance())
         <el-form-item label="间隔（分钟）"><el-input-number v-model="plan.intervalMinutes" aria-label="备份间隔" :min="60" :max="10080" :step="60" :precision="0" :disabled="store.backupPlanPending || !store.backupPlanStatus" /></el-form-item>
         <el-button :loading="store.backupPlanPending" :disabled="pending || !store.backupPlanStatus" data-testid="backup-plan-save" @click="savePlan">保存计划</el-button>
       </el-form>
-      <p class="maintenance-note">{{ store.backupPlanStatus?.nextRunAt ? `下次执行：${formatDateTime(store.backupPlanStatus.nextRunAt)}` : '计划未启用。' }} 仅在后端运行期间执行；停机错过的周期启动后补执行一次，不自动删除旧备份。以下展示最近 20 次，完整执行记录保留。</p>
+      <p class="maintenance-note">{{ store.backupPlanStatus?.nextRunAt ? `下次执行：${formatDateTime(store.backupPlanStatus.nextRunAt)}` : '计划未启用。' }} 仅在系统运行期间执行；停机错过的周期启动后补执行一次，不自动删除旧备份。以下展示最近 20 次，完整执行记录保留。</p>
       <el-table :data="store.backupPlanStatus?.executions ?? []" empty-text="暂无执行记录" data-testid="backup-executions">
         <el-table-column label="开始时间" min-width="170"><template #default="{ row }">{{ formatDateTime(row.startedAt) }}</template></el-table-column>
         <el-table-column label="结果" width="90"><template #default="{ row }">{{ row.result === 'SUCCESS' ? '成功' : '失败' }}</template></el-table-column>

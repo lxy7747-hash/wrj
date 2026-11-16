@@ -1791,7 +1791,7 @@ describe('P2-2 平台与航点字段校验', () => {
     }
   })
 
-  it('拒绝与场景实体类型不一致的部署域', () => {
+  it('拒绝与节点类型不一致的部署域', () => {
     const config = scenarioDraft().config
     config.platforms[0]!.category = 'air'
 
@@ -1846,7 +1846,7 @@ describe('P2-2 平台与航点字段校验', () => {
     expect(inspectScenarioConfig(config).result.errors).toContainEqual({
       severity: 'ERROR',
       code: 'REFERENCE_OWNERSHIP_MISMATCH',
-      message: '关联对象不属于当前场景实体。',
+      message: '关联对象不属于当前节点。',
       fieldPath: `platforms[0].${field}`,
     })
   })

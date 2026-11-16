@@ -18,6 +18,7 @@ const props = defineProps<{
   runtimeQuality?: RuntimeLinkQualityView | null
   engineSegments?: EngineLinkSegment[]
   engineFrame?: EngineFrameSnapshot | null
+  engineSourceLabel?: string
   fileLink?: { linkId: string; sourceName: string; destinationName: string; typeLabel: string; registeredAt: number; deviceStatus: string } | null
 }>()
 
@@ -82,12 +83,12 @@ function reasonLabel(reason: string): string {
     <template #header>
       <div class="link-quality-dialog__header">
         <span>链路质量详情</span>
-        <strong>{{ engineSegments.length ? `${configuredLink?.id ?? '所选链路'} · 引擎实时分段` : runtimeQuality ? `${runtimeQuality.linkId} · 本次运行 · 帧 ${runtimeQuality.frameId}` : link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
+        <strong>{{ engineSegments.length ? `${configuredLink?.id ?? '所选链路'} · ${engineSourceLabel ?? '引擎数据（状态未确认）'}` : runtimeQuality ? `${runtimeQuality.linkId} · 本次运行 · 帧 ${runtimeQuality.frameId}` : link ? `${link.linkId} · 固定帧 ${link.frameId}` : configuredLink ? `${configuredLink.id} · 所选场景配置` : fileLink ? `${fileLink.linkId} · 本地通信关联` : '链路不存在或已从当前帧移除' }}</strong>
       </div>
     </template>
 
     <div v-if="engineSegments.length" class="link-quality-dialog__body link-quality-dialog__runtime" data-testid="link-detail-engine-segments">
-      <p>链路体制：{{ communicationType }}。来源帧 {{ engineFrame?.frameId ?? '暂无数据' }} · 源仿真时刻 {{ engineFrame ? reportTime(engineFrame.simulationTime) : '暂无数据' }}。以下为引擎明确关联的设备段；多段不合成为整链路质量。</p>
+      <p>链路体制：{{ communicationType }}。来源帧 {{ engineFrame?.frameId ?? '暂无数据' }} · 源仿真时刻 {{ engineFrame ? reportTime(engineFrame.simulationTime) : '暂无数据' }}。以下是各段质量，不代表整条链路。</p>
       <article v-for="(segment, index) in engineSegments" :key="`${segment.linkId}:${index}`" class="engine-segment">
         <strong>{{ segment.sourceName ?? segment.sourcePlatformId ?? '暂无数据' }} / {{ segment.sourcePort ?? '暂无数据' }} → {{ segment.targetName ?? segment.targetPlatformId ?? '暂无数据' }} / {{ segment.targetPort ?? '暂无数据' }}</strong>
         <dl class="link-quality-dialog__grid">
@@ -103,7 +104,7 @@ function reasonLabel(reason: string): string {
           <div><dt>数据率</dt><dd>{{ optionalMetric(segment.inputTrace.dataRateMbps, 3, ' Mbps') }}</dd></div>
           <div><dt>时延（原值，单位待确认）</dt><dd>{{ optionalMetric(segment.quality.delay, 6, '') }}</dd></div>
           <div><dt>传输距离</dt><dd>{{ optionalMetric(segment.distanceM === null ? null : segment.distanceM / 1000, 2, ' km') }}</dd></div>
-          <div><dt>信噪比 SNR</dt><dd>暂无数据（上游未提供）</dd></div>
+          <div><dt>信噪比 SNR</dt><dd>暂无数据</dd></div>
           <div><dt>错误信息</dt><dd>{{ segment.error ?? '暂无数据' }}</dd></div>
         </dl>
         <details>
@@ -149,9 +150,10 @@ function reasonLabel(reason: string): string {
       </dl>
     </div>
     <div v-else-if="!link && configuredLink" class="link-quality-dialog__body" data-testid="link-detail-configured">
-      <p>{{ configuredLink.sourcePlatformId }} → {{ configuredLink.targetPlatformId }}</p>
+      <p>{{ configuredLink.relayPlatformId ? `${configuredLink.sourcePlatformId} → ${configuredLink.relayPlatformId} → ${configuredLink.targetPlatformId}` : `${configuredLink.sourcePlatformId} → ${configuredLink.targetPlatformId}` }}</p>
       <dl class="link-quality-dialog__grid">
         <div><dt>链路体制</dt><dd>{{ LINK_TYPE_LABELS[configuredLink.type] }}</dd></div>
+        <div><dt>中继平台</dt><dd>{{ configuredLink.relayPlatformId ?? '不经中继' }}</dd></div>
         <div><dt>配置开关</dt><dd>{{ configuredLink.enabled === false ? '停用' : '启用' }}</dd></div>
         <div><dt>频率</dt><dd>{{ configuredLink.frequency }} MHz</dd></div>
         <div><dt>带宽</dt><dd>{{ configuredLink.bandwidth }} MHz</dd></div>

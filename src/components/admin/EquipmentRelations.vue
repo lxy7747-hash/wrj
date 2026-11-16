@@ -88,7 +88,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
       </template>
       <el-button :disabled="pending || equipment.readOnly || equipment.active === false" @click="bind">登记当前版本引用</el-button>
     </el-form>
-    <p>选择使用该装备的场景链路并登记，即建立引用。登记本身不覆盖场景；之后保存参数会同步已登记链路与引用版本。停用装备保留既有引用和历史，但不能登记新引用；有引用时不能删除装备。</p>
+    <p>选择场景和链路后登记，登记时不会修改场景。保存装备参数后会更新已登记的链路。停用后不能登记新引用，已有引用和历史保留；有引用时不能删除装备。</p>
     <h4>版本历史</h4>
     <el-table :data="details?.history ?? []" empty-text="暂无数据">
       <el-table-column prop="version" label="版本" /><el-table-column prop="type" label="类型" />

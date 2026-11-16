@@ -11,13 +11,30 @@ describe('模板脚本预览', () => {
     expect(script.preview).toContain('// ===== scenario.txt =====')
     expect(script.preview).toContain('// ===== comm_platform_REAR.txt =====')
     expect(script.preview).toContain('port_params [')
+    expect(script.preview).toContain('clock_rate 2')
+    const rearSection = script.preview.split('// ===== comm_platform_REAR.txt =====')[1]!.split('// ===== ')[0]!
+    expect(rearSection).not.toContain('jamming_range')
+    expect(script.preview).toContain('Array<string> fw_sit_dst  = { "mission_uav_02", "mission_uav_03" }')
     expect(script.preview).toContain('// ===== mapping.json =====')
     const result = inspectScriptPreview(script.preview)
     expect(result).toMatchObject({ valid: true })
-    expect(result.warnings.map((item: { code: string }) => item.code)).toEqual(expect.arrayContaining(['LINK_CALC_PROVIDER_UNCONFIRMED', 'TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED', 'GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED']))
-    expect(result.warnings.map((item: { message: string }) => item.message).join('\n')).toContain('MICRO_REAR_PLATFORM_DIR_ANTENNA')
-    expect(result.warnings.map((item: { message: string }) => item.message).join('\n')).toContain('OMNI_ANTENNA_HIGHGAIN')
+    // F09：三种天线已在交付包定义，端口引用可解析，不再产生“未定义天线”待确认告警。
+    expect(result.warnings.map((item: { code: string }) => item.code)).toEqual(expect.arrayContaining(['LINK_CALC_PROVIDER_UNCONFIRMED', 'GROUND_JAMMER_WEAPON_PROVIDER_UNCONFIRMED']))
+    expect(result.warnings.map((item: { code: string }) => item.code)).not.toContain('TEMPLATE_REFERENCE_PROVIDER_UNCONFIRMED')
     expect(projection.preflight(script.scriptId, script.checksum)).toMatchObject({ ok: true, data: { valid: true } })
+  })
+
+  it('预览遵守同一倍速规则：全速不启用 realtime，x32 启用 realtime', () => {
+    const full = createTemplateScenario()
+    full.config.scenario.realtime = false
+    full.config.scenario.environment.simClockSpeed = 32
+    const fullPreview = new ScriptProjection().preview(full).preview
+    expect(fullPreview).toMatch(/clock_rate 32/u)
+    expect(fullPreview).not.toMatch(/^\s*realtime\s*$/mu)
+    const x32 = createTemplateScenario()
+    delete x32.config.scenario.realtime
+    x32.config.scenario.environment.simClockSpeed = 32
+    expect(new ScriptProjection().preview(x32).preview).toMatch(/^\s*realtime\s*\r?\n\s*clock_rate 32/mu)
   })
 
   it('仍拒绝缺少入口和输出段的伪预览', () => {

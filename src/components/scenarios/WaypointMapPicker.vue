@@ -10,12 +10,25 @@ export interface WaypointMapPoint {
   latitude: number
 }
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: boolean
   longitude: number
   latitude: number
   bounds?: NonNullable<(typeof PLATFORM_POSITION_RULES)['AIRBORNE_MISSION_CLUSTER']>
-}>()
+  /** 弹窗标题，默认按航点选点。 */
+  title?: string
+  /** 弹窗顶部说明，默认按航点选点。 */
+  hint?: string
+  /** 未选点时的空态文案。 */
+  emptyText?: string
+  /** 是否在选中信息中展示“高度 0 m”；初始位置等需保留高度的场景可关闭。 */
+  showAltitude?: boolean
+}>(), {
+  title: '地图选取航点',
+  hint: '单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。',
+  emptyText: '尚未选择航点',
+  showAltitude: true,
+})
 
 const emit = defineEmits<{
   'update:modelValue': [visible: boolean]
@@ -178,7 +191,7 @@ onBeforeUnmount(destroyMap)
   <el-dialog
     :model-value="modelValue"
     class="waypoint-map-dialog scenario-dialog"
-    title="地图选取航点"
+    :title="title"
     width="min(760px, calc(100vw - 2rem))"
     append-to-body
     destroy-on-close
@@ -187,21 +200,21 @@ onBeforeUnmount(destroyMap)
     @opened="initializeMap"
     @closed="destroyMap"
   >
-    <p class="waypoint-map-dialog__hint">单击地图选择经纬度；二维地图无法确定高度，确认后高度设置为 0 米。</p>
+    <p class="waypoint-map-dialog__hint">{{ hint }}</p>
     <p v-if="rangeHint" class="waypoint-map-dialog__hint" data-testid="waypoint-range-hint">{{ rangeHint }}</p>
     <el-alert v-if="selectionError" :title="selectionError" type="error" :closable="false" show-icon data-testid="waypoint-range-error" />
     <div
       ref="mapContainer"
       class="waypoint-map-dialog__map"
       role="application"
-      aria-label="航点离线地图选点"
+      aria-label="离线地图选点"
       data-testid="waypoint-map"
     />
     <div class="waypoint-map-dialog__selection" aria-live="polite">
       <template v-if="selectedPoint">
-        经度 {{ selectedPoint.longitude.toFixed(6) }}° · 纬度 {{ selectedPoint.latitude.toFixed(6) }}° · 高度 0 m
+        经度 {{ selectedPoint.longitude.toFixed(6) }}° · 纬度 {{ selectedPoint.latitude.toFixed(6) }}°<template v-if="showAltitude"> · 高度 0 m</template>
       </template>
-      <template v-else>尚未选择航点</template>
+      <template v-else>{{ emptyText }}</template>
     </div>
     <template #footer>
       <el-button @click="emit('update:modelValue', false)">取消</el-button>

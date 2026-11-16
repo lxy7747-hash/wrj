@@ -33,15 +33,21 @@ it('已保存非默认场景创建单实例 Mock：时长/步长/锁一致，不
     await api.get(`/api/v1/simulations/${runId}/frames/F-00042`).set(headers).expect(404)
     await api.get(`/api/v1/simulations/${runId}/events`).set(headers).expect(404)
     const parameters = { enabled: true, frequency: 2200, bandwidth: 40, power: 72, direction: 360, duration: 1200 }
+    // 真实控制（命令/闭环）仍受固定演示证据保护；本地参数接受已解除该限制。
     for (const [path, body] of [
       [`/api/v1/simulations/${runId}/events`, { frameId: 'F-00042', detectionEventId: 'DET-042', targetPlatformId: 'UAV-01', affectedLinkId: 'L-DL-03' }],
       ['/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/commands', parameters],
-      ['/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters', { version: 5, effectiveFrameId: 'F-00042', parameters }],
     ] as const) {
       const rejected = await api.post(path).set(headers).send(body).expect(404)
       expect(rejected.body.ok).toBe(false)
       expect(rejected.body.data).toBeUndefined()
     }
+    // 非演示场景/运行：合法本地参数可接受并回读，不宣称引擎帧生效。
+    const accepted = await api.post('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters').set(headers)
+      .send({ version: 5, effectiveFrameId: 'F-00042', parameters: { ...parameters, power: 1 } }).expect(200)
+    expect(accepted.body.data).toMatchObject({ status: 'LOCAL_ACCEPTED', engineSync: 'NOT_CONNECTED', parameterVersion: 5, effectiveFrameId: 'F-00042' })
+    expect((await api.get('/api/v1/tasks/TASK-001/jammers/JAM-WB-01-TX/parameters').set(headers).expect(200)).body.data)
+      .toMatchObject({ version: 5, detectionRangeM: 44448 })
     socket = new WebSocket(origin.replace('http:', 'ws:') + '/ws/v1?role=OPERATOR', { headers: { Origin: headers.Origin } })
     const messages: any[] = []
     const received = new Promise<void>(resolve => socket!.on('message', (raw: { toString(): string }) => {

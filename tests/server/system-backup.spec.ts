@@ -16,6 +16,23 @@ let fixture: ReturnType<typeof createBackupFixture> | undefined
 afterEach(() => { fixture?.close(); fixture = undefined; vi.restoreAllMocks(); vi.useRealTimers() })
 const setup = () => (fixture = createBackupFixture())
 
+it('账号关联事务与完整系统备份恢复兼容，恢复后仍可同步删除绑定', () => {
+  const f = setup()
+  f.auth.connectAccessControl(f.access)
+  const user = { userId: 'USR-BOUND', username: 'bound', role: 'OPERATOR', status: 'ACTIVE' }
+  f.auth.save(user, 'Bound-test-1234')
+  f.access.save({ version: 2, profiles: [{ profileId: 'READ', name: '只读态势', baseRole: 'OPERATOR', permissions: ['BUSINESS_READ'], menuPaths: ['/situation'] }], assignments: [{ userId: user.userId, profileId: 'READ' }] }, 1)
+  const before = f.access.load()
+  expect(f.backup.backup('ACCOUNT-ROLES').ok).toBe(true)
+  f.auth.save({ ...user, role: 'ADMIN' })
+  expect(f.access.load().assignments).toEqual([])
+  expect(f.backup.restore('ACCOUNT-ROLES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(f.auth.list()).toContainEqual({ ...user, displayName: user.username })
+  expect(f.access.load()).toEqual(before)
+  f.auth.delete(user.userId)
+  expect(f.access.load().assignments).toEqual([])
+})
+
 it('六库备份恢复真实内容、历史、引用、归档和白名单配置，现有连接可重载；审计不回退', () => {
   const f = setup()
   expect(f.backup.backup('ALL', '全部业务备份')).toMatchObject({ ok: true, data: { name: '全部业务备份', format: 'SYSTEM_SQLITE_V1' } })
@@ -570,4 +587,31 @@ it('D1 校验版本更新后重新校验旧版本登记的 INVALID，不沿用�
       expect(read).toHaveBeenCalledTimes(1)
     } finally { reopened.close() }
   } finally { catalog.close() }
+})
+
+
+it('独立用户名随完整备份恢复；缺少显示名列的旧备份仍有效且文件不改写', () => {
+  const f = setup()
+  const admin = f.auth.list()[0]!
+  f.auth.save({ ...admin, displayName: '原显示名' })
+  expect(f.backup.backup('NAMES').ok).toBe(true)
+  f.auth.save({ ...admin, displayName: '改后显示名' })
+  expect(f.backup.restore('NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(f.auth.list()[0]!.displayName).toBe('原显示名')
+  const file = join(f.backup.directory, 'NAMES.system.db')
+  const snapshot = new DatabaseSync(file)
+  const tables = JSON.parse(String(snapshot.prepare('SELECT payload FROM snapshot').get()!.payload))
+  const users = tables.find((table: { scope: string; table: string }) => table.scope === 'main' && table.table === 'users')
+  users.sql = users.sql.replace(', display_name TEXT)', ')')
+  for (const row of users.rows) delete row.display_name
+  snapshot.prepare('UPDATE snapshot SET payload=?').run(JSON.stringify(tables))
+  snapshot.close()
+  const before = readFileSync(file)
+  const catalog = new DatabaseSync(join(f.backup.directory, 'catalog.db'))
+  try { catalog.prepare('UPDATE system_backups SET checksum=? WHERE backup_id=?').run(createHash('sha256').update(before).digest('hex').toUpperCase(), 'NAMES') }
+  finally { catalog.close() }
+  expect(f.backup.listBackups().find((row: { backupId: string; status: string }) => row.backupId === 'NAMES')?.status).toBe('VALID')
+  expect(f.backup.restore('NAMES')).toMatchObject({ ok: true, data: { result: 'SUCCESS' } })
+  expect(f.auth.list()[0]!.displayName).toBe(admin.username)
+  expect(readFileSync(file)).toEqual(before)
 })

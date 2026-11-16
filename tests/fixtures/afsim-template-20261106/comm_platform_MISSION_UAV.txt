@@ -187,6 +187,17 @@ platform_type MISSION_UAV_PLATFORM WSF_PLATFORM
     end_receiver
     internal_link script_proc
   end_comm
+  processor forward_delay WSF_DELAY_PROCESSOR
+    queuing_method first_in_first_out
+    number_of_servers 10
+    time_distribution constant time 1.0 sec
+  end_processor
+  processor return_delay WSF_DELAY_PROCESSOR
+    queuing_method first_in_first_out
+    number_of_servers 10
+    time_distribution constant time 1.0 sec
+    internal_link script_proc
+  end_processor
   processor script_proc WSF_SCRIPT_PROCESSOR
     report_to commander via microwave_link
     update_interval 1 sec

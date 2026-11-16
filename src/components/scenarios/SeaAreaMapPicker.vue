@@ -134,7 +134,6 @@ onBeforeUnmount(destroyMap)
   >
     <p class="sea-area-dialog__hint">
       依次单击地图放置区域顶点，至少 {{ SEA_POLYGON_LIMITS.minPoints }} 个，最多 {{ SEA_POLYGON_LIMITS.maxPoints }} 个；首尾自动闭合。
-      链路路径位于该区域上方时，按海况等级计算海面多径衰落。
     </p>
     <div ref="mapContainer" class="sea-area-dialog__map" role="application" aria-label="海面区域离线地图框选" data-testid="sea-area-map" />
     <div class="sea-area-dialog__status" aria-live="polite">

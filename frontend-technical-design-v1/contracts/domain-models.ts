@@ -1,5 +1,14 @@
 /** Frontend/mock contract declarations. Source authority: SRS, DD, approved frontend baseline V1.1. */
 
+/** 后端核实过的遗留运行；不会自动恢复仿真或生成结果。 */
+export interface MissionRecoveryStatus {
+  runId?: string;
+  scenarioId?: string;
+  pid?: number;
+  canStop: boolean;
+  message: string;
+}
+
 export type Iso8601Utc = string;
 export type Identifier = string;
 export type TaskId = `TASK-${string}`;
@@ -31,7 +40,7 @@ export type Permission =
   | 'ORDINARY_REPORT_EXPORT' | 'OFFICIAL_TEMPLATE_MAINTAIN'
   | 'MASTER_DATA_MAINTAIN' | 'USER_ROLE_MAINTAIN'
   | 'BACKUP_RESTORE' | 'AUDIT_READ' | 'FULL_CONFIG_EXPORT';
-export interface Principal { userId: Identifier; username: string; role: Role; permissions: readonly Permission[]; menuPaths?: string[]; }
+export interface Principal { userId: Identifier; username: string; displayName?: string; role: Role; permissions: readonly Permission[]; menuPaths?: string[]; }
 export interface RbacDecision { allowed: boolean; permission: Permission; reason?: 'PERMISSION_DENIED' | 'LAST_ADMIN_GUARD' | 'CONFIRMATION_REQUIRED'; }
 export interface LoginRequest { username: string; passwordFixture: string; }
 export interface AuthResult { authenticated: boolean; principal?: Principal; reason?: 'INVALID_CREDENTIALS' | 'ACCOUNT_LOCKED'; sessionCreated: boolean; }
@@ -45,6 +54,8 @@ export type SupportingEntityType = 'COMMUNICATION_SATELLITE' | 'GROUND_JAMMER_DE
 export type PlatformType = BusinessInformationNodeType | SupportingEntityType;
 /** 通信卫星的业务子类型；不增加信息节点分类数量。 */
 export type SatelliteType = 'TIANTONG' | 'SHENTONG';
+/** 平台所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。 */
+export type Faction = 'BLUE' | 'RED' | 'NEUTRAL';
 export type DeploymentDomain = 'ground' | 'air' | 'space';
 export type LinkType = 'SAT' | 'MICROWAVE' | 'DATALINK' | 'LASER' | 'FIBER';
 /** 已确认的新写入业务类型四枚举；读取保留历史业务文本。 */
@@ -112,8 +123,17 @@ export interface PortParameters {
   eirpDbw?: Decibels; gtDbk?: Decibels;
   parameterSource?: LinkParameterSource;
 }
+/** 一个模板通信端口的设备类型；有线端口为 `WSF_COMM_TRANSCEIVER`。 */
+export type CommDeviceType = 'WSF_RADIO_TRANSCEIVER' | 'WSF_COMM_TRANSCEIVER';
+/** 场景数据可选的通信端口清单：按模板平台类型列出需要生成的端口及其设备类型/网络。 */
+export interface CommPortDefinition {
+  deviceType: CommDeviceType;
+  network: string;
+}
 export interface DeviceParameters {
   ports?: Partial<Record<TemplatePlatformType, Partial<Record<string, PortParameters>>>>;
+  /** 可选的端口清单；按平台类型列出需要生成的端口。缺省时沿用模板全端口。 */
+  commPorts?: Partial<Record<TemplatePlatformType, Partial<Record<string, CommPortDefinition>>>>;
   antennaGains?: Partial<Record<TemplateAntennaName, Decibels>>;
 }
 export interface FrequencyRange { min: Megahertz; max: Megahertz; }
@@ -172,6 +192,10 @@ export interface Platform {
   loiterWaypoints?: TemplateRoutePoint[];
   /** 仅任务无人机、前出中继支持；缺省表示不生成返航路线。 */
   returnPlan?: ReturnPlan;
+  /** 所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。 */
+  faction?: Faction;
+  /** 节点通信能力范围（m）；是通信能力范围，不是几何距离或海峡宽度（Environment.transmissionDistance）。缺失表示未配置。 */
+  communicationRangeM?: Meters;
   waypoints: Waypoint[]; linkIds: Identifier[]; sensorIds: Identifier[]; jammerIds: Identifier[];
 }
 export interface Link {
@@ -204,6 +228,10 @@ export interface Link {
   rxPolarization?: Polarization;
   /** 接收机噪声系数（dB）；缺省 3 dB（含天通卫星）。 */
   noiseFigureDb?: Decibels;
+  /** 激光本地留存的 EIRP（dBW），与 PortParameters 同名同义；仅本地留存，不声称已接入执行。 */
+  eirpDbw?: Decibels;
+  /** 激光本地留存的接收 G/T（dB/K），与 PortParameters 同名同义；仅本地留存，不声称已接入执行。 */
+  gtDbk?: Decibels;
   /** 新增/编辑时用户选择的基础数据快照；旧场景可省略。 */
   parameterSource?: LinkParameterSource;
 }
@@ -284,6 +312,10 @@ export interface Jammer {
   detectionMinimumRange?: Meters;
   /** 相对仿真开始的触发秒数；旧记录未指定时保留缺省，新建默认 300 秒。 */
   triggerTimeS?: Seconds;
+  /** 计划启动帧序号（非负整数，须小于 plannedStopFrame）；0 与 false 是合法显式值，不当作未配置。300 启/900 停为示例，不额外乘 5。 */
+  plannedStartFrame?: number;
+  /** 计划停止帧序号（非负整数，须大于 plannedStartFrame）；缺省表示未配置停止帧。 */
+  plannedStopFrame?: number;
   /** 可选干扰时序配置，单位 s；未填写时不发送，需服务端同步支持。 */
   detectionDelayS?: Seconds; jammingDurationS?: Seconds;
 }
@@ -396,7 +428,7 @@ export interface CopyTemplateRequest { name: string; scenarioId?: ScenarioId; }
 export interface ScriptPreviewRequest { scenarioId: ScenarioId; warningConfirmationId?: Identifier; }
 export interface PreflightRequest { checksum: string; }
 export interface PlaybackFileSource { eventSha256: string; positionSha256: string; }
-export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioId; fileSource?: PlaybackFileSource; }
+export interface SimulationCreateRequest { taskId: TaskId; scenarioId: ScenarioId; fileSource?: PlaybackFileSource; referenceScenarioId?: ScenarioId; }
 
 export interface SimulationRun {
   runId: RunId; taskId: TaskId; scenarioId: ScenarioId; uiStatus: UiSimulationStatus;
@@ -443,13 +475,44 @@ export interface SensorStatusData {
 }
 export interface JammingParameterSet {
   version: number; effectiveFrameId: FrameId; parameters: JammingCommand;
+  /** 参数同步探测范围（合同米）；界面按 km 编辑。旧请求缺省不含该字段仍兼容，不参与版本检查以外语义。 */
+  detectionRangeM?: Meters;
 }
 export interface SyncResult {
   taskId: TaskId; jammerId: Identifier; parameterVersion: number;
   configParameterVersion: number; nodeParameterVersion: number;
-  engineParameterVersion: number; uiParameterVersion: number;
+  uiParameterVersion: number;
   effectiveFrameId: FrameId; effectiveSimulationTime: Seconds;
-  status: 'SYNCHRONIZED'; jammerStatus: JammerStatusData;
+  /** 本项目本地参数集接受状态；不代表真实引擎同步/ACK（上游协议未确认）。 */
+  status: 'LOCAL_ACCEPTED';
+  /** 真实引擎同步状态：当前恒为未接入，不伪造插件版本或同步回执。 */
+  engineSync: 'NOT_CONNECTED';
+  jammerStatus: JammerStatusData;
+  /** 回显本次实际接受的参数同步探测范围（合同米）；旧响应缺省不含该字段。 */
+  detectionRangeM?: Meters;
+}
+/** 运行期本地参数读取：仅回显本地已接受的运行参数，不代表引擎执行确认（不伪造 ACK）。 */
+export interface JammerRuntimeParameters {
+  taskId: TaskId; jammerId: Identifier; version: number;
+  /** 本地接受的参数同步探测范围（合同米）。 */
+  detectionRangeM: Meters;
+  /** 干扰样式（仅宽带压制/瞄准式）；缺省表示未设置。 */
+  style?: 'BARRAGE' | 'SPOT';
+  /** 干扰天线俯仰角（-10～60°）；缺省表示未设置。 */
+  elevation?: Degrees;
+  /** 计划启动/停止帧序号（非负整数，stop>start）；缺省表示未配置计划帧。 */
+  plannedStartFrame?: number; plannedStopFrame?: number;
+}
+/** 运行期干扰计划保存请求；仅本地留存，不伪造引擎 ACK。 */
+export interface JammerPlanSaveRequest {
+  style: 'BARRAGE' | 'SPOT'; elevation: Degrees;
+  /** 计划启动/停止帧序号（非负整数，stop>start）；缺省表示未配置计划帧。 */
+  plannedStartFrame?: number; plannedStopFrame?: number;
+}
+/** 运行期干扰计划保存结果；storage 仅表示本地留存，不代表引擎执行成功。 */
+export interface JammerPlanSaved {
+  taskId: TaskId; jammerId: Identifier; style: 'BARRAGE' | 'SPOT'; elevation: Degrees;
+  plannedStartFrame?: number; plannedStopFrame?: number; storage: 'LOCAL_RUN';
 }
 export interface CompositeLossEvidence {
   linkId: Identifier; freeSpaceLossDb: Decibels; systemLossDb: Decibels;
@@ -492,7 +555,15 @@ export interface TelemetryFrame {
   uiLinks: UiLinkProjection[];
   eventIds: Identifier[]; evidence: FrameEvidence;
 }
-export interface DetectionEvent { eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'DETECTION'; sensorId: Identifier; targetPlatformId: Identifier; detectionProbability: Ratio01; dedupeKey: string; frequencyMinMHz?: Megahertz; frequencyMaxMHz?: Megahertz; detected?: boolean; }
+export interface DetectionEvent {
+  eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'DETECTION'; sensorId: Identifier; targetPlatformId: Identifier; detectionProbability: Ratio01; dedupeKey: string; frequencyMinMHz?: Megahertz; frequencyMaxMHz?: Megahertz; detected?: boolean;
+  /** ESM 实测目标位置，与同帧平台位置分列区分；缺省表示未提供，不计算猜值。 */
+  measuredLongitude?: Degrees; measuredLatitude?: Degrees; measuredAltitude?: Meters;
+  /** 目标实际工作频率，区别于 frequencyMinMHz/frequencyMaxMHz 的侦测频段。 */
+  actualFrequencyMHz?: Megahertz;
+  /** 接收信号强度；缺省表示未提供。 */
+  receivedSignalStrengthDbm?: DecibelMilliwatts;
+}
 export interface SwitchEvent {
   eventId: Identifier; frameId: FrameId; time: Seconds; sourceRegistryTime?: Seconds; type: 'LINK_SWITCH';
   direction: LinkDirection; oldLinkId: Identifier; newLinkId: Identifier; oldBer: Ratio01; newBer: Ratio01;
@@ -545,7 +616,7 @@ export interface EngineRouteSwitch extends EngineRoute {
   oldPathId: string | null; oldNodes: EnginePathNode[]; reasons: { linkId: string | null; reasons: string[] }[];
 }
 export interface EngineRouteAlarm { pathId: string | null; linkId: string | null; message: string | null }
-export interface EngineFrameEvent { type: string | null; pathId: string | null; uavNames: string[]; jammerNames: string[]; uavIds: string[]; jammerIds: string[] }
+export interface EngineFrameEvent { type: string | null; pathId: string | null; newPathId?: string | null; oldPathId?: string | null; uavNames: string[]; jammerNames: string[]; uavIds: string[]; jammerIds: string[] }
 export interface EngineJammer {
   name: string | null; platformId: string | null; detectStatus: string | null; deviceStatus: string | null;
   powerW: number | null; frequencyHz: number | null; rangeM: number | null;
@@ -557,7 +628,7 @@ export interface EngineJammer {
   actions: { action: string | null; targetName: string | null; targetPlatformId: string | null; mode: 'BARRAGE' | 'SPOT' | 'SWEEP' | null; engineMode: string | null }[];
 }
 export interface EngineFrameSnapshot {
-  /** simulationTime 为内部秒数；上游 sim_time_s 实际为毫秒，仅在接收入口转换。 */
+  /** frameId 保留上游非负秒值（可含小数）；simulationTime 为内部秒数，新帧按 frame_id 取值，历史归档保留已存秒值。 */
   kind: 'ENGINE_FRAME'; runId: string; engineEpoch: number; frameId: number; simulationTime: number;
   /** 上游计时原值，起点未约定，不用于推送延迟判定。 */
   wallTimeMs?: number | null;
@@ -710,7 +781,7 @@ export type ConfirmationAction =
 export interface ConfirmationRequest { action: ConfirmationAction; objectId: Identifier; }
 export interface ConfirmationContext { confirmationId: Identifier; state: ConfirmationState; actor: string; role: Role; createdAt: Iso8601Utc; expiresAt: Iso8601Utc; }
 
-export interface User { userId: Identifier; username: string; role: Role; status: 'ACTIVE' | 'DISABLED' | 'LOCKED'; lastLoginAt?: Iso8601Utc; }
+export interface User { userId: Identifier; username: string; displayName?: string; role: Role; status: 'ACTIVE' | 'DISABLED' | 'LOCKED'; lastLoginAt?: Iso8601Utc; }
 export interface MasterDataEntry { key: string; valueType: 'TEXT' | 'NUMBER' | 'BOOLEAN'; value: string | number | boolean; unit?: string; minimum?: number; maximum?: number; }
 export interface MasterDataContent { name: string; description: string; entries: MasterDataEntry[]; }
 export interface MasterData { dataId: Identifier; kind: string; version: number; referenceCount: number; active: boolean; content?: MasterDataContent; }

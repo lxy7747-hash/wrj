@@ -1435,28 +1435,110 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "object",
         "additionalProperties": false,
         "description": "Received engine-frame archive only. Segment rows are not merged into logical links; detailTruncated means report/UI projections are bounded and the verified raw JSONL must be downloaded for full detail.",
-        "required": ["sourceSha256", "frameCount", "firstSimulationTime", "lastSimulationTime", "missingFieldNames", "segmentRows", "switchRows", "eventRows"],
+        "required": [
+          "sourceSha256",
+          "frameCount",
+          "firstSimulationTime",
+          "lastSimulationTime",
+          "missingFieldNames",
+          "segmentRows",
+          "switchRows",
+          "eventRows"
+        ],
         "properties": {
-          "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-          "frameCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-          "firstSimulationTime": { "type": ["number", "null"], "minimum": 0 },
-          "lastSimulationTime": { "type": ["number", "null"], "minimum": 0 },
-          "missingFieldNames": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "segmentRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-          "switchRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-          "eventRows": { "type": "array", "items": { "type": "object", "additionalProperties": true } },
-          "detailTruncated": { "type": "boolean" },
-          "retainedDetailRows": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
+          "sourceSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "frameCount": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "firstSimulationTime": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "lastSimulationTime": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "missingFieldNames": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "segmentRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "switchRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "eventRows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "detailTruncated": {
+            "type": "boolean"
+          },
+          "retainedDetailRows": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
           "aggregate": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["uniqueSingleSegmentCount", "switchCount", "missing"],
+            "required": [
+              "uniqueSingleSegmentCount",
+              "switchCount",
+              "missing"
+            ],
             "properties": {
-              "uniqueSingleSegmentCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-              "averageGxbDb": { "type": "number" },
-              "averageBer": { "type": "number", "minimum": 0, "maximum": 1 },
-              "switchCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-              "missing": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+              "uniqueSingleSegmentCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "averageGxbDb": {
+                "type": "number"
+              },
+              "averageBer": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "switchCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "missing": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
             }
           }
         }
@@ -1464,33 +1546,82 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "engineCsv": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["sourceSha256", "files", "missing"],
+        "required": [
+          "sourceSha256",
+          "files",
+          "missing"
+        ],
         "properties": {
-          "sourceSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "sourceSha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
           "files": {
             "type": "array",
             "items": {
-              "type": "object", "additionalProperties": false,
-              "required": ["fileName", "rowCount", "sha256", "status", "skippedCount"],
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "fileName",
+                "rowCount",
+                "sha256",
+                "status",
+                "skippedCount"
+              ],
               "properties": {
-                "fileName": { "type": "string", "minLength": 1 },
-                "rowCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-                "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-                "status": { "enum": ["COMPLETE", "PARTIAL"] },
-                "skippedCount": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 },
-                "reason": { "type": "string", "minLength": 1 }
+                "fileName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "rowCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "status": {
+                  "enum": [
+                    "COMPLETE",
+                    "PARTIAL"
+                  ]
+                },
+                "skippedCount": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           },
           "missing": {
             "type": "array",
             "items": {
-              "type": "object", "additionalProperties": false,
-              "required": ["fileName", "status", "reason"],
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "fileName",
+                "status",
+                "reason"
+              ],
               "properties": {
-                "fileName": { "type": "string", "minLength": 1 },
-                "status": { "const": "SOURCE_MISSING" },
-                "reason": { "type": "string", "minLength": 1 }
+                "fileName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "const": "SOURCE_MISSING"
+                },
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                }
               }
             }
           }
@@ -2798,6 +2929,20 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         ],
         "description": "仅通信卫星使用；旧场景允许缺省。"
       },
+      "faction": {
+        "type": "string",
+        "enum": [
+          "BLUE",
+          "RED",
+          "NEUTRAL"
+        ],
+        "description": "所属阵营（蓝/红/中立）；旧场景缺省时按平台类型推断，不自动回写。"
+      },
+      "communicationRangeM": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "节点通信能力范围（m）；是通信能力范围，不是几何距离或海峡宽度。缺失表示未配置。"
+      },
       "category": {
         "type": "string",
         "enum": [
@@ -3139,7 +3284,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "if": {
           "properties": {
             "type": {
-              "enum": ["SAT", "MICROWAVE", "DATALINK"]
+              "enum": [
+                "SAT",
+                "MICROWAVE",
+                "DATALINK"
+              ]
             }
           }
         },
@@ -3299,6 +3448,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "maximum": 100,
         "description": "接收机噪声系数，单位 dB；缺省 3 dB（含天通卫星）。"
       },
+      "eirpDbw": {
+        "type": "number",
+        "description": "激光本地留存的 EIRP（dBW），与 PortParameters 同名同义；仅本地留存，不声称已接入执行。"
+      },
+      "gtDbk": {
+        "type": "number",
+        "description": "激光本地留存的接收 G/T（dB/K），与 PortParameters 同名同义；仅本地留存，不声称已接入执行。"
+      },
       "parameterSource": {
         "$ref": "#/components/schemas/LinkParameterSource",
         "description": "新增或编辑时用户选择的基础数据快照；旧场景可省略。"
@@ -3399,9 +3556,6 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           ]
         },
         "then": {
-          "required": [
-            "laser"
-          ],
           "properties": {
             "laser": {
               "$ref": "#/components/schemas/LaserLinkParameters"
@@ -3464,6 +3618,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "triggerTimeS": {
         "type": "number",
         "minimum": 0
+      },
+      "plannedStartFrame": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "计划启动帧序号；须小于 plannedStopFrame。0 为合法显式值。300 启/900 停为示例，不额外乘 5。"
+      },
+      "plannedStopFrame": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "计划停止帧序号；须大于 plannedStartFrame。缺省表示未配置停止帧。"
       },
       "detectionRange": {
         "type": "number",
@@ -4300,36 +4464,98 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   "TemplateRoutePoint": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["longitude", "latitude", "altitude", "speed"],
+    "required": [
+      "longitude",
+      "latitude",
+      "altitude",
+      "speed"
+    ],
     "properties": {
-      "longitude": { "type": "number", "minimum": -180, "maximum": 180 },
-      "latitude": { "type": "number", "minimum": -90, "maximum": 90 },
-      "altitude": { "type": "number", "minimum": 0 },
-      "speed": { "type": "number", "exclusiveMinimum": 0 }
+      "longitude": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180
+      },
+      "latitude": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90
+      },
+      "altitude": {
+        "type": "number",
+        "minimum": 0
+      },
+      "speed": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
     }
   },
   "ReturnPlan": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["timeS", "waypoints"],
+    "required": [
+      "timeS",
+      "waypoints"
+    ],
     "properties": {
-      "timeS": { "type": "number", "exclusiveMinimum": 0 },
-      "waypoints": { "type": "array", "minItems": 1, "items": { "$ref": "#/components/schemas/TemplateRoutePoint" } }
+      "timeS": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "waypoints": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "$ref": "#/components/schemas/TemplateRoutePoint"
+        }
+      }
     }
   },
   "PortParameters": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["txFrequency", "txBandwidth", "txPower", "rxFrequency", "rxBandwidth", "noiseFigureDb", "transferRate"],
+    "required": [
+      "txFrequency",
+      "txBandwidth",
+      "txPower",
+      "rxFrequency",
+      "rxBandwidth",
+      "noiseFigureDb",
+      "transferRate"
+    ],
     "properties": {
-      "txFrequency": { "type": "number", "exclusiveMinimum": 0 },
-      "txBandwidth": { "type": "number", "exclusiveMinimum": 0 },
-      "txPower": { "type": "number", "exclusiveMinimum": 0 },
-      "rxFrequency": { "type": "number", "exclusiveMinimum": 0 },
-      "rxBandwidth": { "type": "number", "exclusiveMinimum": 0 },
-      "noiseFigureDb": { "type": "number", "minimum": 0 },
-      "transferRate": { "type": "number", "exclusiveMinimum": 0 },
-      "parameterSource": { "$ref": "#/components/schemas/PortParameterSource" },
+      "txFrequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "txBandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "txPower": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "rxFrequency": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "rxBandwidth": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "noiseFigureDb": {
+        "type": "number",
+        "minimum": 0
+      },
+      "transferRate": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      },
+      "parameterSource": {
+        "$ref": "#/components/schemas/PortParameterSource"
+      },
       "eirpDbw": {
         "type": "number"
       },
@@ -4343,26 +4569,103 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "sourceId", "sourceVersion", "fields"],
+        "required": [
+          "kind",
+          "sourceId",
+          "sourceVersion",
+          "fields"
+        ],
         "properties": {
-          "kind": { "const": "EQUIPMENT" },
-          "sourceId": { "type": "string", "minLength": 1, "pattern": "\\S" },
-          "sourceVersion": { "type": "integer", "minimum": 1 },
-          "fields": { "type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": { "enum": ["bandwidth", "txPower", "dataRate"] } }
+          "kind": {
+            "const": "EQUIPMENT"
+          },
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "bandwidth",
+                "txPower",
+                "dataRate"
+              ]
+            }
+          }
         }
       },
       {
         "type": "object",
         "additionalProperties": false,
-        "required": ["kind", "sourceId", "sourceVersion", "fields"],
+        "required": [
+          "kind",
+          "sourceId",
+          "sourceVersion",
+          "fields"
+        ],
         "properties": {
-          "kind": { "const": "MASTER_DATA" },
-          "sourceId": { "type": "string", "minLength": 1, "pattern": "\\S" },
-          "sourceVersion": { "type": "integer", "minimum": 1 },
-          "fields": { "type": "array", "minItems": 1, "maxItems": 7, "uniqueItems": true, "items": { "enum": ["frequency", "bandwidth", "txPower", "rxFrequency", "rxBandwidth", "dataRate", "noiseFigureDb"] } }
+          "kind": {
+            "const": "MASTER_DATA"
+          },
+          "sourceId": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "sourceVersion": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fields": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 7,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "frequency",
+                "bandwidth",
+                "txPower",
+                "rxFrequency",
+                "rxBandwidth",
+                "dataRate",
+                "noiseFigureDb"
+              ]
+            }
+          }
         }
       }
     ]
+  },
+  "CommPortDefinition": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "deviceType",
+      "network"
+    ],
+    "properties": {
+      "deviceType": {
+        "enum": [
+          "WSF_RADIO_TRANSCEIVER",
+          "WSF_COMM_TRANSCEIVER"
+        ]
+      },
+      "network": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    }
   },
   "DeviceParameters": {
     "type": "object",
@@ -4372,21 +4675,216 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "MISSION_UAV_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" }, "microwave_link": { "$ref": "#/components/schemas/PortParameters" }, "c_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "c_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_downlink": { "$ref": "#/components/schemas/PortParameters" } } },
-          "COMMAND_VEHICLE_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "c_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "c_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_uplink": { "$ref": "#/components/schemas/PortParameters" }, "l_band_downlink": { "$ref": "#/components/schemas/PortParameters" }, "fiber_link": { "$ref": "#/components/schemas/PortParameters" } } },
-          "REAR_COMM_PLATFORM": { "type": "object", "additionalProperties": false, "properties": { "sat_link_a": { "$ref": "#/components/schemas/PortParameters" }, "sat_link_b": { "$ref": "#/components/schemas/PortParameters" }, "microwave_link": { "$ref": "#/components/schemas/PortParameters" }, "fiber_link": { "$ref": "#/components/schemas/PortParameters" } } },
-          "TIAN_TONG_SAT": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" } } },
-          "SHEN_TONG_SAT": { "type": "object", "additionalProperties": false, "properties": { "sat_link": { "$ref": "#/components/schemas/PortParameters" } } }
+          "MISSION_UAV_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "microwave_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "c_band_uplink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "c_band_downlink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "l_band_uplink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "l_band_downlink": {
+                "$ref": "#/components/schemas/PortParameters"
+              }
+            }
+          },
+          "COMMAND_VEHICLE_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "c_band_uplink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "c_band_downlink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "l_band_uplink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "l_band_downlink": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "fiber_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              }
+            }
+          },
+          "REAR_COMM_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link_a": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "sat_link_b": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "microwave_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              },
+              "fiber_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              }
+            }
+          },
+          "TIAN_TONG_SAT": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              }
+            }
+          },
+          "SHEN_TONG_SAT": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/PortParameters"
+              }
+            }
+          }
+        }
+      },
+      "commPorts": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "MISSION_UAV_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "microwave_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "c_band_uplink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "c_band_downlink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "l_band_uplink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "l_band_downlink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "lazer_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              }
+            }
+          },
+          "COMMAND_VEHICLE_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "c_band_uplink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "c_band_downlink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "l_band_uplink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "l_band_downlink": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "fiber_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              }
+            }
+          },
+          "REAR_COMM_PLATFORM": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link_a": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "sat_link_b": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "microwave_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              },
+              "fiber_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              }
+            }
+          },
+          "TIAN_TONG_SAT": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              }
+            }
+          },
+          "SHEN_TONG_SAT": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "sat_link": {
+                "$ref": "#/components/schemas/CommPortDefinition"
+              }
+            }
+          }
         }
       },
       "antennaGains": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "MICRO_UAV_OMNI_ANTENNA": { "type": "number" }, "MICRO_REAR_PLATFORM_DIR_ANTENNA": { "type": "number" }, "OMNI_ANTENNA_HIGHGAIN": { "type": "number" },
-          "C_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "C_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
-          "L_BAND_DIRECTIONAL_VEHICLE_ANTENNA": { "type": "number" }, "L_BAND_DIRECTIONAL_UAV_ANTENNA": { "type": "number" },
-          "SAT_GROUND_MOBILE_ANTENNA": { "type": "number" }, "SAT_SPACE_BEAM_ANTENNA": { "type": "number" }, "SAT_UAV_CLUSTER_WIDEBAND_ANTENNA": { "type": "number" }, "LASER_COMM_ANTENNA": { "type": "number" },
+          "MICRO_UAV_OMNI_ANTENNA": {
+            "type": "number"
+          },
+          "MICRO_REAR_PLATFORM_DIR_ANTENNA": {
+            "type": "number"
+          },
+          "OMNI_ANTENNA_HIGHGAIN": {
+            "type": "number"
+          },
+          "C_BAND_DIRECTIONAL_VEHICLE_ANTENNA": {
+            "type": "number"
+          },
+          "C_BAND_DIRECTIONAL_UAV_ANTENNA": {
+            "type": "number"
+          },
+          "L_BAND_DIRECTIONAL_VEHICLE_ANTENNA": {
+            "type": "number"
+          },
+          "L_BAND_DIRECTIONAL_UAV_ANTENNA": {
+            "type": "number"
+          },
+          "SAT_GROUND_MOBILE_ANTENNA": {
+            "type": "number"
+          },
+          "SAT_SPACE_BEAM_ANTENNA": {
+            "type": "number"
+          },
+          "SAT_UAV_CLUSTER_WIDEBAND_ANTENNA": {
+            "type": "number"
+          },
+          "LASER_COMM_ANTENNA": {
+            "type": "number"
+          },
           "OMNI_ANTENNA": {
             "type": "number"
           }
@@ -5284,6 +5782,31 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "detected": {
         "type": "boolean"
+      },
+      "measuredLongitude": {
+        "type": "number",
+        "minimum": -180,
+        "maximum": 180,
+        "description": "ESM 实测目标经度，与同帧平台位置分列区分；缺省表示未提供，不计算猜值。"
+      },
+      "measuredLatitude": {
+        "type": "number",
+        "minimum": -90,
+        "maximum": 90,
+        "description": "ESM 实测目标纬度；缺省表示未提供。"
+      },
+      "measuredAltitude": {
+        "type": "number",
+        "description": "ESM 实测目标高度（m）；缺省表示未提供。"
+      },
+      "actualFrequencyMHz": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "目标实际工作频率（MHz），区别于侦测频段 frequencyMinMHz/frequencyMaxMHz。"
+      },
+      "receivedSignalStrengthDbm": {
+        "type": "number",
+        "description": "接收信号强度（dBm）；缺省表示未提供。"
       }
     },
     "x-fixture-path": "$.events",
@@ -5341,6 +5864,31 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
               {
                 "required": [
                   "detected"
+                ]
+              },
+              {
+                "required": [
+                  "measuredLongitude"
+                ]
+              },
+              {
+                "required": [
+                  "measuredLatitude"
+                ]
+              },
+              {
+                "required": [
+                  "measuredAltitude"
+                ]
+              },
+              {
+                "required": [
+                  "actualFrequencyMHz"
+                ]
+              },
+              {
+                "required": [
+                  "receivedSignalStrengthDbm"
                 ]
               }
             ]
@@ -5406,8 +5954,16 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "string",
         "format": "date-time"
       },
-      "fileSource": { "$ref": "#/components/schemas/PlaybackFileSource" },
-      "executionSource": { "type": "string", "enum": ["REMOTE_WS"], "description": "Local reception lifecycle, not sender execution acknowledgement." },
+      "fileSource": {
+        "$ref": "#/components/schemas/PlaybackFileSource"
+      },
+      "executionSource": {
+        "type": "string",
+        "enum": [
+          "REMOTE_WS"
+        ],
+        "description": "Local reception lifecycle, not sender execution acknowledgement."
+      },
       "engineControl": {
         "type": "object",
         "additionalProperties": false,
@@ -6127,7 +6683,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minLength": 1
       },
       "username": {
-        "type": "string"
+        "type": "string",
+        "description": "唯一登录账号；兼容既有 username 字段。"
       },
       "role": {
         "type": "string",
@@ -6146,6 +6703,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "lastLoginAt": {
         "type": "string",
         "format": "date-time"
+      },
+      "displayName": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "pattern": "\\S",
+        "description": "显示用户名；旧账号默认使用登录账号，更新时省略则保留已有值。"
       }
     }
   },
@@ -6588,6 +7152,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
           },
           "menuPaths": {
             "$ref": "#/components/schemas/MenuPaths"
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "\\S",
+            "description": "显示用户名；旧账号默认使用登录账号，更新时省略则保留已有值。"
           }
         }
       },
@@ -7375,10 +7946,19 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
   "PlaybackFileSource": {
     "type": "object",
     "additionalProperties": false,
-    "required": ["eventSha256", "positionSha256"],
+    "required": [
+      "eventSha256",
+      "positionSha256"
+    ],
     "properties": {
-      "eventSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
-      "positionSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      "eventSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "positionSha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      }
     }
   },
   "SimulationCreateRequest": {
@@ -7389,7 +7969,13 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "scenarioId"
     ],
     "properties": {
-      "fileSource": { "$ref": "#/components/schemas/PlaybackFileSource" },
+      "referenceScenarioId": {
+        "type": "string",
+        "pattern": "^SCN-"
+      },
+      "fileSource": {
+        "$ref": "#/components/schemas/PlaybackFileSource"
+      },
       "taskId": {
         "type": "string",
         "pattern": "^TASK-"
@@ -9826,6 +10412,11 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "parameters": {
         "$ref": "#/components/schemas/JammingCommand"
+      },
+      "detectionRangeM": {
+        "type": "number",
+        "exclusiveMinimum": 0,
+        "description": "参数同步探测范围（合同米），界面按 km 1–100 编辑；旧请求缺省不含该字段仍兼容。"
       }
     }
   },
@@ -9838,7 +10429,7 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       "parameterVersion",
       "configParameterVersion",
       "nodeParameterVersion",
-      "engineParameterVersion",
+      "engineSync",
       "uiParameterVersion",
       "effectiveFrameId",
       "effectiveSimulationTime",
@@ -9866,9 +10457,9 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "type": "integer",
         "minimum": 1
       },
-      "engineParameterVersion": {
-        "type": "integer",
-        "minimum": 1
+      "engineSync": {
+        "const": "NOT_CONNECTED",
+        "description": "真实引擎同步状态：当前恒为未接入，不伪造插件版本或同步回执。"
       },
       "uiParameterVersion": {
         "type": "integer",
@@ -9883,10 +10474,15 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "minimum": 0
       },
       "status": {
-        "const": "SYNCHRONIZED"
+        "const": "LOCAL_ACCEPTED"
       },
       "jammerStatus": {
         "$ref": "#/components/schemas/JammerStatusData"
+      },
+      "detectionRangeM": {
+        "type": "number",
+        "minimum": 0,
+        "description": "回显本次实际接受的参数同步探测范围（合同米）；旧响应缺省不含该字段。"
       }
     }
   },
@@ -9907,6 +10503,176 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
       },
       "data": {
         "$ref": "#/components/schemas/SyncResult"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "JammerRuntimeParameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "jammerId",
+      "version",
+      "detectionRangeM"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "version": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "detectionRangeM": {
+        "type": "number",
+        "minimum": 0,
+        "description": "本地接受的参数同步探测范围（合同米）。"
+      },
+      "style": {
+        "type": "string",
+        "enum": [
+          "BARRAGE",
+          "SPOT"
+        ],
+        "description": "干扰样式（宽带压制/瞄准式）；缺省表示未设置。"
+      },
+      "elevation": {
+        "type": "number",
+        "minimum": -10,
+        "maximum": 60,
+        "description": "干扰天线俯仰角（度）；缺省表示未设置。"
+      },
+      "plannedStartFrame": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "计划启动帧序号；缺省表示未配置。"
+      },
+      "plannedStopFrame": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "计划停止帧序号；缺省表示未配置。"
+      }
+    }
+  },
+  "JammerPlanSaveRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "style",
+      "elevation"
+    ],
+    "properties": {
+      "style": {
+        "type": "string",
+        "enum": [
+          "BARRAGE",
+          "SPOT"
+        ]
+      },
+      "elevation": {
+        "type": "number",
+        "minimum": -10,
+        "maximum": 60
+      },
+      "plannedStartFrame": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "plannedStopFrame": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  },
+  "JammerPlanSaved": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "taskId",
+      "jammerId",
+      "style",
+      "elevation",
+      "storage"
+    ],
+    "properties": {
+      "taskId": {
+        "type": "string",
+        "pattern": "^TASK-"
+      },
+      "jammerId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "style": {
+        "type": "string",
+        "enum": [
+          "BARRAGE",
+          "SPOT"
+        ]
+      },
+      "elevation": {
+        "type": "number",
+        "minimum": -10,
+        "maximum": 60
+      },
+      "plannedStartFrame": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "plannedStopFrame": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "storage": {
+        "const": "LOCAL_RUN"
+      }
+    }
+  },
+  "GetapiV1TasksTaskIdJammersJammerIdParametersResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/JammerRuntimeParameters"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "PutapiV1TasksTaskIdJammersJammerIdPlanRequest": {
+    "$ref": "#/components/schemas/JammerPlanSaveRequest"
+  },
+  "PutapiV1TasksTaskIdJammersJammerIdPlanResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/JammerPlanSaved"
       },
       "meta": {
         "$ref": "#/components/schemas/Meta"
@@ -11817,14 +12583,14 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "maximum": 9007199254740991
       },
       "frameId": {
-        "type": "integer",
+        "type": "number",
         "minimum": 0,
         "maximum": 9007199254740991
       },
       "simulationTime": {
         "type": "number",
         "minimum": 0,
-        "description": "Internal simulation time in seconds. Newly ingested websocketNew frames use frame_id as seconds (5, 10, 15). Legacy sim_time_s is ignored; existing normalized archives retain their stored time."
+        "description": "Internal simulation time in seconds. Newly ingested websocketNew frames use frame_id as seconds, retaining fractional values such as 0.25 and 12.75. Legacy sim_time_s is ignored; existing normalized archives retain their stored time."
       },
       "modelVersion": {
         "type": [
@@ -11921,6 +12687,8 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
                 "null"
               ]
             },
+            "newPathId": { "type": ["string", "null"] },
+            "oldPathId": { "type": ["string", "null"] },
             "uavNames": {
               "type": "array",
               "items": {
@@ -11985,6 +12753,97 @@ export const OPENAPI_SCHEMA_SNAPSHOT: Readonly<Record<string, unknown>> = Object
         "$ref": "#/components/schemas/EngineFrameSnapshot"
       }
     ]
+  },
+  "MissionRecoveryStatus": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "message",
+      "canStop"
+    ],
+    "properties": {
+      "runId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "scenarioId": {
+        "type": "string",
+        "minLength": 1
+      },
+      "pid": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "canStop": {
+        "type": "boolean"
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "MissionRecoveryStopRequest": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "runId"
+    ],
+    "properties": {
+      "runId": {
+        "type": "string",
+        "pattern": "^RUN-[A-Za-z0-9][A-Za-z0-9._-]*$"
+      }
+    }
+  },
+  "MissionRecoveryList": {
+    "type": "array",
+    "items": {
+      "$ref": "#/components/schemas/MissionRecoveryStatus"
+    }
+  },
+  "StopMissionRecoveryRequest": {
+    "$ref": "#/components/schemas/MissionRecoveryStopRequest"
+  },
+  "GetMissionRecoveryResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MissionRecoveryList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
+  },
+  "StopMissionRecoveryResponse": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "ok",
+      "data",
+      "meta"
+    ],
+    "properties": {
+      "ok": {
+        "const": true
+      },
+      "data": {
+        "$ref": "#/components/schemas/MissionRecoveryList"
+      },
+      "meta": {
+        "$ref": "#/components/schemas/Meta"
+      }
+    }
   }
 }
 )

@@ -24,7 +24,7 @@ import { PLATFORM_POSITION_RULES, SATELLITE_GEO_POSITION } from './platform-posi
 import { taskPhaseIssue } from './task-phases'
 import { isLinkParameterSource } from './link-parameter-source'
 import { isConfiguredLinkEnabled, readLinkSettings } from './link-settings'
-import { TEMPLATE_ANTENNA_NAMES, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS, readPortParameters, resolveTemplateLinkPorts } from './template-defaults'
+import { TEMPLATE_ANTENNA_NAMES, TEMPLATE_COMM_PORT_META, TEMPLATE_PLATFORM_TYPES, TEMPLATE_PORT_PARAMETER_SOURCE_FIELDS, readPortParameters, resolveLinkRequiredCommPorts, resolveTemplateLinkPorts } from './template-defaults'
 
 const ROOT_KEYS = [
   'schemaVersion',
@@ -68,10 +68,10 @@ export const SEA_POLYGON_LIMITS = { minPoints: 3, maxPoints: 64 } as const
 const PLATFORM_KEYS = ['id', 'name', 'type', 'category', 'initialPosition', 'waypoints', 'linkIds', 'sensorIds', 'jammerIds'] as const
 /** 已删除的平台字段（初始航向）：旧数据中接受但不检查，由 dropRetiredScenarioFields 丢弃。 */
 const RETIRED_PLATFORM_KEYS = ['heading'] as const
-const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
+const OPTIONAL_PLATFORM_KEYS = ['satelliteType', 'faction', 'communicationRangeM', 'loiterWaypoints', 'returnPlan', ...RETIRED_PLATFORM_KEYS] as const
 const LINK_KEYS = ['id', 'type', 'sourcePlatformId', 'targetPlatformId', 'frequency', 'bandwidth', 'txPower', 'antennaGain', 'modulation', 'berThreshold', 'dataRate', 'direction'] as const
 const OPTIONAL_LINK_KEYS = ['enabled', 'antennaGainCorrectionDb', 'coding', 'antiJammingGainDb', 'spatialIsolationDb', 'relayPlatformId', 'band',
-  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate'] as const
+  'rxFrequency', 'rxBandwidth', 'txPolarization', 'rxPolarization', 'noiseFigureDb', 'eirpDbw', 'gtDbk', 'laser', 'parameterSource', 'forwardDataRate', 'reverseDataRate'] as const
 const LASER_KEYS = ['txApertureDiameterM', 'rxApertureDiameterM', 'pulseWidthS', 'modulation'] as const
 export const DATALINK_BANDS = ['C', 'L'] as const
 export const LINK_SWITCH_TRIGGERS = ['DISTANCE_ABOVE', 'DISTANCE_BELOW', 'JAMMING_ACTIVE', 'JAMMING_STOPPED'] as const
@@ -79,7 +79,7 @@ const SWITCH_RULE_KEYS = ['id', 'trigger', 'sourcePlatformId', 'targetPlatformId
 const OPTIONAL_SWITCH_RULE_KEYS = ['enabled', 'distanceThresholdM', 'jammerId'] as const
 const JAMMER_KEYS = ['id', 'platformId', 'type', 'defaultPower', 'frequency', 'bandwidth', 'detectionRange', 'jammingRange'] as const
 const RETIRED_JAMMER_KEYS = ['autoDetect'] as const
-const OPTIONAL_JAMMER_KEYS = ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle', 'triggerTimeS', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
+const OPTIONAL_JAMMER_KEYS = ['radarFrequency', 'radarBandwidth', 'radarPower', 'noiseFigureDb', 'gtDbk', 'eirpDbw', 'antennaGainDbi', 'txLossDb', 'sweepDutyCycle', 'triggerTimeS', 'plannedStartFrame', 'plannedStopFrame', 'releaseRange', 'detectionMinimumRange', 'detectionDelayS', 'jammingDurationS', ...RETIRED_JAMMER_KEYS] as const
 const SENSOR_KEYS = ['id', 'platformId', 'frequencyRange', 'detectionRange'] as const
 const FREQUENCY_RANGE_KEYS = ['min', 'max'] as const
 const OUTPUT_KEYS = ['directory', 'writeInterval', 'linkQualityEnabled', 'eventsEnabled', 'linkSwitchEnabled'] as const
@@ -118,6 +118,8 @@ export const PLATFORM_TYPE_DOMAINS: Record<PlatformType, DeploymentDomain> = {
   AIRBORNE_JAMMER_PLATFORM: 'air',
 }
 export const SATELLITE_TYPES = ['TIANTONG', 'SHENTONG'] as const
+/** 平台阵营枚举；缺省表示未显式配置，读取时按平台类型推断，不自动回写旧数据。 */
+export const FACTIONS = ['BLUE', 'RED', 'NEUTRAL'] as const
 /**
  * 业务信息节点的受保护容量上限。50 节点是验收基线而非硬边界；保留有限上限，
  * 让验收后的扩展配置在进入真实引擎压测前仍可被完整保存和校验。
@@ -387,8 +389,8 @@ export function parseJsonText(text: string): JsonTextParseResult {
 }
 
 /**
- * 判断场景实体是否计入业务信息节点容量。
- * @param type 场景实体类型。
+ * 判断节点是否计入业务信息节点容量。
+ * @param type 节点类型。
  * @returns 属于文档规定的四类业务信息节点时返回 `true`。
  * @remarks 纯分类判断，不修改场景数据。
  */
@@ -434,7 +436,7 @@ function inspectReferenceIds(
   if (new Set(value).size !== value.length) addError(errors, 'REFERENCE_DUPLICATED', '关联 ID 不允许重复。', fieldPath)
   if (value.some((id) => !knownIds.has(id))) addError(errors, 'REFERENCE_NOT_FOUND', '关联 ID 必须引用当前场景中存在的对象。', fieldPath)
   if (value.some((id) => knownIds.has(id) && !ownedIds.has(id))) {
-    addError(errors, 'REFERENCE_OWNERSHIP_MISMATCH', '关联对象不属于当前场景实体。', fieldPath)
+    addError(errors, 'REFERENCE_OWNERSHIP_MISMATCH', '关联对象不属于当前节点。', fieldPath)
   }
 }
 
@@ -511,15 +513,13 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
       }
       if (value.laser.modulation !== LASER_LINK_MODULATION) addError(errors, 'LASER_MODULATION_INVALID', '激光调制方式请选择 OOK。', `${path}.laser.modulation`)
     }
-  } else if (mode === 'write' && value.type === 'LASER' && value.enabled !== false) {
-    addError(errors, 'LASER_PARAMETERS_REQUIRED', '启用的激光链路必须填写光学口径、脉宽和光调制方式。', `${path}.laser`)
   }
   if (mode === 'write' && value.type === 'LASER' && value.enabled !== false) {
     if (!isPositiveFiniteNumber(value.txPower)) addError(errors, 'LASER_POWER_INVALID', '激光光功率必须大于 0 W。', `${path}.txPower`)
     if (!isPositiveFiniteNumber(value.dataRate)) addError(errors, 'LASER_RATE_INVALID', '激光链路介质传输速率必须大于 0 Mbps。', `${path}.dataRate`)
   }
-  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
-  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前场景实体。', `${path}.targetPlatformId`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'LINK_SOURCE_INVALID', '链路源平台必须引用当前节点。', `${path}.sourcePlatformId`)
+  if (typeof value.targetPlatformId !== 'string' || !platformIds.has(value.targetPlatformId)) addError(errors, 'LINK_TARGET_INVALID', '链路目标平台必须引用当前节点。', `${path}.targetPlatformId`)
   if (typeof value.sourcePlatformId === 'string' && value.sourcePlatformId === value.targetPlatformId) addError(errors, 'LINK_ENDPOINT_DUPLICATED', '链路源平台和目标平台不能相同。', `${path}.targetPlatformId`)
   if (!isPositiveFiniteNumber(value.frequency)) addError(errors, 'LINK_FREQUENCY_INVALID', '链路频率必须大于 0 MHz。', `${path}.frequency`)
   if (!isPositiveFiniteNumber(value.bandwidth)) addError(errors, 'LINK_BANDWIDTH_INVALID', '链路带宽必须大于 0 MHz。', `${path}.bandwidth`)
@@ -545,6 +545,8 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
     ['antennaGainCorrectionDb', '天线增益修正值', -Infinity],
     ['antiJammingGainDb', '波形抗干扰增益', 0],
     ['spatialIsolationDb', '空域隔离量', 0],
+    ['eirpDbw', 'EIRP', -Infinity],
+    ['gtDbk', '接收 G/T', -Infinity],
   ] as const) {
     if (Object.hasOwn(value, key) && !isFiniteNumber(value[key], minimum)) {
       addError(errors, 'LINK_GAIN_INVALID', `${label}必须为${minimum === 0 ? '非负' : ''}有限数值。`, `${path}.${key}`)
@@ -577,7 +579,7 @@ function inspectLink(value: unknown, index: number, platformIds: ReadonlySet<str
 /**
  * 校验卫星开关和切换策略，同时兼容历史类型开关的结构校验。
  * @param value 未受信任的链路设置。
- * @param platforms 未受信任的场景实体集合，用于核对卫星类型。
+ * @param platforms 未受信任的节点集合，用于核对卫星类型。
  * @param errors 接收错误的数组；错误路径用于页面定位。
  */
 function inspectLinkSettings(value: unknown, platforms: unknown, errors: ValidationIssue[], mode: 'read' | 'write',
@@ -693,7 +695,7 @@ function inspectLinkCalc(value: unknown, errors: ValidationIssue[]): void {
 /**
  * 校验阶段切换规则：端点、目标链路与干扰设备都须引用当前场景，且目标链路连接同一对端点。
  * @param value 未受信任的规则数组。
- * @param platforms 场景实体，用于核对端点。
+ * @param platforms 节点，用于核对端点。
  * @param links 场景链路，用于核对切换目标。
  * @param jammers 场景干扰设备，用于核对干扰条件。
  * @param demands 场景信息需求；生成器只把规则用于同方向业务，端点上有启用业务却无同方向业务时阻断，避免规则静默失效。
@@ -731,7 +733,7 @@ function inspectSwitchRules(value: unknown, platforms: unknown, links: unknown, 
     if (!(LINK_SWITCH_TRIGGERS as readonly unknown[]).includes(trigger)) addError(errors, 'SWITCH_RULE_TRIGGER_INVALID', '请选择切换条件。', `${path}.trigger`)
     for (const key of ['sourcePlatformId', 'targetPlatformId'] as const) {
       if (typeof rule[key] !== 'string' || !platformIds.has(rule[key])) {
-        addError(errors, 'SWITCH_RULE_ENDPOINT_INVALID', `${key === 'sourcePlatformId' ? '源' : '目标'}平台必须引用当前场景实体。`, `${path}.${key}`)
+        addError(errors, 'SWITCH_RULE_ENDPOINT_INVALID', `${key === 'sourcePlatformId' ? '源' : '目标'}平台必须引用当前节点。`, `${path}.${key}`)
       }
     }
     if (rule.sourcePlatformId === rule.targetPlatformId) addError(errors, 'SWITCH_RULE_ENDPOINT_DUPLICATED', '源平台和目标平台不能相同。', `${path}.targetPlatformId`)
@@ -820,7 +822,7 @@ function inspectTemplatePlatformRoutes(value: Record<string, unknown>, index: nu
 }
 
 function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): void {
-  if (!isClosedObject(value, [], ['ports', 'antennaGains'])) {
+  if (!isClosedObject(value, [], ['ports', 'commPorts', 'antennaGains'])) {
     addError(errors, 'DEVICE_PARAMETERS_INVALID', '通信设备参数结构不正确。', 'deviceParameters')
     return
   }
@@ -861,6 +863,38 @@ function inspectDeviceParameters(value: unknown, errors: ValidationIssue[]): voi
       }
     }
   }
+  if (Object.hasOwn(value, 'commPorts')) {
+    const commPorts = value.commPorts
+    if (commPorts === null || typeof commPorts !== 'object' || Array.isArray(commPorts)) {
+      addError(errors, 'DEVICE_COMM_PORTS_INVALID', '通信端口清单必须为对象。', 'deviceParameters.commPorts')
+    } else for (const [platformType, ports] of Object.entries(commPorts)) {
+      const platformPath = `deviceParameters.commPorts.${platformType}`
+      if (!(TEMPLATE_PLATFORM_TYPES as readonly string[]).includes(platformType) || ports === null || typeof ports !== 'object' || Array.isArray(ports)) {
+        addError(errors, 'DEVICE_COMM_PORTS_INVALID', '通信平台类型或端口清单不正确。', platformPath)
+        continue
+      }
+      const templatePorts = TEMPLATE_COMM_PORT_META[platformType as (typeof TEMPLATE_PLATFORM_TYPES)[number]]
+      for (const [portName, definition] of Object.entries(ports)) {
+        const path = `${platformPath}.${portName}`
+        const expected = templatePorts[portName]
+        if (expected === undefined) {
+          addError(errors, 'DEVICE_COMM_PORT_UNKNOWN', '该平台类型不包含指定的模板通信端口。', path)
+          continue
+        }
+        if (!isClosedObject(definition, ['deviceType', 'network'], [])) {
+          addError(errors, 'DEVICE_COMM_PORT_INVALID', '通信端口定义结构不正确。', path)
+          continue
+        }
+        const portDefinition = definition as { deviceType?: unknown; network?: unknown }
+        if (portDefinition.deviceType !== expected.deviceType) {
+          addError(errors, 'DEVICE_COMM_PORT_DEVICE_INVALID', `端口设备类型必须为 ${expected.deviceType}。`, `${path}.deviceType`)
+        }
+        if (portDefinition.network !== expected.network) {
+          addError(errors, 'DEVICE_COMM_PORT_NETWORK_INVALID', `端口网络必须为 ${expected.network}。`, `${path}.network`)
+        }
+      }
+    }
+  }
   if (Object.hasOwn(value, 'antennaGains')) {
     if (value.antennaGains === null || typeof value.antennaGains !== 'object' || Array.isArray(value.antennaGains)) {
       addError(errors, 'ANTENNA_GAINS_INVALID', '天线增益必须为对象。', 'deviceParameters.antennaGains')
@@ -890,7 +924,7 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
     }
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'JAMMER_ID_INVALID', '干扰设备 ID 为必填项。', `${path}.id`)
-  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前场景实体。', `${path}.platformId`)
+  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_INVALID', '干扰设备必须归属于当前节点。', `${path}.platformId`)
   else if (mode === 'write' && !jammerPlatformIds.has(value.platformId)) addError(errors, 'JAMMER_PLATFORM_TYPE_INVALID', '请选择地面干扰站或机载干扰平台作为所属干扰节点。', `${path}.platformId`)
   if (typeof value.type !== 'string' || !(JAMMER_TYPES as readonly string[]).includes(value.type)) addError(errors, 'JAMMER_TYPE_INVALID', '干扰设备类型不正确。', `${path}.type`)
   if (mode === 'write' ? !isPositiveFiniteNumber(value.defaultPower) : !isFiniteNumber(value.defaultPower, 0)) {
@@ -932,6 +966,17 @@ function inspectJammer(value: unknown, index: number, platformIds: ReadonlySet<s
   }
   // 时长本身非法时由场景字段报错，不连带误报合法触发时刻。
   if (Object.hasOwn(value, 'triggerTimeS') && !isFiniteNumber(value.triggerTimeS, 0, isPositiveFiniteNumber(duration) ? duration : Infinity)) addError(errors, 'JAMMER_TRIGGER_TIME_INVALID', '干扰触发时间须在 0 秒至仿真总时长之间。', `${path}.triggerTimeS`)
+  // 计划帧：非负整数，且停止帧严格大于启动帧；0 是合法的显式值，不当作未配置。
+  for (const [key, label] of [['plannedStartFrame', '计划启动帧'], ['plannedStopFrame', '计划停止帧']] as const) {
+    if (Object.hasOwn(value, key) && !(Number.isSafeInteger(value[key]) && (value[key] as number) >= 0)) {
+      addError(errors, 'JAMMER_PLANNED_FRAME_INVALID', `${label}必须为非负整数。`, `${path}.${key}`)
+    }
+  }
+  if (Object.hasOwn(value, 'plannedStartFrame') && Object.hasOwn(value, 'plannedStopFrame')
+    && Number.isSafeInteger(value.plannedStartFrame) && Number.isSafeInteger(value.plannedStopFrame)
+    && (value.plannedStopFrame as number) <= (value.plannedStartFrame as number)) {
+    addError(errors, 'JAMMER_PLANNED_FRAME_ORDER_INVALID', '计划停止帧必须大于计划启动帧。', `${path}.plannedStopFrame`)
+  }
 }
 
 /** D6：同类干扰平台共用参数，每个平台至多挂接一台干扰设备。 */
@@ -1022,7 +1067,7 @@ function inspectSensor(value: unknown, index: number, platformIds: ReadonlySet<s
     return
   }
   if (typeof value.id !== 'string' || value.id.trim() === '') addError(errors, 'SENSOR_ID_INVALID', '传感器 ID 为必填项。', `${path}.id`)
-  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'SENSOR_PLATFORM_INVALID', '传感器必须归属于当前场景实体。', `${path}.platformId`)
+  if (typeof value.platformId !== 'string' || !platformIds.has(value.platformId)) addError(errors, 'SENSOR_PLATFORM_INVALID', '传感器必须归属于当前节点。', `${path}.platformId`)
   if (!isClosedObject(value.frequencyRange, FREQUENCY_RANGE_KEYS)) {
     addError(errors, 'SENSOR_FREQUENCY_RANGE_INVALID', '传感器频率范围结构不正确。', `${path}.frequencyRange`)
   } else {
@@ -1076,7 +1121,7 @@ function isDemandReachable(links: readonly Link[], sourcePlatformId: string, tar
 }
 
 /**
- * 激光链路只保留天线图、不会进入新模板通信端口。业务绑定激光链路，或同方向仅能
+ * 激光链路不建立可执行链路/路由映射（涉及无人机时仅保留模板 lazer_link 端口定义）。业务绑定激光链路，或同方向仅能
  * 通过激光到达目标时返回精确的业务/目标索引，供生成器过滤；不作为界面校验警告。
  */
 export function laserOnlyBusinessPaths(config: ScenarioConfig): Array<{ fieldPath: string; demandIndex: number; targetIndex: number | 'ALL' }> {
@@ -1139,7 +1184,7 @@ function inspectInformationDemand(value: unknown, index: number, platformIds: Re
       if (value.direction !== link.direction && !reportedAsTypeConflict) addError(errors, 'INFORMATION_DEMAND_LINK_DIRECTION_MISMATCH', '业务方向必须与所属链路一致。', `${path}.direction`)
     }
   }
-  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前场景实体。', `${path}.sourcePlatformId`)
+  if (typeof value.sourcePlatformId !== 'string' || !platformIds.has(value.sourcePlatformId)) addError(errors, 'INFORMATION_DEMAND_SOURCE_INVALID', '信息需求源平台必须引用当前节点。', `${path}.sourcePlatformId`)
   if (!Array.isArray(value.destinationPlatformIds) || value.destinationPlatformIds.length === 0
     || value.destinationPlatformIds.some((id) => typeof id !== 'string' || !platformIds.has(id))) {
     addError(errors, 'INFORMATION_DEMAND_DESTINATION_INVALID', '信息需求至少需要一个有效目标平台。', `${path}.destinationPlatformIds`)
@@ -1409,7 +1454,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         addError(errors, 'SATELLITE_TYPE_DUPLICATED', '天通卫星和神通卫星各只能配置一颗。', 'platforms')
       }
     }
-    if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '场景实体 ID 不允许为空或重复。', 'platforms')
+    if (platformIds.size !== value.platforms.length) addError(errors, 'PLATFORM_ID_DUPLICATED', '节点 ID 不允许为空或重复。', 'platforms')
     if (missingBusinessTypes.length > 0) {
       warnings.push({
         severity: 'WARNING',
@@ -1422,13 +1467,13 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
     platforms.forEach((platform, index) => {
       const path = `platforms[${index}]`
       if (!isClosedObject(platform, PLATFORM_KEYS, OPTIONAL_PLATFORM_KEYS)) {
-        addError(errors, 'PLATFORM_SHAPE_INVALID', '场景实体结构不正确。', path)
+        addError(errors, 'PLATFORM_SHAPE_INVALID', '节点结构不正确。', path)
         return
       }
-      if (typeof platform.id !== 'string' || platform.id.trim() === '') addError(errors, 'PLATFORM_ID_INVALID', '场景实体 ID 为必填项。', `${path}.id`)
-      if (typeof platform.name !== 'string' || platform.name.trim() === '') addError(errors, 'PLATFORM_NAME_INVALID', '场景实体名称为必填项。', `${path}.name`)
+      if (typeof platform.id !== 'string' || platform.id.trim() === '') addError(errors, 'PLATFORM_ID_INVALID', '节点 ID 为必填项。', `${path}.id`)
+      if (typeof platform.name !== 'string' || platform.name.trim() === '') addError(errors, 'PLATFORM_NAME_INVALID', '节点名称为必填项。', `${path}.name`)
       const platformTypeValid = typeof platform.type === 'string' && (PLATFORM_TYPES as readonly string[]).includes(platform.type)
-      if (!platformTypeValid) addError(errors, 'PLATFORM_TYPE_INVALID', '场景实体类型不正确。', `${path}.type`)
+      if (!platformTypeValid) addError(errors, 'PLATFORM_TYPE_INVALID', '节点类型不正确。', `${path}.type`)
       if (platform.type === 'COMMUNICATION_SATELLITE') {
         // 旧数据读取兼容缺省；写入必须由用户明确指定卫星子类型。
         if ((mode === 'write' || Object.hasOwn(platform, 'satelliteType')) && !(SATELLITE_TYPES as readonly unknown[]).includes(platform.satelliteType)) {
@@ -1437,6 +1482,12 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       } else if (Object.hasOwn(platform, 'satelliteType')) {
         addError(errors, 'SATELLITE_TYPE_NOT_APPLICABLE', '只有通信卫星可以配置卫星类型。', `${path}.satelliteType`)
       }
+      if (Object.hasOwn(platform, 'faction') && !(FACTIONS as readonly unknown[]).includes(platform.faction)) {
+        addError(errors, 'PLATFORM_FACTION_INVALID', '所属阵营请选择蓝方、红方或中立。', `${path}.faction`)
+      }
+      if (Object.hasOwn(platform, 'communicationRangeM') && !isPositiveFiniteNumber(platform.communicationRangeM)) {
+        addError(errors, 'PLATFORM_COMMUNICATION_RANGE_INVALID', '节点通信能力范围必须为大于 0 的有限数值（m）；未配置请留空（0 不是有效值）。', `${path}.communicationRangeM`)
+      }
       if (Object.hasOwn(platform, 'loiterWaypoints') || Object.hasOwn(platform, 'returnPlan')) {
         inspectTemplatePlatformRoutes(platform, index, typeof scenario.duration === 'number' ? scenario.duration : 0, errors, mode)
       }
@@ -1444,7 +1495,7 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
       if (!platformCategoryValid) {
         addError(errors, 'PLATFORM_CATEGORY_INVALID', '部署域不正确。', `${path}.category`)
       } else if (platformTypeValid && platform.category !== PLATFORM_TYPE_DOMAINS[platform.type as PlatformType]) {
-        addError(errors, 'PLATFORM_CATEGORY_MISMATCH', '部署域必须与场景实体类型一致。', `${path}.category`)
+        addError(errors, 'PLATFORM_CATEGORY_MISMATCH', '部署域必须与节点类型一致。', `${path}.category`)
       }
       inspectPosition(platform.initialPosition, `${path}.initialPosition`, false, errors)
       if (mode === 'write' && typeof platform.type === 'string'
@@ -1511,6 +1562,9 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
   if (Array.isArray(value.links)) {
     const linkIds = collectIds(value.links)
     const platformIds = collectIds(value.platforms)
+    const configuredCommPorts = typeof value.deviceParameters === 'object' && value.deviceParameters !== null && !Array.isArray(value.deviceParameters)
+      ? (value.deviceParameters as { commPorts?: Record<string, Record<string, unknown>> }).commPorts
+      : undefined
     if (linkIds.size !== value.links.length) addError(errors, 'LINK_ID_DUPLICATED', '链路 ID 不允许为空或重复。', 'links')
     value.links.forEach((link, index) => {
       inspectLink(link, index, platformIds, errors, mode)
@@ -1518,6 +1572,18 @@ export function inspectScenarioConfig(value: unknown, mode: 'read' | 'write' = '
         const resolution = resolveTemplateLinkPorts({ platforms: value.platforms as Platform[] }, link as Link)
         if (resolution.status === 'ERROR') addError(errors, 'TEMPLATE_PORT_MAPPING_INVALID', resolution.message, `links[${index}]`)
         else if (resolution.status === 'WARNING' && link.type !== 'LASER') warnings.push({ severity: 'WARNING', code: 'TEMPLATE_PORT_MAPPING_WARNING', message: resolution.message, fieldPath: `links[${index}]` })
+        if (configuredCommPorts !== undefined && Array.isArray(value.platforms)) {
+          const platforms = value.platforms as Platform[]
+          const linkSettings = readLinkSettings({ platforms, linkSettings: value.linkSettings as ScenarioConfig['linkSettings'] })
+          if (isConfiguredLinkEnabled(link as Link, linkSettings, platforms)) {
+            for (const side of resolveLinkRequiredCommPorts(platforms, link as Link)) {
+              const allowedPorts = configuredCommPorts[side.platformType]
+              if (allowedPorts !== undefined && !Object.hasOwn(allowedPorts, side.portName)) {
+                addError(errors, 'COMM_PORT_NOT_CONFIGURED', `链路使用的端口 ${side.portName} 未在 deviceParameters.commPorts.${side.platformType} 中列出。`, `links[${index}]`)
+              }
+            }
+          }
+        }
       }
       if (typeof link === 'object' && link !== null && typeof link.relayPlatformId === 'string'
         && Array.isArray(value.platforms) && !value.platforms.some((p) => (

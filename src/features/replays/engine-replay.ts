@@ -1,5 +1,5 @@
 import type { EngineFrameSnapshot, Link } from '../../contracts/domain-models'
-import { isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
+import { isEngineFrameId, isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
 
 type FrameItem<T> = { frameId: number; simulationTime: number } & T
 export interface EngineReplayEvidence {
@@ -36,7 +36,7 @@ export function isEngineReplaySnapshot(value: unknown): value is EngineReplaySna
     || (v.epochs.length > 0 && !v.epochs.some(e => e.engineEpoch === v.engineEpoch))
     || !Array.isArray(v.links) || !v.links.every(l => l && typeof l.id === 'string' && ['SAT', 'MICROWAVE', 'DATALINK', 'LASER', 'FIBER'].includes(l.type) && typeof l.sourcePlatformId === 'string' && typeof l.targetPlatformId === 'string')) return false
   const rows = [v.engineEvents, v.engineSwitches, v.engineAlarms]
-  if (!rows.every(items => Array.isArray(items) && items.length <= 200 && items.every(item => item && integer(item.frameId) && number(item.simulationTime) && item.simulationTime <= v.time))) return false
+  if (!rows.every(items => Array.isArray(items) && items.length <= 200 && items.every(item => item && isEngineFrameId(item.frameId) && number(item.simulationTime) && item.simulationTime <= v.time))) return false
   if (v.engineFrame === null) return rows.every(items => items.length === 0)
   if (!isEngineFrameSnapshot(v.engineFrame) || v.engineFrame.runId !== v.runId || v.engineFrame.engineEpoch !== v.engineEpoch || v.engineFrame.simulationTime > v.time) return false
   // Reuse the frame's nested payload validation for historical event rows.

@@ -156,11 +156,11 @@ onBeforeUnmount(() => { store.clearMasterDetails(); store.resetMaintenance() })
         <el-button link type="danger" :disabled="pending" @click="remove(row)">删除</el-button>
       </template></el-table-column>
     </el-table>
-    <p class="maintenance-note">通用数据保存实际内容和版本；引用数量由服务端根据已登记的历史关系维护。装备具体参数请在“设备参数”分类维护。</p>
+    <p class="maintenance-note">装备参数请在“设备参数”分类维护。</p>
 
     <el-dialog :model-value="editor !== null" class="master-editor-dialog" :title="creating ? '新增通用数据' : '编辑通用数据'" width="min(760px, calc(100vw - 32px))" top="5vh" :close-on-click-modal="false" @close="editor = null">
       <el-form v-if="editor" label-position="top" @submit.prevent="save">
-        <el-alert v-if="editor.kind === 'DEVICE'" type="warning" title="旧版设备记录只保留读取兼容；新的装备参数请在“设备参数”分类维护。" :closable="false" />
+        <el-alert v-if="editor.kind === 'DEVICE'" type="warning" title="旧版设备记录仅供查看。请在“设备参数”分类维护装备参数。" :closable="false" />
         <div class="master-editor-basics">
           <el-form-item label="编号" required><el-input v-model="editor.dataId" :disabled="!creating || pending" placeholder="例如 DICT-COMMON-001" data-testid="master-id" /><p class="master-field-help">必填且不能为 . 或 ..；新增时不能与已有或历史编号重复。</p></el-form-item>
           <el-form-item label="类型" required><el-select v-model="editor.kind" :disabled="pending || editor.kind === 'DEVICE'" aria-label="编辑通用数据类型"><el-option v-for="option in KIND_OPTIONS" :key="option.value" :label="option.label" :value="option.value" /><el-option v-if="editor.kind === 'DEVICE'" :label="MASTER_DATA_KINDS.DEVICE" value="DEVICE" /></el-select></el-form-item>

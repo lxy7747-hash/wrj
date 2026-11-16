@@ -1,6 +1,7 @@
 import { apiFetch, invalidateSessionRequests } from '../features/shared/api-fetch'
 import { defineStore } from 'pinia'
 import { validMenuPaths } from '../features/admin/access-control'
+import { requiresRuntimeEndpoints, runtimeEndpoints, serviceOrigin } from '../config/runtime-endpoints'
 import type {
   ApiFailure,
   ApiResult,
@@ -72,6 +73,7 @@ function isPrincipal(value: unknown): value is Principal {
   const candidate = value as Partial<Principal>
   return typeof candidate.userId === 'string'
     && typeof candidate.username === 'string'
+    && (candidate.displayName === undefined || (typeof candidate.displayName === 'string' && candidate.displayName.trim().length > 0 && candidate.displayName.length <= 64))
     && (candidate.role === 'ADMIN' || candidate.role === 'OPERATOR')
     && Array.isArray(candidate.permissions)
     && candidate.permissions.every(isPermission)
@@ -88,7 +90,7 @@ function isPrincipal(value: unknown): value is Principal {
 function isStoredPrincipal(value: unknown): value is Principal {
   if (!isPrincipal(value)) return false
   const keys = Object.keys(value)
-  return keys.every((key) => ['userId', 'username', 'role', 'permissions', 'menuPaths'].includes(key))
+  return keys.every((key) => ['userId', 'username', 'displayName', 'role', 'permissions', 'menuPaths'].includes(key))
 }
 
 /**
@@ -121,6 +123,7 @@ function storePrincipal(principal: unknown): void {
   const projection: Principal = {
     userId: principal.userId,
     username: principal.username,
+    ...(principal.displayName === undefined ? {} : { displayName: principal.displayName }),
     role: principal.role,
     permissions: [...principal.permissions],
     ...(principal.menuPaths ? { menuPaths: [...principal.menuPaths] } : {}),
@@ -153,6 +156,7 @@ function restoreStoredPrincipal(): Principal | null {
     return {
       userId: candidate.userId,
       username: candidate.username,
+      ...(candidate.displayName === undefined ? {} : { displayName: candidate.displayName }),
       role: candidate.role,
       permissions: [...candidate.permissions],
       ...(candidate.menuPaths ? { menuPaths: [...candidate.menuPaths] } : {}),
@@ -185,6 +189,10 @@ function isLoopbackHost(hostname: string): boolean {
 export function resolveMockOrigin(candidate = import.meta.env.VITE_MOCK_ORIGIN): string {
   // 内网发布包跟随页面入口，迁移服务器地址不需要重新构建；开发入口保留原有边界。
   if (import.meta.env.MODE === 'lan') return window.location.origin
+  // 离线包页面：接口与页面同主机、不同端口，端口来自启动器生成的运行配置。
+  const endpoints = runtimeEndpoints()
+  if (endpoints) return serviceOrigin(endpoints.apiPort)
+  if (requiresRuntimeEndpoints()) throw new Error('运行配置尚未加载，已拒绝连接默认接口地址。')
   const origin = candidate?.trim() || DEFAULT_MOCK_ORIGIN
   let url: URL
 

@@ -1,0 +1,100 @@
+// 更新include：替换 FORWARD_UAV 为 MISSION_UAV
+include_once comm_platform_COMMAND_VEHICLE.txt
+include_once comm_platform_MISSION_UAV.txt       // ← 替换 FORWARD_UAV
+include_once comm_platform_JAMMER.txt
+include_once comm_platform_REAR.txt
+include_once comm_platform_SAT.txt
+include_once comm_platform_INS.txt
+include_once observers.txt
+
+start_date sep 15 2025
+start_time 00:00:00
+end_time 90 min                                 // ← 增加仿真时长（覆盖完整场景）
+realtime
+clock_rate 2.0
+multi_thread
+
+simulation_name "MultiMethod_UAV_Comm_Scenario"
+
+event_pipe
+   file D:\afsimOfficialCourse\DevelopTraining\AFSIM2.9\afsim2.9en\swdev\2019x64\Debug\output\scenario_events.aer
+end_event_pipe
+
+// ============================================================
+// 场景事件输出配置（CSV日志）
+// ============================================================
+csv_event_output
+  file D:\afsimOfficialCourse\DevelopTraining\AFSIM2.9\afsim2.9en\swdev\2019x64\Debug\output\scenario_events.csv
+
+  // 标准AFSIM事件
+  enable PLATFORM_ADDED
+  enable PLATFORM_INITIALIZED
+  enable COMM_TURNED_ON       // TurnOn/TurnOff 事件
+  enable COMM_TURNED_OFF
+  enable MESSAGE_TRANSMITTED    // SendMessage 发送事件 ✓
+  enable MESSAGE_RECEIVED      // 消息到达接收方事件 ✓
+  enable JAMMING_REQUEST_INITIATED
+  enable JAMMING_REQUEST_CANCELED
+  enable JAMMING_REQUEST_UPDATED
+  enable WEAPON_FIRED
+  enable SENSOR_DETECTION_CHANGED
+
+  // ★ 新增：捕获干扰激活事件
+  enable WEAPON_TURNED_ON
+  enable WEAPON_MODE_ACTIVATED
+  enable WEAPON_MODE_DEACTIVATED
+
+   enable PLATFORM_ADDED
+   enable PLATFORM_INITIALIZED
+   enable PLATFORM_DELETED
+   enable PLATFORM_BROKEN
+   enable PLATFORM_OMITTED
+
+   #enable PLATFORM_POSITION
+   enable SIMULATION_STARTING
+   enable SIMULATION_COMPLETE
+
+   enable LINK_ADDED_TO_MANAGER
+   enable LINK_ENABLED_ON_MANAGER
+   enable LINK_DISABLED_ON_MANAGER
+   enable LINK_REMOVED_FROM_MANAGER
+
+   enable MESSAGE_HOP
+
+   enable COMM_TURNED_ON
+   enable COMM_FREQUENCY_CHANGED
+
+   enable LOCAL_TRACK_INITIATED
+   enable LOCAL_TRACK_UPDATED
+   enable LOCAL_TRACK_DROPPED
+                  
+   enable SENSOR_TRACK_INITIATED
+   enable SENSOR_TRACK_UPDATED
+   enable SENSOR_TRACK_DROPPED
+   
+   #enable SENSOR_DETECTION_ATTEMPT
+   enable EXCHANGE_COMPLETED
+   
+   enable LINK_ENABLED_ON_LOCAL
+   enable LINK_DISABLED_ON_LOCAL
+
+  # ★ 新增：武器开关和模式切换事件
+  enable WEAPON_TURNED_OFF
+
+  # ★ 新增：传感器检测事件（如果干扰站用传感器探测）
+  enable SENSOR_DETECTION_CHANGED
+
+   enable MOVER_TURNED_ON
+
+
+
+  // 自定义格式：通过PLATFORM.Log()输出到日志，后续可解析
+  // 输出的格式为 "SCENARIO: [PHASEX] EVENT_TYPE: description"
+  // 可通过脚本过滤提取到独立CSV
+end_csv_event_output
+
+// ============================================================
+// 全局场景日志（汇总所有平台的SCENARIO日志）
+// ============================================================
+// 注意：AFSIM将把PLATFORM.Log()输出统一记录到wizard.log
+// 用户可通过 grep "SCENARIO:" wizard.log > scenario_log.csv 提取场景日志

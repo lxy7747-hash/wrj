@@ -34,7 +34,7 @@ it('链路设置把父级实时校验文字显示在字段下方，修正后立�
 
   message.value = ''
   await nextTick()
-  expect(range.props('error')).toBe('')
+  expect(wrapper.find('[data-testid="link-calc-jammingRangeKm"]').exists()).toBe(false)
 })
 
 it('既有任务阶段字段在编辑后即时提示并在修正后清除', async () => {

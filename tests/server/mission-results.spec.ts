@@ -1,10 +1,11 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { REPORT_EVENT_CSV } from '../fixtures/local-report-csv'
 import { POSITION_CSV } from '../fixtures/local-replay'
 import { fileReceptionScenarioId, playbackFileSource } from '../../src/features/situation/file-reception'
-import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilterResult } from '../../src/contracts/domain-models'
+import type { ScenarioDraft, AccessControlConfig, Report, LocalReportFilter, LocalReportFilterResult } from '../../src/contracts/domain-models'
 import type { MissionResultParameterComparison, MissionResultRecord, MissionResultSnapshot } from '../../src/features/results/mission-result'
+import { snapshotMissionResultParameters, isMissionResultSnapshot } from '../../src/features/results/mission-result'
 const { mkdtemp, mkdir, readFile, writeFile, rm, readdir } = await import('node:fs/' + 'promises')
 const { tmpdir } = await import('node:' + 'os')
 const { join } = await import('node:' + 'path')
@@ -12,6 +13,8 @@ const { once } = await import('node:' + 'events')
 const { createHash } = await import('node:' + 'crypto')
 const { default: request } = await import('super' + 'test')
 const { LocalMissionResults } = await import('../../server/local/' + 'mission-results.js')
+const { createEngineFrameArchive } = await import('../../server/local/' + 'engine-frame-archive.js')
+const { createRunQualityStore } = await import('../../server/local/' + 'run-quality.js')
 const { LocalMissionRunner } = await import('../../server/local/' + 'mission-runner.js')
 const { ScenarioProjection } = await import('../../server/scenarios/' + 'projection.js')
 const { AuthSqliteStorage } = await import('../../server/local/' + 'auth-sqlite.js')
@@ -40,6 +43,82 @@ async function setup() {
 }
 
 describe('真实仿真结果闭环', () => {
+  it.each([true, false])('历史参数接口仅读取已保存快照，不加载质量数据或重建 CSV（有参数=%s）', async hasParameters => {
+    const { root, entry, output, draft, results } = await setup()
+    await results.capture(entry, draft, start, end, () => true, { taskId: 'TASK-PARAMETERS', runId: 'RUN-PARAMETERS' })
+    const record = (await results.list())[0]!
+    const path = join(root, 'results', record.resultId + '.json')
+    const snapshot = (await results.get(record.resultId))!
+    if (!hasParameters) {
+      delete snapshot.parameters
+      const payload = JSON.stringify(snapshot)
+      await writeFile(path, JSON.stringify({ sha256: createHash('sha256').update(payload).digest('hex'), payload }))
+    }
+    const frozen = await readFile(path, 'utf8')
+    await writeFile(join(output, 'scenario_events.csv'), '源文件已改变，不得重读')
+    await writeFile(join(output, 'position.csv'), '源文件已改变，不得重读')
+    const archive = createEngineFrameArchive(join(root, 'engine-frames'), () => end)
+    const quality = createRunQualityStore(join(root, 'quality'), () => end)
+    const reads = [vi.spyOn(archive, 'load'), vi.spyOn(archive, 'aggregate'), vi.spyOn(archive, 'finalizeCsv'), vi.spyOn(quality, 'load')]
+    for (const read of reads) read.mockRejectedValue(new Error('参数对比不得读取或生成质量文件'))
+    const server = createMockServer({ port: 0, missionResults: results, engineFrameArchive: archive, runQualityStore: quality })
+    cleanup.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const api = request(server.httpServer), url = `/api/v1/mission-results/${record.resultId}/parameters`
+    const response = await api.get(url).set(headers).expect(200)
+    expect(response.body.data).toEqual({ record, ...(hasParameters ? { parameters: snapshot.parameters } : {}) })
+    for (const read of reads) expect(read).not.toHaveBeenCalled()
+    expect(await readFile(path, 'utf8')).toBe(frozen)
+    await api.get(url + '?path=other.csv').set(headers).expect(400)
+    await api.get('/api/v1/mission-results/invalid/parameters').set(headers).expect(400)
+    await api.get('/api/v1/mission-results/RESULT-00000000-0000-0000-0000-000000000000/parameters').set(headers).expect(404)
+    await writeFile(path, frozen.replace('"sha256":"', '"sha256":"bad'))
+    await api.get(url).set(headers).expect(503)
+    for (const read of reads) expect(read).not.toHaveBeenCalled()
+  })
+
+  it('关联的项目参数及阶段随文件结果持久保存，按参考阶段筛选且不冒充执行版本', async () => {
+    const { root, output, draft, results } = await setup()
+    draft.revision = 7
+    draft.config.scenario.phases = [{ id: 'PH-1', name: '前段', startTimeS: 0, endTimeS: 5 }, { id: 'PH-2', name: '后段', startTimeS: 5, endTimeS: 10 }]
+    const parameters = { ...snapshotMissionResultParameters(draft), source: 'PROJECT_REFERENCE' as const }
+    const expected = structuredClone(parameters)
+    const eventPath = join(output, 'scenario_events.csv'), positionPath = join(output, 'position.csv')
+    const fileSource = playbackFileSource(await readLocalReplay(eventPath, positionPath))
+    const run = { runId: 'RUN-REFERENCE' as const, taskId: 'TASK-001' as const, scenarioId: fileReceptionScenarioId(fileSource), startedAt: start, fileSource }
+    const saving = results.captureFileReception(eventPath, positionPath, run, end, 10, parameters)
+    parameters.phases![0]!.name = '后来修改'
+    parameters.links[0]!.txPowerW += 99
+    await saving
+    const reopened = new LocalMissionResults(join(root, 'results'))
+    const record = (await reopened.list())[0]!
+    const snapshot = (await reopened.get(record.resultId))!
+    expect(record).toMatchObject({ scenarioId: run.scenarioId, revision: 1 })
+    expect(snapshot.parameters).toEqual(expected)
+    const filtered = await reopened.filter(record.resultId, snapshot.report.reportId, { stage: 'PH-1' })
+    expect(filtered.stages).toEqual(['PH-1', 'PH-2'])
+    expect(filtered.timeline.length).toBeGreaterThan(0)
+    expect(filtered.timeline.every((event: { time: number }) => event.time >= 0 && event.time < 5)).toBe(true)
+    expect(filtered.report.localEvidence).toMatchObject({ startTimeS: 0, endTimeS: 5 })
+    const exported = await exportLocalReport(join(root, 'exports'), filtered.report, 'HTML', 'operator', record, [{ record, parameters: expected }], { stage: 'PH-1' })
+    const html = await readFile(exported.filePath, 'utf8')
+    expect(html).toContain('未确认引擎实际执行版本')
+    expect(html).toContain('阶段筛选按该参考计划')
+    expect(html).toContain(expected.scenarioId)
+    expect(isMissionResultSnapshot({ ...snapshot, parameters: { ...expected, source: undefined } })).toBe(false)
+    expect(isMissionResultSnapshot({ ...snapshot, record: { ...record, executionSource: undefined } })).toBe(false)
+    expect(isMissionResultSnapshot({ ...snapshot, parameters: { ...expected, source: 'ENGINE_CONFIRMED' } })).toBe(false)
+    const server = createMockServer({ port: 0,
+      missionResults: { list: async () => { throw new Error('目录暂不可用') }, get: (id: string) => reopened.get(id), filter: (...args: [string, string, LocalReportFilter]) => reopened.filter(...args) },
+      exportLocalReport: (...args: [Report, 'HTML' | 'PDF' | 'CSV', string, MissionResultRecord?, MissionResultParameterComparison[]?, LocalReportFilter?]) => exportLocalReport(join(root, 'exports-api'), ...args),
+    })
+    cleanup.push(() => server.close())
+    if (!server.httpServer.listening) await once(server.httpServer, 'listening')
+    const response = await request(`http://127.0.0.1:${server.httpServer.address().port}`).post(`/api/v1/reports/${snapshot.report.reportId}/export?resultId=${record.resultId}&download=1`).set(headers)
+      .send({ reportId: snapshot.report.reportId, format: 'HTML', filter: { stage: 'PH-1' } }).expect(200)
+    expect(response.text).toContain('项目参考配置，未确认引擎实际执行版本')
+    expect(response.text).toContain('阶段筛选按该参考计划')
+  })
   it.each([true, false])('文件与 WS 接收可发布可筛选快照，重建后仍保留来源；文件变化不能混入（源文件结束标记 %s）', async complete => {
     const { root, output, results } = await setup()
     const eventPath = join(output, 'scenario_events.csv'), positionPath = join(output, 'position.csv')
@@ -242,6 +321,7 @@ describe('真实仿真结果闭环', () => {
     const api = request(server.httpServer)
     const url = `/api/v1/reports/${snapshot.report.reportId}/export?resultId=${record.resultId}&download=1`
     await api.get('/api/v1/mission-results').set(headers).expect(401)
+    await api.get(`/api/v1/mission-results/${record.resultId}/parameters`).set(headers).expect(401)
     await api.post(url).set(headers).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(401)
     const login = await api.post('/api/v1/auth/login').set(headers).send({ username: 'admin', passwordFixture: 'Results-test-1234' }).expect(200)
     const cookie = login.headers['set-cookie']
@@ -266,8 +346,10 @@ describe('真实仿真结果闭环', () => {
     access.profiles = [{ profileId: 'limited', name: '只读报告', baseRole: 'ADMIN', permissions: ['BUSINESS_READ', 'USER_ROLE_MAINTAIN'], menuPaths: ['/reports', '/admin'] }]
     access.assignments = [{ userId: login.body.data.principal.userId, profileId: 'limited' }]
     await api.post(url).set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(403)
+    expect((await api.get(`/api/v1/mission-results/${record.resultId}/parameters`).set(headers).set('Cookie', cookie).expect(200)).body.data).toEqual({ record, parameters: snapshot.parameters })
     access.profiles[0]!.menuPaths = ['/admin']
     await api.get(`/api/v1/mission-results/${record.resultId}`).set(headers).set('Cookie', cookie).expect(403)
+    await api.get(`/api/v1/mission-results/${record.resultId}/parameters`).set(headers).set('Cookie', cookie).expect(403)
     await api.post('/api/v1/auth/logout').set(headers).set('Cookie', cookie).send({ confirm: true }).expect(200)
     await api.post(url).set(headers).set('Cookie', cookie).send({ reportId: snapshot.report.reportId, format: 'HTML' }).expect(401)
   })

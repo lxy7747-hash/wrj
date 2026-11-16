@@ -131,6 +131,14 @@ function setThreshold(key: (typeof thresholdFields)[number]['key'], text: string
   updateLinkCalc({ [key]: text.trim() === '' ? Number.NaN : Number(text) })
 }
 
+/** 紧急/告警阈值按科学计数法回显，避免 1e-5 被显示成 0.00001。 */
+function thresholdDisplay(key: (typeof thresholdFields)[number]['key'], value: number | undefined): string {
+  if ((key === 'emergencyThreshold' || key === 'warningThreshold') && typeof value === 'number' && Number.isFinite(value)) {
+    return value.toExponential()
+  }
+  return String(value ?? '')
+}
+
 const hotEndLabels: Record<HotLinkSettings['endPlatformType'], string> = {
   REAR_COMMAND_NODE: '后方指挥节点（REAR_COMM_PLATFORM）',
   GROUND_CLUSTER_COMMAND_NODE: '地面集群指挥节点（COMMAND_VEHICLE_PLATFORM）',
@@ -242,7 +250,6 @@ function linkLabel(link: Link): string {
       <div class="link-settings__column" data-testid="link-settings-left">
       <el-form-item class="link-settings__strategy" :error="fieldMessage?.('priority') ?? ''">
         <div class="link-settings__heading">链路优先级 <small>拖拽排序，越靠上优先级越高</small></div>
-        <small class="link-settings__hint">不单独写入脚本；未手动配置热链时，用于自动串联热链的分支选择。</small>
         <ol class="link-settings__priority" aria-label="链路优先级，从高到低">
           <li v-for="(type, index) in settings.priority" :key="type"
             :class="{ 'is-dragging': draggedType === type, 'is-drop-target': !disabled && dropTarget === type && draggedType !== type }"
@@ -270,6 +277,9 @@ function linkLabel(link: Link): string {
             :disabled="!platforms.some(p => p.type === 'COMMUNICATION_SATELLITE' && p.satelliteType === satellite.value)" />
         </el-select>
       </el-form-item>
+      <details class="scenario-advanced" data-testid="link-strategy-advanced"
+        :open="['switchCooldownS', 'switchStableChecks', 'switchConsistencyCheck', ...decisionFields.map(field => field.key), ...failureFields.map(field => field.key)].some(key => fieldMessage?.(key))">
+      <summary>选路稳定性与标定参数</summary>
       <el-form-item label="防乒乓滞回时间（秒）" :error="fieldMessage?.('switchCooldownS') ?? ''">
         <el-input-number :model-value="settings.switchCooldownS" :min="fieldMessage ? undefined : 0" :step="1" controls-position="right"
           data-testid="link-switch-cooldown" @update:model-value="setCooldown" />
@@ -277,16 +287,13 @@ function linkLabel(link: Link): string {
       <el-form-item label="连续稳定检查次数" :error="fieldMessage?.('switchStableChecks') ?? ''">
         <el-input-number :model-value="settings.switchStableChecks ?? LINK_DECISION_DEFAULTS.switchStableChecks" :min="fieldMessage ? undefined : 1" :max="fieldMessage ? undefined : 100" :step="1" step-strictly controls-position="right"
           :disabled="disabled" data-testid="link-switch-stable-checks" @update:model-value="setStableChecks" />
-        <small class="link-settings__hint">默认连续 3 帧满足条件；质量选路按有效输入帧检查，场景规则按配置的仿真时间步检查。</small>
       </el-form-item>
       <el-form-item label="规则切换一致性校验" :error="fieldMessage?.('switchConsistencyCheck') ?? ''">
         <el-switch :model-value="settings.switchConsistencyCheck ?? true" :disabled="disabled" data-testid="link-switch-consistency"
           @update:model-value="setConsistency" />
-        <small class="link-settings__hint">规则稳定窗内候选链路变化后重新计数；质量选路始终复核候选一致性。</small>
       </el-form-item>
       <section class="link-settings__rules" data-testid="quality-decision-settings" aria-label="质量选路与切换门限">
         <div class="link-settings__heading"><span>质量选路与切换门限</span></div>
-        <small class="link-settings__hint">新模板无对应参数，不写入脚本。</small>
         <el-form-item v-for="field in decisionFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
           <el-input-number :model-value="settings[field.key] ?? LINK_DECISION_DEFAULTS[field.key]"
             :min="fieldMessage ? undefined : 'min' in field ? field.min : undefined"
@@ -294,7 +301,6 @@ function linkLabel(link: Link): string {
             :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
             @update:model-value="setDecisionField(field.key, $event)" />
         </el-form-item>
-        <small class="link-settings__hint">候选须同时满足 GXB、BER 与空域隔离门限；切换须满足连续稳定、冷却秒数及帧数，并达到 BER 或 GXB 改善门限。</small>
         <el-form-item v-for="field in failureFields" :key="field.key" :label="field.label" :error="fieldMessage?.(field.key) ?? ''">
           <el-switch :model-value="Object.hasOwn(settings, field.key)" :disabled="disabled" :data-testid="`link-decision-enable-${field.key}`"
             @update:model-value="enableFailureField(field.key, $event)" />
@@ -303,12 +309,12 @@ function linkLabel(link: Link): string {
             :step="field.step" :disabled="disabled" controls-position="right" :data-testid="`link-decision-${field.key}`"
             @update:model-value="setFailureField(field.key, $event)" />
         </el-form-item>
-        <small class="link-settings__hint">硬失效门限按设备标定值启用并填写；未配置时不会推定中断功率或 GXB 门限。</small>
+        <small class="link-settings__hint">请按设备标定值填写已启用的门限。</small>
       </section>
+      </details>
       <section class="link-settings__rules" data-testid="channel-encoding-settings" aria-labelledby="channel-encoding-title">
         <div class="link-settings__heading">
           <span id="channel-encoding-title">编码方案（全局）</span>
-          <small>channel_encoding_scheme，用于链路计算中的干扰余量</small>
         </div>
         <el-form-item label="信道编码" :error="fieldMessage?.('linkCalc.channelEncodingScheme') ?? ''">
           <el-select :model-value="linkCalc.channelEncodingScheme" data-testid="link-calc-channelEncodingScheme"
@@ -317,13 +323,11 @@ function linkLabel(link: Link): string {
           </el-select>
         </el-form-item>
       </section>
-      <section class="link-settings__rules" data-testid="link-calc-settings" aria-labelledby="link-calc-title">
-        <div class="link-settings__heading">
-          <span id="link-calc-title">链路计算阈值（全局）</span>
-          <small>写入后方节点 link_calc，供对接方链路计算使用</small>
-        </div>
+      <details class="link-settings__rules scenario-advanced" data-testid="link-calc-settings"
+        :open="Boolean(fieldMessage?.('linkCalc') || fieldMessage?.('messageIntervalS'))">
+        <summary>链路计算周期与阈值</summary>
         <div class="link-settings__rule-grid">
-          <el-form-item label="业务发送周期（秒）" :error="fieldMessage?.('messageIntervalS') ?? ''">
+          <el-form-item v-if="fieldMessage?.('messageIntervalS')" label="历史业务周期（秒，待修正）" :error="fieldMessage?.('messageIntervalS') ?? ''">
             <el-input-number :model-value="settings.messageIntervalS" :disabled="disabled" controls-position="right" data-testid="link-message-interval"
               @update:model-value="value => { if (!disabled) emit('update:modelValue', { ...settings, messageIntervalS: value ?? Number.NaN }) }" />
           </el-form-item>
@@ -332,18 +336,19 @@ function linkLabel(link: Link): string {
               @update:model-value="updateLinkCalc({ updateIntervalS: $event ?? Number.NaN })" />
           </el-form-item>
           <el-form-item v-for="field in thresholdFields" :key="field.key" :label="field.label" :error="fieldMessage?.(`linkCalc.${field.key}`) ?? ''">
-            <el-input :model-value="String(linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
+            <el-input :model-value="thresholdDisplay(field.key, linkCalc[field.key])" placeholder="如 1e-5" :data-testid="`link-calc-${field.key}`"
               @change="setThreshold(field.key, $event)" />
           </el-form-item>
-          <el-form-item :label="`干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
+          <el-form-item v-if="fieldMessage?.('linkCalc.jammingRangeKm')" :label="`历史干扰圈半径（km，${JAMMING_RANGE_KM.min}～${JAMMING_RANGE_KM.max}，待修正）`" :error="fieldMessage?.('linkCalc.jammingRangeKm') ?? ''">
             <el-input-number :model-value="linkCalc.jammingRangeKm" :min="fieldMessage ? undefined : JAMMING_RANGE_KM.min" :max="fieldMessage ? undefined : JAMMING_RANGE_KM.max" controls-position="right"
               data-testid="link-calc-jammingRangeKm" @update:model-value="updateLinkCalc({ jammingRangeKm: $event ?? Number.NaN })" />
           </el-form-item>
         </div>
-      </section>
+      </details>
       </div>
       <div class="link-settings__column" data-testid="link-settings-right">
-      <section class="link-settings__rules" data-testid="hot-link-settings" aria-labelledby="hot-link-title">
+      <details class="link-settings__rules scenario-advanced" data-testid="hot-link-settings" :open="Boolean(fieldMessage?.('hotLinks'))">
+        <summary>手动热链配置（高级）</summary>
         <div class="link-settings__heading">
           <span id="hot-link-title">热链配置（全局）</span>
           <small data-testid="hot-link-state">{{ settings.hotLinks ? '已手动调整' : '自动生成' }}</small>
@@ -375,11 +380,12 @@ function linkLabel(link: Link): string {
           <el-button size="small" :disabled="disabled || !links.some(item => item.direction === group.direction)"
             :data-testid="`hot-link-${group.key}-add`" @click="updateChain(group.key, hotLinks[group.key].length, [])">新增热链</el-button>
         </div>
-      </section>
-      <section class="link-settings__rules" data-testid="link-switch-rules" aria-labelledby="link-switch-rules-title">
+      </details>
+      <details class="link-settings__rules scenario-advanced" data-testid="link-switch-rules" :open="Boolean(fieldMessage?.('switchRules'))">
+        <summary>阶段切换规则（{{ rules.length }} 条）</summary>
         <div class="link-settings__heading">
           <span id="link-switch-rules-title">阶段切换规则</span>
-          <small>条件满足时，源到目标的业务改走指定链路；两次切换间隔不少于滞回时间。新模板无对应参数，不写入脚本。</small>
+          <small>两次切换间隔不少于滞回时间。</small>
         </div>
         <p v-if="rules.length === 0" class="link-settings__empty">未配置规则时，仿真全程使用优先级最高的链路。</p>
         <div v-for="(rule, index) in rules" :key="rule.id" class="link-settings__rule" :data-testid="`switch-rule-${index}`">
@@ -431,7 +437,7 @@ function linkLabel(link: Link): string {
           </div>
         </div>
         <el-button size="small" :disabled="disabled || links.length === 0" data-testid="add-switch-rule" @click="addRule">新增规则</el-button>
-      </section>
+      </details>
       </div>
     </el-form>
     <template #footer>

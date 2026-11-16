@@ -1,0 +1,2 @@
+# The source manifest hashes these fixtures byte for byte.
+/tests/fixtures/afsim-template-1112/*.txt -text -whitespace

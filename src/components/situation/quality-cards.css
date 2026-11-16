@@ -1,8 +1,7 @@
 .quality-card-panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior: contain; overflow-wrap: anywhere; }
 .quality-card-panel > * { flex: 0 0 auto; min-width: 0; }
 .quality-card-source { display: flex; align-items: center; gap: 8px; }
-.quality-card-source > p { flex: 1; min-width: 0; }
-.quality-card-info { flex: none; padding: 4px 0; border: 0; color: var(--console-cyan, #4bd9f2); background: transparent; font: inherit; cursor: pointer; }
+.quality-card-info { flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 0; border: 0; color: var(--console-cyan, #4bd9f2); background: transparent; font: inherit; cursor: pointer; }
 .quality-card-filters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
 .quality-card-filters :deep(.el-form-item) { min-width: 0; margin-bottom: 0; }
 .quality-card-filters :deep(.el-form-item__content), .quality-card-filters :deep(.el-select) { min-width: 0; width: 100%; }

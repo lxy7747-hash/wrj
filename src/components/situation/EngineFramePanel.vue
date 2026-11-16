@@ -1,13 +1,24 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { EngineLinkSegment, EnginePathNode, LinkType, Link } from '../../contracts/domain-models'
+import type { EngineLinkSegment, EnginePathNode, LinkType, Link, EngineFrameSnapshot } from '../../contracts/domain-models'
 import { useRuntimeQualityStore } from '../../stores/runtime-quality'
 import { useSimulationStore } from '../../stores/simulation'
 import { formatSimulationTime, LINK_TYPE_LABELS } from '../../features/situation/situation-model'
-import { includesEngineSimulationTime, resolveEngineSwitchHighlights, type EngineRouteResolution } from '../../features/situation/engine-route-highlights'
+import { includesEngineSimulationTime, resolveEngineSwitchHighlights, type EngineRouteResolution, type EngineSwitchHighlights } from '../../features/situation/engine-route-highlights'
 import type { EngineReplayEvidence } from '../../features/replays/engine-replay'
 
-const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string; links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[]; evidence?: EngineReplayEvidence; nodeNames?: Record<string, string> }>()
+const props = defineProps<{ section: 'quality' | 'decisions' | 'jammers' | 'events'; selectedLinkId?: string; links?: Pick<Link, 'id' | 'type' | 'sourcePlatformId' | 'targetPlatformId'>[]; evidence?: EngineReplayEvidence; nodeNames?: Record<string, string>; sourceLabel?: string }>()
+const sourceLabel = computed(() => props.evidence ? '历史引擎数据' : props.sourceLabel ?? '引擎数据（状态未确认）')
+const qualityStatusLabels: Record<string, string> = {
+  '引擎实时数据': '实时更新',
+  '最后收到的引擎数据（等待新帧）': '等待更新',
+  '最后收到的引擎数据（连接中断）': '连接中断',
+  '暂停展示的引擎数据': '已暂停',
+  '历史引擎数据（运行已结束）': '已结束',
+  '历史引擎数据': '历史回放',
+  '引擎数据（状态未确认）': '状态未确认',
+}
+const qualityStatus = computed(() => qualityStatusLabels[sourceLabel.value] ?? '状态未确认')
 const runtimeQuality = useRuntimeQualityStore()
 const quality = computed(() => props.evidence ?? runtimeQuality)
 const simulation = useSimulationStore()
@@ -40,14 +51,6 @@ const selectedType = (link: EngineLinkSegment): LinkType[] => link.linkIds.flatM
 const displayedStatus = (link: EngineLinkSegment) => link.error ? 'UNKNOWN' : link.status
 const segmentKey = (link: EngineLinkSegment) => JSON.stringify([quality.value.engineFrame?.runId, quality.value.engineFrame?.engineEpoch,
   link.linkId, link.sourcePlatformId, link.sourcePort, link.targetPlatformId, link.targetPort])
-const sourceHint = computed(() => {
-  const frame = quality.value.engineFrame
-  return frame ? [`源仿真时刻：${frame.simulationTime} s`,
-    ...(frame.wallTimeMs == null ? [] : [`上游计时：${frame.wallTimeMs} ms（起点待确认）`]),
-    `模型版本：${value(frame.modelVersion)}；调制：${value(frame.modulation)}`,
-    '时延单位、总复合损耗口径待确认；按源值展示。',
-    '当前只提供本帧测量；时间范围按源仿真时刻筛选，范围外或起始大于结束时为空。'].join('；') : ''
-})
 const filteredLinks = computed(() => (quality.value.engineFrame?.links ?? []).filter(link =>
   (!nodeFilter.value || link.sourcePlatformId === nodeFilter.value || link.targetPlatformId === nodeFilter.value)
   && (!linkFilter.value || link.linkId === linkFilter.value || link.linkIds.includes(linkFilter.value))
@@ -56,6 +59,13 @@ const filteredLinks = computed(() => (quality.value.engineFrame?.links ?? []).fi
 ))
 watch(() => props.selectedLinkId, value => { linkFilter.value = selectableLinks.value.some(link => link.id === value) || unboundSegments.value.some(link => link.linkId === value) ? value ?? '' : '' }, { immediate: true })
 const switchHighlights = (oldNodes: EnginePathNode[], newNodes: EnginePathNode[]) => resolveEngineSwitchHighlights(quality.value.engineFrame, oldNodes, newNodes)
+type SwitchEntry = { frameId: number; simulationTime: number; route: EngineFrameSnapshot['routing']['switches'][number]; resolution?: EngineSwitchHighlights }
+/** 优先使用接收切换事件帧时冻结的解析结果；回放证据无冻结结果时仅对同帧在现有帧上解析，历史项明确缺失。 */
+const switchResolution = (item: SwitchEntry): EngineSwitchHighlights | undefined => {
+  if (item.resolution) return item.resolution
+  const frame = quality.value.engineFrame
+  return frame && item.frameId === frame.frameId ? switchHighlights(item.route.oldNodes, item.route.nodes) : undefined
+}
 const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
   if (resolution.totalHops === 0) return `${title}：路径无可解析段`
   if (resolution.resolvedHops === resolution.totalHops) return `${title}：已唯一关联 ${resolution.linkIds.join('、') || '无'}（${resolution.resolvedHops}/${resolution.totalHops} 段）`
@@ -66,14 +76,12 @@ const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
 <template>
   <section v-if="quality.engineFrame" class="engine-evidence" :class="{ 'engine-evidence--quality': section === 'quality', 'quality-card-panel': section === 'quality' }" :data-testid="`engine-${section}`">
     <div v-if="section === 'quality'" class="quality-card-source">
-      <p class="engine-evidence__source">{{ evidence ? '历史引擎数据' : '引擎推送' }} · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }}</p>
-      <el-tooltip :content="sourceHint" :popper-style="{ maxWidth: '280px', whiteSpace: 'normal', overflowWrap: 'anywhere' }">
-        <button type="button" class="quality-card-info" aria-label="查看引擎数据说明">数据说明</button>
+      <el-tooltip :content="`${sourceLabel} · 帧 ${quality.engineFrame.frameId} · ${formatSimulationTime(quality.engineFrame.simulationTime)}。时间范围只筛选当前帧。时延单位、总复合损耗口径尚未确认。`" :trigger="['hover', 'focus']" :popper-style="{ maxWidth: '280px', whiteSpace: 'normal', overflowWrap: 'anywhere' }">
+        <button type="button" class="engine-evidence__source quality-card-info" data-testid="quality-source">数据时刻：{{ formatSimulationTime(quality.engineFrame.simulationTime).replace('T+ ', '') }} · {{ qualityStatus }}</button>
       </el-tooltip>
     </div>
     <template v-else>
-    <p class="engine-evidence__source">{{ evidence ? '历史引擎数据' : '引擎推送' }} · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }} · {{ value(quality.engineFrame.simulationTime, ' s') }}</p>
-    <p v-if="quality.engineFrame.wallTimeMs != null" class="engine-evidence__note">上游计时 {{ value(quality.engineFrame.wallTimeMs, ' ms') }}（起点待确认）</p>
+    <p class="engine-evidence__source">{{ sourceLabel }} · 帧 {{ quality.engineFrame.frameId }} · {{ formatSimulationTime(quality.engineFrame.simulationTime) }}</p>
     </template>
     <template v-if="section === 'quality'">
       <el-form label-position="top" class="engine-evidence__filters quality-card-filters">
@@ -149,11 +157,11 @@ const resolutionLabel = (title: string, resolution: EngineRouteResolution) => {
         <p>新路径：{{ item.route.pathId }} · {{ path(item.route.nodes) }}</p>
         <p>业务：{{ item.route.transTypes.join('、') || '暂无数据' }}</p>
         <p v-if="item.route.parameters">路径参数（原值，单位待确认）：时延 {{ value(item.route.parameters.delay) }} · 传输频次 {{ value(item.route.parameters.transFrequency) }} · 信息量 {{ value(item.route.parameters.dataContent) }}</p>
-        <template v-if="item.frameId === quality.engineFrame.frameId">
-          <p class="engine-evidence__switch-before">{{ resolutionLabel('切换前高亮', switchHighlights(item.route.oldNodes, item.route.nodes).before) }}</p>
-          <p class="engine-evidence__switch-after">{{ resolutionLabel('切换后高亮', switchHighlights(item.route.oldNodes, item.route.nodes).after) }}</p>
+        <template v-if="switchResolution(item)">
+          <p class="engine-evidence__switch-before">{{ resolutionLabel('切换前高亮', switchResolution(item)!.before) }}</p>
+          <p class="engine-evidence__switch-after">{{ resolutionLabel('切换后高亮', switchResolution(item)!.after) }}</p>
         </template>
-        <p v-else class="engine-evidence__note">历史切换：未保留该帧的设备段关联证据，未使用当前帧推断或高亮。</p>
+        <p v-else class="engine-evidence__note">该次历史切换暂无可高亮的链路。</p>
         <p v-if="!item.route.reasons.length">切换原因：暂无数据</p>
         <p v-for="(reason, r) in item.route.reasons" :key="r">相关链路段：{{ value(reason.linkId) }} · 原因：{{ reason.reasons.map(label).join('、') || '暂无数据' }}</p>
       </article>

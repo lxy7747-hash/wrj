@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { dirname, join } from 'node:path'
 import type { TaskId, WsTopic } from '../../src/contracts/domain-models.js'
 import type { JournalEvent, JournalRead, RealtimeJournalStore } from '../ws/realtime-journal.js'
+import { REALTIME_TOPICS } from '../ws/realtime-journal.js'
 
 interface State { latest?: number; boundary?: number; runId?: string; hot: JournalEvent[]; failure?: string }
 interface DiskEvent extends JournalEvent { digest: string }
@@ -12,7 +13,6 @@ interface TopicMeta { boundary?: number; runId: string }
 const RECORD_BYTES = 24
 const MAX_PAGE_BYTES = 4 * 1024 * 1024
 const MAX_PAGE_EVENTS = 512
-const TOPICS: WsTopic[] = ['simulation.frame', 'runtime.state', 'link.metric', 'jammer.event', 'switch.event']
 
 /** Local-only durable journal; fixed offsets keep memory independent of historical file size. */
 export class DiskRealtimeJournal implements RealtimeJournalStore {
@@ -54,7 +54,7 @@ export class DiskRealtimeJournal implements RealtimeJournalStore {
   }
 
   prepareRun(task: TaskId, runId: string): boolean {
-    const states = TOPICS.map(topic => this.state(task, topic))
+    const states = REALTIME_TOPICS.map(topic => this.state(task, topic))
     const failed = states.find(state => state.failure)
     if (failed) throw new Error(failed.failure)
     if (states.every(state => state.runId === runId)) return false
@@ -64,7 +64,7 @@ export class DiskRealtimeJournal implements RealtimeJournalStore {
       boundary: changed ? (state.latest ?? 0) + 1 : state.boundary, runId,
     }))
     try {
-      TOPICS.forEach((topic, index) => this.atomicJson(this.meta(task, topic), next[index]!))
+      REALTIME_TOPICS.forEach((topic, index) => this.atomicJson(this.meta(task, topic), next[index]!))
     } catch (error) {
       const reason = 'Unable to persist realtime run boundary: ' + this.message(error)
       states.forEach(state => { state.failure = reason })

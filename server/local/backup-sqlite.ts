@@ -119,12 +119,20 @@ export class BackupSqliteStorage implements BackupStorage {
       || snapshot.prepare('PRAGMA foreign_key_check').all().length !== 0) throw new Error('备份完整性校验失败。')
     const schemaSql = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
     const expected = this.db.prepare(schemaSql).all()
+    const actual = snapshot.prepare(schemaSql).all().map(row => {
+      const current = expected.find(item => item.name === row.name)
+      // 旧账号表仅缺少追加的显示名列；其他结构仍须逐字匹配。
+      return row.name === 'users' && row.sql === String(current?.sql).replace(', display_name TEXT)', ')')
+        ? { ...row, sql: current!.sql } : row
+    })
     if (expected.some(row => row.type !== 'table' || !ALL_TABLES.includes(String(row.name)))
       || expected.length !== ALL_TABLES.length
-      || JSON.stringify(snapshot.prepare(schemaSql).all()) !== JSON.stringify(expected)) throw new Error('备份结构与当前版本不兼容。')
+      || JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error('备份结构与当前版本不兼容。')
     if (!snapshot.prepare("SELECT 1 FROM users WHERE role = 'ADMIN' AND status = 'ACTIVE'").get()) throw new Error('备份缺少启用的管理员。')
     for (const user of snapshot.prepare('SELECT * FROM users').all()) {
-      if (typeof user.user_id !== 'string' || !user.user_id.trim()
+      if ((user.display_name !== undefined && user.display_name !== null
+        && (typeof user.display_name !== 'string' || !user.display_name.trim() || user.display_name.length > 64))
+        || typeof user.user_id !== 'string' || !user.user_id.trim()
         || !/^[a-f0-9]{32}$/i.test(String(user.password_salt)) || !/^[a-f0-9]{64}$/i.test(String(user.password_hash))
         || (user.last_login_at !== null && !isRfc3339DateTime(user.last_login_at))) throw new Error('备份账号数据无效。')
     }
@@ -175,7 +183,8 @@ export class BackupSqliteStorage implements BackupStorage {
         // 审计日志保留当前历史；整组数据在一个事务内替换，已有连接无需重开或替换数据库文件。
         for (const table of RESTORED_TABLES) {
           this.db.exec(`DELETE FROM main.${table}`)
-          this.db.exec(`INSERT INTO main.${table} SELECT * FROM restore_source.${table}`)
+          const legacyUser = table === 'users' && !this.db.prepare('PRAGMA restore_source.table_info(users)').all().some(row => row.name === 'display_name')
+          this.db.exec(`INSERT INTO main.${table} SELECT *${legacyUser ? ', NULL' : ''} FROM restore_source.${table}`)
         }
         this.validate(this.db)
         this.db.exec('COMMIT')

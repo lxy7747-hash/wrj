@@ -1,6 +1,6 @@
-import type { LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report } from '../../contracts/domain-models'
+import type { LocalQualityKpis, LocalReportEvidence, LocalReportExportResult, LocalReportFilter, LocalSwitchEvent, Report, TaskPhase } from '../../contracts/domain-models'
 import { isQualityDatasetProjection } from '../data-exchange/quality-records'
-import { isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
+import { isEngineFrameId, isEngineFrameSnapshot } from '../data-exchange/engine-frame-snapshot'
 import { isDetectionEvent } from './detection-events'
 
 /** 共享纯校验，Mock 服务无需导入本机文件索引适配器。 */
@@ -14,6 +14,43 @@ export function parseLocalReportFilter(value: unknown): LocalReportFilter | null
     || !['from', 'to'].every(validTime) || (typeof item.from === 'number' && typeof item.to === 'number' && item.from > item.to)) return null
   return { ...(typeof item.nodeId === 'string' ? { nodeId: item.nodeId } : {}), ...(typeof item.linkId === 'string' ? { linkId: item.linkId } : {}), ...(typeof item.stage === 'string' ? { stage: item.stage } : {}),
     ...(typeof item.from === 'number' ? { from: item.from } : {}), ...(typeof item.to === 'number' ? { to: item.to } : {}) }
+}
+
+/** 报告时间/阶段交集与阶段末点归属；质量、引擎段与切换、导出共用同一规则。 */
+export interface PhaseRange { start: number; end: number; phase?: TaskPhase; includeEnd: boolean }
+
+/**
+ * 阶段按 [startTimeS,endTimeS) 归属；仅当阶段结束等于未裁剪报告的结束时间且没有下一阶段
+ * 从此开始时才包含末点。用户独立 from/to 仍与阶段取闭区间交集；末段判定不使用裁剪后的
+ * endTimeS，也不减 epsilon。
+ *
+ * @param evidence 报告来源（含完整 startTimeS/endTimeS，可能已被上游裁剪）。
+ * @param filter 用户筛选（阶段与 from/to）。
+ * @param phases 冻结任务阶段计划。
+ * @param reportEndTimeS 未裁剪报告的结束时间；缺省回退到 evidence.endTimeS。
+ */
+export function resolvePhaseRange(
+  evidence: { startTimeS: number; endTimeS: number },
+  filter: LocalReportFilter | undefined,
+  phases: TaskPhase[] | undefined,
+  reportEndTimeS: number = evidence.endTimeS,
+): PhaseRange {
+  const phase = filter?.stage === undefined ? undefined : phases?.find(item => item.id === filter.stage)
+  if (filter?.stage !== undefined && !phase) throw new Error('报告的任务阶段无效。')
+  const start = Math.max(evidence.startTimeS, filter?.from ?? evidence.startTimeS, phase?.startTimeS ?? evidence.startTimeS)
+  const end = Math.min(evidence.endTimeS, filter?.to ?? evidence.endTimeS, phase?.endTimeS ?? evidence.endTimeS)
+  if (start > end) throw new Error('报告筛选时间范围无效。')
+  const includeEnd = phase === undefined || (phase.endTimeS === reportEndTimeS && !(phases ?? []).some(item => item.startTimeS === phase.endTimeS))
+  return { start, end, ...(phase ? { phase } : {}), includeEnd }
+}
+
+/** 单个时刻是否落在阶段半开区间与用户闭区间交集内。 */
+export function withinPhaseRange(range: PhaseRange, time: number): boolean {
+  if (time < range.start || time > range.end) return false
+  if (range.phase === undefined) return true
+  if (time < range.phase.endTimeS) return true
+  if (time > range.phase.endTimeS) return false
+  return range.includeEnd
 }
 
 const text = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0
@@ -119,7 +156,7 @@ function isEngineFrameArchive(value: unknown): boolean {
       || (aggregate.averageGxbDb !== undefined && (typeof aggregate.averageGxbDb !== 'number' || !Number.isFinite(aggregate.averageGxbDb))) || (aggregate.averageBer !== undefined && (typeof aggregate.averageBer !== 'number' || !Number.isFinite(aggregate.averageBer) || aggregate.averageBer < 0 || aggregate.averageBer > 1))))
     || (archive.detailTruncated === true && archive.retainedDetailRows === undefined)) return false
   const row = (item: unknown, field: 'segment' | 'value', kind: 'segment' | 'switch' | 'event') => {
-    if (!object(item, ['engineEpoch', 'frameId', 'simulationTime', field]) || !count(item.engineEpoch) || !count(item.frameId) || !time(item.simulationTime)) return false
+    if (!object(item, ['engineEpoch', 'frameId', 'simulationTime', field]) || !count(item.engineEpoch) || !isEngineFrameId(item.frameId) || !time(item.simulationTime)) return false
     const candidate = { kind: 'ENGINE_FRAME', runId: 'RUN-REPORT-VALIDATION', engineEpoch: item.engineEpoch, frameId: item.frameId, simulationTime: item.simulationTime,
       modelVersion: null, modulation: null, links: kind === 'segment' ? [item[field]] : [], jammers: [], initRouting: null,
       routing: { switches: kind === 'switch' ? [item[field]] : [], alarms: [] }, events: kind === 'event' ? [item[field]] : [] }
@@ -265,8 +302,18 @@ export function engineAggregateSummary(evidence: LocalReportEvidence): string[][
   ]
 }
 
-/** 图表与导出共用已应用的范围，不读取尚未提交的筛选输入。 */
-export function localReportChartRange(evidence: LocalReportEvidence, fileName: string, filter?: LocalReportFilter): string {
+/** 图表来源说明的补充上下文；仅在调用方确知报告身份与来源摘要时传入。 */
+export interface LocalReportChartContext { reportId?: string; runId?: string; resultId?: string; sourceSha256?: string }
+
+/**
+ * 图表与导出共用已应用的范围，不读取尚未提交的筛选输入。传入 context 时在既有范围文本后
+ * 追加运行/结果标识、来源摘要、节点与链路（全部也写明）及端点语义，旧调用保持原文本。
+ */
+export function localReportChartRange(evidence: LocalReportEvidence, fileName: string, filter?: LocalReportFilter, context?: LocalReportChartContext): string {
   const selection = [filter?.nodeId && `节点 ${filter.nodeId}`, filter?.linkId && `链路 ${filter.linkId}`, filter?.stage && `阶段 ${filter.stage}`].filter(Boolean)
-  return `${fileName} · ${filter ? '筛选范围' : '完整快照'} · ${reportTime(filter?.from ?? evidence.startTimeS)}～${reportTime(filter?.to ?? evidence.endTimeS)}${selection.length ? ` · ${selection.join(' · ')}` : ''}`
+  const legacy = `${fileName} · ${filter ? '筛选范围' : '完整快照'} · ${reportTime(filter?.from ?? evidence.startTimeS)}～${reportTime(filter?.to ?? evidence.endTimeS)}${selection.length ? ` · ${selection.join(' · ')}` : ''}`
+  if (context === undefined) return legacy
+  const identity = context.resultId ?? context.runId ?? context.reportId ?? '未提供'
+  const scope = `节点 ${filter?.nodeId ?? '全部'} · 链路 ${filter?.linkId ?? '全部'} · 阶段 ${filter?.stage ?? '全部'}`
+  return `${legacy} · 结果 ${identity} · 来源 SHA-256 ${context.sourceSha256 ?? '未提供'} · ${scope} · 时间范围含首尾端点`
 }

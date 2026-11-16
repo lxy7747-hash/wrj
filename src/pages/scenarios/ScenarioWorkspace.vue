@@ -3,12 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref, toRaw } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { ScenarioDraft } from '../../contracts/domain-models'
-import { createScenarioSnapshot, scenarioSnapshotId } from '../../features/scenarios/scenario-snapshot'
+import { createScenarioSnapshot, scenarioSnapshotId, scenarioImportMigrationNotes } from '../../features/scenarios/scenario-snapshot'
 import { saveScriptText } from '../../features/scenarios/script-file'
 import { useScenarioStore } from '../../stores/scenario'
 import { useAuthStore } from '../../stores/auth'
 import { useSimulationStore } from '../../stores/simulation'
 import ScenarioEditor from './scenarios.vue'
+import MissionRecovery from '../../components/situation/MissionRecovery.vue'
 
 const store = useScenarioStore()
 const auth = useAuthStore()
@@ -24,8 +25,9 @@ const canWrite = computed(() => auth.authorize('SCENARIO_DRAFT_WRITE').allowed)
 const sceneSelectionDisabled = computed(() => busy.value || simulationStore.pending || simulationStore.selectingScene
   || simulationStore.run?.configLocked || ['RUNNING', 'PAUSED'].includes(simulationStore.uiStatus))
 let active = true
+let stopRefreshTimer: ReturnType<typeof setTimeout> | undefined
 const selectionLifetime = new AbortController()
-onBeforeUnmount(() => { active = false; selectionLifetime.abort() })
+onBeforeUnmount(() => { active = false; selectionLifetime.abort(); clearTimeout(stopRefreshTimer) })
 
 async function mayLeave(): Promise<boolean> {
   if (!editing.value || !store.dirty) return true
@@ -35,11 +37,29 @@ async function mayLeave(): Promise<boolean> {
   } catch { return false }
 }
 
+async function refreshScenes(): Promise<void> {
+  clearTimeout(stopRefreshTimer)
+  await Promise.all([
+    store.loadScenes(),
+    auth.runtimeMode === 'LOCAL' ? simulationStore.resetProjection() : undefined,
+  ])
+  if (active && auth.runtimeMode === 'LOCAL' && simulationStore.run?.configLocked) stopRefreshTimer = setTimeout(refreshStoppingRun, 1000)
+}
+
+/** 离开态势页后的进程收尾是异步的，解锁后同步列表，避免永久显示旧状态。 */
+async function refreshStoppingRun(): Promise<void> {
+  if (!active || editing.value || auth.runtimeMode !== 'LOCAL' || !auth.principal) return
+  await simulationStore.resetProjection()
+  if (!active) return
+  if (simulationStore.run?.configLocked) stopRefreshTimer = setTimeout(refreshStoppingRun, 1000)
+  else await store.loadScenes()
+}
+
 async function showList(): Promise<void> {
   if (!await mayLeave() || !active) return
   editing.value = false
   store.resetToSafeEmpty()
-  await store.loadScenes()
+  await refreshScenes()
 }
 
 function create(): void {
@@ -174,9 +194,12 @@ async function importJson(event: Event): Promise<void> {
       return
     }
     const name = store.draft?.config.scenario.name ?? ''
+    let migrationNotes: string[] = []
+    try { migrationNotes = store.draft ? scenarioImportMigrationNotes(JSON.parse(text), store.draft) : [] } catch { migrationNotes = [] }
+    if (migrationNotes.length > 0) ElMessage.info(`旧版配置已补齐运动字段：${migrationNotes.join('；')}`)
     const result = await generateImportedScript()
     if (!active || !result) return
-    if (result.ok) ElMessage.success(`已导入场景“${name}”，TXT 已生成：${result.path}`)
+    if (result.ok) ElMessage.success(`已导入场景“${name}”。`)
     else ElMessage.warning(`已导入场景“${name}”，但 TXT 未生成：${result.message} 可进入场景点击“保存”重试。`)
     store.resetToSafeEmpty()
   } finally {
@@ -213,7 +236,7 @@ onBeforeRouteLeave(async to => {
   if (store.dirty) store.resetToSafeEmpty()
   return true
 })
-onMounted(() => { void store.loadScenes() })
+onMounted(() => { void refreshScenes() })
 </script>
 
 <template>
@@ -221,12 +244,13 @@ onMounted(() => { void store.loadScenes() })
   <section v-else class="page scene-list" aria-label="场景配置" data-testid="scene-list">
     <header class="scene-list__toolbar">
       <h2>场景列表</h2>
-      <el-button :disabled="busy" @click="store.loadScenes()">刷新</el-button>
+      <el-button :disabled="busy" @click="refreshScenes">刷新</el-button>
       <el-button :disabled="busy || !canWrite" data-testid="scene-import-json" @click="jsonFile?.click()">导入 JSON 文件</el-button>
       <input ref="jsonFile" type="file" accept=".json,application/json" hidden aria-label="选择场景 JSON 文件" data-testid="scene-import-file" @change="importJson">
       <el-button :disabled="busy || !canWrite" data-testid="scene-from-template" @click="chooseTemplate">从模板创建</el-button>
       <el-button type="primary" :disabled="busy || !canWrite" data-testid="scene-create" @click="create">新建场景</el-button>
     </header>
+    <MissionRecovery :refresh-key="store.listMessage" @resolved="refreshScenes" />
     <el-alert v-if="store.listState === 'ERROR'" type="error" :closable="false" :title="store.listMessage" show-icon />
     <el-alert v-if="importError" type="error" :title="`场景 JSON 导入失败：${importError}`" show-icon data-testid="scene-import-error" @close="importError = ''" />
     <p v-if="store.listState === 'LOADING'" role="status">正在加载场景列表…</p>

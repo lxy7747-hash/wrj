@@ -120,8 +120,8 @@ describe('引擎帧可靠归档', () => {
     const restored = JSON.parse((await readFile(path, 'utf8')).trim())
     expect(restored).toEqual(received)
     const csv = await archive.finalizeCsv('RUN-ARCHIVE', { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-09T00:00:00Z' }, {})
-    expect(csv?.files).toEqual([])
-    expect(csv?.missing.map((item: { fileName: string }) => item.fileName)).toEqual(expect.arrayContaining(['link_state.csv', 'link_loss.csv', 'link_quality.csv']))
+    expect(csv?.files).toEqual(expect.arrayContaining([expect.objectContaining({ fileName: 'link_state.csv', rowCount: received.links.length, skippedCount: 0 }), expect.objectContaining({ fileName: 'link_loss.csv', rowCount: received.links.length, skippedCount: 0 })]))
+    expect(csv?.missing.map((item: { fileName: string }) => item.fileName)).toEqual(expect.arrayContaining(['link_quality.csv']))
   })
   it('按轮次和帧号去重，结束后发布带来源摘要的可验证真实段记录', async () => {
     const root = await mkdtemp(join(tmpdir(), 'wrj-engine-archive-')); roots.push(root)
@@ -202,7 +202,7 @@ describe('引擎帧可靠归档', () => {
     session.append(received); await session.close()
     const evidence = await archive.finalizeCsv('RUN-ARCHIVE', { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }, { 'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B' } })
     expect(evidence?.files.map((file: { fileName: string }) => file.fileName)).toEqual(expect.arrayContaining(['link_state.csv', 'link_loss.csv']))
-    expect(evidence?.missing.map((file: { fileName: string }) => file.fileName)).toEqual(expect.arrayContaining(['link_quality.csv', 'link_switch.csv', 'events.csv']))
+    expect(evidence?.missing.map((file: { fileName: string }) => file.fileName)).toEqual(expect.arrayContaining(['link_quality.csv', 'events.csv']))
     expect(await archive.getCsvFile('RUN-ARCHIVE', evidence!.sourceSha256, 'link_state.csv')).toMatch(/link_state\.csv$/)
     expect(await archive.aggregate('RUN-ARCHIVE', { taskId: 'TASK-001', runId: 'RUN-ARCHIVE', scenarioId: 'SCN-001', revision: 1, startedAt: '2026-11-07T00:00:00Z' }, { 'L-1': { type: 'MICROWAVE', sourcePlatformId: 'A', targetPlatformId: 'B' } })).toMatchObject({ uniqueSingleSegmentCount: 1, averageGxbDb: 2, averageBer: 0.01, missing: ['connectivityDurationS', 'interferenceDurationS'] })
   })
@@ -218,7 +218,7 @@ describe('引擎帧可靠归档', () => {
     session.append(valid); session.append(incomplete); await session.close()
     const evidence = await archive.finalizeCsv('RUN-ARCHIVE', scope, {})
     const state = evidence!.files.find((file: { fileName: string }) => file.fileName === 'link_state.csv')!
-    expect(state).toMatchObject({ status: 'PARTIAL', rowCount: 1, skippedCount: 1 })
+    expect(state).toMatchObject({ status: 'PARTIAL', rowCount: 2, skippedCount: 0 })
     const path = await archive.getCsvFile('RUN-ARCHIVE', evidence!.sourceSha256, 'link_state.csv')
     expect(await readFile(path!, 'utf8')).toContain(',-80\r\n')
   })
@@ -244,7 +244,7 @@ describe('引擎帧可靠归档', () => {
     const second = frame(2); second.links[0]!.linkIds = ['L-1']; second.links[0]!.sourcePlatformId = 'A'; second.links[0]!.targetPlatformId = 'B'; second.links[0]!.status = 'UP'; second.links[0]!.quality = { ...second.links[0]!.quality, gxbDb: 3, ber: 0.03, rxPowerDbm: -70 }
     session.append(first); session.append(second); await session.close()
     const evidence = await archive.finalizeCsv('RUN-ARCHIVE', scope, {})
-    expect(evidence!.files.find((file: { fileName: string }) => file.fileName === 'link_state.csv')).toMatchObject({ status: 'PARTIAL', rowCount: 1 })
+    expect(evidence!.files.find((file: { fileName: string }) => file.fileName === 'link_state.csv')).toMatchObject({ status: 'PARTIAL', rowCount: 3 })
     await expect(archive.aggregate('RUN-ARCHIVE', scope, {}, { start: 1, end: 1, linkId: 'L-1' })).resolves.toMatchObject({ uniqueSingleSegmentCount: 0 })
     await expect(archive.aggregate('RUN-ARCHIVE', scope, {}, { start: 2, end: 2, linkId: 'L-1' })).resolves.toMatchObject({ uniqueSingleSegmentCount: 1, averageGxbDb: 3, averageBer: 0.03 })
   })

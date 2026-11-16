@@ -59,6 +59,24 @@ function prepare(activeScope = scope()) {
 describe('运行质量 Store', () => {
   beforeEach(() => setActivePinia(createPinia()))
 
+  it('本机位置与链路按共同时间推进，保留缓存帧事件，解除限时后收齐末帧', () => {
+    const store = prepare()
+    const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    store.setPresentationTimes([1])
+    for (let i = 1; i <= 8; i++) expect(store.acceptEngineFrame(store.epoch, { ...base, frameId: i / 4, simulationTime: i / 4,
+      events: [{ type: 'TEST', pathId: String(i), uavNames: [], jammerNames: [], uavIds: [], jammerIds: [] }] })).toBe(true)
+    expect(store.engineFrame?.simulationTime).toBe(1)
+    expect(store.engineEvents).toHaveLength(4)
+    store.setPresentationTimes([1, 3])
+    expect(store.engineFrame?.simulationTime).toBe(1)
+    store.setPresentationTimes([1, 1.75])
+    expect(store.engineFrame?.simulationTime).toBe(1.75)
+    expect(store.engineEvents).toHaveLength(7)
+    store.setPresentationTimes(null)
+    expect(store.engineFrame?.simulationTime).toBe(2)
+    expect(store.engineEvents.map(item => item.event.pathId)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8'])
+  })
+
   it('暂停冻结展示并有界缓存，恢复只接受新帧，切换运行不会带回暂停期间旧数据', () => {
     const now = vi.spyOn(performance, 'now').mockReturnValue(100)
     const store = prepare()
@@ -402,5 +420,57 @@ describe('运行质量 Store', () => {
     expect(first.scope).toBeNull()
     expect(second.snapshot?.frameId).toBe(2)
     expect(first.acceptFrame(oldEpoch, { frameId: 3, simulationTime: 3 }, sourceCalc())).toBe(false)
+  })
+})
+
+describe('引擎切换前历史路由证据（整改10）', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  const node = (platformId: string, inPort: string, outPort: string) => ({ platformName: platformId, platformId, inPort, outPort })
+
+  it('旧段只在事件前帧出现时，接收切换帧即冻结解析出切换前路线；事件帧提供切换后路线', () => {
+    const store = prepare()
+    const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    const segment = (linkId: string, linkIds: string[], sp: string, spPort: string, tp: string, tpPort: string) =>
+      ({ ...base.links[0]!, linkId, linkIds, sourcePlatformId: sp, sourcePort: spPort, targetPlatformId: tp, targetPort: tpPort, error: null })
+    const oldNodes = [node('N1', '', 'n1-out'), node('N2', 'n2-in', '')]
+    const newNodes = [node('N1', '', 'n1-out'), node('N3', 'n3-in', '')]
+    const switchRoute = { pathId: 'p2', direction: 'FORWARD', sourceName: 'N1', targetName: 'N3', sourcePlatformId: 'N1', targetPlatformId: 'N3',
+      transTypes: [], nodes: newNodes, oldPathId: 'p1', oldNodes, reasons: [] }
+
+    const f1 = { ...base, frameId: 5, simulationTime: 5, links: [segment('seg-old', ['L-OLD'], 'N1', 'n1-out', 'N2', 'n2-in')],
+      routing: { switches: [], alarms: [] }, events: [], initRouting: null }
+    expect(store.acceptEngineFrame(store.epoch, f1)).toBe(true)
+    const f2 = { ...base, frameId: 6, simulationTime: 6, links: [segment('seg-new', ['L-NEW'], 'N1', 'n1-out', 'N3', 'n3-in')],
+      routing: { switches: [switchRoute], alarms: [] }, events: [], initRouting: null }
+    expect(store.acceptEngineFrame(store.epoch, f2)).toBe(true)
+
+    const item = store.engineSwitches.at(-1)!
+    expect(item.resolution).toMatchObject({ before: { linkIds: ['L-OLD'], resolvedHops: 1, totalHops: 1 }, after: { linkIds: ['L-NEW'], resolvedHops: 1, totalHops: 1 } })
+    // 后续新帧到达不改变已冻结的旧切换解析。
+    expect(store.acceptEngineFrame(store.epoch, { ...f2, frameId: 7, simulationTime: 7, links: [segment('seg-new2', ['L-NEW'], 'N1', 'n1-out', 'N3', 'n3-in')], routing: { switches: [], alarms: [] } })).toBe(true)
+    expect(store.engineSwitches.at(-1)!.resolution).toEqual(item.resolution)
+  })
+
+  it('较新的歧义证据使旧唯一映射失效，切换前路线保持未解析', () => {
+    const store = prepare()
+    const base = { ...adaptEngineFrameSnapshot(engineSample).data!, runId: scope().runId }
+    const segment = (linkId: string, linkIds: string[], sp: string, spPort: string, tp: string, tpPort: string) =>
+      ({ ...base.links[0]!, linkId, linkIds, sourcePlatformId: sp, sourcePort: spPort, targetPlatformId: tp, targetPort: tpPort, error: null })
+    const oldNodes = [node('N1', '', 'n1-out'), node('N2', 'n2-in', '')]
+    const newNodes = [node('N1', '', 'n1-out'), node('N3', 'n3-in', '')]
+    const switchRoute = { pathId: 'p2', direction: 'FORWARD', sourceName: 'N1', targetName: 'N3', sourcePlatformId: 'N1', targetPlatformId: 'N3',
+      transTypes: [], nodes: newNodes, oldPathId: 'p1', oldNodes, reasons: [] }
+    expect(store.acceptEngineFrame(store.epoch, { ...base, frameId: 5, simulationTime: 5,
+      links: [segment('seg-old', ['L-OLD'], 'N1', 'n1-out', 'N2', 'n2-in')], routing: { switches: [], alarms: [] }, events: [], initRouting: null })).toBe(true)
+    // 前一帧对同一跳出现歧义（两段同端口），必须使更早的唯一映射失效。
+    expect(store.acceptEngineFrame(store.epoch, { ...base, frameId: 6, simulationTime: 6,
+      links: [segment('a', ['L-A', 'L-B'], 'N1', 'n1-out', 'N2', 'n2-in'), segment('b', ['L-C'], 'N1', 'n1-out', 'N2', 'n2-in')],
+      routing: { switches: [], alarms: [] }, events: [], initRouting: null })).toBe(true)
+    expect(store.acceptEngineFrame(store.epoch, { ...base, frameId: 7, simulationTime: 7,
+      links: [segment('seg-new', ['L-NEW'], 'N1', 'n1-out', 'N3', 'n3-in')], routing: { switches: [switchRoute], alarms: [] }, events: [], initRouting: null })).toBe(true)
+    const item = store.engineSwitches.at(-1)!
+    expect(item.resolution!.before).toMatchObject({ linkIds: [], resolvedHops: 0, totalHops: 1 })
+    expect(item.resolution!.after).toMatchObject({ linkIds: ['L-NEW'], resolvedHops: 1 })
   })
 })

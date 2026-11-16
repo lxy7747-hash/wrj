@@ -1,3 +1,17 @@
+import { requiresRuntimeEndpoints, runtimeEndpoints, serviceOrigin } from './runtime-endpoints'
+
+/**
+ * 地图服务地址：单入口内网包走同源 /tiles；离线包按页面主机名与运行配置端口；开发环境保持本机 4174。
+ * 在创建图层时求值，确保运行配置加载后才生成瓦片地址。
+ */
+function mapServiceOrigin(): string {
+  if (import.meta.env.MODE === 'lan') return ''
+  const endpoints = runtimeEndpoints()
+  if (endpoints) return serviceOrigin(endpoints.mapPort)
+  if (requiresRuntimeEndpoints()) throw new Error('运行配置尚未加载，已拒绝使用默认地图地址。')
+  return 'http://127.0.0.1:4174'
+}
+
 /** 浏览器端地图支持的配色主题。 */
 export type MapTheme = 'dark' | 'light'
 
@@ -14,7 +28,7 @@ export const MAP_CONFIG = {
     vector: {
       /** 资源 TileJSON 中的西南、东北边界，每点为 [纬度, 经度]；范围外不请求不存在的瓦片。 */
       bounds: [[7.197594, 71.61502], [54.011569, 135.677601]],
-      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/china-taiwan-260823/{z}/{x}/{y}`,
+      get tileUrl(): string { return `${mapServiceOrigin()}/tiles/china-taiwan-260823/{z}/{x}/{y}` },
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
       /** 此矢量资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
@@ -23,7 +37,7 @@ export const MAP_CONFIG = {
     satellite: {
       /** 卫星包 TileJSON 覆盖范围；坐标顺序为 [纬度, 经度]，与矢量范围独立。 */
       bounds: [[-66.530768, -0.043945], [66.530768, 157.543945]],
-      tileUrl: `${import.meta.env.MODE === 'lan' ? '' : 'http://127.0.0.1:4174'}/tiles/taiwan-strait-satellite/{z}/{x}/{y}`,
+      get tileUrl(): string { return `${mapServiceOrigin()}/tiles/taiwan-strait-satellite/{z}/{x}/{y}` },
       /** 保留版权来源元数据，供未来版权或关于页面使用。 */
       attribution: 'VersaTiles - Satellite + Orthophotos',
       /** 此卫星资源可原生提供的最高缩放级别；地图可继续缩放至全局上限。 */
@@ -81,7 +95,9 @@ export const MAP_CONFIG = {
     latitude: 26.018571,
   },
   /** 临时卫星分布半径，以纬度度数表示；经度按中心纬度修正。仅用于示意。 */
-  temporarySatelliteSpreadRadiusDegrees: 0.05,
+  temporarySatelliteSpreadRadiusDegrees: 0.25,
+  /** 卫星环绕起始角度（度）；45° 使多颗卫星在水平与垂直方向都拉开距离。 */
+  temporarySatelliteStartAngleDegrees: 45,
   /** 右侧全链路状态表的 SNR / BER 列；只控制展示，不删除质量数据。 */
   showLinkQualityColumns: false as boolean,
   /**
@@ -114,14 +130,14 @@ export const MAP_CONFIG = {
   } as Readonly<Record<string, string>>,
   /** 用户提供的透明俯视图；静态 URL 由 Vite 打包，离线部署无需访问 Material 源目录。 */
   nodeTypeImages: {
-    REAR_COMMAND_NODE: new URL('../../Material/top_view_transparent_7_png/rear.png', import.meta.url).href,
-    GROUND_CLUSTER_COMMAND_NODE: new URL('../../Material/top_view_transparent_7_png/comand_vehical1.png', import.meta.url).href,
-    FORWARD_RELAY_NODE: new URL('../../Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
-    AIRBORNE_MISSION_CLUSTER: new URL('../../Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
-    GROUND_JAMMER_DETECTION_STATION: new URL('../../Material/top_view_transparent_7_png/jammer_station.png', import.meta.url).href,
-    AIRBORNE_JAMMER_PLATFORM: new URL('../../Material/top_view_transparent_7_png/jammer_airbround.png', import.meta.url).href,
-    TIANTONG: new URL('../../Material/top_view_transparent_7_png/tiantong_sat.png', import.meta.url).href,
-    SHENTONG: new URL('../../Material/top_view_transparent_7_png/shentong_sat.png', import.meta.url).href,
+    REAR_COMMAND_NODE: new URL('../../scripts/icons/Material/top_view_transparent_7_png/rear.png', import.meta.url).href,
+    GROUND_CLUSTER_COMMAND_NODE: new URL('../../scripts/icons/Material/top_view_transparent_7_png/comand_vehical1.png', import.meta.url).href,
+    FORWARD_RELAY_NODE: new URL('../../scripts/icons/Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
+    AIRBORNE_MISSION_CLUSTER: new URL('../../scripts/icons/Material/top_view_transparent_7_png/UAV.png', import.meta.url).href,
+    GROUND_JAMMER_DETECTION_STATION: new URL('../../scripts/icons/Material/top_view_transparent_7_png/jammer_station.png', import.meta.url).href,
+    AIRBORNE_JAMMER_PLATFORM: new URL('../../scripts/icons/Material/top_view_transparent_7_png/jammer_airbround.png', import.meta.url).href,
+    TIANTONG: new URL('../../scripts/icons/Material/top_view_transparent_7_png/tiantong_sat.png', import.meta.url).href,
+    SHENTONG: new URL('../../scripts/icons/Material/top_view_transparent_7_png/shentong_sat.png', import.meta.url).href,
   } as Readonly<Record<string, string>>,
   nodeFallbackGlyph: '○',
 } as const
@@ -190,7 +206,7 @@ export function resolvePlatformCoordinates(
     const ids = [...new Set(platforms.filter(isSatellitePlatform).map(node => node.platformId ?? node.id ?? ''))].sort()
     const index = ids.indexOf(platform.platformId ?? platform.id ?? '')
     if (ids.length > 1 && index >= 0) {
-      const angle = index * 2 * Math.PI / ids.length
+      const angle = index * 2 * Math.PI / ids.length + MAP_CONFIG.temporarySatelliteStartAngleDegrees * Math.PI / 180
       const radius = MAP_CONFIG.temporarySatelliteSpreadRadiusDegrees
       return {
         longitude: center.longitude + radius * Math.cos(angle) / Math.cos(center.latitude * Math.PI / 180),

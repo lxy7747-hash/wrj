@@ -16,7 +16,25 @@ const validate = ajv.compile({ $ref: 'engine#/components/schemas/LinkMetricPaylo
 const adapt = (input: unknown = sample) => { const result = adaptEngineFrameSnapshot(input); expect(result.data).not.toBeNull(); return { ...result.data!, runId: 'RUN-ENGINE' } }
 
 describe('引擎帧归一化及合同', () => {
-  it.each([0, 5, 10, 3770.0])('无 sim_time_s 的帧 %s 直接按帧号提供秒制时间', frame_id => {
+  it('保留事件新旧路径并兼容旧 pathId，新增字段可选且严格校验', () => {
+    const frame = adapt({ ...sample, events: [
+      { events_type: 'beyond_weitch', events_new_pathid: 'new', events_old_pathid: 'old' },
+      { events_type: 'legacy', events_pathid: 'legacy', events_new_pathid: 'new' },
+      { events_type: 'old-only', events_old_pathid: 'old' },
+    ] })
+    expect(frame.events).toMatchObject([
+      { pathId: 'new', newPathId: 'new', oldPathId: 'old' },
+      { pathId: 'legacy', newPathId: 'new' },
+      { pathId: 'old', oldPathId: 'old' },
+    ])
+    expect(isEngineFrameSnapshot(frame)).toBe(true)
+    expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
+    const bad = structuredClone(frame) as any
+    bad.events[0].oldPathId = 123
+    expect(isEngineFrameSnapshot(bad)).toBe(false)
+    expect(validate(bad)).toBe(false)
+  })
+  it.each([0, 0.25, 0.5, 12.75, 5, 10, 3770.0])('无 sim_time_s 的帧 %s 直接按帧号提供秒制时间', frame_id => {
     const { sim_time_s: _legacyTime, ...raw } = sample
     const frame = adapt({ ...raw, frame_id })
     expect(frame).toMatchObject({ frameId: frame_id, simulationTime: frame_id })
@@ -115,7 +133,7 @@ describe('引擎帧归一化及合同', () => {
     expect(frame).toMatchObject({ jammers: [], events: [], initRouting: null, routing: { switches: [], alarms: [] } })
     expect(validate(frame), JSON.stringify(validate.errors)).toBe(true)
   })
-  it.each([{ frame_id: undefined }, { frame_id: -1 }, { frame_id: 1.5 }, { frame_id: '' }, { link_calc: {} }])('必要帧头不合法拒绝并定位 %j', change => {
+  it.each([{ frame_id: undefined }, { frame_id: -1 }, { frame_id: Number.MAX_SAFE_INTEGER + 1 }, { frame_id: '' }, { link_calc: {} }])('必要帧头不合法拒绝并定位 %j', change => {
     const result = adaptEngineFrameSnapshot({ ...sample, ...change })
     expect(result.data).toBeNull(); if (!result.data) expect(result.errors[0]!.fieldPath).toMatch(/frame_id|link_calc.links/)
   })

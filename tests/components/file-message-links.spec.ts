@@ -8,6 +8,7 @@ import {
   MESSAGE_MAX_DELAY_S,
   readFileMessageDirection,
   selectFileMessageLinks,
+  withDerivedMessageDirections,
 } from '../../src/features/situation/file-message-links'
 
 const DECLARATION = [
@@ -99,6 +100,31 @@ describe('文件消息链路投影', () => {
     expect(links).toHaveLength(3)
     expect(links.map((link) => link.targetPlatformId).sort()).toEqual(['B', 'C', 'D'])
     for (const link of links) expect(link.messageCount).toBe(1)
+  })
+
+  it('排除无法构成已知链路的候选：中继下一跳不会把唯一有效来源误判为歧义', () => {
+    const { links, issues } = build([
+      // 同一消息：A 光纤发送（有效）与 A 数传发送（与 B 的光纤接收不兼容）。
+      transmit(1, 'A', 'fiber_link', 7),
+      transmit(1.0001, 'A', 'c_band_uplink', 7),
+      receive(1.0002, 'B', 'fiber_link', 7),
+    ], { devices: [
+      ['A', 'fiber_link', 'WSF_COMM_TRANSCEIVER'], ['A', 'c_band_uplink', 'WSF_RADIO_TRANSCEIVER'],
+      ['B', 'fiber_link', 'WSF_COMM_TRANSCEIVER'],
+    ] })
+    expect(issues).toEqual({ undelivered: 0, ambiguous: 0, unclassified: 0 })
+    expect(links).toHaveLength(1)
+    expect(links[0]).toMatchObject({ sourcePlatformId: 'A', sourceDeviceId: 'fiber_link', targetDeviceId: 'fiber_link', type: 'FIBER' })
+  })
+
+  it('兼容候选仍分散在不同设备时保持歧义，不猜来源', () => {
+    const { links, issues } = build([
+      transmit(1, 'A', 'c_band_uplink', 7),
+      transmit(1.0001, 'A', 'l_band_uplink', 7),
+      receive(1.0002, 'B', 'c_band_uplink', 7),
+    ], { devices: [['A', 'c_band_uplink'], ['A', 'l_band_uplink'], ['B', 'c_band_uplink']] })
+    expect(links).toEqual([])
+    expect(issues).toEqual({ undelivered: 0, ambiguous: 1, unclassified: 0 })
   })
 
   it('候选发送分散在不同设备时判为歧义，不生成链路也不猜来源', () => {
@@ -319,6 +345,24 @@ describe('文件消息链路投影', () => {
       expect(isFileMessageLink({ ...link, direction }, ids)).toBe(false)
     }
     expect(isFileMessageLink({ ...link, messageTypes: ['CMD_ORDER', 'RECON_DATA'] }, ids)).toBe(false)
+  })
+
+  it('读取旧快照时为当时未识别的消息类型补出方向，不拒绝历史结果', () => {
+    type LegacyLink = { messageTypes: string[]; direction?: 'FORWARD' | 'REVERSE' }
+    const legacy: LegacyLink[] = [
+      { messageTypes: ['kForwardSituation', 'kForwardTarget'] },
+      { messageTypes: ['kReturnReconStatus', 'kReturnReconVideo'] },
+      { messageTypes: ['kReturnReconStatus'], direction: 'REVERSE' },
+      { messageTypes: ['MYSTERY'] },
+    ]
+    const normalized = withDerivedMessageDirections({ messageLinks: legacy })
+    expect(normalized.messageLinks[0]?.direction).toBe('FORWARD')
+    expect(normalized.messageLinks[1]?.direction).toBe('REVERSE')
+    // 已存在的方向保持原样，无法归类的类型不猜方向。
+    expect(normalized.messageLinks[2]?.direction).toBe('REVERSE')
+    expect(normalized.messageLinks[3]?.direction).toBeUndefined()
+    // 不修改传入对象，避免把迁移写回旧内存。
+    expect(legacy[0]?.direction).toBeUndefined()
   })
 
   it('旧版浏览器没有 Object.hasOwn 时仍可校验消息链路', () => {

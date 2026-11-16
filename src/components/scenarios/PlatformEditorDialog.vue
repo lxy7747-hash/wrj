@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, toRaw, watch } from 'vue'
-import type { BusinessInformationNodeType, Platform, PlatformType, SatelliteType, TemplateRoutePoint, ValidationIssue, Waypoint } from '../../contracts/domain-models'
+import type { BusinessInformationNodeType, Faction, Platform, PlatformType, SatelliteType, TemplateRoutePoint, ValidationIssue, Waypoint } from '../../contracts/domain-models'
 import { INFORMATION_NODE_LIMIT, PLATFORM_TYPE_DOMAINS, WAYPOINT_PLATFORM_TYPES, waypointSpeedError } from '../../features/scenarios/scenario-validation'
 import { PLATFORM_POSITION_RULES, RELAY_DEFAULT_ORIGIN, RELAY_DEFAULT_ROUTE, SATELLITE_GEO_POSITION } from '../../features/scenarios/platform-position-rules'
 import { fieldValidationMessage } from '../../features/scenarios/validation-fields'
@@ -10,13 +10,15 @@ type PlatformTypeOption = { value: PlatformType, label: string }
 type SatelliteTypeOption = { value: SatelliteType, label: string }
 /** 新模板路线：盘旋航点与返航路线。 */
 type TemplateRouteList = 'loiter' | 'return'
-/** 地图选点目标：普通航点或新模板路线中的某个点。 */
-type RoutePickerTarget = { list: 'waypoints' | TemplateRouteList, index: number }
+/** 地图选点目标：普通航点、新模板路线中的某个点，或节点初始位置。 */
+type RoutePickerTarget = { list: 'waypoints' | TemplateRouteList, index: number } | { list: 'initialPosition' }
 
 /** 可配置盘旋航点的平台类型，与场景校验保持一致。 */
 const LOITER_PLATFORM_TYPES: readonly PlatformType[] = ['AIRBORNE_MISSION_CLUSTER', 'FORWARD_RELAY_NODE', 'AIRBORNE_JAMMER_PLATFORM']
 /** 可配置返航的平台类型（无人机类），与场景校验保持一致。 */
 const RETURN_PLATFORM_TYPES: readonly PlatformType[] = ['AIRBORNE_MISSION_CLUSTER', 'FORWARD_RELAY_NODE']
+/** 初始位置支持地图选点的地面节点类型（2026-11-13 用户确认）。 */
+const INITIAL_POSITION_PICKER_TYPES: readonly PlatformType[] = ['REAR_COMMAND_NODE', 'GROUND_CLUSTER_COMMAND_NODE', 'GROUND_JAMMER_DETECTION_STATION']
 /** 新模板路线点列表在平台对象中的字段路径，用于原位显示校验错误。 */
 const TEMPLATE_ROUTE_FIELDS: Record<TemplateRouteList, string> = { loiter: 'loiterWaypoints', return: 'returnPlan.waypoints' }
 const TEMPLATE_ROUTE_SPEED_ERROR = '速度必须至少为 1 m/s。'
@@ -90,9 +92,36 @@ const waypointBounds = computed(() => supportsWaypoints.value ? positionRule.val
 const isSatellite = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE')
 /** 任务无人机与前出中继可配置普通航点。 */
 const supportsWaypoints = computed(() => editor.value !== null && (WAYPOINT_PLATFORM_TYPES as readonly PlatformType[]).includes(editor.value.type))
+/** 后方指挥节点、地面无人集群指挥车、地面干扰设备可在初始位置直接地图选点。 */
+const supportsInitialPositionPicker = computed(() => editor.value !== null && INITIAL_POSITION_PICKER_TYPES.includes(editor.value.type))
 const hasInvalidWaypointSpeed = computed(() => supportsWaypoints.value && editor.value?.waypoints.some(point => waypointSpeedError(point.speed)) === true)
 const invalidSatelliteType = computed(() => editor.value?.type === 'COMMUNICATION_SATELLITE'
   && editor.value.satelliteType !== 'TIANTONG' && editor.value.satelliteType !== 'SHENTONG')
+/** 平台阵营选项：显式选择后写入；清空表示按平台类型推断，不自动回写旧数据。 */
+const FACTION_OPTIONS: readonly { value: Faction; label: string }[] = [
+  { value: 'BLUE', label: '蓝方' },
+  { value: 'RED', label: '红方' },
+  { value: 'NEUTRAL', label: '中立' },
+]
+function setFaction(value: Faction | '' | undefined): void {
+  if (editor.value === null) return
+  touchField('faction')
+  if (value === 'BLUE' || value === 'RED' || value === 'NEUTRAL') editor.value.faction = value
+  else delete editor.value.faction
+}
+/** 节点通信能力范围界面按 km 编辑、合同存 m；清空表示未配置。 */
+const communicationRangeKm = computed<number | undefined>({
+  get: () => editor.value?.communicationRangeM === undefined ? undefined : Number((editor.value.communicationRangeM / 1000).toFixed(3)),
+  set: (value) => {
+    if (editor.value === null) return
+    touchField('communicationRangeM')
+    if (value === undefined || value === null || !Number.isFinite(value)) delete editor.value.communicationRangeM
+    else editor.value.communicationRangeM = value * 1000
+  },
+})
+function setCommunicationRangeKm(value: number | undefined): void {
+  communicationRangeKm.value = value ?? undefined
+}
 /** 批量新增无人机时不配置盘旋与返航，生成后再逐个编辑。 */
 const batchAdding = computed(() => showBatchQuantity.value && quantity.value > 1)
 const supportsLoiter = computed(() => editor.value !== null && LOITER_PLATFORM_TYPES.includes(editor.value.type))
@@ -102,9 +131,15 @@ const visibleTemplateRoutes = computed<TemplateRouteList[]>(() => {
   return [...(supportsLoiter.value ? ['loiter' as const] : []), ...(supportsReturn.value ? ['return' as const] : [])]
 })
 /** 普通航点沿用类型选点范围；新模板路线点不受编队范围限制，与校验一致。 */
-const waypointPickerBounds = computed(() => waypointPickerTarget.value === null || waypointPickerTarget.value.list === 'waypoints'
-  ? waypointBounds.value
-  : undefined)
+const waypointPickerBounds = computed(() => {
+  const target = waypointPickerTarget.value
+  if (target === null || target.list === 'waypoints') return waypointBounds.value
+  // 初始位置选点与经纬度输入框一致，按节点类型的范围限位；指挥车无范围时不受限。
+  if (target.list === 'initialPosition') return positionRule.value
+  return undefined
+})
+/** 当前是否在为初始位置打开地图选点，用于切换弹窗文案。 */
+const pickingInitialPosition = computed(() => waypointPickerTarget.value?.list === 'initialPosition')
 /** 盘旋 / 返航的本地兜底校验，仅在未传入 validate 或其尚未覆盖时阻止确认。 */
 const templateRouteMessage = computed(() => {
   if (editor.value === null || batchAdding.value) return ''
@@ -253,8 +288,8 @@ function toggleReturnPlan(enabled: string | number | boolean): void {
 }
 
 /**
- * 同步实体类型对应的卫星子类型和批量数量字段。
- * @param type 当前选择的场景实体类型。
+ * 同步节点类型对应的卫星子类型和批量数量字段。
+ * @param type 当前选择的节点类型。
  * @returns 无返回值。
  * @sideEffects 同步部署域、移除非卫星的子类型；不补卫星默认值，非空中无人作业集群恢复单条新增。
  */
@@ -283,7 +318,7 @@ function synchronizeTypeFields(type: PlatformType): void {
 }
 
 function onPlatformTypeChange(type: PlatformType): void {
-  // 只在新增时主动选择中继填入模板起飞点、中继点和盘旋点；已有航线内容不覆盖，打开已有实体不改写。
+  // 只在新增时主动选择中继填入模板起飞点、中继点和盘旋点；已有航线内容不覆盖，打开已有节点不改写。
   if (!props.editing && type === 'FORWARD_RELAY_NODE' && editor.value) {
     editor.value.initialPosition = { ...RELAY_DEFAULT_ORIGIN }
     if (editor.value.waypoints.length === 0) editor.value.waypoints = RELAY_DEFAULT_ROUTE.waypoints.map(point => ({ ...point }))
@@ -318,7 +353,7 @@ function addWaypoint(): void {
     latitude: waypointBounds.value?.minLatitude ?? 0, altitude: 0, speed: 1, arrivalTime: editor.value.waypoints.length ? editor.value.waypoints.at(-1)!.arrivalTime + 1 : 0 })
 }
 
-function openWaypointPicker(index: number, list: RoutePickerTarget['list'] = 'waypoints'): void {
+function openWaypointPicker(index: number, list: 'waypoints' | TemplateRouteList = 'waypoints'): void {
   const waypoint = list === 'waypoints' ? editor.value?.waypoints[index] : templatePoints(list)?.[index]
   if (waypoint === undefined) return
   waypointPickerTarget.value = { list, index }
@@ -326,9 +361,27 @@ function openWaypointPicker(index: number, list: RoutePickerTarget['list'] = 'wa
   waypointPickerVisible.value = true
 }
 
+/** 打开初始位置地图选点；仅对支持的类型生效。 */
+function openInitialPositionPicker(): void {
+  if (editor.value === null || !supportsInitialPositionPicker.value) return
+  waypointPickerTarget.value = { list: 'initialPosition' }
+  waypointPickerPoint.value = { longitude: editor.value.initialPosition.longitude, latitude: editor.value.initialPosition.latitude }
+  waypointPickerVisible.value = true
+}
+
 function applyWaypointMapPoint(point: WaypointMapPoint): void {
   const target = waypointPickerTarget.value
   if (target === null) return
+  if (target.list === 'initialPosition') {
+    if (editor.value === null) return
+    // 初始位置只回填经纬度；高度沿用当前值，由用户按需在输入框微调。
+    editor.value.initialPosition.longitude = point.longitude
+    editor.value.initialPosition.latitude = point.latitude
+    touchField('initialPosition.longitude')
+    touchField('initialPosition.latitude')
+    waypointPickerVisible.value = false
+    return
+  }
   if (target.list !== 'waypoints') {
     // 与普通航点及选点框提示一致：二维地图无法确定高度，确认后高度置 0，由用户补填。
     const routePoint = templatePoints(target.list)?.[target.index]
@@ -395,7 +448,7 @@ watch(() => props.modelValue, (visible) => {
   <el-dialog
     :model-value="modelValue"
     class="platform-editor-dialog scenario-dialog"
-    :title="editing ? '编辑场景实体' : '新增场景实体'"
+    :title="editing ? '编辑节点' : '新增节点'"
     width="min(1000px, calc(100vw - 2rem))"
     destroy-on-close
     append-to-body
@@ -408,14 +461,14 @@ watch(() => props.modelValue, (visible) => {
       <section class="platform-editor-section" aria-labelledby="platform-basic-title">
         <h4 id="platform-basic-title" class="platform-editor-section__title">基本信息</h4>
         <div class="platform-editor-grid">
-          <el-form-item required v-show="showIds" label="场景实体 ID" :error="fieldError('id')">
+          <el-form-item required v-show="showIds" label="节点 ID" :error="fieldError('id')">
             <el-input v-model="editor.id" :disabled="editing" data-testid="platform-id" @input="touchField('id')" @update:model-value="touchField('id')" />
           </el-form-item>
           <el-form-item label="名称" required :error="fieldError('name', !editor.name?.trim() ? '请填写名称。' : '')">
             <el-input v-model="editor.name" data-testid="platform-name" @input="touchField('name')" @update:model-value="touchField('name')" />
           </el-form-item>
-          <el-form-item required label="场景实体类型" :error="fieldError('type')">
-            <el-select v-model="editor.type" placeholder="请选择场景实体类型" style="width: 100%" data-testid="platform-type" @change="onPlatformTypeChange">
+          <el-form-item required label="节点类型" :error="fieldError('type')">
+            <el-select v-model="editor.type" placeholder="请选择节点类型" style="width: 100%" data-testid="platform-type" @change="onPlatformTypeChange">
               <el-option-group label="信息节点">
                 <el-option v-for="option in businessTypeOptions" :key="option.value" :label="option.label" :value="option.value" />
               </el-option-group>
@@ -439,12 +492,23 @@ watch(() => props.modelValue, (visible) => {
           <el-form-item label="部署域">
             <el-input :model-value="deploymentDomainLabels[editor.category]" readonly data-testid="platform-category" />
           </el-form-item>
+          <el-form-item label="所属阵营" :error="fieldError('faction')">
+            <el-select :model-value="editor.faction" clearable placeholder="默认（按平台类型推断）" style="width: 100%" data-testid="platform-faction" @update:model-value="setFaction">
+              <el-option v-for="option in FACTION_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+            <span class="platform-editor-field__hint">未填写时按平台类型推断。</span>
+          </el-form-item>
+          <el-form-item label="节点通信能力范围（km）" :error="fieldError('communicationRangeM')">
+            <el-input-number :model-value="communicationRangeKm" :min="0" :step="1" controls-position="right" placeholder="未配置" data-testid="platform-communication-range" @update:model-value="setCommunicationRangeKm" />
+            <span class="platform-editor-field__hint">通信能力范围，不是几何距离或海峡宽度。留空表示未配置。</span>
+          </el-form-item>
         </div>
       </section>
 
       <section class="platform-editor-section" aria-labelledby="platform-position-title">
         <div class="waypoint-heading">
           <h4 id="platform-position-title" class="platform-editor-section__title">{{ editor.type === 'AIRBORNE_MISSION_CLUSTER' ? '编队原点' : '初始位置' }}</h4>
+          <el-button v-if="supportsInitialPositionPicker" size="small" :disabled="pending || locked" data-testid="pick-initial-position" @click="openInitialPositionPicker">地图选点</el-button>
         </div>
         <span v-if="editor.type === 'AIRBORNE_MISSION_CLUSTER'" class="platform-editor-field__hint" data-testid="formation-origin-hint">此处仅设置整个集群的编队原点，不单独配置各成员位置。</span>
         <p v-if="isSatellite" class="platform-editor-field__hint" data-testid="satellite-geo-position">GEO 轨道，定点 0°N 120°E，高度 35786 km</p>
@@ -526,8 +590,12 @@ watch(() => props.modelValue, (visible) => {
   </el-dialog>
 
   <WaypointMapPicker
-    v-if="supportsWaypoints || supportsLoiter"
+    v-if="supportsWaypoints || supportsLoiter || supportsInitialPositionPicker"
     v-model="waypointPickerVisible"
+    :title="pickingInitialPosition ? '地图选取初始位置' : undefined"
+    :hint="pickingInitialPosition ? '单击地图选择初始位置经纬度；确认后仅更新经纬度，高度保持不变。' : undefined"
+    :empty-text="pickingInitialPosition ? '尚未选择初始位置' : undefined"
+    :show-altitude="!pickingInitialPosition"
     :longitude="waypointPickerPoint.longitude"
     :latitude="waypointPickerPoint.latitude"
     :bounds="waypointPickerBounds"

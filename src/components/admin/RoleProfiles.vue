@@ -8,6 +8,7 @@ import { resolveMockOrigin, useAuthStore } from '../../stores/auth'
 import { APP_CONFIG } from '../../config/app.config'
 
 defineProps<{ users: User[] }>()
+const emit = defineEmits<{ saved: [] }>()
 const auth = useAuthStore()
 const config = ref<AccessControlConfig | null>(null)
 const error = ref('')
@@ -54,7 +55,7 @@ async function request(save = false): Promise<void> {
     if (!response.ok || body.ok !== true) throw new Error(body.error?.message ?? '角色配置请求失败。')
     if (!isAccessControlConfig(body.data, save ? 'write' : 'read')) throw new Error('角色配置响应不正确。')
     config.value = body.data
-    if (save) ElMessage.success('角色配置已保存，受影响账号需重新登录。')
+    if (save) { emit('saved'); ElMessage.success('角色配置已保存，受影响账号需重新登录。') }
   } catch (reason) { if (current === epoch) { if (!save) config.value = null; error.value = reason instanceof Error ? reason.message : '角色配置请求失败。' } }
   finally { clearTimeout(timer); if (current === epoch) pending.value = false }
 }
@@ -100,7 +101,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
 <template>
   <section class="role-profiles" aria-label="自定义角色与菜单权限" data-testid="role-profiles" v-loading="pending">
     <header><h3>自定义角色与菜单权限</h3><el-button :disabled="pending" @click="request()">重新加载</el-button><el-button :disabled="pending || !config" @click="edit()">新增角色</el-button><el-button type="primary" :disabled="pending || !config" @click="save">保存权限配置</el-button></header>
-    <p>未分配自定义角色的账号保持原有权限。角色只收窄基础权限；菜单授权不会开启全局配置中隐藏的模块。分配不会改变账号的 ADMIN／OPERATOR 身份。</p>
+    <p>未分配自定义角色的账号保持原有权限。自定义角色只能减少基础角色的权限，不能开放已隐藏的菜单，也不会改变账号的基础角色。</p>
     <el-alert v-if="error" type="error" :title="error" :closable="false" />
     <el-table :data="config?.profiles ?? []" empty-text="暂无数据">
       <el-table-column prop="name" label="角色名称" /><el-table-column prop="profileId" label="编号" /><el-table-column prop="baseRole" label="基础角色" />
@@ -109,7 +110,7 @@ onBeforeUnmount(() => { ++epoch; controller?.abort() })
       <el-table-column label="操作"><template #default="{ row }"><el-button link :disabled="pending || row.profileId === ownProfileId" @click="edit(row)">编辑</el-button><el-button link type="danger" :disabled="pending || config?.assignments.some(item => item.profileId === row.profileId)" @click="remove(row.profileId)">删除</el-button></template></el-table-column>
     </el-table>
     <h4>账号分配</h4>
-    <el-table :data="users" empty-text="暂无数据"><el-table-column prop="username" label="账号" /><el-table-column prop="role" label="基础身份" /><el-table-column label="自定义角色"><template #default="{ row }">
+    <el-table :data="users" empty-text="暂无数据"><el-table-column label="用户名"><template #default="{ row }">{{ row.displayName ?? row.username }}</template></el-table-column><el-table-column prop="username" label="登录账号" /><el-table-column prop="role" label="基础身份" /><el-table-column label="自定义角色"><template #default="{ row }">
       <el-select :model-value="config?.assignments.find(item => item.userId === row.userId)?.profileId ?? ''" :disabled="pending || !config || row.userId === auth.principal?.userId" @update:model-value="assign(row, $event)">
         <el-option value="" label="使用原有权限" /><el-option v-for="profile in config?.profiles.filter(item => item.baseRole === row.role) ?? []" :key="profile.profileId" :value="profile.profileId" :label="profile.name" />
       </el-select>

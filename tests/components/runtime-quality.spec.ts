@@ -117,7 +117,7 @@ describe('统一运行质量投影与展示', () => {
     }, global: { plugins: [pinia, ElementPlus], stubs: { ElDialog: dialogStub } } })
     expect(wrapper.get('[data-testid="link-detail-engine-segments"]').text()).toContain('来源帧 18 · 源仿真时刻 1分12.25秒')
     expect(detail('引擎状态')).toBe('劣化')
-    expect(detail('信噪比 SNR')).toBe('暂无数据（上游未提供）')
+    expect(detail('信噪比 SNR')).toBe('暂无数据')
     await wrapper.setProps({ engineSegments: [{
       linkId: 'segment-error', linkIds: [configured.id], sourceName: 'TX', sourcePlatformId: 'TX', sourcePort: 'TX-PORT', targetName: 'RX', targetPlatformId: 'RX', targetPort: 'RX-PORT',
       status: 'UP', engineStatus: 'AVAILABLE', error: '计算输入缺失', distanceM: null,

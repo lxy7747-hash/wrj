@@ -26,7 +26,9 @@ export function functionalParameterDraft(): ScenarioDraft {
     platform.initialPosition = { longitude: 119.5, latitude: 24.9 + index * 0.00001, altitude: 10 }
   })
   config.links = [{ ...config.links[0]!, id: 'PARAM-RF-01', type: 'MICROWAVE', enabled: true,
-    sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', direction: 'FORWARD', antennaGainCorrectionDb: 7 }]
+    sourcePlatformId: 'CMD-01', targetPlatformId: 'AIR-01', direction: 'FORWARD', antennaGainCorrectionDb: 7,
+    // 与下方设备端口显式值保持一致：#1 冲突阻断要求链路显式值与 deviceParameters 相同，否则阻断生成。
+    frequency: 8210, rxFrequency: 8210, bandwidth: 40, rxBandwidth: 40, txPower: 25, dataRate: 96, noiseFigureDb: 4 }]
   config.sensors = [{ id: 'PARAM-ESM-01', platformId: 'CMD-01', frequencyRange: { min: 2000, max: 5000 }, detectionRange: 150000 }]
   config.jammers = []
   config.informationDemand = [{ ...config.informationDemand[0]!, id: 'PARAM-INFO-01', linkId: 'PARAM-RF-01',
